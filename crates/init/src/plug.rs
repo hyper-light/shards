@@ -917,26 +917,56 @@ fn peak_since(used: u64) -> u64 {
     peak.max(used)
 }
 
-/// What a run keeps plugged past what its microVM booted with as its host asks for memory
-/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
-/// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
-/// what it used at its peak
-/// since it was last asked: twice what it uses, as the grower asks for twice what it
-/// reaches (D148), never less than its peak, in whole memory blocks. None where it gives
-/// back nothing: less than a block, or while memory it asked for to grow is still to come,
-/// which the giving back would take away from it as it grows (PM M275).
-fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64) -> Option<u64> {
-    if asked.saturating_sub(plugged) >= ALIGN {
-        return None;
-    }
-    let keep = used
-        .saturating_mul(2)
-        .max(peak)
+/// What a run's memory is grown to and kept at past what its microVM booted with (`boot`)
+/// (D133, D188, memory-14): the least whole blocks whose hold ([`needed_for`]), its kernel
+/// holding `beside` beside it uncharged with its [`slack`], keeps `held` (twice what the run
+/// uses, and its peak where a give-back keeps it). Twice is no tuning: it is the delta-t
+/// estimator (Gott, Nature 363, 1993), what a run has grown to so far standing at the median
+/// for what it grows to in all, the estimator D215's `w` uses; learned from realized peaks
+/// it would be biased low, as the hold caps what a run can show. The grower asks for it and
+/// a give-back keeps it, both of the run's own use, so that a give-back takes nothing a
+/// growth just asked for on the same use.
+fn holding(boot: u64, held: u64, beside: u64) -> u64 {
+    needed_for(held, beside)
         .saturating_sub(boot)
         .checked_next_multiple_of(ALIGN)
         .unwrap_or(u64::MAX)
-        .min(most);
+}
+
+/// What the grower asks for past `boot` as a run that uses `used` reaches its hold, its
+/// kernel holding `beside` beside it with its slack, `plugged` plugged and `asking` asked for
+/// now: [`holding`] twice its use, and at least a block past what is plugged, the unit its
+/// driver adds memory in, so that a run held at its hold is always given room to grow into;
+/// never less than is asked for now, nor past its `most`.
+fn to_ask(boot: u64, most: u64, plugged: u64, asking: u64, used: u64, beside: u64) -> u64 {
+    holding(boot, used.saturating_mul(2), beside)
+        .max(plugged.saturating_add(ALIGN))
+        .max(asking)
+        .min(most)
+}
+
+/// What a run keeps plugged past what its microVM booted with as its host asks for memory
+/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
+/// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses, what
+/// it used at its peak since it was last asked and what its kernel holds beside it with its
+/// slack: [`holding`] twice what it uses, as the grower asks for ([`to_ask`]), never less
+/// than its peak. None where it gives back nothing: less than a block, or while memory it
+/// asked for to grow is still to come, which the giving back would take away from it as it
+/// grows (PM M275).
+fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64, beside: u64) -> Option<u64> {
+    if asked.saturating_sub(plugged) >= ALIGN {
+        return None;
+    }
+    let keep = holding(boot, used.saturating_mul(2).max(peak), beside).min(most);
     (plugged.saturating_sub(keep) >= ALIGN).then_some(keep)
+}
+
+/// What the kernel holds beside `cgroup` uncharged now, with its [`slack`]: what a hold of it
+/// keeps beside it ([`needed_for`]).
+fn beside(cgroup: &str, boot: u64) -> io::Result<u64> {
+    let now = reading(cgroup, boot)
+        .ok_or_else(|| err(format!("{cgroup}: what its kernel holds beside it is unread")))?;
+    Ok(now.uncharged.saturating_add(slack(cgroup, boot)?))
 }
 
 /// Gives back what the run holds plugged past what it keeps ([`to_keep`], D188). The run is
@@ -962,7 +992,8 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     if came_within(begin_period(stays), stays) {
         return Ok(0);
     }
-    let Some(keep) = to_keep(boot, most, stays, asked, used, peak) else {
+    let beside = beside(cgroup, boot)?;
+    let Some(keep) = to_keep(boot, most, stays, asked, used, peak, beside) else {
         return Ok(0);
     };
     begin_period(keep);
@@ -1210,11 +1241,7 @@ const PCP_FRACTION: u64 = 8;
 pub fn needed() -> io::Result<(u64, u64)> {
     let peak = number(&format!("{BUILD}/memory.peak"))
         .ok_or_else(|| err(format!("{BUILD}/memory.peak: none to read")))?;
-    let boot = BOOT.get().copied().unwrap_or(0);
-    let kernel = reading(BUILD, boot)
-        .ok_or_else(|| err(format!("{BUILD}: what its kernel holds beside it is unread")))?
-        .uncharged;
-    let beside = kernel.saturating_add(slack(BUILD, boot)?);
+    let beside = beside(BUILD, BOOT.get().copied().unwrap_or(0))?;
     let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
         .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
     let killed = events
@@ -1767,13 +1794,17 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
         // Never less than is asked for now: the device's request, which a run gives back
         // by (D188), else what it asked for last.
         let asking = control_read64(control::HOTPLUG_REQUEST).unwrap_or(asked);
-        asked = total
-            .saturating_mul(2)
-            .saturating_sub(plug.boot)
-            .checked_next_multiple_of(ALIGN)
-            .unwrap_or(u64::MAX)
-            .max(asking)
-            .min(plug.most);
+        let Ok(beside) = beside(cgroup, plug.boot) else {
+            continue;
+        };
+        asked = to_ask(
+            plug.boot,
+            plug.most,
+            total.saturating_sub(plug.boot),
+            asking,
+            current,
+            beside,
+        );
         let mut builder = Builder {
             plug,
             notes,
@@ -2097,42 +2128,79 @@ mod tests {
         assert_eq!(working_room(), working_room_of(cpus, page_size()));
     }
 
-    /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as
-    /// its host asks; never what it used at its peak since it was last asked, nor anything
-    /// while memory it asked for to grow is still to come, nor less than a block.
+    /// A run gives back what it holds plugged past what holds twice what it uses beside what
+    /// its kernel holds, in whole blocks, as its host asks; never what it used at its peak
+    /// since it was last asked, nor anything while memory it asked for to grow is still to
+    /// come, nor less than a block.
     #[test]
     fn a_run_keeps_its_peak_and_what_it_asked_for() {
-        const GIB: u64 = 1 << 30;
         let boot = 256 * MIB;
-        // Using 300 MiB of 4 GiB plugged: it keeps 600 less what it booted with, 344 MiB,
-        // in whole blocks, 384.
+        let beside = 100 * MIB;
+        // Using 300 MiB of 4 GiB plugged, its kernel 100 beside it: 700 MiB held is 800 with
+        // its CPUs' lists, 896 in whole blocks, 640 past its boot.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB),
-            Some(384 * MIB)
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB, beside),
+            Some(640 * MIB)
         );
-        // Having reached 2.5 GiB since it was last asked: it keeps that.
+        // Having reached 2.5 GiB since it was last asked: what holds that, 3 GiB, less boot.
         let peak = 2560 * MIB;
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak),
-            Some((peak - boot).next_multiple_of(ALIGN))
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak, beside),
+            Some(2816 * MIB)
         );
         // Growing, a block or more it asked for not yet plugged: it gives back nothing.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB),
+            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB, beside),
             None
         );
-        // What it would give back is less than a block, 448 MiB plugged and 384 kept; and a
+        // What it would give back is less than a block, 640 MiB plugged and 640 kept; and a
         // block exactly.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 448 * MIB, 448 * MIB, 300 * MIB, 300 * MIB),
+            to_keep(boot, 8 * GIB, 640 * MIB, 640 * MIB, 300 * MIB, 300 * MIB, beside),
             None
         );
         assert_eq!(
-            to_keep(boot, 8 * GIB, 512 * MIB, 512 * MIB, 300 * MIB, 300 * MIB),
-            Some(384 * MIB)
+            to_keep(boot, 8 * GIB, 768 * MIB, 768 * MIB, 300 * MIB, 300 * MIB, beside),
+            Some(640 * MIB)
         );
         // Never past its most.
-        assert_eq!(to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB), Some(GIB));
+        assert_eq!(
+            to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB, beside),
+            Some(GIB)
+        );
+    }
+
+    /// The grower asks for what a give-back keeps, both of the run's own use (memory-14):
+    /// growth that asked for twice its MemTotal while a give-back kept twice its use, a
+    /// give-back after a growth took back what the growth had just asked for. And a run held
+    /// at its hold is given a block more than it has at least, never nothing to grow into.
+    #[test]
+    fn a_grower_asks_for_what_a_give_back_keeps() {
+        let most = 64 * GIB;
+        for (boot, used, beside) in [
+            (256 * MIB, 300 * MIB, 100 * MIB),
+            (512 * MIB, 3 * GIB, 180 * MIB),
+            (2 * GIB, 900 * MIB, 400 * MIB),
+            (512 * MIB, 20 * GIB, 300 * MIB),
+        ] {
+            let asked = to_ask(boot, most, 0, 0, used, beside);
+            assert_eq!(asked % ALIGN, 0, "{used}");
+            let plugged = asked + 8 * GIB;
+            assert_eq!(
+                to_keep(boot, most, plugged, plugged, used, used, beside),
+                Some(asked),
+                "{boot} {used} {beside}"
+            );
+        }
+        // Held at its hold with little used and much plugged: a block more than it has.
+        let plugged = 4 * GIB;
+        assert_eq!(
+            to_ask(256 * MIB, most, plugged, plugged, 10 * MIB, 50 * MIB),
+            plugged + ALIGN
+        );
+        // Never past its most, never below what it asks for now.
+        assert_eq!(to_ask(256 * MIB, GIB, 0, 0, 3 * GIB, 0), GIB);
+        assert_eq!(to_ask(256 * MIB, most, 0, 6 * GIB, 300 * MIB, 0), 6 * GIB);
     }
 
     /// The kernel's memory less its report of what may still be plugged (D149): read

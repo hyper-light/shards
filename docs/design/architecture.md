@@ -19255,6 +19255,25 @@ build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and PM M392's 8
 build on 32 vCPUs with each wake's `memory.peak − memory.high` and uncharged rise logged, on
 HVF and KVM at 4, 16 and 32 vCPUs: each observed maximum must sit under its term.
 
+**Review memory-14 (2026-11-14): growth and give-back both rest on the run's own use.**
+The grower asked for twice the builder's MemTotal and a give-back kept twice the run's
+use: two different bases, so a give-back just after a growth took back what that growth
+had asked for on the same use. Both now hold the least whole blocks whose hold
+(`needed_for`, the kernel's uncharged use and the slack beside it) keeps twice
+`memory.current` (`plug::holding`, `to_ask`, `to_keep`); a give-back keeps the run's peak
+since the last where that is more (PM M275), and the grower asks for a block more than is
+plugged at least, the unit the driver adds memory in, so that a run held at its hold always
+has room to grow into. Twice is not a tuning: it is the delta-t estimator (Gott, Nature
+363, 1993), what a run has grown to so far standing at the median for what it grows to in
+all, the estimator D215's `w` uses, with the same cold start (none: the run's use itself).
+A factor learned from realized peaks would be biased low, as the hold caps what a run can
+show (censored), so it is not learned naively. Owed to ROOT, to validate the median:
+realized episode ratios (final peak over the use at a growth episode's first ask) on real
+builds and runs; `cargo test -p shards --test build
+a_build_held_short_of_memory_has_its_builder_give_back` and
+`a_builders_memory_is_plugged_as_its_build_needs_it` on HVF and KVM; ask counts and stall
+per build, before and after, n ≥ 20, p50/p90/p99/max.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
