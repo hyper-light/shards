@@ -260,7 +260,10 @@ mod tests {
         // Index 1 again, a later vCPU of it: its time adds to the first's.
         let one = clocks.join(1, clock(&at[2]));
         let t = clocks.whole();
-        assert_eq!((times(&t), t.departed_ns, t.total_ns()), (vec![(0, 10), (1, 50)], 0, 60));
+        assert_eq!(
+            (times(&t), t.departed_ns, t.total_ns()),
+            (vec![(0, 10), (1, 50)], 0, 60)
+        );
         assert_eq!(t.total_ns(), clocks.sample().total_ns());
         drop(zero);
         let refused: Read = Box::new(|| Err(Unread::HvfExecTime(-1)));

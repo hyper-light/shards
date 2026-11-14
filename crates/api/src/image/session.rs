@@ -21,8 +21,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::wire::{self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, RunEnded, Stats, StatsScope, Unused};
-use super::{ChannelEnd, ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor};
+use super::wire::{
+    self, Channel, LeaseRefusal, MemberInfo, Ready, RunEnd, RunEnded, Stats, StatsScope, Unused,
+};
+use super::{
+    ChannelEnd, ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor,
+};
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
 /// caller's pipe has taken: one read of the guest's (`run::CHUNK`), the most one of its
@@ -1181,12 +1185,10 @@ fn read_answers(shared: &Arc<Shared>, mut from_host: io::PipeReader) {
     release(shared);
     let mut state = lock(&shared.state);
     if let Some(why) = failed {
-        state
-            .end
-            .get_or_insert(RunEnded::unused(
-                RunEnd::Failed(format!("the run host broke its channel: {why}")),
-                Unused::Untold,
-            ));
+        state.end.get_or_insert(RunEnded::unused(
+            RunEnd::Failed(format!("the run host broke its channel: {why}")),
+            Unused::Untold,
+        ));
     }
     state.answered = true;
     shared.changed.notify_all();
@@ -1693,12 +1695,10 @@ fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>) {
     let mut state = lock(&shared.state);
     let _ = host.wait();
     if let Err(e) = awaited {
-        state
-            .end
-            .get_or_insert(RunEnded::unused(
-                RunEnd::Failed(format!("waiting for the run host: {e}")),
-                Unused::Untold,
-            ));
+        state.end.get_or_insert(RunEnded::unused(
+            RunEnd::Failed(format!("waiting for the run host: {e}")),
+            Unused::Untold,
+        ));
     }
     state.exited = true;
     shared.changed.notify_all();
@@ -2057,12 +2057,25 @@ mod tests {
         assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
         let state = lock(&s.state);
         assert_eq!(channel_end(&state, 1, Channel::Stdout), Some(ChannelEnd::Closed));
-        assert_eq!(channel_end(&state, 1, Channel::Stderr), Some(ChannelEnd::Aborted(104)));
-        assert_eq!(channel_end(&state, 2, Channel::Stdout), None, "its host still answers");
+        assert_eq!(
+            channel_end(&state, 1, Channel::Stderr),
+            Some(ChannelEnd::Aborted(104))
+        );
+        assert_eq!(
+            channel_end(&state, 2, Channel::Stdout),
+            None,
+            "its host still answers"
+        );
         drop(state);
         lock(&s.state).answered = true;
-        assert_eq!(channel_end(&lock(&s.state), 2, Channel::Stdout), Some(ChannelEnd::WithRun));
-        assert_eq!(channel_end(&lock(&s.state), 1, Channel::Stderr), Some(ChannelEnd::Aborted(104)));
+        assert_eq!(
+            channel_end(&lock(&s.state), 2, Channel::Stdout),
+            Some(ChannelEnd::WithRun)
+        );
+        assert_eq!(
+            channel_end(&lock(&s.state), 1, Channel::Stderr),
+            Some(ChannelEnd::Aborted(104))
+        );
     }
 
     /// `end`, as a host said it with no final use told.
@@ -2094,7 +2107,10 @@ mod tests {
                 }),
             }),
         };
-        assert_eq!(take(&s, wire::to_client::ENDED, &ended.encode().unwrap()), Ok(true));
+        assert_eq!(
+            take(&s, wire::to_client::ENDED, &ended.encode().unwrap()),
+            Ok(true)
+        );
         assert_eq!(lock(&s.state).end_seen(), Some(ended.clone()));
         assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(ended.clone())));
         assert_eq!(s.rate(None, BOUND), Err(ImageRefusal::Ended(ended.clone())));
@@ -2238,7 +2254,10 @@ mod tests {
         assert_eq!(said.end_seen(), Some(untold(RunEnd::Exited(3))));
         // A stop that saw no end: its VM killed, its use gone with it.
         let mut stopped = State::default();
-        assert_eq!(stopped.stopped(), RunEnded::unused(RunEnd::Stopped, Unused::Killed));
+        assert_eq!(
+            stopped.stopped(),
+            RunEnded::unused(RunEnd::Stopped, Unused::Killed)
+        );
     }
 
     /// A member's stdin has its flow as the run's start is taken, under the lock that answer
@@ -2740,7 +2759,10 @@ mod tests {
         );
         assert!(lock(&s.state).rooms.is_empty());
         lock(&s.state).end = Some(untold(RunEnd::Stopped));
-        assert_eq!(s.room(None, BOUND), Err(ImageRefusal::Ended(untold(RunEnd::Stopped))));
+        assert_eq!(
+            s.room(None, BOUND),
+            Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
+        );
         assert!(lock(&s.state).rooms.is_empty());
     }
 
@@ -2781,7 +2803,10 @@ mod tests {
         );
         assert!(lock(&s.state).rates.is_empty());
         lock(&s.state).end = Some(untold(RunEnd::Stopped));
-        assert_eq!(s.rate(None, BOUND), Err(ImageRefusal::Ended(untold(RunEnd::Stopped))));
+        assert_eq!(
+            s.rate(None, BOUND),
+            Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
+        );
         assert!(lock(&s.state).rates.is_empty());
     }
 
@@ -3000,7 +3025,10 @@ mod tests {
     fn until_its_channel_closes(shared: &Shared) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while lock(&shared.to_host).is_some() {
-            assert!(Instant::now() < deadline, "the run's end never closed its host's channel");
+            assert!(
+                Instant::now() < deadline,
+                "the run's end never closed its host's channel"
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -3024,12 +3052,19 @@ mod tests {
             end: wire::StreamEnd::Closed,
         };
         says(&mut h.host, wire::to_client::OUTPUT_END, &end.encode());
-        says(&mut h.host, wire::to_client::ENDED, &untold(RunEnd::Exited(0)).encode().unwrap());
+        says(
+            &mut h.host,
+            wire::to_client::ENDED,
+            &untold(RunEnd::Exited(0)).encode().unwrap(),
+        );
         until_its_channel_closes(&h.shared);
         let mut read = Vec::new();
         member_stdout(&h.shared).read_to_end(&mut read).unwrap();
         assert_eq!(read, b"first record\nsecond record\n");
-        assert!(!lock(&h.shared.state).answered, "ended by its host's answers, not its channel's end");
+        assert!(
+            !lock(&h.shared.state).answered,
+            "ended by its host's answers, not its channel's end"
+        );
         drop(h.host);
         h.reader.join().unwrap();
     }
@@ -3044,7 +3079,11 @@ mod tests {
     #[test]
     fn output_said_after_the_runs_end_reaches_its_owner_before_its_end() {
         let mut h = hosted(None, &[]);
-        says(&mut h.host, wire::to_client::ENDED, &untold(RunEnd::Exited(0)).encode().unwrap());
+        says(
+            &mut h.host,
+            wire::to_client::ENDED,
+            &untold(RunEnd::Exited(0)).encode().unwrap(),
+        );
         until_its_channel_closes(&h.shared);
         let mut owner = member_stdout(&h.shared);
         says_output(&mut h.host, b"the last of it\n");
@@ -3197,7 +3236,13 @@ mod tests {
             drop(h.host);
             h.reader.join().unwrap();
             assert!(
-                matches!(lock(&h.shared.state).end, Some(RunEnded { end: RunEnd::Failed(_), .. })),
+                matches!(
+                    lock(&h.shared.state).end,
+                    Some(RunEnded {
+                        end: RunEnd::Failed(_),
+                        ..
+                    })
+                ),
                 "{lessor} {twice}"
             );
             let l = lock(&orchestrator.ledger);
@@ -3528,7 +3573,10 @@ mod tests {
             }
             assert_eq!(
                 booted,
-                Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
+                Err(ImageRefusal::Ended(RunEnded::unused(
+                    RunEnd::Stopped,
+                    Unused::NotStarted
+                ))),
                 "after {took:?}"
             );
             assert!(took < BOOT_BOUND, "the stop took {took:?}");
@@ -3587,7 +3635,10 @@ mod tests {
         let took = asked.elapsed();
         assert_eq!(
             stopped,
-            Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
+            Err(ImageRefusal::Ended(RunEnded::unused(
+                RunEnd::Stopped,
+                Unused::NotStarted
+            ))),
             "after {took:?}"
         );
         assert!(took < BOOT_BOUND, "the stop took {took:?}");
@@ -3802,7 +3853,10 @@ mod tests {
             let (host_gone, vm_gone) = (host.ended(), vm.ended());
             assert_eq!(
                 booted,
-                Err(ImageRefusal::Ended(RunEnded::unused(RunEnd::Stopped, Unused::NotStarted))),
+                Err(ImageRefusal::Ended(RunEnded::unused(
+                    RunEnd::Stopped,
+                    Unused::NotStarted
+                ))),
                 "after {took:?}"
             );
             assert!(took < BOOT_BOUND, "the stop took {took:?}");

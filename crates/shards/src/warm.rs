@@ -2893,6 +2893,9 @@ mod tests {
         drop(held);
         let m = shards_ipc::recv(&owner).unwrap().unwrap();
         assert_eq!((m.kind, m.payload.as_slice()), (kind::FINAL_USE, used.as_bytes()));
-        assert!(shards_ipc::recv(&owner).unwrap().is_none(), "closed with its last handle");
+        assert!(
+            shards_ipc::recv(&owner).unwrap().is_none(),
+            "closed with its last handle"
+        );
     }
 }

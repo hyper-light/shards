@@ -4458,17 +4458,26 @@ mod tests {
                 };
                 let bytes = ended.encode().unwrap();
                 assert_eq!(RunEnded::decode(&bytes), Ok(ended));
-                assert_eq!(RunEnded::decode(&[&bytes[..], &[0]].concat()), Err(WireError::Trailing));
+                assert_eq!(
+                    RunEnded::decode(&[&bytes[..], &[0]].concat()),
+                    Err(WireError::Trailing)
+                );
                 assert_eq!(RunEnded::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
             }
         }
         // An end alone, as a host of version 27 said it, is short of its final use.
-        assert_eq!(RunEnded::decode(&RunEnd::Stopped.encode().unwrap()), Err(WireError::Short));
+        assert_eq!(
+            RunEnded::decode(&RunEnd::Stopped.encode().unwrap()),
+            Err(WireError::Short)
+        );
         let tagged = |tail: &[u8]| RunEnded::decode(&[&[1u8][..], tail].concat());
         assert!(matches!(tagged(&[2]), Err(WireError::Tag { tag: 2, .. })));
         assert!(matches!(tagged(&[1, 4]), Err(WireError::Tag { tag: 4, .. })));
         assert!(matches!(tagged(&[1, 3, 5]), Err(WireError::Tag { tag: 5, .. })));
-        assert!(matches!(tagged(&[0, 0]), Err(WireError::Tag { tag: 0, .. })), "no cost read");
+        assert!(
+            matches!(tagged(&[0, 0]), Err(WireError::Tag { tag: 0, .. })),
+            "no cost read"
+        );
     }
 
     #[test]

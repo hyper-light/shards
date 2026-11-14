@@ -3416,7 +3416,12 @@ mod hosted {
         /// Ends `key`'s channel `end`: what waits of it goes first, its room or not, as no
         /// credit after its end could let it go: at most one record's, as `grant` grants the
         /// guest none while anything waits.
-        fn end_channel(&self, flows: &mut Flows, key: (u32, Channel), end: wire::StreamEnd) -> io::Result<()> {
+        fn end_channel(
+            &self,
+            flows: &mut Flows,
+            key: (u32, Channel),
+            end: wire::StreamEnd,
+        ) -> io::Result<()> {
             flows.ended.insert(key, true);
             let rest = flows.waiting.remove(&key).unwrap_or_default();
             if !rest.is_empty() {
