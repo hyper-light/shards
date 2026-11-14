@@ -1928,7 +1928,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
-    // The home's names are relative to it (its slots, an older build's socket): the home is
+    // The home's names are relative to it (its slots): the home is
     // the daemon's own, so this holds no client's directory busy.
     let home = entered_home(&home)?;
     let Some(home_lock) = take_lock(&home)? else {
@@ -1948,11 +1948,8 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // works in the home, with the daemon's limits, as the children it makes do.
     shards_ipc::start_spawner(&exe, &[OsStr::new("spawner")])
         .map_err(|e| format!("the daemon's spawner: {e}"))?;
-    // Its daemon is gone, since this one holds the lock: an older build's socket with it
-    // (Unix's: no daemon ran on Windows before slots), and the writable layers made for its
+    // Its daemon is gone, since this one holds the lock: the writable layers made for its
     // microVMs that none took (D190).
-    #[cfg(unix)]
-    let _ = std::fs::remove_file(shards_ipc::SOCKET);
     layers::clear(&home);
     let _ = std::fs::remove_file(crate::context::LISTENING);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
@@ -2180,7 +2177,8 @@ fn readable_fd(fd: RawFd) -> bool {
 /// The home's lock, or `None` if another daemon serves the home. One that finds no
 /// daemon serving waits a while for the lock: the last daemon may be exiting. The lock is
 /// its file's (`File::try_lock`): flock(2) on Unix, LockFileEx on Windows, each exclusive
-/// and refused at once where another holds it.
+/// and refused at once where another holds it. Refused where a daemon of a build from
+/// before slots holds it ([`shards_ipc::PreSlotsDaemon`]).
 fn take_lock(home: &Path) -> Result<Option<File>, String> {
     let path = home.join("daemon.lock");
     let file = crate::os::owner_only(
@@ -2199,15 +2197,12 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
         }
-        // Its holder serves: its slots, or (Unix's) an older build's socket, whose client
-        // then has it step aside for its own.
-        #[cfg(unix)]
-        let older = UnixStream::connect(shards_ipc::SOCKET).is_ok();
-        #[cfg(windows)]
-        let older = false;
-        if shards_ipc::slots::served(home) || older {
+        // Its holder serves its slots; one of a build from before slots is refused, never
+        // asked to step aside (D185).
+        if shards_ipc::slots::served(home) {
             return Ok(None);
         }
+        shards_ipc::no_pre_slots_daemon(Path::new(".")).map_err(|e| e.to_string())?;
         // Held and offering nothing: its lists may have been removed by hand, which its
         // maker learns of only as a name of the home comes or goes. One made and removed
         // says so, once, never through a link at its name (D185).

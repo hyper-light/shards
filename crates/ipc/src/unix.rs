@@ -1147,14 +1147,6 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// The socket of a daemon of a build from before request slots (D185): `daemon.sock` in
-/// shards' home, named relative to the working directory, which each process that uses it
-/// makes the home first. A client reaches such a daemon there only to have it step aside
-/// for its own build's, and a daemon starting removes one left. A relative name fits a
-/// socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
-/// the home's path (PM M26).
-pub const SOCKET: &str = "daemon.sock";
-
 /// Whether process `pid` lives: kill(2) with signal 0 asks, one of another user's among
 /// those that do (EPERM), and one that has exited does not, whether or not its parent has
 /// reaped it (waits-08): a zombie answers kill(2) and keeps its start, so a client that
