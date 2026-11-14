@@ -5135,7 +5135,7 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        let outside = shards_ipc::spawn_std(&mut outside).unwrap();
+        let mut outside = shards_ipc::spawn_std(&mut outside).unwrap();
         let mut held = Held::open(outside.id());
         let spec = stand_in_spec(
             &me,
@@ -5157,6 +5157,8 @@ mod tests {
             session.wait_for(Duration::ZERO),
             Ok(Some(untold(RunEnd::Exited(0))))
         );
+        outside.kill().unwrap();
+        outside.wait().unwrap();
     }
 
     /// A Windows reader of a run host's pipe (`UntilGone`) whose writer, another process's,
