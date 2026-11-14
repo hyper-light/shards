@@ -54,7 +54,7 @@ fn a_daemons_whole_lines_are_its_words() {
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `idle`, nothing at all until
-/// its stdin closes.
+/// its stdin closes; `falls MS`, a give-back ([`falls`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -79,6 +79,88 @@ fn stand_in() {
         to.write_all(ANSWER).unwrap();
     } else if asked == "idle" {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
+    } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
+        falls(ms, busy);
+    }
+}
+
+/// The memory a give-back stand-in frees, in regions of this many bytes, this many.
+const REGION: usize = 32 << 20;
+const REGIONS: usize = 4;
+
+/// A stand-in guest's give-back: [`REGIONS`] regions of [`REGION`] bytes mapped and touched,
+/// "mapped" said on stdout; once stdin gives a byte, each unmapped in turn, `ms` of busy CPU
+/// apart, the first after twice that (its free, then its guest's wait before it reports, as
+/// D151's reports come); then nothing until stdin closes.
+fn falls(ms: u64, busy: impl Fn(u64)) {
+    use std::io::Read as _;
+    let regions: Vec<Region> = (0..REGIONS).map(|_| Region::touched()).collect();
+    let mut out = std::io::stdout();
+    out.write_all(b"mapped\n").unwrap();
+    out.flush().unwrap();
+    let mut stdin = std::io::stdin();
+    let _ = stdin.read(&mut [0u8; 1]);
+    busy(ms);
+    for region in regions {
+        busy(ms);
+        drop(region);
+    }
+    let _ = stdin.read(&mut [0u8; 1]);
+}
+
+/// [`REGION`] bytes of memory of the process's own, mapped and given back to its host
+/// directly, not through an allocator that may keep them.
+struct Region(*mut u8);
+
+impl Region {
+    fn touched() -> Region {
+        #[cfg(unix)]
+        // SAFETY: an anonymous private mapping of REGION bytes, which nothing else maps.
+        let at = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                REGION,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        #[cfg(unix)]
+        assert_ne!(at, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+        #[cfg(windows)]
+        // SAFETY: REGION bytes reserved and committed, readable and writable, at an address
+        // Windows chooses.
+        let at = unsafe {
+            use windows_sys::Win32::System::Memory::{MEM_COMMIT, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
+            VirtualAlloc(std::ptr::null(), REGION, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        };
+        assert!(!at.is_null(), "{}", std::io::Error::last_os_error());
+        let at = at.cast::<u8>();
+        for page in (0..REGION).step_by(4096) {
+            // SAFETY: within the REGION bytes just mapped, writable.
+            unsafe { at.add(page).write_volatile(1) };
+        }
+        Region(at)
+    }
+}
+
+impl Drop for Region {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: the mapping `touched` made, unmapped once, as its Region drops.
+        unsafe {
+            libc::munmap(self.0.cast(), REGION);
+        }
+        #[cfg(windows)]
+        // SAFETY: the allocation `touched` made, released whole once, as its Region drops.
+        unsafe {
+            windows_sys::Win32::System::Memory::VirtualFree(
+                self.0.cast(),
+                0,
+                windows_sys::Win32::System::Memory::MEM_RELEASE,
+            );
+        }
     }
 }
 
@@ -442,5 +524,50 @@ fn a_retry_goes_on_while_what_this_test_started_works() {
             patience.seen()
         );
         patience.done();
+    }
+}
+
+/// A give-back is followed while its process's own memory falls, its CPU no progress, to its
+/// end, and its kind learns how long it took (ROOT's ruling, D209 Part 4: containers.rs'
+/// `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waited for two samples 500 ms
+/// apart within 4 MiB). Do: a stand-in that frees four regions one at a time, 200 ms of busy
+/// CPU apart, the first 400 ms in, followed from before it frees; twice from one call site.
+/// Expect: each round's end held what was left once all four went, and the second round's
+/// kind learned a give-back that long.
+#[test]
+fn a_give_back_is_followed_while_its_memory_falls() {
+    let ms = 200;
+    for round in 0..2 {
+        let mut stand_in = stand_in_doing(&format!("falls {ms}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufRead::lines(std::io::BufReader::new(stand_in.stdout.take().unwrap()));
+        assert!(
+            lines.any(|l| l.unwrap() == "mapped"),
+            "the stand-in mapped nothing"
+        );
+        let peak = shards_vmm::platform::process_usage(stand_in.id())
+            .unwrap()
+            .footprint;
+        let falling = common::Falling::begin(stand_in.id());
+        assert!(
+            round == 0
+                || matches!(falling.seen(), shards_api::Seen::Learned { slowest, .. }
+                    if slowest >= Duration::from_millis(ms * (REGIONS as u64 + 1))),
+            "its kind learned no whole give-back: {:?}",
+            falling.seen()
+        );
+        stand_in.stdin.as_mut().unwrap().write_all(b"go").unwrap();
+        let ended = falling.settled();
+        let _ = stand_in.kill();
+        let _ = stand_in.wait();
+        // Midway between three regions given back and four: all four went before its end.
+        let region = REGION as u64;
+        assert!(
+            peak.saturating_sub(ended) >= 3 * region + region / 2,
+            "round {round}: {peak} bytes held mapped, {ended} at its give-back's end"
+        );
     }
 }

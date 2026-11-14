@@ -21,8 +21,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{
-    Patience, Run, TempDir, Told, Wait, WaitKind, bridge, cannot_run_vms, fixed_port, guest_init, kernel,
-    noise, registry, run_shards_env, served, served_counting, sha256_digest, test_index,
+    Falling, Patience, Run, TempDir, Told, Wait, WaitKind, bridge, cannot_run_vms, fixed_port, guest_init,
+    kernel, noise, registry, run_shards_env, served, served_counting, sha256_digest, test_index,
 };
 #[cfg(unix)]
 use common::{shards, shards_vm};
@@ -3993,31 +3993,16 @@ fn what_a_microvm_holds_cold_is_given_back_at_its_hosts_word() {
     let said = || std::fs::read_to_string(&log).unwrap_or_default();
     // Its microVM grown first, as the group's test grows its own: a run's grower plugs for
     // what its runs touch, not for what they read (D148), and jupiter's guest kept 107 MiB of
-    // four reads (PM M391). What it touched and freed given back (D151) before it is idle.
-    let booted = held();
+    // four reads (PM M391). What it touched and freed given back (D151) before it is idle:
+    // idle once its give-back has ended (`Falling`, D209 Part 4), followed from before the
+    // free. A second read of a file its guest's kernel finds the first's still holding makes
+    // its pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`),
+    // and an idle measured as it went on giving back had the file read twice and gave back
+    // nothing of it on Fedora, once in 6.
+    let falling = Falling::begin(pid);
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    // Idle once it holds what it booted with, near enough, and has stopped giving back: a
-    // second read of a file its guest's kernel finds the first's still holding makes its
-    // pages active, which a give-back takes none of (`reclaim_cold`, `inactive_file`), and
-    // an idle measured as it went on giving back had the file read twice and gave back
-    // nothing of it on Fedora, once in 6.
-    let mut patience = Patience::of(&home);
-    let mut last = held();
-    loop {
-        std::thread::sleep(Duration::from_millis(500));
-        let now = held();
-        if now < booted + (128 << 20) && now.abs_diff(last) < 4 << 20 {
-            patience.done();
-            break;
-        }
-        assert!(
-            patience.holds(),
-            "{booted} bytes held booted, {now} after touching and freeing a GiB"
-        );
-        last = now;
-    }
-    let idle = held();
+    let idle = falling.settled();
     // Its guest holds what its joiner read, read once.
     let read = shards(&["exec", "reader", "/bin/testguest", "read", "/big"]);
     assert!(read.stdout.starts_with("read /big 536870912 "), "{read}");
@@ -13224,18 +13209,16 @@ fn update_moves_a_microvms_memory_both_ways() {
 ///
 /// And the grow-after-unplug tail (PM M466): a raise that comes while the guest's driver
 /// still unplugs what the lowering before it gave back waits for the unplug, and where
-/// nothing came for 5 s its grower asked a second time and said so in its kernel's log
-/// (init plug.rs `come`, `STALLED`), which a privileged run's exec reads. Each round whose
-/// allocation took longer than that has its guest's words read; the rounds where its
-/// grower asked again are printed with what its driver said, and fail the test: a driver
-/// that gives way to a changed request (resources/kernel/patches/0014) has none.
+/// nothing came past the slowest a block had taken in that guest, its grower asked a second
+/// time and said so in its kernel's log (init plug.rs `come`, `Coming`; D209 Part 4), which
+/// a privileged run's exec reads. That slowest is the guest's own, so each round has its
+/// guest's words read; the rounds where its grower asked again are printed with what its
+/// driver said, and fail the test: a driver that gives way to a changed request
+/// (resources/kernel/patches/0014) has none.
 #[test]
 #[ignore = "a stress: SHARDS_STRESS_N=… cargo test --test containers -- --ignored update_under_pressure --nocapture"]
 fn update_under_pressure_stress() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    // init plug.rs `STALLED`: how long the grower waits on memory that does not come
-    // before it asks again. An allocation shorter than it holds no second ask.
-    const STALLED: Duration = Duration::from_secs(5);
     if cannot_run_vms() {
         return;
     }
@@ -13322,20 +13305,18 @@ fn update_under_pressure_stress() {
         if !ok {
             killed.push(round);
         }
-        if held_more.elapsed > STALLED {
-            let log = shards(&["exec", "vm", "grows", "/bin/testguest", "fs", "kmsg:asking again"]);
-            assert_eq!(log.status, Some(0), "round {round}: {log}");
-            let new: Vec<String> = log
-                .stdout
-                .lines()
-                .filter(|l| !l.starts_with("kmsg "))
-                .filter(|l| asked_again.insert(l.to_string()))
-                .map(str::to_string)
-                .collect();
-            if !new.is_empty() {
-                println!("round {round}: its grower asked again: {}", new.join("\n  "));
-                stalled.push(round);
-            }
+        let log = shards(&["exec", "vm", "grows", "/bin/testguest", "fs", "kmsg:asking again"]);
+        assert_eq!(log.status, Some(0), "round {round}: {log}");
+        let new: Vec<String> = log
+            .stdout
+            .lines()
+            .filter(|l| !l.starts_with("kmsg "))
+            .filter(|l| asked_again.insert(l.to_string()))
+            .map(str::to_string)
+            .collect();
+        if !new.is_empty() {
+            println!("round {round}: its grower asked again: {}", new.join("\n  "));
+            stalled.push(round);
         }
         let lowered = shards(&["update", "vm", "-m", "256m", "--memory-swap", "256m", "grows"]);
         assert_eq!(lowered.status, Some(0), "{lowered}");
@@ -13343,17 +13324,13 @@ fn update_under_pressure_stress() {
     took.sort_by(f64::total_cmp);
     let at = |q: f64| took[((took.len() as f64 - 1.0) * q).round() as usize];
     println!(
-        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}; over {} s {}; asked again {} {stalled:?}",
+        "allocations: n {}, p50 {:.0}, p90 {:.0}, p99 {:.0}, max {:.0} ms; not held {} {killed:?}; asked again {} {stalled:?}",
         took.len(),
         at(0.5),
         at(0.9),
         at(0.99),
         at(1.0),
         killed.len(),
-        STALLED.as_secs(),
-        took.iter()
-            .filter(|&&ms| ms > STALLED.as_secs_f64() * 1e3)
-            .count(),
         stalled.len()
     );
     assert_eq!(shards(&["stop", "vm", "-t", "1", "grows"]).status, Some(0));

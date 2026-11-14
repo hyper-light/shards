@@ -88,11 +88,29 @@ fn let_go_of_balloons(driver: &str) {
     }
 }
 
-/// How long the memory asked for may take to come online, from the last of it that came,
-/// before the process that grows it asks again: a thousand times the 5-7 ms 1 GiB took
-/// (PM M193). Asked again, the device tells its driver again, which then tries what it
-/// could not plug at once, not at its retry timer's 50 s (D137).
-const STALLED: Duration = Duration::from_secs(5);
+/// What the grower has learned in this guest of memory coming online (D137, D209 Part 4):
+/// W*, the slowest a block took to come, from the ask or the block before it, of the blocks
+/// that came. None until the first, kept in the grower's memory for its guest's life. Past
+/// it, a block not come is asked for again, and the device tells its driver again, which
+/// then tries what it could not plug at once, not at its retry timer's 50 s (D137).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Coming {
+    slowest: Option<Duration>,
+}
+
+impl Coming {
+    /// A block came `took` after the ask or the block before it: the slowest rises to it
+    /// where it is slower. A block no time long teaches nothing.
+    fn came(&mut self, took: Duration) {
+        if !took.is_zero() {
+            self.slowest = Some(self.slowest.map_or(took, |s| s.max(took)));
+        }
+    }
+}
+
+/// The grower's pace between its looks at MemTotal: no wait, a look's pace. A pause that
+/// runs past it is its guest's or its host's hold of the grower, which no window counts.
+const PAUSE: Duration = Duration::from_millis(1);
 /// inotify's cost of a watch and epoll's of an item in this kernel, in bytes
 /// (`INOTIFY_WATCH_COST`, `EP_ITEM_COST`): what makes their limits 1:28.17 at every size
 /// the pinned kernel was measured at, 4, 16 and 64 GiB (PM M193).
@@ -1225,8 +1243,10 @@ trait Grows {
     fn kernel_said(&mut self) -> Vec<String>;
     /// How long since `from` began, from [`Grows::now`].
     fn now(&mut self) -> Duration;
-    /// Waits a moment before looking again.
+    /// Waits [`PAUSE`] before looking again.
     fn pause(&mut self);
+    /// What its guest's blocks have taught so far.
+    fn coming(&mut self) -> &mut Coming;
 }
 
 /// The builder's own memory, its device and its build's cgroup.
@@ -1234,6 +1254,7 @@ struct Builder<'n> {
     plug: Plug,
     notes: &'n OwnedFd,
     began: Instant,
+    coming: &'n mut Coming,
 }
 
 impl Grows for Builder<'_> {
@@ -1267,19 +1288,27 @@ impl Grows for Builder<'_> {
     }
 
     fn pause(&mut self) {
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(PAUSE);
+    }
+
+    fn coming(&mut self) -> &mut Coming {
+        self.coming
     }
 }
 
 /// Asks for `asked` bytes past what the builder booted with, and raises the build's
-/// `memory.high` as they come online. Where none comes for [`STALLED`], asks again, which
-/// tells the driver again; where none comes for as long again, stops.
+/// `memory.high` as they come online, each block teaching [`Coming`]. Past the slowest seen
+/// in this guest with no block come, the grower's own time alone counted (each pause at
+/// most [`PAUSE`]: one its guest or its host held longer is their hold, not the driver's
+/// stall), asks again, which tells the driver again; past it again, stops. A guest's first
+/// plug, none seen yet, waits on its driver for as long as it takes, as D215's cold wait
+/// follows its party: the driver tries again on its own timer (D137).
 fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     let want = plug.boot.saturating_add(asked);
     let Ok(start) = g.total() else {
         return Came::Stalled(0);
     };
-    let (mut last, mut since) = (start, g.now());
+    let (mut last, mut since, mut still) = (start, g.now(), Duration::ZERO);
     let mut again = false;
     if let Err(e) = g.ask(asked) {
         g.say(&format!("asking for {asked} bytes: {e}"));
@@ -1287,21 +1316,22 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     }
     while let Ok(now) = g.total() {
         if now > last {
-            (last, since) = (now, g.now());
+            let took = g.now().saturating_sub(since);
+            g.coming().came(took);
+            (last, since, still) = (now, g.now(), Duration::ZERO);
             g.raise(now.saturating_sub(plug.boot));
         }
         if now >= want {
             return Came::All;
         }
-        if g.now().saturating_sub(since) > STALLED {
+        if let Some(slowest) = g.coming().slowest.filter(|&s| still >= s) {
             if again {
                 break;
             }
             let came = now.saturating_sub(plug.boot);
             let kernel = g.kernel_said();
             g.say(&format!(
-                "{asked} bytes asked for, {came} came in {} s; asking again{}{}",
-                STALLED.as_secs(),
+                "{asked} bytes asked for, {came} came, none for {still:?}, past the slowest a block took here ({slowest:?}); asking again{}{}",
                 if kernel.is_empty() {
                     ""
                 } else {
@@ -1313,9 +1343,11 @@ fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
                 g.say(&format!("asking for {asked} bytes again: {e}"));
                 break;
             }
-            (again, since) = (true, g.now());
+            (again, since, still) = (true, g.now(), Duration::ZERO);
         }
+        let before = g.now();
         g.pause();
+        still = still.saturating_add(g.now().saturating_sub(before).min(PAUSE));
     }
     Came::Stalled(last.saturating_sub(plug.boot))
 }
@@ -1335,16 +1367,20 @@ pub(crate) fn oom_kills(cgroup: &str) -> u64 {
 /// What the kernel said as it last ended a process for want of memory (/dev/kmsg): what
 /// asked for memory and of what order, the memory free in each zone against its
 /// watermarks, and what it ended (mm/oom_kill.c `dump_header`, `__oom_kill_process`;
-/// mm/show_mem.c `show_free_areas`). It counts the kill before it says what it ended, so
-/// where that is not said yet, it is read again, for as long as [`STALLED`].
+/// mm/show_mem.c `show_free_areas`). It counts the kill, sends its SIGKILL and then says
+/// what it ended, on the killer's own path with no return between (Linux 7.2
+/// `__oom_kill_process`: `memcg_memory_event_mm`, `do_send_sig_info`, `pr_err`), so a kill
+/// counted is said: where that is not said yet, it is read again until it is (D137, D209
+/// Part 4: no clock). A guest whose log cannot be read at all says nothing at once.
 pub(crate) fn oom_said() -> Vec<String> {
-    let began = Instant::now();
     loop {
-        let said = oom_report();
-        if said.iter().any(|l| ended(l)) || began.elapsed() > STALLED {
+        let Some(said) = oom_report() else {
+            return Vec::new();
+        };
+        if said.iter().any(|l| ended(l)) {
             return said;
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(PAUSE);
     }
 }
 
@@ -1357,7 +1393,8 @@ fn ended(line: &str) -> bool {
 
 /// The lines of the kernel's last report of a process ended for want of memory, as
 /// [`oom_said`] relays them.
-fn oom_report() -> Vec<String> {
+/// None where the kernel's log cannot be read: no /dev/kmsg, and syslog(2) refused.
+fn oom_report() -> Option<Vec<String>> {
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -1365,7 +1402,7 @@ fn oom_report() -> Vec<String> {
     else {
         // A run's root moved over the VM's, its /dev has no kmsg: the log read whole with
         // syslog(2), which init, the VM's own, may.
-        return oom_lines(&syslog_records());
+        return syslog_records().map(|records| oom_lines(&records));
     };
     let mut records = Vec::new();
     let mut record = [0u8; 8192];
@@ -1380,31 +1417,29 @@ fn oom_report() -> Vec<String> {
         };
         records.push(String::from_utf8_lossy(record.get(..n).unwrap_or_default()).into_owned());
     }
-    oom_lines(&records)
+    Some(oom_lines(&records))
 }
 
 /// The kernel's log read whole with syslog(2) (`SYSLOG_ACTION_READ_ALL`), each line a
 /// record as /dev/kmsg gives one (`LEVEL,SEQ,USECS,FLAGS;TEXT`), its fields but the text
-/// left as nothing is read of them.
-fn syslog_records() -> Vec<String> {
+/// left as nothing is read of them; none where syslog(2) refuses.
+fn syslog_records() -> Option<Vec<String>> {
     const READ_ALL: libc::c_int = 3;
     const SIZE_BUFFER: libc::c_int = 10;
     // SAFETY: syslog(2)'s size query takes no buffer.
     let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
-    let Ok(len) = usize::try_from(size) else {
-        return Vec::new();
-    };
+    let len = usize::try_from(size).ok()?;
     let mut buf = vec![0u8; len.max(1)];
     let room = libc::c_int::try_from(buf.len()).unwrap_or(libc::c_int::MAX);
     // SAFETY: a buffer of `room` bytes, which syslog(2) fills at most.
     let read = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), room) };
-    let Ok(read) = usize::try_from(read) else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
-        .lines()
-        .map(syslog_record)
-        .collect()
+    let read = usize::try_from(read).ok()?;
+    Some(
+        String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
+            .lines()
+            .map(syslog_record)
+            .collect(),
+    )
 }
 
 /// A line of syslog(2)'s, `<LEVEL>[SECONDS] TEXT`, as /dev/kmsg's record of it.
@@ -1471,6 +1506,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
         }
     };
     let mut asked = 0u64;
+    let mut coming = Coming::default();
     let mut buf = [0u8; 4096];
     loop {
         // SAFETY: read(2) into a buffer this process owns; it blocks for the next event.
@@ -1533,6 +1569,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             plug,
             notes,
             began: Instant::now(),
+            coming: &mut coming,
         };
         match come(plug, asked, &mut builder) {
             Came::All if asked >= plug.most => lift(),
@@ -1587,6 +1624,10 @@ mod tests {
         raised: Vec<u64>,
         said: Vec<String>,
         clock: Duration,
+        coming: Coming,
+        /// A pause its host or its guest holds past [`PAUSE`]: the first at or after the
+        /// first time, for the second.
+        held: Option<(Duration, Duration)>,
     }
 
     impl<F: FnMut(&[u64], Duration) -> u64> Grows for Fake<F> {
@@ -1610,7 +1651,14 @@ mod tests {
             self.clock
         }
         fn pause(&mut self) {
-            self.clock += Duration::from_millis(1);
+            self.clock += PAUSE;
+            if let Some((at, held)) = self.held.filter(|&(at, _)| self.clock >= at) {
+                self.clock += held;
+                self.held = None;
+            }
+        }
+        fn coming(&mut self) -> &mut Coming {
+            &mut self.coming
         }
     }
 
@@ -1621,6 +1669,8 @@ mod tests {
             raised: Vec::new(),
             said: Vec::new(),
             clock: Duration::ZERO,
+            coming: Coming::default(),
+            held: None,
         }
     }
 
@@ -1891,7 +1941,8 @@ mod tests {
         assert!(g.said.is_empty(), "{:?}", g.said);
     }
 
-    /// Memory that comes slowly, a block every four seconds, is never stalled.
+    /// Memory that comes slowly, a block every four seconds, is never stalled, and teaches
+    /// its guest's grower that a block may take four seconds.
     #[test]
     fn memory_that_comes_slowly_is_waited_for() {
         let mut g = fake(|asks: &[u64], t: Duration| {
@@ -1900,6 +1951,27 @@ mod tests {
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB]);
         assert_eq!(g.raised, [128 * MIB, 256 * MIB, 384 * MIB, 512 * MIB]);
+        assert_eq!(g.coming.slowest, Some(Duration::from_secs(4)));
+    }
+
+    /// A grower its host or its guest held from looking is not stalled for it: learned that a
+    /// block takes 100 ms, held 10 s 50 ms into its wait on one that comes 10.08 s in, 80 ms
+    /// of its own time, it asks once.
+    #[test]
+    fn a_grower_held_from_looking_is_not_stalled() {
+        let mut g = fake(|asks: &[u64], t: Duration| {
+            PLUG.boot
+                + if t >= Duration::from_millis(10_080) {
+                    asks[0]
+                } else {
+                    0
+                }
+        });
+        g.coming.came(Duration::from_millis(100));
+        g.held = Some((Duration::from_millis(50), Duration::from_secs(10)));
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert!(g.said.is_empty(), "{:?}", g.said);
     }
 
     /// A guest's first plug has no slowest seen to be past: it is waited for for as long as
@@ -1914,33 +1986,39 @@ mod tests {
         assert!(g.said.is_empty(), "{:?}", g.said);
     }
 
-    /// Memory that stops coming is asked for again after [`STALLED`], saying so with the
-    /// kernel's words, which tells the driver again; it comes then, and is waited for.
+    /// Memory that stops coming past the slowest a block took in its guest (here 2 s) is
+    /// asked for again, saying so with the kernel's words, which tells the driver again; it
+    /// comes then, and is waited for.
     #[test]
     fn memory_that_stops_coming_is_asked_for_again() {
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 1 { 512 * MIB } else { 0 });
+        g.coming.came(Duration::from_secs(2));
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB, 512 * MIB]);
         assert_eq!(
             g.said,
             [
-                "536870912 bytes asked for, 0 came in 5 s; asking again; the kernel said: virtio_mem virtio5: adding memory failed: -12"
+                "536870912 bytes asked for, 0 came, none for 2s, past the slowest a block took here (2s); asking again; the kernel said: virtio_mem virtio5: adding memory failed: -12"
             ]
         );
     }
 
     /// Memory that does not come though asked for twice is given up, with what came of it,
-    /// after [`STALLED`] twice and no sooner.
+    /// once nothing came past the slowest a block took in its guest twice, and no sooner;
+    /// the block that came taught it nothing slower.
     #[test]
     fn memory_that_never_comes_is_given_up() {
+        let slowest = Duration::from_secs(2);
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.is_empty() { 0 } else { 256 * MIB });
+        g.coming.came(slowest);
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Stalled(256 * MIB));
         assert_eq!(g.asks.len(), 2);
         assert!(
-            g.clock > 2 * STALLED && g.clock < 2 * STALLED + Duration::from_millis(10),
+            g.clock >= 2 * slowest && g.clock < 2 * slowest + Duration::from_millis(10),
             "{:?}",
             g.clock
         );
+        assert_eq!(g.coming.slowest, Some(slowest));
     }
 
     /// The give-back connection's two ends: the host's, and the answerer's as init holds it.

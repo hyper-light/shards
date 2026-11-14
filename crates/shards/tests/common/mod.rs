@@ -2376,6 +2376,97 @@ impl Patience {
     }
 }
 
+/// A give-back followed (ROOT's ruling, D209 Part 4): a VM process's own resident memory
+/// (`Usage::footprint`) while it falls. A give-back is progress while that falls, as the
+/// daemon's judge of an end counts it (daemon/ends.rs `goes_on`), so this is a judged
+/// [`Wait`] whose progress is a fall alone, its CPU its liveness only (an idle guest's ticks
+/// give nothing back), and whose kind, its caller's site, learns W*, the slowest give-back
+/// seen: from the wait's start to its last fall. Learned, its judge's refusal, a whole W*
+/// with no fall and its host not holding it, is the give-back's end; W* spans each gap
+/// between falls of a give-back as long as the slowest. Cold, none seen on this host, the
+/// give-back so far is the slowest seen: it ends once no fall has come for as long as from
+/// its start to its last fall, its host's holds not counted, and none ends before its first
+/// fall, which it waits on for as long as the process lives. Begun before what it gives
+/// back is freed, its first fall spans the free and its guest's whole wait before it
+/// reports (mm/page_reporting.c `PAGE_REPORTING_DELAY`, D151), which each later report
+/// only waits again.
+pub struct Falling {
+    pid: u32,
+    wait: Wait,
+    held: u64,
+    /// Its last fall, and the last time a look found its host holding it since.
+    fell: Option<Instant>,
+    quiet: Option<Instant>,
+}
+
+impl Falling {
+    /// Follows VM process `pid`'s own memory from now.
+    #[track_caller]
+    pub fn begin(pid: u32) -> Falling {
+        let kind = WaitKind::at(std::panic::Location::caller());
+        let mut party = Party::client(pid, None);
+        party.read_cpu(Cpu::Liveness);
+        Falling {
+            pid,
+            wait: Wait::on(kind, party, "its memory to stop falling"),
+            held: Falling::footprint(pid),
+            fell: None,
+            quiet: None,
+        }
+    }
+
+    fn footprint(pid: u32) -> u64 {
+        match shards_vmm::platform::process_usage(pid) {
+            Ok(usage) => usage.footprint,
+            Err(e) => panic!("VM process {pid}'s memory unread: {e}"),
+        }
+    }
+
+    /// What its kind has learned on this host.
+    pub fn seen(&self) -> shards_api::Seen {
+        self.wait.kind.record().seen()
+    }
+
+    /// What it holds of its own once its give-back has ended, which teaches its kind how
+    /// long the give-back took. A process gone fails the test.
+    pub fn settled(mut self) -> u64 {
+        loop {
+            let now = Falling::footprint(self.pid);
+            let fell = now < self.held;
+            self.held = now;
+            if fell {
+                (self.fell, self.quiet) = (Some(Instant::now()), Some(Instant::now()));
+            }
+            let judged = self.wait.look(fell);
+            assert!(
+                !self.wait.gone(),
+                "VM process {} gone as it gave back\n{}",
+                self.pid,
+                self.wait.account()
+            );
+            if self.wait.holding.is_some() && self.fell.is_some() {
+                self.quiet = Some(Instant::now());
+            }
+            let ended = match (judged, self.fell, self.quiet) {
+                (Err(_), ..) => true,
+                (Ok(()), Some(fell), Some(quiet)) if !self.wait.judged() => {
+                    quiet.elapsed() >= fell.saturating_duration_since(self.wait.began)
+                }
+                (Ok(()), ..) => false,
+            };
+            if ended {
+                if let Some(fell) = self.fell {
+                    let took = fell.saturating_duration_since(self.wait.began);
+                    self.wait.kind.record().teach(took, self.wait.work);
+                    self.wait.kind.keep();
+                }
+                return now;
+            }
+            std::thread::sleep(self.wait.next_look());
+        }
+    }
+}
+
 /// A claim of speed taken out of a test's pass or fail (D209, #77's ruling: a time that no
 /// later event of the test's can be ordered against is a measurement, not a bound): `times`
 /// told on the test's output as n, p50, p90, p99 and max, by nearest rank, with `what` they
