@@ -24493,3 +24493,12 @@ the reply that would tell the guest its size refused: `window::tests` 12 of 12, 
 evidence on real NTFS views, no real VM; a view refused after its section was made is
 unit-unreachable, and the WHP DAX tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### Review memory-18: a refused FUSE reply retires its unpublished acquisitions (D197)
+
+Found by the Windows P0 lane. At abecce1a5, resumed Kiln r28, macOS arm64,
+eight refused LOOKUPs left 9 nodes/references instead of the root's 1; eight
+CREATEs also left 8 handles and cached descriptors. c37547114 releases only the
+new handle and forgets each new entry before EIO; eddbef457 shares the entry walk
+with reconciliation. Earlier accepted resources and completed mutations remain.
+[Sources, exact red/green, typed cleanup failure and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).

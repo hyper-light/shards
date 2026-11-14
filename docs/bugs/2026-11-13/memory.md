@@ -286,6 +286,20 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Fix/test direction:** Derive a per-message bound from the wire grammar (empty or the signed-integer textual maximum), and give malformed frames typed refusal semantics. Test exact valid maxima and one byte past each grammar's bound.
 
+### memory-18 — P2 / high — Refused FUSE replies retain their nodes and open handles
+
+**Found by:** the Windows P0 lane, recorded in D197 and assigned by ROOT after memory-01 landed at b2e3b069a (fix 7f0cb8ce9).
+
+**Status (2026-11-13):** fixed in c37547114 with shared entry traversal eddbef457 (red `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged`, abecce1a5). Eight refused lookups left nine nodes; eight refused creates also left eight handles and descriptors. Evidence and remaining platform/VM work: `docs/research/measurements/memory-fixes-v1/memory-18.md`.
+
+**Location:** `crates/vmm/src/devices/virtio/fs/mod.rs`, the window-reconciliation refusal after `Slot::ask_into`; `server.rs` lookup/handle ownership.
+
+**Defect:** A successful LOOKUP or CREATE has already increased the server's lookup count and, for CREATE, taken a handle/descriptor. The device can replace its success with EIO when its window cannot follow the file. The guest never receives the new identity, so it cannot issue the matching FORGET or RELEASE. Repeating such refusals retains nodes, references and descriptors until unmount, worsening resource pressure.
+
+**Red test:** `refused_lookups_leave_the_held_count_unchanged` and `refused_creates_leave_the_held_count_unchanged` at abecce1a5 run real framed requests through Slot and Server, then invoke the device's extracted EIO replacement. Compare held nodes, lookup references, handles, cached descriptors and pins before and after a loop. The replacement is the production path; the unit test does not cause an actual Windows/Unix mapping failure.
+
+**Fix direction:** Retire exactly the acquisitions in an unpublished successful reply through the existing FUSE FORGET/RELEASE operations. Preserve references and handles from earlier accepted replies, and preserve the filesystem effects of completed mutations. Amend D197's until-unmount limitation.
+
 ## Checked and found sound
 
 These are static checks, not passing runtime results.
