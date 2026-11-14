@@ -27760,6 +27760,60 @@ API's protocol: its output drained, its end, its connections.
   client process's own, its nonce and counter as its socket directories have: a scope
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
+- *A report with no clock* (Hex lead's ask, Hex review C-9 and its decision 9; ROOT accepted
+  it, 2026-11-14). `with_gpu_report(scope, deadline: Instant)` took only a finite absolute
+  deadline, and `take_gpu_report` was capped by it: Hex's managed GPU creates were the last
+  wait on its boot-records file with a clock it had to choose. Now one typed shape,
+  `PreparedBoot::with_gpu_report(scope, until: Until)`, the old signature gone:
+  - `Until::At(instant)` is the old finite budget, unchanged: a take that reaches it is
+    `GpuProbe(Pending)`, an instant already past refused `Pending` at once.
+  - `Until::Released` has no clock. A take (`ManagedGuest::take_gpu_report(Duration::MAX)`)
+    waits until the report's writer closes after its frame, or until its VM process ends as
+    its native receipt says (`TerminalScope::Released`, which the guest's watcher already
+    waits on, as every managed wait follows its VM process, D215): refused
+    `GpuProbe(GpuProbeError::Ended)`, typed, a new variant, where it ended with no complete
+    frame (its writer still open elsewhere, or the frame torn), or with the receipt's own
+    refusal where the watcher's observation failed (an end not proven is not said as one). A
+    finite `patience` still caps the take, and the end answers a finite take too, where it
+    used to wait out its deadline. A take begun after the watcher let the pipe go answers
+    `Ended` too, where it said `Unavailable`. A writer closed with nothing is `Unreported`,
+    as before.
+  - `GpuReportRequest::until()` replaces `deadline()`: a native launcher that bounded its
+    own launch by the report's instant (Hex's macOS remote launch, `until.min(deadline)`)
+    takes `until().instant()`, none for `Released`.
+  - *How it waits.* The watcher, as its wait on the receipt returns, records how it ended
+    (`ReportWatch`: `Unasked`, `Watching(Ending)`, `Ended(Result)`) and tells the take,
+    before the report's cleanup, which waits for the take to let the report go. Unix: a
+    second private pipe (close-on-exec), whose one writer the watcher drops; the take polls
+    the report pipe and the end pipe's read end together (one poll(2), -1 with no deadline),
+    and on the end's POLLHUP reads the report pipe once more, so a frame its writer closed
+    before the end is still the frame. Windows: a private manual-reset event the watcher
+    sets; the pending overlapped read waits on its own event and that one together
+    (WaitForMultipleObjects, INFINITE with no deadline), checks the read once more without
+    waiting, and cancels it as the deadline path does, its cells kept until the watcher's
+    cleanup completes it. No thread, timer or poll period of ours.
+  - *Literals and cold start.* None: -1 and INFINITE are the OSes' own "no timeout", the
+    create's instant and the caller's patience the only clocks. Nothing learned, no cold
+    start. Uncertainty: on Windows a SetEvent that failed (no documented failure for an owned
+    event of full access) leaves a take with no clock unwoken; the watcher records it as the
+    guest's managed end.
+  - *Wire.* API only: the deadline never crossed a wire. The report frame, the image channel
+    (version 30) and `ImageSpec::gpu_report` are unchanged.
+  - *Tests (light)*, shards-api: `client::tests::a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends`
+    (a stand-in launch asked with `Until::Released`, its report writer held by the test as
+    another process would: no answer while the receipt lives, then `Ended` once it says
+    `Released`, the take found blocked never twice past the watcher's telling) and
+    `a_report_with_no_clock_is_taken_as_it_comes` (the frame written while the take waits,
+    taken); D232's and D233's report tests kept, on `Until::At`. Red before: no `Until`
+    (the tests do not compile). Run on adas-mac-studio-3.local (macOS arm64) at 9e453fc87:
+    `cargo test -p shards-api --lib -- report` 19 passed, `cargo test -p shards-abi --lib gpu`
+    13 passed, `cargo clippy -p shards-api -p shards-abi --all-targets -- -D warnings` clean (and
+    `cargo xwin clippy` of both for x86_64-pc-windows-msvc, on adas-mac-studio.local);
+    the end pipe left out of the poll (m1, `poll(.., 1, ..)`), the no-clock test failed
+    "blocked in the kernel .. where it should have answered", its twin and the borrowed
+    no-clock tests green; restored, `-- managed` 14 passed. Owed (ROOT): the Windows reader's
+    end wait and these tests, run first on CI's Windows legs; Hex's own managed GPU create with
+    `Until::Released` on a real VM.
 - *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
   no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
   image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
