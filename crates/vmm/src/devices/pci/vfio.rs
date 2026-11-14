@@ -2236,7 +2236,7 @@ mod tests {
     fn unplug_releases_interrupt_routes_before_closing_eventfds() {
         use super::super::hotplug::Plugged;
         #[derive(Debug, Default)]
-        struct Routes(Mutex<Vec<RawFd>>);
+        struct Routes(Mutex<Vec<(RawFd, bool)>>);
         impl Route for Routes {
             fn intx(&self, _: RawFd, _: RawFd) -> Result<(), String> {
                 Ok(())
@@ -2249,8 +2249,9 @@ mod tests {
             }
             fn msi_off(&self, event: RawFd, _: u64, _: u32) -> Result<(), String> {
                 // These are real eventfds: removing their routes must precede close.
-                assert_ne!(unsafe { libc::fcntl(event, libc::F_GETFD) }, -1);
-                self.0.lock().unwrap().push(event);
+                // SAFETY: F_GETFD queries a descriptor and dereferences no pointer.
+                let open = unsafe { libc::fcntl(event, libc::F_GETFD) } != -1;
+                self.0.lock().unwrap().push((event, open));
                 Ok(())
             }
         }
@@ -2299,6 +2300,7 @@ mod tests {
         };
         f.unplugged();
         assert_eq!(route.0.lock().unwrap().len(), 3);
+        assert!(route.0.lock().unwrap().iter().all(|(_, open)| *open));
         f.unplugged();
         assert_eq!(route.0.lock().unwrap().len(), 3, "cleanup is idempotent");
     }
