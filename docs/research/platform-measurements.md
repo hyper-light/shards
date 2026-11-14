@@ -24012,3 +24012,11 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### Review memory-02: a live-copy value outlives unplug (2026-11-13)
+
+Two focused unit cases at 04ae8a9cd, macOS arm64, really plugged and unplugged
+anonymous memory, then consumed the live-copy bytes: SIGBUS in each (kiln r4/r5).
+At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
+This is correctness evidence, not a VM/performance measurement. Full commands,
+ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.

@@ -334,11 +334,10 @@ struct DeviceWrites {
 /// The unit a device's writes are noted in.
 const DEVICE_PAGE: u64 = 4096;
 
-/// What [`GuestMemory::each_used`] gives each run of used pages to: whether plugged, its
-/// place, and its bytes.
 /// An owned live-move page: plugged, file offset or guest address, and bytes.
 pub type CopiedPage = (bool, u64, [u8; crate::vm::live::PAGE as usize]);
 
+/// What each_used gives its consumer: mapping kind, offset, and owned copied bytes.
 pub type UsedTaker<'a> = dyn FnMut(bool, u64, &[u8]) -> io::Result<()> + 'a;
 
 // SAFETY: the reservations are memory this value owns. The host reaches it only through an

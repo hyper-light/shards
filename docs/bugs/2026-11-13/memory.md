@@ -54,6 +54,8 @@ Priority mapping: P0 critical; P1 high memory-safety defects; P2 high functional
 
 **Test sketch:** Gate the reader immediately after collecting a plugged range/pointer; complete UNPLUG from another thread; release the gate. Require a safely skipped/retried chunk or a consistent owned copy, with no invalid dereference. Exercise both each_used and page_at on each OS and verify final migration handles replugged/unplugged state.
 
+**Status (2026-11-13):** fixed in 29196c6b3 (red `live_copy_keeps_bytes_after_their_block_is_unplugged` and `live_copy_page_keeps_bytes_after_their_block_is_unplugged`, SIGBUS at 04ae8a9cd; focused green r7). Evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 ### memory-03 — P1 / high — Stopping a VM during live precopy can unmap a layer underneath a read
 
 **Location:** `crates/vmm/src/devices/virtio/pmem.rs:464–469`; teardown `crates/vmm/src/vm/runtime.rs:1182`.
