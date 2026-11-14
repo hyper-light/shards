@@ -1383,6 +1383,8 @@ struct Daemon<D: Disk = Real> {
     plugged: Mutex<devices::PluggedMap>,
     /// Each running microVM's device steps, one at a time (D214).
     device_steps: devices::Steps,
+    /// Which runs have each disk file plugged in, by its identity (devices-11, D214).
+    disk_claims: devices::DiskClaims,
     /// Each running microVM's join share process (D119), by the ID of the microVM whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first joiner of that microVM's network brings volumes.
@@ -2212,6 +2214,7 @@ impl<D: Disk> Daemon<D> {
             paused: Mutex::default(),
             plugged: Mutex::default(),
             device_steps: devices::Steps::default(),
+            disk_claims: devices::DiskClaims::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
             noticing: Mutex::default(),
