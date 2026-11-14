@@ -14197,7 +14197,19 @@ page by page as each came; resumed there; and stopped here once it runs there.
     written. Each bit is a host page, given the loop as the 4 KiB units it sends.
   - On Hypervisor.framework, its writable memory taken away for writing at stage 2
     (`hv_vm_protect`) and each page given back whole as its guest writes it, noted, the
-    working-set recorder's mechanism (D25).
+    working-set recorder's mechanism (D25), with which it shares the one stage 2: what a page
+    of each region has until its guest faults on it is the two's together (`Watch::rest`),
+    nothing while a working set is recorded, all but its writes while the move watches them,
+    else all of it, put back as either starts or ends, under both locks (the recording's,
+    then the watch's, as each fault takes them). Until 2026-11-13 a recording's end gave the
+    guest all its memory back whatever watched it (migrate-02): a warm run's recording, ended
+    by its timer (D25) as a live move's rounds ran, left every page writable unwatched, its
+    writes in no round and not in the last save, the restored guest finding the bytes it had
+    before; and a watch begun within a recording gave the guest reads of pages the recorder
+    had taken away. Held on the framework by `vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`
+    (hv::hvf, the crate's one test with a VM): a guest's read within a recording the watch
+    began in is recorded, and a page it writes after a recording ended, the watch begun
+    within it or it within the watch, is `written` each time (red at 9efde7252: none was).
   - On WHP, its dirty page tracking (`WHvCapabilityCodeFeatures`' DirtyPageTracking): each
     writable range the partition maps mapped again in place with
     `WHvMapGpaRangeFlagTrackDirtyPages` as the watch begins, as WHvMapGpaRange "replaces
