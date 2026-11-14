@@ -300,4 +300,27 @@ mod tests {
         assert_eq!(server.join().unwrap(), b"asked\n");
         assert_eq!(output, b"answered\n");
     }
+
+    /// Failure writing a response must cancel the idle stdin copy, without depending on
+    /// the harness to close its still-open stdin writer.
+    #[test]
+    fn a_bridge_output_failure_does_not_wait_for_its_idle_input() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (input, held_input) = io::pipe().unwrap();
+        let (output_reader, output) = io::pipe().unwrap();
+        drop(output_reader);
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            tx.send(copy_both(input, output, &ours).map_err(|e| e.kind())).unwrap();
+        });
+        theirs.write_all(b"response").unwrap();
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        // A red implementation is released before the assertion, leaving no helper behind.
+        drop(held_input);
+        bridge.join().unwrap();
+        assert_eq!(result, Ok(Err(io::ErrorKind::BrokenPipe)));
+    }
 }
