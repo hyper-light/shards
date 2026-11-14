@@ -76,6 +76,8 @@ The replacement `A` exists and the old lock still has a link in `B`. The old dae
 
 **Confidence:** high in the blocking/control gap; live scheduling reproduction unrun. **Fix direction:** hold the spawned host in the stop state before any potentially blocking CREATE I/O, retaining ownership through all initialization/error exits. Ensure stop can kill the host without acquiring the writer lock. **Test:** a stand-in announces its PID but never reads stdin; send a staged payload exceeding pipe capacity, wait until the write blocks, call stop, and require `Ended(Stopped)`, host/tree termination and resource cleanup without resuming the reader. Exercise fresh and warm paths.
 
+**Status (2026-11-13):** fixed in a7ad98b9bb873f750fe7eadf916343c176c4e3c4 (red `a_stop_cancels_a_create_whose_host_never_reads`, kiln r20; green regression +33 session tests and API all-target clippy r22). Exact logs retained in `docs/research/measurements/runs-fixes/runs03-{red,green}.log`; real-VM cancellation/resource checks remain owed to ROOT.
+
 ### runs-04 — P1 / high — An orchestrator pool hands out a dead warm host and fails its run
 
 **At head:** `crates/api/src/image/pool.rs:393–397`; `crates/api/src/image/session.rs:894–901`.
