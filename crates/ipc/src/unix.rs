@@ -1147,14 +1147,6 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// The socket of a daemon of a build from before request slots (D185): `daemon.sock` in
-/// shards' home, named relative to the working directory, which each process that uses it
-/// makes the home first. A client reaches such a daemon there only to have it step aside
-/// for its own build's, and a daemon starting removes one left. A relative name fits a
-/// socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
-/// the home's path (PM M26).
-pub const SOCKET: &str = "daemon.sock";
-
 /// Whether process `pid` lives: kill(2) with signal 0 asks, one of another user's among
 /// those that do (EPERM), and one that has exited does not, whether or not its parent has
 /// reaped it (waits-08): a zombie answers kill(2) and keeps its start, so a client that
@@ -2693,5 +2685,50 @@ pub(crate) mod tests {
             end(&a);
             assert_eq!(waiting.join().unwrap(), Ok(0));
         });
+    }
+}
+
+/// Names this process after the file it runs, as ps(1), top(1) and pgrep(1) show it (its
+/// `comm`, prctl(2) PR_SET_NAME): a helper `shards` starts through its own descriptor,
+/// `/proc/PID/fd/N` (shards `helpers::Program::path`), is named `N` by its exec, which takes the
+/// name from the path's last part (fs/exec.c `__set_task_comm` of `bprm->filename`'s
+/// basename). Its file's own name is `/proc/self/exe`'s; Linux keeps the first 15 bytes of
+/// it (TASK_COMM_LEN, 16 with its NUL).
+#[cfg(target_os = "linux")]
+pub fn name_after_executable() -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let exe = std::env::current_exe()?;
+    let name = exe
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "an executable with no name"))?;
+    let name = std::ffi::CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "an executable's name with NUL"))?;
+    // SAFETY: prctl(2) PR_SET_NAME reads a NUL-terminated string, which it copies.
+    if unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::unwrap_used)]
+mod name_tests {
+    /// A thread that names itself after its executable is shown by that name, as much of it
+    /// as Linux keeps (15 bytes): a helper started through `/proc/PID/fd/N` is shown as `N`
+    /// until it does (the VM process at 8cdbf4a05, whose `comm` read `5`, so the tests' VM
+    /// processes, found by name, were none). Do: name a thread of this test process, whose
+    /// own name the harness set to the test's. Expect: its comm is this executable's name.
+    #[test]
+    fn a_process_named_after_its_executable_shows_its_files_name() {
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_str().unwrap();
+        let want = name.get(..name.len().min(15)).unwrap().to_string();
+        let shown = std::thread::spawn(|| {
+            super::name_after_executable().unwrap();
+            std::fs::read_to_string("/proc/thread-self/comm").unwrap()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(shown.trim_end(), want);
     }
 }

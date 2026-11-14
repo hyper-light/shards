@@ -979,8 +979,8 @@ struct Keep<'a> {
     /// The way its kept layer was taken, where it could go either, what it held, and when
     /// it was chosen: recorded as its command starts ([`layers::Restarts`]).
     layer_way: Option<LayerWay>,
-    /// How many segments its log keeps (D161): its own, else the daemon's.
-    log_files: u64,
+    /// How its log keeps its output (D161): its own, else the daemon's.
+    log_kept: LogRetention,
     /// Its log's rotated segments are compressed (D162).
     log_compress: bool,
     /// A visit to a stopped microVM's files (visit.rs): no start, no end, no state of
@@ -1090,8 +1090,8 @@ struct Inbox {
     /// the daemon made.
     container: PathBuf,
     segment: u64,
-    /// How many segments its log keeps (D161).
-    log_files: u64,
+    /// How its log keeps its output (D161): its segments, and their bound (runs-11).
+    log_kept: LogRetention,
     /// Its log's rotated segments are compressed (D162).
     log_compress: bool,
     /// Exec clients' connections handed to the VM and not yet taken, by number: held
@@ -1685,8 +1685,10 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
 }
 
 /// How much of a microVM's output its log keeps unless a setting says otherwise: its
-/// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
-pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
+/// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186), in segments
+/// as no file system's unit is known (`disk::log_retention`): where none is written (a
+/// log's flags read, `--log-driver none`'s run head), or the home's unit could not be read.
+pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY, None);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
@@ -1864,9 +1866,14 @@ fn settings() -> Result<Settings, String> {
     let keep = Duration::from_secs(count("SHARDS_POOL_KEEP", DEFAULT_KEEP.as_secs())?);
     let given = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
     let logs = if given("SHARDS_LOG_MAX_SIZE") || given("SHARDS_LOG_MAX_FILE") {
+        // The other's default as the home's file system's unit makes it.
+        let unit = shards_ipc::home()
+            .ok()
+            .and_then(|home| shards_vmm::platform::allocation_unit(&home).ok());
+        let default = crate::disk::log_retention(crate::disk::LOG_HISTORY, unit);
         let logs = LogRetention {
-            size: count("SHARDS_LOG_MAX_SIZE", DEFAULT_LOGS.size)?,
-            files: count("SHARDS_LOG_MAX_FILE", DEFAULT_LOGS.files)?,
+            size: count("SHARDS_LOG_MAX_SIZE", default.size)?,
+            files: count("SHARDS_LOG_MAX_FILE", default.files)?,
         };
         if logs.size == 0 {
             return Err("SHARDS_LOG_MAX_SIZE: a log keeps at least a byte".into());
@@ -1924,7 +1931,7 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     let descriptors = raise_descriptor_limit();
     let home = shards_ipc::home()?;
     shards_vmm::platform::create_private_dir(&home).map_err(|e| format!("{}: {e}", home.display()))?;
-    // The home's names are relative to it (its slots, an older build's socket): the home is
+    // The home's names are relative to it (its slots): the home is
     // the daemon's own, so this holds no client's directory busy.
     let home = entered_home(&home)?;
     let Some(home_lock) = take_lock(&home)? else {
@@ -1946,11 +1953,8 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
     // works in the home, with the daemon's limits, as the children it makes do.
     shards_ipc::start_spawner(&exe, &[OsStr::new("spawner")])
         .map_err(|e| format!("the daemon's spawner: {e}"))?;
-    // Its daemon is gone, since this one holds the lock: an older build's socket with it
-    // (Unix's: no daemon ran on Windows before slots), and the writable layers made for its
+    // Its daemon is gone, since this one holds the lock: the writable layers made for its
     // microVMs that none took (D190).
-    #[cfg(unix)]
-    let _ = std::fs::remove_file(shards_ipc::SOCKET);
     layers::clear(&home);
     let _ = std::fs::remove_file(crate::context::LISTENING);
     let _ = std::fs::remove_file(home.join(shards_ipc::STOPPING));
@@ -2188,7 +2192,8 @@ fn readable_fd(fd: RawFd) -> bool {
 /// held is a holder that lives. No home is taken, and no wait given up, on a clock: a
 /// starting holder that runs nothing at all for a whole slice past the slowest start this
 /// host has shown is refused typed ([`HolderStalled`]), and before the host has shown one,
-/// followed by its lock alone.
+/// followed by its lock alone. Refused where a daemon of a build from before slots holds it
+/// ([`shards_ipc::PreSlotsDaemon`]).
 fn take_lock(home: &Path) -> Result<Option<File>, String> {
     let path = home.join("daemon.lock");
     let file = crate::os::owner_only(
@@ -2208,15 +2213,12 @@ fn take_lock(home: &Path) -> Result<Option<File>, String> {
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
         }
-        // Its holder serves: its slots, or (Unix's) an older build's socket, whose client
-        // then has it step aside for its own.
-        #[cfg(unix)]
-        let older = UnixStream::connect(shards_ipc::SOCKET).is_ok();
-        #[cfg(windows)]
-        let older = false;
-        if shards_ipc::slots::served(home) || older {
+        // Its holder serves its slots; one of a build from before slots is refused, never
+        // asked to step aside (D185).
+        if shards_ipc::slots::served(home) {
             return Ok(None);
         }
+        shards_ipc::no_pre_slots_daemon(Path::new(".")).map_err(|e| e.to_string())?;
         // Held and offering nothing: its lists may have been removed by hand, which its
         // maker learns of only as a name of the home comes or goes. One made and removed
         // says so, once, never through a link at its name (D185).
@@ -4509,7 +4511,10 @@ impl<D: Disk> Daemon<D> {
                 layer_pending: layer_out.is_some(),
                 layer_over: over.as_ref().map(|(_, at)| at.clone()),
                 layer_way,
-                log_files: kept.map_or(DEFAULT_LOGS.files, |k| k.files),
+                log_kept: kept.map_or(DEFAULT_LOGS, |k| LogRetention {
+                    size: k.size,
+                    files: k.files,
+                }),
                 log_compress: kept.is_some_and(|k| k.compress),
                 visit: false,
                 egress,
@@ -5968,7 +5973,7 @@ impl<D: Disk> Daemon<D> {
             layer_pending,
             layer_over,
             layer_way,
-            log_files,
+            log_kept,
             log_compress,
             visit,
             egress,
@@ -6043,7 +6048,7 @@ impl<D: Disk> Daemon<D> {
             pool: ready.pool,
             container: lock(&self.containers).dir(id),
             segment: 0,
-            log_files,
+            log_kept,
             log_compress,
             execs_in_flight: Vec::new(),
             exec_ids: Vec::new(),
@@ -6737,7 +6742,7 @@ impl<D: Disk> Daemon<D> {
                     id: id.to_string(),
                     dir: inbox.container.clone(),
                     seq,
-                    files: inbox.log_files,
+                    kept: inbox.log_kept,
                     pack: inbox.log_compress,
                     socket: inbox.socket.clone(),
                 });
@@ -8550,7 +8555,13 @@ impl<D: Disk> Daemon<D> {
     fn log_retention(&self) -> Result<LogRetention, String> {
         match self.logs {
             Some(logs) => Ok(logs),
-            None => crate::disk::read(&self.home).map(|s| s.log_retention()),
+            None => {
+                // Its segments in its file system's unit (runs-11 `LOG_SEGMENT`).
+                let unit = shards_vmm::platform::allocation_unit(&self.home).map_err(|e| {
+                    format!("{}: its file system's allocation unit: {e}", self.home.display())
+                })?;
+                crate::disk::read(&self.home).map(|s| s.log_retention(Some(unit)))
+            }
         }
     }
 
@@ -10943,7 +10954,7 @@ mod tests {
                         layer_pending: false,
                         layer_over: None,
                         layer_way: None,
-                        log_files: DEFAULT_LOGS.files,
+                        log_kept: DEFAULT_LOGS,
                         log_compress: false,
                         visit: false,
                         egress: None,
@@ -11396,7 +11407,7 @@ mod tests {
                             layer_pending: false,
                             layer_over: None,
                             layer_way: None,
-                            log_files: DEFAULT_LOGS.files,
+                            log_kept: DEFAULT_LOGS,
                             log_compress: false,
                             visit: false,
                             egress: None,
@@ -14783,7 +14794,7 @@ mod tests {
                     layer_pending: false,
                     layer_over: None,
                     layer_way: None,
-                    log_files: DEFAULT_LOGS.files,
+                    log_kept: DEFAULT_LOGS,
                     log_compress: false,
                     visit: false,
                     egress: None,
@@ -14905,7 +14916,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -14957,7 +14968,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -15636,17 +15647,10 @@ mod tests {
         let mut t = Test::new("refiller");
         t.daemon.target = 2;
         t.daemon.warm_max = 8;
-        // A VM that never says it is ready, written by a process of its own: a file this one
-        // held open to write, a child another test's thread forked meanwhile would hold
-        // until it execs, and the daemon's exec of it would fail with ETXTBSY until then.
+        // A VM that never says it is ready, written by a process of its own
+        // (`shards_testdir::program`): no exec of it fails ETXTBSY.
         let vm = t.home.join("vm");
-        let written = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"printf '#!/bin/sh\nexec /bin/sleep 600\n' > "$0" && chmod 700 "$0""#)
-            .arg(&vm)
-            .status()
-            .unwrap();
-        assert!(written.success(), "{written}");
+        shards_testdir::program(&vm, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
         t.daemon.vm = vm;
         t.run(|t| {
             let dir = t.home.join("template");
@@ -15688,7 +15692,7 @@ mod tests {
                     layer_pending: false,
                     layer_over: None,
                     layer_way: None,
-                    log_files: DEFAULT_LOGS.files,
+                    log_kept: DEFAULT_LOGS,
                     log_compress: false,
                     visit: false,
                     egress: None,
@@ -15763,7 +15767,7 @@ mod tests {
                 layer_pending: false,
                 layer_over: None,
                 layer_way: None,
-                log_files: DEFAULT_LOGS.files,
+                log_kept: DEFAULT_LOGS,
                 log_compress: false,
                 visit: false,
                 egress: None,
@@ -16311,7 +16315,7 @@ mod tests {
                 id: "made".into(),
                 dir: dir.clone(),
                 seq: 1,
-                files: DEFAULT_LOGS.files,
+                kept: DEFAULT_LOGS,
                 pack: false,
                 socket: Arc::new(RunSocket::new(ours)),
             });
@@ -16334,6 +16338,50 @@ mod tests {
             assert!(dir.join(crate::segments::log_segment(1).0).is_file());
             let m = heard_whole(&vm);
             assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
+        });
+    }
+
+    /// Every run's log is held to its bound in bytes as it rotates, not by its count of segments
+    /// alone (runs-11 `LOG_SEGMENT`): a log continued under a retention whose segments are smaller
+    /// than those it holds (a history set smaller, or segments sized anew) lets go of its oldest
+    /// until its output is within `size × files`, each loss in `log.capped`. Red before: a run
+    /// with no members' logs was held by its count alone, which kept all three.
+    #[test]
+    fn a_runs_log_is_held_to_its_bound_whatever_its_segments() {
+        let t = Test::new("files-bound");
+        t.run(|t| {
+            t.t.daemon.start_files(t.threads);
+            let (ours, vm) = UnixStream::pair().unwrap();
+            let dir = t.home.join("containers").join("bound");
+            std::fs::create_dir_all(&dir).unwrap();
+            for seq in 1..=3 {
+                let (log, index) = crate::segments::log_segment(seq);
+                std::fs::write(dir.join(log), [b'x'; 64]).unwrap();
+                std::fs::write(dir.join(index), [0u8; 8]).unwrap();
+            }
+            t.daemon.make_soon(files::Job::Segment {
+                id: "bound".into(),
+                dir: dir.clone(),
+                seq: 4,
+                kept: LogRetention { size: 16, files: 8 },
+                pack: false,
+                socket: Arc::new(RunSocket::new(ours)),
+            });
+            let m = heard_whole(&vm);
+            assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));
+            // Its loss is recorded once the segment has gone: both are waited for.
+            let capped = || managed::capped(&shards_vmm::platform::open_dir(&dir).unwrap()).unwrap();
+            t.until("the log was not held to its bound", |_| capped().segments > 0);
+            let capped = capped();
+            assert_eq!((capped.segments, capped.bytes), (1, 64));
+            let first = crate::segments::log_segment(1);
+            assert!(!dir.join(&first.0).exists() && !dir.join(&first.1).exists());
+            for seq in 2..=4 {
+                assert!(
+                    dir.join(crate::segments::log_segment(seq).1).exists(),
+                    "segment {seq}"
+                );
+            }
         });
     }
 
@@ -16605,7 +16653,9 @@ mod tests {
             Some(format!("{regs:x?}"))
         }
         fn process(b: &[u8]) -> Option<String> {
-            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?).map(|n| format!("{n:?}"))
+            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?)
+                .ok()
+                .map(|n| format!("{n:?}"))
         }
         // As context.rs reads it for an invitation.
         fn address(b: &[u8]) -> Option<String> {

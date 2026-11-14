@@ -403,11 +403,13 @@ impl Drain {
 
     /// The run's command's log has rotated (files.rs): its one cap holds again, the segment its
     /// VM finished now weighed.
-    pub(super) fn cap(&self) {
+    pub(super) fn cap(&self) -> bool {
         let mut kept = lock(&self.kept);
-        if kept.cap.is_some() {
+        let capped = kept.cap.is_some();
+        if capped {
             self.hold(&mut kept);
         }
+        capped
     }
 
     /// Holds the run's logs within its one bound (cap.rs), closing a member's newest through its

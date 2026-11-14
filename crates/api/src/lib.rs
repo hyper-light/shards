@@ -637,9 +637,9 @@ pub enum Refusal {
 /// process has gone, it is [`Refusal::Process`] or [`Refusal::Ended`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmProcessRefusal {
-    /// On Windows, its `shards` has not recorded the VM process it starts yet
-    /// ([`vm_process_file`]): it has not started it, or it is a `shards` from before the
-    /// record.
+    /// On Windows, no record names the VM process ([`vm_process_file`]): its `shards` has not
+    /// started it yet, as it writes the record before that process runs; a launch whose
+    /// record could not be written ends. No other cause is read into it.
     Unrecorded,
     /// Its record names no process as `PID START` does.
     Broken,

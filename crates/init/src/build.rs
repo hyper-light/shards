@@ -212,7 +212,7 @@ fn serve() -> io::Result<()> {
     // What the guest needs as its build is held, for its host to learn its next builder's
     // boot (memory-15): with memory to plug or not, before its grower or its build takes any.
     if let Err(e) = crate::plug::note_startup() {
-        let _ = writeln!(io::stderr(), "shards-init: {e}; its next builder boots cold");
+        let _ = writeln!(io::stderr(), "shards-init: {e}; its build's needs go unrecorded");
     }
     let notes = match plug {
         Some(plug) => {
@@ -292,9 +292,10 @@ fn serve() -> io::Result<()> {
                     true => crate::plug::needed(),
                     false => Ok((0, 0)),
                 };
+                // All four words or none: a need with no start is never said (D133).
                 let said = match (needed, crate::plug::startup_said()) {
                     (Ok((need, killed)), Some(start)) => format!("{need} {killed} {start}"),
-                    (Ok((need, killed)), None) => format!("{need} {killed}"),
+                    (Ok(_), None) => "its guest's start was not noted".to_owned(),
                     (Err(e), _) => e.to_string(),
                 };
                 send(&b.conn, kind::NEEDED, said.as_bytes())?;

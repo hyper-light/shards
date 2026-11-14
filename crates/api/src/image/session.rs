@@ -822,16 +822,28 @@ impl Begun {
         self.send(wire::to_host::CREATE, request)
     }
 
-    /// Sends the host `request`, as a run's (`create`) or a warm host's exemplar (`WARM`).
+    /// Sends the host `request`, as a run's (`create`) or a warm host's exemplar (`WARM`). A
+    /// send that meets the host's end (EPIPE or ECONNRESET: it exited, or closed its stdin,
+    /// before it took the request; or a stop took its channel) is that end, followed as the
+    /// end: the wait after it says why, the host's own words and exit, typed as every other
+    /// host's end is ("it exited before its run started"). Refused here, it was an `Os`
+    /// refusal or a host's word by which of the two came first (Linux, parallel tests:
+    /// `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and the GPU report's boot
+    /// refused `Os { BrokenPipe }`; D231's note).
     pub(super) fn send(&self, kind: u8, request: &wire::Request) -> Result<(), ImageRefusal> {
         let payload = request.encode().map_err(|e| ImageRefusal::Spec {
             what: "the spec",
             why: e.to_string(),
         })?;
-        self.shared.send(kind, &payload).map_err(|e| ImageRefusal::Os {
-            what: "the run host's request",
-            kind: e.kind(),
-        })
+        match self.shared.send(kind, &payload) {
+            Err(e) if !matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) => {
+                Err(ImageRefusal::Os {
+                    what: "the run host's request",
+                    kind: e.kind(),
+                })
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Waits for a warm host's microVM to be ready (`WARMED`, D253's pools): how it started;
@@ -4028,18 +4040,22 @@ mod tests {
         }
     }
 
-    /// `script` written to `dir` as an executable stand-in for `shards api-run`.
+    /// `script` written to `dir` as an executable stand-in for `shards api-run`, by a process
+    /// of its own (`shards_testdir::program`): one this process wrote itself failed its exec
+    /// ETXTBSY where another test's child held it (Hex's Linux gate, `Text file busy` from
+    /// `a_run_host_that_ends_before_its_run_starts_leaves_no_layer`).
     #[cfg(unix)]
     fn stand_in(dir: &Path, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join("host");
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        shards_testdir::program(&path, script).unwrap();
         path
     }
 
-    /// A stand-in run host that says `frames` (each a kind and its payload) as it starts, then
-    /// reads its channel to its end, or, `exits`, reads its request's first byte and exits.
+    /// A stand-in run host that says `frames` (each a kind and its payload) once its request
+    /// has begun to come (its first byte read), as a run host answers its request; then reads
+    /// its channel to its end, or, `exits`, exits. One that said them as it started told a
+    /// GPU report before the session had asked for one, a broken channel ("a GPU report its
+    /// run asked none of"), in 3 of 40 runs beside the crate's other tests (Linux).
     #[cfg(unix)]
     fn saying(dir: &Path, frames: &[(u8, Vec<u8>)], exits: bool) -> PathBuf {
         let octal: String = frames
@@ -4047,12 +4063,11 @@ mod tests {
             .flat_map(|(kind, payload)| wire::frame(*kind, payload).unwrap())
             .map(|b| format!("\\{b:03o}"))
             .collect();
-        let after = if exits {
-            "head -c 1 >/dev/null\nexit 0"
-        } else {
-            "exec cat >/dev/null"
-        };
-        stand_in(dir, &format!("#!/bin/sh\nprintf '{octal}'\n{after}\n"))
+        let after = if exits { "exit 0" } else { "exec cat >/dev/null" };
+        stand_in(
+            dir,
+            &format!("#!/bin/sh\nhead -c 1 >/dev/null\nprintf '{octal}'\n{after}\n"),
+        )
     }
 
     /// A run of `host` naming one GPU, its report scoped `[3; 16]` (D233).

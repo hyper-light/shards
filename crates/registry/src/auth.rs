@@ -1618,19 +1618,10 @@ mod tests {
     /// there names the registry's store: found for the registry, asked as a pull asks it.
     #[cfg(unix)]
     fn helper(dir: &std::path::Path, name: &str, script: &str) -> Found {
-        use std::io::Write as _;
-        // Written by a child, as credentials.rs's tests write theirs: an exec of a file this
-        // process holds open to write fails (ETXTBSY, Linux).
+        // Written by a process of its own (`shards_testdir::program`): no exec of it fails
+        // ETXTBSY.
         let path = dir.join(format!("docker-credential-{name}"));
-        let mut writer = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"cat > "$0" && chmod 755 "$0""#)
-            .arg(&path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer.stdin.take().unwrap().write_all(script.as_bytes()).unwrap();
-        assert!(writer.wait().unwrap().success());
+        shards_testdir::program(&path, script).unwrap();
         std::fs::write(dir.join("config.json"), format!(r#"{{"credsStore":"{name}"}}"#)).unwrap();
         let vars = HashMap::from([
             ("DOCKER_CONFIG".to_string(), dir.to_string_lossy().into_owned()),

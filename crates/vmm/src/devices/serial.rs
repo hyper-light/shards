@@ -70,8 +70,8 @@ struct State {
     /// THR-empty interrupt is pending until IIR reports it or THR is written.
     thri_pending: bool,
     overrun: bool,
-    /// Received bytes the guest has not read, at most [`rx_capacity`] but for a snapshot's
-    /// of an older build, which the guest drains first.
+    /// Received bytes the guest has not read: at most [`rx_capacity`] as they are taken,
+    /// and never more than [`RX_FIFO`], which a restore holds a snapshot's to.
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
     /// The console's last bytes, at most [`keep`](State::keep).
@@ -352,9 +352,12 @@ impl MmioDevice for Serial {
         s.fifo_enabled = r.bool()?;
         s.thri_pending = r.bool()?;
         s.overrun = r.bool()?;
-        // As many bytes as the snapshot holds: an older build's held up to 4096, which the
-        // guest drains before host input finds room again.
-        let rx = r.bytes(u32::MAX as usize)?;
+        // At most the FIFO's depth, the most this receiver holds in either mode (taken only
+        // while below `rx_capacity`; a FIFO turned off keeps what it held). A snapshot whose
+        // receiver held more is of a build before the FIFO's depth bounded it, and is refused.
+        let rx = r
+            .bytes(RX_FIFO)
+            .map_err(|e| codec::DecodeError(format!("the console's receiver: {}", e.0)))?;
         s.rx.clear();
         s.rx.extend(rx);
         self.room.notify_all();
@@ -510,28 +513,41 @@ mod tests {
         assert_eq!(rd(&s, LSR) & LSR_OE, 0);
     }
 
-    /// A snapshot of an older build, whose receiver held more than the FIFO's depth,
-    /// restores whole, and the guest reads it all.
+    /// A snapshot's receiver restores whole up to the FIFO's depth, and the guest reads it
+    /// all; one that held more, as a build before 66652aafb kept up to 4096 bytes, is
+    /// refused (a malformed state), never restored. Red before legacy3, which restored the
+    /// 4096.
     #[test]
-    fn an_older_snapshots_longer_receive_buffer_restores() {
-        let mut w = Writer::default();
-        for v in [0, 3, MCR_OUT2, 0, 12, 0] {
-            w.u8(v);
+    fn a_receiver_past_the_fifos_depth_is_refused() {
+        fn state(held: &[u8]) -> Vec<u8> {
+            let mut w = Writer::default();
+            for v in [0, 3, MCR_OUT2, 0, 12, 0] {
+                w.u8(v);
+            }
+            w.bool(true);
+            w.bool(false);
+            w.bool(false);
+            w.u32(held.len() as u32);
+            held.iter().for_each(|&b| w.u8(b));
+            w.into_bytes()
         }
-        w.bool(true);
-        w.bool(false);
-        w.bool(false);
-        let held: Vec<u8> = (0..=u8::MAX).cycle().take(4096).collect();
-        w.u32(held.len() as u32);
-        held.iter().for_each(|&b| w.u8(b));
-        let bytes = w.into_bytes();
+        let full: Vec<u8> = (0..RX_FIFO as u8).collect();
         let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
+        let bytes = state(&full);
         let mut r = Reader::new(&bytes);
         s.restore(&mut r).unwrap();
         r.finish().unwrap();
-        let read: Vec<u8> = held.iter().map(|_| rd(&s, RBR_THR_DLL)).collect();
-        assert_eq!(read, held);
+        let read: Vec<u8> = full.iter().map(|_| rd(&s, RBR_THR_DLL)).collect();
+        assert_eq!(read, full);
         assert_eq!(rd(&s, LSR) & LSR_DR, 0);
+        for held in [RX_FIFO + 1, 4096] {
+            let held: Vec<u8> = (0..=u8::MAX).cycle().take(held).collect();
+            let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
+            let bytes = state(&held);
+            let refused = s.restore(&mut Reader::new(&bytes)).unwrap_err();
+            assert!(refused.0.contains("the console's receiver"), "{refused}");
+            assert_eq!(rd(&s, LSR) & LSR_DR, 0, "{} bytes restored", held.len());
+        }
     }
 
     /// Host input fills the receiver to its depth, the FIFO's or in 16450 mode its one
