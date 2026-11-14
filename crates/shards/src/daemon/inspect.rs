@@ -10,21 +10,42 @@ use shards_agentfile::image::{Image as Config, json_string};
 use shards_image::reference::Reference;
 use shards_image::store::Image;
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ShmOwnerRefused {
+    Cycle(String),
+    Missing(String),
+    Storage,
+}
+
+impl std::fmt::Display for ShmOwnerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cycle(id) => write!(f, "shared-memory ownership cycle at {id}"),
+            Self::Missing(id) => write!(f, "shared-memory owner {id} is unavailable"),
+            Self::Storage => f.write_str("shared-memory ownership storage is unavailable"),
+        }
+    }
+}
+
 fn shm_owner(
     mut id: String,
     mut run: shards_ipc::Run,
-    mut next: impl FnMut(&str, &shards_ipc::Run) -> Option<(String, shards_ipc::Run)>,
-) -> (String, shards_ipc::Run) {
-    for _ in 0..64 {
-        match next(&id, &run) {
+    mut next: impl FnMut(&str, &shards_ipc::Run) -> Result<Option<(String, shards_ipc::Run)>, ShmOwnerRefused>,
+) -> Result<(String, shards_ipc::Run), ShmOwnerRefused> {
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        visited.try_reserve(1).map_err(|_| ShmOwnerRefused::Storage)?;
+        if !visited.insert(id.clone()) {
+            return Err(ShmOwnerRefused::Cycle(id));
+        }
+        match next(&id, &run)? {
             Some((next_id, next_run)) => {
                 id = next_id;
                 run = next_run;
             }
-            None => break,
+            None => return Ok((id, run)),
         }
     }
-    (id, run)
 }
 
 /// What moby's collectRepoTagsAndDigests makes of an image's references: each name,
@@ -542,8 +563,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .cloned()
                     .ok_or_else(|| format!("No such container: {given}"))
             });
-            match found {
-                Ok(c) => documents.push(self.container_value(&c, parsed.bool("size"))),
+            match found.and_then(|c| {
+                self.container_value(&c, parsed.bool("size"))
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(document) => documents.push(document),
                 Err(e) if e.starts_with("Error response") => errors.push(e),
                 Err(e) => errors.push(format!("shards: {e}")),
             }
@@ -562,9 +586,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .made(id)
             .cloned()
             .ok_or_else(|| format!("No such container: {id}"))?;
-        let doc: serde_json::Value =
-            serde_json::from_str(&super::inspect_doc::json(&self.container_value(&c, false)))
-                .map_err(|e| e.to_string())?;
+        let doc: serde_json::Value = serde_json::from_str(&super::inspect_doc::json(
+            &self.container_value(&c, false).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?;
         let at = |path: &str| doc.pointer(path).cloned().unwrap_or_default();
         let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
         let strings = |path: &str| -> Vec<String> {
@@ -609,25 +634,29 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// container:NAME`), that one's; its own `--shm-size`; else its microVM's, half all the
     /// memory that microVM may have (`run::shm_bytes`), its own or that of the microVM it
     /// lives in: the one it joins (`--network container:NAME`), or whose own engine made it.
-    /// Each followed 64 steps at most, as a run names only those made before it. `request`
+    /// Each followed to its owner, refusing cycles and missing records. `request`
     /// is `c`'s as it was asked for.
-    fn shm_size(&self, c: &crate::containers::Container, request: &shards_ipc::Run) -> i64 {
-        let read = |reference: &str| self.stored_run(reference);
-        let (mut id, mut run) = (c.id.clone(), request.clone());
-        // Whose /dev/shm it is.
-        for _ in 0..64 {
-            if run.ipc == "none" {
-                return 0;
-            }
-            match run.ipc.strip_prefix("container:").and_then(read) {
-                Some(next) => (id, run) = next,
-                None => break,
-            }
+    fn shm_size(
+        &self,
+        c: &crate::containers::Container,
+        request: &shards_ipc::Run,
+    ) -> Result<i64, ShmOwnerRefused> {
+        let (id, run) = shm_owner(c.id.clone(), request.clone(), |_, run| {
+            run.ipc
+                .strip_prefix("container:")
+                .map(|reference| {
+                    self.stored_run(reference)
+                        .ok_or_else(|| ShmOwnerRefused::Missing(reference.into()))
+                })
+                .transpose()
+        })?;
+        if run.ipc == "none" {
+            return Ok(0);
         }
         if run.shm_size != 0 {
-            return run.shm_size;
+            return Ok(run.shm_size);
         }
-        i64::try_from(self.microvm_shm(&id, &run)).unwrap_or(i64::MAX)
+        Ok(i64::try_from(self.microvm_shm(&id, &run)?).unwrap_or(i64::MAX))
     }
 
     /// Container `reference`'s ID and the request it was made by, as it keeps it.
@@ -644,28 +673,28 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// (D156): half the memory that microVM may have in all, by the run whose microVM it is:
     /// its own, the one it joined (`--network container:`), or the one whose engine made it
     /// (D181). Every run of every limit restores one template (D148): each is told its own.
-    pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> u64 {
+    pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> Result<u64, ShmOwnerRefused> {
         let (_, run) = shm_owner(id.to_string(), run.clone(), |id, run| {
             let engine_of = super::lock(&self.containers)
                 .get(id)
                 .and_then(|c| c.engine_made.as_ref().map(|m| m.of.clone()));
-            match engine_of {
-                Some(of) => self.stored_run(&of),
-                None => run
-                    .network
-                    .strip_prefix("container:")
-                    .and_then(|r| self.stored_run(r)),
-            }
-        });
+            let owner = engine_of.or_else(|| run.network.strip_prefix("container:").map(str::to_string));
+            owner
+                .map(|reference| {
+                    self.stored_run(&reference)
+                        .ok_or(ShmOwnerRefused::Missing(reference))
+                })
+                .transpose()
+        })?;
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
-        crate::run::shm_bytes(most)
+        Ok(crate::run::shm_bytes(most))
     }
 
     pub(super) fn container_value(
         &self,
         c: &crate::containers::Container,
         sized: bool,
-    ) -> shards_template::Value {
+    ) -> Result<shards_template::Value, ShmOwnerRefused> {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
         let mut request = std::fs::read(dir.join(super::REQUEST))
@@ -675,7 +704,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 image: c.image.clone(),
                 ..shards_ipc::Run::default()
             });
-        let shm = self.shm_size(c, &request);
+        let shm = self.shm_size(c, &request)?;
         // One its microVM's engine made is on that engine's network, or on the microVM's
         // own, its engine's host's (D181), as its engine says it.
         if let Some(m) = &c.engine_made {
@@ -838,7 +867,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 });
             }
         }
-        document(&Facts {
+        Ok(document(&Facts {
             container: c,
             request: &request,
             image: config.as_ref(),
@@ -854,7 +883,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             user_nets,
             size: sized.then(|| self.container_sizes(c)),
             shm,
-        })
+        }))
     }
 
     /// MicroVM `c`'s SizeRw and SizeRootFs, inspect's fields (D170): the disk its writable
@@ -990,7 +1019,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                             .ok_or_else(|| format!("No such container: {given}"))
                     });
                     match c {
-                        Ok(c) => return Ok(self.container_value(&c, parsed.bool("size"))),
+                        Ok(c) => {
+                            return self
+                                .container_value(&c, parsed.bool("size"))
+                                .map_err(|e| daemon_said(&e.to_string()));
+                        }
                         Err(e) if !any => return Err(daemon_said(&e)),
                         Err(_) => {}
                     }
@@ -1246,10 +1279,24 @@ mod tests {
             })
             .collect();
         let (_, owner) = shm_owner("65".into(), runs[65].clone(), |_, run| {
-            let id = run.network.strip_prefix("container:")?;
-            Some((id.into(), runs[id.parse::<usize>().unwrap()].clone()))
-        });
+            let Some(id) = run.network.strip_prefix("container:") else {
+                return Ok(None);
+            };
+            Ok(Some((id.into(), runs[id.parse::<usize>().unwrap()].clone())))
+        })
+        .unwrap();
         assert_eq!(owner.resources.memory, 512 << 20);
+    }
+
+    #[test]
+    fn shm_owner_refuses_cycles_and_missing_records() {
+        let run = shards_ipc::Run::default();
+        assert!(
+            matches!(shm_owner("a".into(),run.clone(),|_,run| Ok(Some(("a".into(),run.clone())))), Err(ShmOwnerRefused::Cycle(id)) if id == "a")
+        );
+        assert!(
+            matches!(shm_owner("a".into(),run,|_,_| Err(ShmOwnerRefused::Missing("b".into()))), Err(ShmOwnerRefused::Missing(id)) if id == "b")
+        );
     }
 
     /// As encoding/json's Indent lays out what it is given, by Go's own answers

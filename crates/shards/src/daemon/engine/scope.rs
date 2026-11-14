@@ -478,12 +478,13 @@ impl<D: Disk> Daemon<D> {
                 };
                 let id = c.id.clone();
                 match (method, rest) {
-                    ("GET", ["json"]) => Answer::document(
-                        200,
-                        self.scoped_mounts(crate::daemon::inspect_doc::json(
-                            &self.container_value(c, call.flag("size")),
-                        )),
-                    ),
+                    ("GET", ["json"]) => match self.container_value(c, call.flag("size")) {
+                        Ok(document) => Answer::document(
+                            200,
+                            self.scoped_mounts(crate::daemon::inspect_doc::json(&document)),
+                        ),
+                        Err(e) => Answer::error(500, e.to_string()),
+                    },
                     ("POST", ["start"]) => self.engine_start(threads, &id, call),
                     ("POST", ["stop"]) => self.engine_stop(threads, &id, call, false),
                     ("POST", ["kill"]) => self.engine_stop(threads, &id, call, true),
@@ -767,11 +768,15 @@ impl<D: Disk> Daemon<D> {
             Err(e) => return refused(&e, 400),
         };
         let sized = call.flag("size");
-        let summaries: Vec<Value> = of_scope(listing.containers.iter(), &scope.provider)
+        let summaries = match of_scope(listing.containers.iter(), &scope.provider)
             .iter()
             .take(limit.unwrap_or(usize::MAX))
             .map(|c| self.summary(c, sized))
-            .collect();
+            .collect::<Result<Vec<Value>, _>>()
+        {
+            Ok(values) => values,
+            Err(e) => return refused(&e, 500),
+        };
         Answer::json(200, &Value::Array(summaries))
     }
 }
