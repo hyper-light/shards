@@ -360,3 +360,9 @@ Conflict-free merge b4075e66915014fe348badce300203ca92a5bb87 adds main 02d3fe33b
 warm Mac `cargo check --tests`: clean. [Check](logs/r23-contention-check.log).
 Latest full host focused green remains R22 (30d6080e9); init check remains R19,
 whose crate/dependency inputs are unchanged. No conflict was resolved here.
+
+Conflict-free merge e51d7eea577b5343c6749030abab5226764e49ed adds main6a52ef516
+(migration code). R24 four-crate Mac check clean; immediate ff push from the
+runner using its existing SSH identity was refused because main had advanced.
+[Check/push log](logs/r24-contention-check-push.log). No authentication failure
+or credential transfer occurred. Focused green remains R22, init check R19.
