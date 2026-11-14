@@ -530,3 +530,11 @@ and TCP clients resolve a live peer, withhold one upstream UDP reply, and verify
 progress before that connection closes. Add failed spawn, FD/memory pressure,
 relay death and guest end witnesses under ROOT's campaign bounds. Existing serial
 DNS latency M247 is not such evidence. No such VM/cost campaign ran here.
+
+Network08 landed main97f404be8e0cda228f12f924d3517a1e6afb4a3c (code74ea2d725).
+Focused tested merge4b7e93f10. New mainf8e5948bc touched init/mcp, so merge
+1304c74e4 passed warm `cargo check -p shards-init --tests`, r33, exit0
+([output](check08-landing.log)). First ff-push was refused. Final97f404be8 adds
+only disjoint shards/helpers and docs from f89d7a03d and was pushed immediately,
+with no conflict, as the contention rule permits. Every commit/merge has one
+gpgsig. Owned Linux target cleanup is recorded next.
