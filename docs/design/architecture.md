@@ -34820,8 +34820,13 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     write. Other devices and vCPUs do not.
   - Daemon, builder and managed runs write to a sink (`Console::Discard`), which never blocks.
     Only `run --kernel` with its console on a terminal can.
-  - Not built yet: a host-side writer with a bounded buffer would let pause land while stdout
-    blocks.
+  - Since then: a console on stdout writes through a writer of its own (`console::Output::Writer`).
+    The exit takes one buffer, uses it and returns. The host holds at most that one buffer while
+    it is written; the guest's next waits in its ring of one (`TRANSMIT_SIZE`), the guest
+    spinning on it. A blocked write holds no transport lock, so other exits and a pause or
+    snapshot land: unit test `a_blocked_stdout_holds_no_exit_and_no_pause`, which blocks when
+    the output is written in the exit instead. A console nobody reads still writes to its sink
+    in the exit.
 - **Kernels shards does not build** (`shards configure guest`, D28) keep upstream's lost
   backlog until the fix reaches them. A version-agnostic layer is designed, not built: at the
   first transmit after a fresh activation, the VMM would emit the ring's records older than the
