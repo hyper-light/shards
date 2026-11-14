@@ -295,6 +295,11 @@ impl Host for Machine {
         // start that takes long would hold it.
         let stalls = args.first().is_some_and(|a| a == "stalls");
         let args = if stalls { args[1..].to_vec() } else { args };
+        // `exhausts await GO...`: `await GO...`, after whose start this process can have no
+        // more descriptors ([`Exhausted`]), as a daemon at its limit can have none, until the
+        // daemon's wait for it begins, which then lets it go on (GO).
+        let exhausts = args.first().is_some_and(|a| a == "exhausts");
+        let args = if exhausts { args[1..].to_vec() } else { args };
         if stalls {
             let _ = self.seen.send(Seen::Stalled(args.join(" ")));
             if let Some(release) = self.stall.lock().unwrap().as_ref() {
@@ -316,6 +321,13 @@ impl Host for Machine {
             seen: self.seen.clone(),
         };
         let _ = self.seen.send(Seen::Started(what.clone()));
+        #[cfg(unix)]
+        if exhausts {
+            *EXHAUSTED.lock().unwrap() = Some(Exhausted::now());
+        }
+        #[cfg(windows)]
+        assert!(!exhausts, "no descriptor limit on Windows");
+        let go = exhausts.then(|| args.get(1).cloned()).flatten();
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
         let held = Held(self.seen.clone(), what.clone());
@@ -329,6 +341,11 @@ impl Host for Machine {
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             wait: Box::new(move || {
+                if let Some(go) = &go {
+                    #[cfg(unix)]
+                    drop(EXHAUSTED.lock().unwrap().take());
+                    std::fs::write(go, b"").unwrap();
+                }
                 let status = loop {
                     if let Some(status) = ended(&mut child) {
                         break status;
@@ -1405,6 +1422,109 @@ fn a_command_refused_after_it_started_is_cut() {
         raw.next(),
         Heard::Frame(stream, Tag::Refused, b"a frame out of place (Joined)".to_vec())
     );
+}
+
+/// This process held to the descriptors it has, until it drops: its soft RLIMIT_NOFILE lowered
+/// to the lowest it has free, so that every descriptor below it is open and none more can be
+/// had (EMFILE, getrlimit(2)), as a daemon at its limit has none.
+#[cfg(unix)]
+struct Exhausted(libc::rlimit);
+
+#[cfg(unix)]
+static EXHAUSTED: Mutex<Option<Exhausted>> = Mutex::new(None);
+
+#[cfg(unix)]
+impl Exhausted {
+    fn now() -> Exhausted {
+        use std::os::fd::AsRawFd;
+        let mut was = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut was) }, 0);
+        let lowest = std::fs::File::open("/dev/null").unwrap();
+        let held = libc::rlimit {
+            rlim_cur: libc::rlim_t::try_from(lowest.as_raw_fd()).unwrap(),
+            rlim_max: was.rlim_max,
+        };
+        drop(lowest);
+        // SAFETY: setrlimit(2) from a local.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &held) }, 0);
+        Exhausted(was)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Exhausted {
+    fn drop(&mut self) {
+        // SAFETY: setrlimit(2) from what getrlimit(2) gave.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) };
+    }
+}
+
+/// A command started as its daemon can have no more descriptors (remote-07) runs as any does:
+/// its output and status cross, and the one wait its daemon owes it reaps it. Every step of
+/// its relay that can fail (a waker's descriptor, a thread) is taken before its start; the
+/// limit holds from its start until its daemon's wait for it begins (`exhausts`), so that the
+/// process's other parts, its client's among them, have descriptors again. Red with its relay
+/// had after its start: the relay's first waker (a dup(2)) refused with EMFILE, the stream
+/// cut, and the started command, its wait and hangup dropped, neither hung up nor reaped. In
+/// a process of its own, as a descriptor limit is its whole process's.
+#[cfg(unix)]
+#[test]
+fn a_command_started_as_its_daemon_runs_out_of_descriptors_is_relayed_and_reaped() {
+    const CHILD: &str = "SHARDS_TEST_RELAY_EXHAUSTED";
+    if std::env::var_os(CHILD).is_none() {
+        let output = this_test(
+            "a_command_started_as_its_daemon_runs_out_of_descriptors_is_relayed_and_reaped",
+            (CHILD, "1".as_ref()),
+        )
+        .output();
+        assert!(
+            output.status == 0,
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let dir = TempDir::new("remote-exhausted").unwrap();
+    let go = dir.path().join("go");
+    let go = go.to_str().unwrap();
+    let ran = run(
+        laptop,
+        d.remote,
+        &["exhausts", "await", go, "say=out", "exit=3"],
+        None,
+    )
+    .get();
+    // Let go whatever became of it, and its command too.
+    let held = EXHAUSTED.lock().unwrap().take().is_some();
+    std::fs::write(go, b"").unwrap();
+    let what = format!("await {go} say=out exit=3");
+    d.seen.saw(&Seen::Started(what.clone()));
+    assert_eq!(
+        ran,
+        (Ok(3), b"out\n".to_vec(), Vec::new()),
+        "held to its descriptors still: {held}"
+    );
+    d.seen.saw(&Seen::Exited(what.clone(), 3));
+    d.seen.saw(&Seen::Released(what.clone()));
+    let waits = d
+        .seen
+        .now()
+        .iter()
+        .filter(|s| matches!(s, Seen::Exited(w, _) if *w == what))
+        .count();
+    assert_eq!(waits, 1, "reaped once: {:?}", d.seen.now());
 }
 
 /// A frame a raw client heard: its stream, its tag and its payload.
