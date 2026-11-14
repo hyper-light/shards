@@ -1212,6 +1212,15 @@ for the exit status.
     and verifies retained offers/PID and removal of the old remainder after it. See
     [runs-fixes](../research/measurements/runs-fixes/README.md); live daemon/VM checks
     remain ROOT's. This adds no timeout, polling, cache or platform manager.
+  - *Handed whole across a launch* (ROOT, 2026-11-14). A VM process does not start in the
+    daemon's directory: macOS App Sandbox starts it in its container's `Data` directory, so
+    a `./…` path handed it named another file there, and every HVF run of an image with
+    agents ended 125 (`<chain>.over-<hex>.erofs: No such file or directory`; bisected to
+    this entry's d3b11258a, member_exec at 8fdd66512). `launch.rs` `absolute` makes each word
+    before a VM's `--` that is `.` or `./…` absolute from the launching process's working
+    directory as it launches, which names the home where it is then, renamed or not; the
+    guest's words past `--` stay as given. Red: HVF member_exec at 8fdd66512; unit
+    `launch::tests::a_vms_paths_from_here_are_handed_it_whole_and_its_guests_words_as_given`.
   - It admits only clients of its own user: its slots are FIFOs of mode 0600 in a
     directory of 0700, and a connection's peer is checked besides (`getpeereid`,
     `SO_PEERCRED`): a home in a shared directory must not let another user run commands as
@@ -12265,6 +12274,44 @@ main thread stuck for good while the stream goes on carrying gets its `PastItsPa
 no account (the copied minute gave one), and the host, its stream carrying, waits on it
 (`Heard::of`) to its job's limit. Owed (ROOT): the storm suites (tests/snapshot.rs) on KVM,
 Hypervisor.framework and the nested arm64 Windows host.
+
+**Part 6: a run's stop grace is its daemon's own deadline** (#77, 2026-11-14; ROOT's brief:
+fix the judge's reading, not the bound). HVF at 0ce6cdc66 (adas-mac-studio.local, macOS
+arm64, kiln r2081, `managed_output metrics::task_refusals_export_the_actual_kernel_event_counter`
+alone, daemon.log timestamped by a watcher beside it): `stop daemon` (managed_output.rs:347)
+was refused 259 ms into its wait, "no progress for 45.3 ms" past a W* of 36.0 ms, its last
+progress "process 98449 ran". The daemon said "stepping aside" at 2.612 s, its run's end
+("managed output closed", `Exited (137)`) at 12.632 s: 10.02 s, the default stop grace
+(`STOP_GRACE`, Docker's 10 s) of a `/bin/testguest sleep` main that, its PID namespace's
+init with no handler, ignores SIGTERM from outside its namespace (kernel/signal.c
+`sig_task_ignored`, SIGNAL_UNKILLABLE), until its SIGKILL. Through the grace the daemon's
+stop thread waits on its timer and the guest sleeps: nothing of the party runs, and nothing
+is stalled. The party was whole: the client, the daemon and its tree by parent (spawner,
+VM and network processes) are all members on Unix; it was not missing the spawner's
+children, the first reading of the failure.
+- *The rule.* A run's stop grace is a deadline its daemon holds, set by the run (`stop -t`,
+  `--stop-timeout`) or the daemon's default. From the signal the daemon sends a run's
+  command (its own stop, `stop_each`; a stop of named runs, `end_all`) until
+  that command's SIGKILL or its end, the daemon keeps `stop.grace` in the run's directory
+  (`shards_ipc::GRACE`: the SIGKILL's time, nanoseconds since the Unix epoch, written whole,
+  removed by its guard's drop at the SIGKILL, the run's end or the stop's own end). A
+  look (`Party::look`) that finds a process of its party live and nothing else (`Still`)
+  while a run of its home is within its grace finds it `Held`: the daemon's own deadline.
+  Past the grace it is judged as before, a whole W* without progress refused.
+- *R03.* No literal: the grace is the run's own or the daemon's default, the deadline the
+  daemon itself acts at. The clock is the system clock, the one std reads alike in two
+  processes on every OS; a step of it moves the hold by the step. A grace that cannot be
+  kept (past the clock's reach, a write that fails) is said in the daemon's log and keeps
+  no hold: that wait is judged as before. A negative stop timeout (no SIGKILL at all) keeps
+  none either: its wait follows the judge as before (the gap).
+- *Held by* tests/harness.rs `a_runs_stop_grace_is_its_daemons_and_not_refused` (a
+  sleeping stand-in daemon, a run of its home in its grace for 20 W*, a sleeping client),
+  on adas-mac-studio-3.local (macOS arm64, kiln r2083, at 58ddf5b9d): red with the look's
+  grace arm removed, refused 148.2 ms into a grace of 1.454 s (W* 72.7 ms); green with it,
+  held through the grace and refused once past; harness.rs 27 passed, 3 ignored; clippy of
+  shards and shards-ipc clean. The daemon's side (the file kept and removed) has no unit
+  test: the real-VM run is its evidence. Owed (ROOT): `cargo test -p shards --profile
+  test-release --test managed_output -- --test-threads=1` on HVF and KVM.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -27284,6 +27331,61 @@ API's protocol: its output drained, its end, its connections.
     shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
     Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
     there first), and Hex's own campaign through a real VM's offered streams.
+- *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
+  confined VM process's identity (pid and start time, as Identity names the host's), so it can
+  read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
+  shards-vm.exe, not in the `shards` its launcher started). `ManagedGuest::vm_process()`
+  answers `VmProcess { pid, started }`, its start counted as `Identity::started` counts it
+  (`shards_ipc::started`: Linux's starttime, macOS's `ri_proc_start_abstime`, Windows' creation
+  FILETIME).
+  - *Linux and macOS: the launched process itself.* `shards run vm --kernel` becomes shards-vm
+    in place (cli/mod.rs `instead`, `Command::exec`) after starting its broker and keepers as
+    children, so the pid Hex's launcher started is the VM process from the exec on, and its
+    start is kept through exec (Linux sets `start_time` in `copy_process`; XNU sets `p_start` in
+    fork, which posix_spawn's new process takes too; `shards_ipc::started` documents both as
+    "kept through exec"). The answer is the
+    receipt's identity, no record. Before the exec (the launch's own setup, before the VM
+    serves its socket) the same process is still `shards`; nothing else ever holds that pid
+    and start.
+  - *Windows: its `shards`'s child, recorded.* Windows has no exec; `shards` starts shards-vm
+    confined (D141) and waits for it. A managed launch's `shards` (`--host-managed` with a
+    `--vsock`) now starts it suspended (`spawn_suspended`), writes `PID START\n` (the home's PID
+    files' form, `shards_ipc::Named`) whole, by rename, to `vm_process_file(vsock)`
+    (`<vsock>.vm`, beside D260's `.used` in the launcher's private directory), then resumes it:
+    the record is in place before the VM process runs. A record that cannot be written ends the
+    suspended child (its Job's last handle drops) and fails the launch, so no managed VM runs
+    unnamed. Not a wire: a file of one fixed line, read by the API that names its path, so no
+    version; a `shards` from before writes none, answered `Unrecorded`.
+  - *Typed answers* (R04): `Refusal::Ended` once the guest has ended; `Refusal::Process` with
+    `Exited` or `DifferentStart { observed }` where the named process has gone or its pid is
+    another's (each answer is checked against the OS as it is given: `taken::Held::find` on
+    Unix, `borrowed_windows::Held::find` on Windows, held by the process object before its
+    start is compared); `Refusal::VmProcess(Unrecorded | Broken)` on Windows; `ManagedIo`
+    where the record cannot be read.
+  - *Restarts.* None: one VM process serves a managed guest for its life (Unix: one exec;
+    Windows: `shards` starts one child and exits with it; D253's second boot of a template is
+    the run host's, not a managed launch's). Its end is the guest's.
+  - *Literals.* The record's longest, `VM_PROCESS_MOST`: a u32's decimal digits, a space, a
+    u64's, a newline (`shards_abi::rate::decimal_digits`), 32 bytes; read to a byte past it so a
+    longer one is `Broken` unread. Nothing learned, no cold start.
+  - *Tests (light).* shards-api `client::tests::a_managed_guests_vm_process_is_the_launched_process_on_unix`
+    (a real child as the receipt's identity: its pid and start read from the OS answered; an
+    identity of another start refused `DifferentStart` with the observed start; the child
+    killed and reaped, refused `Process`; the guest ended, `Ended`),
+    `a_vm_process_record_names_one_process_or_is_refused` (every host: none `Unrecorded`, the
+    longest read, fourteen malformed or over-long records `Broken`), and its Windows twin
+    `a_managed_guests_vm_process_on_windows_is_the_one_its_record_names` (compiled and run on
+    CI's Windows legs first); shards `final_use::tests::a_managed_vms_process_is_named_as_shards_api_reads_it`.
+    Run on adas-mac-studio-3.local (macOS arm64, Darwin 25) at b2563ac76: red, before it, no
+    `vm_process` to call (the tests do not compile); green, `cargo test -p shards-api --lib --
+    vm_process managed` 18 passed, 1 ignored (every managed test beside the new ones), and
+    `cargo test -p shards --bin shards final_use` 4 passed; the start-and-liveness check dropped
+    (m1), the Unix test failed at its stale identity; `cargo clippy -p shards-api -p shards
+    --all-targets -- -D warnings` clean. Windows: `cargo xwin clippy -p shards-api -p shards
+    --all-targets --target x86_64-pc-windows-msvc -- -D warnings` (scripts/lint's form, these
+    crates alone) clean on adas-mac-studio.local at 8f2440013. Owed (ROOT): the Windows twin
+    and a real managed launch on WHP, its record read against shards-vm.exe's own pid and
+    creation time; a real managed launch on HVF and KVM, the answer read against shards-vm's.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
   frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
   Windows' anonymous pipes are (which take no overlapped reads), with a name of the
@@ -31370,6 +31472,22 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   - *Literals.* None chosen: poll(2)'s int and WaitForSingleObject's DWORD of milliseconds
     (`INFINITE`) are the APIs' own, a patience past them waiting until a ring, rounded up so no
     patience waits less than asked.
+  - *A member's stdio, and an exec's and MCP connection's, on the same wake* (Hex's ask after
+    D-10: one thread per output, input and MCP connection otherwise). `Output::try_next_record`
+    and `Input::try_write` answer `Ok(None)`, their `WouldBlock`, where no record has come or
+    the endpoint has no room, and otherwise exactly as `next_record` and `write` do: a record,
+    `Got::Finished`, `Fault::InputEnded`, or the lane's `Fault`, then again. `None` is the
+    crate's own "not yet", as a pending ask's `wait(Duration::ZERO)` says it; an `io::Result`
+    would carry these handles' typed ends and faults as `io::Error`s (R04). The driver already
+    rings for their words (records, finishes, room, faults, through each lane's mark), so the
+    one rule drives sockets, outputs, inputs and the pending asks from one thread. Each shares
+    its blocking twin's state (`Waits`, as the sockets'): an output's record handed out is
+    acknowledged by whichever call comes next. An input's try takes its bytes as one record and
+    answers at once, the record in flight (`Flight::Sent`, R04): no room until the endpoint has
+    taken it, and the cursor passes it as its taken is heard, by the next try, `write` or `end`.
+    `write` itself is unchanged, waiting for its record's taken. An abort with a record in
+    flight names the cursor before it, which the endpoint takes (an abort at or before the next
+    record's start, `managed::input`). No literal.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and
   generation, which an ask names. One that serves sockets alone knows only the keys its
   connection pinned, and an ask there names the zero run and generation 0, as a controller of
@@ -31449,6 +31567,23 @@ function"), no time chosen.
   ring), `a_lanes_fault_rings_its_controllers_wake` (a cut read and written as
   `ConnectionReset` through the tries), and `one_thread_drives_several_lanes_on_its_wake` (three
   echoing lanes, one thread, sleeping on the wake alone).
+- Its outputs' and inputs' tries (policy df2acf47, implementer): `control::tests::lanes`, over
+  the real transport with an MCP connection's host played by the test,
+  `an_outputs_try_says_none_until_its_record_finish_or_fault_rings_the_wake` (none before a
+  record; two records, the first acknowledged by the try after it; the finish, then again; an
+  aborted output's `Revoked`, then again, as `next_record` says it) and
+  `an_inputs_try_says_none_until_its_room_end_or_fault_rings_the_wake` (none while its record
+  is in flight, the cursor not past it; room once its host delivered it; the host's end,
+  `InputEnded`, as `write` says it; a revoked input's `Revoked`), each found after a ring; and
+  `control::unix::tests::one_thread_drives_an_output_an_input_and_a_socket_lane_on_its_wake`
+  (an MCP connection whose harness echoes each record and a socket lane to an echoing workload,
+  one thread trying all three and sleeping on the wake alone, then the connection's end).
+  On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 75 tests, three runs,
+  `loopback` 35, clippy `--all-targets -D warnings` clean. Its guards mutated: a try that finds
+  nothing saying its lane gone instead of none fails all three tries' tests; the cursor not
+  passed as a record in flight is taken fails the input's tries, the one-thread test, and the
+  blocking writes' `the_controller_drives_a_members_stdio_exactly_and_ends_as_it_ends` and
+  `a_newer_dial_supersedes_the_older_and_resumes_at_its_cursors`; restored, green.
   On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 70 tests, `loopback`
   35, and clippy `--all-targets -D warnings` clean. Its guard mutated: the sweep's taking of
   the marks of the lanes it lets go removed, `a_lanes_fault_rings_its_controllers_wake` and
@@ -32020,6 +32155,23 @@ end `Failed`; its budget given back whole; its member lanes, D238),
 `a_members_mcp_bridge_needs_the_runs_control_and_is_carried_with_it` and its wire tests at
 version 25.
 
+**Built** (its hangup, Hex's ask). An MCP connection's end, an exec's `ExecControl`, hangs its
+exec up as it is let go before its exit was heard, and on `ExecControl::hangup`, which lets it
+go: its lane abandoned both ways (RESET_STREAM and STOP_SENDING, the driver's `Ask::Hangup`),
+the mechanism a log let go before its end uses (D238). Its endpoint lets the exec go at once
+(`stop_exec`): the record in flight with it, its stdio's lanes reset (each handle's `Revoked`),
+and its host's steering closed, which its host reads as the hangup: the connection ended both
+ways. Without it, a controller's only way to end a connection whose harness had stopped reading
+was to wait for the record in flight to be taken or the run to end. A controller that lets go
+of `end` keeping `from` and `to` ends the connection too: read the end, or keep it. Tested:
+`control::tests::lanes`, `a_dropped_exec_control_hangs_its_mcp_connection_up_at_once` and
+`a_hung_up_exec_control_hangs_its_mcp_connection_up_at_once` (the host holding the record a
+write waits on, never delivered; the host's steering closes, the write ends `Revoked`, the
+output `Revoked`). Red before it, on the same host: the dropped control's test fails, its host's
+steering still open at the tests' patience (`Err(Timeout)`, not `Disconnected`); its guard
+mutated (the drop handing no `Hangup`), both fail so; restored, green (policy df2acf47,
+implementer; adas-mac-studio-3.local, macOS arm64, with the tries' run above).
+
 **Owed.** kiln's harness configs naming the bridge; a resumed daemon's run's members'
 connections, once managed scopes are restored (above).
 kiln's in-process server over the two streams is built (kiln main `dace992a6`,
@@ -32234,7 +32386,7 @@ are none.
   `a_members_arguments_follow_its_images_command_in_order` (written; built and linted only),
   whose harness is the test guest's `argv` mode, writing its command line word by word, each
   with its NUL. Booted through `ImageShards` with `MemberSpec::args` of `--resume`, `s 1` and an
-  empty one, its stdout is its program as found in its own `bin`, its image's options (`argv`,
+  empty one, its stdout is its program as its image's command names it (argv[0] as given, as runc passes it; the file found by the member's own search, confine-04), its image's options (`argv`,
   `--from-image`), then those three. An argument holding a NUL is refused as "a member's
   argument" by its place alone, and two of half `run::MAX_PAYLOAD` each as "the spec", before
   any run host starts.
@@ -32394,6 +32546,47 @@ seen on real runs:
   part written first or after. A part the file refuses is lost to it alone. The tail is kept to
   quote as before. api_image's harness-end tests keep theirs in the test's home, which a failing
   test shows as its home goes.
+  - *Bounded* (Hex audit B-9, Hex lead's ask, 2026-11-14: "keep_diagnostics(to, bound): once
+    the file would pass the bound, cut it back to the tail you already keep for quoting and go
+    on"; Hex passes each box's admitted disk). The file grew without bound: the keeper wrote
+    every part of the host's stderr to it. Now `keep_diagnostics(to: File, bound: u64)`; the
+    one-argument form is gone, Hex its only caller outside this repository (here: pool.rs's
+    delegate, session.rs's test, api_image's `boot`).
+    - The file's size counts what it held as it was named (its length) and every byte written
+      since, never short of its length. A part that keeps it within `bound` is written after;
+      one that would pass it cuts the file (`set_len(0)`, then a seek to its start, so a file
+      opened to append and one opened in place both start over) back to the session's tail,
+      exactly its latest bytes (the part's end among them), and the next parts are written
+      after that tail. A part that fails is lost to the file alone, and its size counts as the
+      bound, so the next part cuts it back to a known state.
+    - The tail is the one kept to quote (`said_kept()`): shards' longest report of a VM's end,
+      its console's default kept bytes escaped (`client::tail` over
+      `shards_abi::bounds::console_said`, D12's records), not chosen here. It is cut as the tail
+      is kept, by bytes: the tail logic keeps no line or UTF-8 boundary (its quote reads it
+      lossily, `quoted`), so a cut matches it, byte for byte.
+    - Refused, typed: `ImageRefusal::DiagnosticsBound { bound, tail }` for a bound short of the
+      tail, which a cut would leave the file past; `ImageRefusal::Os` for a file that cannot be
+      cut, found as it is named by a truncation to its own length: on Windows a file opened to
+      append alone, whose handle Rust's std opens without `FILE_WRITE_DATA`
+      (library/std/src/sys/fs/windows.rs, `FILE_GENERIC_WRITE & !FILE_WRITE_DATA`), which
+      setting a file's end needs. api_image's `boot` now keeps one file per boot, made to write
+      in place, which a failing test still shows as its home goes.
+    - Literals: none. The bound is the caller's, the tail D12's; nothing learned, no cold start.
+    - Tests (light): session.rs `a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again`
+      (a file opened in place and one to append, each holding two bytes as named: within the
+      bound, at it, cut back to the tail at the part past it, grown again after, a part longer
+      than the tail) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
+      (a bound one short of the tail refused typed, naming nothing; one at it, through the
+      keeper's thread, the file never past it, ending as exactly the host's latest bytes).
+      Run on adas-mac-studio-3.local (macOS arm64) on the merge 8f2440013 and its test fix
+      2f1d1b86b: red, before it, no bound to pass (the tests do not compile); green, `cargo test
+      -p shards-api --lib -- vm_process managed diagnostics` 21 passed, 1 ignored, beside the
+      unbounded test kept (`a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`,
+      `u64::MAX`); the bound's check dropped (m2: a part never passes it), the cut test failed at
+      its cut; clippy of shards-api and shards clean, and Windows' (`cargo xwin clippy`, x86_64)
+      clean. Owed (ROOT): Windows' run of these tests (an append-only file there refused `Os` as
+      named, unexercised by a test: which a file's mode allows is the OS's), and api_image's
+      real-VM tests with a file per boot.
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.

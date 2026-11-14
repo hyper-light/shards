@@ -125,23 +125,23 @@ fn codex() -> MemberName {
     MemberName::harness("codex")
 }
 
-/// Where the diagnostics of the run hosts a test boots in `home` are kept whole
-/// (`ImageGuest::keep_diagnostics`), each appended after the last: a `.stderr` of the home's,
-/// which a failing test shows as its home goes (`common::TempDir`).
+/// Where the diagnostics of a run host a test boots in `home` are kept whole
+/// (`ImageGuest::keep_diagnostics`): a `.stderr` of the home's for each, numbered in boot order,
+/// which a failing test shows as its home goes (`common::TempDir`). One file each, made to
+/// write in place: a file opened to append alone takes no cut on Windows, which a bounded keep
+/// asks of it, and so is refused.
 fn diagnostics(home: &TempDir) -> std::path::PathBuf {
-    home.join("run-hosts.stderr")
+    static BOOTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = BOOTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    home.join(format!("run-host-{n}.stderr"))
 }
 
 /// `s` booted, its run host's diagnostics kept whole in [`diagnostics`] from its start.
 #[track_caller]
 fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
     let guest = booted(&ImageShards::new(), s).unwrap();
-    let kept = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(diagnostics(home))
-        .unwrap();
-    guest.keep_diagnostics(kept).unwrap();
+    let kept = std::fs::File::create(diagnostics(home)).unwrap();
+    guest.keep_diagnostics(kept, u64::MAX).unwrap();
     guest
 }
 
@@ -1321,7 +1321,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
 
 /// D256: a member's run-time arguments follow its image's command on its command line, each
 /// whole and in its order. The harness, the test guest writing its command line word by word,
-/// each with its NUL, says its program as found in its own `bin`, its image's options, then its
+/// each with its NUL, says its program as its image's command names it, its image's options, then its
 /// run's `--resume`, `s 1` and an empty one: none split, joined or dropped. An argument holding
 /// a NUL, which no command line exec'd holds, is refused by its place, never its bytes; and
 /// arguments past the channel's bound are refused whole, never cut; each before any run host
@@ -1352,8 +1352,12 @@ fn a_members_arguments_follow_its_images_command_in_order() {
     let guest = boot(&home, &given(["--resume", "s 1", ""].map(String::from).to_vec()));
     let said = read_all(&*guest, Channel::Stdout);
     let (program, rest) = said.split_at(said.iter().position(|&b| b == 0).unwrap_or(said.len()));
-    assert!(
-        program.starts_with(b"/") && program.ends_with(b"/bin/codex"),
+    // Its program as its image's command names it: the member's own search finds its file
+    // (confine-04, `run::exec_found`) and its argv[0] stays as given, as runc's execve(2)
+    // passes a container's command.
+    assert_eq!(
+        program,
+        b"codex",
         "its command line: {:?}",
         String::from_utf8_lossy(&said)
     );

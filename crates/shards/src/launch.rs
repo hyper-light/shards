@@ -249,6 +249,35 @@ fn program(args: &[&OsStr], vm: &Path) -> Result<(crate::helpers::Program, Env, 
     Ok((crate::helpers::program(&crate::helpers::vm_gpu()?)?, env, true))
 }
 
+/// `args` with each word before its `--` that names a path from the working directory (`.`
+/// or `./…`, as the daemon's home and the paths under it are once it has entered it,
+/// runs-02) made absolute, from where this process's working directory is now: a VM process
+/// does not start there (macOS App Sandbox starts one in its container's `Data` directory),
+/// so a relative path names another file in it, as it did each run's root filesystem
+/// (`<chain>.over-<hex>.erofs: No such file or directory`, every HVF run of an image with
+/// agents at 8fdd66512). The working directory names the home where it is now, renamed or
+/// not, as the daemon's relative paths do. Words past `--` are its guest's and stay as given.
+#[cfg(unix)]
+fn absolute(args: &[&OsStr]) -> Result<Vec<OsString>, String> {
+    let here = std::env::current_dir().map_err(|e| format!("this process's working directory: {e}"))?;
+    let mut guests = false;
+    Ok(args
+        .iter()
+        .map(|&word| {
+            guests |= word == "--";
+            let bytes = word.as_encoded_bytes();
+            if guests || !(bytes == b"." || bytes.starts_with(b"./")) {
+                return word.to_os_string();
+            }
+            match Path::new(word).strip_prefix(".") {
+                Ok(rest) if rest.as_os_str().is_empty() => here.clone().into_os_string(),
+                Ok(rest) => here.join(rest).into_os_string(),
+                Err(_) => word.to_os_string(),
+            }
+        })
+        .collect())
+}
+
 /// `args` with `words` right after its command, where Windows' `--grants` goes
 /// (`shards_ipc::Spawn::grants_at`): before anything of its caller's, and so before any `--`.
 fn after_command<'w>(args: &[&'w OsStr], words: &'w [OsString]) -> Vec<&'w OsStr> {
@@ -404,7 +433,9 @@ fn launch_with(
         granted.as_ref().map(|g| g.as_fd()),
         started.as_ref().map(|(_, side, mac)| (side, mac)),
     );
-    let argv = after_command(args, &words);
+    let args = absolute(args)?;
+    let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
+    let argv = after_command(&args, &words);
     let spawned = spawn(
         group,
         &binary.path(),
@@ -644,6 +675,41 @@ mod tests {
     use super::*;
 
     const MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x01];
+
+    /// A VM's paths from the working directory are handed it whole (runs-02's `.` home), and
+    /// its guest's words past `--` as they were given.
+    #[cfg(unix)]
+    #[test]
+    fn a_vms_paths_from_here_are_handed_it_whole_and_its_guests_words_as_given() {
+        let here = std::env::current_dir().unwrap();
+        let args = [
+            "run",
+            "--rootfs",
+            "./images/r.erofs",
+            "--snapshot-dir",
+            ".",
+            "/abs",
+            "--",
+            "./run.sh",
+            ".",
+        ]
+        .map(OsStr::new);
+        let made = absolute(&args).unwrap();
+        let rootfs = here.join("images/r.erofs").into_os_string();
+        let home = here.clone().into_os_string();
+        let expected: Vec<&OsStr> = vec![
+            OsStr::new("run"),
+            OsStr::new("--rootfs"),
+            rootfs.as_os_str(),
+            OsStr::new("--snapshot-dir"),
+            home.as_os_str(),
+            OsStr::new("/abs"),
+            OsStr::new("--"),
+            OsStr::new("./run.sh"),
+            OsStr::new("."),
+        ];
+        assert_eq!(made.iter().map(OsString::as_os_str).collect::<Vec<_>>(), expected);
+    }
 
     #[test]
     fn the_launchs_words_go_right_after_the_vms_command() {

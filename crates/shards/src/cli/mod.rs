@@ -1215,10 +1215,25 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
 /// Where a managed VM `args` start records its final use (D260, final_use.rs): beside its
 /// vsock socket, where it is booted `--host-managed` with one.
 fn final_use_record(args: &[OsString]) -> Option<PathBuf> {
+    managed_record(args, crate::final_use::record_of)
+}
+
+/// Where a managed VM `args` start is named on Windows (D233's VM process, final_use.rs
+/// `name_vm`): beside its vsock socket, as its final use is.
+#[cfg(windows)]
+fn vm_process_record(args: &[OsString]) -> Option<PathBuf> {
+    managed_record(args, crate::final_use::vm_record_of)
+}
+
+/// The record `of` places beside the vsock socket of a managed VM `args` start.
+fn managed_record(
+    args: &[OsString],
+    of: fn(Option<&std::ffi::OsStr>, bool) -> Option<PathBuf>,
+) -> Option<PathBuf> {
     let vsock = vm_options(args)
         .find(|(word, _)| *word == "--vsock")
         .and_then(|(_, value)| value);
-    crate::final_use::record_of(
+    of(
         vsock.map(OsString::as_os_str),
         has_vm_flag(args, "--host-managed"),
     )
@@ -1981,7 +1996,9 @@ fn vm(args: &[OsString]) -> ExitCode {
             handle: writer.as_handle(),
         });
     }
-    let spawned = shards_ipc::spawn_confined(&shards_ipc::Spawn {
+    // A managed VM's process named beside its socket before it runs (D233's VM process).
+    let vm_record = vm_process_record(args);
+    let spawned = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
         grants_at: 1,
@@ -1997,6 +2014,14 @@ fn vm(args: &[OsString]) -> ExitCode {
         group: Some(&job),
         // A GPU's VM process runs its host's GPU driver (D202).
         graphics: args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu"),
+    })
+    .and_then(|suspended| {
+        // Unnamed, it is ended as it drops, its Job's last handle with it, before it ran.
+        if let Some(record) = &vm_record {
+            let started = shards_ipc::started(suspended.id())?;
+            crate::final_use::name_vm(record, suspended.id(), started).map_err(std::io::Error::other)?;
+        }
+        suspended.resume()
     });
     // The VM's ends are its own now: its exit ends the requests, what it hands over of its
     // working set, and its shares, whose process then exits.

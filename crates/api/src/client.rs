@@ -1745,6 +1745,67 @@ pub fn final_use_file(vsock: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The file a managed guest's VM process is named in on Windows (D233's VM process): beside its
+/// vsock socket `vsock`, its name the socket's and `.vm`, in the directory its launcher made
+/// for the guest. Its `shards` writes it whole, by rename, while the VM process it starts is
+/// still suspended, so it is in place before that process runs: `PID START\n`, as a home's
+/// PID files name a process (`shards_ipc::Named`), its start as [`Identity::started`] counts
+/// it. On Linux and macOS no file is written: the launched `shards` becomes the VM process in
+/// place (exec), its pid and start its own.
+pub fn vm_process_file(vsock: &Path) -> PathBuf {
+    let mut name = vsock.as_os_str().to_owned();
+    name.push(".vm");
+    PathBuf::from(name)
+}
+
+/// The longest record [`vm_process_file`] holds: a u32's decimal, a space, a u64's, a newline.
+#[cfg(any(windows, test))]
+const VM_PROCESS_MOST: usize =
+    shards_abi::rate::decimal_digits(u32::MAX as u64) + 1 + shards_abi::rate::decimal_digits(u64::MAX) + 1;
+
+/// The VM process a managed guest's record at `vsock` names ([`vm_process_file`]), read up to
+/// its longest and a byte past it, so a longer one is broken without being read whole.
+#[cfg(any(windows, test))]
+fn read_vm_process(vsock: &Path) -> Result<crate::VmProcess, Refusal> {
+    let file = match std::fs::File::open(vm_process_file(vsock)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded));
+        }
+        Err(e) => return Err(managed_io("the VM process's record", e)),
+    };
+    let most = VM_PROCESS_MOST
+        .checked_add(1)
+        .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(most)
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    io::Read::read_to_end(
+        &mut io::Read::take(file, u64::try_from(most).unwrap_or(u64::MAX)),
+        &mut bytes,
+    )
+    .map_err(|e| managed_io("the VM process's record", e))?;
+    vm_process_named(&bytes).ok_or(Refusal::VmProcess(crate::VmProcessRefusal::Broken))
+}
+
+/// The process a record's bytes name: `PID START\n`, both decimal digits alone, neither zero
+/// (no process has either).
+#[cfg(any(windows, test))]
+fn vm_process_named(bytes: &[u8]) -> Option<crate::VmProcess> {
+    let line = bytes.strip_suffix(b"\n")?;
+    let at = line.iter().position(|b| *b == b' ')?;
+    let (pid, started) = (line.get(..at)?, line.get(at.checked_add(1)?..)?);
+    fn digits(word: &[u8]) -> Option<&str> {
+        (!word.is_empty() && word.iter().all(u8::is_ascii_digit))
+            .then(|| std::str::from_utf8(word).ok())
+            .flatten()
+    }
+    let pid: u32 = digits(pid)?.parse().ok()?;
+    let started: u64 = digits(started)?.parse().ok()?;
+    (pid != 0 && started != 0).then_some(crate::VmProcess { pid, started })
+}
+
 /// The final use a managed guest's record says (D260), its read `read`: its parts as its VM
 /// process told them, an answer none of the protocol's typed by what breaks it; none where
 /// there is no record, its VM killed (`stopping`, its stop asked) or ended without it.
@@ -2258,6 +2319,43 @@ impl ManagedGuest {
         };
         drop(state);
         Ok(Some(ManagedEnded { end, final_use }))
+    }
+
+    /// Its VM process (D233's VM process): the confined process its VMM runs in, which holds
+    /// its guest's RAM, by its pid and its start, so that its caller reads that process as the
+    /// VMM's and never one given its pid since. On Linux and macOS it is the process its
+    /// launcher started ([`identity`](Guest::identity)'s), which became the VM process in
+    /// place (exec), its pid and start kept through it; on Windows it is that `shards`'s
+    /// child, read from its record ([`vm_process_file`]). One VM process serves a guest for
+    /// its life: none restarts or replaces it.
+    ///
+    /// Each answer is checked against the process as its OS holds it now: refused
+    /// [`Refusal::Ended`] once the guest has ended; [`Refusal::Process`] where the process
+    /// named has gone (`Exited`) or its pid is another's (`DifferentStart`); on Windows
+    /// [`Refusal::VmProcess`] where its `shards` has not recorded it yet (`Unrecorded`) or its
+    /// record is broken (`Broken`), and [`Refusal::ManagedIo`] where it cannot be read.
+    pub fn vm_process(&self) -> Result<crate::VmProcess, Refusal> {
+        if let Some(end) = self.end(&mut lock(&self.shared.state))? {
+            return Err(Refusal::Ended(end));
+        }
+        let identity = self.process.identity()?;
+        #[cfg(unix)]
+        let named = crate::VmProcess {
+            pid: identity.pid,
+            started: identity.started,
+        };
+        #[cfg(windows)]
+        let named = read_vm_process(&identity.vsock)?;
+        let failed = |failure| Refusal::Process {
+            pid: named.pid,
+            expected_started: named.started,
+            failure,
+        };
+        #[cfg(unix)]
+        crate::taken::Held::find(named.pid, named.started).map_err(failed)?;
+        #[cfg(windows)]
+        borrowed_windows::Held::find(named.pid, named.started).map_err(failed)?;
+        Ok(named)
     }
 
     /// The room a budget leaves the guest, as an image run's (`ImageGuest::room`, D188, D241):
@@ -3002,15 +3100,31 @@ mod tests {
         coordinate_stop: bool,
         socket: PathBuf,
     ) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
-        let here = std::env::current_dir().unwrap();
-        let root = here.ancestors().last().unwrap();
-        let plan = prepare_boot(&spec(), &root.join("model").join("never-executed"), &socket, 0).unwrap();
-        let native = triomphe::Arc::try_new(ModelNative {
-            identity: Identity {
+        managed_model_as(
+            coordinate_stop,
+            Identity {
                 pid: 42,
                 started: 7,
                 vsock: socket,
             },
+        )
+    }
+    /// [`managed_model`] whose native receipt names `identity`.
+    fn managed_model_as(
+        coordinate_stop: bool,
+        identity: Identity,
+    ) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let plan = prepare_boot(
+            &spec(),
+            &root.join("model").join("never-executed"),
+            &identity.vsock,
+            0,
+        )
+        .unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity,
             state: Mutex::new(NativeState::default()),
             changed: Condvar::new(),
             coordinate_stop,
@@ -3019,6 +3133,152 @@ mod tests {
         .unwrap();
         let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
         (guest, native)
+    }
+
+    /// A managed guest's VM process on Linux and macOS is the process its launcher started,
+    /// become shards-vm in place: named by its pid and its start as the OS reads them, while
+    /// it lives; an identity whose start is another's refused `DifferentStart` with the start
+    /// observed, and one whose process has gone refused, neither named; an ended guest
+    /// refused `Ended`.
+    #[cfg(unix)]
+    #[test]
+    fn a_managed_guests_vm_process_is_the_launched_process_on_unix() {
+        let mut child = Command::new("sleep").arg("600").spawn().unwrap();
+        let (pid, started) = (child.id(), crate::taken::started(child.id()).unwrap());
+        let dir = shards_testdir::TempDir::new("vm-process").unwrap();
+        let vsock = dir.join("v");
+        let (guest, native) = managed_model_as(
+            false,
+            Identity {
+                pid,
+                started,
+                vsock: vsock.clone(),
+            },
+        );
+        assert_eq!(
+            guest.vm_process().unwrap(),
+            crate::VmProcess { pid, started },
+            "the launched process, its start the OS's"
+        );
+        let (stale, _) = managed_model_as(
+            false,
+            Identity {
+                pid,
+                started: started.wrapping_add(1),
+                vsock: vsock.clone(),
+            },
+        );
+        assert!(
+            matches!(stale.vm_process(), Err(Refusal::Process {
+                pid: p, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if p == pid && expected_started == started.wrapping_add(1) && observed == started),
+            "{:?}",
+            stale.vm_process()
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            matches!(guest.vm_process(), Err(Refusal::Process { pid: p, expected_started, .. })
+                if p == pid && expected_started == started),
+            "{:?}",
+            guest.vm_process()
+        );
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        assert_eq!(guest.vm_process(), Err(Refusal::Ended(End::PowerOff)));
+    }
+
+    /// A managed guest's VM process on Windows is its `shards`'s child, named by the record
+    /// its `shards` writes beside its socket: the process it names, its start the OS's; none
+    /// until it is written (`Unrecorded`); a record whose start is another's refused
+    /// `DifferentStart`; a broken one refused `Broken`.
+    #[cfg(windows)]
+    #[test]
+    fn a_managed_guests_vm_process_on_windows_is_the_one_its_record_names() {
+        let (mut launched, identity) = waiting();
+        let (mut vm, vm_identity) = waiting();
+        let record = vm_process_file(&identity.vsock);
+        let (guest, native) = managed_model_as(false, identity.clone());
+        assert_eq!(
+            guest.vm_process(),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded))
+        );
+        std::fs::write(&record, format!("{} {}\n", vm_identity.pid, vm_identity.started)).unwrap();
+        assert_eq!(
+            guest.vm_process().unwrap(),
+            crate::VmProcess {
+                pid: vm_identity.pid,
+                started: vm_identity.started,
+            }
+        );
+        let other = vm_identity.started.wrapping_add(1);
+        std::fs::write(&record, format!("{} {other}\n", vm_identity.pid)).unwrap();
+        assert!(
+            matches!(guest.vm_process(), Err(Refusal::Process {
+                pid, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if pid == vm_identity.pid && expected_started == other && observed == vm_identity.started),
+            "{:?}",
+            guest.vm_process()
+        );
+        std::fs::write(&record, "x\n").unwrap();
+        assert_eq!(
+            guest.vm_process(),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Broken))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(guest);
+        for child in [&mut launched, &mut vm] {
+            child.kill().unwrap();
+            let _ = child.wait();
+        }
+    }
+
+    /// A VM process's record is read as its `shards` writes it: `PID START` and a newline, both
+    /// decimal digits alone, neither zero, at most its longest; anything else is broken, and
+    /// none is unrecorded.
+    #[test]
+    fn a_vm_process_record_names_one_process_or_is_refused() {
+        let dir = shards_testdir::TempDir::new("vm-record").unwrap();
+        let vsock = dir.join("v");
+        assert_eq!(
+            read_vm_process(&vsock),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded))
+        );
+        let longest = format!("{} {}\n", u32::MAX, u64::MAX);
+        assert_eq!(longest.len(), VM_PROCESS_MOST);
+        for (text, named) in [
+            ("12 34\n", Some((12, 34))),
+            (longest.as_str(), Some((u32::MAX, u64::MAX))),
+        ] {
+            std::fs::write(vm_process_file(&vsock), text).unwrap();
+            let expected = named.map(|(pid, started)| crate::VmProcess { pid, started });
+            assert_eq!(read_vm_process(&vsock).ok(), expected, "{text:?}");
+        }
+        // Past the longest, though each word would parse: read no further than a byte past it.
+        let past = format!("{}12 34\n", "0".repeat(VM_PROCESS_MOST));
+        for text in [
+            "",
+            "12 34",
+            "12  34\n",
+            " 12 34\n",
+            "12 34 \n",
+            "+12 34\n",
+            "12 -34\n",
+            "0 34\n",
+            "12 0\n",
+            "4294967296 1\n",
+            "1 18446744073709551616\n",
+            "12 34\n\n",
+            "12\n",
+            past.as_str(),
+        ] {
+            std::fs::write(vm_process_file(&vsock), text).unwrap();
+            assert_eq!(
+                read_vm_process(&vsock),
+                Err(Refusal::VmProcess(crate::VmProcessRefusal::Broken)),
+                "{text:?}"
+            );
+        }
     }
 
     /// A listener at `path` for a stand-in of a managed guest's VM process, as each OS binds

@@ -2067,6 +2067,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             followed: Followed,
             /// When it was sent SIGKILL, or its VM killed: how long its end took.
             since: Instant,
+            /// Its grace, kept while it is signalled.
+            grace: Option<super::Grace>,
         }
         let after = |d: Duration| Instant::now().checked_add(d);
         let mut going = Vec::with_capacity(targets.len());
@@ -2087,13 +2089,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // A signal that could not be sent went nowhere: its run's connection to its VM
             // is gone, which its guest says its end on too, so no end can come from the
             // guest, and its VM is killed at once.
-            let (phase, deadline, followed) = if linux == 9 {
+            let (phase, deadline, followed, grace) = if linux == 9 {
                 let (wait, teardown) = self.kill_command(&id);
-                (Phase::Killed, wait.and_then(after), teardown)
+                (Phase::Killed, wait.and_then(after), teardown, None)
             } else if self.signal(&id, linux) {
-                (Phase::Signalled, grace.and_then(after), Followed::of(None))
+                let dir = lock(&self.containers).dir(&id);
+                let kept = grace.and_then(|grace| super::Grace::begin(&dir, grace));
+                (Phase::Signalled, grace.and_then(after), Followed::of(None), kept)
             } else {
-                (Phase::Killed, after(Duration::ZERO), Followed::of(None))
+                (Phase::Killed, after(Duration::ZERO), Followed::of(None), None)
             };
             going.push(Ending {
                 index,
@@ -2104,6 +2108,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 deadline,
                 followed,
                 since: Instant::now(),
+                grace,
             });
         }
         // Their ends, waited on together by their indices, however many: a wait of Windows'
@@ -2135,6 +2140,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 if e.deadline.is_some_and(|d| d <= now) {
                     match e.phase {
                         Phase::Signalled => {
+                            e.grace = None;
                             let (wait, teardown) = self.kill_command(&e.id);
                             e.phase = Phase::Escalated;
                             e.deadline = wait.and_then(after);
