@@ -27191,6 +27191,15 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       - ROOT first named `/proc/<pid>/stat`'s utime and stime (fields 14 and 15). Those
         count clock ticks (USER_HZ, 100 a second), in which an answer within two ticks
         shows no CPU at all.
+      - Its last CPU, read once its exit is told (waitid(2), a pidfd readable, its state
+        `Z`), is what it had run by that notice, not by its last instruction: the kernel
+        tells the exit (kernel/exit.c, `do_exit`'s `exit_notify`) before the task's last
+        switch from its CPU (`do_task_dead`), which charges its clock with what ran
+        between. A later read of the same zombie can be more, never less (PM M584: 14 in
+        5,000 `true` children on adacachy2 grew 3 to 8 µs after waitid saw them; the
+        test's two reads differed 46 µs once). The watcher reads it once, and
+        `progress::tests::an_exited_process_is_read_until_it_is_reaped` holds a later read
+        no less than an earlier, never equal.
     - macOS: proc_pid_rusage (RUSAGE_INFO_V0): its threads' user and system times in Mach
       absolute-time units, converted by mach_timebase_info(3).
       - The same call gives its start (a pid given to another process shows) and its exit

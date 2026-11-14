@@ -24848,3 +24848,33 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
 - **Decision.** Clear inheritance where a duplicate is made (D215), and give `shards_api`
   callers `&dyn Stream` reads and writes and `into_socket`, so none needs a duplicate.
 
+
+### M584. A zombie's CPU clock grows after its exit is told (D215; shards-api's `an_exited_process_is_read_until_it_is_reaped`)
+
+- **Question.** `progress::tests::an_exited_process_is_read_until_it_is_reaped` failed 2 of
+  40 runs of shards-api's library tests on adacachy2 (64 test threads, ROOT's flaky3 lane).
+  It reads a child of `true` that waitid(2) (WEXITED | WNOWAIT) has seen exit, and held each
+  later read of its CPU (`ran_by_end`) equal to the first. Is a zombie's CPU fixed?
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at
+  b27eeffe5, 2026-11-14.
+  - The test alone, 3,000 times, 32 at once:
+    `seq 1 3000 | nice -n 10 xargs -P 32 -I{} sh -c "$bin --exact progress::tests::an_exited_process_is_read_until_it_is_reaped"`.
+  - A probe in C (docs/research/measurements/api-flakes/zombie-cpu.c): 5,000 times,
+    posix_spawn `true`, waitid it to its exit with WNOWAIT, read its process CPU clock
+    (clock_getcpuclockid(3)) three times, sleep 200 µs, and read it again.
+- **Results.**
+  - Before: 1 of 3,000 failed, `left: Some(287.679µs)`, `right: Some(241.222µs)`
+    (progress.rs:1889). Its old equality put back over the fixed test (the mutation): 1 of
+    3,000, `261.58µs read after 259.386µs`.
+  - The probe, on an idle host: 14 of 5,000 zombies' clocks grew after waitid saw them, by
+    3 to 8 µs. The three reads at once were equal each time; the one after the sleep
+    was more.
+  - Why: Linux tells an exit (kernel/exit.c, `do_exit`'s `exit_notify`, which wakes the
+    parent's waitid and makes the state `Z`) before the task's last switch from its CPU
+    (`do_task_dead`), and the switch charges its clock with what ran in between. A parent
+    woken on the child's CPU preempts it there, and the child finishes its exit later.
+  - After, the test holding each later read no less than the one before: 0 of 3,000, the
+    same load. 0 failures of it in 250 runs of the whole library at 64 threads.
+- **Decision.** No production change: the watcher reads a zombie's CPU once, as what it
+  had run by its exit's notice. `ran_by_end`'s doc and D215 say so, and the test holds the
+  clock monotonic rather than fixed.
