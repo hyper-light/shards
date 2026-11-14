@@ -23765,6 +23765,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
   aborted-lane resource counts remain ROOT's.
 
+- **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
+  pipe at its first credit refused by the run's end, records already taken left queued, and
+  at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
+  (the owner read the first of two records, and nothing of one said after the end), green at
+  cf2764c6e, each guard's mutation red, on adas-mac-studio-3.local macOS 26.2 arm64; D240
+  says the pump's ends; [commands and R01–R16 account](measurements/control-01-v1/README.md).
+  Real-VM managed_output and api_image lanes remain ROOT's.
+
 ### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
 
 - **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
