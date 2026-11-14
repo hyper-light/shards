@@ -102,6 +102,9 @@ pub enum Lost {
     Closed,
     /// The guest sent on it what it never sends.
     Protocol,
+    /// The guest sent within its run's managed control scope what that scope never takes:
+    /// what came, named (`capture::Refusal`).
+    Refused(capture::Refusal),
     /// The host could not take it as a restored guest dialed it again (D176).
     Untaken,
     /// A send on it, a read of it, or a copy of it to read failed: the error's kind, and
@@ -123,6 +126,7 @@ impl std::fmt::Display for Lost {
         match *self {
             Self::Closed => f.write_str("the guest closed it before its end"),
             Self::Protocol => f.write_str("the guest sent on it what it never sends"),
+            Self::Refused(refusal) => write!(f, "its managed control refused {refusal}"),
             Self::Untaken => f.write_str("its restored guest's dial could not be taken"),
             Self::Failed { os: Some(code), .. } => write!(f, "{}", io::Error::from_raw_os_error(code)),
             Self::Failed { kind, os: None } => write!(f, "{}", io::Error::from(kind)),
@@ -2497,10 +2501,8 @@ fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture
         match control.supervise(&watched, &boundary) {
             Ok(capture::Served::ControlEnded) => {}
             Ok(capture::Served::RelayEnded) => return ended(to),
-            Err(e) => {
-                shards_vmm::debug!("managed control boundary ended: {e}");
-                return lose(to, Lost::of(&e));
-            }
+            Err(capture::Unserved::Refused(refusal)) => return lose(to, Lost::Refused(refusal)),
+            Err(capture::Unserved::Failed(e)) => return lose(to, Lost::of(&e)),
         }
     }
     watch(to, &watched);

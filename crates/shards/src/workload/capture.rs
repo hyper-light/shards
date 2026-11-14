@@ -130,10 +130,63 @@ pub enum Served {
     /// broke its relay, then its words and its end on the run's connection (init run.rs).
     RelayEnded,
 }
+/// What a run's managed control scope refused of its guest, which init never says there
+/// (init capture.rs `ControlQueue`): the frame named, so that the scope's loss says what came.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A frame of a kind, or of a length, that the scope never takes: its header's words.
+    Frame { kind: u8, len: u32 },
+    /// Eight bytes that are no frame's header (shards-abi `parse_header`).
+    Header([u8; run::HEADER]),
+    /// An abort's or an input end's payload, which does not decode as one.
+    Payload { kind: u8, why: managed::Error },
+    /// An abort of a member the run did not admit.
+    Tenant(u32),
+    /// An input's end of a member whose input is not open: none asked, or its end said.
+    Input(u32),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Frame { kind, len } => write!(f, "a frame of kind {kind}, {len} bytes long"),
+            Self::Header(header) => write!(f, "a header that is no frame's, {header:02x?}"),
+            Self::Payload { kind, why } => {
+                write!(f, "a frame of kind {kind} whose payload is refused: {why}")
+            }
+            Self::Tenant(member) => write!(f, "an abort of member {member}, which the run did not admit"),
+            Self::Input(member) => write!(f, "an input's end of member {member}, whose input is not open"),
+        }
+    }
+}
+
+/// How a run's managed control scope failed: its connection or its owner's link failed, or
+/// its guest said what it never says there.
+#[derive(Debug)]
+pub enum Unserved {
+    Failed(io::Error),
+    Refused(Refusal),
+}
+
+impl From<io::Error> for Unserved {
+    fn from(e: io::Error) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl std::fmt::Display for Unserved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(e) => write!(f, "{e}"),
+            Self::Refused(refusal) => write!(f, "its guest sent {refusal}"),
+        }
+    }
+}
+
 impl Control {
     /// [`Control::serve`]; the guest's run connection, `boundary`, ended where its control is
     /// refused or ends unannounced.
-    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> io::Result<Served> {
+    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> Result<Served, Unserved> {
         let result = self.serve(signals);
         if let Err(e) = &result {
             *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -142,7 +195,7 @@ impl Control {
         }
         result
     }
-    pub fn serve(mut self, signals: &UnixStream) -> io::Result<Served> {
+    pub fn serve(mut self, signals: &UnixStream) -> Result<Served, Unserved> {
         let mut read = shards_ipc::Polled(signals);
         loop {
             let mut header = [0; run::HEADER];
@@ -154,26 +207,37 @@ impl Control {
                 Some((kind::MANAGED_INPUT_ENDED, n)) if n == managed::INPUT_ENDED_LEN as u32 => {
                     let mut payload = [0; managed::INPUT_ENDED_LEN];
                     read.read_exact(&mut payload)?;
-                    let ended = managed::InputEnded::decode(&payload).map_err(invalid)?;
-                    let state = self
-                        .inputs
-                        .get_mut(usize::try_from(ended.member).map_err(invalid)?)
+                    let ended = managed::InputEnded::decode(&payload).map_err(|why| {
+                        Unserved::Refused(Refusal::Payload {
+                            kind: kind::MANAGED_INPUT_ENDED,
+                            why,
+                        })
+                    })?;
+                    let state = usize::try_from(ended.member)
+                        .ok()
+                        .and_then(|member| self.inputs.get_mut(member))
                         .filter(|s| **s == InputState::Open)
-                        .ok_or_else(|| invalid("managed input end of a member with no open input"))?;
+                        .ok_or(Unserved::Refused(Refusal::Input(ended.member)))?;
                     crate::warm::managed_input_ended(&self.daemon, &payload)?;
                     *state = InputState::Ended;
                     continue;
                 }
-                _ => return Err(invalid("managed abort frame")),
+                Some((kind, len)) => return Err(Unserved::Refused(Refusal::Frame { kind, len })),
+                None => return Err(Unserved::Refused(Refusal::Header(header))),
             }
             let mut payload = [0; managed::ABORT_LEN];
             read.read_exact(&mut payload)?;
             let payload = payload.as_slice();
-            let abort = managed::Abort::decode(payload).map_err(invalid)?;
-            let state = self
-                .members
-                .get_mut(usize::try_from(abort.member).map_err(invalid)?)
-                .ok_or_else(|| invalid("managed abort tenant"))?;
+            let abort = managed::Abort::decode(payload).map_err(|why| {
+                Unserved::Refused(Refusal::Payload {
+                    kind: kind::MANAGED_ABORT,
+                    why,
+                })
+            })?;
+            let state = usize::try_from(abort.member)
+                .ok()
+                .and_then(|member| self.members.get_mut(member))
+                .ok_or(Unserved::Refused(Refusal::Tenant(abort.member)))?;
             if matches!(*state, AbortState::Aborted) {
                 continue;
             }
@@ -727,7 +791,10 @@ mod tests {
                 (&retained_boundary).write_all(b"x").unwrap();
                 assert_eq!(record(&mut layer), (kind::LAYER, b"x".to_vec()));
             } else {
-                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+                assert!(
+                    matches!(&result, Err(Unserved::Failed(e)) if e.kind() == io::ErrorKind::UnexpectedEof),
+                    "{result:?}"
+                );
                 assert_eq!(
                     ended_run().as_deref(),
                     Some("its managed control ended: failed to fill whole buffer")
@@ -906,7 +973,71 @@ mod tests {
             // Closed after: a relay that took them all reads its end, never hangs.
             drop(peer);
             let refused = worker.join().unwrap().unwrap_err();
-            assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                matches!(refused, Unserved::Refused(Refusal::Input(1))),
+                "{refused:?}"
+            );
+        }
+    }
+
+    /// What the guest says within its run's managed control scope that the scope never takes
+    /// is named where the scope's loss is said, in the VM process's log and in the run's end.
+    /// At c120c8a95 every refusal said "invalid data" alone (ROOT's KVM runs of api_image on
+    /// adacachy2, 2026-11-13: `the guest's signal connection is lost: invalid data: its
+    /// workload takes no more signals, ...`), and what had come could not be told.
+    #[test]
+    fn what_the_control_scope_refuses_is_named_in_the_loss_it_says() {
+        use super::super::{Lost, Signals, ToGuest, Unsent, signal_guest, take_signals, will_run};
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let abort = managed::Abort { member: 4, errno: 5 }.encode().unwrap();
+        let cases = [
+            (
+                run::header(kind::STDOUT, 3).to_vec(),
+                Refusal::Frame {
+                    kind: kind::STDOUT,
+                    len: 3,
+                },
+            ),
+            (vec![0xff; run::HEADER], Refusal::Header([0xff; run::HEADER])),
+            (
+                [
+                    &run::header(kind::MANAGED_ABORT, managed::ABORT_LEN as u32)[..],
+                    &abort,
+                ]
+                .concat(),
+                Refusal::Tenant(4),
+            ),
+        ];
+        for (said, refused) in cases {
+            ended_run();
+            let to: &'static ToGuest = Box::leak(Box::new(ToGuest::new(Signals::new())));
+            will_run(to);
+            let (host, mut guest) = UnixStream::pair().unwrap();
+            let (boundary, mut guests_run) = UnixStream::pair().unwrap();
+            let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
+            let control = Control {
+                daemon,
+                members: vec![AbortState::Active],
+                inputs: vec![InputState::None],
+            };
+            guest.write_all(&said).unwrap();
+            take_signals(to, host, Some((control, boundary)));
+            let lost = signal_guest(to, 15).unwrap_err();
+            assert_eq!(lost, Unsent::Lost(Lost::Refused(refused)));
+            assert_eq!(
+                lost.to_string(),
+                format!("the guest's signal connection is lost: its managed control refused {refused}")
+            );
+            assert_eq!(
+                ended_run(),
+                Some(format!("its managed control ended: its guest sent {refused}"))
+            );
+            assert!(
+                matches!(guests_run.read(&mut [0]), Ok(0)),
+                "the run's connection ended"
+            );
         }
     }
 }

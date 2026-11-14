@@ -2306,26 +2306,51 @@ fn loses_signals_on() -> Option<u32> {
 /// connection's loss (D16). A connect still under way, as a run can end before its first
 /// poll finishes it, is waited for: the kernel ends one within its connect timeout (Linux 6.18
 /// net/vmw_vsock/af_vsock.c l. 136, 1509, 1652), and sends nothing on it before (l. 2075).
-/// Its frame takes room nothing else takes by now, the managed control's having ended.
-fn say_signals_end(signals: &File, connected: bool) {
+/// The run's managed control, where a failure broke the relay before it all went, goes first
+/// and whole (`ControlQueue::finish`): the end written within a frame part of which went
+/// would be read as that frame's rest, and the host would refuse what followed. Both are
+/// written whole, the connection waited on as it fills: a vsock stream takes what its peer's
+/// credit has room for (Linux 6.18 net/vmw_vsock/virtio_transport_common.c,
+/// `virtio_transport_get_credit`), and an end of which none or part went is no end.
+fn say_signals_end(signals: &File, connected: bool, control: Option<&mut crate::capture::ControlQueue>) {
     let fd = signals.as_raw_fd();
-    if !connected {
-        let mut p = libc::pollfd {
-            fd,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        // SAFETY: poll(2) of one pollfd of a descriptor the relay holds open.
-        while unsafe { libc::poll(&mut p, 1, -1) } < 0 {
-            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return;
-            }
-        }
-        if connect_result(fd).is_err() {
-            return;
+    if !connected && (writable(fd).is_err() || connect_result(fd).is_err()) {
+        return;
+    }
+    if let Some(control) = control
+        && control.finish(fd).is_err()
+    {
+        return;
+    }
+    let _ = write_whole(fd, &run::header(kind::SIGNALS_END, 0));
+}
+
+/// Waits until non-blocking `fd` has room to write, or has ended or failed.
+fn writable(fd: RawFd) -> io::Result<()> {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: poll(2) of one pollfd of a descriptor the caller holds open.
+    while unsafe { libc::poll(&mut p, 1, -1) } < 0 {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
         }
     }
-    let _ = write(fd, &run::header(kind::SIGNALS_END, 0));
+    Ok(())
+}
+
+/// Writes `bytes` whole on non-blocking `fd`, waiting for room as it fills ([`writable`]).
+pub(crate) fn write_whole(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match write(fd, bytes)? {
+            0 => writable(fd)?,
+            n => bytes = bytes.get(n..).unwrap_or_default(),
+        }
+    }
+    Ok(())
 }
 
 /// Writes one frame, blocking.
@@ -5983,7 +6008,7 @@ impl Workload {
             set_nonblocking(fd, false);
         }
         if let Some(signals) = &signals {
-            say_signals_end(signals, signals_connected);
+            say_signals_end(signals, signals_connected, self.capture_control.as_mut());
         }
         let result = match fatal {
             Some(failure) => {
@@ -7128,7 +7153,7 @@ mod signals_end_tests {
     fn the_relays_end_is_said_last_on_its_signal_connection() {
         for connected in [true, false] {
             let (signals, mut host) = ours();
-            say_signals_end(&signals, connected);
+            say_signals_end(&signals, connected, None);
             drop(signals);
             let mut said = Vec::new();
             host.read_to_end(&mut said).unwrap();
@@ -7137,7 +7162,41 @@ mod signals_end_tests {
         // A host gone first hears nothing, and the relay waits for nothing.
         let (signals, host) = ours();
         drop(host);
-        say_signals_end(&signals, false);
+        say_signals_end(&signals, false, None);
+    }
+
+    /// A relay broken by a failure while part of its managed control's frame had gone writes
+    /// the rest of that control whole before its end: the host reads whole frames, then the
+    /// end. Written at once after the part, the end was read as the frame's rest, and its
+    /// host's managed control refused what followed (PM M564).
+    #[test]
+    fn the_relays_end_follows_its_control_whole_where_part_of_a_frame_went() {
+        let (signals, mut host) = ours();
+        let mut control = crate::capture::ControlQueue::prepare(2, 0).unwrap();
+        let aborts = [3, 4].map(|member| run::managed::Abort {
+            member,
+            errno: libc::EIO,
+        });
+        for abort in aborts {
+            control.push(abort).unwrap();
+        }
+        let frame = |abort: run::managed::Abort| {
+            [
+                &run::header(kind::MANAGED_ABORT, run::managed::ABORT_LEN as u32)[..],
+                &abort.encode().unwrap(),
+            ]
+            .concat()
+        };
+        let whole = [frame(aborts[0]), frame(aborts[1])].concat();
+        // Three bytes of the first frame went before the failure.
+        (&signals).write_all(&whole[..3]).unwrap();
+        control.sent(3);
+        say_signals_end(&signals, true, Some(&mut control));
+        drop(signals);
+        let mut said = Vec::new();
+        host.read_to_end(&mut said).unwrap();
+        assert_eq!(said, [&whole[..], &run::header(kind::SIGNALS_END, 0)].concat());
+        assert!(!control.pending());
     }
 
     /// An init built without the tests' knob (`SHARDS_TEST_LOSE_SIGNALS_ON`), as every one
