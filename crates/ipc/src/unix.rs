@@ -1343,14 +1343,6 @@ fn take_fds(msg: &libc::msghdr, fds: &mut Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// The socket of a daemon of a build from before request slots (D185): `daemon.sock` in
-/// shards' home, named relative to the working directory, which each process that uses it
-/// makes the home first. A client reaches such a daemon there only to have it step aside
-/// for its own build's, and a daemon starting removes one left. A relative name fits a
-/// socket address (`sun_path`: 104 bytes on macOS, 108 on Linux, NUL included) whatever
-/// the home's path (PM M26).
-pub const SOCKET: &str = "daemon.sock";
-
 /// Whether process `pid` lives: kill(2) with signal 0 asks, one of another user's among
 /// those that do (EPERM), and one that has exited does not, whether or not its parent has
 /// reaped it (waits-08): a zombie answers kill(2) and keeps its start, so a client that
@@ -1593,15 +1585,24 @@ impl Child {
     }
 
     /// Waits for the child to end: its exit status, or 128 plus the signal that ended it.
+    /// Its end is waited for first, holding nothing; then it is reaped under the lock that
+    /// [`kill`](Self::kill) takes, which waits on nothing: a child of this process's own is
+    /// reaped without waiting (WNOHANG), and one its end was wrongly said of is waited for
+    /// again, the lock let go of. So a signal is never held behind a reap that waits
+    /// (PM M583).
     pub fn wait(&self) -> io::Result<i32> {
-        self.ended()?;
-        let mut reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
-        let status = match self.by {
-            Some(by) => crate::spawner::reap(by, self.pid)?,
-            None => reap(self.pid)?,
-        };
-        *reaped = true;
-        Ok(status)
+        loop {
+            self.ended()?;
+            let mut reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+            let status = match self.by {
+                Some(by) => Some(crate::spawner::reap(by, self.pid)?),
+                None => reap_now(self.pid)?,
+            };
+            if let Some(status) = status {
+                *reaped = true;
+                return Ok(status);
+            }
+        }
     }
 
     /// Whether the child has ended, without waiting: its status as [`Child::wait`] gives
@@ -1674,6 +1675,198 @@ impl Child {
         };
         matches!(ended, Ok(Some(_)))
     }
+
+    /// Ends the process group a detached child leads, as [`kill_group`](Self::kill_group)
+    /// does, and returns once every process of it has exited, as Windows' twin returns
+    /// (D231): followed by the kernel's word of each one's exit, its pidfd on Linux (readable
+    /// from `exit_notify`, after `exit_task_work` has run each of its files' last release),
+    /// its kqueue's `NOTE_EXIT` on macOS (posted by `proc_exit` after `fdt_invalidate`; a
+    /// pipe it held was seen ending up to microseconds after it, PM M583). Never a pipe's
+    /// end, which any process holding a write end of it, one a spawn elsewhere let inherit
+    /// it, holds back. Each round signals the group, lists the processes in it that have not
+    /// exited and waits on each one's exit, until a round lists none: a process made as a
+    /// round signalled is signalled by the next. Never timed (D215): every wait is on a
+    /// process SIGKILL has begun to end. Called before the child is reaped, its pid, the
+    /// group's ID, no other process's or group's while it holds the lock that reaping takes;
+    /// a reaped child's group is gone or another's, and is left be.
+    pub fn end_group(&self) -> io::Result<()> {
+        let reaped = self.reaped.lock().unwrap_or_else(PoisonError::into_inner);
+        if *reaped {
+            return Ok(());
+        }
+        if let Some(by) = self.by
+            && !crate::spawner::serving(by)
+        {
+            return Err(io::Error::other("the spawner that made it has gone"));
+        }
+        loop {
+            // SAFETY: kill(2) of the group our unreaped child leads, as `kill_group`'s.
+            let signalled = if unsafe { libc::kill(-self.pid, libc::SIGKILL) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            };
+            // A group of exited processes alone has none to signal: Linux says ESRCH, XNU
+            // EPERM. One that lists a running process it could not signal is refused.
+            let members = group_members(self.pid)?;
+            if members.is_empty() {
+                return Ok(());
+            }
+            signalled?;
+            for pid in members {
+                // Its end watched first, then seen still the group's and running: a pid freed
+                // and taken by another process meanwhile is not waited on, and one that ends
+                // after the look is the one watched.
+                let Some(end) = exit_watch(pid)? else {
+                    continue;
+                };
+                if member(pid, self.pid) {
+                    await_any(&[end.as_fd()])?;
+                }
+            }
+        }
+    }
+}
+
+/// A descriptor readable once process `pid` has ended: a kqueue of its `EVFILT_PROC`
+/// `NOTE_EXIT` on macOS (kqueue(2); a kqueue's descriptor is selectable), its pidfd on
+/// Linux (pidfd_open(2), readable once it has exited, Linux 5.3). `None` where no process
+/// has that pid. Neither is inherited by a child.
+pub(crate) fn exit_watch(pid: libc::pid_t) -> io::Result<Option<OwnedFd>> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: kqueue(2) takes no arguments.
+        let raw = unsafe { libc::kqueue() };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let queue = unsafe { OwnedFd::from_raw_fd(raw) };
+        let change = libc::kevent {
+            ident: pid.unsigned_abs() as libc::uintptr_t,
+            filter: libc::EVFILT_PROC,
+            flags: libc::EV_ADD,
+            fflags: libc::NOTE_EXIT,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: kevent(2) reading one change, writing no event.
+        if unsafe {
+            libc::kevent(
+                queue.as_raw_fd(),
+                &change,
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        } < 0
+        {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+        Ok(Some(queue))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is close-on-exec.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if raw < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(None);
+            }
+            return Err(e);
+        }
+        let raw = RawFd::try_from(raw).map_err(|_| io::Error::other("a descriptor out of range"))?;
+        // SAFETY: a descriptor just made, owned by nothing else.
+        Ok(Some(unsafe { OwnedFd::from_raw_fd(raw) }))
+    }
+}
+
+/// The processes of group `pgid` that have not exited: on Linux each of `/proc`'s whose
+/// `stat` says so ([`member`]); one that cannot be read (gone meanwhile) is not one.
+#[cfg(target_os = "linux")]
+fn group_members(pgid: libc::pid_t) -> io::Result<Vec<libc::pid_t>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc")? {
+        let Some(pid) = entry
+            .ok()
+            .and_then(|e| e.file_name().to_str().and_then(|n| n.parse::<libc::pid_t>().ok()))
+        else {
+            continue;
+        };
+        if member(pid, pgid) {
+            found.push(pid);
+        }
+    }
+    Ok(found)
+}
+
+/// The processes of group `pgid` that have not exited: on macOS those proc_listpids(3)
+/// lists by group (`PROC_PGRP_ONLY`, sys/proc_info.h), asked again with twice the room
+/// while its answer fills all it was given, each then seen a member ([`member`]).
+#[cfg(not(target_os = "linux"))]
+fn group_members(pgid: libc::pid_t) -> io::Result<Vec<libc::pid_t>> {
+    /// sys/proc_info.h's `PROC_PGRP_ONLY`.
+    const PROC_PGRP_ONLY: u32 = 2;
+    let group = u32::try_from(pgid).map_err(io::Error::other)?;
+    let mut room = 64usize;
+    loop {
+        let mut pids: Vec<libc::pid_t> = vec![0; room];
+        let bytes = room
+            .checked_mul(size_of::<libc::pid_t>())
+            .and_then(|b| libc::c_int::try_from(b).ok())
+            .ok_or_else(|| io::Error::other("a process group past what a listing holds"))?;
+        // SAFETY: proc_listpids(3) into `pids`, `bytes` long, of the pids of group `group`.
+        let n = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, group, pids.as_mut_ptr().cast(), bytes) };
+        let filled = usize::try_from(n).map_err(|_| io::Error::last_os_error())? / size_of::<libc::pid_t>();
+        if filled < room {
+            pids.truncate(filled);
+            pids.retain(|&pid| pid > 0 && member(pid, pgid));
+            return Ok(pids);
+        }
+        room = room
+            .checked_mul(2)
+            .ok_or_else(|| io::Error::other("a process group past what a listing holds"))?;
+    }
+}
+
+/// Whether process `pid` is in group `pgid` and has not exited: on Linux its
+/// `/proc/<pid>/stat`, after the last ')', its state (field 3) neither `Z` nor `X` and its
+/// group (field 5) `pgid` (proc(5)).
+#[cfg(target_os = "linux")]
+fn member(pid: libc::pid_t, pgid: libc::pid_t) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        let mut fields = stat
+            .rfind(')')
+            .and_then(|i| stat.get(i.saturating_add(1)..))
+            .unwrap_or_default()
+            .split_ascii_whitespace();
+        let state = fields.next();
+        let group = fields.nth(1).and_then(|g| g.parse::<libc::pid_t>().ok());
+        !matches!(state, None | Some("Z" | "X")) && group == Some(pgid)
+    })
+}
+
+/// Whether process `pid` is in group `pgid` and has not exited: on macOS its
+/// `proc_bsdinfo` (proc_pidinfo(3), `PROC_PIDTBSDINFO`) names that group and no zombie. Not
+/// its rusage's exit ([`exited`]): XNU sets that as `proc_exit` begins, before it closes the
+/// process's descriptors (`fdt_invalidate`) and posts `NOTE_EXIT`, which is what is waited on.
+#[cfg(not(target_os = "linux"))]
+fn member(pid: libc::pid_t, pgid: libc::pid_t) -> bool {
+    // SAFETY: a proc_bsdinfo, plain data, for proc_pidinfo to fill.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let Ok(size) = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()) else {
+        return false;
+    };
+    // SAFETY: proc_pidinfo(3) of `pid` into a proc_bsdinfo of ours, `size` long, as
+    // PROC_PIDTBSDINFO names.
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    n == size && u32::try_from(pgid).is_ok_and(|g| info.pbi_pgid == g) && info.pbi_status != libc::SZOMB
 }
 
 /// Whether this process's child `pid` has ended, waiting for it to if `wait`: its status
@@ -1689,6 +1882,20 @@ pub(crate) fn status_of(pid: libc::pid_t, wait: bool) -> io::Result<Option<i32>>
             let (ended, status) = unsafe { (info.si_pid(), info.si_status()) };
             if ended == 0 {
                 return Ok(None);
+            }
+            // XNU's waitid(2) says a stopped child under WEXITED alone (PM M442, M583): no end.
+            // Its end is then waited for by the kernel's own word of it, and asked again.
+            if !matches!(
+                info.si_code,
+                libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED
+            ) {
+                if !wait {
+                    return Ok(None);
+                }
+                if let Some(end) = exit_watch(pid)? {
+                    await_any(&[end.as_fd()])?;
+                }
+                continue;
             }
             return Ok(Some(if info.si_code == libc::CLD_EXITED {
                 status
@@ -2672,6 +2879,75 @@ pub(crate) mod tests {
         let child = spawn(Path::new("/bin/sleep"), &["30".as_ref()], &[], false).unwrap();
         child.kill(libc::SIGTERM).unwrap();
         assert_eq!(child.wait().unwrap(), 128 + libc::SIGTERM);
+    }
+
+    /// Waits until the kernel says child `child` has stopped, leaving it to be waited for.
+    fn stopped(child: &Child) {
+        loop {
+            // SAFETY: an all-zero siginfo_t, for waitid(2) to fill for our child.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waitid(2) of our child's stop, which it leaves to be waited for again.
+            let r =
+                unsafe { libc::waitid(libc::P_PID, child.id(), &mut info, libc::WSTOPPED | libc::WNOWAIT) };
+            if r == 0 && info.si_code == libc::CLD_STOPPED {
+                return;
+            }
+            assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::Interrupted);
+        }
+    }
+
+    /// Do wait for a child's end on another thread, stop the child (SIGSTOP) and see it
+    /// stopped, then ask whether it has ended and kill its group. Expect: a stopped child
+    /// has not ended, the kill is sent though a reaper waits, and the wait returns once the
+    /// child has ended, its status SIGKILL's. Red on macOS where `ended`'s waitid(2), asked
+    /// for exits alone, woke at the stop and took it for an end (PM M442, M583), and `wait`
+    /// then reaped in a wait4(2) that waited, holding the lock `kill_group` takes: the kill
+    /// was never sent, and the test hangs.
+    #[test]
+    fn a_stopped_child_waited_for_is_killed_at_once_and_reaped_at_its_end() {
+        let child = spawn(Path::new("/bin/sleep"), &["600".as_ref()], &[], true).unwrap();
+        std::thread::scope(|s| {
+            let waiting = s.spawn(|| child.wait());
+            child.kill(libc::SIGSTOP).unwrap();
+            stopped(&child);
+            let (ended, waited) = (child.has_ended(), child.try_wait());
+            child.kill_group(libc::SIGKILL).unwrap();
+            assert_eq!(waiting.join().unwrap().unwrap(), 128 + libc::SIGKILL);
+            assert!(!ended, "a stopped child was said to have ended");
+            assert_eq!(waited, None);
+        });
+    }
+
+    /// Do start a child of a group of its own that starts another and tells its pid, stop
+    /// the child, then end its group (`end_group`) before it is reaped. Expect: `end_group`
+    /// returns once both have exited, and the child's status is SIGKILL's.
+    #[test]
+    fn a_groups_end_follows_every_process_of_it_to_its_end() {
+        let (read, write) = io::pipe().unwrap();
+        let child = spawn(
+            Path::new("/bin/sh"),
+            &[
+                "-c".as_ref(),
+                "sleep 600 3>&- & echo $! >&3; exec 3>&-; wait".as_ref(),
+            ],
+            &[(write.as_fd(), 3)],
+            true,
+        )
+        .unwrap();
+        drop(write);
+        let mut said = String::new();
+        (&read).read_to_string(&mut said).unwrap();
+        let other: u32 = said.trim().parse().unwrap();
+        child.kill(libc::SIGSTOP).unwrap();
+        stopped(&child);
+        assert!(alive(other));
+        child.end_group().unwrap();
+        assert!(
+            !alive(other),
+            "end_group returned while a process of its group ran"
+        );
+        assert!(child.has_ended());
+        assert_eq!(child.wait().unwrap(), 128 + libc::SIGKILL);
     }
 
     #[test]

@@ -1109,10 +1109,11 @@ mod tests {
     #[test]
     fn a_helper_that_does_not_read_its_input_is_heard() {
         let bin = temp("deaf-helper");
-        program(
+        shards_testdir::program(
             &bin.join("docker-credential-deaf"),
             "#!/bin/sh\nexec 0<&-\necho '{\"ServerURL\":\"x\",\"Username\":\"u\",\"Secret\":\"s\"}'\n",
-        );
+        )
+        .unwrap();
         let dirs = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", dirs.as_str())];
         let long = "k".repeat(1 << 20);
@@ -1138,25 +1139,7 @@ broken.example) echo 'the keychain is locked'; exit 1 ;;
 *) echo 'credentials not found in native keychain'; exit 1 ;;
 esac
 "#;
-        program(&dir.join(format!("docker-credential-{name}")), script);
-    }
-
-    /// The program `text` at `path`, written by a process of its own: a file this one held
-    /// open to write, a child another test's thread forked meanwhile holds until it execs,
-    /// and an exec of the file fails with ETXTBSY until then (Linux; CI's run 38905368380,
-    /// "Text file busy").
-    #[cfg(unix)]
-    fn program(path: &Path, text: &str) {
-        use std::io::Write as _;
-        let mut writer = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"cat > "$0" && chmod 755 "$0""#)
-            .arg(path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
-        assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+        shards_testdir::program(&dir.join(format!("docker-credential-{name}")), script).unwrap();
     }
 
     /// What a context's client sends of its own reads back as it was: a password, an
@@ -1227,7 +1210,7 @@ esac
         helper(&bin, name);
         if !cfg!(target_os = "macos") {
             // `pass` itself must be installed for Docker to choose its helper.
-            program(&bin.join("pass"), "#!/bin/sh\nexit 0\n");
+            shards_testdir::program(&bin.join("pass"), "#!/bin/sh\nexit 0\n").unwrap();
         }
         let path = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", path.as_str())];
@@ -1385,13 +1368,14 @@ esac
     fn logins_go_to_the_credential_helper() {
         let dir = temp("store-helper");
         let log = dir.join("helper.log");
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-shardstest"),
             &format!(
                 "#!/bin/sh\nIFS= read -r line || true\nprintf '%s %s\\n' \"$1\" \"$line\" >> '{}'\n",
                 log.display()
             ),
-        );
+        )
+        .unwrap();
         std::fs::write(dir.join("config.json"), r#"{"credsStore":"shardstest"}"#).unwrap();
         let mut vars: HashMap<String, String> = HashMap::new();
         vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());
@@ -1482,20 +1466,22 @@ esac
     /// whose own child holds its output open as it waits.
     #[cfg(unix)]
     fn stuck(dir: &Path, pids: &Path) {
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-stuck"),
             &format!(
                 "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
                 pids.display()
             ),
-        );
-        program(
+        )
+        .unwrap();
+        shards_testdir::program(
             &dir.join("docker-credential-parent"),
             &format!(
                 "#!/bin/sh\necho $$ >> '{0}'\n/bin/sleep 3613 &\necho $! >> '{0}'\nwait\n",
                 pids.display()
             ),
-        );
+        )
+        .unwrap();
     }
 
     /// A helper is started as it is found and never waited for unless its answer is read:
@@ -1554,10 +1540,11 @@ esac
     fn a_registry_token_asks_no_helper_and_a_missing_one_fails_only_its_answer() {
         let dir = temp("token-helper");
         let marks = dir.join("marks");
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-marking"),
             &format!("#!/bin/sh\necho asked >> '{}'\n", marks.display()),
-        );
+        )
+        .unwrap();
         std::fs::write(
             dir.join("config.json"),
             r#"{"credsStore":"marking","auths":{"t.example":{"registrytoken":"rt"}}}"#,

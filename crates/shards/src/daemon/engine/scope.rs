@@ -124,9 +124,7 @@ pub(super) fn engine_network<'n>(
 
 /// The images microVM `provider`'s own engine reaches: its own, and those it pulled.
 fn images_of(provider: &Container) -> Vec<String> {
-    provider
-        .image_id
-        .iter()
+    std::iter::once(&provider.image_id)
         .chain(&provider.engine_images)
         .cloned()
         .collect()
@@ -801,7 +799,7 @@ mod tests {
             stop_signal: None,
             stop_timeout: None,
             ports: Vec::new(),
-            image_id: None,
+            image_id: String::new(),
             image_manifest: None,
             labels: Default::default(),
             annotations: Default::default(),

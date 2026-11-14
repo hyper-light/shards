@@ -4808,9 +4808,9 @@ mod tests {
             from: StartedFrom::Restored,
         };
         let bytes = started.encode().unwrap();
-        // The wake's address (a tag, four octets and a port), then the period (8) and how it
-        // started (1), last.
-        let wake = bytes.len() - 9 - (1 + 4 + 2);
+        // The wake's address (a tag, four octets and a port), then how it started (1), last:
+        // since v31 the hold's period rides each rate's answer (`Rated`), not `Started`.
+        let wake = bytes.len() - 1 - (1 + 4 + 2);
         let waker = wake - (1 + 4 + 2);
         assert_eq!(bytes[waker], 4);
         assert_eq!(bytes[waker + 1..waker + 5], [127, 0, 0, 1]);
