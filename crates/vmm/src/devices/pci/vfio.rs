@@ -2225,6 +2225,77 @@ impl MmioDevice for VfioBar {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unplug_releases_interrupt_routes_before_closing_eventfds() {
+        use super::super::hotplug::Plugged;
+        #[derive(Debug, Default)]
+        struct Routes(Mutex<Vec<RawFd>>);
+        impl Route for Routes {
+            fn intx(&self, _: RawFd, _: RawFd) -> Result<(), String> {
+                Ok(())
+            }
+            fn msi(&self, _: RawFd, _: u64, _: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn intx_off(&self, event: RawFd) -> Result<(), String> {
+                self.msi_off(event, 0, 0)
+            }
+            fn msi_off(&self, event: RawFd, _: u64, _: u32) -> Result<(), String> {
+                // These are real eventfds: removing their routes must precede close.
+                assert_ne!(unsafe { libc::fcntl(event, libc::F_GETFD) }, -1);
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            }
+        }
+        let dir = shards_testdir::TempDir::new("vfio-unplug").unwrap();
+        let file = File::create(dir.join("device")).unwrap();
+        let route = Arc::new(Routes::default());
+        let f = VfioFunction {
+            device: Device {
+                name: "fixture".into(),
+                told: file.as_raw_fd(),
+                file,
+                regions: Vec::new(),
+                _holds: Vec::new(),
+            },
+            kept: Header::new(
+                Identity {
+                    vendor: 0,
+                    device: 0,
+                    class: 0,
+                    revision: 0,
+                    subsystem_vendor: 0,
+                    subsystem: 0,
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+            caps: Vec::new(),
+            route: Some(route.clone()),
+            send: None,
+            grows: false,
+            irqs: Mutex::new(Irqs {
+                intx: Some((EventFd::new().unwrap(), EventFd::new().unwrap())),
+                msi: Some((EventFd::new().unwrap(), 0xfee0_0000, 32)),
+                vectors: Some(vec![Vector {
+                    event: Some(EventFd::new().unwrap()),
+                    routed: Some((0xfee0_0000, 33)),
+                }]),
+                ..Irqs::default()
+            }),
+            windows: Vec::new(),
+            slots: None,
+            mapped: Mutex::new(Vec::new()),
+            _mappings: Vec::new(),
+            overlays: Vec::new(),
+            decoding: std::sync::atomic::AtomicBool::new(false),
+        };
+        f.unplugged();
+        assert_eq!(route.0.lock().unwrap().len(), 3);
+        f.unplugged();
+        assert_eq!(route.0.lock().unwrap().len(), 3, "cleanup is idempotent");
+    }
+
     /// What the guest reads of a function where the VMM puts bits of its own: those bits,
     /// in whichever bytes of a read hold them; and an extended capability taken out of its
     /// list, the first or one past it, the rest of the list as it was.
