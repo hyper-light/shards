@@ -18165,6 +18165,16 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
+**Review memory-17 (2026-11-13):** the give-back connection's largest host
+request is ROOM: Giver::tell and tell_first use the canonical decimal `i64`
+encoding, or an empty payload for no budget. GIVE_BACK is empty too. Its exact
+bound is one minus sign plus `floor(log10(abs(i64::MIN))) + 1` decimal digits,
+computed with unsigned_abs and ilog10. No calibration/cold-start guess is needed;
+the fixed integer type bounds the arithmetic on every supported target. A longer
+header follows the existing connection-end path before allocation or payload
+read. Both signed extremes remain accepted. Red/green evidence and platform
+limits: `docs/research/measurements/memory-fixes-v1/README.md`.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.

@@ -24400,6 +24400,14 @@ removes the 64-kind comparison cutoff; the input's block count bounds the search
 The sparse-file/index regression checks actual retained identity and length.
 [Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
 
+### Review memory-17: the give-back request's exact encoded bound (D133)
+
+adacachy2, Linux 7.3.3-1-cachyos x86_64, native GNU target, rustc 1.98.1:
+red c61cc6b1d (resumed r20) accepted both signed i64 extremes but waited for a
+payload whose ROOM header was longer than either producer can encode.
+5826a9bcf derives the limit from i64::MIN's minus sign and decimal digits.
+[Commands, red/green and unrun host/guest combinations](measurements/memory-fixes-v1/README.md).
+
 ### M572. A registry's trouble past the longest its path passed runs out, told once, and the pull follows liveness; buffered reads, named waits and late routes (D222, waits-05, -06, -07)
 
 - **Question.** M558 made a trouble past the longest its path had passed the request's
