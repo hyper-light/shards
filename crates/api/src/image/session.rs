@@ -2519,7 +2519,7 @@ mod tests {
         );
         assert!(lock(&shared.said_to).is_none(), "nothing named");
         let (said, mut host) = io::pipe().unwrap();
-        let written: Vec<u8> = (0..said_kept() * 3).map(|i| b'a' + (i % 251) as u8).collect();
+        let written: Vec<u8> = (0..said_kept() * 3).map(|i| (i % 251) as u8).collect();
         shared
             .keep_diagnostics(std::fs::File::create(&path).unwrap(), tail)
             .unwrap();
