@@ -216,6 +216,8 @@ pending. Work begins after the earlier assigned list.
 
 **Follow-up (2026-11-14, P0, found by ROOT on real VMs):** with the starter born, member_exec's `a_command_run_in_a_member_has_a_terminal_that_resizes` hung on KVM (adacachy2, 8fdd66512) and HVF (0ce6cdc66): the exec on a terminal started, but its host's resizes reached nothing. The starter's path (53b5654b5) said `STARTED` for a member exec without marking it a terminal's (`Exec::tty` stayed false; the path before it set it from `Started::tty`), and `EXEC_RESIZE` looked only for an exec with `tty` set, so no SIGWINCH came and the harness waited for its `resized` line for ever. Fixed in e5dc26322: one lookup, `Exec::terminal`, gives the master the ask holds while asked and born, and the stdout once running, which `member_launched` marks. The starter's own terminal path is sound: the new `domains::tests::a_command_run_in_a_member_on_a_terminal_has_it_as_its_sessions` (member PID 1 of its PID namespace, real pty, `stty size`, `/dev/tty`, the master read to EIO) is green on the starter as it was, and red with `TIOCSCTTY` removed (`/dev/tty: No such device or address`). Red `run::exec_link_tests::a_command_run_in_a_member_on_a_terminal_is_sized_by_its_host` with main's lookup (`born, before it execs`: `None`) and with the running exec unmarked (`running`: `None`), green after; Linux x86_64 adacachy2, 7.3.3, under `unshare --map-auto --map-root-user` (D243 *Its terminal*). Owed to ROOT, real VMs: `cargo test -p shards --profile test-release --test member_exec -- --test-threads=1` on KVM and HVF.
 
+**Follow-up (2026-11-14, harness, flaky3):** confine-10's tests could hang where they should fail. `as_root_of_own_mounts`' child forked each test's member (`a_confined_member`), which held the harness's result pipe's write end (fork(2) keeps O_CLOEXEC descriptors until an exec the member never makes) and paused for good; a test that panicked once its member was made, its kill skipped, left the harness's read of that pipe waiting on the member, and the test hung. Fixed in 5ae26fd2c: the member closes the result pipe's write end as it is forked, before any process of its own (its starter) is, and is a `Member` killed and waited for as it drops, its test ending or unwinding. Red `domains::tests::a_test_that_fails_once_its_member_is_made_fails_at_once` on the old harness: hung, killed at 120 s; green after, at once; domains 19/19, starter 2/2, init clippy clean (adacachy2, Linux 7.3.3 x86_64, under `unshare --map-auto --map-root-user`). Mutants: neither guard, hung again; the close alone removed, green (the kill frees the pipe); the kill alone removed, green with the paused member left behind.
+
 ### confine-11 — P3 / medium — a member's starter as the member sees it: `top` and `pids.max`
 
 **Author:** ROOT, assigned 2026-11-14 (owed-findings brief, `/tmp/g121-shot/review/owed-brief.md`), from confine-10's
@@ -229,7 +231,7 @@ status above: its parity row, the starter in `shards top` and in `pids.max`.
 lists a container's own processes and not runc's exec helper; and the starter counts against the member's
 `pids.max`, which its declared processes alone should number.
 
-**Status (2026-11-14):** fixed in SLICE_TOP and SLICE_PIDS (Linux 7.3.3 x86_64, adacachy2, under `unshare --map-auto
+**Status (2026-11-14):** fixed in 363d8ea15 (`top`) and b8d4ce6ec (`pids.max`, the starter's refusal) (Linux 7.3.3 x86_64, adacachy2, under `unshare --map-auto
 --map-root-user`; the cgroup tests in a `systemd-run --user --scope -p Delegate=yes` scope with SHARDS_TEST_CGROUP).
 - *`top`*: the starter was not listed at 6f3cd4428 (`domains::tests::a_members_top_lists_its_own_processes_alone`,
   the starter alive, green before and after): `dump` left out every process whose `/proc/PID/exe` read the same path
@@ -253,9 +255,14 @@ lists a container's own processes and not runc's exec helper; and the starter co
   Linux 7.2-rc4 :2335, :2394, :2568); the starter sent that closed descriptor with its `NOT_BORN`, sendmsg failed
   EBADF, and the exec waited for ever where `Refusal::Processes` was due. Reproduced live with `with_starter`
   mutated to the declared count: the test's init end polled with nothing queued, the starter back in recvmsg, the
-  member's `pids.events` `max 1`. Fixed in SLICE_PIDS (a pidfd sent only with a command born); guard
+  member's `pids.events` `max 1`. Fixed in b8d4ce6ec (a pidfd sent only with a command born); guard
   `a_command_past_what_its_member_declared_is_refused` (`NotBorn { errno: EAGAIN }`).
-- RESULTS_LINE
+- Red/green: `a_member_runs_as_many_processes_as_it_declares_its_starter_apart` (declares 2: `/bin/true` exits 0),
+  `a_command_past_what_its_member_declared_is_refused` (declares 1: `NotBorn { errno: 11 }`) and
+  `a_member_whose_starter_went_is_held_to_what_it_declared`; one mutant, `with_starter` giving the declared count:
+  `not born: NotBorn { errno: 11 }`, `not asked: Gone` (a member of one process left no starter), `Some(5)`. Before
+  the pidfd fix the first under that mutant hung (above). Green on the branch: the `a_member`, `a_command`, `starter`
+  and `procs` tests 29/29 and the two cgroup tests 2/2; again on its merge with main 7c60a669c; init clippy clean.
 - member_exec's `confined pid=4 procs=4` stands: the starter is in the member's PID namespace, as it must be to bear
   commands there, and a command counting that namespace's processes counts it (D243 *Costs*).
 - Owed to ROOT, real VMs: `cargo test -p shards --profile test-release --test member_exec -- --test-threads=1` on KVM

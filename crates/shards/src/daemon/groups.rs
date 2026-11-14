@@ -45,7 +45,25 @@ pub(super) struct Budget {
     /// is stopped, as a cgroup's OOM killer kills within it.
     pub max: Option<u64>,
     /// `cpu.max`: µs of CPU time its microVMs may use together each period of µs.
-    pub cpu: Option<(u64, u64)>,
+    pub cpu: CpuMax,
+}
+
+/// A group's `cpu.max` as the kernel reads it: `quota` µs of CPU time each `period` µs, no
+/// quota for `max`, whose period is still the group's own, as `cpu.max` reads `max 100000`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CpuMax {
+    pub quota: Option<u64>,
+    pub period: u64,
+}
+
+/// A `cpu.max` not written: `max`, over the kernel's default period.
+impl Default for CpuMax {
+    fn default() -> CpuMax {
+        CpuMax {
+            quota: None,
+            period: CPU_PERIOD,
+        }
+    }
 }
 
 impl Budget {
@@ -135,7 +153,7 @@ pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
     };
     let cpu = match read("cpu.max")? {
         Some(text) => cpu_max(&text).map_err(|e| format!("{}: {e}", dir.join("cpu.max").display()))?,
-        None => None,
+        None => CpuMax::default(),
     };
     Ok(Budget {
         high: memory("memory.high")?,
@@ -148,7 +166,7 @@ pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
 /// `cpu_period_quota_parse` and `tg_set_cfs_bandwidth`): `$MAX $PERIOD`, µs of CPU time
 /// each period of µs, `$MAX` `max` for none and `$PERIOD` [`CPU_PERIOD`] where it is left
 /// out; the period 1 ms to 1 s, a quota 1 ms or more and less than 2^44 µs.
-fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
+fn cpu_max(text: &str) -> Result<CpuMax, String> {
     let bad = || format!("{:?}: not a quota and its period, or max", text.trim());
     let mut words = text.split_whitespace();
     let quota = words.next().ok_or_else(bad)?;
@@ -161,7 +179,7 @@ fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
         return Err(format!("a period of {period} µs, where it is 1000 to 1000000"));
     }
     if quota == "max" {
-        return Ok(None);
+        return Ok(CpuMax { quota: None, period });
     }
     if !quota.bytes().all(|b| b.is_ascii_digit()) {
         return Err(bad());
@@ -172,7 +190,10 @@ fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
             "a quota of {quota} µs, where it is 1000 or more and less than 2^44"
         ));
     }
-    Ok(Some((quota, period)))
+    Ok(CpuMax {
+        quota: Some(quota),
+        period,
+    })
 }
 
 /// A memory budget as the kernel reads one written to `memory.max` (mm/page_counter.c,
@@ -456,17 +477,24 @@ impl Groups {
 }
 
 /// What a group's microVMs hold themselves to of its `cpu.max` (`GroupCpu::set_budget`):
-/// none where it lets them use every CPU of the host's, which they cannot pass, and none
+/// no quota where it lets them use every CPU of the host's, which they cannot pass, and none
 /// where a quota is past what the count's word holds, which takes a host of more than
-/// 4,295 CPUs.
+/// 4,295 CPUs; its period the group's own whatever the quota, which its governors look again
+/// each of where there is none. Refused where the period is none, or past the word's: no
+/// `cpu.max` the kernel takes (`cpu_max`) has one.
 #[cfg(any(target_os = "macos", windows))]
-fn held_cpu(cpu: Option<(u64, u64)>) -> Option<(u32, u32)> {
-    let (quota, period) = cpu?;
+fn held_cpu(cpu: CpuMax) -> Result<shards_vmm::vm::group::Budget, String> {
+    let period = u32::try_from(cpu.period)
+        .ok()
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or_else(|| format!("a CPU period of {} µs", cpu.period))?;
     let host = u64::try_from(crate::resources::host_cpus()).unwrap_or(u64::MAX);
-    if quota >= period.saturating_mul(host) {
-        return None;
-    }
-    Some((u32::try_from(quota).ok()?, u32::try_from(period).ok()?))
+    let quota = cpu
+        .quota
+        .filter(|&quota| quota < cpu.period.saturating_mul(host))
+        .and_then(|quota| u32::try_from(quota).ok())
+        .and_then(std::num::NonZeroU32::new);
+    Ok(shards_vmm::vm::group::Budget { quota, period })
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -493,16 +521,19 @@ impl<D: Disk> Daemon<D> {
             .map_err(|e| at(&e))?;
         let mapped = shards_vmm::vm::group::GroupCpu::map(file.try_clone().map_err(|e| at(&e))?)
             .map_err(|e| at(&e))?;
-        mapped.set_budget(held_cpu(budget(&dir)?.cpu));
+        mapped.set_budget(held_cpu(budget(&dir)?.cpu).map_err(|e| at(&e))?);
         let given = file.try_clone().map_err(|e| at(&e))?;
         cpus.insert(name.to_string(), (file, mapped));
         Ok(given)
     }
 
     /// Group `name`'s CPU budget written as its `cpu.max` says now, where its count is kept.
-    fn budget_group_cpu(&self, name: &str, cpu: Option<(u64, u64)>) {
+    fn budget_group_cpu(&self, name: &str, cpu: CpuMax) {
         if let Some((_, mapped)) = lock(&self.groups.cpus).get(name) {
-            mapped.set_budget(held_cpu(cpu));
+            match held_cpu(cpu) {
+                Ok(budget) => mapped.set_budget(budget),
+                Err(e) => log(format!("group {name}'s CPU budget, kept as it was: {e}")),
+            }
         }
     }
 }
@@ -1140,12 +1171,14 @@ mod tests {
     /// the period the kernel's default where it is left out; each within the kernel's bounds.
     #[test]
     fn cpu_budgets_read_as_the_kernel_reads_them() {
-        assert_eq!(cpu_max("max 100000\n"), Ok(None));
-        assert_eq!(cpu_max("max"), Ok(None));
-        assert_eq!(cpu_max("50000 100000"), Ok(Some((50_000, 100_000))));
-        assert_eq!(cpu_max("250000\n"), Ok(Some((250_000, 100_000))));
-        assert_eq!(cpu_max("1000 1000"), Ok(Some((1_000, 1_000))));
-        assert_eq!(cpu_max("200000 1000000 more"), Ok(Some((200_000, 1_000_000))));
+        let cpu = |quota, period| Ok(CpuMax { quota, period });
+        assert_eq!(cpu_max("max 100000\n"), cpu(None, 100_000));
+        assert_eq!(cpu_max("max"), cpu(None, 100_000));
+        assert_eq!(cpu_max("max 20000"), cpu(None, 20_000), "max keeps its period");
+        assert_eq!(cpu_max("50000 100000"), cpu(Some(50_000), 100_000));
+        assert_eq!(cpu_max("250000\n"), cpu(Some(250_000), 100_000));
+        assert_eq!(cpu_max("1000 1000"), cpu(Some(1_000), 1_000));
+        assert_eq!(cpu_max("200000 1000000 more"), cpu(Some(200_000), 1_000_000));
         for bad in [
             "",
             "lots",
@@ -1166,10 +1199,25 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_cpu_budget_of_every_cpu_holds_nothing() {
+        use std::num::NonZeroU32;
         let host = u64::try_from(crate::resources::host_cpus()).unwrap();
-        assert_eq!(held_cpu(None), None);
-        assert_eq!(held_cpu(Some((50_000, 100_000))), Some((50_000, 100_000)));
-        assert_eq!(held_cpu(Some((host * 100_000, 100_000))), None);
+        let cpu = |quota, period| CpuMax { quota, period };
+        let held = |quota, period| {
+            Ok(shards_vmm::vm::group::Budget {
+                quota: NonZeroU32::new(quota),
+                period: NonZeroU32::new(period).unwrap(),
+            })
+        };
+        assert_eq!(held_cpu(CpuMax::default()), held(0, 100_000));
+        assert_eq!(
+            held_cpu(cpu(None, 20_000)),
+            held(0, 20_000),
+            "max keeps its period"
+        );
+        assert_eq!(held_cpu(cpu(Some(50_000), 100_000)), held(50_000, 100_000));
+        assert_eq!(held_cpu(cpu(Some(host * 100_000), 100_000)), held(0, 100_000));
+        assert!(held_cpu(cpu(None, 0)).is_err());
+        assert!(held_cpu(cpu(None, 1 << 32)).is_err());
     }
 
     /// An ask made while a member's word is under way waits behind it, the newest room told
@@ -1229,7 +1277,13 @@ mod tests {
             "max 100000\n"
         );
         std::fs::write(dir.join("cpu.max"), "50000\n").unwrap();
-        assert_eq!(budget(&dir).unwrap().cpu, Some((50_000, 100_000)));
+        assert_eq!(
+            budget(&dir).unwrap().cpu,
+            CpuMax {
+                quota: Some(50_000),
+                period: 100_000
+            }
+        );
         std::fs::write(dir.join("cpu.max"), "max 100000\n").unwrap();
         std::fs::write(dir.join("memory.high"), "1G\n").unwrap();
         assert_eq!(made(&home, "agents").unwrap(), dir);

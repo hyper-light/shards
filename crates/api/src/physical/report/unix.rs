@@ -1,22 +1,37 @@
-//! A private nonblocking pipe; poll spends the original finite deadline.
+//! A private nonblocking pipe; poll spends the original deadline, if any, and waits on the
+//! VM process's end beside it: a second private pipe, whose one writer ([`Ending`]) the guest's
+//! watcher closes as it sees the end, which poll(2) reports as POLLHUP on its read end.
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _};
 use std::os::fd::AsRawFd as _;
 use std::time::Instant;
 
-use super::{buffer, io_error, pending};
+use super::{Read, buffer, io_error, pending};
 use crate::{GpuProbeError, Refusal};
 
 #[derive(Debug)]
 pub(super) struct Reader {
     pipe: Option<io::PipeReader>,
+    /// Read end of the end pipe: hung up once its [`Ending`] is told (dropped).
+    end: io::PipeReader,
     bytes: Vec<u8>,
     used: usize,
 }
 
+/// The VM process's end, told to a take that waits: its pipe's one writer, closed as told.
+#[derive(Debug)]
+pub(crate) struct Ending(io::PipeWriter);
+
+impl Ending {
+    pub fn tell(self) -> Result<(), Refusal> {
+        drop(self.0);
+        Ok(())
+    }
+}
+
 impl Reader {
-    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter), Refusal> {
+    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter, Ending), Refusal> {
         let bytes = buffer(byte_count)?;
         let (reader, writer) = io::pipe().map_err(|e| io_error("GPU report pipe", e))?;
         let fd = reader.as_raw_fd();
@@ -31,24 +46,31 @@ impl Reader {
         if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(io_error("GPU report nonblocking", io::Error::last_os_error()));
         }
+        // std's pipe(2) is close-on-exec, so no process the launcher starts holds its writer.
+        let (end, ending) = io::pipe().map_err(|e| io_error("GPU report end pipe", e))?;
         Ok((
             Self {
                 pipe: Some(reader),
+                end,
                 bytes,
                 used: 0,
             },
             writer,
+            Ending(ending),
         ))
     }
 
-    pub fn frame(&mut self, deadline: Instant) -> Result<&[u8], Refusal> {
-        let reader = self
-            .pipe
-            .as_mut()
-            .ok_or(Refusal::GpuProbe(GpuProbeError::Unavailable))?;
+    /// The frame, read to its writer's close, by `deadline` where there is one. Its VM
+    /// process's end, once told, is answered once the pipe holds nothing more to read and no
+    /// close: a frame its writer closed before the end is still the frame.
+    pub fn frame(&mut self, deadline: Option<Instant>) -> Result<Read<'_>, Refusal> {
+        // Its watcher lets the pipe go only after the VM process's end.
+        let Some(reader) = self.pipe.as_mut() else {
+            return Ok(Read::Ended);
+        };
+        let mut ended = false;
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(pending());
             }
             let available = self
@@ -61,6 +83,7 @@ impl Reader {
                     return self
                         .bytes
                         .get(..self.used)
+                        .map(Read::Frame)
                         .ok_or(Refusal::GpuProbe(GpuProbeError::Count));
                 }
                 Ok(read) => {
@@ -74,33 +97,48 @@ impl Reader {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(io_error("GPU report read", error)),
             }
-            // poll uses milliseconds; round UP once, then recheck the absolute
-            // deadline. The i32 ceiling is its ABI, not a retry/tuning interval.
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err(pending());
+            if ended {
+                return Ok(Read::Ended);
             }
-            let millis = left
-                .as_millis()
-                .checked_add(u128::from(!left.subsec_nanos().is_multiple_of(1_000_000)))
-                .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
-            let timeout = i32::try_from(millis).unwrap_or(i32::MAX);
-            let mut event = libc::pollfd {
-                fd: reader.as_raw_fd(),
+            // poll uses milliseconds; round UP once, then recheck the absolute
+            // deadline. The i32 ceiling is its ABI, not a retry/tuning interval;
+            // -1 is poll(2)'s own "no timeout", for a wait with no deadline.
+            let timeout = match deadline {
+                None => -1,
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(pending());
+                    }
+                    let millis = left
+                        .as_millis()
+                        .checked_add(u128::from(!left.subsec_nanos().is_multiple_of(1_000_000)))
+                        .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
+                    i32::try_from(millis).unwrap_or(i32::MAX)
+                }
+            };
+            let mut events = [reader.as_raw_fd(), self.end.as_raw_fd()].map(|fd| libc::pollfd {
+                fd,
                 events: libc::POLLIN,
                 revents: 0,
-            };
-            // SAFETY: one initialized stack pollfd, live private descriptor, and
-            // finite native timeout; poll retains no memory after returning.
-            let ready = unsafe { libc::poll(&mut event, 1, timeout) };
+            });
+            // SAFETY: two initialized stack pollfds of live private descriptors, their
+            // count the array's; poll retains no memory after returning.
+            let ready = unsafe { libc::poll(events.as_mut_ptr(), 2, timeout) };
             if ready < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() != io::ErrorKind::Interrupted {
                     return Err(io_error("GPU report readiness", error));
                 }
-            } else if event.revents & libc::POLLNVAL != 0 {
+                continue;
+            }
+            let [report, end] = events;
+            if (report.revents | end.revents) & libc::POLLNVAL != 0 {
                 return Err(Refusal::Launch(crate::LaunchError::Observer));
             }
+            // Its writer gone (POLLHUP) or anything else reported on it: the end was told.
+            // The report pipe is read once more before the end is answered.
+            ended = end.revents != 0;
         }
     }
 

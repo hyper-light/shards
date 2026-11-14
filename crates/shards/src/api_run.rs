@@ -1003,18 +1003,22 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
 }
 
 /// What its VM said it holds a run's vCPUs to (`RATED`'s answer, D247), as asked with
-/// `rate`: the rate it was asked where it holds them, nothing where it lets them be. A VM
-/// holds what it is told or nothing, so any other word is a broken one, never a hold.
-fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<Option<std::num::NonZeroU64>, String> {
-    if said.is_empty() {
-        return Ok(None);
-    }
-    match (said.parse::<std::num::NonZeroU64>(), rate) {
-        (Ok(held), Some(asked)) if held == asked => Ok(Some(held)),
-        (Ok(held), _) => Err(format!(
-            "its VM held its vCPUs to {held} milli-CPU, asked {rate:?}"
+/// `rate`, its line a managed machine's rate answer (`shards_abi::rate`): the rate it was
+/// asked where it holds them, nothing where it lets them be, and the period its governor
+/// derived for it (D191). A VM holds what it is told or nothing, so any other rate is a
+/// broken word, never a hold; its refusal is its words.
+fn rated_of(rate: Option<std::num::NonZeroU64>, said: &str) -> Result<wire::Rated, String> {
+    use shards_abi::rate::{Answer, read_answer};
+    match read_answer(said.as_bytes()) {
+        Ok(Answer::Held { milli, period_ns }) if milli.is_none() || milli == rate => Ok(wire::Rated {
+            milli,
+            period: Duration::from_nanos(period_ns.get()),
+        }),
+        Ok(Answer::Held { milli, .. }) => Err(format!(
+            "its VM held its vCPUs to {milli:?} milli-CPU, asked {rate:?}"
         )),
-        (Err(_), _) => Err(format!("its VM held its vCPUs to {said:?}, no rate")),
+        Ok(Answer::Refused(why)) => Err(why.to_string()),
+        Err(broken) => Err(format!("its VM's rate answer {said:?}: {broken}")),
     }
 }
 
@@ -3137,7 +3141,7 @@ mod hosted {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
         let streams = dirs
             .iter()
-            .map(|_| shards_ipc::byte_pair())
+            .map(|_| crate::os::share_pipe())
             .collect::<io::Result<Vec<_>>>()
             .map_err(|e| format!("a share's stream: {e}"))?;
         let mut args: Vec<&OsStr> = vec![OsStr::new("share")];
@@ -3943,9 +3947,6 @@ mod hosted {
                 members: plan.members.clone(),
                 published,
                 control: control.as_ref().map(|(endpoint, _)| control_at(endpoint)),
-                // The period its VM's governor holds a rate over: this build's hold's, which
-                // the VM process it carries holds by (D36, D247).
-                rate_period: shards_vmm::vm::hold_period(),
                 from: launched.from,
             }
             .encode()
@@ -5104,18 +5105,15 @@ mod hosted {
 
     /// The CPU rate its orchestrator holds the run's vCPUs to (D247), told its VM as the
     /// daemon tells a run's its CPUs (`CPUS`, D191) but answered (`RATED`): what the VM
-    /// holds them to, none where it lets them be, or why not.
-    fn rate(
-        live: &Live<'_>,
-        rate: Option<std::num::NonZeroU64>,
-    ) -> Result<Option<std::num::NonZeroU64>, String> {
+    /// holds them to, none where it lets them be, and the period it holds over; or why not.
+    fn rate(live: &Live<'_>, rate: Option<std::num::NonZeroU64>) -> Result<wire::Rated, String> {
         let milli = rate.map_or(0, std::num::NonZeroU64::get);
         let said = ask_vm(live, &live.rates, kind::RATE, &milli.to_be_bytes(), &[])?;
         super::rated_of(rate, &said)
     }
 
     /// A rate's outcome, told its orchestrator (`RATED`).
-    fn rated(live: &Live<'_>, id: u32, result: Result<Option<std::num::NonZeroU64>, String>) {
+    fn rated(live: &Live<'_>, id: u32, result: Result<wire::Rated, String>) {
         if let Ok(payload) = (wire::RateAnswer { id, result }).encode() {
             let _ = live.answers.send(wire::to_client::RATED, &[&payload]);
         }
@@ -7498,20 +7496,34 @@ mod tests {
     #[test]
     fn a_rates_answer_reads_as_it_was_asked() {
         let rate = std::num::NonZeroU64::new;
-        assert_eq!(rated_of(rate(1500), "1500"), Ok(rate(1500)));
+        let held = |milli, period| {
+            Ok(wire::Rated {
+                milli: rate(milli),
+                period,
+            })
+        };
+        let p = Duration::from_micros(2_667);
+        assert_eq!(rated_of(rate(1500), "RATED 1500 2667000\n"), held(1500, p));
         assert_eq!(
-            rated_of(rate(4000), ""),
-            Ok(None),
-            "every vCPU's whole CPU: no hold"
+            rated_of(rate(4000), "RATED 0 1050000\n"),
+            held(0, Duration::from_micros(1_050)),
+            "every vCPU's whole CPU: no hold, over g"
         );
-        assert_eq!(rated_of(None, ""), Ok(None));
+        assert_eq!(
+            rated_of(None, "RATED 0 1000000\n"),
+            held(0, Duration::from_millis(1))
+        );
+        assert_eq!(
+            rated_of(rate(1500), "REFUSED its hold's period: outgrown\n"),
+            Err("its hold's period: outgrown".into())
+        );
         for (asked, said) in [
-            (rate(1500), "1000"),
-            (None, "1500"),
-            (rate(1500), "0"),
-            (rate(1500), "-1500"),
-            (rate(1500), "1500 milli"),
-            (rate(1500), " 1500"),
+            (rate(1500), "RATED 1000 2667000\n"),
+            (None, "RATED 1500 2667000\n"),
+            (rate(1500), "RATED 1500 0\n"),
+            (rate(1500), "RATED 1500\n"),
+            (rate(1500), "1500"),
+            (rate(1500), ""),
         ] {
             assert!(rated_of(asked, said).is_err(), "{asked:?} {said:?}");
         }
@@ -7847,7 +7859,6 @@ mod tests {
             members: Vec::new(),
             published: Vec::new(),
             control: Some(hosted::control_at(&endpoint)),
-            rate_period: Duration::from_millis(100),
             from: wire::StartedFrom::Booted,
         };
         let told = wire::Started::decode(&started.encode().unwrap())

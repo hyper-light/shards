@@ -235,7 +235,7 @@ pub(super) fn served(args: &[OsString], job: &shards_ipc::GroupJob) -> Result<Se
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let streams = shares
         .iter()
-        .map(|_| shards_ipc::byte_pair())
+        .map(|_| crate::os::share_pipe())
         .collect::<std::io::Result<Vec<_>>>()
         .map_err(|e| format!("a share's stream: {e}"))?;
     let n = shares.len();

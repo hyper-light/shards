@@ -3705,6 +3705,11 @@ mod tests {
     /// already, its uid and gid there 0 (user_namespaces(7)), standing in for init's
     /// privileges. None, said as a SKIP, where this host gives an unprivileged process
     /// neither namespace.
+    /// The write end of [`as_root_of_own_mounts`]' result pipe, in its child: what a member
+    /// it starts closes ([`a_confined_member`]), so that the harness reads the pipe's end as
+    /// that child ends, whatever the member does.
+    static RESULT_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
     fn as_root_of_own_mounts(work: impl FnOnce() -> String) -> Option<String> {
         use std::io::{Read as _, Write as _};
         let mut fds = [0 as RawFd; 2];
@@ -3720,6 +3725,7 @@ mod tests {
         assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
         if pid == 0 {
             drop(r);
+            RESULT_PIPE.store(w.as_raw_fd(), std::sync::atomic::Ordering::Relaxed);
             // A panic here is the child's to say, never to unwind into the harness.
             let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let flags = libc::CLONE_NEWNS | if root { 0 } else { libc::CLONE_NEWUSER };
@@ -4058,11 +4064,28 @@ mod tests {
         assert_eq!(said, "member refused (13); command refused (13)");
     }
 
+    /// A member's first process ([`a_confined_member`]), killed and waited for as it drops:
+    /// as its test ends, or unwinds from a failure, which a paused member would otherwise
+    /// outlive.
+    struct Member(libc::pid_t);
+
+    impl Drop for Member {
+        fn drop(&mut self) {
+            // SAFETY: kill(2) and waitpid(2) of this process's own child.
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+                libc::waitpid(self.0, std::ptr::null_mut(), 0);
+            }
+        }
+    }
+
     /// The member's first process for a test of what a command run in it reaches: confined
     /// as member `c`, it holds until it is killed, as its program would; `before`, run in it
-    /// once it is confined, before it says it is ready. Its PID; none where it could not be
-    /// confined.
-    fn a_confined_member(c: &Confinement, before: impl FnOnce()) -> Option<libc::pid_t> {
+    /// once it is confined, before it says it is ready. None where it could not be confined.
+    /// It holds none of the harness's result pipe ([`RESULT_PIPE`]), nor does any process
+    /// it starts: a test that fails once it is made ends its child, and the harness reads
+    /// that pipe's end then, rather than wait on a member paused for good.
+    fn a_confined_member(c: &Confinement, before: impl FnOnce()) -> Option<Member> {
         let mut fds = [0 as RawFd; 2];
         // SAFETY: pipe2(2) into a two-element array.
         assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
@@ -4073,8 +4096,13 @@ mod tests {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
         if pid == 0 {
-            // SAFETY: a process of one thread, which holds or exits.
+            // SAFETY: a process of one thread, which holds or exits; close(2) of the
+            // harness's result pipe's write end, which this process alone lets go of.
             unsafe {
+                let result = RESULT_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+                if result >= 0 {
+                    libc::close(result);
+                }
                 if rules(c, c.ruleset.as_raw_fd())
                     .and_then(|()| confine(c, c.ruleset.as_raw_fd()))
                     .is_err()
@@ -4097,7 +4125,25 @@ mod tests {
             unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
             return None;
         }
-        Some(pid)
+        Some(Member(pid))
+    }
+
+    /// A test that fails once its member is made fails at once, its member ended: the member
+    /// holds none of the harness's result pipe, and is killed as the test unwinds. A member
+    /// that held it, paused for good, held the harness's read of it, and the test hung in
+    /// place of failing (the starter lane's finding, 2026-11-14). Run as root of IDs past its
+    /// own (`unshare --map-auto --map-root-user`), where uid 1000 is another's; else a SKIP.
+    #[test]
+    fn a_test_that_fails_once_its_member_is_made_fails_at_once() {
+        let said = as_root_of_own_mounts(|| {
+            let c = member_confinement(1000, Vec::new(), "/");
+            let Some(_member) = a_confined_member(&c, || {}) else {
+                return "SKIP: confining the member".into();
+            };
+            panic!("a test's failure once its member is made");
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, "the child panicked");
     }
 
     /// confine-10 (docs/bugs/2026-11-13/confine.md): a command run in a member signals the
@@ -4131,14 +4177,10 @@ mod tests {
                     c"/bin/sh",
                     c"-c",
                     c"kill -0 \"$0\"",
-                    &CString::new(member.to_string()).unwrap(),
+                    &CString::new(member.0.to_string()).unwrap(),
                 ],
             );
-            // SAFETY: kill(2) and waitpid(2) of this process's own child.
-            unsafe {
-                libc::kill(member, libc::SIGKILL);
-                libc::waitpid(member, std::ptr::null_mut(), 0);
-            }
+            drop(member);
             said
         });
         let Some(said) = said else { return };
@@ -4197,11 +4239,7 @@ mod tests {
             // SAFETY: read(2) into a one-byte buffer of ours.
             unsafe { libc::read(r.as_raw_fd(), waited.as_mut_ptr().cast(), 1) };
             let said = command_in(&starter, &[c"/bin/sh", c"-c", c"kill -0 1"]);
-            // SAFETY: kill(2) and waitpid(2) of this process's own child.
-            unsafe {
-                libc::kill(member, libc::SIGKILL);
-                libc::waitpid(member, std::ptr::null_mut(), 0);
-            }
+            drop(member);
             let waited = match waited[0] {
                 b'e' => "its wait sees no child",
                 b'w' => "its wait sees its starter",
@@ -4537,11 +4575,7 @@ mod tests {
                 }
                 Err(e) => format!("no terminal: {e}"),
             };
-            // SAFETY: kill(2) and waitpid(2) of this process's own child.
-            unsafe {
-                libc::kill(member, libc::SIGKILL);
-                libc::waitpid(member, std::ptr::null_mut(), 0);
-            }
+            drop(member);
             said
         });
         let Some(said) = said else { return };

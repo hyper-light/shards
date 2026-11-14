@@ -1449,7 +1449,7 @@ mod tests {
                 }))
             );
         }
-        // A small file's range (D189's DAX_SMALLEST, PM's dax-smallest entry): a 4 KiB file
+        // A small file's range (D189's crossover, memory-09; PM's dax-smallest entry): a 4 KiB file
         // mapped in a range of its own, its page and the zeros past it, and unmapped; and the
         // host mappings a range adds, a small file's and a large one's.
         let small_path = dir.join("small");
