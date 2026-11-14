@@ -8434,7 +8434,8 @@ the latch needs (a descriptor; two on macOS, kqueue(2) and its directory's) and 
 watch of the process's one inotify instance (`max_user_watches`, inotify(7)), or an instance
 where the process could not make that one (`max_user_instances`), so a lane refused it is one
 the host is out of resources for, which its controller may ask again. The other `UNWATCHED`
-users (the listener, `logs -f`, a process's events, a log driver's copier) stay owed (runs-11).
+users (the listener, `logs -f`, a process's events, a log driver's copier) refuse as well
+since runs-11 (below).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -8893,10 +8894,73 @@ process.
 | `RETRY` (daemon.rs), the collector | 250 ms | none: `have_room` on a wake | the wake of descriptors let go of |
 | `daemon.pid`, `daemon.stopping` | `PID` | `PID START` | proc(5); `proc_pid_rusage`; `GetProcessTimes` |
 
-Still picked, owed: `UNWATCHED` (250 ms, `RETRY`'s other use), how often what could not make
-a file watch (Linux's 128 inotify instances a user, PM M257) looks instead: the listener at
-its home, `logs -f`, a process's events, a log driver's copier; and the macOS list watcher's
-250 ms look where `daemon.pid` names no live daemon. Neither has an event to wait for.
+Still picked, owed: the macOS list watcher's 250 ms look where `daemon.pid` names no live
+daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
+
+**runs-11, built (2026-11-14): no follower and no slot waits on a clock.**
+- *`UNWATCHED` (250 ms, picked)*, how often what could not make a file watch looked instead,
+  is gone: where no watch can be made, the follower refuses, typed (`daemon::WatchRefused`,
+  made by `daemon::watch`), as control-08's log lanes do (27fa453ad). ROOT's ruling, 2026-11-14:
+  refuse; no clock fallback, no handle-only mode. A watch needs a descriptor (two on macOS,
+  kqueue(2) and its directory's) and on Linux a watch of the process's one inotify instance
+  (`max_user_watches`) or an instance of its own (`max_user_instances`, inotify(7); PM M257):
+  a host out of them is out of resources the follower could not wait for, and a look's
+  interval has no cost to be derived from. Each user:
+  - *The listener* makes its three watches (the home, `images/`, `contexts/`) before the
+    daemon says it serves (`home_watches`, in `serve`): a daemon that cannot make one does not
+    start, its starter told as of any start it cannot make. `listen` takes `[FileWatch; 3]`,
+    no `Option`.
+  - *`logs -f`* makes each log's watch before any of it is shown, and *`watch processes`*
+    its record's: one refused answers `shards: NAME: …: its watch could not be made, so it is
+    not followed: …`, status 1, its run's end waiter never asked for. `wait_readable` takes
+    no timeout.
+  - *A log driver's shipper* makes its watch as it begins to follow: refused, it ends with
+    `WatchRefused` (its cause in the daemon's log, as a driver that cannot be made ends it),
+    its waiter forgotten and its place kept, so that the shipper its run's next start or the
+    daemon's next start makes sends from there.
+  Red, each by mutation restoring the fallback or swallowing the refusal:
+  `a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown` (`logs -f` and
+  `watch processes`: before, each followed its run to its end and said nothing),
+  `a_shipper_no_watch_can_be_made_for_ends_typed`, and
+  `a_daemon_that_cannot_watch_its_home_is_not_started` (each of the three directories). A
+  test makes a directory's watch fail by the name `unwatchable` in it (`cfg(test)` only).
+- *`SWEEP` (60 s, picked)*, after which a slot taken with no request was marked, and at the
+  second removed, is gone (ROOT's ruling, 2026-11-14: the taker names its process and the
+  daemon follows its end; a `shards_ipc::slots` protocol change). On Unix:
+  - A client names itself as it takes a slot: before it opens anything else of it, it writes
+    `PID START` (`this_process`, `Named`) in one write to the slot's sixth FIFO, `N.taker`
+    (32 bytes at most: a `u32`'s digits, a space, a `u64`'s, a newline; far under
+    `PIPE_BUF`, read whole, POSIX write(2)).
+  - `Slot::wait` waits on `say`, its stop and `taker`; once the name comes it tells its
+    caller (`Event::Named`) and follows that process: a kqueue of its `EVFILT_PROC`
+    `NOTE_EXIT` on macOS, its pidfd on Linux (pidfd_open(2), 5.3), its start checked once its
+    end is watched. A taker that ends before its first byte leaves the slot `Gone`, which its
+    maker replaces at once; what it wrote before it ended goes first.
+  - The gap between a client's read of its record and its name's write is closed by the take
+    lock, `requests/taking`: a client holds it shared (flock(2)) from before it reads a record
+    until it has named itself, let go of before its file closes (M244); a lock goes with its
+    holder's end. Where more slots of a list are taken than have named takers, the maker tries
+    it exclusive, never waiting (`Requests::quiet`): held, no client is taking a slot, so a
+    slot taken whose name is neither there to read (`Probe`) nor read (its wait says so before
+    it reads, drained then) is a taker's that ended in the gap, let go of and another offered.
+    Not held, a client is taking one, and its name or its request is an event that brings the
+    maker back. A slot left so holds no client's place nor the daemon's quiet; one whose taker
+    died in the gap waits for the maker's next event with no client taking.
+  - Windows' slots needed none of it: a client takes an instance by opening it, and its end
+    ends the instance's reads (M340), so `Slot::wait` is `Gone` already; `probe` is always
+    named and `quiet` never held.
+  - A build before takers: a client finds no `N.taker` and no `taking` and names nothing; a
+    daemon of it makes neither. Either way the slot is served as before, its request reaching
+    the daemon to step aside for its client's build.
+  Red, each by mutation: the taker's end not followed (the wait never ends), in
+  `slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone`; the lock not
+  asked, and names not looked at, in
+  `daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes`.
+  Also `the_daemon_holds_the_take_lock_only_while_no_client_takes_a_slot`.
+  Owed to ROOT: a client killed between take and request on HVF, KVM and WHP hosts, its slot
+  re-offered as it ends (`cargo test -p shards --profile test-release --test daemon`); the
+  client path's added cost (an flock pair, a FIFO's open and write) by
+  `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
 
 Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
 unanswered), `a_requests_wait_is_learned_from_its_clients`,
@@ -19394,10 +19458,10 @@ were excluded by the review.
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
 | 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
-| `UNWATCHED` 250 ms (daemon.rs) | picked (D185's admission) | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
+| `UNWATCHED` 250 ms (daemon.rs) | gone (runs-11, D185): refused typed where no watch can be made, ROOT's ruling over this row's design | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
 | 1 ms poll (cli/client.rs `ask_slot`) | picked | The client started the daemon, so it holds its child: wait on that child's exit and a `FileWatch` of `requests/` for the first list. The daemon's own `daemon.pid` covers one started by another client. | red: a counted-look test, a started daemon that offers slots late |
 | 250 ms (ipc slots/fifo.rs, macOS list with no process watch) | picked (D185) | select(2) sees a FIFO writer's end on macOS (M253's finding), so wait on the list's read end for it: no clock. | macOS unit test, the list's writer ended with no pid |
-| `SWEEP` 60 s (daemon/slots.rs) | picked | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
+| `SWEEP` 60 s (daemon/slots.rs) | gone (runs-11, D185): built as this row says, the gap before a name closed by the take lock | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
 | 60 s log window (daemon/slots.rs `said_at_most`) | picked, policy | Say each episode, at reaching the most and as clients in hand go below it, with how many waited and how long. A log line per episode is bounded by the log's own rotation (D163). | a unit test of the transitions |
 | 5 s (vm_run.rs, joiners' end reports, `warm::await_joiners`) | picked | Wait while each joiner's process lives, judged by D215 on a record of joiner end reports: cold, its liveness. | red: a joiner that reports at 6 s keeps its holder |
 | 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
@@ -19501,7 +19565,7 @@ progress; D222's estimators).
 The daemon's `REQUEST_TIMEOUT` and `RETRY`, and how a client knows its daemon, are D185's
 "Admission" (2026-11-09): a request cut told RESTART and its wait learned, a client out of
 descriptors refused with a spare and the daemon woken as descriptors go, a daemon known by its
-ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is still owed.
+ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is gone (runs-11).
 
 Held by unit tests (`a_pressure_is_said_as_it_doubles`,
 `each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles`,

@@ -1,0 +1,10 @@
+# runs-11 SWEEP, red by mutation. macOS arm64, adas-mac-studio-3.local, kiln r1967.
+== MUTATION m-follow (Slot::wait does not follow its taker's end)
+test slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone ... FAILED
+panicked at crates/ipc/src/slots/fifo.rs:1776:14: its taker's end unseen: Timeout
+== MUTATION m-lock (reclaim does not ask the take lock)
+test daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes ... FAILED
+assertion `left == right` failed: a slot let go of while a client took one
+== MUTATION m-named (reclaim does not look at names)
+test daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes ... FAILED
+panicked at crates/shards/src/daemon/slots.rs:1049:9: a named taker's slot let go of
