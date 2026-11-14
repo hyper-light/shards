@@ -189,6 +189,7 @@ pub const NAMES_STEP: &str = "\u{0}names";
 /// Message kinds between the daemon, warm VMs and clients.
 /// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
 pub mod device {
+    pub use super::device_reply::{Refusal, Retry, decode, encode};
     /// A disk plugged in: a flags byte ([`READ_ONLY`]) and its serial; its file a
     /// descriptor. Answers its place on the PCI bus (`devfn`, decimal) and its guest's
     /// address of it, a space between.
@@ -214,6 +215,8 @@ pub mod device {
     /// iommufd, not its group's.
     pub const BY_NODE: u8 = 1;
 }
+
+mod device_reply;
 
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
