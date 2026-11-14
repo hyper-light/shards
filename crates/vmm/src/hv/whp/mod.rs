@@ -466,7 +466,13 @@ fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
 struct Partition(WHV_PARTITION_HANDLE, Mutex<Ram>, Mutex<Tracked>);
 
 /// What the partition maps of this process's memory, where Windows' instruction emulator's
-/// accesses to guest memory go ([`Vcpu::emulate`]).
+/// accesses to guest memory go ([`Vcpu::emulate`]): disjoint ranges, each as it was mapped,
+/// cut where part of it is unmapped since (a virtio-mem block unplugged from a larger range,
+/// whose memory the host then decommits, memory.rs `unplug`) or mapped anew, as WHvMapGpaRange
+/// "replaces any previous mappings for the specified GPA pages" (Microsoft Learn). Every
+/// access the emulator makes to them is made under the partition's lock of it
+/// ([`Partition::access`]), which an unmap takes to cut its range: none reaches memory once
+/// its unmap has returned and its memory may be gone (platform-05).
 #[derive(Debug, Default)]
 struct Ram(Vec<Range>);
 
@@ -481,18 +487,25 @@ enum Reached {
 }
 
 impl Ram {
-    /// Records `range`, mapped.
+    /// Records `range`, mapped: what it maps of the ranges before it is theirs no longer.
     fn map(&mut self, range: Range) {
+        cut(&mut self.0, range.gpa, range.len);
         self.0.push(range);
     }
 
-    /// Takes `len` bytes at `gpa` out, unmapped.
+    /// Takes `len` bytes at `gpa` out, unmapped: what is left of each range they cut kept.
     fn unmap(&mut self, gpa: u64, len: u64) {
-        self.0.retain(|m| m.gpa != gpa || m.len != len);
+        cut(&mut self.0, gpa, len);
     }
 
     /// Reads `data.len()` bytes at `gpa` into `data`, or writes them there where `write`, if
-    /// one range holds them all.
+    /// one range holds them all and lets the guest access them so: a write only where it is
+    /// mapped writable (WHvMapGpaRangeFlagWrite). A write the guest makes itself to memory
+    /// mapped read-only exits as an access to no memory does, which shards gives its devices
+    /// (`Vcpu::mmio`), as KVM gives a write to a read-only slot to its VMM (KVM_MEM_READONLY,
+    /// Documentation/virt/kvm/api.rst): the emulator's write goes there too, never to the
+    /// memory, which may be a view this process may not write (read-only virtio-pmem's
+    /// section, PAGE_READONLY) or bytes the guest is denied (platform-06).
     ///
     /// # Safety
     /// Each range's memory in this process is mapped as long as it is recorded here.
@@ -500,7 +513,8 @@ impl Ram {
         let len = data.len() as u64;
         let Some(at) = self.0.iter().find_map(|m| {
             let offset = gpa.checked_sub(m.gpa)?;
-            (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
+            let allowed = !write || m.flags & WHvMapGpaRangeFlagWrite != 0;
+            (allowed && offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
         }) else {
             return Reached::Elsewhere;
         };
@@ -676,7 +690,10 @@ impl Partition {
         // SAFETY: forwarded caller contract.
         check("WHvMapGpaRange", unsafe {
             WHvMapGpaRange(self.0, host.cast_const().cast::<c_void>(), gpa, len as u64, flags)
-        })
+        })?;
+        // What it replaces is the emulator's guest RAM no longer.
+        lock(&self.1).unmap(gpa, len as u64);
+        Ok(())
     }
 
     /// Unmaps `len` bytes at `gpa`: what the guest wrote there, while a live move watches
