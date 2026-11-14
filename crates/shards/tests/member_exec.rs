@@ -173,7 +173,9 @@ fn a_member_starts_with_every_signal_at_its_default() {
     }
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -514,7 +516,9 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
     assert_eq!(said.last().map(String::as_str), Some("resized 40 120"));
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }
@@ -541,7 +545,9 @@ fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
     );
     guest.stop().unwrap();
     assert_eq!(
-        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
         Some(RunEnd::Stopped)
     );
 }

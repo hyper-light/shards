@@ -63,6 +63,25 @@ In-kernel GIC:
 | SPIs | INTID 32–1019 (988) |
 | EL1 virtual timer | PPI INTID 27 |
 
+### Runs review fixes: focused validation (2026-11-13)
+
+The [runs fix record](measurements/runs-fixes/README.md) retains source-specific
+red/green unit tests on adas-mac-studio.local (macOS arm64). These are functional
+checks, not real-VM validation or performance measurements. The runs-01 fault
+case returned success instead of EIO before correction; the corrected case and
+49 share-server tests pass, and shards-vmm all-target clippy passes on that host.
+Other host/guest checks remain owed to ROOT as the record names them.
+The same record retains runs-02's actual overwritten-marker unit red and green
+rename/cleanup + stopping-lock checks and shards all-target clippy on that Mac;
+its real-daemon/VM counterpart remains unrun.
+Runs-04's exited-after-WARMED stand-in failed as not safely retryable before the
+change; afterward the regression, 5 pool tests and 30 session tests pass, with
+shards-api all-target clippy. Actual VM death during handoff remains ROOT's check.
+Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
+CREATE, the same regression and 33 session tests pass, with API all-target clippy.
+The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
+live checks are recorded there.
+
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 
 | Operation | p50 | p99 |
@@ -17783,6 +17802,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
+
+
 - **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
 
 
@@ -24231,3 +24253,41 @@ skips every filter for a syscall each allows whatever its arguments
 them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
+
+### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
+that asked, as `confine` did, for a file to read and a snapshot directory, and no `SEALED`,
+staged and committed a generation, then was granted a sentinel file outside its grants to
+write, and wrote it (`overwritten` where `untouched`). At 1e8c83104 its last ask seals
+(`grant_ask::obtain_sealed`): `grant_answer::windows_tests` 7 of 7, the late GRANT refused and
+the stage and commit still answered; both mutants (no `SEALED`; no broker refusal) fail it.
+Unit-level functional evidence, no real VM: `confine` refuses any process outside an
+AppContainer, and the WHP real-VM tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
+
+### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+
+2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
+Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
+waiters `[1, 1, 2, 1, 2, 2]` where two distinct flows should resume once each.
+Fix 1b21eb21a deduplicates pending flow tokens and removes pending/resumed tokens
+on flow release. The outstanding broker ask remains identifiable for a late answer.
+Merged 16ebc78cf: `cargo test -p shards-net lease::`, 12 passed; shards-net all-target
+clippy and development-policy check passed. Exact commands, setup failures, retained
+output and unrun work: [record](measurements/creds-fixes-v1/README.md).
+No performance, allocation, exhaustion or real-VM result is claimed; ROOT owns those.
+
+creds-05: a52f4518c anchors returned remaining life at the first ask, conservatively
+spending broker work and all relay time, including cold starts. Spent or unrepresentable
+budgets resume as typed Lapsed without retaining a value; retries cannot reset the clock.
+Red at 6eb3ad718; merged 950c1a0fe, 14 lease tests and shards-net all-target clippy pass
+on the same Mac. The linked record includes the causality proof, alternatives and the
+early-refusal/renewal-boundary limitation. No wire timestamp or chosen grace is added.
+
+creds-07: exact grant membership is checked by the CA signer before key generation,
+as typed LeafError::Ungranted; subtree constraints alone do not authorize exact hosts.
+Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32,
+all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
+verifier coverage remains independent. No performance result; linked credential
+record above has commands, evidence, and real-VM coverage owed.
