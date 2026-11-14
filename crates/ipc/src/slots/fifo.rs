@@ -262,69 +262,16 @@ const fn digits(mut n: u64) -> usize {
 }
 
 /// The end of the process a slot's taker named itself as (`N.taker`, [`crate::Named`]): a
-/// descriptor readable once it has ended, to wait on beside the slot's own. A kqueue of its
-/// `EVFILT_PROC` `NOTE_EXIT` on macOS (kqueue(2); a kqueue's descriptor is selectable), its
-/// pidfd on Linux (pidfd_open(2), readable once it has exited, Linux 5.3). `None` where it
-/// has ended already, or its ID names a process that started after it (its start, read once
+/// descriptor readable once it has ended ([`exit_watch`](crate::unix::exit_watch)), to wait
+/// on beside the slot's own. `None` where it has ended already, or its ID names a process that started after it (its start, read once
 /// its end is watched).
 fn taker_end(named: &crate::Named) -> io::Result<Option<std::os::fd::OwnedFd>> {
-    use std::os::fd::FromRawFd as _;
     let pid = libc::pid_t::try_from(named.pid)
         .ok()
         .filter(|&pid| pid > 0)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker named no process"))?;
-    #[cfg(target_os = "macos")]
-    let end = {
-        // SAFETY: kqueue(2) takes no arguments. A kqueue is not inherited by a child.
-        let raw = unsafe { libc::kqueue() };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a fresh descriptor nothing else owns.
-        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-        let change = libc::kevent {
-            ident: pid.unsigned_abs() as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
-        // SAFETY: kevent(2) reading one change, writing no event.
-        if unsafe {
-            libc::kevent(
-                queue.as_raw_fd(),
-                &change,
-                1,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null(),
-            )
-        } < 0
-        {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(None);
-            }
-            return Err(e);
-        }
-        queue
-    };
-    #[cfg(not(target_os = "macos"))]
-    let end = {
-        // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is close-on-exec.
-        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if raw < 0 {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(None);
-            }
-            return Err(e);
-        }
-        let raw =
-            std::os::fd::RawFd::try_from(raw).map_err(|_| io::Error::other("a descriptor out of range"))?;
-        // SAFETY: a descriptor just made, owned by nothing else.
-        unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) }
+    let Some(end) = crate::unix::exit_watch(pid)? else {
+        return Ok(None);
     };
     Ok(named.lives().then_some(end))
 }
