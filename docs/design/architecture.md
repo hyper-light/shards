@@ -26709,6 +26709,45 @@ API's protocol: its output drained, its end, its connections.
 - *Connections.* `connect_before(port, deadline)` dials under an absolute deadline, a socket
   completed after it never published; `connect_once_before` dials once, refused at once where
   nothing listens.
+- *A borrowed connect with no clock* (Hex lead's ask, 2026-11-14: Hex's audit fix D-3 and its
+  decision 9, no verdict at a bound). `connect_borrowed(identity, port, patience)` had one
+  finite deadline and no uncensored form: `Duration::MAX` is refused `Bounds` before the dial,
+  and any finite patience closes an `OK` that comes after it. Hex's offered-stream CONNECT
+  (every Windows exec with streams) must, past its own learned W*, wait for its `OK` with no
+  clock. Now `connect_borrowed_before(identity, port, deadline: Option<Instant>)`:
+  - `Some(at)` is `connect_borrowed`'s finite wait to the caller's instant (`Until`), unchanged:
+    each step waits to it, an answer at or past it is refused `Borrowed { Expired }`.
+    `connect_borrowed` stays as it was, Hex's existing calls with it.
+  - `None` has no clock. Its one dial's handshake ends only at the `OK`, however late, at the
+    connection's end (`Borrowed { Channel(..) }`), or at the end of the identity's VM process,
+    refused `Process { failure: Exited }`, typed, whatever the connection said as it ended.
+  - *The watch is the hold the borrowed connect already takes* (`taken::Held::find` on Unix,
+    `borrowed_windows::Held` on Windows, before the dial, by pid and start): a pidfd on Linux,
+    a kqueue with the exit registered (EVFILT_PROC, NOTE_EXIT) on macOS, a process handle with
+    SYNCHRONIZE on Windows, the same objects a taken-back guest's watcher waits on
+    (`Held::exited`). Each holds the process object, not its pid: a pid given to another
+    process since is refused `DifferentStart` before the dial (`Held::found`), and the end the
+    hold sees is the held process's alone.
+  - *How it waits.* Where a step would block, it waits on the socket and the hold together
+    (`stream::Socket::read_watched`, `write_watched`), with no thread and no timer: on Unix one
+    poll(2) of both, a pidfd and a kqueue holding an event each being readable (pidfd_open(2),
+    kqueue(2)); on Windows, where WSAPoll takes sockets alone, the socket's FD_READ or FD_WRITE
+    and FD_CLOSE selected to an event (WSAEventSelect, signalled at once where the condition
+    holds as it is selected) and waited on with the process handle (`shards_ipc::await_any`,
+    WaitForMultipleObjects), the selection let go of after. An owned guest's no-clock connect
+    (`Guest::connect(port, Duration::MAX)`) is woken by its watcher thread's condvar between
+    its dials; a borrowed connect makes one dial, so its one wait is inside the handshake, on
+    the same hold. Its dial waits on nothing new: Unix's connect never waits on its listener,
+    Windows' ends as afunix.sys ends it, and a VM process's end closes the listener.
+  - *Literals and cold start.* None: no timeout, period or bound of ours. poll(2)'s -1 and
+    INFINITE are the OS's own "no timeout"; the caller's deadline is the only clock, and with
+    `None` there is none. Nothing is learned, so there is no cold start.
+  - *Tests (light)*, `client::borrowed_tests::no_clock`: a withheld `OK` closed at a learned
+    patience (`while_runs::until_reached`) and taken, past it, with `None`, the bytes after it
+    the stream's; the identity's process (a child that waits on its stdin) killed and reaped
+    as the connect waits, its peer holding the connection open, refused `Exited`, its answer
+    waited for at the scale of that kill and reap; a pid of another start refused
+    `DifferentStart` before any dial, and a reaped one refused `Process`, neither followed.
 - *The report.* D232's report reaches the client on its private pipe: one complete scoped
   frame by the deadline, anything else uncertainty. On Windows the pipe is a named pipe, as
   Windows' anonymous pipes are (which take no overlapped reads), with a name of the

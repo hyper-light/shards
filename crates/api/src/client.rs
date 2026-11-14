@@ -1343,13 +1343,16 @@ impl HandshakeError {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum HandshakeWait {
+enum HandshakeWait<'a> {
     Ready,
     Until(Instant),
     Unbounded,
+    /// No clock, and each wait also on the end of a held process (a borrowed connect's), which
+    /// ends the handshake `Closed`: its caller refuses it as that end.
+    Watched(stream::Exit<'a>),
 }
 
-fn remaining(wait: HandshakeWait, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
+fn remaining(wait: HandshakeWait<'_>, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
     match wait {
         HandshakeWait::Until(at) => {
             let left = at.saturating_duration_since(Instant::now());
@@ -1359,7 +1362,16 @@ fn remaining(wait: HandshakeWait, phase: HandshakePhase) -> Result<Option<Durati
                 Ok(Some(left))
             }
         }
-        HandshakeWait::Ready | HandshakeWait::Unbounded => Ok(None),
+        HandshakeWait::Ready | HandshakeWait::Unbounded | HandshakeWait::Watched(_) => Ok(None),
+    }
+}
+
+/// A watched step's I/O, or `Closed` where the held process ended first.
+fn watched(step: io::Result<Option<usize>>) -> Result<io::Result<usize>, HandshakeError> {
+    match step {
+        Ok(Some(n)) => Ok(Ok(n)),
+        Ok(None) => Err(HandshakeError::Closed),
+        Err(e) => Ok(Err(e)),
     }
 }
 
@@ -1410,7 +1422,7 @@ fn owned_handshake_error(error: HandshakeError) -> Attempt {
 fn handshake_until(
     vsock: &Path,
     port: u32,
-    wait: HandshakeWait,
+    wait: HandshakeWait<'_>,
     cost: &mut Duration,
 ) -> Result<Socket, HandshakeError> {
     use HandshakePhase::{ClearTimeouts, Dial, Read, Write};
@@ -1419,7 +1431,9 @@ fn handshake_until(
     let connected = match wait {
         HandshakeWait::Ready => stream::connect_nowait(vsock),
         HandshakeWait::Until(at) => stream::connect_until(vsock, Some(at)),
-        HandshakeWait::Unbounded => stream::connect_until(vsock, None),
+        // Unix's connect never waits on its listener; Windows' ends as afunix.sys ends it, and
+        // a VM process's end closes the listener it dials.
+        HandshakeWait::Unbounded | HandshakeWait::Watched(_) => stream::connect_until(vsock, None),
     };
     // A dial its deadline passed in is expired, as a write's and a read's are, whatever the
     // dial said: Windows' connect waits for its connection to complete, to the deadline, and
@@ -1440,6 +1454,7 @@ fn handshake_until(
     while !ask.is_empty() {
         let sent = match wait {
             HandshakeWait::Ready => s.write_nowait(ask),
+            HandshakeWait::Watched(exit) => watched(s.write_watched(ask, exit))?,
             _ => {
                 Stream::set_write_timeout(&s, remaining(wait, Write)?)
                     .map_err(|source| HandshakeError::io(Write, source))?;
@@ -1463,6 +1478,7 @@ fn handshake_until(
             .ok_or(HandshakeError::Reply(ReplyError::TooLong))?;
         let read = match wait {
             HandshakeWait::Ready => s.read_nowait(byte),
+            HandshakeWait::Watched(exit) => watched(s.read_watched(byte, exit))?,
             _ => {
                 Stream::set_read_timeout(&s, remaining(wait, Read)?)
                     .map_err(|source| HandshakeError::io(Read, source))?;
@@ -1502,10 +1518,12 @@ fn handshake_until(
 /// Zero patience makes one readiness-only attempt: connect and every handshake
 /// operation must complete without waiting. Pending or interrupted I/O returns
 /// its typed phase/cause and closes the connection. Positive patience starts one
-/// deadline before identity validation; unrepresentable patience returns Bounds
-/// before identity or dial. There is one dial and no retry. Dropping the returned stream
-/// closes only that connection. The supplied identity/socket remain trusted input;
-/// matching a PID/start is not authentication of the socket's peer.
+/// deadline before identity validation; unrepresentable patience (`Duration::MAX`
+/// included) returns Bounds before identity or dial: a connect with no clock is
+/// [`connect_borrowed_before`]'s, with no deadline. There is one dial and no retry.
+/// Dropping the returned stream closes only that connection. The supplied
+/// identity/socket remain trusted input; matching a PID/start is not authentication
+/// of the socket's peer.
 ///
 /// Synchronous OS calls and scheduling are not hard real-time bounded. Readiness
 /// waits use the original deadline, and late completion is refused.
@@ -1515,25 +1533,59 @@ pub fn connect_borrowed(
     patience: Duration,
 ) -> Result<Box<dyn Stream>, Refusal> {
     let began = Instant::now();
+    if patience.is_zero() {
+        return borrowed(identity, port, HandshakeWait::Ready);
+    }
+    let deadline = began
+        .checked_add(patience)
+        .filter(|_| patience != Duration::MAX)
+        .ok_or_else(|| {
+            message(format_args!("{}", BorrowFailure::DeadlineOverflow))
+                .map(|why| Refusal::Bounds {
+                    what: "patience",
+                    why,
+                })
+                .unwrap_or(Refusal::Allocation {
+                    what: "connection diagnostic",
+                })
+        })?;
+    borrowed(identity, port, HandshakeWait::Until(deadline))
+}
+
+/// Connect to a running guest without acquiring its lifetime, by `deadline`, or with none.
+///
+/// `Some(at)`: [`connect_borrowed`]'s positive patience, to the caller's instant: each
+/// handshake step waits to it, and an answer completed at or past it is refused
+/// `Borrowed { failure: Expired }`, its socket closed. An instant already past expires
+/// before the dial.
+///
+/// `None`: no clock. Its one dial's handshake waits for the guest's `OK`, and an `OK` that
+/// comes however late is taken. It ends only at that `OK`, at the end of the connection
+/// (`Borrowed { failure: Channel(..) }`), or at the end of the identity's VM process, which it
+/// waits on as it waits on the socket, through the process held by its pid and start before
+/// the dial (a pidfd on Linux, a kqueue with its exit registered on macOS, a process handle on
+/// Windows): refused `Process { failure: ProcessFailure::Exited }`, whatever the connection
+/// said as it ended. A pid that names another process (another start) is refused
+/// `DifferentStart` before the dial, never followed.
+///
+/// Either way there is one dial and no retry, and the identity and socket remain trusted
+/// input, as [`connect_borrowed`]'s.
+pub fn connect_borrowed_before(
+    identity: &Identity,
+    port: u32,
+    deadline: Option<Instant>,
+) -> Result<Box<dyn Stream>, Refusal> {
+    borrowed(
+        identity,
+        port,
+        deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until),
+    )
+}
+
+/// A borrowed connect's one dial, its handshake waiting as `wait` says, `Unbounded` waiting
+/// on the held process's end too (`Watched`).
+fn borrowed(identity: &Identity, port: u32, wait: HandshakeWait<'_>) -> Result<Box<dyn Stream>, Refusal> {
     let refused = |failure| Refusal::Borrowed { port, failure };
-    let wait = if patience.is_zero() {
-        HandshakeWait::Ready
-    } else {
-        let deadline = began
-            .checked_add(patience)
-            .filter(|_| patience != Duration::MAX)
-            .ok_or_else(|| {
-                message(format_args!("{}", BorrowFailure::DeadlineOverflow))
-                    .map(|why| Refusal::Bounds {
-                        what: "patience",
-                        why,
-                    })
-                    .unwrap_or(Refusal::Allocation {
-                        what: "connection diagnostic",
-                    })
-            })?;
-        HandshakeWait::Until(deadline)
-    };
     let process_failure = |failure| Refusal::Process {
         pid: identity.pid,
         expected_started: identity.started,
@@ -1543,8 +1595,18 @@ pub fn connect_borrowed(
     let held = crate::taken::Held::find(identity.pid, identity.started).map_err(process_failure)?;
     #[cfg(windows)]
     let held = borrowed_windows::Held::find(identity.pid, identity.started).map_err(process_failure)?;
+    let wait = match wait {
+        HandshakeWait::Unbounded => HandshakeWait::Watched(held.exit()),
+        wait => wait,
+    };
     let mut cost = Duration::ZERO;
     let stream = handshake_until(&identity.vsock, port, wait, &mut cost).map_err(|cause| {
+        // With no clock, the held process's end is the refusal, whatever the channel said of it.
+        if matches!(wait, HandshakeWait::Watched(_))
+            && let Err(failure) = held.check()
+        {
+            return process_failure(failure);
+        }
         refused(match cause {
             HandshakeError::Io {
                 kind: io::ErrorKind::OutOfMemory,
@@ -1614,6 +1676,12 @@ mod borrowed_windows {
             }
             held.check()?;
             Ok(held)
+        }
+
+        /// What its end is waited on through beside a socket: the handle, signalled once
+        /// its process has exited.
+        pub(super) fn exit(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+            std::os::windows::io::AsHandle::as_handle(&self.0)
         }
 
         pub(super) fn check(&self) -> Result<(), ProcessFailure> {
