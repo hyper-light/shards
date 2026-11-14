@@ -27827,6 +27827,21 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
+  placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
+  HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
+  `Set-Cookie`, the reason phrase) put the real token in the guest beside the placeholders. Now, once the body names
+  its tokens, every place of the response that goes to the guest as it came is read for each token, access, refresh
+  and ID, as it came and with its percent-encoding and quoted-pairs decoded (`signin::unechoed`): an HTTP/1.1 head
+  whole, each HTTP/2 field's name and value, its trailers'. One found is refused 502 (`signin::Refusal::Echoed`)
+  before the tokens are asked outside, as `read` refuses a token echoed in another of the body's strings: the guest
+  gets none of the response and nothing is captured. A chunked HTTP/1.1 response's trailer section is no part of what
+  goes (`Piece::Trailers`, dropped). Masking the head with the placeholders instead was refused: it would hand the
+  guest a response the body's own rule refuses. Tests (macOS arm64): `inject::tests::leaks`' token response
+  repeating its tokens in a field, a cookie and the reason phrase over HTTP/1.1, and in a field and in the trailers
+  over HTTP/2, red before (a real token reached the guest), green after, and each escaped form found; the check
+  removed, and HTTP/2's trailers left out of it, each fail them. Still unread: an informational (1xx) response,
+  which goes before the body names its tokens.
 
 **Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
 refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
