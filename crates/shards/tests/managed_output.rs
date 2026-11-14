@@ -789,6 +789,25 @@ fn a_socket_is_found_once_while_others_come_and_go() {
     let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
     let batch = 2 * page / 128;
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    // Its churners hold `threads * batch` sockets at once: the soft descriptor limit raised to
+    // the hard one, as the daemon raises its own (a systemd unit's soft limit is 1024, under
+    // 32 threads' 2,048: KVM c36 refused EMFILE).
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) and setrlimit(2) on a struct of ours.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+    }
+    let wanted = u64::try_from(threads * batch).unwrap();
+    assert!(
+        limit.rlim_max > wanted,
+        "its churners need {wanted} descriptors; this host's hard limit is {}",
+        limit.rlim_max
+    );
     let stop = AtomicBool::new(false);
     std::thread::scope(|s| {
         for _ in 0..threads {

@@ -4331,7 +4331,9 @@ the first.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
-| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | 100 ms, an upstream default; its derivation decided and owed ("Its period", below) | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
+| `PERIOD` (`HOLD_PERIOD`, vm/mod.rs) | 100 ms | none: each limit's period derived as it is set, vcpus × g over its share (`granule::period`; "Its period, in force", below) | the machine's vCPUs; g learned where it runs (`platform::granule`) |
+| `SOONEST` (vm/hold.rs) is `granule::LEAST_WAIT` | 1 ms | 1 ms, cited, g cold | as `SOONEST` |
+| the group's look with no quota (vm/hold.rs `govern_group`) | `PERIOD`, 100 ms | the group's own `cpu.max` period, which `max` keeps (`group::Budget::period`) | the group's `cpu.max` (kernel/sched/core.c `cpu_period_quota_parse`: `max 100000` where unset) |
 | `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
 | `SOONEST` (vm/hold.rs) | 1 ms | 1 ms, cited | kernel/sched/core.c l. 10054 (`min_bw_quota_period_us`); kernel/sched/fair.c l. 7179 (`min_cfs_rq_runtime`); Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186 |
 | the machine's busy mark (vm/hold.rs `govern`) | `used * 2 >= share` | `busy_next(before, used, share)`: `used + (used - before) >= share` | the machine's own last two periods |
@@ -4401,6 +4403,60 @@ default, which R03 holds insufficient alone.
     `cargo test -p shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (or the
     run D191's measurement drives) at the rates above, reading each limit's "derived … from g"
     line beside the kicks a second and guest progress; then the switch, with `RATED`'s period.
+- *Its period, in force* (2026-11-14, migrate-09: ROOT's brief, "finish wiring the hold's
+  period to the learned value, so no fixed period is left in production"; the kick-cost
+  measurement stays owed, below). `HOLD_PERIOD` and `vm::hold_period` are gone.
+  - *The derivation, shared* (`platform::granule::period`): vcpus × g × `MILLI_PER_CPU` over
+    the rate, in u128, refused typed (`granule::Outgrown`) where it outgrows a u64 of ns,
+    never saturated. Windows' priority governor holds one thread's half a CPU by the same
+    function (platform-11).
+  - *When*: as each limit is set (`Hold::set`), from g as the process knows it then
+    (`granule::g`, `step().g(LEAST_WAIT)`); the governor holds that limit's periods over it
+    (`State::period`) until the next limit. g learned later (a wait's lateness) moves the next
+    limit's period, never one already answered, so a period said is the one held.
+  - *Cold start*: the first limit measures, on the setting thread, before any period is
+    derived (`granule::measure`, ROOT's review 2026-11-14): the host's wake, one timed wait of
+    the least a wait can ask (a nanosecond), its lateness counted in `LATE` as the host's own
+    wake granularity (a timer tick where the host waits in ticks, µs on high-resolution
+    timers); and the thread clock's step (two of its steps at most: µs where clocks count ns,
+    31.25 ms on Windows, PM M294). The first g is so `LEAST_WAIT` plus the measured wake, or
+    the clock's step where coarser: never `LEAST_WAIT` alone. A clock that cannot be read is
+    typed `Unclocked` and g its wake's (the debug line says so).
+  - *`LEAST_WAIT` (1 ms), its source*: CFS bandwidth control's own precision, cited above for
+    `SOONEST` (core.c `min_bw_quota_period_us`, fair.c `min_cfs_rq_runtime`): the least the
+    governor waits between reads, as D191 holds vCPUs as CFS holds a cgroup and no closer. It
+    is not any host's timer resolution, and no longer stands as one: g adds the host's
+    measured wake above it. Held by `granule::tests::a_cold_wake_is_measured_before_any_wait`.
+    A g learned low only shortens the period: the share is then held on average across
+    periods, as the debt carries, never over more than it gives.
+  - *Let be* (no rate, or every vCPU's whole CPU): the period is g, the formula at a share of
+    every vCPU, the finest the governor resolves, which `RATED`'s period must still say (it is
+    never none, `shards_abi::rate`).
+  - *Refused*: a period past a u64 of ns refuses the limit, the hold as it was
+    (`Running::hold_rate`'s error, `REFUSED` on the wire).
+  - *Told*: the direct path's `RATED <milli> <period>` carries each limit's period (D255);
+    the image channel moves the period from `Started` to each `RATED` answer (version 31,
+    `wire::Rated`), the VM telling the daemon its answer as the managed machine's line
+    (`shards_abi::rate::answer`, read back by api_run's `rated_of`). `ImageGuest::rate_period()`
+    is the last answer's, none before one (Hex's learner reads it there; its re-vendor owed).
+  - *The group's look*: a group with no quota looks again each period of its own `cpu.max`,
+    which `max` keeps and the daemon now writes with it (`group::Budget`, `groups::CpuMax`);
+    a budget never written refuses `hold_group`, typed, never a picked look.
+  - Held (red/green): vmm `hold::tests::a_limit_is_held_over_the_period_derived_from_g` and
+    `the_governor_holds_over_the_limits_period` (red with the period in force at 100 ms: the
+    hold returned no period, and a thread at half a CPU held 50 ms past its 10 ms period's
+    share), `granule::tests::a_derived_period_resolves_its_share`, `group::tests`'s
+    `a_budget_written_is_read_through_another_mapping`, api `wire::tests::a_rates_period_reads_back_as_its_vm_said_it`,
+    `session::tests::a_rates_answer_is_kept_for_its_awaited_ask_alone`, shards
+    `api_run::tests::a_rates_answer_reads_as_it_was_asked`, `vm_run::tests::a_rates_answer_is_its_hold_and_its_period`,
+    `daemon::groups::tests::cpu_budgets_read_as_the_kernel_reads_them` and
+    `a_cpu_budget_of_every_cpu_holds_nothing`.
+  - *Owed to ROOT*: the kick-cost runs above, now of the period in force:
+    `SHARDS_LOG=debug cargo test -p shards --profile test-release --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket -- --nocapture`
+    and `cargo test -p shards --profile test-release --test api_image the_orchestrators_rate_holds_its_run_to_it`
+    on HVF, KVM x86-64 and arm64 (L1), WHP x86-64 and arm64, reading each "held … over …
+    from g" line beside the kicks a second and guest progress (`docs/research/measurements/macos-sched/launchd-run.sh`
+    on macOS); the hold's E2E (`--cpus`) on each; Hex's re-vendor to channel version 31.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -10169,6 +10225,35 @@ host's disk as a run's (D190). M268 at larger sizes.
 
 ### D189. Volumes' file data once, in the host's page cache: virtio-fs DAX windows (built: every share's window as long as its host's memory, but on a virtual machine on an AMD CPU)
 
+**Review memory-09 (2026-11-14): which files a window maps, learned where it runs.**
+`DAX_SMALLEST`, 1 MiB, PM M338's crossover on the Mac and Fedora, held on every host, is
+gone. The server says which files *may* be mapped (a regular file it may read, and write
+where the window needs it: `Server::dax_of`, whatever its size); each share's device
+decides which *are* (`fs::crossover`), and only takes the window away (it clears
+`fuse_attr.flags`' FUSE_ATTR_DAX in a reply), never gives it, so no cost moves a
+permission. The device sees both ways: a READ, its server's answer timed from ask to
+reply, and a SETUPMAPPING, its own, timed from its descriptor's ask to its window's
+mapping, each a cost a byte of the file it served, kept by the file's size class (the
+power of two at or below its size, known from the attributes the replies told) as the
+cheapest and dearest seen, the spread its uncertainty. A class whose window's dearest
+costs no more a byte than FUSE's cheapest is mapped; one where they overlap, or FUSE's
+reach below, is read. The least class at and past which every known class is mapped is the
+crossover, and a class past it not yet known is mapped too. *Cold start:* a class with
+fewer than two costs of either way (two, the fewest that show a spread) is calibrating:
+its files are told each way in turn as the guest learns of them (the first mapped), each
+file keeping its way while it calibrates. *Failure:* a class in which a mapping failed is
+read, its errno kept (`Verdict::Failed`). A file the guest maps already keeps its mapping
+until its kernel lets the inode go (`fuse_dax_dontcache`). The learner is the device's,
+in the VM process's memory, as a restored VM's starts cold. *What it cannot see:* the
+guest's faults on a mapped page and its copies into its own page cache of what it read,
+which are its vCPUs', and a reread's cost. *Owed to ROOT:* D189's file-size/working-tree
+harness (PM M338's) on HVF, KVM x86_64 and WHP, and KVM arm64 through the L1 path: per
+size class, cold read, warm reread and overwrite, and resident memory, n ≥ 20 per class
+with p50/p90/p99/max, against the learner's chosen crossover; and `cargo test -p shards
+--test containers a_volumes_files_are_mapped_as_its_share_learns`, `a_volumes_large_files_go_through_its_dax_window`
+and the other DAX tests (dma, budget, saved, slates_fs), whose files are now mapped as a
+cold share calibrates: the first file of each size class mapped, the next read.
+
 **Found.** The user's plan, item 5. A volume's file the guest reads is in the host's page
 cache and again in the guest's (944 MiB of a 1 GiB file, PM M267), and every read and write
 goes through the share process: two copies a request, on one queue (the benchmark's
@@ -12347,6 +12432,45 @@ children, the first reading of the failure.
   test: the real-VM run is its evidence. Owed (ROOT): `cargo test -p shards --profile
   test-release --test managed_output -- --test-threads=1` on HVF and KVM.
 
+**Part 7: a restored guest's first answer is a kind of its own** (#77, 2026-11-14; ROOT's
+brief: fix the judge's reading, not the bound). HVF (adas-mac-studio.local, main 6f3cd4428)
+and KVM (c35 at 8fdd66512, c36 at 3f2705f8d): moved.rs
+`a_moved_microvms_published_port_answers_there` was refused at :631, "a guest's stream made
+no progress for 34.870583ms, past the slowest answer of its kind seen on this host
+(17.694042ms), 70.9335ms into its wait ... (this test's own VM processes, its CPU its
+liveness alone, daemon 47690 of …/ports-t-12) ... its last progress its daemon said
+something 70.516834ms ago; its host not holding it; its record W* 17.694042ms, R* 0ns of
+CPU in 17.694042ms".
+- *The cause.* The test read its published port through one closure, `ask`, before the move
+  (a running guest) and after it (the guest its restore on the other home had just
+  started). `Following`'s kind is its call site and `STREAM` (`WaitKind::awaiting`), and a
+  closure cannot be `#[track_caller]` on stable Rust, so both reads were moved.rs:629:9, one
+  kind: the warm read's 17.7 ms answer was the W* that judged the restored guest's first
+  answer. That answer waits on the restored guest's own work (its memory faulted back from
+  its snapshot, its first accept) and carries no byte until it comes. A `Following`'s
+  party's CPU is its liveness alone (`Cpu::Liveness`), so no reading of its processes would
+  have shown that work as progress: the kind, not the party, was wrong.
+- *Not the party.* The party was whole: no VM process is the test's own here, and the
+  restored VM process descends from the other home's daemon (its spawner's child), which
+  `Party::members` follows by parent. "R* 0ns of CPU" is the record's, not this wait's: the
+  rate of the one answer that taught it, whose looks read no CPU between a first look (based)
+  and its answer. The harness test below shows the same "R* 0ns of CPU in W*" with no party
+  at all.
+- *The fix.* moved.rs' two published-port tests read through nested `#[track_caller]`
+  functions, so each read's kind is its caller's site: the read before the move and the
+  restored guest's first are two kinds, each cold on a host until its own first answer
+  (D215), each learning from its own answers alone. No literal and no bound changed (R03).
+- *Held by* tests/harness.rs `a_moved_guests_first_answer_is_a_kind_of_its_own`
+  (a stream answered 5 ms in, then one answered after four times the W* that taught, from
+  two call sites of one `#[track_caller]` helper), on adas-mac-studio-3.local (macOS arm64,
+  kiln r60/r64, dac3eafa3's tests): green 3 of 3; red with both read through one closure
+  (moved.rs' shape), 2 of 2, "refused 81.1845ms into its peer's quiet: a guest's stream made
+  no progress for 20.296125ms, past the slowest answer of its kind seen on this host
+  (20.296125ms) ... its record W* 20.296125ms, R* 0ns of CPU in 20.296125ms". The whole
+  harness binary (r42, the test's first form): its 27 others passed, 3 ignored; clippy of shards (`--all-targets -D warnings`) clean.
+  Owed (ROOT): `cargo test -p shards --profile test-release --test moved --
+  --test-threads=1` on HVF and KVM.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
@@ -13659,6 +13783,50 @@ four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask
 `start /affinity 1`, whose microVMs get its mask's CPUs, D191) with a busy guest each, beside a normal-priority host spinner on that CPU, and 2x the host's CPUs of busy
 vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
 changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
+
+**The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
+the hold's old period) is gone: each look's period is D191's for one thread held to half a
+CPU (`HALF`, 500 milli-CPU: the most a fair scheduler gives a thread that contends for its CPU
+at all, as a raise matters only where another thread is ready there: beside k ≥ 1 ready
+threads of its priority Windows gives each a slice in turn, Scheduling Priorities, as Linux's
+fair scheduler gives threads of one weight w / (w + k·w), kernel/sched/core.c
+`sched_prio_to_weight`, so 1 / (k + 1) ≤ 1/2, at k = 1 the most: a bound, not a pick),
+`granule::period(1, 500 milli-CPU, g)` = 2g, derived as each look begins from g as the
+process knows it (`granule::g`; one function with the hold's, migrate-09), the governor's
+sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTimes counts
+15.625 ms ticks (PM M294), 31.25 ms.
+- *Its credit, a thread's and a pool's per CPU: a whole period, where it was half.* One look
+  can charge a thread the whole period of its one CPU (every tick of the look landing on its
+  runs), a physical bound: the credit holds it, so no single look's ticks put a thread that
+  keeps to its half back to normal. At half a 2g period, one tick of slack, a thread running
+  1 ms of every 6 charged both ticks of a look went back to normal (the risk platform-11's
+  2026-11-14 Status named). A raised thread so takes half a CPU over a long stretch and two
+  periods more at most (4g, 62.5 ms at ticks), where it took a period and a half of 100 ms
+  (150 ms).
+- *Cold start*: the governor measures its wake and its thread clock's step as it starts,
+  before it is raised and before its first look (`granule::measure`: one shortest wait, and
+  two of its clock's steps of its own CPU time, 31.25 ms at ticks); a thread raised before
+  then is credited at a g of `LEAST_WAIT`, a 2 ms period, as small a credit: it may go back to
+  normal until the first look, less authority, never more.
+- *Failure, typed*: a period that outgrows a u64 of ns (`granule::Outgrown`) raises no thread
+  (`raise_current` errs, the thread at its priority) and, at a look, puts every watched thread
+  back to normal and lets go of them; a clock that cannot be read leaves g its wake's
+  (`Unclocked`), and a thread whose time is unread is refused as before.
+- Held (light, Windows): `platform::windows_thread::tests::the_look_is_d191s_period_for_half_a_cpu`,
+  `a_look_charged_its_whole_period_keeps_a_thread_raised` (red at half a period's credit:
+  none left after one look's two ticks), `credit_carries_a_thread_that_waits_across_its_clocks_steps`
+  and `a_pool_is_half_of_its_cpus_time` at 2g. Linted for x86_64-pc-windows-msvc; their run on
+  Windows is owed to ROOT: `cargo test -p shards-vmm --lib windows_thread` on windows-2025
+  (CI) and jupiter, with `a_thread_that_waits_between_its_runs_stays_raised`,
+  `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits` and
+  `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` at the derived period, then PM
+  M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
+  beside 100 ms.
+- Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
+  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
+  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
+  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  cost). No number replaced another.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -19256,6 +19424,93 @@ header follows the existing connection-end path before allocation or payload
 read. Both signed extremes remain accepted. Red/green evidence and platform
 limits: `docs/research/measurements/memory-fixes-v1/README.md`.
 
+**Review memory-11 (2026-11-14): the reserve's slack, derived and learned.** The 64 MiB
+slack beside a held cgroup's `memory.high` (`plug::reserve`, and with it `needed_for` and a
+run's `plug_for`) is now two terms, neither picked:
+
+- *What the kernel lets a cgroup's charges pass its hold by* (`plug::overshoot`), a bound of
+  the kernel's own: a task's charges are counted past `memory.high` until they come to more
+  than `MEMCG_CHARGE_BATCH`'s 64 pages, then it reclaims at once (mm/memcontrol.c
+  `try_charge_memcg`, `current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH`, Linux
+  7.2-rc4), so a task passes it by two charges at most, each of a batch or of the folio it
+  charges where larger: a PMD's where the kernel has THP (`hpage_pmd_size`; the pinned
+  kernels' configs have `CONFIG_TRANSPARENT_HUGEPAGE=y`), else 2^8 pages
+  (`PREFERRED_MAX_PAGECACHE_ORDER`), never past `MAX_XAS_ORDER`'s 2^11 pages
+  (include/linux/pagemap.h); one such task on each CPU online. A `hpage_pmd_size` unread
+  counts a PMD as the page table has it (a page of 8-byte entries), the larger case. On
+  32 CPUs with 4 KiB pages it is 128 MiB, past the 64 MiB it replaces; on 4 CPUs, 16 MiB.
+- *What the kernel adds beside the cgroup uncharged* (`plug::Uncharged`), learned by the
+  grower at each `memory.events` wake: the most `MemTotal − MemFree − memory.current` rose
+  between two wakes, less the page structures of memory plugged between them (a 64th, which
+  the reserve counts apart). Its cold start is what the kernel held beside the cgroup as its
+  hold was set, its use so far standing for what it adds (the delta-t estimator D215's `w`
+  uses). It lives in the page init, its grower and its builtins share (`CAP`'s `Shared`), so
+  each hold and give-back reads one value; without that page, a reader takes what the
+  kernel holds beside the cgroup now. A wake whose files are unread keeps what was learned,
+  never none; a hold that cannot read them at all is refused typed (`high` errs).
+
+What a build needed (`plug::needed`, `NEEDED`) now counts what its kernel holds beside it
+as it ends with the slack, where `needed_for` had stood the 64 MiB for both. The two terms
+can over-count: the CPUs' lists' pages are outside MemFree, so their growth is learned as
+uncharged and also kept in the reserve's eighth. Owed to ROOT: `cargo test -p shards --test
+build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`, and PM M392's 8-compiler
+build on 32 vCPUs with each wake's `memory.peak − memory.high` and uncharged rise logged, on
+HVF and KVM at 4, 16 and 32 vCPUs: each observed maximum must sit under its term.
+
+**Review memory-14 (2026-11-14): growth and give-back both rest on the run's own use.**
+The grower asked for twice the builder's MemTotal and a give-back kept twice the run's
+use: two different bases, so a give-back just after a growth took back what that growth
+had asked for on the same use. Both now hold the least whole blocks whose hold
+(`needed_for`, the kernel's uncharged use and the slack beside it) keeps twice
+`memory.current` (`plug::holding`, `to_ask`, `to_keep`); a give-back keeps the run's peak
+since the last where that is more (PM M275), and the grower asks for a block more than is
+plugged at least, the unit the driver adds memory in, so that a run held at its hold always
+has room to grow into. Twice is not a tuning: it is the delta-t estimator (Gott, Nature
+363, 1993), what a run has grown to so far standing at the median for what it grows to in
+all, the estimator D215's `w` uses, with the same cold start (none: the run's use itself).
+A factor learned from realized peaks would be biased low, as the hold caps what a run can
+show (censored), so it is not learned naively. The step: the run's use now, `u`, is a point
+of its growth episode, so `r = u/P` of the episode's final peak `P` is uniform on (0, 1);
+P(r > 1/2) = 1/2, so the median of `P` is `u / (1/2) = 2u`. The median is the point estimate
+under absolute loss, an even chance of the run growing past it or not (a quantile `q` would
+give `1/(1−q)`). Owed, the censored refinement: a Kaplan-Meier estimate of `P/u` over the
+growth episodes that ended below their hold (uncensored) and those the hold capped
+(censored), its cold start the median, 2, resting on ROOT's realized-episode measurement
+below. Owed to ROOT, to validate the median:
+realized episode ratios (final peak over the use at a growth episode's first ask) on real
+builds and runs; `cargo test -p shards --test build
+a_build_held_short_of_memory_has_its_builder_give_back` and
+`a_builders_memory_is_plugged_as_its_build_needs_it` on HVF and KVM; ask counts and stall
+per build, before and after, n ≥ 20, p50/p90/p99/max.
+
+**Review memory-15 (2026-11-14): what a builder boots with, learned per home and guest.**
+`BOOT_MEMORY_MIB`'s 512 is gone. As init would hold its build (with memory to plug or not),
+it notes what its guest needs then (`plug::note_startup`, `startup`): the least MemTotal whose
+hold leaves the first growth's working room (`working_room`) beside what its kernel uses and
+the reserve (memory-11's slack, its uncharged term cold, so its use again; at most a 64th for
+what may still be plugged; the CPUs' lists' eighth), `t ≥ (2·used + overshoot + working)·64/55`;
+and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`; an older init's
+two words still read). The host learns from it what that guest needs to boot
+(`build::boot_need`): past MemTotal, what the kernel took at boot is its image and its page
+structures, a 64th of what it booted with, allocated from memblock and never in MemTotal; the
+first stays as it was, the second is counted for the memory booted with, so the least `b`
+with `b − b/64 ≥ fixed + start`. The home's `builder-memory` keeps the most each guest needed
+(`boot IDENTITY BYTES`), a guest named by its kernel's and init's paths, lengths and times and
+its CPUs (`build::builder_identity`), one line each guest the home booted builders of. The
+next builder of that guest boots with it in whole blocks within its ceiling
+(`build::builder_boot`). The cold start, no record for this guest, boots with the ceiling,
+all it may have, which always boots: it costs that boot the page structures of all of it (a
+64th, PM M82, M193), once a home and guest, and a cold builder plugs nothing, so it gives
+back only its files' cold pages at its host's word (D188), never blocks. Never a guessed
+floor: the ceiling's own floor of 512 MiB is gone too, a ceiling held at least what its
+guest was learned to boot with, and all the host's memory where what is available holds no
+whole block (as where it is unread). A host whose memory is unread takes what its home
+recorded, else is refused (`build::HostMemoryUnread`), where it was given 512 MiB. Owed to
+ROOT: cold-home and warm-home builder boot time and VM-process footprint on HVF, KVM x86_64,
+KVM arm64 (L1) and WHP, at 4 and 32 vCPUs, n ≥ 20 each with p50/p90/p99/max, for the ceiling
+cold start and the learned boot; and `cargo test -p shards --test build
+a_builders_memory_is_plugged_as_its_build_needs_it` across cold homes.
+
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
 designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
@@ -21775,6 +22030,20 @@ the workload's cgroup, as before the fix (the mutant), `ceiling=named`. Mutation
 guard (an exec let into the namespace's root): `a_granted_runs_execs_join_its_leaf_never_its_root`
 fails. The bpf(2) steps themselves need init's privileges, which no unit test has: the
 real-VM twin below is owed. The reaper's own cgroup namespace has no unit test reaching it.
+
+**inithex-01's twin, its node moved** (2026-11-14): its first runs (ROOT, HVF at 6f3cd4428,
+KVM x86_64 at 3f2705f8d) said `ceiling before: errno 13` and `after: errno 13`, none
+detached: the node was made in the run's `--tmpfs /run`, which the run mounts nodev
+(`setup.rs`'s tmpfs defaults, moby's MergeTmpfsOptions, since ea4f387a0), and open(2) refuses
+a device node on a nodev mount EACCES in `may_open` before `inode_permission` reaches the
+device program (Linux v7.2 fs/namei.c `may_open_dev`, then `do_inode_permission`,
+`devcgroup_inode_permission`). So the test never reached the program; no production layer
+changed, and none was loosened. The node is now made in the run's /dev, a tmpfs without
+nodev (run.rs `container_mounts`), and the workload says its mount's flag (`ceiling mount:
+dev`, statvfs's ST_NODEV), which the test asserts with `mknod done`: DAC passes root's own
+0600 node, Landlock (no domain beside the grant, and an open's Landlock check is
+`security_file_open`, after the program) says EACCES if anything, so `errno 1` before and
+after is the device program's alone, and a detached program lets the open succeed.
 
 **Evidence owed** (ROOT):
 - inithex-01's real-VM twin: `cargo test -p shards --profile test-release --test nesting
@@ -31141,7 +31410,9 @@ move it: Hex had no rate for a Shards image VM but stopping its process.
   the link closes.
 - *One ask.* The client's room and rate are one numbered ask (`session::Asked`), each held while
   it is awaited, and no longer.
-- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14).
+- *Its period* (2026-11-13, channel version 17, the Hex lead's ask for plan step 14; moved to
+  each `RATED` answer in version 31, 2026-11-14, as D191 derives a period for each rate: D191's
+  hold, "Its period, in force").
   `ImageGuest::rate_period()` is the period the run's VM's governor holds a rate over. Hex's
   learner derives its window from it (Hex `learned-charge.md` C1) and copies no 100 ms of its
   own.
@@ -32295,7 +32566,8 @@ alone (D215).
   follows a `RATE` line, whose client waits for its answer.
 - `ANSWER_MOST`: the run protocol's payload bound (`run::MAX_PAYLOAD`), as an image run's
   `RATED` carries its VM's words (D247).
-- The period is D191's (`hold_period`).
+- The period is D191's, derived for each rate as it is held (`granule::period`; D191's hold,
+  "Its period, in force").
 
 **Cold start** (R03). Nothing here is learned. The rate is the orchestrator's, told as it
 moves; until one is told, the vCPUs run as booted, the envelope their ceiling. The client knows

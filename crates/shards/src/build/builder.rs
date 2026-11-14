@@ -45,11 +45,6 @@ static ENDED: Record = Record::new();
 /// `BOOT_PATIENCE`'s 30 s, judged each `daemon::READY_STALL`'s 10 s, picked (ROOT's (3)).
 static BOOTED: Record = Record::new();
 
-/// The memory a builder boots with, in MiB, where it may have more: what its page
-/// structures cost it at boot grows with it (PM M82), and the rest is plugged as the build
-/// needs it, its init asking (D133, PM M193).
-pub const BOOT_MEMORY_MIB: u64 = 512;
-
 /// Where a snapshot's tree comes from, as a builder guest holds it.
 #[derive(Debug)]
 pub enum Origin {
@@ -125,8 +120,9 @@ pub struct Builder {
     /// The range of its join disk each cache layer's file was given, by the layer.
     attached: HashMap<String, (u64, u64)>,
     /// Where its home records what its builds needed of memory (D133), which it adds its
-    /// own build's to as it ends.
-    needs: Option<PathBuf>,
+    /// own build's to as it ends, with what its guest (its identity) needed to boot, having
+    /// booted with the bytes it names (memory-15).
+    needs: Option<(PathBuf, String, u64)>,
     /// Its home's record of this host's ends, by which its network process is followed to
     /// its end (`netproc::reap`, D217).
     ends: crate::daemon::ends::Ends,
@@ -352,9 +348,14 @@ pub struct Boot<'a> {
     pub kernel: &'a Path,
     pub init: &'a Path,
     pub cpus: u32,
-    /// The most memory the builder may have, in MiB: it boots with [`BOOT_MEMORY_MIB`] of
-    /// it, and the rest is plugged as the build needs it (D133).
+    /// The most memory the builder may have, in MiB: it boots with `boot_mib` of it, and
+    /// the rest is plugged as the build needs it (D133).
     pub memory_mib: u64,
+    /// What it boots with, in MiB: what its home learned its guest needs to boot, else all
+    /// it may have (`build::builder_boot`, memory-15).
+    pub boot_mib: u64,
+    /// Its guest's identity in its home's record (`build::builder_identity`).
+    pub identity: &'a str,
     pub bases: &'a [PathBuf],
     /// The build's proxy (D110): where there is one, the builder's network reaches it
     /// alone.
@@ -770,7 +771,7 @@ impl Builder {
             "--cpus".into(),
             boot.cpus.to_string().into(),
             "--memory".into(),
-            boot.memory_mib.min(BOOT_MEMORY_MIB).to_string().into(),
+            boot.boot_mib.min(boot.memory_mib).to_string().into(),
             "--memory-max".into(),
             boot.memory_mib.to_string().into(),
             "--vsock".into(),
@@ -841,7 +842,13 @@ impl Builder {
             proxy_url,
             attach,
             attached: HashMap::new(),
-            needs: boot.needs.map(Path::to_path_buf),
+            needs: boot.needs.map(|path| {
+                (
+                    path.to_path_buf(),
+                    boot.identity.to_string(),
+                    boot.boot_mib.min(boot.memory_mib).saturating_mul(1 << 20),
+                )
+            }),
             ends,
         };
         if let Some((_, architectures)) = boot.emulators {
@@ -1417,18 +1424,44 @@ fn following<'r>(vm: &shards_ipc::Child, record: &'r Record) -> Option<Follow<'r
     Follow::begin(record, followed).ok().flatten()
 }
 
+/// What a builder's guest said its build needed of memory (`NEEDED`, D133): the bytes, the
+/// processes ended for want of it, and, where its init says it (memory-15), what it needed
+/// as its build was held (`start`) and MemTotal as it booted (`total`), its guest's boot
+/// learned from them (`build::boot_need`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Said {
+    pub need: u64,
+    pub killed: u64,
+    pub start: Option<(u64, u64)>,
+}
+
+/// [`Said`] of a `NEEDED` frame's words: `NEED KILLED`, or `NEED KILLED START TOTAL`, as an
+/// init before memory-15 says it, or since.
+pub(super) fn said_needed(said: &str) -> Result<Said, String> {
+    let words: Result<Vec<u64>, _> = said.split_whitespace().map(str::parse::<u64>).collect();
+    match words.as_deref() {
+        Ok(&[need, killed]) => Ok(Said {
+            need,
+            killed,
+            start: None,
+        }),
+        Ok(&[need, killed, start, total]) => Ok(Said {
+            need,
+            killed,
+            start: Some((start, total)),
+        }),
+        _ => Err(format!("the builder cannot say what its build needed: {said}")),
+    }
+}
+
 /// What a build has needed of memory, as its builder's guest says it over `conn`
-/// (`NEEDED`, D133): the bytes, and the processes ended for want of it. Its answer is
+/// (`NEEDED`, D133, [`Said`]). Its answer is
 /// waited for past the frames of a step still running, which come before it, as its VM
 /// `vm` goes on, judged by `record` (D215's judge): before its kind's first answer, as long
 /// as its connection and its VM live; after, given up on at a look, each the slowest answer
 /// seen past the look before, that finds its VM ran nothing at all since. A frame begun is
 /// read whole, as it comes. None where it was given up on, Err where its guest cannot say.
-fn ask_needed(
-    conn: &UnixStream,
-    vm: &shards_ipc::Child,
-    record: &Record,
-) -> Result<Option<(u64, u64)>, String> {
+fn ask_needed(conn: &UnixStream, vm: &shards_ipc::Child, record: &Record) -> Result<Option<Said>, String> {
     frame_to(conn, kind::NEEDS, b"")?;
     let mut follow = following(vm, record);
     let mut buf = Vec::new();
@@ -1457,12 +1490,7 @@ fn ask_needed(
     if let Some(follow) = follow.as_mut() {
         follow.answered();
     }
-    let said = String::from_utf8_lossy(&buf);
-    let mut words = said.split_whitespace().map(str::parse::<u64>);
-    match (words.next(), words.next(), words.next()) {
-        (Some(Ok(need)), Some(Ok(killed)), None) => Ok(Some((need, killed))),
-        _ => Err(format!("the builder cannot say what its build needed: {said}")),
-    }
+    said_needed(&String::from_utf8_lossy(&buf)).map(Some)
 }
 
 /// How a builder's VM ended, its guest told to power off.
@@ -1552,10 +1580,13 @@ impl Drop for Builder {
         // What its build needed added to its home's record, the next builders' evidence
         // (D133), its guest's answer waited for while its VM goes on: one that cannot say
         // leaves the record as it was.
-        if let Some(path) = &self.needs
-            && let Ok(Some((need, killed))) = ask_needed(&self.conn, &self.vm, &NEEDED)
+        if let Some((path, identity, booted)) = &self.needs
+            && let Ok(Some(said)) = ask_needed(&self.conn, &self.vm, &NEEDED)
         {
-            let _ = super::record_need(path, need, killed > 0);
+            let boot = said
+                .start
+                .map(|(start, total)| (identity.as_str(), super::boot_need(*booted, total, start)));
+            let _ = super::record_need(path, said.need, said.killed > 0, boot);
         }
         // The guest powers off as its connection closes: its VM followed to its end.
         super::end(&self.conn);
@@ -1659,7 +1690,14 @@ mod tests {
             guest
         });
         let cold = Record::new();
-        assert_eq!(ask_needed(&host, &vm, &cold), Ok(Some((1 << 20, 0))));
+        assert_eq!(
+            ask_needed(&host, &vm, &cold),
+            Ok(Some(Said {
+                need: 1 << 20,
+                killed: 0,
+                start: None
+            }))
+        );
         let _guest = answering.join().unwrap();
         vm.kill(libc::SIGSTOP).unwrap();
         let slowest = Duration::from_millis(200);
