@@ -312,3 +312,12 @@ Additional existing real-VM commands owed to ROOT (not run by this implementer):
 The 02 nesting, 03 API MCP and 06/08 missing fault witnesses/commands are specified
 in their sections above. All VM commands need ROOT's actual carried helpers, not
 the inert embed inputs used in the filesystem-only unit checks here.
+
+The ff push was refused as main advanced. Conflict-free merge
+6003be290ebb0359c1fdc8d3749acba7a04153bf incorporates c6dd46525; new main inputs
+were net injector, api_run, daemon commands/inspect and vmm's fs server. Following
+ROOT's 05:10Z contention amendment, R15 ran
+`cargo check -j 4 -p shards -p shards-api -p shards-ipc -p shards-remote --tests`
+on the same warm Mac target: clean. [Check log](logs/r15-contention-check.log).
+Full focused green remains 7765f515d (R14); native init green 4ce3d80a4 (R13),
+whose inputs remain unchanged. No conflict was resolved in this later merge.
