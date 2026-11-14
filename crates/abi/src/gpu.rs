@@ -220,7 +220,7 @@ impl core::error::Error for JoinError {}
 )]
 mod tests {
     use super::*;
-    use alloc::{string::ToString, vec};
+    use alloc::string::ToString;
 
     #[test]
     fn native_identity_roundtrips_without_narrowing() {
