@@ -376,6 +376,7 @@ impl<'a> Follow<'a> {
             began,
             ended: Instant::now(),
             resolution: watch.resolution(),
+            own: Duration::ZERO,
         };
         judge
             .found_over(Found::Based, span)
@@ -416,6 +417,7 @@ impl<'a> Follow<'a> {
             began,
             ended: Instant::now(),
             resolution: self.watch.resolution(),
+            own: Duration::ZERO,
         };
         self.judge.found_over(found, span).map_err(Unfollowed::Stalled)
     }

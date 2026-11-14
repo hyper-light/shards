@@ -16653,7 +16653,9 @@ mod tests {
             Some(format!("{regs:x?}"))
         }
         fn process(b: &[u8]) -> Option<String> {
-            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?).map(|n| format!("{n:?}"))
+            shards_ipc::Named::parse(std::str::from_utf8(b).ok()?)
+                .ok()
+                .map(|n| format!("{n:?}"))
         }
         // As context.rs reads it for an invitation.
         fn address(b: &[u8]) -> Option<String> {
