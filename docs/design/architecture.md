@@ -12361,6 +12361,24 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     tied to the run; unconfirmed, no account kept (the runsignal lane's 2 of 20 pre-ready
     `Heard::running` refusals, under its mutant; the grants broker is the VM's child, already
     of its party).
+  - *A thread its host keeps from any CPU holds a party whose CPU is its liveness*
+    (2026-11-14, judgecli; ROOT's batch 26, HVF, 1f71dea19: snapshot.rs' 64-vCPU storm on
+    14 loaded cores, "stream 3 ... no progress for 169.9ms, past ... (86.6ms) ... its CPU its
+    liveness alone"). A look finds a process held only where it ran nothing; a VM of more
+    vCPUs than its host's CPUs runs some while the vCPU its stream waits on sits runnable
+    on none, which no process-level read shows. `shards_api::Watch::starved` reads each
+    thread (macOS `PROC_PIDTHREADINFO`: `pth_user_time` plus `pth_system_time`, and
+    `pth_run_state` `TH_STATE_RUNNING`; Linux each task's `schedstat` `sum_exec_runtime`,
+    a task whose schedstat is zeros left out, and its `stat` state `R`) and says held where
+    a thread runnable now had no CPU at all since its call before. A thread that ran any CPU
+    shows nothing, so a process that wakes a moment each window (the gitssh lane's wedged
+    run, ~750 µs a window) is never held by it. `Party::look` asks it at each look of a
+    `Cpu::Liveness` party, a waiter that never asks paying nothing; production's judged
+    waits count any CPU as progress and do not ask. Windows reads no thread's state outside
+    the system's whole listing: unread there. Held by shards-api's
+    `a_thread_runnable_and_unrun_since_the_read_before_is_starved` and
+    `a_live_processs_threads_read_twice_show_no_starved_sleeper_or_spinner`. Not reproduced
+    live here: the storm's refusal needs a loaded 14-core host; ROOT's batch confirms.
   - *A daemon's helpers serving a waiter's own clients are its daemon's run* (2026-11-14,
     judgecli). Part 8's rule discounted the daemon's own run in a window in which the
     waiter began a client of its home, not its helper processes'. On KVM (adacachy2,

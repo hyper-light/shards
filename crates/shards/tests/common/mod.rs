@@ -3654,7 +3654,17 @@ impl Party {
             }
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
+            // A party whose CPU is its liveness alone ran, some threads of it, while the one
+            // its answer waits on may have sat runnable on no CPU: its host's hold
+            // (`shards_api::Watch::starved`), read at each look so its window is theirs.
+            let starved = self.cpu == Cpu::Liveness && watch.starved();
             match (found, self.cpu) {
+                (Ok(Found::Progressed | Found::Still), Cpu::Liveness)
+                    if starved && looked.found == Found::Still =>
+                {
+                    looked.found = Found::Held;
+                    looked.what = format!("its host held a thread of process {pid} from any CPU");
+                }
                 (Ok(Found::Progressed), Cpu::Progress) if daemon == Some(pid) => {
                     looked.daemon_ran = Some(format!("its daemon {pid} ran"));
                 }

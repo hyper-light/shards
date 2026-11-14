@@ -263,6 +263,22 @@ pub struct Watch {
     hold: Hold,
     /// The least time a change of its CPU counter stands for ([`Span::resolution`]).
     resolution: Duration,
+    /// Its threads as [`starved`](Watch::starved) last read them, none before its first.
+    threads: Option<Threads>,
+}
+
+/// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
+/// in nanoseconds, and whether it was runnable on no CPU or running ([`Watch::starved`]).
+pub(crate) type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
+
+/// Whether a thread runnable in `now` had no CPU at all since `before`: its host kept it
+/// from a CPU through the whole time between the two reads (or it ran less than its OS's
+/// counter shows). A thread that ran any CPU, or that `before` did not see, shows nothing:
+/// a process that wakes for a moment's housekeeping each window is never starved by it
+/// (the gitssh lane's wedged run, ~750 µs a window, which must stay refusable).
+pub(crate) fn starved(before: &Threads, now: &Threads) -> bool {
+    now.iter()
+        .any(|(id, &(cpu, runnable))| runnable && before.get(id).is_some_and(|&(was, _)| was == cpu))
 }
 
 impl Watch {
@@ -280,7 +296,30 @@ impl Watch {
             last,
             hold,
             resolution,
+            threads: None,
         }))
+    }
+
+    /// Whether its host held a thread of it from any CPU since the call before ([`starved`]):
+    /// for a waiter whose party's CPU is its liveness alone, whose looks find it ran (some of
+    /// its threads did) while the one its answer waits on sat runnable on no CPU, as a guest of
+    /// more vCPUs than its host has CPUs, the host busy besides (ROOT's batch 26, HVF: a
+    /// 64-vCPU storm's stream refused 170 ms into its quiet). Its threads are read only here,
+    /// so a waiter that never asks pays nothing; false at its first call, and where they
+    /// cannot be read (Windows reads none: its threads' states are in the system's whole
+    /// listing alone).
+    pub fn starved(&mut self) -> bool {
+        #[cfg(target_os = "linux")]
+        let now = os::threads(self.followed.pid());
+        #[cfg(all(unix, not(target_os = "linux")))]
+        let now = os::threads_cpu(self.followed.pid());
+        #[cfg(windows)]
+        let now: Option<Threads> = None;
+        let was = std::mem::replace(&mut self.threads, now);
+        match (&was, &self.threads) {
+            (Some(before), Some(now)) => starved(before, now),
+            _ => false,
+        }
     }
 
     /// The least time a change of its CPU counter stands for, as its OS says it
@@ -584,6 +623,37 @@ mod os {
         hold
     }
 
+    /// Process `pid`'s threads ([`Threads`]): each task's run time, its `schedstat`'s first
+    /// field (`sum_exec_runtime`, nanoseconds; a thread's own CPU clock is its own thread
+    /// group's alone, posix-cpu-timers.c `pid_for_clock`), and whether its state is `R`
+    /// (`/proc/<pid>/task/<tid>/stat` field 3). A task whose schedstat reads as zeros (no
+    /// accounting) is left out: its run would not show. None where its tasks cannot be listed.
+    pub(super) fn threads(pid: u32) -> Option<super::Threads> {
+        let mut threads = super::Threads::new();
+        for task in std::fs::read_dir(format!("/proc/{pid}/task")).ok()?.flatten() {
+            let Some(tid) = task.file_name().to_str().and_then(|tid| tid.parse::<u64>().ok()) else {
+                continue;
+            };
+            let dir = task.path();
+            let Some(ran) = std::fs::read_to_string(dir.join("schedstat"))
+                .ok()
+                .and_then(|text| {
+                    let mut fields = text.split_whitespace().map(str::parse::<u64>);
+                    let (ran, waited, slices) =
+                        (fields.next()?.ok()?, fields.next()?.ok()?, fields.next()?.ok()?);
+                    (ran != 0 || waited != 0 || slices != 0).then_some(ran)
+                })
+            else {
+                continue;
+            };
+            let Some(state) = std::fs::read(dir.join("stat")).ok().and_then(|stat| state(&stat)) else {
+                continue;
+            };
+            threads.insert(tid, (ran, state == b'R'));
+        }
+        Some(threads)
+    }
+
     /// A task's run-queue wait in nanoseconds, its `schedstat`'s second field; none where it
     /// could not be read, or reads as zeros (no accounting, [`Queued::Unread`]).
     fn run_delay(task: &Path) -> Option<u64> {
@@ -840,16 +910,38 @@ mod os {
         Some(handles)
     }
 
-    /// The run state of process `id`'s thread `handle` (`pth_run_state`); none where it could
-    /// not be read, as of a thread that ended since it was listed.
-    fn run_state(id: libc::c_int, handle: u64) -> Option<libc::c_int> {
+    /// Process `pid`'s threads ([`Threads`](super::Threads)), by their handles: each one's user
+    /// and system time (`pth_user_time`, `pth_system_time`, nanoseconds, sys/proc_info.h), and
+    /// whether its run state is `TH_STATE_RUNNING` (running, or waiting for a CPU). A thread
+    /// that ended since it was listed is left out; none where they cannot be listed.
+    pub(super) fn threads_cpu(pid: u32) -> Option<super::Threads> {
+        let id = libc::c_int::try_from(pid).ok()?;
+        let mut read = super::Threads::new();
+        for handle in threads(id)? {
+            if let Some(info) = thread_info(id, handle) {
+                let cpu = info.pth_user_time.saturating_add(info.pth_system_time);
+                read.insert(handle, (cpu, info.pth_run_state == libc::TH_STATE_RUNNING));
+            }
+        }
+        Some(read)
+    }
+
+    /// Process `id`'s thread `handle` (`PROC_PIDTHREADINFO`); none where it could not be
+    /// read, as of a thread that ended since it was listed.
+    fn thread_info(id: libc::c_int, handle: u64) -> Option<libc::proc_threadinfo> {
         // SAFETY: a proc_threadinfo, plain data, for proc_pidinfo to fill.
         let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
         let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
         // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
         let got =
             unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTHREADINFO, handle, (&raw mut info).cast(), size) };
-        (got == size).then_some(info.pth_run_state)
+        (got == size).then_some(info)
+    }
+
+    /// The run state of process `id`'s thread `handle` (`pth_run_state`); none where it could
+    /// not be read, as of a thread that ended since it was listed.
+    fn run_state(id: libc::c_int, handle: u64) -> Option<libc::c_int> {
+        thread_info(id, handle).map(|info| info.pth_run_state)
     }
 
     fn rusage(pid: u32) -> Result<Option<libc::rusage_info_v0>, ProcessFailure> {
@@ -1448,6 +1540,69 @@ mod os {
                 _ => return,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod starved_tests {
+    use super::{Threads, starved};
+
+    fn threads(of: &[(u64, u64, bool)]) -> Threads {
+        of.iter()
+            .map(|&(id, cpu, runnable)| (id, (cpu, runnable)))
+            .collect()
+    }
+
+    /// A thread runnable now that ran nothing since the read before is its host's hold;
+    /// one that ran any CPU, a sleeper, and one the read before did not see are not
+    /// (ROOT's batch 26: a 64-vCPU storm's stream; the gitssh lane's ~750 µs a window).
+    #[test]
+    fn a_thread_runnable_and_unrun_since_the_read_before_is_starved() {
+        let before = threads(&[(1, 100, true), (2, 500, false), (3, 900, true)]);
+        assert!(starved(&before, &threads(&[(1, 100, true)])), "runnable, unrun");
+        assert!(!starved(&before, &threads(&[(1, 101, true)])), "it ran");
+        assert!(!starved(&before, &threads(&[(2, 500, false)])), "a sleeper");
+        assert!(!starved(&before, &threads(&[(4, 0, true)])), "a thread new since");
+        assert!(
+            !starved(&before, &threads(&[(1, 175, true), (3, 950, false)])),
+            "housekeeping: each ran a moment"
+        );
+        assert!(
+            starved(&before, &threads(&[(1, 175, false), (3, 900, true)])),
+            "one of many"
+        );
+    }
+
+    /// A live process's threads, read twice: a thread sleeping throughout is never starved,
+    /// and a thread spinning throughout ran, so is not either.
+    #[cfg(unix)]
+    #[test]
+    fn a_live_processs_threads_read_twice_show_no_starved_sleeper_or_spinner() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let _sleeper = scope.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            });
+            let _spinner = scope.spawn(|| {
+                let mut spun = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    spun = std::hint::black_box(spun.wrapping_add(1));
+                }
+            });
+            let pid = std::process::id();
+            #[cfg(target_os = "linux")]
+            let read = || super::os::threads(pid);
+            #[cfg(not(target_os = "linux"))]
+            let read = || super::os::threads_cpu(pid);
+            let before = read().expect("this process's threads");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let now = read().expect("this process's threads");
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(now.len() >= 3, "{now:?}");
+            assert!(!starved(&before, &now), "{before:?} -> {now:?}");
+        });
     }
 }
 
