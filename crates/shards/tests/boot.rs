@@ -2369,6 +2369,56 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     );
     let _ = plain.kill();
     let _ = plain.wait();
+    assert!(
+        !shards_api::final_use_file(&socket).exists(),
+        "a guest killed recorded a final use"
+    );
+}
+
+/// D260's final use, a managed guest's: a guest booted `--host-managed` that spins its one
+/// vCPU and powers off has, as its process ends, its final use recorded beside its vsock
+/// socket (`shards_api::final_use_file`), whole: its one vCPU by its index with the guest time
+/// it ran, none departed apart from it, and its VM process's CPU time, which holds it. A guest
+/// not booted `--host-managed` records none.
+#[test]
+fn a_managed_guest_records_its_final_use_as_it_ends() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("final");
+    let run = |socket: &std::path::Path, managed: bool| {
+        let mut cmd = common::command();
+        cmd.args(["run", "--kernel", kernel().to_str().unwrap()])
+            .args(["--init", test_guest().to_str().unwrap()])
+            .args(["--cpus", "1", "--memory", "256", "--no-console", "--vsock"])
+            .arg(socket);
+        if managed {
+            cmd.arg("--host-managed");
+        }
+        cmd.arg("--cmdline")
+            .arg("console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms=500 shards_idle_ms=0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+    };
+    let socket = dir.join("v");
+    assert!(run(&socket, true).success());
+    let record = std::fs::read(shards_api::final_use_file(&socket)).unwrap();
+    let used = shards_abi::rate::read_used(&record).unwrap();
+    let (times, host) = (used.guest.unwrap(), used.host.unwrap());
+    assert_eq!(
+        times.vcpus.iter().map(|v| v.index).collect::<Vec<_>>(),
+        [0],
+        "{times:?}"
+    );
+    assert_eq!(times.departed_ns, 0, "{times:?}");
+    assert!(times.vcpus[0].guest_ns > 0, "{times:?}");
+    assert!(host.cpu_ns >= times.total_ns(), "{host:?} {times:?}");
+    let plain = dir.join("u");
+    assert!(run(&plain, false).success());
+    assert!(!shards_api::final_use_file(&plain).exists());
 }
 
 /// Measures shards-api's boot of the test guest to its echo port answering, here, side by
