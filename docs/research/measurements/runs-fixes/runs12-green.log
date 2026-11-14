@@ -1,0 +1,8 @@
+# runs-12, green. Windows 11 x86_64 10.0.26200 (the Windows 11 container on adacachy, ssh -p 2222, key SHA256:Zy41Whwy7VAoSyleXvGlHx8kZUutMMXqCuCRP/vJfCI), rustc 1.98.1, CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip, script runs-tail-win.ps1 (C:\g121\runs-tail)
+## at 9840566c (2026-11-14T05:33Z) and e81b6da8 (05:45Z)
+cargo test -j 4 -p shards --bin shards daemon::ends: 5 passed
+  ok: an_end_is_followed_while_its_vm_process_runs, a_homes_processes_keep_one_record_of_its_ends,
+      each_published_record_is_read_back_by_the_next_process, a_hosts_ends_are_learned_and_kept_in_its_home,
+      concurrent_end_writers_keep_each_others_maxima
+cargo clippy -j 4 -p shards -p shards-vmm --all-targets -- -D warnings at e81b6da8: exit 0
+## Unix (cannot be red: no versions): macOS arm64 kiln r1851/r1863 and Linux x86_64 kiln r1865, daemon::ends 6 passed each

@@ -24616,3 +24616,32 @@ arm64 (adas-mac-studio-3) and 89/89 on Linux x86_64 (adacachy2), the seven memor
 tests among them, clippy clean on both; the red (no cleanup) and eight more mutants of
 the guard killed on both hosts. No real VM ran.
 [Sources, red/green, mutants and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).
+
+### M580. A helper's start reads its version, not its bytes, once its version is checked (runs-10, D36)
+
+Each start of a helper shards carries had read its whole file through SHA-256 (runs-10's
+first fix, 0122d69cc); `helpers::program` now reads the file's version
+(`platform::file_identity`) and its bytes only for a version this process has not
+checked. Method: unit test `a_helper_checks_cost` (helpers.rs, `--ignored`), a file of
+one helper's size (2,976,656 bytes, shards-vm, and 4,326,400, shards-net, as this
+Mac's helpers cache held them on 2026-11-13), 200 checks each way, in-process,
+`--profile test-release`: "version known" is the whole check of a start that finds its
+version (open, version, cache), "bytes read" a SHA-256 of the file through std's buffer.
+Host adas-mac-studio-3.local (hostname Adas-Mac-Studio-4.local, 14 cores, arm64), macOS 26.2 25C56,
+rustc 1.98.1, revision e81b6da82, load average 2.93 (the host's CI job beside it),
+kiln r1863:
+
+| file | check | n | p50 | p90 | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| shards-vm, 2,976,656 B | version known | 200 | 27.1 µs | 27.7 µs | 37.2 µs | 80.6 µs |
+| shards-vm, 2,976,656 B | bytes read | 200 | 1.260 ms | 1.861 ms | 3.143 ms | 3.470 ms |
+| shards-net, 4,326,400 B | version known | 200 | 27.1 µs | 27.5 µs | 34.4 µs | 157.9 µs |
+| shards-net, 4,326,400 B | bytes read | 200 | 1.699 ms | 2.050 ms | 4.545 ms | 4.821 ms |
+
+So a networked start that read both helpers' bytes spent 1.26 + 1.70 = 2.96 ms on them at
+their p50s (3.14 and 4.55 ms at their p99s), and one whose versions are known 54 µs: the bytes are read once a process
+for each version. The page cache held the file throughout (the bytes-read figure is the
+hash's, not the disk's). Owed (ROOT): the same on Linux x86_64 and Windows; a cold
+`shards run --kernel` and `docs/research/measurements/build-ab/ab.py` A/B of this build
+against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP.
+[runs-fixes record](measurements/runs-fixes/README.md#runs-10).
