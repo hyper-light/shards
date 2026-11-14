@@ -2750,6 +2750,10 @@ fn run_ending(
         }
     };
     let mut wait = Wait::begin(kind, child.id(), home.as_deref(), &asked.join(" "));
+    // Its answer, its client's end, is missing as it begins: its client started just now,
+    // so an end its first check finds before any look is its party's answer, which teaches
+    // its kind, never one there before it.
+    wait.absent();
     let mut status = None;
     loop {
         if status.is_none()
@@ -5983,6 +5987,12 @@ impl<'a> Heard<'a> {
     /// What it waited for came: its kind's answer.
     pub fn answered(&mut self) {
         self.wait.answered();
+    }
+
+    /// Its caller found what it waits for missing ([`Wait::absent`]): a party's end it
+    /// started just now, which no check finds there before it.
+    pub fn absent(&mut self) {
+        self.wait.absent();
     }
 
     /// What its kind has learned on this host.
