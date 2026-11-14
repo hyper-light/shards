@@ -240,7 +240,10 @@ pub fn uplink6_entry((guest6, gateway6): (Ipv6Addr, Ipv6Addr)) -> Vec<u8> {
 /// What a run on the default `bridge` tells its network process of its addresses
 /// (`NET_ADDRESS`): the bridge's guest address, prefix and gateway, then eth0's IPv6
 /// `(guest6, gateway6)` and its /64.
-pub fn bridge_address(bridge: &shards_net::bridge::Bridge, (guest6, gateway6): (Ipv6Addr, Ipv6Addr)) -> Vec<u8> {
+pub fn bridge_address(
+    bridge: &shards_net::bridge::Bridge,
+    (guest6, gateway6): (Ipv6Addr, Ipv6Addr),
+) -> Vec<u8> {
     let mut address = bridge.guest().octets().to_vec();
     address.push(bridge.subnet().1);
     address.extend_from_slice(&bridge.gateway().octets());

@@ -222,9 +222,18 @@ jobs:
         shell: bash
         run: cargo clippy --locked -p shards-vmm --features gpu --all-targets --target ${{ matrix.target }} -- -D warnings
       # The runner's /dev/kvm is root:kvm 0660 and the runner user is not in `kvm`.
+      # As a rule of udev's, not a chmod: a later step's apt install restarts systemd-udevd
+      # (needrestart), which put /dev/kvm back to 0660 root:kvm before the tests ran (run
+      # 43575280954: every VM test refused "cannot open /dev/kvm: permission denied").
       - name: KVM access (Linux)
         if: runner.os == 'Linux'
-        run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo chmod 666 /dev/kvm
+          fi
       # The runner user's systemd manager, as a login has one (D183): `--cgroup-parent`'s
       # test makes microVMs under its slices, on its bus.
       - name: User manager (Linux)

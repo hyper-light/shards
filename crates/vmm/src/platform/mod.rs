@@ -13,8 +13,8 @@ pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
-pub use shards_ipc::{holdable, holdable_known, host_available, host_memory};
 pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
+pub use shards_ipc::{holdable, holdable_known, host_available, host_memory};
 
 #[cfg(unix)]
 mod unix;
