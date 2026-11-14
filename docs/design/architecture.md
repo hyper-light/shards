@@ -33765,9 +33765,10 @@ seen on real runs:
       in place, which a failing test still shows as its home goes.
     - Literals: none. The bound is the caller's, the tail D12's; nothing learned, no cold start.
     - Tests (light): session.rs `a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again`
-      (a file opened in place and one to append, each holding two bytes as named: within the
-      bound, at it, cut back to the tail at the part past it, grown again after, a part longer
-      than the tail) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
+      (a file opened in place and one to append, each holding two bytes, named through
+      `keep_diagnostics`: within the bound, at it, cut back to the tail at the part past it,
+      grown again after, a part longer than the tail; on Windows the one opened to append
+      refused `Os { kind: PermissionDenied }` as named and left as it was) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
       (a bound one short of the tail refused typed, naming nothing; one at it, through the
       keeper's thread, the file never past it, ending as exactly the host's latest bytes).
       Run on adas-mac-studio-3.local (macOS arm64) on the merge 8f2440013 and its test fix
@@ -33776,9 +33777,15 @@ seen on real runs:
       unbounded test kept (`a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`,
       `u64::MAX`); the bound's check dropped (m2: a part never passes it), the cut test failed at
       its cut; clippy of shards-api and shards clean, and Windows' (`cargo xwin clippy`, x86_64)
-      clean. Owed (ROOT): Windows' run of these tests (an append-only file there refused `Os` as
-      named, unexercised by a test: which a file's mode allows is the OS's), and api_image's
-      real-VM tests with a file per boot.
+      clean. On Windows (the Windows 11 guest on adacachy, x86_64-pc-windows-msvc, NTFS) the
+      cut test was red at 0004b5a1a through df2e693bd: it gave `Diagnostics` the append-only
+      file directly, past the check that refuses it, and its cut's `set_len(0)` failed with
+      ERROR_ACCESS_DENIED (5) at its write's unwrap. Readers were never refused: std opens with
+      `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (its `OpenOptions::new`). With the test naming each file
+      through `keep_diagnostics`, `cargo test -p shards-api --lib -- image::session::tests::`
+      passed 37 of 37 there, clippy -D warnings clean; the check's truncation dropped (the
+      mutant), it failed at its refusal, `Ok(())` for `Err(Os { PermissionDenied })`. Owed
+      (ROOT): api_image's real-VM tests with a file per boot.
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.

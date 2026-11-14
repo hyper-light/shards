@@ -2629,10 +2629,12 @@ mod tests {
     }
 
     /// Do write a run host's diagnostics past their file's bound, what the file held as it was
-    /// named counted, a file opened to write in place and one opened to append. Expect: each
-    /// part written after the last while the file is within its bound; the part that would
-    /// pass it cutting the file back to the tail, exactly its latest bytes; the next parts
-    /// written after that tail, the file growing again.
+    /// named counted, a file opened to write in place and one opened to append, each named as
+    /// a caller names it. Expect: each part written after the last while the file is within
+    /// its bound; the part that would pass it cutting the file back to the tail, exactly its
+    /// latest bytes; the next parts written after that tail, the file growing again. On
+    /// Windows the file opened to append refused `Os` as named and left as it was: std opens
+    /// it without `FILE_WRITE_DATA`, which a cut needs (D258).
     #[test]
     fn a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again() {
         let dir = shards_testdir::TempDir::new("api-bound").unwrap();
@@ -2644,6 +2646,19 @@ mod tests {
                 .append(append)
                 .open(&path)
                 .unwrap();
+            let named = shared().keep_diagnostics(file.try_clone().unwrap(), u64::MAX);
+            if append && cfg!(windows) {
+                assert_eq!(
+                    named,
+                    Err(ImageRefusal::Os {
+                        what: "the run host's diagnostics",
+                        kind: io::ErrorKind::PermissionDenied
+                    })
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), b"ab", "left as it was");
+                continue;
+            }
+            assert_eq!(named, Ok(()));
             let mut kept = Diagnostics {
                 size: file.metadata().unwrap().len(),
                 file,
