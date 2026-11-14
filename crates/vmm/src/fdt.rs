@@ -315,7 +315,7 @@ mod tests {
         let mut f = Fdt::new();
         f.begin_node("");
         f.begin_node("chosen");
-        f.prop_str("bootargs", "console=ttyS0\0evil");
+        f.prop_str("bootargs", "console=hvc0\0evil");
         f.end_node();
         f.end_node();
         assert_eq!(f.finish(0), Err(FdtError::InvalidString("bootargs")));

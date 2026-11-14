@@ -1584,24 +1584,32 @@ fn forward_stdin(handle: vm::Handle) {
         .name("console-in".into())
         .spawn(move || {
             let mut stdin = std::io::stdin().lock();
-            // As much as the console's receiver takes at once: the rest waits in stdin.
-            let mut buf = [0u8; shards_vmm::devices::serial::INPUT_AT_ONCE];
+            // As much as a buffer the guest posts takes: the rest waits in stdin.
+            let mut buf = [0u8; shards_vmm::devices::virtio::console::INPUT_AT_ONCE];
+            let mut typed = Vec::with_capacity(buf.len());
             let mut escape = false;
             loop {
                 let n = match stdin.read(&mut buf) {
                     Ok(0) | Err(_) => return,
                     Ok(n) => n,
                 };
+                // What was read goes to the guest at once, its escapes taken out: one
+                // buffer of the guest's for as much as it holds, not one for each byte.
+                typed.clear();
                 for &b in buf.iter().take(n) {
                     match (escape, b) {
-                        (true, b'x') => return handle.stop(),
-                        (true, 0x01) => handle.console_input(&[0x01]), // Ctrl-A Ctrl-A sends one
-                        (true, other) => handle.console_input(&[0x01, other]),
+                        (true, b'x') => {
+                            handle.console_input(&typed);
+                            return handle.stop();
+                        }
+                        (true, 0x01) => typed.push(0x01), // Ctrl-A Ctrl-A sends one
+                        (true, other) => typed.extend([0x01, other]),
                         (false, 0x01) => {}
-                        (false, other) => handle.console_input(&[other]),
+                        (false, other) => typed.push(other),
                     }
                     escape = !escape && b == 0x01;
                 }
+                handle.console_input(&typed);
             }
         });
     if let Err(e) = spawned {
@@ -4208,16 +4216,16 @@ mod tests {
         };
         let options = "quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0";
         assert_eq!(
-            booted("console=ttyS0 -- managed-network capabilities", true),
-            format!("console=ttyS0 {options} shards_template=1 -- managed-network capabilities")
+            booted("console=hvc0 -- managed-network capabilities", true),
+            format!("console=hvc0 {options} shards_template=1 -- managed-network capabilities")
         );
         assert_eq!(
-            booted("console=ttyS0 \"--\"\tx  'y z'", false),
-            format!("console=ttyS0 {options} \"--\"\tx  'y z'")
+            booted("console=hvc0 \"--\"\tx  'y z'", false),
+            format!("console=hvc0 {options} \"--\"\tx  'y z'")
         );
         assert_eq!(
-            booted("console=ttyS0 earlycon panic=-1", true),
-            format!("console=ttyS0 earlycon panic=-1 {options} shards_template=1")
+            booted("console=hvc0 panic=-1", true),
+            format!("console=hvc0 panic=-1 {options} shards_template=1")
         );
     }
     use std::os::unix::ffi::OsStrExt as _;

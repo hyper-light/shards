@@ -186,7 +186,7 @@ fn the_vm_process_is_confined() {
         "--memory".as_ref(),
         "256".as_ref(),
         "--cmdline".as_ref(),
-        "console=ttyS0 quiet shards_test=idle".as_ref(),
+        "console=hvc0 quiet shards_test=idle".as_ref(),
     ]);
     vm.wait_for("SHARDS-TEST READY");
     let cli = vm.id();
@@ -355,7 +355,7 @@ fn two_vcpus_boot_to_their_end_with_their_console() {
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
-    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.cmdline = "console=hvc0 panic=-1".into();
     cfg.console = Console::Stdout;
     // Its whole console kept: this test reads it as it goes (D12).
     cfg.said = usize::MAX;

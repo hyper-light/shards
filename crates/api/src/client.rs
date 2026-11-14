@@ -4348,7 +4348,7 @@ mod tests {
         let binary = dir.join("never-started");
         let socket = dir.join("v");
         for gpu in [false, true] {
-            for cmdline in ["--host-managed", "--", "console=ttyS0"] {
+            for cmdline in ["--host-managed", "--", "console=hvc0"] {
                 let mut spec = spec();
                 spec.gpu = gpu;
                 spec.cmdline = cmdline.into();
@@ -4474,7 +4474,7 @@ mod tests {
         GuestSpec {
             kernel: "/k/Image".into(),
             init: Init::Executable("/k/init".into()),
-            cmdline: "console=ttyS0 quiet".into(),
+            cmdline: "console=hvc0 quiet".into(),
             vcpus: 2,
             memory_mib: 256,
             gpu: false,
@@ -4513,7 +4513,7 @@ mod tests {
                 "--init",
                 "/k/init",
                 "--cmdline",
-                "console=ttyS0 quiet",
+                "console=hvc0 quiet",
                 "--cpus",
                 "2",
                 "--memory",
@@ -5055,7 +5055,7 @@ mod tests {
             start(&GuestSpec {
                 kernel: var("SHARDS_API_KERNEL"),
                 init: Init::Executable(var("SHARDS_API_INIT")),
-                cmdline: "console=ttyS0 quiet shards_test=echo".into(),
+                cmdline: "console=hvc0 quiet shards_test=echo".into(),
                 vcpus: 1,
                 memory_mib: crate::min_memory_mib(std::env::consts::ARCH).max(256),
                 gpu: false,

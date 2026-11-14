@@ -3889,6 +3889,14 @@ D12's too, derived apart):
   `CONNECT`, a space, a port of at most `u32::MAX`'s digits, and `\r\n` (a client's
   terminal may end it so; `\n` is Firecracker's). Case and spacing are taken as
   Firecracker takes them, within that length; a longer line is refused before its end.
+- **Superseded 2026-11-14 (hvc0): the NS16550A is gone.** The console is virtio-console
+  (`devices/virtio/console.rs`), and host input goes into the buffers the guest posts. Its rings
+  hold one buffer each: Linux's driver posts page-sized receive buffers until the ring is full
+  (drivers/char/virtio_console.c `fill_queue`, l. 1290-1311), and sends one transmit buffer at a
+  time, spinning until it is used (`put_chars`/`__send_to_port`, l. 596-640, 1118-1123). What the
+  guest has not taken waits in the host, so nothing is lost. The rows below for `serial.rs` record
+  what was replaced. Its successors are `RECEIVE_SIZE`/`TRANSMIT_SIZE` = 1 and `INPUT_AT_ONCE` = 4 KiB,
+  one guest page (x86-64's only size; arm64's `CONFIG_ARM64_4K_PAGES=y`).
 - **The console's receiver is the NS16550A's**: its 16-byte FIFO, or in 16450 mode its
   one register, as the guest's driver sizes it. Host input waits for room instead of
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
