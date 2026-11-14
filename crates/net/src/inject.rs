@@ -783,21 +783,32 @@ fn decoded_head(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
     let end = head.len().saturating_sub(2);
     fields
         .iter()
-        .filter(|f| matches!(f.name.as_str(), "content-encoding" | "transfer-encoding" | "content-length"))
+        .filter(|f| {
+            matches!(
+                f.name.as_str(),
+                "content-encoding" | "transfer-encoding" | "content-length"
+            )
+        })
         .map(|f| (f.line.clone(), Vec::new()))
         .chain([(end..end, b"Transfer-Encoding: chunked\r\n".to_vec())])
         .collect()
 }
 
-/// `b`, a decoded response's bytes as its mask lets them go, as one chunk (RFC 9112 §7.1).
-fn chunk(guest: &mut ServerConnection, b: &[u8]) -> io::Result<()> {
+/// `b`, a decoded response's bytes as its mask let them go, as one chunk (RFC 9112 §7.1), its
+/// size line this side's own and held to `mask` as creds-02's are (creds-12).
+fn chunk(guest: &mut ServerConnection, mask: &Mask, b: &[u8]) -> Result<(), Broken> {
     if b.is_empty() {
         return Ok(());
     }
+    let line = format!("{:x}\r\n", b.len());
+    if mask.holds(line.as_bytes()) {
+        return Err(Broken("a chunk's size that is a value filled in"));
+    }
     let mut w = guest.writer();
-    w.write_all(format!("{:x}\r\n", b.len()).as_bytes())?;
-    w.write_all(b)?;
-    w.write_all(b"\r\n")
+    w.write_all(line.as_bytes())
+        .and_then(|()| w.write_all(b))
+        .and_then(|()| w.write_all(b"\r\n"))
+        .map_err(|_| Broken("its bytes could not be queued"))
 }
 
 /// What the host owes for the request it was last given, until its final response ends.
@@ -1399,7 +1410,13 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
 /// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
-fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
+fn filled_in(
+    mask: &mut Mask,
+    sent: &[(&str, &[u8])],
+    host: &str,
+    grants: &[crate::Grant],
+    audit: &mut Vec<Audit>,
+) {
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1490,7 +1507,12 @@ impl Mask {
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    fn push(
+        &mut self,
+        bytes: &[u8],
+        data: bool,
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
@@ -1546,14 +1568,17 @@ impl Mask {
     fn size(&mut self, size: u64, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let line = format!("{size:x}\r\n");
         let line = line.as_bytes();
-        if self
-            .filled
-            .iter()
-            .any(|f| line.windows(f.value.len()).any(|w| w == f.value.as_slice()))
-        {
+        if self.holds(line) {
             return Err(io::Error::other(Holds));
         }
         self.push(line, false, out)
+    }
+
+    /// Whether a value filled in lies in `bytes`.
+    fn holds(&self, bytes: &[u8]) -> bool {
+        self.filled
+            .iter()
+            .any(|f| bytes.windows(f.value.len()).any(|w| w == f.value.as_slice()))
     }
 
     /// Lets the first `n` bytes go on.
@@ -2001,9 +2026,10 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
-                            host.writer().write_all(b)
-                        }
+                        Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b) => host.writer().write_all(b),
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -2375,7 +2401,7 @@ impl Ended {
                     let mut coded = Zeroizing::new(Vec::new());
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
                         if let Piece::Data(b) = p {
-                            coded.extend_from_slice(b);
+                            signin::append(&mut coded, b);
                         }
                         Ok(())
                     })?;
@@ -2393,7 +2419,9 @@ impl Ended {
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
                         // A trailer section is fields, which an echo may lie in, as a head's.
-                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Data(b) | Piece::Trailers(b) => {
+                            mask.push(b, true, &mut |b| guest.writer().write_all(b))
+                        }
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -2624,11 +2652,18 @@ impl Ended {
         });
         fed.map_err(|why| Broken(why.why()))?;
         *decode_left = decode_left.saturating_sub(plain.len());
-        let mut out = |b: &[u8]| chunk(guest, b);
+        let mut released = Zeroizing::new(Vec::new());
+        let mut out = |b: &[u8]| {
+            signin::append(&mut released, b);
+            Ok(())
+        };
         let queued = |_: io::Error| Broken("its bytes could not be queued");
         mask.push(&plain, true, &mut out).map_err(queued)?;
         if end {
             mask.end_message(&mut out).map_err(queued)?;
+        }
+        chunk(guest, mask, &released)?;
+        if end {
             guest.writer().write_all(b"0\r\n\r\n").map_err(queued)?;
         }
         Ok(())
@@ -4631,12 +4666,16 @@ pub(crate) mod tests {
                     }
                 };
                 let mut piece = Vec::new();
-                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
-                    piece.extend_from_slice(b);
-                    Ok(())
-                })
-                .unwrap();
+                let (n, ended) =
+                    walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                        let (Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b)) = p;
+                        piece.extend_from_slice(b);
+                        Ok(())
+                    })
+                    .unwrap();
                 self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
@@ -4782,6 +4821,9 @@ pub(crate) mod tests {
         waiter: u64,
         /// The window its connection advertises the guest (`WINDOW`, unless a test sets it).
         window: usize,
+        /// Whether a test expects the flow to be reset, and whether it was.
+        may_reset: bool,
+        reset: bool,
     }
 
     impl Bench {
@@ -4804,6 +4846,8 @@ pub(crate) mod tests {
                 passed: false,
                 waiter: 7,
                 window: WINDOW,
+                may_reset: false,
+                reset: false,
             }
         }
 
@@ -4885,7 +4929,11 @@ pub(crate) mod tests {
                     }
                 }
                 Said::Close => self.closed = true,
-                Said::Reset => panic!("the flow was reset"),
+                Said::Reset => {
+                    assert!(self.may_reset, "the flow was reset");
+                    self.reset = true;
+                    self.flow = None;
+                }
             }
         }
 

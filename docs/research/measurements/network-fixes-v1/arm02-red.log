@@ -1,0 +1,138 @@
+ Downloading crates ...
+  Downloaded once_cell v1.21.4
+  Downloaded lazy_static v1.5.0
+  Downloaded untrusted v0.9.0
+  Downloaded num-conv v0.2.2
+  Downloaded cfg-if v1.0.5
+  Downloaded rusticata-macros v4.1.0
+  Downloaded subtle v2.6.1
+  Downloaded asn1-rs-derive v0.6.0
+  Downloaded dunce v1.0.5
+  Downloaded openssl-probe v0.2.1
+  Downloaded powerfmt v0.2.0
+  Downloaded untrusted v0.7.1
+  Downloaded asn1-rs-impl v0.2.0
+  Downloaded der-parser v10.0.0
+  Downloaded displaydoc v0.2.7
+  Downloaded shlex v2.0.1
+  Downloaded autocfg v1.5.1
+  Downloaded data-encoding v2.11.1
+  Downloaded oid-registry v0.8.1
+  Downloaded cmake v0.1.58
+  Downloaded jobserver v0.1.35
+  Downloaded quote v1.0.47
+  Downloaded synstructure v0.13.2
+  Downloaded pkg-config v0.3.34
+  Downloaded thiserror-impl v2.0.21
+  Downloaded zeroize v1.9.0
+  Downloaded thiserror v2.0.21
+  Downloaded find-msvc-tools v0.1.14
+  Downloaded fs_extra v1.3.0
+  Downloaded bit-vec v0.9.1
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded num-integer v0.1.47
+  Downloaded httparse v1.10.1
+  Downloaded deranged v0.5.8
+  Downloaded time-macros v0.2.32
+  Downloaded rustls-native-certs v0.8.4
+  Downloaded getrandom v0.2.17
+  Downloaded memchr v2.8.3
+  Downloaded proc-macro2 v1.0.107
+  Downloaded serde_core v1.0.229
+  Downloaded serde_derive v1.0.229
+  Downloaded time-core v0.1.9
+  Downloaded unicode-ident v1.0.26
+  Downloaded yasna v0.6.0
+  Downloaded log v0.4.34
+  Downloaded num-traits v0.2.19
+  Downloaded rcgen v0.14.10
+  Downloaded rustls-platform-verifier v0.7.1
+  Downloaded minimal-lexical v0.2.1
+  Downloaded rustls-webpki v0.103.16
+  Downloaded asn1-rs v0.7.2
+  Downloaded serde v1.0.229
+  Downloaded nom v7.1.3
+  Downloaded num-bigint v0.4.8
+  Downloaded x509-parser v0.18.1
+  Downloaded cc v1.5.1
+  Downloaded time v0.3.55
+  Downloaded syn v3.0.6
+  Downloaded syn v2.0.119
+  Downloaded rustls v0.23.46
+  Downloaded libc v0.2.189
+  Downloaded ring v0.17.14
+   Compiling libc v0.2.189
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling fs_extra v1.3.0
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling zeroize v1.9.0
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling rustls-pki-types v1.15.1
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.46
+   Compiling deranged v0.5.8
+   Compiling subtle v2.6.1
+   Compiling powerfmt v0.2.0
+   Compiling once_cell v1.21.4
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling openssl-probe v0.2.1
+   Compiling jobserver v0.1.35
+   Compiling rustls-native-certs v0.8.4
+   Compiling time v0.3.55
+   Compiling httparse v1.10.1
+   Compiling cc v1.5.1
+   Compiling log v0.4.34
+   Compiling yasna v0.6.0
+   Compiling shards-netring v0.1.0 (/src/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/src/crates/syscall-filter)
+   Compiling cmake v0.1.58
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+   Compiling shards-net-process v0.1.0 (/src/crates/net-process)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+    Finished `test` profile [unoptimized] target(s) in 54.02s
+     Running unittests src/main.rs (/target/debug/deps/shards_net-86c0f870d115ce8d)
+
+running 1 test
+test tests::startup_installs_a_native_seccomp_filter ... FAILED
+
+failures:
+
+---- tests::startup_installs_a_native_seccomp_filter stdout ----
+
+thread 'tests::startup_installs_a_native_seccomp_filter' (1733) panicked at crates/net-process/src/main.rs:309:9:
+assertion `left == right` failed: startup left its child unfiltered
+  left: Some(0)
+ right: Some(2)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::startup_installs_a_native_seccomp_filter
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-net-process --bin shards-net`

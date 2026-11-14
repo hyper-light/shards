@@ -240,6 +240,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Check each size line as creds-02's are.
 
+**Status (2026-11-13):** fixed in 6f8cf1196 (red `inject::tests::leaks::a_decoded_bodys_own_size_line_never_carries_a_value`)
+
 ### creds-13 — P2 — A decoded body's buffers are not wiped as they grow
 
 **Location:** `crates/net/src/decode.rs`, `crates/net/src/inject.rs` (`decoded`, H2 `host_data`).
@@ -247,6 +249,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 **Defect:** A decoded body's buffers are `Zeroizing`, but they grow by `extend_from_slice`, and each buffer let go of as one grows holds decoded plaintext, unwiped.
 
 **Fix direction:** Grow them as `signin::append` grows a token response: a buffer of twice the size, the old one wiped as it drops.
+
+**Status (2026-11-13):** fixed in 4c51c6ae4 (red `decode::wiped::a_decoded_bodys_buffers_are_wiped_as_they_grow`); the decoders' own windows stay a residual (D242).
 
 ## Checked and found sound
 

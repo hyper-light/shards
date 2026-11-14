@@ -662,6 +662,41 @@ mod tests {
         assert_eq!(held.len(), 1);
     }
 
+    #[test]
+    fn a_budget_removed_during_an_ask_is_delivered_after_its_answer() {
+        for kind in [build::kind::GIVE_BACK, build::kind::ROOM] {
+            let (mut giver, end) = builder();
+            let initial = Some(64 * MIB as i64);
+            if kind == build::kind::GIVE_BACK {
+                giver.ask().unwrap();
+            } else {
+                giver.tell(initial).unwrap();
+            }
+            let mut header = [0; run::HEADER];
+            (&end).read_exact(&mut header).unwrap();
+            let (_, len) = run::parse_header(header).unwrap();
+            let mut payload = vec![0; len as usize];
+            (&end).read_exact(&mut payload).unwrap();
+            let mut held = vec![giver];
+            let mut unsaid = Unsaid {
+                told: initial,
+                ..Unsaid::default()
+            };
+            budget_written(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
+            if kind == build::kind::GIVE_BACK {
+                gave(&end, "0 0");
+            } else {
+                (&end).write_all(&run::header(build::kind::HELD, 0)).unwrap();
+            }
+            late(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
+            end.set_nonblocking(true).unwrap();
+            (&end)
+                .read_exact(&mut header)
+                .expect("budget removal was lost behind the pending answer");
+            assert_eq!(run::parse_header(header), Some((build::kind::ROOM, 0)));
+        }
+    }
+
     /// What builders give back under a budget written as the build goes is said at once,
     /// whatever was said a moment before: a word of its host's pressure heard before a test
     /// set its budget said what little was given back then, and the give-back under the
