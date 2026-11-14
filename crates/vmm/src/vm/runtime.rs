@@ -553,9 +553,15 @@ impl Handle {
                 swap.as_ref().map(|s| s.run_data()).transpose(),
             )
         };
-        self.resume();
+        let found = found.0.and_then(|layer| found.1.map(|swap| (layer, swap)));
+        let outcome = match found {
+            Ok(runs) => Scanned::Mapped(runs),
+            Err(e) if self.control.lost() => Scanned::Lost(e),
+            Err(e) => Scanned::Failed(e),
+        };
+        let found = self.shared.finish_scan(outcome);
         precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
-        let (layer_runs, swap_runs) = (found.0?, found.1?);
+        let (layer_runs, swap_runs) = found?;
         let mut buf = vec![0u8; live::MAX_RECORD];
         let mut send = |kind: u8, runs: &[(u64, u64)], read: &Reader<'_>| {
             for &(off, len) in runs {
@@ -862,6 +868,13 @@ impl Handle {
     }
 }
 
+/// Whether extent discovery left every withdrawn mapping available to the guest.
+enum Scanned<T> {
+    Mapped(T),
+    Failed(String),
+    Lost(String),
+}
+
 /// Host operations that keep mappings alive until their last read, including errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostRead {
@@ -1028,6 +1041,14 @@ impl Shared {
             guest: GuestClocks::default(),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
+        }
+    }
+
+    fn finish_scan<T>(&self, outcome: Scanned<T>) -> Result<T, String> {
+        self.hold.resume();
+        match outcome {
+            Scanned::Mapped(value) => Ok(value),
+            Scanned::Failed(e) | Scanned::Lost(e) => Err(e),
         }
     }
 
@@ -1941,6 +1962,25 @@ impl Cut<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming() {
+        let sh = Shared::new(0);
+        let result = sh.finish_scan::<()>(Scanned::Lost("layer map-back failed".into()));
+        assert_eq!(result, Err("layer map-back failed".into()));
+        assert!(sh.exiting(), "a live copy resumed after losing its layer mapping");
+    }
+
+    #[test]
+    fn a_live_copy_with_intact_mappings_can_continue_after_a_scan_error() {
+        let sh = Shared::new(0);
+        assert_eq!(sh.finish_scan(Scanned::Mapped(7)), Ok(7));
+        assert_eq!(
+            sh.finish_scan::<()>(Scanned::Failed("extent read failed".into())),
+            Err("extent read failed".into())
+        );
+        assert!(!sh.exiting());
+    }
 
     #[test]
     fn live_copy_excludes_save_and_teardown_until_its_guard_is_gone() {
