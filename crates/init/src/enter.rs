@@ -88,12 +88,7 @@ pub fn start(spec: &run::Spec, member: u32, members: &[Started]) -> Result<Enter
     let actor = crate::hotplug::member_process(&m.cgroup)
         .map_err(|e| refused(Refusal::Ended, format!("{}: {e}", m.label)))?;
     let c = &m.confinement;
-    let env = over(&c.env, &spec.env).map_err(|e| {
-        refused(
-            Refusal::Widening,
-            format!("{}: {:?}: {}", m.label, String::from_utf8_lossy(&e), Unsettable),
-        )
-    })?;
+    let env = over(&c.env, &spec.env).map_err(|e| refused(Refusal::Widening, format!("{}: {e}", m.label)))?;
     let (explicit, candidates) = crate::run::candidates(argv0, &env);
     let nul = |what: &str| refused(Refusal::Widening, format!("{what} holds a NUL byte"));
     let cstrings = |list: &[Vec<u8>], what: &str| {
@@ -271,11 +266,16 @@ pub fn start(spec: &run::Spec, member: u32, members: &[Started]) -> Result<Enter
 
 /// Why a variable of an exec's is not laid over its member's: it holds a NUL, or names no
 /// variable, or names SHARDS_DOMAIN, which init sets, the member's own name for its domain.
-struct Unsettable;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Unsettable(Vec<u8>);
 
 impl std::fmt::Display for Unsettable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("no NAME=value or NAME without NUL, or SHARDS_DOMAIN, which init sets")
+        write!(
+            f,
+            "{:?}: no NAME=value or NAME without NUL, or SHARDS_DOMAIN, which init sets",
+            String::from_utf8_lossy(&self.0)
+        )
     }
 }
 
@@ -283,13 +283,13 @@ impl std::fmt::Display for Unsettable {
 /// exec's over its container's (daemon/container/env.go, ReplaceOrAppendEnvValues): each
 /// replaces the variable of its name, a name alone unsets it, and the rest are appended. The
 /// first refused, as [`Unsettable`].
-fn over(own: &[CString], given: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Vec<u8>> {
+fn over(own: &[CString], given: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Unsettable> {
     let mut env: Vec<Vec<u8>> = own.iter().map(|e| e.as_bytes().to_vec()).collect();
     let key = |e: &[u8]| -> Vec<u8> { e.split(|&b| b == b'=').next().unwrap_or_default().to_vec() };
     for e in given {
         let name = key(e);
         if name.is_empty() || e.contains(&0) || name == run::members::DOMAIN_VARIABLE {
-            return Err(e.clone());
+            return Err(Unsettable(e.clone()));
         }
         env.retain(|have| key(have) != name);
         if e.contains(&b'=') {
@@ -578,7 +578,25 @@ mod tests {
             b"",
             b"A=\0",
         ] {
-            assert_eq!(over(&own(), &[bad.to_vec()]), Err(bad.to_vec()), "{bad:?}");
+            assert_eq!(
+                over(&own(), &[bad.to_vec()]),
+                Err(Unsettable(bad.to_vec())),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_environment_values_never_enter_diagnostics() {
+        let sentinel = "public-credential-sentinel";
+        for bad in [
+            format!("API_KEY={sentinel}\0suffix"),
+            format!("={sentinel}"),
+            format!("SHARDS_DOMAIN={sentinel}"),
+        ] {
+            let error = over(&own(), &[bad.into_bytes()]).unwrap_err();
+            assert!(!error.to_string().contains(sentinel));
+            assert!(!format!("{error:?}").contains(sentinel));
         }
     }
 
