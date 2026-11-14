@@ -16935,7 +16935,11 @@ mod tests {
             };
             refused_as(ready(&plan("../x", "s1", &[])), moves::Named::Id, "../x");
             refused_as(ready(&plan(&ours, "../s1", &[])), moves::Named::Snapshot, "../s1");
-            refused_as(ready(&plan(&ours, "s1", &["../../x"])), moves::Named::Volume, "../../x");
+            refused_as(
+                ready(&plan(&ours, "s1", &["../../x"])),
+                moves::Named::Volume,
+                "../../x",
+            );
 
             // A move's stream: its plan, then the microVM directory `whole` names, if any,
             // written from a directory of the test's own; imported as the mover's client
@@ -16948,8 +16952,6 @@ mod tests {
                 if let Some(dir) = whole {
                     w.tree(dir, &format!("containers/{}", p.id), &|_| false).unwrap();
                     w.finish().unwrap();
-                } else {
-                    drop(w);
                 }
                 n.set(n.get() + 1);
                 let at = streams.join(format!("s{}", n.get()));
@@ -16966,16 +16968,28 @@ mod tests {
                 assert_eq!(tree_of(&t.home, &private), before, "the home changed");
                 assert!(!t.home.join("x").exists() && !t.home.parent().unwrap().join("x").exists());
                 if private.exists() {
-                    assert_eq!(std::fs::read_dir(&private).unwrap().count(), 0, "a move's staging stayed");
+                    assert_eq!(
+                        std::fs::read_dir(&private).unwrap().count(),
+                        0,
+                        "a move's staging stayed"
+                    );
                 }
             };
             // Its plan's names, before its entries are read: each stream ends past its plan,
             // where an import that read on would fail instead.
             refused_as(import(&plan("../x", "s1", &[]), None), moves::Named::Id, "../x");
             unchanged();
-            refused_as(import(&plan(&ours, "../../x", &[]), None), moves::Named::Snapshot, "../../x");
+            refused_as(
+                import(&plan(&ours, "../../x", &[]), None),
+                moves::Named::Snapshot,
+                "../../x",
+            );
             unchanged();
-            refused_as(import(&plan(&ours, "s1", &["../../x"]), None), moves::Named::Volume, "../../x");
+            refused_as(
+                import(&plan(&ours, "s1", &["../../x"]), None),
+                moves::Named::Volume,
+                "../../x",
+            );
             unchanged();
 
             // A volume its record mounts, which its guest is shared a host directory of:

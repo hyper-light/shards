@@ -14,7 +14,7 @@ POLICY_READ — role: **adversarial reviewer, area migrate** (coordinator for th
 
 Read-only source review on the supplied macOS arm64 checkout. No code changes, commits, builds, tests, daemons, VMs, benchmarks, policy-script runs or live mutations. The review report was first written to `/tmp/g121-shot/review/migrate.md`, then saved here on 2026-11-13 at the user's explicit request. This Markdown report is the only repository addition; no code was changed. The user will notify Shards. Findings below are verified **source-path proofs**, not live reproductions. R09/R10 live reproduction, exact hardware effects, fixed/green and mutation evidence remain ROOT's work; none is represented as passed.
 
-Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no P2/P4 findings assigned. Counts: **2 critical/P0, 6 high/P1, 2 medium/P3, 0 low/P5**.
+Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no P2/P4 findings assigned. Counts: **2 critical/P0, 6 high/P1, 2 medium/P3, 0 low/P5**; migrate-11 (P0) was added after the review by the fix lane that found it, making 3 P0.
 
 ## Findings, in severity order
 
@@ -210,6 +210,22 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Regression sketch:** Vary link progress, restore working-set sizes, resource allowance and concurrent snapshot publication. Verify decisions follow the learned/admitted inputs rather than these fixed thresholds; require live before/after and mutation evidence from ROOT.
 
 **Status (2026-11-13):** owed to ROOT: cold-link, contention and working-set campaigns plus stopping/budget/publication designs in the fix evidence; no replacement constants added. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
+### migrate-11 — P0 / critical — A move's plan names reach home paths unchecked
+
+Added 2026-11-13 by the migrate fix lane (not one of the review's three lanes): found while fixing migrate-01, in the same `adopt` path.
+
+**Location (at 35b1e23d7):** `crates/shards/src/daemon/moves.rs`: `move_ready` `:1829`, `:1837`; `move_import` `:2019`; `adopt` `:2051`, `:2055`, `:2085`, `:2118`, `:2142`, `:2147`, `:2168`; `move_done` `:1561`.
+
+**Defect:** The receiving daemon builds paths of its home from names the sending machine supplies, and checks none of them to be one path component: the plan's `id` (`containers/<id>`, `registry.dir(id)`), its `snapshot` (`containers/<id>/snapshots/<snapshot>`, handed to `lay_under` and `snapshot::relocate`), each of its `volumes` (`volumes/<v>` as the rename's source and target), and each volume name the moved record's `mounts` carry, which becomes `store.data(name)`: the host directory shared into the guest. `move_done`'s snapshot argument is joined the same way before `snapshot::remove`. The stream's entry names go through `relative` (migrate-01's checks); these names do not.
+
+**Concrete scenario:** A malformed or hostile plan whose record mounts volume `../../../../etc` (or `/etc`, which `Path::join` takes as the whole path) is adopted with that mount's `Source` outside `<home>/volumes`, so the guest's share is a host directory of the sender's choosing once the microVM is restored. A snapshot named `/some/other/snapshot` makes `relocate` rewrite another snapshot's state. An `id` of `../x` makes `containers/../x` the microVM's directory. `ready` takes such a plan and answers its needs.
+
+**Evidence:** Unit red (R09 from a reproducing unit test, brief-common): `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing` with every check turned off (the `off` mutation, which is the code before the fix): `ready` answers status 0 to a plan whose id is `../x`.
+
+**Fix:** Each such name is checked to be one name of its kind (`Named::takes`): an id is `2 × MICROVM_ID_BYTES` lowercase hex digits, as `containers::new_id` makes one; a snapshot's passes `synced::name_alone(_, true)` (Windows' rules, the stricter, on every host, so a name one host takes every host takes); a volume's passes the local driver's `Store::valid` and `name_alone`. Each rule refuses separators, `.`, `..`, roots and drive colons, so no name can be more than one component. A refusal is typed: `Refused::NotAName { name, field: id | snapshot | volume, value }`. `ready` checks the plan first; `import` checks it right after `read_plan`, before the Placer places any entry; `adopt` takes every name it joins (`staged/containers/<id>`, the snapshot directory for `lay_under` and `relocate`, `registry.dir(id)`, both volume paths, each `mounts` volume before `store.data`) through the same `one_name` check; `done` checks its snapshot before anything else. `import` and `done` now answer through `move_step`'s `typed`, and the mover reads `import`'s refusal typed (`cli/moves.rs` `unready`). `server::guest::Beneath` (migrate-01) is not used for these joins: it places entries under a held root but has no rename, and `adopt`'s steps are renames and reads by path; with each name one checked component, every join stays in its directory.
+
+STATUS_PLACEHOLDER
 
 ## Checked and found sound
 

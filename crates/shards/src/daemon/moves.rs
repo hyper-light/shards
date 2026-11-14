@@ -2839,16 +2839,21 @@ mod tests {
 
         let ok = plan();
         assert_eq!(names_refused(&ok), None);
-        let cases: [(Named, &dyn Fn(&mut Plan)); 3] = [
-            (Named::Id, &|p| p.id = "../x".into()),
-            (Named::Snapshot, &|p| p.snapshot = "../../x".into()),
-            (Named::Volume, &|p| p.volumes.push("../../x".into())),
-        ];
-        for (field, put) in cases {
-            let mut p = ok.clone();
-            put(&mut p);
+        let mut id = ok.clone();
+        id.id = "../x".into();
+        let mut snapshot = ok.clone();
+        snapshot.snapshot = "../../x".into();
+        let mut volume = ok.clone();
+        volume.volumes.push("../../x".into());
+        for (field, p) in [
+            (Named::Id, id),
+            (Named::Snapshot, snapshot),
+            (Named::Volume, volume),
+        ] {
             match names_refused(&p) {
-                Some(Refused::NotAName { name, field: f, .. }) => assert_eq!((name.as_str(), f), ("web", field)),
+                Some(Refused::NotAName { name, field: f, .. }) => {
+                    assert_eq!((name.as_str(), f), ("web", field))
+                }
                 other => panic!("{field:?}: {other:?}"),
             }
         }
