@@ -121,21 +121,35 @@ pub struct Control {
     members: Vec<AbortState>,
     inputs: Vec<InputState>,
 }
+/// How a run's managed control scope ended, as its guest said it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Served {
+    /// Its own end (`MANAGED_CONTROL_END`): the signal connection goes on to its relay's end.
+    ControlEnded,
+    /// Its relay's end (`SIGNALS_END`), the scope's with it: init says it so where a failure
+    /// broke its relay, then its words and its end on the run's connection (init run.rs).
+    RelayEnded,
+}
 impl Control {
-    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> io::Result<()> {
+    /// [`Control::serve`]; the guest's run connection, `boundary`, ended where its control is
+    /// refused or ends unannounced.
+    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> io::Result<Served> {
         let result = self.serve(signals);
-        if result.is_err() {
+        if let Err(e) = &result {
+            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(format!("its managed control ended: {e}"));
             super::end_guest(boundary);
         }
         result
     }
-    pub fn serve(mut self, signals: &UnixStream) -> io::Result<()> {
+    pub fn serve(mut self, signals: &UnixStream) -> io::Result<Served> {
         let mut read = shards_ipc::Polled(signals);
         loop {
             let mut header = [0; run::HEADER];
             read.read_exact(&mut header)?;
             match run::parse_header(header) {
-                Some((kind::MANAGED_CONTROL_END, 0)) => return Ok(()),
+                Some((kind::MANAGED_CONTROL_END, 0)) => return Ok(Served::ControlEnded),
+                Some((kind::SIGNALS_END, 0)) => return Ok(Served::RelayEnded),
                 Some((kind::MANAGED_ABORT, n)) if n == managed::ABORT_LEN as u32 => {}
                 Some((kind::MANAGED_INPUT_ENDED, n)) if n == managed::INPUT_ENDED_LEN as u32 => {
                     let mut payload = [0; managed::INPUT_ENDED_LEN];
@@ -335,11 +349,12 @@ fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Str
     Ok(())
 }
 
-/// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]).
+/// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]) or
+/// its control was refused or ended unannounced ([`Control::supervise`]), said whole.
 static ENDED_RUN: Mutex<Option<String>> = Mutex::new(None);
 
-/// Why the run's managed capture ended its run, where it did ([`relay_ending`]), taken: for
-/// its serve to say, in place of the end of the run's connection it caused.
+/// Why the run's managed capture ended its run, where it did ([`ENDED_RUN`]), taken: for its
+/// serve to say, in place of the end of the run's connection it caused.
 pub fn ended_run() -> Option<String> {
     ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
@@ -365,7 +380,8 @@ fn relay_ending(
             "one of its sides ended its connection",
         )),
         Relayed::Broke(e) => {
-            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(format!("its members' output could not be relayed: {e}"));
             super::end_guest(run);
             Err(e)
         }
@@ -666,7 +682,10 @@ mod tests {
         };
         let (ended, why) = relaying(&|owner, _| send_credit(owner, 0, Channel::Stdout, capacity));
         assert!(ended, "a relay that broke left its run's connection open");
-        assert_eq!(why.as_deref(), Some("duplicate or closed managed credit"));
+        assert_eq!(
+            why.as_deref(),
+            Some("its members' output could not be relayed: duplicate or closed managed credit")
+        );
         let (ended, why) = relaying(&|_, guest| {
             guest.shutdown(std::net::Shutdown::Both).unwrap();
         });
@@ -679,7 +698,11 @@ mod tests {
 
     #[test]
     fn explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for graceful in [true, false] {
+            ended_run();
             let (signals, mut peer) = UnixStream::pair().unwrap();
             let (boundary, mut layer) = UnixStream::pair().unwrap();
             let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
@@ -705,9 +728,51 @@ mod tests {
                 assert_eq!(record(&mut layer), (kind::LAYER, b"x".to_vec()));
             } else {
                 assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+                assert_eq!(
+                    ended_run().as_deref(),
+                    Some("its managed control ended: failed to fill whole buffer")
+                );
                 assert!(matches!(layer.read(&mut [0]), Ok(0)));
             }
         }
+    }
+
+    /// A guest whose relay ends inside the control scope, as init's does on a failure that
+    /// breaks its relay (run.rs: `say_signals_end` after the loop, then `SYSTEM_ERR` and `EXIT`
+    /// on the run's connection), has said its end: the scope ends with it, the run's
+    /// connection is left open for those words, and nothing is refused. Refused as "managed
+    /// abort frame", it ended the run's connection before they were read, and the run ended
+    /// "the guest stopped before the command ended: failed to fill whole buffer" (CI run
+    /// 43513425954, api_image's staged_credentials case, its signal connection lost to
+    /// "invalid data" just before).
+    #[test]
+    fn a_relays_end_within_the_control_scope_ends_it_and_leaves_the_run_open() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ended_run();
+        let (signals, mut peer) = UnixStream::pair().unwrap();
+        let (boundary, mut guests_run) = UnixStream::pair().unwrap();
+        let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
+        let control = Control {
+            daemon,
+            members: vec![AbortState::Active],
+            inputs: vec![InputState::None],
+        };
+        let retained = boundary.try_clone().unwrap();
+        let worker = std::thread::spawn(move || control.supervise(&signals, &boundary));
+        peer.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), Served::RelayEnded);
+        assert_eq!(ended_run(), None);
+        // The guest's words after its relay's end reach the host on the run's connection.
+        guests_run.write_all(&run::header(kind::EXIT, 4)).unwrap();
+        guests_run.write_all(&3u32.to_be_bytes()).unwrap();
+        let mut said = [0; run::HEADER + 4];
+        (&retained).read_exact(&mut said).unwrap();
+        assert_eq!(said[run::HEADER..], 3u32.to_be_bytes());
+        // And the host's way to the guest is open too.
+        (&retained).write_all(b"x").unwrap();
+        assert_eq!(guests_run.read(&mut [0]).unwrap(), 1);
     }
 
     #[test]
