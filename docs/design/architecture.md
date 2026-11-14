@@ -19049,6 +19049,11 @@ receiver for an incoming port" above:
   A notification names the calling thread, which pidfd_open(2) refuses where it leads no
   thread group: the chooser, and the host network's binds (D124), open its group's leader
   then, so that a server binding on a thread of its own is seen (found by that test).
+- **Zone retirement review (network-04, 2026-11-13):** wrapping the chooser's u16
+  counter does not establish that its old NAT tuples expired. Real-kernel
+  confirmation and a typed owner refusal at exhaustion, or authoritative kernel
+  retirement before reuse, remain owed to ROOT. No copied timeout closes the gap.
+  [Fixture and design](../research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement).
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
