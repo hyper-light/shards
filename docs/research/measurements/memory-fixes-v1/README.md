@@ -192,3 +192,24 @@ ROOT owes `cargo test -p shards --test build a_build_held_short_of_memory_has_it
 for the actual host-to-guest ROOM exchange. Policy checker is also owed:
 `python3 scripts/check-development-policy` (the implementer brief permits only
 focused cargo tests/clippy, plus the amended cargo-check gate).
+
+Green at `29e8e3cbe` (main `bfd2cca4c` included), resumed r21, same Linux host:
+`cargo test -p shards-init plug::tests::` passed 28/28 (the substring filter also
+selects five hotplug tests); init all-target clippy passed. `green-memory-17.log`
+retains the output. Both runs used the single lane-owned cold-start target.
+
+## Remaining coordinator work and cleanup
+
+All six implemented fixes (02/03/04/05/16/17) have unit red/green and touched-crate
+clippy evidence. Findings 06..15 remain owed designs; no production replacement
+is claimed. Memory-01 belongs to the Claude P0 lane and was not changed here.
+No new outside-area findings were sought. ROOT owns the policy checker, matrix,
+real-VM integration/fault/pressure, profiling and benchmarking gates. In addition
+to the commands above and in owed-designs.md, run
+`cargo test -p shards --test saved a_saved_microvm_writes_on_through_its_volume`
+with repeated/distinct head patterns and the APFS map-back failure/stop variants.
+These were not run by this implementer. No 4–5x or resource-improvement ratio is claimed.
+
+After memory-16 landed, resumed r19 removed only
+`~/g121-tmp/fix-memory-v1/target` on the Mac and verified it absent. The source
+checkout and all committed evidence remain. No daemons or VMs were started.
