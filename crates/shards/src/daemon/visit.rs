@@ -233,7 +233,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 layer_pending: writes,
                 layer_over: None,
                 layer_way: None,
-                log_files: kept.files,
+                log_kept: kept,
                 log_compress: false,
                 visit: true,
                 egress: None,

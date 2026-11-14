@@ -8487,8 +8487,8 @@ fn segment_log(dir: &Path, seq: u64) -> Vec<u8> {
 
 /// How much of a run's output its log keeps is its user's to set (`shards configure disk
 /// --log-history`, D186): a run made after the setting, the daemon running or not, keeps at
-/// most that much of its newest output, and at least that less a segment (half of it, below
-/// 40 MiB); with none set, 1 GiB, as `configure disk` says. A settings file that does not
+/// most that much of its newest output, and at least that less two segments (its segments
+/// as its file system's unit makes them, disk.rs `log_retention`); with none set, 1 GiB, as `configure disk` says. A settings file that does not
 /// read refuses a run, saying where, and `--reset` takes every setting back to its default,
 /// read or not; every flag is checked before any is kept.
 #[test]
@@ -8560,14 +8560,30 @@ fn a_logs_history_is_what_its_user_set() {
             kept.len()
         );
     };
+    // A history's segments on the home's file system (runs-11 `LOG_SEGMENT`, disk.rs
+    // `log_retention`): √(history · unit) in whole units, within a unit and the history's
+    // half, as many as the history holds whole.
+    let unit = shards_vmm::platform::allocation_unit(&home).unwrap();
+    let segments = |history: u64| {
+        let half = history / 2;
+        let size = if unit > half {
+            half
+        } else {
+            let balanced = u64::try_from((u128::from(history) * u128::from(unit)).isqrt()).unwrap();
+            (balanced.min(half) / unit * unit).max(unit)
+        };
+        (size, history / size)
+    };
     let set = shards(&["configure", "disk", "--log-history", "64k"]);
     assert_eq!(set.status, Some(0), "{set}");
     assert!(set.stdout.contains("log-history         65536\n"), "{set}");
-    logged("before", 32 << 10, 2);
+    let (size, files) = segments(64 << 10);
+    logged("before", size, files);
     // Set again as the daemon runs: its next run keeps that.
     let set = shards(&["configure", "disk", "--log-history=128k"]);
     assert_eq!(set.status, Some(0), "{set}");
-    logged("after", 64 << 10, 2);
+    let (size, files) = segments(128 << 10);
+    logged("after", size, files);
     // A flag that does not read keeps nothing, a reset after it included.
     let refused = shards(&["configure", "disk", "--log-history", "0", "--reset"]);
     assert_ne!(refused.status, Some(0), "{refused}");
