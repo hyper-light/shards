@@ -15816,8 +15816,8 @@ other's but what the move sends, and what the other takes by content:
   the daemon's own `key` step).
 - **Refused before anything moves, by what refuses it** (R04). The machine moved to answers
   `ready` with a `Refused` (daemon/moves.rs) as JSON on stdout, beside its words on
-  stderr, which a mover of an earlier build prints as before; this build's mover reads it
-  typed (cli/moves.rs `unready`). It is one of: another architecture; another hypervisor
+  stderr, as any step's failure says them; the mover reads it typed (cli/moves.rs
+  `unready`). It is one of: another architecture; another hypervisor
   (`Plan::hypervisor`, `hv::BACKEND`), whose own a snapshot's vCPUs, interrupt controller
   and devices are (KVM's x86-64 state is not WHP's, nor Hypervisor.framework's arm64 state
   KVM's), which a snapshot's head, naming its architecture alone, does not tell apart;
@@ -16041,11 +16041,16 @@ peer", each going on here as it should. What changed for them:
   waited for, compressing having taken the packer longer than reading it, a level down, to
   none, as on a link faster than the compressor, where it stays, no wait of the packer's
   there covering a level's cost. Nothing is measured but the stream's own waits and its
-  compressing. The machine moved to says it unpacks it (`Needs::unpacks`, `zstd`)
-  and is then asked `import --packed zstd`; one of an earlier build says nothing and is sent
-  the stream as it is, as before; held by `a_packed_stream_reads_back_as_it_was`,
-  `the_level_follows_who_waits` and `a_stream_is_packed_only_for_a_daemon_that_unpacks_it`
-  (packing.rs).
+  compressing. Every move's stream is packed: the machine moved to says it unpacks it
+  (`Needs::unpacks`, `zstd`, a field every answer has) and is then asked `import --packed
+  zstd`, which `import` requires. An answer without it, or one that does not unpack zstd, is
+  another build's daemon's, refused typed before anything moves (cli/moves.rs `needs_of`,
+  `OtherDaemon`); the send-as-it-is fallback for an earlier daemon, and `import`'s
+  unpacked stream, are deleted (legacy5, the no-legacy rule). Likewise the move's `key` step,
+  which every daemon of this build answers: one that fails is said ("NAME runs on CONTEXT,
+  and its key there could not be read"), never taken as no key. Held by
+  `a_packed_stream_reads_back_as_it_was`, `the_level_follows_who_waits` (packing.rs) and
+  `a_needs_missing_unpacks_is_refused_typed` (cli/moves.rs).
 - **Each move says what it sent and what the link did**, where `SHARDS_MOVE_TIMES` is set
   (`move: stream R bytes, sent W bytes, P of F frames as zstd; link A bytes acknowledged in
   T us, X B/s, rtt, packets lost, longest silence S us`), a failed move's too; two-hosts.sh
