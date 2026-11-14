@@ -60,7 +60,9 @@ fn a_daemons_whole_lines_are_its_words() {
 
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
-/// milliseconds, then its end; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's PORT, busy for MS
+/// milliseconds, then its end; `go MS`, the same once a byte (its go) or its end comes on
+/// its stdin; `refuse`, its end at once, status 1; `answer PORT MS`, connected to loopback's
+/// PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `fetch PORT`, a request
 /// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
@@ -87,6 +89,9 @@ fn stand_in() {
         .and_then(|a| a.split_once(' '))
         .and_then(|(port, ms)| Some((port.parse::<u16>().ok()?, ms.parse().ok()?)));
     if let Some(ms) = asked.strip_prefix("busy ").and_then(|ms| ms.parse().ok()) {
+        busy(ms);
+    } else if let Some(ms) = asked.strip_prefix("go ").and_then(|ms| ms.parse().ok()) {
+        let _ = std::io::stdin().read(&mut [0u8; 1]);
         busy(ms);
     } else if asked == "refuse" {
         std::process::exit(1);
@@ -620,15 +625,19 @@ fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
     for round in 0..2 {
-        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
-        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
-        let began = Instant::now();
-        let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
+        // Its busy second begins on its go, sent once its wait has begun, so that the answer
+        // its end gives, timed from that begin, is never less than its work: a busy second
+        // begun as it ran, before its spawn returned, taught 993.99 ms under load
+        // (adacachy2 at 9dd326609), as runs-11's health test's answer did (490ddff78).
+        let mut daemon = stand_in_doing(&format!("go {}", busy.as_millis()))
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
+        let began = Instant::now();
+        daemon.stdin.take().unwrap().write_all(b"\n").unwrap();
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
                 let _ = daemon.kill();
@@ -802,6 +811,57 @@ fn judged_end(party: &mut std::process::Child) -> Result<std::process::ExitStatu
         || {},
         || party.wait().unwrap(),
     )
+}
+
+/// A judged call's own work, on its own thread of this process, is its party's progress
+/// (ROOT's batch 22, f385b8dac: api_image.rs' `refused` closures boot through
+/// `common::booted`, whose shards-api client checks a spec on the call's thread; a refusal
+/// answered in 206 µs on HVF, and one of 28.6 ms on KVM, both at 0 ns of the started
+/// processes' CPU, taught their call site a W* that refused the next call 206 µs and 31 ms
+/// in as it worked). Do: a started stand-in idle throughout, the party's live process; from
+/// one call site, its kind's kept record removed, a call that answers at once, then one busy
+/// for 200 ms on its own thread, then one asleep there for 1 s, past the W* the busy one
+/// taught. Expect: the first two
+/// answer; the sleeper, idle on its thread, is refused.
+#[test]
+fn a_judged_calls_own_work_is_its_progress() {
+    #[track_caller]
+    fn work(ms: u64, sleep: bool, forget: bool) -> Result<(), String> {
+        if forget {
+            let site = std::panic::Location::caller();
+            let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
+        }
+        common::judged(
+            common::Party::started(None),
+            "a call's own work",
+            || {},
+            || {
+                if sleep {
+                    std::thread::sleep(Duration::from_millis(ms));
+                    return;
+                }
+                let until = Instant::now() + Duration::from_millis(ms);
+                let mut spun = 0u64;
+                while Instant::now() < until {
+                    spun = std::hint::black_box(spun.wrapping_add(1));
+                }
+            },
+        )
+    }
+    let call = |ms: u64, sleep: bool, forget: bool| work(ms, sleep, forget);
+    let mut idle = stand_in_doing("idle")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let quick = call(0, false, true);
+    let busy = call(200, false, false);
+    let idle_call = call(1000, true, false);
+    drop(idle.stdin.take());
+    idle.wait().unwrap();
+    assert!(quick.is_ok(), "{quick:?}");
+    assert!(busy.is_ok(), "{busy:?}");
+    assert!(idle_call.is_err(), "a call idle on its own thread not refused");
 }
 
 /// What an `answer` stand-in writes.
