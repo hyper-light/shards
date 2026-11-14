@@ -3250,6 +3250,64 @@ mod tests {
         (p, server)
     }
 
+    fn refused_reply_holds(opcode: u32) {
+        let (p, s) = dir();
+        let held = || {
+            let state = s.state.lock().unwrap();
+            (
+                state.nodes.len(),
+                state.nodes.values().map(|n| n.lookups).sum::<u64>(),
+                state.handles.len(),
+                state.fds.open.len(),
+                state.pins.len(),
+            )
+        };
+        let before = held();
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            for i in 0..8 {
+                let file = format!("f{i}");
+                let body = if opcode == op::CREATE {
+                    // A handle its read-only mode cannot reopen: held by its pin too.
+                    let mut body = Vec::new();
+                    for word in [linux::O_RDWR | linux::O_CREAT | linux::O_EXCL, 0o100_400, 0, 0] {
+                        body.extend_from_slice(&word.to_le_bytes());
+                    }
+                    body.extend(name(&file));
+                    body
+                } else {
+                    std::fs::write(p.join(&file), "f").unwrap();
+                    name(&file)
+                };
+                let request = req(opcode, ROOT, 0, &body);
+                let mut reply = Vec::new();
+                assert!(slot.ask_into(&request, &mut reply).unwrap());
+                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                assert!(slot.refuse(&request, &mut reply));
+                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), -EIO);
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(held(), before, "a refused reply left server resources held");
+    }
+
+    #[test]
+    fn refused_lookups_leave_the_held_count_unchanged() {
+        refused_reply_holds(op::LOOKUP);
+    }
+
+    #[test]
+    fn refused_creates_leave_the_held_count_unchanged() {
+        refused_reply_holds(op::CREATE);
+    }
+
     /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
     /// which a directory is opened by.
     fn root_of(p: &std::path::Path) -> host::Owned {

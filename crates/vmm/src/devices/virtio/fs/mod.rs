@@ -238,6 +238,16 @@ impl Slot {
         }
         Ok(!reply.is_empty())
     }
+
+    /// Replaces a server reply its device cannot give the guest with EIO.
+    fn refuse(&self, req: &[u8], reply: &mut Vec<u8>) -> bool {
+        let Some(refused) = proto::unfollowed(req) else {
+            return false;
+        };
+        reply.clear();
+        reply.extend_from_slice(&refused);
+        true
+    }
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
@@ -987,10 +997,10 @@ fn serve_with(
                     unfollowed.get_or_insert(why);
                 }
                 // A size its window does not hold, refused its guest (memory-01).
-                match unfollowed.and_then(|why| Some((why, proto::unfollowed(req)?))) {
-                    Some((why, refused)) => {
+                match unfollowed {
+                    Some(why) => {
                         debug!("virtio-fs: {why:?}: its reply refused");
-                        put(reply, refused)
+                        slot.refuse(req, reply)
                     }
                     None => asked,
                 }
