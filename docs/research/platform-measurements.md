@@ -24054,6 +24054,14 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
 
+### Review memory-02: a live-copy value outlives unplug (2026-11-13)
+
+Two focused unit cases at 04ae8a9cd, macOS arm64, really plugged and unplugged
+anonymous memory, then consumed the live-copy bytes: SIGBUS in each (kiln r4/r5).
+At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
+This is correctness evidence, not a VM/performance measurement. Full commands,
+ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
+
 
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
@@ -24085,6 +24093,16 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
+### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
+
+On macOS arm64, the real Shared read completed while its release mutex was held
+at bebc160ab (r13, failed assertion); e5e2ef793 serializes it with release and
+keeps teardown behind the active reader. At 5185919b8 the live-copy continuation
+resumed after a Lost scan outcome (r14, failed assertion); fb58160ac stops instead.
+The latter is a unit continuation, not injected APFS/hypervisor failure. Commands,
+source revisions, light results and ROOT's remaining gates are in
+[the memory fix evidence](measurements/memory-fixes-v1/README.md).
 
 ### M566. What the run host's managed control scope refused was said as "invalid data", and init's relay end could land within a frame
 
