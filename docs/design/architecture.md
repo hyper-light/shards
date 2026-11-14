@@ -25467,6 +25467,16 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     already shared by the boot's session and its exit watcher (an `Arc`); the stop holds a
     clone only while the boot waits, as a borrow cannot reach the stopping thread from the
     boot's frame.
+  - *CREATE is under the stop too* (runs-03). Both a fresh run and a warm take
+    register their host before sending CREATE, in the shared `Begun::started` operation.
+    A protocol-sized staged file can block that pipe while the host reads nothing;
+    cancellation kills its reader without taking the writer mutex, so the write returns.
+    Send failures still release the registration; a stop wins over that transport error
+    and returns `Ended(Stopped)` only after the existing host/group cleanup completes.
+    `a_stop_cancels_a_create_whose_host_never_reads` observes the writer held, stops it,
+    and checks the typed end and reaped host/closed diagnostics. Red: the stop left it
+    blocked until test cleanup killed it. Green: the stop ends it without resuming the
+    reader. No new production deadline or polling interval.
   - *The whole tree.* On Unix the run host now leads a session and process group of its own
     (`POSIX_SPAWN_SETSID`), and shards-api's every kill of a host (a stop, its patience, its
     pools, a `stop` whose host cannot be asked) is SIGKILL to that group: its VM, network and
@@ -27486,8 +27496,10 @@ check refuses a grant toward no host as well.
 - *The CA (`shards_net::ca`).* Self-signed, `pathLenConstraint` 0 (it signs leaves alone),
   `keyCertSign`, ECDSA over P-256 with SHA-256 (the signature every TLS 1.3 client must
   verify, RFC 8446 §9.1). Name constraints are the grants' hosts as dNSName subtrees, written
-  critical (RFC 5280 §4.2.1.10). A leaf (`Ca::leaf`, the injector's, step 3) has a key of its
-  own and `serverAuth`.
+  critical (RFC 5280 §4.2.1.10). Those subtrees admit descendants; the signing API also
+  retains the exact granted hosts and refuses any other name as typed `LeafError::Ungranted`
+  before creating a key or signing (creds-07). The injector's SNI check remains separate.
+  A leaf (`Ca::leaf`, the injector's, step 3) has a key of its own and `serverAuth`.
 - *Its key is made as the process starts, before it confines itself.* AWS-LC's first draw
   from its random generator opens the VM-generation device (`crypto/ube/vm_ube_detect.c`,
   `open`) and marks a page `MADV_WIPEONFORK` (`crypto/ube/fork_ube_detect.c`), once per
@@ -27606,6 +27618,12 @@ VM failing. On the orchestrator's side
   lease it gave is released once: as the host says `RELEASED`, as the channel ends where it
   never says it, or at once where given after the run's release or with none of its life left
   (answered `Ended` or `Lapsed`).
+- *Pending waiter ownership (creds-06).* Repeated asks of a pending reference keep one
+  waiter per live flow, including multiple HTTP/2 streams of the same flow. Releasing its
+  TCP slot removes that token from pending and resumed lease records. The broker ask
+  itself stays identifiable so late answers still belong to this run. The vector's bound
+  derives from live callers, with no timeout, chosen size or duplicate queue. Red/green
+  and the teardown test: docs/research/measurements/creds-fixes-v1/README.md.
 - *Refusals, typed through.* The broker's `Denied` and `Unavailable` (in its words),
   `KeyReplaced { asked, current }` (the fields of the daemon's `Refused::KeyReplaced`, D176 part
   6), `Ended` and `Lapsed`; and the run host's own `Ungranted` and `Live`. The run host maps the
@@ -27662,10 +27680,15 @@ VM failing. On the orchestrator's side
   endpoint, the GPUs a run names (D232), the rate's period (D247), members' arguments
   (D256) and how a run's microVM started (D253)). A lease's life is the
   broker's: the answer carries it in nanoseconds (a u64, as `ready_by` is) past the answer's
-  arrival, which each side makes an instant on its own monotonic clock as it reads it. The run host reads it first, so its lease of a credential
-  ends no later than the network process's, whose next ask then finds the run host's ended. A
-  life past what a clock can name lives until the run ends; a life of none is no lease,
-  refused. Ask ids are u32s as the channel's other asks', a new one never a live lease's. No
+  arrival for the run host's bookkeeping. The injector's authorization instead starts that
+  budget at its first ask (creds-05): its ask precedes the SDK's settlement, so adding the
+  SDK's remaining life there cannot pass the lessor's original end. Broker work and all
+  relay/delivery time, including cold starts, spend the budget; retries never restart it.
+  A budget spent before delivery, or an unrepresentable end, is refused as typed `Lapsed`
+  before retaining the value. This can refuse early under delay; the run-host ledger can
+  still say `Live` until its later bookkeeping expiry, without sending a provider request.
+  Proof, alternatives and red/green: docs/research/measurements/creds-fixes-v1/README.md.
+  A life of none is no lease, refused. Ask ids are u32s as the channel's other asks', a new one never a live lease's. No
   deadline is set on an ask: each side waits on its answer or its channel's end. The run
   host's ledger is bounded by the run's grants, one lease of each at a time, a bound derived
   from the request rather than chosen.
