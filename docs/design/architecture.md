@@ -15851,6 +15851,14 @@ Docker on Linux does, which refuses several of them for want of a VM.
 
 ### D154. KVM on arm64, and a host's PCI function passed through (VFIO)
 
+**Review devices-02 (2026-11-13).** An IOMMU MAP has an inclusive end
+(virtio 1.3 §5.13.6.6), including `u64::MAX`. Translation bounds the
+remaining inclusive span by the nonempty request before adding the final
+byte, so a full-space MMIO mapping cannot overflow to a zero-length part.
+No timeout, cache, allocation limit or platform-specific path is added.
+Red/green evidence: `docs/research/measurements/device-fixes/README.md`.
+
+
 D13 planned KVM on arm64 Linux hosts, and none ran a VM: the KVM backend was x86_64's.
 D153's test path for VFIO is a guest given the test function, passing it to a guest of
 its own, on an arm64 Mac (D132): shards' VM process inside that guest is an arm64 Linux

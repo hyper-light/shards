@@ -505,7 +505,9 @@ impl Translation {
             if last < at || flags & want == 0 {
                 return None;
             }
-            let take = (last - at + 1).min(end - at);
+            // MAP's end is inclusive (§5.13.6.6), and may be u64::MAX. Bound
+            // the span by the nonempty request before adding its final byte.
+            let take = (last - at).min(end - at - 1) + 1;
             parts.push((phys + (at - first), take));
             at += take;
         }
