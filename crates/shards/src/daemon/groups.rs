@@ -284,8 +284,9 @@ impl Ask {
     }
 }
 
-/// A member's word under way (R04): its own exec judge's state, and the next ask.
-/// Only that judge can refuse it; the groups thread consumes its typed outcome.
+/// A member's word under way (R04): its exec's own judge's state, and the next ask. Only
+/// that judge can refuse it, and its refusal stands for that exec alone: each exec of the
+/// word begins `Waiting` (its room told, then a give-back). The groups thread consumes it.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
 struct Word {
@@ -824,6 +825,9 @@ impl<D: Disk> Daemon<D> {
         loop {
             self.tell_group_room(&m.id, m.pid, ask.room);
             if let Some(round) = ask.give {
+                // Its room's exec has ended: a refusal of it is no verdict on the give-back
+                // that follows, which its own judge judges, nor on a round opened after it.
+                self.word_begins(m.pid);
                 let vm = self.own_run(&m.id);
                 self.give_after(&vm);
                 let refused = |cut: &super::health::Cut| self.refuse_word(m.pid, cut);
@@ -853,6 +857,13 @@ impl<D: Disk> Daemon<D> {
                 Some(next) => ask = next,
                 None => return,
             }
+        }
+    }
+
+    /// Member `pid`'s word begins an exec of its own: no refusal stands for it yet.
+    fn word_begins(&self, pid: u32) {
+        if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
+            word.state = WordState::Waiting;
         }
     }
 
