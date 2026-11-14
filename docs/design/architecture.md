@@ -5390,8 +5390,8 @@ then verifies it still handles Stop; without the retry it returns the same socke
 seen by context commands on Fedora. The daemon's side (`server.rs`, `daemon/remote.rs`)
 starts each command
 by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
-whose owner uses a context of their own never sends a client's command on), says each in
-its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a
+whose owner uses a context of their own never sends a client's command on), records its client and operation in
+its log, without argument values or relay tokens (remote-05), hangs a command up whose connection went (SIGHUP, as a
 terminal that went away), and checks a client's enrollment again for each command, so that
 `shards remove client` ends its access at once. A join's refusal is the same whatever made
 it fail. The client's side (`client.rs`, `context.rs`) refuses here what a context does not
@@ -25749,6 +25749,14 @@ run's resolver answers, not the records' host mentions, which include help-text 
 **What would falsify it.** A provider whose clients reach it at addresses its names never
 answer (then address ranges as grants); a member that must reach one port by name beside
 another member's other names (then the per-member hold above, which lifts the refusal).
+
+**Absolute DNS names in MCP URLs** (inithex-04). The build's `mcp_endpoint`
+and init's paired reader omit a terminal root dot before lowercasing the grant's
+host, as DNS `query_name` omits that root label on the wire (RFC1034 §3.1).
+`https://MCP.example./mcp` therefore grants `mcp.example:443`, with the source URL
+kept as written. No unrestricted DNS or extra port is added. Two wire-question
+regressions reproduce the former spelling mismatch at build and in init's real
+netplan reader. [Evidence and owed real-VM variant](../research/measurements/inithex-fixes/README.md).
 
 ### D237. A program that carries shards writes its VM and network processes out beside its own `shards`, signed as it signs its own (built; real-VM validation owed)
 
