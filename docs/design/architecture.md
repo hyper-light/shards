@@ -34426,6 +34426,117 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   managed, and one killed, record none; the confined VM process's write to its inherited
   channel on each OS); Hex's adoption.
 
+### D261. The guest's console is virtio-console (hvc0); the 16550 UART is gone; a panic before it is told by pvpanic and read from the printk ring (built; real-VM runs owed)
+
+**Asked.** The person, 2026-11-14, on the emulated NS16550A (`devices/serial.rs`): "serial
+queues strike me as poor design, we can and should do better." Approved direction: virtio-console
+over virtio-mmio replaces the 16550 everywhere; the early-boot answer is pvpanic plus a
+post-mortem read of the printk ring through VMCOREINFO, not a debug port.
+
+**Decision.**
+- **The console is virtio-console** (VIRTIO 1.3 §5.3; `devices/virtio/console.rs`): one port,
+  no MULTIPORT, receiveq 0 and transmitq 1, the first virtio device on both architectures, so
+  KVM, HVF and WHP on x86-64 and arm64 share it (R12). Every command line says `console=hvc0`;
+  `earlycon` went with the UART it named.
+  - Output: a buffer per notification, written out on the device's worker, never on the
+    vCPU's thread. A UART traps every byte: printk before a tty opens costs an LSR poll and
+    a THR write per byte (Linux 8250_port.c `serial8250_console_write`, `wait_for_xmitr`).
+  - Input: into the buffers the guest posts, waiting while it has posted none, so nothing
+    is lost or held by the device. A paused console takes none.
+  - A snapshot keeps its queues alone.
+  - D12's report (`devices/said.rs`) moved over unchanged.
+- **Deleted, no dual path:** `serial.rs`, COM1 (its port 0x3f8, GSI 4, ACPI `PNP0501` and the
+  now-unused `aml::io`), arm64's UART node, `stdout-path` and `layout::UART`/`SPI_UART`, and
+  `serial::INPUT_AT_ONCE`.
+- **Snapshots.** Format 31 is the machine without the UART. A user's snapshot of format 30
+  holds a guest whose 8250 driver is bound to the deleted COM1/UART, so it is refused, not
+  migrated: `ResumeRefused::OlderMachine { format, saved_by }`, the same type and message as
+  olderinit's causes (D176), naming the shards that saved it. Format 32 adds pvpanic, so 31
+  is refused the same way. Templates are remade, keyed by the format (D25).
+  - The person's ruling (via ROOT): a migration that leaves a guest polling a dead port is a
+    hidden degraded state. Its cost would have been 2 frame times per byte, `wait_for_lsr`,
+    about 2 ms at the 9600 baud of divisor 12.
+- **pvpanic** (QEMU docs/specs/pvpanic.rst; `devices/pvpanic.rs`): one register taking
+  PANICKED (include/uapi/misc/pvpanic.h), written by the kernel's first panic notifier
+  (pvpanic.c, `.priority = INT_MAX`) before `panic=-1` resets.
+  - x86-64: found by ACPI `QEMU0001`, in the first page past the virtio-mmio windows.
+  - arm64: found by a `qemu,pvpanic-mmio` node (Documentation/devicetree/bindings/misc/
+    pvpanic-mmio.txt), at `GIC_REDIST_MAX_END`.
+  - It tells the console's port; `Handle::panicked`.
+  - The guest kernel gains `CONFIG_PVPANIC=y` and `CONFIG_PVPANIC_MMIO=y` (resources/kernel/
+    shards.config).
+- **The printk ring after a stop** (`printk.rs`). hvc0 registers only as its driver probes
+  (device_initcall), and then replays the ring (hvc_console.c `hvc_check_console`,
+  CON_PRINTBUFFER). A kernel that stops earlier said why to its ring alone, so where the
+  console carried nothing, `Handle::console_said` reads the ring's last lines from guest
+  memory under D12's bound.
+  - VMCOREINFO (CONFIG_VMCORE_INFO=y in both base configs) is a page filled at subsys_initcall
+    (kernel/vmcore_info.c l. 140-253), before any virtio probe.
+  - It names `prb`, every ring offset (printk.c `log_buf_vmcoreinfo_setup`, l. 980-1036) and
+    the address translation: x86-64 `phys_base` and `pgtable_l5_enabled`; arm64
+    `kimage_voffset`, `PHYS_OFFSET` and `VA_BITS`.
+  - The page is found by its first line `OSRELEASE=` at a page start. No channel hands it
+    over here; QEMU's is fw_cfg, which shards has none of.
+  - The ring is walked as `prb_read_valid`/`get_data` walk it.
+  - The refusal is typed: `printk::Unread`.
+  - Covered: panics from subsys_initcall on, which includes everything before hvc0.
+- **No KASLR in shards' boots**, checked for this:
+  - x86-64 boots `vmlinux` uncompressed (arch/x86_64/boot.rs), its zero page's loadflags
+    LOADED_HIGH alone (l. 287). `KASLR_FLAG` is set only by the bzImage decompressor (Linux
+    arch/x86/boot/compressed/kaslr.c l. 875) and read by `kaslr_enabled()` (asm/setup.h
+    l. 85-88), so the direct map is at its unrandomized base.
+  - arm64's base config has RANDOMIZE_BASE unset.
+  - So `printk_rb_static` is at its link address on both.
+
+**Alternatives rejected.**
+- A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
+  target, so it needs a kernel patch. arm64 has no port I/O and no write-only earlycon
+  (EARLYCON_DECLARE lists UARTs and JTAG DCC). It would be x86-only (R11/R12) and still a
+  per-byte-exit device kept for early boot.
+- Keeping the UART for early boot only: the legacy path the person ruled out.
+
+**Literals (R03).** Each is a cited bound; none is learned, so none has a cold start.
+
+| Literal | Value | Source |
+|---|---|---|
+| `RECEIVE_SIZE` | 1 | Linux virtio_console.c `fill_queue` (l. 1290-1311): page-sized buffers until the ring is full; the rest of the host's input waits in the host |
+| `TRANSMIT_SIZE` | 1 | `put_chars`/`__send_to_port` (l. 596-640, 1118-1123): one buffer outstanding, spun on until used |
+| `INPUT_AT_ONCE` | 4 KiB | one receive buffer, a guest page (x86-64's only size; arm64 `CONFIG_ARM64_4K_PAGES=y`) |
+| `pvpanic::PANICKED` | 1 | include/uapi/misc/pvpanic.h |
+| x86 `PVPANIC` | 0xc000_4000 | derived: the first page past `VIRTIO_MMIO + VIRTIO_MMIO_MAX * STRIDE` |
+| arm64 `PVPANIC` | 0x0900_0000 | `GIC_REDIST_MAX_END`, the first device page past the redistributors |
+| printk `PAGE` | 4 KiB | `VMCOREINFO_BYTES` = PAGE_SIZE |
+| `X86_START_KERNEL_MAP`, `X86_PAGE_OFFSET_L4/L5` | 0xffffffff80000000, 0xffff888000000000, 0xff11000000000000 | arch/x86/include/asm/page_64_types.h; no KASLR, above |
+| `STATE_SHIFT`, `ID_MASK`, `COMMITTED`, `FINALIZED`, `EMPTY_LINE` | 62, !(3<<62), 1, 2, 0x3 | kernel/printk/printk_ringbuffer.h l. 121-153 |
+
+Every ring length is bounded by the guest's RAM (`within_ram`); a larger one is
+`Unread::PastRam`.
+
+**Evidence.**
+- Phase 1 design: ROOT's record of 2026-11-14.
+- Cost: PM M588 (`docs/research/measurements/console-cost/`).
+- Unit tests:
+  - devices::virtio::console: output written and kept; input waits for posted buffers and
+    loses nothing; a paused console holds input. A mutant that drops the wait goes red.
+  - devices::said; devices::pvpanic: only PANICKED is a panic, red for a kdump event.
+  - snapshot: OlderMachine for 30, red when let through.
+  - printk: x86-64 and arm64 maps, a wrapped block, an empty line, data-less and reserved
+    records left out, a ring past RAM, a missing number. A mutant without the wrapped-block
+    rule goes red.
+  - The x86 DSDT and the arm64 devicetree contract.
+- Hosts: macOS arm64 and Linux x86-64.
+
+**Owed (coordinator).**
+- The whole real-VM E2E, since every test command line moved to hvc0.
+- The Firecracker comparison: its guests keep `console=ttyS0`, Firecracker's own console
+  being a 16550 (src/vmm/src/devices/legacy/serial.rs), both quiet.
+- The A/B at n=20 on HVF and KVM (M588).
+- `initcalls.py`: how early hvc0 and VMCOREINFO come.
+- The pinned kernel's release with PVPANIC.
+- A real panic before hvc0 (pvpanic told, its ring's lines quoted) on HVF, KVM x86-64/arm64
+  and WHP.
+- A ring read from a real pinned kernel's memory.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

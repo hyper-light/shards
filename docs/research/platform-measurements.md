@@ -25052,3 +25052,31 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   macOS was not reproduced (unverified). The futex case is left to the judge's owner: name
   the lock (a stack of the worker at the look, `/proc/<pid>/task/<tid>/stack` or a
   backtrace) before counting or excluding it.
+
+### M588. What a guest's console costs: the 16550 UART against virtio-console (D261)
+
+- **Question.** What does 1 MiB through the console cost the guest and its host on each, and
+  does any of it go missing?
+- **Method.** `docs/research/measurements/console-cost/cost.py`. The test guest's `console`
+  mode writes KiB KiB to its console as 64-byte lines and drains them (`tcdrain`), timed on
+  its own clock.
+  - Each way boots with that KiB and with 0, interleaved, n rounds. Each way names its own
+    build: no build has both devices. The UART side is c7633e13d, the last with it; the hvc0
+    side is 6e067b01b or later.
+  - Measured: the host CPU of the VM process (getrusage), lines that arrived whole, KVM exits
+    (`perf stat -e kvm:kvm_exit`) where allowed, and failed boots with why.
+  - `initcalls.py` gives when VMCOREINFO's and the virtio initcalls return.
+- **Found (preliminary, the coordinator's first HVF run).** Adas-Mac-Studio-3, macOS arm64,
+  host load about 30, through `launchd-run.sh`, 1 MiB, 9 rounds each way before one boot
+  was killed from outside the harness (SIGKILL, round 9), which then stopped it (fixed in
+  18beb6bd7):
+
+  | way | guest time (min–max) | host CPU (min–max) | lines lost |
+  |---|---|---|---|
+  | ttyS0 (16550) | 2080–2193 ms | 2041–2183 ms | 0 |
+  | hvc0 (virtio-console) | 217–251 ms | 282–318 ms | 0 |
+
+  hvc0 was about 9× faster on the guest's clock and used about 7× less host CPU for the same
+  MiB.
+- **Owed.** n=20 with p50/p90/p99/max on HVF and KVM (with exits per KiB on KVM), the
+  initcall timings, and the raw logs beside this record.
