@@ -16365,7 +16365,8 @@ person's decision, "refuse it clearly". A save records who saved it, after its s
 head (format 30): the shards version (`snapshot::SAVED_BY`, crates/shards/Cargo.toml's,
 which vmm's build.rs passes as `SHARDS_VERSION`, as the VM process that saves is a
 package of its own) and the contract its init announced on the control page
-(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; 0 where none). Every
+(`Snapshot::init`, from `Control::guest_abi` as the cut is taken; none where its guest
+runs no shards-init, which format 33 records as such, below). Every
 resume asks `snapshot::resumable(dir)` before anything restores the snapshot or its guest
 runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
 saved and live moves' first step on the machine moved from), and `shards restore DIR`
@@ -16380,8 +16381,8 @@ a plan of its contract that is not of this build's shape next (`Refused::OtherPl
 field of a plan defaults (legacy5).
 The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
 and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
-`OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
-none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
+`OlderInit { saved_by, init_abi, ours }`, a saver whose shards-init announced another
+contract ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
 continue in this shards (contract …): start it again from its image; its volumes are
 kept, its memory's state is not"); `Unrecorded { format }`, a state of a format before 30,
 whose saver is unrecorded and whose init's contract is in its device state, which is laid
@@ -16398,13 +16399,43 @@ format 30 alone. Its volumes and image are not the snapshot's: `rm vm` and a fre
 keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker start`'s
 failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
 `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
-resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
+resumes, and so does a guest that runs none; another's refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
 refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
 (on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
 `a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
 contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
+
+A guest that runs no shards-init (initzero, 2026-11-14). Formats 30 to 32 wrote the saver's
+init as a u64, 0 where the control page held none (`Control::guest_abi`), and `resumable`
+refused every state whose u64 was not this build's contract, so a save of a guest whose
+init is not shards-init (the test guest, `shards run --kernel … --init` of the user's own, a
+`--snapshot-dir` template of one) was refused as "saved by shards …, whose shards-init
+(contract 0000000000000000) cannot continue" by the very build that saved it: the HVF
+`snapshot.rs` storm test `restores_of_a_busy_machine_lose_no_interrupt_and_repeat_no_write`
+red 3 of 3 at main 490ddff78. Such a guest has no init contract a restore could break: its
+own init is in its memory, and nothing of shards speaks to it but the machine, which the
+format and machine checks hold. A save of format 33 or later is only ever written by a
+build whose shards-init announces its contract, so in it "none announced" says only that
+the guest runs no shards-init; format 33 records that as itself rather than as contract 0
+(R04): a flag, then the contract only where there is one (`decode_init`), and `resumable`
+refuses `OlderInit` only for a contract that is not this build's. The bytes change, so the
+format does (33); a state of 30 to 32 has only its saver's version read, and is refused
+`OlderMachine` as before, its init's record never parsed (no legacy reader). The workload's
+`OtherInit` is unchanged, and still refuses a guest that announced none: it is asked only
+once a guest has dialed the run's port and is to be sent a command in shards-init's
+protocol, which a guest of the user's own init never dials, and one that dials it without
+announcing a contract speaks a protocol it has not said it speaks. A move's plan names
+this build's contract for every microVM (`Plan::init`, `u64`), so a custom-init guest's
+move is not refused at `ready`; a saved move's plan asks `resumable` of its save on the
+machine moved from (`Daemon::plan`), which now passes it. That plan's `init` still says
+this build's contract for a guest that runs none: owed, an `Option` taken from the save
+(`resumable` returning its saver's init) and, for a live move, from the running VM
+process's `Control::guest_abi`. Red/green: `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` and
+`resumable_refuses_another_init_and_leaves_the_snapshot` resume a save whose guest announced
+none, red with format 32's record put back. Owed to ROOT: the storm test on HVF past its
+restore.
 
 The checks after a guest dials (legacy5). The VM process checked a resumed guest's init
 contract once its connections came back (vm_run.rs), with words of its own; it is deleted,
@@ -28067,11 +28098,24 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   - *What it waits on now.* The host's exit watcher (`watch`), once the host has exited and
     before it is reaped (its pid, the group's ID, held), ends its group and follows every
     process of it to its exit: `Child::end_group`, the Unix twin of Windows' (above). Each
-    round sends the group SIGKILL, lists its processes that have not exited (Linux `/proc`
-    `stat`: group, state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then
-    `proc_pidinfo` group and not `SZOMB`), and waits on each one's exit word, its end
-    watched before it is seen still the group's so a reused pid is never waited on, until
-    a round lists none. A host that ends as it should has reaped what it started, and its
+    round lists the group's processes that have not exited (Linux `/proc` `stat`: group,
+    state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then `proc_pidinfo` group and
+    not `SZOMB`, asked with a nonzero `arg` so that XNU looks among exiting processes too),
+    watches each one's exit word, its end watched before it is seen still the group's so a
+    reused pid is never waited on, then sends the group SIGKILL and waits on each watch,
+    until a round lists none. Amended 2026-11-14 (groupend lane): XNU hides an exiting
+    process from `proc_find` from `proc_prepareexit` on (`P_REF_DEAD`, before `proc_exit`'s
+    `fdt_invalidate`, `NOTE_EXIT` and `SZOMB`; xnu-12377.1.9 kern_exit.c), and both
+    `proc_pidinfo` without `arg` and a `NOTE_EXIT` watch (`filt_procattach`) ask it. Rounds
+    that signalled first, then looked, read a process our SIGKILL had begun to end as gone,
+    and returned before it was a zombie, its files possibly still open:
+    `a_groups_end_follows_every_process_of_it_to_its_end` failed 1 in 8 and 2 in 40 whole-lib
+    runs on adas-mac-studio-3 at 5231d8279, the leader not yet ended (`has_ended`) or the
+    group's `sleep` still alive. At a failure the leader was in `proc_listpids`' group
+    listing, refused by `proc_pidinfo` and by a `NOTE_EXIT` watch (ESRCH), and its waitid(2)
+    end came 466 µs later. Watched before it is signalled, each process a round ends
+    is waited on by its exit word; one still exiting after it (between `NOTE_EXIT` and
+    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again. A host that ends as it should has reaped what it started, and its
     group is empty; one it leaves is ended with it (before, waited on for as long as it
     held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
     pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
@@ -28210,8 +28254,9 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The run's own command* is the orchestrator's, or `builtin::ATTEND`: the standby holds,
   the members start.
 - *Its end* (`RunEnd`): `Exited` with the status its own command or `ATTEND`'s holder ended
-  with; a command that never started, `Failed` in its VM's words (D249); a run its VM could
-  not serve, `Failed` in its words (D258).
+  with; a command that never started, or a run its init failed after it started, `Failed` in
+  init's words (D249, amended 2026-11-14); a run its VM could not serve, `Failed` in its words
+  (D258).
 
 **Literals.** None new: `run::MAX_PAYLOAD`, `run::TOKEN`, the permission mask `0o777`,
 `docker run`'s `128 + signal`; every wait is on a fact.
@@ -32687,7 +32732,58 @@ expected); as built, passed.
 and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
-whose command never started ending `Exited`.
+whose command never started ending `Exited`. (Superseded by the amendment below: a started run
+whose `DONE` carries init's words ends `Failed`.)
+
+**Amended (2026-11-14): a started run whose init fails ends `Failed` in init's words.** The
+person's decision, verbatim "typed failure!". Init can fail a run after it said `STARTED`: its
+relay (init run.rs, `workload.relay`) returns a `Failure`, and init sends `SYSTEM_ERR` with its
+words and `EXIT` 125. The VM process keeps the words as `not_run` (workload.rs `relay_frames`),
+and warm.rs `finish` keeps dockerd's code for them (`start_failed`, 128 here). The run host
+read that as `Exited(128)`, which reads as the command's own exit. 5231d8279 (apiend128) fixed
+one such cause, init's capture EOF race. Typing the failure stops this hiding any other.
+- *`DONE`* carries the code the microVM keeps, then init's own words (warm.rs `done`, both
+  `finish` and `joined_finish`), no longer dockerd's text for them. Each reader renders them at
+  its own boundary:
+  - the daemon (daemon.rs `run_ended`) says them as dockerd does
+    (`start_failed(words).0`), for a command that never started, as before;
+  - the run host (`api_run::run_end`) types them.
+  The Docker CLI and Engine API answers are unchanged: the container's `ExitCode` stays 128 and
+  `docker run` still exits 125, 126 or 127 as Docker defines.
+- *`run_end`*: a `DONE` with words is `Failed`, its guest having said `STARTED` or not:
+  - not started: `"its command never started (status N): WORDS"`, as before, now with init's
+    unamended words;
+  - started: `"its init failed after its command started: WORDS"`.
+  A `DONE` of a status alone is `Exited(status)`. The branch that typed a started run's words
+  as `Exited(status)` is deleted. There is one path.
+- *API change for Hex* (shards-api `RunEnded.end`, the image channel's `ENDED`). There is no wire
+  or VERSION change: `RunEnd::Failed(String)` already exists. A run whose command started and
+  whose guest's init then failed it now ends `RunEnd::Failed("its init failed after its command
+  started: …")` where it ended `RunEnd::Exited(128)`. An orchestrator matching `Exited(128)` as
+  that failure matches `Failed` instead; an `Exited` status is now only ever a command's (or
+  `ATTEND`'s holder's) own.
+
+*Literals.* None new.
+
+*Tests* (unit, one macOS arm64 host, adas-mac-studio-3.local):
+- `api_run::tests::an_init_that_fails_a_started_run_ends_it_failed_in_inits_words`: through
+  `run_end` and `Told::end`.
+- `api_run::tests::a_command_that_never_started_ends_its_run_failed_saying_why`: unchanged
+  but for its started-with-words case, which moved to the test above.
+- `warm::tests::a_runs_done_carries_inits_own_words` (shards-vm-process): words that dockerd
+  amends are carried as init said them.
+
+*Results*: adas-mac-studio-3.local (Darwin arm64, rustc 1.99.1), `SHARDS_HELPERS=skip`.
+- `cargo test -p shards --bin shards -- api_run::` at 331cdf2a4: 55 passed, 0 failed.
+- `cargo test -p shards-vm-process -- warm::tests::a_runs_done_carries_inits_own_words`: passed.
+- `cargo clippy -p shards -p shards-api -p shards-vm-process --all-targets -- -D warnings`:
+  clean.
+- Red: with the old guard put back (`if !started && !words.is_empty()`), the new test failed,
+  `left: Exited(128)`, `right: Failed("its init failed after its command started: …")`.
+
+*Evidence owed* (ROOT, real VMs): a run whose init fails after `STARTED`, through
+`cargo test -p shards --profile test-release --test api_image` on HVF and KVM, and Hex's
+image_real once Hex vendors this.
 
 ### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
 

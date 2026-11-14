@@ -1499,9 +1499,13 @@ struct Daemon<D: Disk = Real> {
     /// Collections, run by the collector's thread: one due at start, and once a pull has
     /// moved a reference (audit A13).
     collecting: Collecting,
-    /// The listener is out of descriptors: no collection starts, whose files would take
-    /// what its clients wait for.
-    starving: AtomicBool,
+    /// The slots' maker is out of descriptors: no collection starts, whose files would take
+    /// what its clients wait for, until the maker offers a slot again ([`Daemon::have_room`]),
+    /// not as soon as any descriptor is let go of, which the maker may yet find too few.
+    slots_starved: AtomicBool,
+    /// A collection failed short of descriptors: it is due again once any is let go of
+    /// ([`Daemon::wake_listener`]).
+    collector_starved: AtomicBool,
     /// The home is gone or going ([`Daemon::home_going`]): the daemon steps aside, and
     /// removes what is left of it as it exits.
     home_gone: AtomicBool,
@@ -2401,7 +2405,8 @@ impl<D: Disk> Daemon<D> {
                 due: Mutex::new(true),
                 ..Collecting::default()
             },
-            starving: AtomicBool::new(false),
+            slots_starved: AtomicBool::new(false),
+            collector_starved: AtomicBool::new(false),
             home_gone: AtomicBool::new(false),
             followers: follow::Followers::new()?,
             completing: follow::Completing::default(),
@@ -2648,12 +2653,16 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Wakes the listener: something it waits for may have happened, descriptors let go of
-    /// among them, which what starved of them tries again for (`have_room`): the listener's
-    /// spare (`refuse_api`), the slots' maker, a collection.
+    /// among them, which what starved of them tries again for: the listener's spare
+    /// (`refuse_api`), the slots' maker, and a collection that found none. A collection held
+    /// back by the slots' maker waits on for the maker's own word ([`have_room`]): started
+    /// here, it ran before the maker had offered a slot again (KVM batch 22).
+    ///
+    /// [`have_room`]: Self::have_room
     fn wake_listener(&self) {
         self.listener_wake.wake();
-        if self.starving.load(Ordering::SeqCst) {
-            self.have_room();
+        if self.collector_starved.swap(false, Ordering::SeqCst) {
+            self.tell_collector();
         }
         self.tell_slots(slots::Event::Room);
         let (held, room) = &self.room;
@@ -7044,13 +7053,13 @@ impl<D: Disk> Daemon<D> {
         // failed. It is not started again, by its policy or otherwise, nor removed with its
         // snapshots: `restore vm` resumes it.
         let saved = inbox.saved_as.take();
-        // DONE carries the status, and for a command that never started what dockerd
-        // would say and the code its microVM keeps (warm.rs finish).
+        // DONE carries the code its microVM keeps and, for a command that never started,
+        // init's words (warm.rs `done`), said here as dockerd says them (D249).
         let (status, said) = match done.and_then(<[u8]>::split_first) {
             _ if saved.is_some() => (shards_ipc::SAVED_STATUS, None),
-            Some((&status, said)) => (
+            Some((&status, words)) => (
                 status,
-                (!started).then(|| String::from_utf8_lossy(said).into_owned()),
+                (!started).then(|| shards_cmdline::commands::start_failed(&String::from_utf8_lossy(words)).0),
             ),
             // A VM that ended without a word leaves its command's status unknown: 255, as
             // dockerd reports a container whose process it lost.
@@ -8413,9 +8422,14 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// The listener has descriptors again: a collection due may start.
+    /// The slots' maker offers slots again: a collection due may start.
     fn have_room(&self) {
-        self.starving.store(false, Ordering::SeqCst);
+        self.slots_starved.store(false, Ordering::SeqCst);
+        self.tell_collector();
+    }
+
+    /// Wakes the collector's thread to look at what holds it again.
+    fn tell_collector(&self) {
         let _guard = lock(&self.collecting.due);
         self.collecting.changed.notify_all();
     }
@@ -8457,7 +8471,10 @@ impl<D: Disk> Daemon<D> {
             {
                 let mut due = lock(&c.due);
                 while !c.ended.load(Ordering::SeqCst)
-                    && (!*due || self.starving.load(Ordering::SeqCst) || self.stopping.load(Ordering::SeqCst))
+                    && (!*due
+                        || self.slots_starved.load(Ordering::SeqCst)
+                        || self.collector_starved.load(Ordering::SeqCst)
+                        || self.stopping.load(Ordering::SeqCst))
                 {
                     due = c.changed.wait(due).unwrap_or_else(PoisonError::into_inner);
                 }
@@ -8469,13 +8486,13 @@ impl<D: Disk> Daemon<D> {
             if let Err(e) = self.collect_garbage() {
                 log(format!("collecting: {e}"));
                 // Short of descriptors, which the clients the listener takes as room comes
-                // may take back from it, it is due again once there is room: the daemon is
-                // starving until it is told descriptors were let go of (`wake_listener`), not
+                // may take back from it, it is due again once there is room: it is starved
+                // until it is told descriptors were let go of (`wake_listener`), not
                 // before, lest it spin while there is none (CI 3a640ba: one begun as room
                 // came failed so, and none followed).
                 if short_of_descriptors(&e) {
                     let mut due = lock(&c.due);
-                    self.starving.store(true, Ordering::SeqCst);
+                    self.collector_starved.store(true, Ordering::SeqCst);
                     *due = true;
                 }
             }
@@ -12713,16 +12730,16 @@ mod tests {
         });
     }
 
-    /// No collection starts while the listener is out of descriptors, which its files
-    /// would take; the one due starts once the listener has room again.
+    /// A collection that failed short of descriptors starts again once descriptors are let
+    /// go of, not before.
     #[test]
-    fn no_collection_starts_while_the_listener_is_starved() {
+    fn no_collection_starts_while_the_collector_is_starved() {
         let t = Test::new("collect-starved");
         t.run(|t| {
             crate::pull::store(&t.home).unwrap();
             let left = t.home.join("images").join("ingest").join("left");
             std::fs::write(&left, b"left behind").unwrap();
-            t.daemon.starving.store(true, Ordering::SeqCst);
+            t.daemon.collector_starved.store(true, Ordering::SeqCst);
             t.t.daemon.start_collector(t.threads);
             std::thread::sleep(Duration::from_millis(100));
             assert!(
@@ -12732,6 +12749,32 @@ mod tests {
             // Descriptors let go of anywhere wake the listener, which tells the collector.
             t.daemon.wake_listener();
             t.until("not collected once the listener had room", |_| !left.exists());
+        });
+    }
+
+    /// No collection starts while the slots' maker is out of descriptors, which its files
+    /// would take, though descriptors are let go of meanwhile: only once the maker offers a
+    /// slot again (KVM batch 22: a collection ran, and said so, before the maker had).
+    #[test]
+    fn no_collection_starts_until_the_slots_maker_has_room() {
+        let t = Test::new("collect-slots");
+        t.run(|t| {
+            crate::pull::store(&t.home).unwrap();
+            let left = t.home.join("images").join("ingest").join("left");
+            std::fs::write(&left, b"left behind").unwrap();
+            t.daemon.slots_starved.store(true, Ordering::SeqCst);
+            t.t.daemon.start_collector(t.threads);
+            t.daemon.collect_soon();
+            // A client's end lets descriptors go and wakes the listener before the maker
+            // has made a slot of them.
+            t.daemon.wake_listener();
+            std::thread::sleep(Duration::from_millis(100));
+            assert!(
+                left.exists(),
+                "collected before the slots' maker offered a slot again"
+            );
+            t.daemon.have_room();
+            t.until("not collected once the slots' maker had room", |_| !left.exists());
         });
     }
 
