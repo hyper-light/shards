@@ -92,3 +92,9 @@ shared package cache and took 2m45s; no performance conclusion follows.
 The final merged run also repeats the 7 MCP termination tests. A follow-up socket
 POLLERR branch preserves errno even when a pending response prevents another read;
 its backpressured-error branch has source reasoning, not a separate fault witness.
+
+Final merged source 41854ef3f (main through 14ddb2413), kiln r9 on the same
+Linux x86_64 host: 3 Agentfile MCP + 7 MCP bridge + 8 netplan tests passed;
+all-target clippy of shards-agentfile and shards-init passed. Full r9 output is
+names-merged.log. The merged-tree mechanical policy check passed locally; no
+build or test ran on the shared Mac. No mutation campaign or outside-area review.
