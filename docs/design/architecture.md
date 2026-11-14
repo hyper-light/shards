@@ -12398,6 +12398,45 @@ children, the first reading of the failure.
   test: the real-VM run is its evidence. Owed (ROOT): `cargo test -p shards --profile
   test-release --test managed_output -- --test-threads=1` on HVF and KVM.
 
+**Part 7: a restored guest's first answer is a kind of its own** (#77, 2026-11-14; ROOT's
+brief: fix the judge's reading, not the bound). HVF (adas-mac-studio.local, main 6f3cd4428)
+and KVM (c35 at 8fdd66512, c36 at 3f2705f8d): moved.rs
+`a_moved_microvms_published_port_answers_there` was refused at :631, "a guest's stream made
+no progress for 34.870583ms, past the slowest answer of its kind seen on this host
+(17.694042ms), 70.9335ms into its wait ... (this test's own VM processes, its CPU its
+liveness alone, daemon 47690 of …/ports-t-12) ... its last progress its daemon said
+something 70.516834ms ago; its host not holding it; its record W* 17.694042ms, R* 0ns of
+CPU in 17.694042ms".
+- *The cause.* The test read its published port through one closure, `ask`, before the move
+  (a running guest) and after it (the guest its restore on the other home had just
+  started). `Following`'s kind is its call site and `STREAM` (`WaitKind::awaiting`), and a
+  closure cannot be `#[track_caller]` on stable Rust, so both reads were moved.rs:629:9, one
+  kind: the warm read's 17.7 ms answer was the W* that judged the restored guest's first
+  answer. That answer waits on the restored guest's own work (its memory faulted back from
+  its snapshot, its first accept) and carries no byte until it comes. A `Following`'s
+  party's CPU is its liveness alone (`Cpu::Liveness`), so no reading of its processes would
+  have shown that work as progress: the kind, not the party, was wrong.
+- *Not the party.* The party was whole: no VM process is the test's own here, and the
+  restored VM process descends from the other home's daemon (its spawner's child), which
+  `Party::members` follows by parent. "R* 0ns of CPU" is the record's, not this wait's: the
+  rate of the one answer that taught it, whose looks read no CPU between a first look (based)
+  and its answer. The harness test below shows the same "R* 0ns of CPU in W*" with no party
+  at all.
+- *The fix.* moved.rs' two published-port tests read through nested `#[track_caller]`
+  functions, so each read's kind is its caller's site: the read before the move and the
+  restored guest's first are two kinds, each cold on a host until its own first answer
+  (D215), each learning from its own answers alone. No literal and no bound changed (R03).
+- *Held by* tests/harness.rs `a_moved_guests_first_answer_is_a_kind_of_its_own`
+  (a stream answered 5 ms in, then one answered after four times the W* that taught, from
+  two call sites of one `#[track_caller]` helper), on adas-mac-studio-3.local (macOS arm64,
+  kiln r60/r64, dac3eafa3's tests): green 3 of 3; red with both read through one closure
+  (moved.rs' shape), 2 of 2, "refused 81.1845ms into its peer's quiet: a guest's stream made
+  no progress for 20.296125ms, past the slowest answer of its kind seen on this host
+  (20.296125ms) ... its record W* 20.296125ms, R* 0ns of CPU in 20.296125ms". The whole
+  harness binary (r42, the test's first form): its 27 others passed, 3 ignored; clippy of shards (`--all-targets -D warnings`) clean.
+  Owed (ROOT): `cargo test -p shards --profile test-release --test moved --
+  --test-threads=1` on HVF and KVM.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting
