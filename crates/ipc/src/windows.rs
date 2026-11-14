@@ -463,7 +463,6 @@ pub struct Child {
 /// duplicates it, as std's `Child` lends its own.
 impl std::os::windows::io::AsHandle for Child {
     fn as_handle(&self) -> BorrowedHandle<'_> {
-        use std::os::windows::io::AsHandle as _;
         self.process.as_handle()
     }
 }
