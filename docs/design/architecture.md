@@ -12171,6 +12171,35 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   - Owed (ROOT): hotplug.rs and guest_time.rs on KVM, HVF and WHP, their records cleared;
     the harness's Windows run of `a_machines_waiter_alone_is_no_progress`, which holds the
     cycle counters' accounting of a running thread (unverified here).
+  - *Linux's process clock lags its other running threads* (CI run 43575280954, aarch64
+    glibc: `a_machines_host_work_is_its_progress` refused 181 ms into its thread's 200 ms
+    spin at W* 239 µs, the process's clock last grown beside its waiter 2.6 ms before).
+    `thread_group_cputime` (kernel/sched/cputime.c) brings only the reading thread's run up
+    to date; a thread running on another CPU is in the process's clock as of that CPU's last
+    tick or scheduler event, so between ticks it grows by the waiter's own run alone.
+    A thread's own clock (`CPUCLOCK_SCHED` per thread, `task_sched_runtime` in
+    kernel/sched/core.c) brings a running thread up to date as it is read. On Linux `Beside`
+    now also reads each other thread of `/proc/self/task` by its own clock (`(~tid << 3) | 6`,
+    include/linux/posix-timers.h `make_thread_cpuclock`, as glibc's and musl's
+    `pthread_getcpuclockid` make it); a look shows progress where either the process's
+    bracketed clock or the threads' own clocks grew (the process's still counts a thread
+    that ran and exited between looks). No new number (R03): the ID's encoding is the
+    kernel's ABI; a thread found anew began since the look before, so all it ran is since;
+    a first look stays based. Measured on adacachy2 (Linux 7.3.3 CachyOS x86_64,
+    CONFIG_HZ=1000, 32 CPUs), `docs/research/measurements/judge-machine/thread-clock-lag.c`
+    (2,000 looks beside a spinning thread): the process's clock less the waiter showed no
+    other thread's run at 14 looks at a 239 µs pace and 8 at 500 µs, while the spinner's own
+    clock grew at every one. Through `Party::machine` itself (a temporary harness test, 2,000
+    looks beside a spinning thread, 8fdd66512 + this change): still looks with the threads'
+    clocks 0 / 3 / 0 at 100 / 239 / 500 µs paces; with them removed (process clock alone)
+    28 / 17 / 17. What it can still hide: a thread its host holds runnable but not running
+    is no progress and no hold here (`Beside` reads no schedstat), so a host that holds a
+    machine's threads past W* can still see it refused.
+  - *A read's test began its clock after its stand-in's* (CI run 43575280954, Alpine:
+    `a_judged_read_goes_on_while_its_party_works` "it answered 999.714051ms in", its read
+    never refused): the stand-in's second of work starts as its connect returns, which can be
+    before the test's accept does, where `began` was taken. It is now taken before the
+    spawn, as its sibling tests' are (CI run 43530570785).
 
 **The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
 guest's storm said its main thread stood still after 15 s and took its host's stream for

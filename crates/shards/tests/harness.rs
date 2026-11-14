@@ -549,12 +549,16 @@ fn a_judged_read_goes_on_while_its_party_works() {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as its connect returns,
+        // which can be before accept returns here (CI run 43575280954, Alpine: "it answered
+        // 999.714051ms in"), as a_judged_call_goes_on_while_its_party_works' can be before
+        // its spawn returns.
+        let began = Instant::now();
         let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let (mut conn, _) = listener.accept().unwrap();
-        let began = Instant::now();
         let mut got = [0u8; ANSWER.len()];
         let read = judged_read(&mut party, &mut conn, &mut got);
         let _ = party.wait();

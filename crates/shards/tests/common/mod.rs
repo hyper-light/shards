@@ -3469,6 +3469,14 @@ impl Party {
 ///   nanosecond, macOS' proc_pid_rusage(2) in Mach units), the thread through
 ///   clock_gettime(2)'s CLOCK_THREAD_CPUTIME_ID, each counter's resolution its clock's
 ///   (`Watch::resolution`, clock_getres(2)).
+/// - Linux, beside that: each other thread's own CPU clock. The process's clock brings only
+///   its reader's thread up to date: a thread running on another CPU is in it as of that
+///   CPU's last tick or scheduler event (kernel/sched/cputime.c `thread_group_cputime`), so
+///   between ticks it grows by its waiter's run alone (CI's aarch64 run 43575280954: refused
+///   at W* 239 µs, 2.6 ms after the process's clock last grew, a thread spinning throughout).
+///   A thread's own clock brings a running thread up to date as it is read
+///   (kernel/sched/core.c `task_sched_runtime`). The process's clock still counts a thread
+///   that ran and exited between two looks; either showing a run is its progress.
 /// - Windows: QueryProcessCycleTime and QueryThreadCycleTime, cycle counts, exact (their
 ///   time undocumented: what they ran is said as no CPU time, R* a refusal's diagnosis).
 ///
@@ -3485,12 +3493,14 @@ struct Beside {
 }
 
 /// One look's reading, in its OS's units (Unix nanoseconds, Windows cycles): the looking
-/// thread's counter, this process's, then the looking thread's again.
-#[derive(Clone, Copy)]
+/// thread's counter, this process's, then the looking thread's again; on Linux each other
+/// thread's own counter too, by its thread ID.
 struct Reading {
     before: u64,
     process: u64,
     after: u64,
+    #[cfg(target_os = "linux")]
+    others: std::collections::BTreeMap<u32, u64>,
 }
 
 /// What [`Beside::look`] found.
@@ -3507,30 +3517,39 @@ enum Ran {
 impl Beside {
     fn look(&mut self) -> Ran {
         let thread = std::thread::current().id();
-        let read = self.read();
-        let before = std::mem::replace(&mut self.last, read.map(|r| (thread, r)));
-        let (Some((by, last)), Some(now)) = (before, read) else {
+        let Some(now) = self.read() else {
+            self.last = None;
             return Ran::Based;
         };
-        if by != thread {
-            return Ran::Based;
+        let others = match self.last.take() {
+            Some((by, last)) if by == thread => Some(self.others(&last, &now)),
+            _ => None,
+        };
+        self.last = Some((thread, now));
+        match others {
+            None => Ran::Based,
+            Some(0) => Ran::Still,
+            Some(ns) if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
+            Some(_) => Ran::Others(Duration::ZERO),
         }
+    }
+
+    /// What this process's threads beside its waiter ran from `last` to `now`, in its OS's
+    /// units: the process's counter past its waiter's run and the counters' uncertainty, or,
+    /// on Linux, the other threads' own counters' growth, whichever shows more.
+    fn others(&self, last: &Reading, now: &Reading) -> u64 {
         let waiter = now.after.saturating_sub(last.before);
         let uncertain = if cfg!(windows) {
             0
         } else {
             u64::try_from(self.uncertainty.as_nanos()).unwrap_or(u64::MAX)
         };
-        let others = now
+        let process = now
             .process
             .saturating_sub(last.process)
             .saturating_sub(waiter)
             .saturating_sub(uncertain);
-        match others {
-            0 => Ran::Still,
-            ns if cfg!(unix) => Ran::Others(Duration::from_nanos(ns)),
-            _ => Ran::Others(Duration::ZERO),
-        }
+        process.max(threads_ran(last, now))
     }
 
     #[cfg(unix)]
@@ -3558,6 +3577,8 @@ impl Beside {
             before: ns(before),
             process: ns(process),
             after: ns(after),
+            #[cfg(target_os = "linux")]
+            others: other_threads_cpu()?,
         })
     }
 
@@ -3581,17 +3602,74 @@ impl Beside {
     }
 }
 
+/// What the other threads' own counters grew by from `last` to `now` (Linux; none read
+/// elsewhere). A thread not read at the look before began since: all it ran is since.
+#[cfg(target_os = "linux")]
+fn threads_ran(last: &Reading, now: &Reading) -> u64 {
+    now.others.iter().fold(0u64, |ran, (tid, &cpu)| {
+        ran.saturating_add(cpu.saturating_sub(last.others.get(tid).copied().unwrap_or(0)))
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn threads_ran(_: &Reading, _: &Reading) -> u64 {
+    0
+}
+
 /// `read` (clock_gettime(2) or clock_getres(2)) of the calling thread's CPU clock.
 #[cfg(unix)]
 fn thread_cpu(
+    read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
+) -> Option<Duration> {
+    cpu_clock(libc::CLOCK_THREAD_CPUTIME_ID, read)
+}
+
+/// The CPU time of each thread of this process but the calling one, by its ID, each from
+/// its own CPU clock: the scheduler's (`CPUCLOCK_SCHED`, 2) of the thread its ID names
+/// (`CPUCLOCK_PERTHREAD_MASK`, 4), `(~tid << 3) | 6` (include/linux/posix-timers.h
+/// `make_thread_cpuclock`; glibc's and musl's `pthread_getcpuclockid` make the same). A
+/// thread that ended between this process's listing and its read is left out.
+#[cfg(target_os = "linux")]
+fn other_threads_cpu() -> Option<std::collections::BTreeMap<u32, u64>> {
+    // SAFETY: gettid(2) takes nothing and always succeeds.
+    let me = unsafe { libc::gettid() };
+    let mut others = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir("/proc/self/task").ok()? {
+        let Some(tid) = entry
+            .ok()
+            .and_then(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        if tid == me {
+            continue;
+        }
+        let Some(clock) = (!tid).checked_shl(3).map(|id| id | 6) else {
+            continue;
+        };
+        let Some(cpu) = cpu_clock(clock, libc::clock_gettime) else {
+            continue;
+        };
+        let (Ok(tid), Ok(ns)) = (u32::try_from(tid), u64::try_from(cpu.as_nanos())) else {
+            continue;
+        };
+        others.insert(tid, ns);
+    }
+    Some(others)
+}
+
+/// `read` (clock_gettime(2) or clock_getres(2)) of CPU clock `clock`.
+#[cfg(unix)]
+fn cpu_clock(
+    clock: libc::clockid_t,
     read: unsafe extern "C" fn(libc::clockid_t, *mut libc::timespec) -> libc::c_int,
 ) -> Option<Duration> {
     let mut at = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: the calling thread's CPU clock read into a local timespec.
-    if unsafe { read(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut at) } != 0 {
+    // SAFETY: a CPU clock read into a local timespec.
+    if unsafe { read(clock, &raw mut at) } != 0 {
         return None;
     }
     Some(Duration::new(
