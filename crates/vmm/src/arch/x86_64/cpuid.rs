@@ -813,7 +813,15 @@ mod covers_tests {
 
     #[test]
     fn a_cpu_baseline_keeps_deadline_timer_shaping_within_its_features() {
-        let template = vec![leaf(1, 0, 0, TSC_DEADLINE, 0)];
+        let template = vec![Leaf {
+            function: 1,
+            index: 0,
+            flags: 0,
+            eax: 0,
+            ebx: 0,
+            ecx: TSC_DEADLINE,
+            edx: 0,
+        }];
         let baseline = vec![[1, 0, 0, 0, 0, 0, 0]];
         let mut masked = template.clone();
         within(&mut masked, &baseline);
