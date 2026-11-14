@@ -17740,7 +17740,7 @@ mod tests {
 
             // A move's stream: its plan, then the microVM directory `whole` names, if any,
             // written from a directory of the test's own; imported as the mover's client
-            // sends it.
+            // sends it, packed.
             let streams = shards_testdir::TempDir::new("mv-names").unwrap();
             let n = std::cell::Cell::new(0);
             let import = |p: &moves::Plan, whole: Option<&Path>| {
@@ -17752,12 +17752,19 @@ mod tests {
                 }
                 n.set(n.get() + 1);
                 let at = streams.join(format!("s{}", n.get()));
-                std::fs::write(&at, &bytes).unwrap();
+                let (mut packing, _) = crate::packing::pack(std::io::Cursor::new(bytes)).unwrap();
+                let mut packed = Vec::new();
+                std::io::Read::read_to_end(&mut packing, &mut packed).unwrap();
+                std::fs::write(&at, &packed).unwrap();
                 let asker = commands::Asker {
                     files: vec![OwnedFd::from(File::open(&at).unwrap())],
                     ..asker()
                 };
-                ask_as(&t.daemon, &[shards_ipc::MOVE_STEP, "import"], &asker)
+                ask_as(
+                    &t.daemon,
+                    &[shards_ipc::MOVE_STEP, "import", "--packed", crate::packing::CODEC],
+                    &asker,
+                )
             };
             let private = t.home.join(PRIVATE);
             let before = tree_of(&t.home, &private);
