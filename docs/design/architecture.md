@@ -2264,12 +2264,21 @@ audit's "Security and test coverage").
     restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
     process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
     kick's does, and runs again.
-    - Whether a thread can answer is read, not guessed: one that blocks the signal, or a
-      process that ignores it (`/proc/self/task/TID/status`, `SigBlk` and `SigIgn`),
-      cannot, and the layer fails at once, closed, typed (`asked::Unasked::Deaf`): a
-      seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
-      pthread_create blocks every signal for a moment, which a look may meet; that run
-      fails closed too.
+    - Whether a thread can answer is read, not guessed (`/proc/self/task/TID/status`,
+      `SigBlk` and `SigIgn`). A process that ignores the signal fails the layer at once,
+      closed, typed (`asked::Unasked::Deaf`): a seal's failure hands its run to another
+      VM (daemon.rs, `hand_over`). A thread that blocks it may be inside pthread_create's
+      window (glibc's and musl's block every signal around their clone, the new thread's
+      until it starts and their caller's until it returns) or deaf, and only evidence
+      tells them apart, never a time: it is sent the signal, which stays pending for it,
+      and looked at again until it unblocks (then it takes it and answers, waited for as
+      any other), ends, or has run since it was first seen blocking (its `stat` utime and
+      stime grown, in clock ticks) and blocks it still: then it is deaf, and the layer
+      fails closed. CPU time, not schedstat's timeslices, as a new thread's first
+      scheduling, which counts there, is the start it makes inside the window. Until one
+      of those, the pass yields to the scheduler between looks (sched_yield(2)), which
+      runs the thread where it can run; one asleep with the signal blocked for good is
+      waited for as long as it lives [PM M568].
     - SIGSYS, because every thread of a filtered process takes it (blocked, a trap ends
       the process unreported) and Mesa's threads, which block every other signal for
       their lives, leave it and SIGSEGV unblocked (src/util/u_thread.c, `u_thread_create`,
@@ -4424,6 +4433,21 @@ including agentdns's former periodic expiry probe. The inherited five-second
 timing and worker memory-envelope validation remain owed under network-12/R14.
 Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
 fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
+
+**The network controls' derivations (network-12, 2026-11-13).** Six of the review's
+fixed controls now rest on a cited or derived basis: IPv6 extension headers are walked to
+the packet's end (RFC 8200 §4.1, hop-by-hop first alone), not to a chosen eight; the
+gateway's TTL and hop limit are the Assigned Numbers default (RFC 1700, RFC 1122
+§3.2.1.7, RFC 4861 §6.3.2), named; a queue's page size is the OS's or a typed error; a
+ring's shared memory on macOS takes the next free name however many are taken; the
+window scale offered is the least that says the whole queue (RFC 7323 §2.3); a peer's
+read holds one whole message. The rest keep their values until their learned designs
+land, each with its cold start, typed failure and the measurement ROOT owes, in
+[the row-by-row record](../research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row):
+the TCP queues and retransmission (RFC 6298, RFC 1122 R2), window updates (RFC 9293),
+the per-turn budget (deficit round robin), UDP lifetimes (RFC 4787 REQ-5, which the
+30 s unreplied lifetime breaks past port 1023), the backlog, the poller's batch, the
+ring's size, the resolvers' wait and the daemon's bind tries.
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -8045,15 +8069,24 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     (reclaim.rs `give_after`); an ask made meanwhile waits behind it, its newest room and
     any give-back kept. The groups' thread asks at its passes, hears each answer as it
     comes (its condvar), and waits on none. A group found short with no round under way
-    begins one, each member asked once; it is judged once each has answered, ended, or run
-    past the slowest answer of its kind this daemon has seen with none (`Record::stalled`,
-    in memory: no figure of ours, and before its kind's first answer a member's word
-    follows its microVM's liveness alone, as its own wait does), the groups' thread waking
-    at that moment if nothing wakes it sooner; past `memory.max` with nothing given back,
-    its largest is stopped. So a member that never answers holds up no other member and no
-    other group, and its own group's stop comes once its word has run past the slowest
-    room answered (the same test: each group's largest stopped, OOM-killed). A group whose
+    begins one, each member asked once; it is judged once each has answered, ended, or
+    its own exec judge has refused its word. A word publishes that typed refusal before
+    it waits for its exec's kill acknowledgement (`Wait::GroupWord`, `WordState::Refused`),
+    so a stalled guest that never acknowledges cannot hold the verdict. The group consumes
+    that outcome, never elapsed wall time: `Record::stalled(word.since, now)` was a second
+    timer that OOM-killed a progressing or host-held member, or one still waiting behind
+    host-pressure reclaim (review waits-01). Before the kind's first answer, liveness
+    alone still governs; another member teaching the record does not bound a wait begun
+    cold. The parallel-group fixture therefore starts its stuck word learned. A refusal
+    stands for the exec its judge refused alone: each exec of a word (its room told, then
+    its give-back) begins `Waiting`, so a refused room is no verdict on the give-back that
+    follows it, which its own judge judges, nor on a round opened while that give-back runs
+    (red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: round 2 counted a
+    member whose give-back was under way as one that gave nothing and OOM-killed it). An answer
+    or refusal wakes the existing groups condvar. No new bound, reader or cache.
+    Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
+    [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
   - **A member's room as of the footprint it was read with** (built, macOS and Windows).
     The groups' thread read what each member's VM process held, then told each its room,
     and init held its run at what it used as the word came plus that room: a member that
@@ -8604,7 +8637,11 @@ process.
     goes whole (POSIX write(2)), as macOS's FIFOs say POLLOUT with less than that free (PM
     M549). Each such
     wait that ends is a take; what the FIFO takes at once waits on no client and teaches
-    nothing.
+    nothing. A wait for room ends only with a write after it that moved bytes: its
+    reader's end wakes `await_fifo_room` too (POLLERR/POLLHUP; select(2)'s writability),
+    and the write after it fails EPIPE, so that wait is told no end and teaches no take
+    (review waits-04, PM M576; red `slots::fifo::tests::a_readers_end_is_no_take`), as
+    the Windows twin's write finished as its reader went is none (PM M553).
   - *Its bound*: a closed daemon lets go of a client whose writer has waited on it longer
     than the slowest take seen. One that reads, however slowly, ends each wait as it reads.
   - *Its cold start*: before any take, a client holds a closed daemon until it ends (its
@@ -8687,7 +8724,16 @@ process.
   wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
   (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
   (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
-  starts itself, the same way, and Windows' besides.
+  starts itself, the same way, and Windows' besides. A process that has exited lives no
+  more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
+  kill(2) and keeps its start, so a client's wait for a slot from a daemon that a
+  supervisor left unreaped waited for ever. Unix's `alive` also reads its exit: Linux's
+  `/proc/<pid>/stat` state `Z` or `X` (proc(5)), macOS's `proc_pid_rusage`
+  `ri_proc_exit_abstime`, set as XNU's `proc_exit` runs (as crates/api's judge reads a
+  process ending); one whose state cannot be read is not known to have exited. Windows'
+  twin already asks its handle (`WaitForSingleObject`, no wait). Red
+  `tests::an_unreaped_daemon_does_not_live` (its child left a zombie by waitid's
+  `WNOWAIT`).
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -11125,7 +11171,13 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     back by the next run on the host (ROOT: a record learned on the host is data, not a
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
-    renamed into place; a keep that fails is the next answer's to make.
+    renamed into place, by a name of its own (its process's and its keep's), the read, merge
+    and rename one transaction under the record's lock (`.<record>.lock`, std's
+    `File::lock`: flock(2), LockFileEx), let go of before its file closes (M244): without
+    it two processes' keeps each read the record before the other renamed, and the last
+    to rename, the faster answer's, shrank W* (review waits-11, PM M576; red
+    `harness.rs::concurrent_keeps_never_shrink_a_kept_record`). A keep that fails is the
+    next answer's to make.
   - *Its key is its whole command line, what a run mints of its own made generic* (#77,
     ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
     each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`

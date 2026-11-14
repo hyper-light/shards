@@ -2969,6 +2969,40 @@ mod tests {
         }
     }
 
+    /// A daemon that has exited lives no more while its parent has not reaped it (waits-08):
+    /// its ID's process still answers kill(2) and keeps its start (Linux's `/proc/PID/stat`,
+    /// macOS's `proc_pid_rusage`), so a client that waits on it while it lives would wait for
+    /// ever on a zombie. Red with liveness its ID and start alone. Here the child that names
+    /// itself is left unreaped (waitid's `WNOWAIT`) and so is a zombie.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreaped_daemon_does_not_live() {
+        let home = shards_testdir::TempDir::new("ipc-zombie").unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let id = libc::id_t::try_from(pid).unwrap();
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of our own child into a siginfo_t of ours; WNOWAIT leaves it
+        // unreaped.
+        let waited = unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+        let start = started(pid).expect("an unreaped child's start");
+        std::fs::write(home.join(PID), format!("{pid} {start}\n")).unwrap();
+        std::fs::write(home.join(STOPPING), format!("{pid} {start}\n")).unwrap();
+        let named = Named {
+            pid,
+            start: Some(start),
+        };
+        assert!(!named.lives(), "{pid}, exited and unreaped, lives");
+        assert!(!daemon_lives(&home), "{pid}, exited and unreaped, lives");
+        assert!(!exiting(&home), "{pid}, exited and unreaped, is ending its runs");
+        let _ = child.wait();
+    }
+
     /// A working set goes in parts each within a message's payload, and comes back whole,
     /// the last part alone flagged so; an empty one is one part, and a name too long for
     /// its length byte sends nothing.
