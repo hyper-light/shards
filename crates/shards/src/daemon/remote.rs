@@ -132,20 +132,32 @@ impl Host for Machine {
 
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error> {
         let refused = || Error::new(server::NOT_INVITED);
-        let (invitation, created) = crate::context::invitation(&self.home, name).ok_or_else(refused)?;
-        if crate::context::lapsed(created) || !invite::verify(&invitation.secret, exported, proof) {
+        // Its client hears the same refusal whatever made it (`NOT_INVITED`); the log says
+        // which, typed (`context::Uninvited`), the name only where it is one an invitation may
+        // have.
+        if let Err(why) = crate::context::joinable(&self.home, name, |invitation| {
+            invite::verify(&invitation.secret, exported, proof)
+        }) {
+            let shown = if invite::valid_name(name) {
+                name
+            } else {
+                "of no invitation's form"
+            };
+            super::log(format!("a join by invitation {shown} refused: {why}"));
             return Err(refused());
         }
         // A client this machine enrolled already, whose context was made again: the
         // invitation is redeemed, that no other key takes it, and the client joins as it was
         // enrolled, under the name it has, its key's one.
         if let Some(enrolled) = self.enrolled(spki) {
-            crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+            crate::context::end_invitation(&self.home, name, crate::context::Ended::Used)
+                .map_err(|_| refused())?;
             super::log(format!("client {enrolled} joined again, by invitation {name}"));
             return Ok(());
         }
         // Redeemed first: of two joins at once, one enrolls.
-        crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+        crate::context::end_invitation(&self.home, name, crate::context::Ended::Used)
+            .map_err(|_| refused())?;
         crate::context::enroll(&self.home, name, spki).map_err(|_| refused())?;
         let key = identity::hex(&identity::fingerprint(spki));
         super::log(format!(

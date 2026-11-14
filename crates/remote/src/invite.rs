@@ -15,11 +15,6 @@ use aws_lc_rs::rand::{SecureRandom as _, SystemRandom};
 use crate::Error;
 use crate::identity::{self, Fingerprint};
 
-/// How long an unused invitation lasts once made, as focal's do ("one hour after its first
-/// preparation"): long enough to carry a file from one machine to another, and no standing
-/// credential after.
-pub const LIFETIME_SECS: u64 = 3600;
-
 /// The exporter's label: RFC 5705 §4 keeps those beginning `EXPERIMENTAL` for private use.
 pub const EXPORTER_LABEL: &[u8] = b"EXPERIMENTAL-shards-join";
 
