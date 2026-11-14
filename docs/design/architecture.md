@@ -26813,6 +26813,34 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The room* its orchestrator's budget leaves the run: init's `builtin::ROOM`, told through
   the run host (D241).
 - *Stop.* The VM process killed at once, as `Guest::stop`.
+  - *A stop returns released, as a boot's stop does* (2026-11-14, Hex's B-4, ROOT's
+    decision). `ImageGuest::stop` returned once the run's end was told, before api-run had
+    reaped its VM, network and share processes (api_run.rs `end`: the VM killed and waited,
+    then `netproc::reap` of the network and share processes, then on Windows the job let
+    go of), so a caller that took `Ok` as "nothing of the run is left" could see processes
+    of it still running. No channel's end says it either: api-run cuts every member
+    channel it gave room to (`Live::cut`, `Aborted(104)`) as the VM's capture ends, before
+    it reaps. `stop` now waits, after the end, for the condition a stop mid-boot already
+    waits for (`Begun::started`): `gone() && said_all`, the host exited and reaped by its
+    watcher, its answers ended, and its diagnostics' pipe closed by every process that held
+    it as its stderr. The host's stdin, closed with the end, is its cue to reap and exit.
+    Followed, never timed (D215, D217): no deadline and no literal; every wait it adds is on
+    a process whose end has begun (its VM killed, its host's stdin closed). On Windows that
+    pipe's end says nothing of its holders' (above), so `Child::end_group` then follows the
+    host's group to its end, as the boot's stop does, and a group it cannot follow is
+    refused `Os` ("the stopped run's processes"), never `Ok` early. `Session`'s drop of a
+    running run stops it, so it returns released too. Tested by
+    `a_stop_returns_once_its_host_and_every_process_it_started_are_gone` (stand-in host:
+    says its end once asked to stop, exits as its stdin closes, its stand-in VM holding its
+    diagnostics until the test lets it go once the host is gone). On adas-mac-studio-3
+    (macOS arm64) at c133bfb5: red with the released wait removed (the stop's old return)
+    and red with its guard mutated to `gone()` alone, each at "the stop returned while the
+    VM its run host started still ran"; green with it, `cargo test -p shards-api --lib
+    image::` 86/86, clippy `-D warnings` clean. **Owed** (ROOT): the Windows stand-in twin
+    (unwritten: its host's job ends its VM with the host, so a stop there is followed by
+    `end_group`), and the real-VM proof on HVF, KVM and WHP, `api_image`'s
+    `stop_ends_the_run_at_once` with no VM, network or share process of the run left once
+    `stop` returns.
 - *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
   patience, &BootStop)`, a default trait method, so that every `Images` keeps compiling (its
