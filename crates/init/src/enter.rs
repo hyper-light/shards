@@ -521,32 +521,8 @@ fn child(p: &Prepared<'_>) -> ! {
         if libc::chdir(p.cwd.as_ptr()) != 0 {
             fail(step::CHDIR, 0);
         }
-        for (i, path) in p.candidates.iter().enumerate() {
-            // Go's findExecutable: a file that is not a directory, executable by us.
-            let mut st: libc::stat = std::mem::zeroed();
-            if libc::stat(path.as_ptr(), &mut st) != 0 {
-                if p.explicit {
-                    fail(step::STAT, i);
-                }
-                continue;
-            }
-            if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                if p.explicit {
-                    *libc::__errno_location() = libc::EISDIR;
-                    fail(step::ACCESS, i);
-                }
-                continue;
-            }
-            if libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
-                if p.explicit {
-                    fail(step::ACCESS, i);
-                }
-                continue;
-            }
-            libc::execve(path.as_ptr(), p.argv.as_ptr(), p.envp.as_ptr());
-            fail(step::EXEC, i);
-        }
-        fail(step::NOT_IN_PATH, 0)
+        let (which, i) = crate::run::exec_found(&p.candidates, p.explicit, p.argv.as_ptr(), p.envp.as_ptr());
+        fail(which, i)
     }
 }
 

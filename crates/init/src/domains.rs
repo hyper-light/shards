@@ -3034,50 +3034,9 @@ fn exec_child(p: &Prepared, c: &Confinement) -> ! {
         if libc::chdir(c.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
-        *libc::__errno_location() = exec_program(&p.paths, p.explicit, p.argv.as_ptr(), p.envp.as_ptr());
+        // Its program found only now, in its own view (confine-04).
+        let _ = crate::run::exec_found(&p.paths, p.explicit, p.argv.as_ptr(), p.envp.as_ptr());
         crate::domains::fail(out, setup, crate::managed::Step::Exec, c"running its command")
-    }
-}
-
-/// Searches only after the caller has entered its cwd and confinement. Buffers must
-/// remain live until exec; on failure, returns errno without allocating after clone.
-unsafe fn exec_program(
-    paths: &[CString],
-    explicit: bool,
-    argv: *const *const libc::c_char,
-    envp: *const *const libc::c_char,
-) -> i32 {
-    // SAFETY: the caller supplies live, NUL-terminated pointer arrays in a child
-    // that execs or exits; each CString owns the path passed to the kernel.
-    unsafe {
-        let mut last = libc::ENOENT;
-        for path in paths {
-            let mut st: libc::stat = std::mem::zeroed();
-            if libc::stat(path.as_ptr(), &mut st) != 0 {
-                if explicit {
-                    break;
-                }
-                continue;
-            }
-            if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                last = libc::EACCES;
-                if explicit {
-                    *libc::__errno_location() = libc::EISDIR;
-                    break;
-                }
-                continue;
-            }
-            if libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
-                last = *libc::__errno_location();
-                if explicit {
-                    break;
-                }
-                continue;
-            }
-            libc::execve(path.as_ptr(), argv, envp);
-            return *libc::__errno_location();
-        }
-        if explicit { *libc::__errno_location() } else { last }
     }
 }
 
@@ -3583,7 +3542,7 @@ mod tests {
                     if libc::chdir(d.workdir.as_ptr()) != 0 {
                         libc::_exit(125);
                     }
-                    exec_program(&paths, explicit, argv.as_ptr(), envp.as_ptr());
+                    crate::run::exec_found(&paths, explicit, argv.as_ptr(), envp.as_ptr());
                     libc::_exit(126);
                 }
             }
