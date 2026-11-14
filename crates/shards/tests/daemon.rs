@@ -133,6 +133,21 @@ fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
     patience.done();
 }
 
+/// Waits until daemon process `daemon` of `home` has exited, followed by its pid ([`Patience::
+/// client`]): its record, by which a home's patience finds its daemon, goes as the daemon
+/// finishes (`Daemon::finish`), before its last work and its exit, and that patience then
+/// finds none of its party running (KVM batch 22, refused 3 ms in; KVM batch 26,
+/// `stop_ends_runs_and_waiting_vms` refused 3.8 ms in, the daemon still ending).
+#[track_caller]
+fn exits(home: &Path, daemon: i32, what: &str) {
+    let mut patience = Patience::client(daemon.unsigned_abs(), home);
+    while alive(daemon) {
+        assert!(patience.holds(), "{what}");
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
+}
+
 fn daemon_pid(home: &Path) -> Option<i32> {
     std::fs::read_to_string(home.join("daemon.pid"))
         .ok()?
@@ -815,7 +830,7 @@ fn stop_ends_runs_and_waiting_vms() {
     // It has let go of its home; the process ends as the kernel finishes its exit, and
     // init, which adopted it, reaps it (kill(2) finds a zombie too).
     assert!(home_is_free(&home), "stop returned before the daemon exited");
-    eventually(&home, "the daemon outlived its stop", || !alive(daemon));
+    exits(&home, daemon, "the daemon outlived its stop");
     assert_eq!(
         wait(&mut sleeper, &home),
         Some(128 + 15),
@@ -1081,7 +1096,7 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     );
     let after = daemon_pid(&home).expect("a daemon pid");
     assert_ne!(before, after, "the old daemon still serves");
-    eventually(&home, "the old daemon did not exit", || !alive(before));
+    exits(&home, before, "the old daemon did not exit");
 }
 
 /// The event that a daemon's idle time of a second (`SHARDS_DAEMON_IDLE=1`) has run, which
@@ -1099,10 +1114,10 @@ fn an_idle_time_ran() {
     let started = run_shards_env(&["daemon"], &["--detached"], &env);
     assert_eq!(started.status, Some(0), "{}", started.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    eventually(
+    exits(
         &home,
+        daemon,
         "a daemon with nothing to hold it did not exit idle",
-        || !alive(daemon),
     );
 }
 
@@ -1123,7 +1138,7 @@ fn idle_daemons_exit() {
     let run = run_shards_env(&["run"], &[image.as_str(), "exit", "0"], &env);
     assert_eq!(run.status, Some(0), "{}", run.stderr);
     let daemon = daemon_pid(&home).expect("a daemon pid");
-    eventually(&home, "the idle daemon did not exit", || !alive(daemon));
+    exits(&home, daemon, "the idle daemon did not exit");
     assert!(daemon_pid(&home).is_none(), "the daemon left its pid file");
 }
 
@@ -1168,9 +1183,7 @@ fn an_engine_stream_ends_with_its_client() {
         an_idle_time_ran();
         assert!(alive(daemon), "the daemon exited while a stream was open");
     }
-    eventually(&home, "the daemon kept a stream whose client had gone", || {
-        !alive(daemon)
-    });
+    exits(&home, daemon, "the daemon kept a stream whose client had gone");
 }
 
 /// A daemon's idle time runs from its last run's end, which nothing else need follow: the
@@ -1208,10 +1221,10 @@ fn a_daemon_idles_from_its_last_runs_end() {
     assert!(alive(daemon), "the daemon exited while a run went on");
     drop(stdin);
     assert_eq!(wait(&mut client, &home), Some(0));
-    eventually(
+    exits(
         &home,
+        daemon,
         "the daemon did not exit once idle after its last run",
-        || !alive(daemon),
     );
 }
 
@@ -1754,7 +1767,7 @@ fn a_client_that_says_nothing_holds_up_no_stop() {
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     common::measured("a daemon's stop with a silent client in hand", &[t0.elapsed()]);
-    eventually(&home, "the daemon outlived its stop", || !alive(daemon));
+    exits(&home, daemon, "the daemon outlived its stop");
     // Let go: told, as it asked nothing yet, to ask the next daemon (RESTART), and shut.
     let heard = || shards_ipc::slots::read_frame(&silent.answer).map(|f| f.map(|f| f.kind));
     let mut got = heard();
@@ -1917,15 +1930,8 @@ fn a_home_removed_once_is_gone_with_its_daemon() {
     std::fs::create_dir(path.join("networks")).unwrap();
     std::fs::write(path.join("networks").join("made-as-it-went.json"), "{}").unwrap();
     std::fs::remove_file(&lock).unwrap();
-    // Followed by its pid: its record, by which a home's patience finds its daemon, went
-    // with the rest, and that patience found none of its party running at its first look
-    // (KVM batch 22, refused 3 ms in).
-    let mut patience = Patience::client(daemon.unsigned_abs(), &home);
-    while alive(daemon) {
-        assert!(patience.holds(), "the daemon outlived its home");
-        std::thread::sleep(patience.next_look());
-    }
-    patience.done();
+    // Its record went with the rest of the home.
+    exits(&home, daemon, "the daemon outlived its home");
     eventually(&home, "what was left of the home was left", || !path.exists());
 }
 
@@ -3194,7 +3200,7 @@ fn a_daemon_whose_home_is_removed_exits_without_making_it_again() {
     eventually(&home, "the home could not be removed", || {
         matches!(std::fs::remove_dir_all(&path), Ok(())) || !path.exists()
     });
-    eventually(&home, "the daemon outlived its home", || !alive(daemon));
+    exits(&home, daemon, "the daemon outlived its home");
     eventually(&home, "VMs outlived their home", || {
         processes_with(&named).is_empty()
     });
