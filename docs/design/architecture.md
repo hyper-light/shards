@@ -7243,15 +7243,26 @@ always did, so that no invitation's name or state is told to a stranger. Green
 taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
 refused, one past its lifetime refused) are ROOT's to run.
 
-*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived. The frame bound
-is to become each tag's own contract: an Exec request this host's own `sysconf(_SC_ARG_MAX)` read at
-the listener's start (POSIX; on Linux a quarter of RLIMIT_STACK, at least 128 KiB, execve(2)), as a
-request this host cannot exec is refused anyway; on Windows CreateProcess's 32,767-character command
-line and the environment block; stdin, stdout and stderr chunks `server::READ_MOST` (the pipe
-buffers cited there); a join `JOIN_MAX`; a microVM's ID `MADE_MOST`; resizes, signals and controls
-their fixed sizes; `MemberExec` its `ASK_MOST`; and managed records (`managed::RECORD_MOST`) and
-move plans (`daemon::moves::MAX_PLAN`), which now borrow `MAX_FRAME`, bounds of their own contracts.
-A frame past its tag's bound is refused typed before it is buffered. None of it is built yet.
+*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived, and it stays in force
+until each bound that replaces it is. A bound per tag, as first proposed, cannot be one: the tags are
+shared by lanes whose payloads differ. `StdinEnd` carries nothing on a command stream and
+`OFFSET + ERRNO` bytes on a managed input lane (`managed/input.rs`); `Exit` carries a four-byte
+status on a command stream and on an exec lane, `OFFSET + ERRNO` on a managed input lane; `Refused`
+carries UTF-8 words on a command stream and a four-byte code on an exec lane (`control/exec.rs`);
+`Stdout` carries a pipe's read on a command stream and an offset-headed record up to
+`managed::RECORD_MOST` on a managed output lane. An `Exec` request's words go to an exec, bounded by
+the host's `sysconf(_SC_ARG_MAX)` (POSIX; on Linux a quarter of RLIMIT_STACK, execve(2)), but a step's
+go to the daemon itself (a move's plan up to `daemon::moves::MAX_PLAN`, which borrows `MAX_FRAME`),
+so ARG_MAX bounds only the first. The derivation is therefore one per lane: each lane's reader hands
+`frame::peek` its own grammar's bound for each tag it takes (none for a tag it does not), and
+`MAX_FRAME` goes once every lane has one. For the command stream: a client's stdin chunk and a
+command's output are reads of `server::READ_MOST` (the pipe buffers cited there); a join `JOIN_MAX`;
+a microVM's ID `MADE_MOST`; resizes, signals, controls and exits their fixed sizes; a request's words
+the larger of the exec's ARG_MAX and its steps' own bounds, which each step must first have
+(`MAX_PLAN`'s is a move plan's own contract, unmade); refusal words a bound the server holds its
+words to, unmade. The exec, socket and MCP lanes already check their payloads after admission
+(`TOLD_MOST`, `ASK_MOST`, `LOG_ASK`), which become their peeks' bounds. Owed: an R02 decision on
+the step and refusal bounds, then the per-lane peeks (an implementer's slice).
 
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 

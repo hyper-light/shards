@@ -24734,6 +24734,24 @@ packet took the handshake's progress to 1141, which three PINGs after it left un
 CRYPTO counted by new handshake data, the replay hears nothing (macOS arm64,
 adas-mac-studio-3.local).
 
+*For the hyper-raft patch (ROOT routes it).* At hyper-raft e0613f524b0df198cc61dc1e82b33c22d604cf7b,
+`crates/hyper-quic/src/endpoint.rs` hands a new connection its first packet through
+`Connection::handle_first_packet` (`connection/mod.rs` l. 3300), which calls
+`on_packet_authenticated` (l. 3325) and `process_decrypted_packet` (l. 3334) directly. Every later
+packet goes through `on_decrypted_packet`, whose `drops_authenticated` (l. 3841) puts the packet's
+number in its space's dedup window (l. 3842: `self.spaces.get_mut(...).dedup.insert(n)`) and drops
+a repeat. The first packet's number is never inserted, so a byte-identical replay of a client's first
+Initial is processed again: its CRYPTO frames recorded in `frame_rx` again, though their data repeats
+what was read. RFC 9000 §12.3 ("A receiver MUST discard a newly unprotected packet unless it is
+certain that it has not processed another packet with the same packet number from the same packet
+number space"). The fix: insert the first packet's number into the Initial space's dedup window in
+`handle_first_packet`. Minimal reproduction, as run here: Shards' `net::tests::replayed_and_unauthenticated_datagrams_do_not_advance_liveness`
+(a real `Driver` accepting a hand-driven client's first datagram at t, then the same datagram at t + 1 ms)
+with CRYPTO counted by frame (the rule at f38ffa2bc, and the `crypto06` mutant at bdd590f9f) fails "a replay
+is no progress", the replay heard 1 ms after accept (kiln runs r1766 and r1897, adas-mac-studio-3.local).
+The same within hyper-quic: its tests' `Pair`, the client's first datagram delivered to the server twice,
+`frame_rx.crypto` then 2 where 1 is right. That in-crate form was not run here.
+
 ### M580. A helper's start reads its version, not its bytes, once its version is checked (runs-10, D36)
 
 Each start of a helper shards carries had read its whole file through SHA-256 (runs-10's
