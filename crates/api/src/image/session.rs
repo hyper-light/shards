@@ -2496,16 +2496,19 @@ mod tests {
         .encode();
         take(&shared, wire::to_client::INPUT_ENDED, &end).unwrap();
         let released = finished.recv_timeout(Duration::from_secs(1));
-        if released.is_ok() {
-            assert!(
-                held_writer.write_all(b"x").is_err(),
-                "an ended input still took bytes"
-            );
+        // Observe the thread's actual exit before checking that all its descriptors
+        // have closed. A broken old feeder is released first so the red test also joins.
+        if released.is_err() {
+            drop(held_writer);
+            feeding.join().unwrap();
+            assert_eq!(released, Ok(()), "member end retained its idle input feeder");
+            return;
         }
-        // Release and join an old blocking feeder before asserting the red result.
-        drop(held_writer);
         feeding.join().unwrap();
-        assert_eq!(released, Ok(()), "member end retained its idle input feeder");
+        assert!(
+            held_writer.write_all(b"x").is_err(),
+            "an ended input still took bytes"
+        );
     }
 
     /// The variable under which the leak check runs, in a test process of its own.
