@@ -358,12 +358,17 @@ impl Handle {
     /// ([`MILLI_PER_CPU`](super::MILLI_PER_CPU) a whole CPU's), its run's limit (D191) or
     /// its orchestrator's rate (D247), whatever its guest does with its own cgroups; 0, or
     /// every vCPU's whole CPU, lets them be. Returns what it holds them to, none where it
-    /// lets them be. Its governor's thread is made with the first limit.
-    pub fn hold_rate(&self, milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
+    /// lets them be, and the period it holds over, derived from g (D191, `granule::period`);
+    /// refused, the hold as it was, where that period outgrows a u64 of ns. Its governor's
+    /// thread is made with the first limit.
+    pub fn hold_rate(&self, milli: u64) -> Result<super::Rated, String> {
         let sh = &self.shared;
-        let held = sh.hold.set(milli);
-        if held.is_none() {
-            return Ok(None);
+        let held = sh
+            .hold
+            .set(milli)
+            .map_err(|e| format!("its hold's period: {e}"))?;
+        if held.milli.is_none() {
+            return Ok(held);
         }
         let mut governor = lock(&sh.governor);
         // Under the lock the teardown takes it by, once the machine stops: none is made
@@ -387,6 +392,9 @@ impl Handle {
         let mut governor = lock(&sh.group_governor);
         if governor.is_some() {
             return Err("this microVM is held by a group's budget already".into());
+        }
+        if group.budget().is_none() {
+            return Err("its group's CPU budget was never written".into());
         }
         if sh.exiting() {
             return Ok(());

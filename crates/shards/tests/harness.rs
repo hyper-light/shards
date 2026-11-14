@@ -1270,6 +1270,58 @@ fn home_stream<'a>(
     )
 }
 
+/// A guest's stream read after its microVM moved, a restored guest's first answer, is judged
+/// by its own kind, never by the W* its answer before the move taught (D209 Part 7). HVF at
+/// 6f3cd4428 and KVM at 8fdd66512 and 3f2705f8d: moved.rs'
+/// `a_moved_microvms_published_port_answers_there` refused its read after the move 70.9 ms
+/// in, 34.9 ms without a byte, by the W* of 17.7 ms its read before the move taught, both
+/// read from one closure's call site. Red with both read through one closure, as moved.rs'
+/// were: refused. Do: from two call sites of one helper, read a stream answered 5 ms in,
+/// then one answered after four times the W* the first taught (a loaded host's first answer
+/// is slower than its 5 ms). Expect: the second read to its answer, each kind taught by its
+/// own answer alone.
+#[test]
+fn a_moved_guests_first_answer_is_a_kind_of_its_own() {
+    let (before, warm) = moved_answer(Duration::from_millis(5));
+    let shards_api::Seen::Learned { slowest: warm, .. } = warm else {
+        panic!("the answer before the move taught nothing");
+    };
+    let quiet = warm * 4;
+    let (after, restored) = moved_answer(quiet);
+    assert_eq!((before.as_slice(), after.as_slice()), (&b"x"[..], &b"x"[..]));
+    assert!(
+        matches!(restored, shards_api::Seen::Learned { slowest, .. } if slowest >= quiet),
+        "the answer after the move taught {restored:?}"
+    );
+}
+
+/// What a peer's stream says once it has said nothing for `after`, read through
+/// [`common::Following`] as moved.rs' `ask` reads a published port: its kind its caller's
+/// call site, cold before its read, and what that kind has seen once read.
+#[track_caller]
+fn moved_answer(after: Duration) -> (Vec<u8>, shards_api::Seen) {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        let (mut to, _) = listener.accept().unwrap();
+        std::thread::sleep(after);
+        to.write_all(b"x").unwrap();
+    });
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut read = Vec::new();
+    let got = std::io::Read::read_to_end(&mut common::Following::of(&stream, None), &mut read);
+    peer.join().unwrap();
+    if let Err(refused) = got {
+        panic!("refused {after:?} into its peer's quiet: {refused}");
+    }
+    (
+        read,
+        common::WaitKind::awaiting(site, common::STREAM).record().seen(),
+    )
+}
+
 /// A home's `daemon.pid` names its daemon by its ID and its start (D185): a wait whose home
 /// names a process that has its ID and not its start follows no daemon (#77 waits-09: the
 /// tests' party read the ID alone, and followed whatever process had it since). Red at

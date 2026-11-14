@@ -1099,8 +1099,8 @@ fn function(
 
 /// Holds this VM's vCPUs together to `milli` milli-CPU of the host's time, its run's CPU
 /// limits updated (`CPUS`, D191) or its orchestrator's rate (`RATE`, D247): what it holds
-/// them to, none where it lets them be.
-pub fn hold_rate(milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
+/// them to, none where it lets them be, and the period it holds over (D191).
+pub fn hold_rate(milli: u64) -> Result<shards_vmm::vm::Rated, String> {
     RUNNING
         .get()
         .ok_or("the microVM has not started")?
@@ -1133,7 +1133,7 @@ fn serve_rates(
     use shards_abi::rate::{Answer, Asked, answer};
     for (mut stream, ask) in asked {
         let line = match ask {
-            Asked::Rate(milli) => match rate_answer(shards_vmm::vm::hold_period(), || hold_rate(milli)) {
+            Asked::Rate(milli) => match rate_answer(|| hold_rate(milli)) {
                 Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
                 Err(why) => answer(&Answer::Refused(&why)),
             },
@@ -1196,21 +1196,20 @@ fn tell_final_use(mut to: std::fs::File, used: &str) {
 }
 
 /// What a rate's ask holds: what `hold` held the vCPUs to, none where it lets them be, and
-/// the hold's `period` in nanoseconds; or why not. A period no u64 counts in nanoseconds
-/// holds nothing, as no client could hear it.
-fn rate_answer(
-    period: std::time::Duration,
-    hold: impl FnOnce() -> Result<Option<std::num::NonZeroU64>, String>,
+/// the period it holds over in nanoseconds, derived as it held them (D191); or why not. A
+/// period no u64 counts in nanoseconds, which no derived one is, is refused, as no client
+/// could hear it.
+pub(crate) fn rate_answer(
+    hold: impl FnOnce() -> Result<shards_vmm::vm::Rated, String>,
 ) -> Result<(Option<std::num::NonZeroU64>, std::num::NonZeroU64), String> {
-    let Some(period_ns) = u64::try_from(period.as_nanos())
-        .ok()
-        .and_then(std::num::NonZeroU64::new)
-    else {
-        return Err(format!(
-            "its hold's period, {period:?}, is no nanoseconds a u64 counts"
-        ));
-    };
-    hold().map(|milli| (milli, period_ns))
+    let rated = hold()?;
+    let period_ns = rated.period_ns().ok_or_else(|| {
+        format!(
+            "its hold's period, {:?}, is no nanoseconds a u64 counts",
+            rated.period
+        )
+    })?;
+    Ok((rated.milli, period_ns))
 }
 
 /// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
@@ -3634,29 +3633,36 @@ mod rate_tests {
     use std::num::NonZeroU64;
     use std::time::Duration;
 
-    /// A rate's answer is what its hold held the vCPUs to, a rate or none, with the hold's
-    /// period in nanoseconds, or the hold's words of why not; a period no u64 counts in
-    /// nanoseconds asks for no hold at all (D255).
+    /// A rate's answer is what its hold held the vCPUs to, a rate or none, with the period
+    /// the hold derived for it in nanoseconds (D191), or the hold's words of why not; a
+    /// period no u64 counts in nanoseconds, or none, is refused (D255).
     #[test]
     fn a_rates_answer_is_its_hold_and_its_period() {
-        let period = Duration::from_millis(100);
-        let ns = NonZeroU64::new(100_000_000).unwrap();
+        let rated = |milli, period| {
+            move || {
+                Ok(shards_vmm::vm::Rated {
+                    milli: NonZeroU64::new(milli),
+                    period,
+                })
+            }
+        };
+        let ns = |n| NonZeroU64::new(n).unwrap();
         assert_eq!(
-            rate_answer(period, || Ok(NonZeroU64::new(250))),
-            Ok((NonZeroU64::new(250), ns))
+            rate_answer(rated(250, Duration::from_millis(16))),
+            Ok((NonZeroU64::new(250), ns(16_000_000)))
         );
-        assert_eq!(rate_answer(period, || Ok(None)), Ok((None, ns)));
         assert_eq!(
-            rate_answer(period, || Err("the microVM has not started".into())),
+            rate_answer(rated(0, Duration::from_micros(1_050))),
+            Ok((None, ns(1_050_000)))
+        );
+        assert_eq!(
+            rate_answer(|| Err("the microVM has not started".into())),
             Err("the microVM has not started".into())
         );
-        let mut asked = false;
-        let refused = rate_answer(Duration::MAX, || {
-            asked = true;
-            Ok(None)
-        });
-        assert!(refused.is_err(), "{refused:?}");
-        assert!(!asked, "a period no client could hear holds nothing");
+        for unsaid in [Duration::MAX, Duration::ZERO] {
+            let refused = rate_answer(rated(250, unsaid));
+            assert!(refused.is_err(), "{refused:?}");
+        }
     }
 
     /// Each rate the muxer hands over is answered on its own connection, one line, then

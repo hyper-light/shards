@@ -598,7 +598,8 @@ fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> Result<i64, i32> {
 
 /// Case (g): the workload, root with CAP_SYS_ADMIN and the default seccomp profile's bpf(2),
 /// tries to take the device program off that bounds it (inithex-01): a node of the
-/// microVM's own disk, which its device rules never give it, refused it first; then each
+/// microVM's own disk, which its device rules never give it, refused it first, by the
+/// program alone (EPERM); then each
 /// BPF_CGROUP_DEVICE program its cgroup namespace's root holds and each one that bounds it,
 /// queried (BPF_PROG_QUERY, BPF_F_QUERY_EFFECTIVE), each one's descriptor taken
 /// (BPF_PROG_GET_FD_BY_ID) and detached from that root (BPF_PROG_DETACH); then the node
@@ -624,9 +625,21 @@ fn ceiling() -> i32 {
         say("ceiling: no block device");
         return 1;
     };
-    let node = "/run/ceiling-disk";
+    // In the run's /dev, which is mounted without nodev (init's `container_mounts`): on a
+    // nodev mount (the run's `--tmpfs /run`, nodev by default) open(2) refuses a device
+    // node EACCES in may_open, before inode_permission reaches the device program
+    // (fs/namei.c `may_open_dev`), so the program would not be what the open meets. Landlock
+    // checks an open later still (security_file_open), and DAC passes root's own 0600 node:
+    // EPERM here is the device program's alone.
+    let node = "/dev/ceiling-disk";
+    let mount = match statvfs(c"/dev") {
+        Ok(flags) if flags & libc::ST_NODEV != 0 => "nodev".to_string(),
+        Ok(_) => "dev".to_string(),
+        Err(e) => errno(&e),
+    };
+    say(&format!("ceiling mount: {mount}"));
     let path = std::ffi::CString::new(node).unwrap_or_default();
-    // SAFETY: mknod(2) of a NUL-terminated path in the run's own /run.
+    // SAFETY: mknod(2) of a NUL-terminated path in the run's own /dev.
     let made = unsafe { libc::mknod(path.as_ptr(), libc::S_IFBLK | 0o600, libc::makedev(major, minor)) };
     say(&format!(
         "ceiling disk {}: mknod {}",
@@ -706,6 +719,17 @@ fn ceiling() -> i32 {
     say(&format!("ceiling detached: {detached} of {}", ids.len()));
     opened("after");
     0
+}
+
+/// statvfs(2)'s mount flags of the mount holding `path`.
+fn statvfs(path: &std::ffi::CStr) -> io::Result<libc::c_ulong> {
+    // SAFETY: an all-zero statvfs is a valid value of the plain C struct statvfs(2) fills.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(2) of a NUL-terminated path into a live struct of its type.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(st.f_flag)
 }
 
 /// Case (f): starts a box that holds, detached, says its process, then ends with `code`:
