@@ -3894,7 +3894,20 @@ D12's too, derived apart):
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
   typed or pasted is lost: what the guest has not drained waits in the host's own pipe or
   terminal. A loopback write past the room overruns, as the datasheet's does. A
-  snapshot's receiver restores whole however long an older build made it.
+  snapshot's receiver restores whole up to the FIFO's 16 bytes, the most it holds in
+  either mode; one that holds more is refused as a malformed state (`DecodeError`, "the
+  console's receiver"), never restored (legacy3, 2026-11-14). Only builds before
+  66652aafb (2026-11-09) kept up to 4096 (`RX_CAPACITY`): v0.6.0's and v0.7.0's snapshots
+  (formats 24 and 28) among them; every format-29 writer (83b09843a, 2026-11-11, after
+  66652aafb) bounded it. Refused, not migrated: a template is a cache the daemon makes
+  again, keyed by the snapshot format (D25), so this build never looks up an older
+  format's, and one that does not restore is removed and booted and saved again (D25,
+  *Later runs restore it*); its receiver is filled only by `run --kernel`'s console
+  (`forward_stdin`), typed input the guest had not read as it was saved, which no
+  rewrite could give back to a 16-byte receiver without dropping it. The reader of the
+  older 4096 bytes is gone. Red/green: serial.rs
+  `a_receiver_past_the_fifos_depth_is_refused` (16 restore; 17 and 4096 refused), which
+  restored the 4096 before.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -9037,8 +9050,19 @@ process.
   as crates/api's taken.rs reads it; Windows `GetProcessTimes`' creation time), and a
   daemon lives only where the process of that ID started then. A client's wait for a slot
   (`daemon_lives`, `exiting`) and the macOS list watcher's wait for its daemon's exit could
-  wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
-  (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
+  wait for ever on an unrelated process given a dead daemon's ID. `PID START` alone is
+  read: a record by its ID alone is refused typed (`shards_ipc::NotNamed::IdAlone`; other
+  forms `Malformed`) and is stale, as a dead process's record is, never a live daemon
+  (legacy3, 2026-11-14). Every release to v0.7.0 wrote `PID` alone (v0.7.0's daemon.rs
+  `format!("{}\n", std::process::id())`; the start came in fb1f28d42, 2026-11-09, in no
+  release: `git tag --contains fb1f28d42` names no `v*`), so such a record is a daemon of
+  another build's (D36), which this build never waits on by its ID: the home's lock is
+  what its successor waits on (`take_lock`; `judge_holder` follows a holder the home
+  names no living process for by its lock alone), and a slot it offers is asked and steps
+  aside as any other build's. The `Option` start, which read such a record by its ID
+  alone and so could wait on whatever process held that ID since, is gone. Red/green:
+  `a_record_by_its_id_alone_is_stale` (crates/ipc), and `a_daemon_is_exiting_while_its_process_lives`'s
+  ID-alone row now `false`. crates/api's reader is its crate's own
   (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
   starts itself, the same way, and Windows' besides. A process that has exited lives no
   more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
@@ -14749,6 +14773,17 @@ reference's preference, another platform's facts where it changed (legacy-audit,
 2026-11-14: the preference read for such a record before it): inspect has no image facts,
 and copy refuses with the missing container/config identity. An available config with
 no User keeps OCI's root default; an explicit run user remains authoritative.
+A record with no image ID is refused by `cp -a` too (`CopyUserRefusal::NoImage`, "its
+record names no image, so its user is unknown"), where it was copied as root, an empty
+user (legacy3, 2026-11-14). That was a security-relevant fallback: an ownership-mode
+copy into a microVM whose image runs as a non-root user would have left root-owned files
+its user could not change, and a user nobody recorded was taken for the most privileged
+one. No release made such a record: `image_id` came in 993756c9e (2026-10-02), before
+v0.3.0, the first release, and in every release (`git grep 'image_id: ' TAG` for v0.3.0 to v0.7.0)
+the daemon's one record maker writes `Some(prepared.image_id)`, the `None`s in test
+modules alone. So there is nothing to migrate; the refusal stands where no image is named.
+Red/green: commands.rs `a_copy_as_the_user_of_a_record_with_no_image_is_refused`, a record
+read without its `image_id` key, answered root before.
 The two-platform store regression changes the preference both ways, checks each selected
 User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
 ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
