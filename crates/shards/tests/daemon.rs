@@ -1781,7 +1781,7 @@ fn a_request_past_a_sockets_buffer_is_served() {
     let home = TempDir::new("daemon-large");
     let env = [("SHARDS_HOME", home.as_os_str())];
     // Windows takes a command line of 32,767 characters (CreateProcessW): there its 300 KB,
-    // past the 64 KiB a slot's line holds (ipc pipe.rs `LINE_BUFFER`, a Linux FIFO's), go
+    // past what a slot's line holds (the system's default, ipc's `Window::System`), go
     // as three labels of 100 KB from a file.
     if cfg!(windows) {
         let file = home.join("labels");
@@ -1969,7 +1969,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// there each answer's first message is a microVM made with 100 KiB of labels from a file,
 /// more than std's pipes take (64 KiB, its child pipes' quota), and for the one 4,500 names
 /// nothing has follow, their errors one message of 123 KiB, more than a slot's line takes
-/// (a Linux FIFO's 64 KiB, ipc pipe.rs `LINE_BUFFER`).
+/// (the system's default, ipc's `Window::System`, as a Linux FIFO's 64 KiB).
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");

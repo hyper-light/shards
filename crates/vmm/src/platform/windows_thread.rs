@@ -83,24 +83,13 @@ use windows_sys::Win32::System::WindowsProgramming::THREAD_PRIORITY_ERROR_RETURN
 use super::granule;
 use crate::sync::{lock, wait};
 
-/// The share a raised thread is credited: half a CPU, the most a fair scheduler gives a thread
-/// that contends for its CPU at all. Its raise matters only where another thread is ready on
-/// that CPU; beside k ≥ 1 ready threads of its priority, Windows gives each a time slice in
-/// turn (Microsoft, Scheduling Priorities), as Linux's fair scheduler gives threads of one
-/// weight w each w / (w + k·w) (kernel/sched/core.c `sched_prio_to_weight`, one weight for
-/// every nice-0 thread): 1 / (k + 1) ≤ 1/2, at k = 1 the most. A bound, not a pick: no
-/// contended thread is owed more.
-const HALF: std::num::NonZeroU64 = match std::num::NonZeroU64::new(crate::vm::MILLI_PER_CPU / 2) {
-    Some(half) => half,
-    None => std::num::NonZeroU64::MIN,
-};
 /// The priority a watched thread runs at while it has credit.
 const RAISED: THREAD_PRIORITY = THREAD_PRIORITY_ABOVE_NORMAL;
 
 /// The time over which the governor counts each thread's use at `g`: D191's period for one
-/// thread held to [`HALF`] a CPU, 2g (`granule::period`).
+/// thread held to half a CPU (`granule::HALF_CPU`), 2g (`granule::period`).
 fn period_at(g: Duration) -> Result<Duration, granule::Outgrown> {
-    granule::period(1, HALF, g)
+    granule::period(1, granule::HALF_CPU, g)
 }
 
 /// [`period_at`] g as this process knows it now (`granule::g`).

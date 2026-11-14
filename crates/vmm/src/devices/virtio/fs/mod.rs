@@ -114,6 +114,11 @@ impl std::ops::Deref for SlotOf {
 pub const MAX_FRAME: usize = proto::IN_HEADER_BYTES + proto::WRITE_IN_BYTES + proto::MAX_WRITE as usize;
 const _: () = assert!(proto::IN_HEADER_BYTES + proto::SETXATTR_MOST <= MAX_FRAME);
 const _: () = assert!(proto::OUT_HEADER_BYTES + proto::MAX_WRITE as usize <= MAX_FRAME);
+/// The most a request or reply takes on a share's stream: its length word ([`write_frame`])
+/// and a frame of [`MAX_FRAME`]. The window a share's pipe holds (`shards_ipc::Window`,
+/// platform-11); a control frame of the VM process's own (a share's tables, D176) is longer
+/// and rarer, and waits on its reader past it, as any stream's write does.
+pub const STREAM_FRAME: usize = std::mem::size_of::<u32>() + MAX_FRAME;
 
 /// A frame of the VM process's own, never of a guest's (D176): its length word's top bit,
 /// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the
