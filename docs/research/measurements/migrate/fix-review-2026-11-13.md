@@ -278,7 +278,14 @@ Linux 7.3.3-1-cachyos x86_64, glibc 2.44, rustc 1.98.1 (48a229cea).
 Raw red/green/clippy/policy logs are retained beside this record:
 `hardlink-red-beneath.log`, `hardlink-green-moves.log`, `hardlink-green-guest.log`,
 `livecopy-03-integrated.log`, `hardlink-clippy.log`, `hardlink-policy.log`.
-Final main merge/landing and task-owned target cleanup follow.
+Main advanced to remotely verified `c6dd465259`; it merged without conflicts at
+`26db8d3581e206c0739b1a9ae51e534d48899a69`. Its changes touched tested crates,
+so ROOT's amended contention rule required the warm
+`cargo check -p shards-vmm -p shards --tests`: passed on that exact merge (43.31s,
+exit 0). Log `~/g121-tmp/fix-migrate-v1/hardlink-main-check-26db8d358.log`.
+Focused tests/clippy remain those of `7720df839`; this later merge received the
+specified compile check, not another full focused run. Landing receipt and
+task-owned target cleanup follow.
 No additional mutation campaign ran; the committed pre-fix unit revision is the
 reproducible feature-removal control, as the fix brief prescribes.
 
