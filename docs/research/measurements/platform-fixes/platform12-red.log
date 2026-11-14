@@ -1,0 +1,24 @@
+Source: 8d013f126695c4a9d3470b240c0b8b5c51663f27
+Runner: adacachy2, Linux x86_64; kiln r4; exit 101
+Command: CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=$HOME/g121-tmp/platform-fix/target SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true nice -n 10 cargo test -p shards --bin shards daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads -- --exact --nocapture
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 01s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/platform-fix/target/debug/deps/shards-71f583195378951d)
+
+running 1 test
+
+thread 'daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads' (2379861) panicked at crates/shards/src/daemon/parents.rs:522:13:
+assertion `left == right` failed: the unchanged leaf was read again before a change
+  left: 1
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads ... FAILED
+
+failures:
+
+failures:
+    daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 888 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p shards --bin shards`
