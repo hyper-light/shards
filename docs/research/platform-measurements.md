@@ -24148,6 +24148,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24179,6 +24189,7 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 

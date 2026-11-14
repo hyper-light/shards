@@ -226,6 +226,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Hold a token host's 1xx responses until its final response is judged and read them with it against the access, refresh and ID tokens (RFC 9110 §15.2), or strip them to what carries nothing.
 
+**Status (2026-11-13):** fixed in 39b12df9a (red `inject::tests::leaks::a_token_hosts_informational_responses_never_carry_its_tokens_to_the_guest`, `an_h2_token_hosts_informational_response_never_carries_its_tokens_to_the_guest`). Chosen: hold a 1xx but 100 and read it with the final response; a 100 goes as its status alone (RFC 9110 §15.2, §15.2.1).
+
 ### creds-11 — P0 / critical — A tunnel after a 101 is masked as raw bytes
 
 **Location:** `crates/net/src/inject.rs` (`Response::Tunnel`).

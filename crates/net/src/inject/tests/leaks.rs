@@ -806,3 +806,133 @@ fn an_h2_response_to_a_stream_with_no_fill_is_masked_against_the_values_leased()
         Some(&echo_mask()[..])
     );
 }
+
+/// The token host's answer to the code's exchange, after the informational response `interim`.
+fn token_answer_after(interim: &str) -> Vec<u8> {
+    let answer = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    format!(
+        "{interim}HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{answer}",
+        answer.len()
+    )
+    .into_bytes()
+}
+
+/// Do: Claude Code's code exchanged at its HTTP/1.1 token host, whose response is preceded by a
+/// 103 that repeats the issued access token; by a benign 103; and by a 100 with a field that
+/// repeats it. Expect (creds-10): the first refused 502, nothing captured and no token in what
+/// the guest read; the second captured, its 103 reaching the guest before the token response;
+/// the third captured, its 100 reaching the guest as its status alone.
+#[test]
+fn a_token_hosts_informational_responses_never_carry_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    let echoing = format!("HTTP/1.1 103 Early Hints\r\nLink: </cb?t={ISSUED_ACCESS}>; rel=preload\r\n\r\n");
+    let benign = "HTTP/1.1 103 Early Hints\r\nLink: </app.css>; rel=preload\r\n\r\n".to_string();
+    let continuing = format!("HTTP/1.1 100 Continue\r\nX-Token: {ISSUED_ACCESS}\r\n\r\n");
+    for (interim, refused) in [(&echoing, true), (&benign, false), (&continuing, false)] {
+        let mut credentials = sign_in_credentials(&root, false);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::default();
+        let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), quiet(&root, &[TOKEN_HOST]));
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            !b.h1().had.is_empty()
+        });
+        cli.answer(&token_answer_after(interim));
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            b.closed
+                || b.got
+                    .ends_with(token_response(SIGNED_ACCESS, SIGNED_REFRESH).as_bytes())
+        });
+        let got = lossy(&cli.got);
+        for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
+            assert!(
+                !got.contains(real),
+                "{interim:?}: a real token reached the guest: {got}"
+            );
+        }
+        if refused {
+            assert!(got.starts_with("HTTP/1.1 502 "), "{interim:?}: {got}");
+            assert!(
+                broker.access.is_empty(),
+                "a refused response's tokens were captured"
+            );
+        } else if interim.contains("103") {
+            assert!(got.starts_with(&format!("{benign}HTTP/1.1 200 OK\r\n")), "{got}");
+        } else {
+            assert!(
+                got.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n"),
+                "{got}"
+            );
+        }
+    }
+}
+
+/// Do: over HTTP/2, the code's exchange at the token host, whose response is preceded by a 103
+/// that repeats the issued refresh token. Expect (creds-10): the stream answered 502, no token in
+/// anything the guest read or decoded, nothing captured.
+#[test]
+fn an_h2_token_hosts_informational_response_never_carries_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    let mut credentials = sign_in_credentials(&root, false);
+    let mut broker = Broker::default();
+    let (mut bench, mut peer) = h2_token_guest(&root, &mut credentials, h2_token_answer);
+    bench.host_mut().auto = false;
+    let mut seen = Vec::new();
+    peer.send_headers(1, &h2_post("/v1/oauth/token", EXCHANGE), false);
+    peer.send_data(1, EXCHANGE.as_bytes(), true);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut |c| broker.serve(c),
+        |_, b| b.host().streams.values().any(|s| s.ended),
+    );
+    let host = bench.host_mut();
+    let link = format!("</cb?t={ISSUED_REFRESH}>; rel=preload");
+    host.peer.send_headers(
+        1,
+        &[field(":status", b"103"), field("link", link.as_bytes())],
+        false,
+    );
+    host.answer(1);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut |c| broker.serve(c),
+        |p, _| p.response(1).ended || !p.ends().is_empty(),
+    );
+    assert_eq!(
+        h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]),
+        None,
+        "a real token reached the guest"
+    );
+    let finals: Vec<Vec<(Vec<u8>, Vec<u8>)>> = peer
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Headers {
+                stream: 1, fields, ..
+            } => Some(
+                fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.value.to_vec()))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        finals.iter().any(|f| value_of(f, ":status") == Some(&b"502"[..])),
+        "the stream was not answered 502"
+    );
+    assert!(
+        broker.access.is_empty(),
+        "a refused response's tokens were captured"
+    );
+}
