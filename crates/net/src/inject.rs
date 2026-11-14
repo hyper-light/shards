@@ -794,15 +794,21 @@ fn decoded_head(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
         .collect()
 }
 
-/// `b`, a decoded response's bytes as its mask lets them go, as one chunk (RFC 9112 §7.1).
-fn chunk(guest: &mut ServerConnection, b: &[u8]) -> io::Result<()> {
+/// `b`, a decoded response's bytes as its mask let them go, as one chunk (RFC 9112 §7.1), its
+/// size line this side's own and held to `mask` as creds-02's are (creds-12).
+fn chunk(guest: &mut ServerConnection, mask: &Mask, b: &[u8]) -> Result<(), Broken> {
     if b.is_empty() {
         return Ok(());
     }
+    let line = format!("{:x}\r\n", b.len());
+    if mask.holds(line.as_bytes()) {
+        return Err(Broken("a chunk's size that is a value filled in"));
+    }
     let mut w = guest.writer();
-    w.write_all(format!("{:x}\r\n", b.len()).as_bytes())?;
-    w.write_all(b)?;
-    w.write_all(b"\r\n")
+    w.write_all(line.as_bytes())
+        .and_then(|()| w.write_all(b))
+        .and_then(|()| w.write_all(b"\r\n"))
+        .map_err(|_| Broken("its bytes could not be queued"))
 }
 
 /// What the host owes for the request it was last given, until its final response ends.
@@ -1403,14 +1409,18 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 }
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
-/// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
+/// audited once each (f26), and given to `mask` as they went, for its response (creds-03); and
+/// every other value the run holds leased toward `host` at `now`, which a response to any request
+/// may carry back too (creds-09), given to it as well.
 fn filled_in(
     mask: &mut Mask,
     sent: &[(&str, &[u8])],
     host: &str,
-    grants: &[crate::Grant],
+    credentials: &Credentials,
+    now: Instant,
     audit: &mut Vec<Audit>,
 ) {
+    let grants = &credentials.grants;
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1429,6 +1439,29 @@ fn filled_in(
             .map_or(&b""[..], |g| g.placeholder.as_bytes());
         mask.fill(value, placeholder);
     }
+    for (value, placeholder) in held_toward(credentials, host, now) {
+        mask.fill(value, placeholder);
+    }
+}
+
+/// Each value the run holds leased at `now` of a credential granted toward `host`, and its
+/// placeholder: what a response from `host` may carry back whether or not its request carried
+/// one (creds-09).
+fn held_toward<'c>(
+    credentials: &'c Credentials,
+    host: &'c str,
+    now: Instant,
+) -> impl Iterator<Item = (&'c [u8], &'c [u8])> + 'c {
+    credentials
+        .grants
+        .iter()
+        .filter(move |g| g.toward.iter().any(|h| h.eq_ignore_ascii_case(host)))
+        .filter_map(move |g| {
+            Some((
+                credentials.leases.held(&g.reference, now)?,
+                g.placeholder.as_bytes(),
+            ))
+        })
 }
 
 /// A chunk's size line that holds a value filled in (`Mask::size`).
@@ -1562,14 +1595,17 @@ impl Mask {
     fn size(&mut self, size: u64, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let line = format!("{size:x}\r\n");
         let line = line.as_bytes();
-        if self
-            .filled
-            .iter()
-            .any(|f| line.windows(f.value.len()).any(|w| w == f.value.as_slice()))
-        {
+        if self.holds(line) {
             return Err(io::Error::other(Holds));
         }
         self.push(line, false, out)
+    }
+
+    /// Whether a value filled in lies in `bytes`.
+    fn holds(&self, bytes: &[u8]) -> bool {
+        self.filled
+            .iter()
+            .any(|f| bytes.windows(f.value.len()).any(|w| w == f.value.as_slice()))
     }
 
     /// Lets the first `n` bytes go on.
@@ -2258,7 +2294,7 @@ impl Ended {
                         fills.push((range, reference));
                     }
                 }
-                if !fills.is_empty() {
+                if !fills.is_empty() || held_toward(run.credentials, &host, run.now).next().is_some() {
                     edits.extend(uncoded(&head, &fields));
                 }
                 None
@@ -2351,7 +2387,8 @@ impl Ended {
             &mut self.mask,
             &sent,
             &parked.host,
-            &run.credentials.grants,
+            run.credentials,
+            run.now,
             &mut run.audit,
         );
         self.owed = Some(parked.owed);
@@ -2392,7 +2429,7 @@ impl Ended {
                     let mut coded = Zeroizing::new(Vec::new());
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
                         if let Piece::Data(b) = p {
-                            coded.extend_from_slice(b);
+                            signin::append(&mut coded, b);
                         }
                         Ok(())
                     })?;
@@ -2643,11 +2680,18 @@ impl Ended {
         });
         fed.map_err(|why| Broken(why.why()))?;
         *decode_left = decode_left.saturating_sub(plain.len());
-        let mut out = |b: &[u8]| chunk(guest, b);
+        let mut released = Zeroizing::new(Vec::new());
+        let mut out = |b: &[u8]| {
+            signin::append(&mut released, b);
+            Ok(())
+        };
         let queued = |_: io::Error| Broken("its bytes could not be queued");
         mask.push(&plain, true, &mut out).map_err(queued)?;
         if end {
             mask.end_message(&mut out).map_err(queued)?;
+        }
+        chunk(guest, mask, &released)?;
+        if end {
             guest.writer().write_all(b"0\r\n\r\n").map_err(queued)?;
         }
         Ok(())
@@ -3635,8 +3679,8 @@ impl H2 {
                 return Ok(());
             }
         }
-        if !go.fills.is_empty() {
-            // Asked as its sender writes it, as the HTTP/1.1 path asks it (creds-04).
+        if !go.fills.is_empty() || held_toward(run.credentials, &go.host, run.now).next().is_some() {
+            // Asked as its sender writes it, as the HTTP/1.1 path asks it (creds-04, creds-09).
             ask_identity(&mut go.fields);
         }
         let path = go
@@ -3981,7 +4025,8 @@ impl H2 {
             &mut s.mask,
             &sent,
             &go.host,
-            &run.credentials.grants,
+            run.credentials,
+            run.now,
             &mut run.audit,
         );
         s.up = Upward::Sent {
@@ -4805,6 +4850,9 @@ pub(crate) mod tests {
         waiter: u64,
         /// The window its connection advertises the guest (`WINDOW`, unless a test sets it).
         window: usize,
+        /// Whether a test expects the flow to be reset, and whether it was.
+        may_reset: bool,
+        reset: bool,
     }
 
     impl Bench {
@@ -4827,6 +4875,8 @@ pub(crate) mod tests {
                 passed: false,
                 waiter: 7,
                 window: WINDOW,
+                may_reset: false,
+                reset: false,
             }
         }
 
@@ -4908,7 +4958,11 @@ pub(crate) mod tests {
                     }
                 }
                 Said::Close => self.closed = true,
-                Said::Reset => panic!("the flow was reset"),
+                Said::Reset => {
+                    assert!(self.may_reset, "the flow was reset");
+                    self.reset = true;
+                    self.flow = None;
+                }
             }
         }
 

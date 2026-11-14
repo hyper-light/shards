@@ -9929,6 +9929,9 @@ template pays it once; what its restores pay is to be measured with mappings.
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
 
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
+
 Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
 
 
@@ -12882,6 +12885,15 @@ the user told).
   `a_microvm_has_the_cpus_its_daemon_may_run_on`).
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
+
+**Review memory-16 (2026-11-13):** saving a head compares a nonzero block with
+every distinct block already retained. The bound is the input's block count;
+there is no selected limit on how many kinds can share. Cold saves start with
+no retained kinds, and existing file errors propagate. This preserves the
+documented “each kept block once” contract after the sixty-fourth kind too.
+Worst-case comparisons are quadratic in input blocks; their cost is unmeasured
+and owed to ROOT. Red/green and scope:
+`docs/research/measurements/memory-fixes-v1/README.md`.
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
@@ -28099,6 +28111,21 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *Every response from a granted host is masked against every value leased toward it (creds-09,
+  amended 2026-11-13).* A response's mask held the values filled into its own request alone, so a
+  request with no placeholder on a granted host's connection got a response with no mask, and a
+  host returning a value leased to the run before (an endpoint that lists keys) gave it to the
+  guest. Now, as a request goes, its mask takes its own values (creds-03) and every value the run
+  holds leased at that instant of a credential granted toward its host (`held_toward`), each the
+  mask's wiped copy until that response ends; and such a request asks `identity` and offers no
+  WebSocket extension as a filled one does (creds-04), its coded response decoded or refused
+  alike. Its bound is the run's leases toward one host, which the run's grants name. A value whose
+  lease lapsed before the request went is held nowhere in this process, so nothing of it is
+  masked: the lease's end is the run's word that the value is no longer the VM's. Tests:
+  `inject::tests::leaks`' H1 request and H2 stream with no placeholder after a filled one, their
+  responses carrying the value in a field and the body, red before (the value reached the
+  guest), green after; the held values left out of the mask, and the `identity` ask left out,
+  each fail them.
 - *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
   chunked body's framing over, so that an echo split across chunks is found; but the framing's
   bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
@@ -28141,7 +28168,10 @@ docs/research/s33-veil-creds/STEP3.md).
   the image store and the registry's client already link), its decoded bytes masked as any body's,
   and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
   Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
-  chunk (`chunk`), its end the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  chunk (`chunk`), each chunk's size line this side's own and held to `Mask::holds` as creds-02's
+  are, one holding a value breaking the message (creds-12, amended 2026-11-13: red before, a
+  value of hex digits written as a size line, green after; the check removed fails it), its end
+  the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
   its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
   length), its DATA's credit given back to the host's window once its decoding has reached the
   guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
@@ -28167,7 +28197,13 @@ docs/research/s33-veil-creds/STEP3.md).
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
   budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
   split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.

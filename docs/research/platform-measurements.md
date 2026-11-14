@@ -17808,6 +17808,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
 Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
 
 
@@ -24346,6 +24349,14 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
 
 ### M572. A WHP DAX range mapped to be written after one to be read was made zeros as its file grew (memory-01, D189, D197)
 

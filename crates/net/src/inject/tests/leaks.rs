@@ -661,3 +661,148 @@ fn a_tokens_echo_in_a_head_is_found_escaped_or_not() {
     }
     assert_eq!(signin::unechoed(&tokens, [&b"X-Echo: kiln%2"[..]]), Ok(()));
 }
+
+/// A value of hex digits alone, as a released run's length writes them.
+const HEX_VALUE: &[u8] = b"80";
+
+/// Answers each lease asked with `HEX_VALUE`.
+fn lease_hex(credentials: &mut Credentials) -> usize {
+    let asks = credentials.leases.asks();
+    for ask in &asks {
+        let (id, _) = lease::decode_ask(ask).unwrap();
+        let life = NonZeroU64::new(60_000_000_000).unwrap();
+        let answer = lease::encode_answer(id, Ok((life, HEX_VALUE))).unwrap();
+        assert!(credentials.leases.answered(&answer, Instant::now()));
+    }
+    asks.len()
+}
+
+/// Do: a granted host's request filled in with a value of hex digits alone, its response gzip
+/// anyway, decoding to a run of 0x80 octets that holds no part of it. Expect: the decoded body's
+/// own chunk-size line, which would say `80`, never written (creds-12): the message broken, the
+/// value nowhere in what the guest read.
+#[test]
+fn a_decoded_bodys_own_size_line_never_carries_a_value() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = Bench::new(
+        guest(credentials.ca.der().to_vec().into(), GRANTED, None),
+        quiet(&root, &[GRANTED]),
+    );
+    bench.may_reset = true;
+    let request = format!("GET /v1/models HTTP/1.1\r\nHost: {GRANTED}\r\nx-api-key: {PLACEHOLDER}\r\n\r\n");
+    bench.guest.writer().write_all(request.as_bytes()).unwrap();
+    bench.until(&mut credentials, &mut lease_hex, |b| !b.h1().had.is_empty());
+    let coded = gzip(&[b'x'; 0x80]);
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        coded.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&coded);
+    bench.answer(&response);
+    bench.settle(&mut credentials, &mut unanswered);
+    assert!(
+        !holds(&bench.got, b"\r\n80\r\n"),
+        "a decoded body's size line carried the value: {}",
+        lossy(&bench.got)
+    );
+    assert!(bench.reset, "the message was not broken");
+}
+
+/// Do: a granted host's request filled in and answered; then, on the same connection, a request
+/// that carries no placeholder, which the host answers with the value leased before (an endpoint
+/// that lists keys). Expect: the second response's value masked with its placeholder's bytes,
+/// the value nowhere in what the guest read (creds-09); the second request asking `identity`.
+#[test]
+fn a_response_to_a_request_with_no_fill_is_masked_against_the_values_leased() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let mut bench = h1_sent(&mut credentials, &root, "");
+    bench.answer(b"HTTP/1.1 204 No Content\r\n\r\n");
+    bench.until(&mut credentials, &mut unanswered, |b| {
+        b.got.ends_with(b"\r\n\r\n")
+    });
+    bench.got.clear();
+    let request = format!("GET /v1/keys HTTP/1.1\r\nHost: {GRANTED}\r\nAccept-Encoding: gzip\r\n\r\n");
+    bench.guest.writer().write_all(request.as_bytes()).unwrap();
+    bench.until(&mut credentials, &mut unanswered, |b| b.h1().had.len() == 2);
+    let v = value();
+    let keys = format!("{{\"keys\":[\"{v}\"]}}");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nX-Key: {v}\r\nContent-Length: {}\r\n\r\n{keys}",
+        keys.len()
+    );
+    bench.answer(response.as_bytes());
+    bench.until(&mut credentials, &mut unanswered, |b| whole(&b.got));
+    assert!(
+        !holds(&bench.got, VALUE),
+        "a value leased before reached the guest: {}",
+        lossy(&bench.got)
+    );
+    assert_eq!(
+        bench
+            .got
+            .windows(VALUE.len())
+            .filter(|w| *w == echo_mask())
+            .count(),
+        2,
+        "{}",
+        lossy(&bench.got)
+    );
+    let sent = &bench.h1().had[1].request;
+    assert!(
+        holds(sent, b"\r\nAccept-Encoding: identity\r\n") && !holds(sent, b"gzip"),
+        "{}",
+        lossy(sent)
+    );
+}
+
+/// The HTTP/2 test host's answer to any request: the value leased to the run, as an endpoint
+/// that lists keys gives it.
+fn h2_keys(_: &[hpack::Field], _: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+    (
+        vec![field(":status", b"200"), field("x-key", VALUE)],
+        [b"{\"keys\":[\"", VALUE, b"\"]}"].concat(),
+    )
+}
+
+/// Do: over HTTP/2, stream 1 filled in, then stream 3 with no placeholder; the host answers each
+/// with the value. Expect: the value nowhere in what the guest read, in a field or in DATA, on
+/// either stream (creds-09).
+#[test]
+fn an_h2_response_to_a_stream_with_no_fill_is_masked_against_the_values_leased() {
+    let root = root("shards test root");
+    let mut credentials = credentials(&root);
+    let host = H2Host::serving(&root, &[GRANTED], h2_keys);
+    let (mut bench, mut peer) = h2_bench(&credentials, GRANTED, host);
+    let mut seen = Vec::new();
+    let bearer = format!("Bearer {PLACEHOLDER}");
+    peer.send_headers(1, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut lease_all,
+        |p, _| p.response(1).ended,
+    );
+    peer.send_headers(3, &h2_request("GET", GRANTED, "/v1/keys", None), true);
+    h2_until(
+        &mut bench,
+        &mut peer,
+        &mut seen,
+        &mut credentials,
+        &mut unanswered,
+        |p, _| p.response(3).ended,
+    );
+    assert_eq!(
+        h2_leaked(&peer, &seen, &[value()]),
+        None,
+        "a value leased before reached the guest"
+    );
+    assert_eq!(
+        value_of(&peer.response(3).fields, "x-key"),
+        Some(&echo_mask()[..])
+    );
+}
