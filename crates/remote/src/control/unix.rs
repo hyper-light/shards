@@ -927,7 +927,7 @@ mod tests {
     //! does, and the workload a listener in a test directory, as Hex's relay is in
     //! `/run/hex/channel`.
 
-    use std::io::{Read as _, Write as _};
+    use std::io::{ErrorKind, Read as _, Write as _};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::num::NonZeroU16;
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -936,7 +936,7 @@ mod tests {
 
     use super::{Admission, Connect, Reply};
     use crate::control::{
-        Controller, Dialed, Ended, Endpoint, Fault, Revoke, Socket, Streams, Subscriptions,
+        Controller, Dialed, Ended, Endpoint, Fault, Revoke, Socket, Streams, Subscriptions, Wake,
     };
     use crate::identity::{Fingerprint, Identity};
     use crate::managed::{Reason, RunId};
@@ -1246,6 +1246,214 @@ mod tests {
         lane.write_all(&sent).unwrap();
         lane.shutdown_write().unwrap();
         assert_eq!(workload.join().unwrap(), sent, "what the controller sent after");
+    }
+
+    /// Tries `try_` until it says other than `WouldBlock`, the controller's wake drained before
+    /// each try and waited for after each `WouldBlock`, as a controller of many lanes on one
+    /// thread does: a wake lost leaves the wait ringless at the tests' patience, which fails.
+    #[allow(clippy::panic_in_result_fn)]
+    fn woken<T>(wake: &Wake, mut try_: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        loop {
+            wake.drain().unwrap();
+            match try_() {
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        wake.wait(PATIENCE).unwrap(),
+                        "no ring within patience: a wake lost"
+                    );
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Nothing come is `WouldBlock`, never a wait: the workload's bytes, its end and then a
+    /// write past the lane's room each ring the controller's wake, and a try after it finds
+    /// what rang. The workload writes in pieces as the controller drains, so that a ring
+    /// races each drain.
+    #[test]
+    fn a_lanes_bytes_end_and_room_ring_its_controllers_wake() {
+        let dir = shards_testdir::TempDir::new("sy").unwrap();
+        let listener = UnixListener::bind(dir.path().join("try.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let sent = pattern(admission(4).window);
+        let (go, gone) = mpsc::channel::<()>();
+        let workload = std::thread::spawn({
+            let sent = sent.clone();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                gone.recv().unwrap();
+                // Pieces of every size from one byte up, each written as it comes.
+                let mut at = 0;
+                for size in 1.. {
+                    let end = sent.len().min(at + size);
+                    conn.write_all(&sent[at..end]).unwrap();
+                    at = end;
+                    if at == sent.len() {
+                        break;
+                    }
+                }
+                conn.shutdown(std::net::Shutdown::Write).unwrap();
+                gone.recv().unwrap();
+                let mut got = Vec::new();
+                conn.read_to_end(&mut got).unwrap();
+                got
+            }
+        });
+        let mut lane = answered!(sockets.connect("try.sock")).unwrap();
+        let mut buf = vec![0u8; 4096];
+        assert_eq!(
+            lane.try_read(&mut buf).map_err(|e| e.kind()),
+            Err(ErrorKind::WouldBlock),
+            "nothing come"
+        );
+        go.send(()).unwrap();
+        let mut back = Vec::new();
+        loop {
+            match woken(&dialed.wake, || lane.try_read(&mut buf)).unwrap() {
+                0 => break,
+                n => back.extend_from_slice(&buf[..n]),
+            }
+        }
+        assert_eq!(back, sent, "the workload's bytes exactly, then its end");
+        assert_eq!(lane.try_read(&mut buf).unwrap(), 0, "its end, again");
+
+        // The workload reads nothing yet: the lane's room runs out, and its try says so.
+        let mut wrote = 0;
+        loop {
+            match lane.try_write(&sent) {
+                Ok(n) => wrote += n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => panic!("a write refused: {e}"),
+            }
+        }
+        go.send(()).unwrap();
+        // Room that comes as the workload reads rings the wake: a try after it is taken.
+        let more = woken(&dialed.wake, || lane.try_write(b"more")).unwrap();
+        assert!(more > 0);
+        lane.shutdown_write().unwrap();
+        let got = workload.join().unwrap();
+        assert_eq!(got.len(), wrote + more, "every byte taken reached the workload");
+    }
+
+    /// A socket cut short rings the wake: its reader's try reads `ConnectionReset`, as its read
+    /// does, and its writer's after it too.
+    #[test]
+    fn a_lanes_fault_rings_its_controllers_wake() {
+        let dir = shards_testdir::TempDir::new("sf").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let workload = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut got = [0u8; 5];
+            conn.read_exact(&mut got).unwrap();
+            // Closed here, its controller's way still open: a cut.
+            got
+        });
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
+        assert_eq!(woken(&dialed.wake, || lane.try_write(b"hello")).unwrap(), 5);
+        assert_eq!(&workload.join().unwrap(), b"hello");
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            woken(&dialed.wake, || lane.try_read(&mut buf)).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a cut, read as its read reads it"
+        );
+        assert_eq!(
+            woken(&dialed.wake, || lane.try_write(b"after")).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a write after the cut"
+        );
+    }
+
+    /// One controller thread drives several lanes at once without waiting on any: each lane's
+    /// workload echoes what it reads as it reads it, so that every lane's bytes cross both
+    /// ways while the others' do; the thread sleeps on the wake alone.
+    #[test]
+    fn one_thread_drives_several_lanes_on_its_wake() {
+        struct Driven {
+            lane: Socket,
+            wrote: usize,
+            shut: bool,
+            back: Vec<u8>,
+            ended: bool,
+        }
+        const LANES: u32 = 3;
+        let dir = shards_testdir::TempDir::new("sm").unwrap();
+        let listener = UnixListener::bind(dir.path().join("echo.sock")).unwrap();
+        let echo = std::thread::spawn(move || {
+            let echoes: Vec<_> = (0..LANES)
+                .map(|_| {
+                    let (conn, _) = listener.accept().unwrap();
+                    std::thread::spawn(move || {
+                        std::io::copy(&mut &conn, &mut &conn).unwrap();
+                        conn.shutdown(std::net::Shutdown::Write).unwrap();
+                    })
+                })
+                .collect();
+            for echo in echoes {
+                echo.join().unwrap();
+            }
+        });
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(LANES));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(LANES));
+        let sockets = dialed.sockets.take().unwrap();
+        let sent = pattern(admission(LANES).window);
+        let mut lanes: Vec<Driven> = (0..LANES)
+            .map(|_| Driven {
+                lane: answered!(sockets.connect("echo.sock")).unwrap(),
+                wrote: 0,
+                shut: false,
+                back: Vec::new(),
+                ended: false,
+            })
+            .collect();
+        let mut buf = vec![0u8; 8192];
+        while lanes.iter().any(|l| !l.ended) {
+            dialed.wake.drain().unwrap();
+            for l in &mut lanes {
+                while l.wrote < sent.len() {
+                    match l.lane.try_write(&sent[l.wrote..]) {
+                        Ok(n) => l.wrote += n,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) => panic!("a lane's write refused: {e}"),
+                    }
+                }
+                if l.wrote == sent.len() && !l.shut {
+                    l.lane.shutdown_write().unwrap();
+                    l.shut = true;
+                }
+                while !l.ended {
+                    match l.lane.try_read(&mut buf) {
+                        Ok(0) => l.ended = true,
+                        Ok(n) => l.back.extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) => panic!("a lane's read refused: {e}"),
+                    }
+                }
+            }
+            if lanes.iter().any(|l| !l.ended) {
+                assert!(
+                    dialed.wake.wait(PATIENCE).unwrap(),
+                    "no ring within patience: a wake lost"
+                );
+            }
+        }
+        for l in &lanes {
+            assert_eq!(l.back, sent, "each lane's bytes echoed exactly");
+        }
+        drop(lanes);
+        echo.join().unwrap();
     }
 
     #[test]

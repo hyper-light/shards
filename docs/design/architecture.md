@@ -7088,7 +7088,21 @@ replaced by:
   (`net::Sender`) to a wake socket of the driver's own, beside the one it serves on, both waited
   on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
   alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
-  client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
+  client's resize waited for the daemon's next packet. Finding fixed (2026-11-14, Hex's
+  default-deny count of every hyper-quic endpoint's sockets): the waker (`net::Sender`) and the
+  wake were two unconnected loopback sockets, so any local process could send datagrams into a
+  run's driver wake, waking it at will, and every endpoint carried two sockets open to every
+  peer. The local datagram injection surface is closed: `Driver::bind_with_limits` connects the
+  waker to the wake and the wake to the waker, by the same rule (connect(2) filters a datagram
+  socket's input to its peer: Linux udp(7), XNU `udp_input`, Winsock's connect, "any datagrams
+  received from an address other than the destination address specified will be discarded"), and
+  drops what came before the connects (connect purges no queue, and no sender has woken it yet).
+  Senders wake with `send`, as XNU's `udp_output` refuses `sendto` an address on a connected
+  socket (EISCONN); every clone (`Sender::try_clone`) holds the same connected socket again. The
+  main socket's check for datagrams from the waker's address, there from before the wake socket,
+  went with it: the waker sends nowhere else. Red/green:
+  `net::tests::the_wake_takes_datagrams_from_its_own_waker_alone`, a stranger's datagram read
+  first before the fix, dropped after it. poll waits whole milliseconds, a wait
   under one taken as one, so that a timer is looked at no sooner than it is due. What its socket
   holds is read with the socket non-blocking: a receive timeout of the least, a microsecond,
   Linux keeps in whole jiffies (SO_RCVTIMEO, net/core/sock.c `sock_set_timeout`), so that a
@@ -18508,6 +18522,40 @@ was built on [PM M200-M203]:
 - **No profile left behind.** Each lives with a record its spawner holds open
   (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
   no process holds.
+  - **A managed VM's, at once (2026-11-14, Hex's ask).** A managed VM whose native owner
+    ends it by killing its job (D215's `ManagedProcess`) leaves its `shards`' profiles, their
+    registry entries, their `%LOCALAPPDATA%\Packages` folders and their records, until
+    some VM's spawner next sweeps. So the owner calls
+    `shards_api::release_app_containers(&paths, &identity, end)` once it has ended the
+    scope: `paths` its `RuntimePaths`, whose cache is the VM's `SHARDS_CACHE`, so the
+    records are `<cache>\containers`; `identity` the VM's recorded `Identity`, whose pid
+    names its profiles (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each
+    profile recorded there under that pid, then its record (`shards_ipc::release`, the
+    sweep's own open-and-delete for one maker), and answers how many: none where a sweep
+    took them first or none was made. Profiles of another cache, or of no record, are never
+    touched.
+  - Refusals, nothing deleted (R04): `Refusal::Release(ReleaseRefusal::ScopeLive)` for an
+    end short of `TerminalScope::Released`, as a process of the VM's may still run in a
+    profile; `ReleaseRefusal::Held` where a record is held open, which only a live process
+    does (the VM's `shards`, a process given its pid since, or a spawner sweeping that
+    moment). Every record is opened, shared with none, before any profile goes, so a held
+    one stops the call whole. An I/O failure is `Refusal::ManagedIo`. A profile whose
+    deletion fails keeps its record for a later sweep. A profile already gone is not a failure
+    (DeleteAppContainerProfile's HRESULT_FROM_WIN32 of ERROR_FILE_NOT_FOUND,
+    ERROR_PATH_NOT_FOUND or ERROR_NOT_FOUND).
+  - The call is compiled on every host, so the owner's code is one. Elsewhere a VM has no
+    AppContainer: after the same check of `end`, it deletes none and answers 0.
+  - No literal is added: the profile name's parts are AppContainer::new's own format.
+  - Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1):
+    - `shards_api` `native::tests::a_killed_managed_vms_app_containers_are_released`: a child
+      makes and records its profile as a VM's `shards` does, and is killed. The call is
+      refused while the child lives (Held) and for an end of `Process` (ScopeLive). Then,
+      Released, the profile's Packages folder and its record are gone, and a second call
+      answers 0.
+    - `shards_ipc` `windows::tests::release_deletes_one_ended_makers_profiles_and_records`:
+      only the named maker's profiles go, each name then makes a new profile where it said
+      ERROR_ALREADY_EXISTS; a record whose profile had gone is released; a held record is
+      refused whole.
 - **The partition that reads WHP's vCPU limit is made as a VM's** (D140 fixed): offered the
   synthetic features without its APICs emulated, WHP refused it (HV_STATUS_INVALID_PARAMETER),
   and with it every VM (CI run 38222358454).
@@ -26728,6 +26776,34 @@ Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process 
 Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
 and WHP (ROOT's); scripts/lint.
 
+**A stream shared without an inheritable duplicate (2026-11-14, Hex's audit D-5).** On
+Windows `Stream::try_clone` returned an inheritable socket. Its duplicate is
+WSADuplicateSocketW's protocol info made a socket by WSASocketW (`shards_afunix`), which
+keeps no WSA_FLAG_NO_HANDLE_INHERIT for it, so a child another thread starts with std's
+`Command` (which inherits every inheritable handle) took the connection. Reproduced before
+the fix (PM M582): a stream's clone, a stream shared with its own process and a listener's
+clone were inheritable, the originals not. Two changes:
+- **No duplicate is needed.** `&dyn Stream` reads and writes (`Read` and `Write` for
+  `&(dyn Stream + '_)`), as std's `&TcpStream` does, through the trait's
+  `read_shared`/`write_shared`, the same polled waits as `read`/`write`. One thread reads
+  while another writes, sharing one handle. `Stream::into_socket(self: Box<Self>) ->
+  shards_api::OwnedSocket` (`OwnedFd` on Unix, `OwnedSocket` on Windows) hands the socket
+  over, left non-blocking, its timeouts gone with the value.
+- **No duplicate is inheritable.** `shards_afunix`'s socket made from protocol info clears
+  HANDLE_FLAG_INHERIT (SetHandleInformation) as it is made: a socket is a handle, whose
+  inheritance WSASocketW's documentation reads with GetHandleInformation, and std cleared
+  its sockets' this way before Windows had the flag. This covers `try_clone`, `from_shared`
+  and a listener's `try_clone`; a failure is the clone's error. So `try_clone` stays, with
+  its documentation saying so.
+
+Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1):
+- `shards_afunix` `tests::no_socket_and_no_duplicate_of_one_is_inheritable`: red before the
+  fix, green after (PM M582).
+- `shards_api` `stream::tests::two_threads_share_a_stream_through_a_reference`: one thread
+  reads and another writes through `&dyn Stream`, and on Windows the socket and a clone's
+  are not inheritable (GetHandleInformation).
+- `stream::tests::a_streams_socket_is_handed_over`: the socket taken carries both ways.
+
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest
 refused.
@@ -26822,6 +26898,34 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
 - *The room* its orchestrator's budget leaves the run: init's `builtin::ROOM`, told through
   the run host (D241).
 - *Stop.* The VM process killed at once, as `Guest::stop`.
+  - *A stop returns released, as a boot's stop does* (2026-11-14, Hex's B-4, ROOT's
+    decision). `ImageGuest::stop` returned once the run's end was told, before api-run had
+    reaped its VM, network and share processes (api_run.rs `end`: the VM killed and waited,
+    then `netproc::reap` of the network and share processes, then on Windows the job let
+    go of), so a caller that took `Ok` as "nothing of the run is left" could see processes
+    of it still running. No channel's end says it either: api-run cuts every member
+    channel it gave room to (`Live::cut`, `Aborted(104)`) as the VM's capture ends, before
+    it reaps. `stop` now waits, after the end, for the condition a stop mid-boot already
+    waits for (`Begun::started`): `gone() && said_all`, the host exited and reaped by its
+    watcher, its answers ended, and its diagnostics' pipe closed by every process that held
+    it as its stderr. The host's stdin, closed with the end, is its cue to reap and exit.
+    Followed, never timed (D215, D217): no deadline and no literal; every wait it adds is on
+    a process whose end has begun (its VM killed, its host's stdin closed). On Windows that
+    pipe's end says nothing of its holders' (above), so `Child::end_group` then follows the
+    host's group to its end, as the boot's stop does, and a group it cannot follow is
+    refused `Os` ("the stopped run's processes"), never `Ok` early. `Session`'s drop of a
+    running run stops it, so it returns released too. Tested by
+    `a_stop_returns_once_its_host_and_every_process_it_started_are_gone` (stand-in host:
+    says its end once asked to stop, exits as its stdin closes, its stand-in VM holding its
+    diagnostics until the test lets it go once the host is gone). On adas-mac-studio-3
+    (macOS arm64) at c133bfb5: red with the released wait removed (the stop's old return)
+    and red with its guard mutated to `gone()` alone, each at "the stop returned while the
+    VM its run host started still ran"; green with it, `cargo test -p shards-api --lib
+    image::` 86/86, clippy `-D warnings` clean. **Owed** (ROOT): the Windows stand-in twin
+    (unwritten: its host's job ends its VM with the host, so a stop there is followed by
+    `end_group`), and the real-VM proof on HVF, KVM and WHP, `api_image`'s
+    `stop_ends_the_run_at_once` with no VM, network or share process of the run left once
+    `stop` returns.
 - *A stop for a boot under way* (2026-11-13, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 17, for Hex's delete of a microVM still booting): `Images::boot_stoppable(spec,
   patience, &BootStop)`, a default trait method, so that every `Images` keeps compiling (its
@@ -27203,6 +27307,7 @@ API's protocol: its output drained, its end, its connections.
     `with_gpu_report` refuses one (`ImageRefusal::GpuProbe`: zero `Scope`, no `gpu_devices`
     `Empty`), before any run host starts and again as the channel reads it
     (`WireError::Gpu`). Image channel version 29: `Request::gpu_report`, appended last.
+    Version 30 (D252's amendment, the endpoint's waker and wake) follows it.
   - The run host gives its VM process the report pipe as a managed launch's client gives its
     own: `--gpu-report` and `--gpu-report-scope` (launch.rs `run_reported`, the write end at
     descriptor 9 on Unix, the one after the release, and by the name `gpu-report` on Windows,
@@ -31129,7 +31234,7 @@ WHP; Hex's image_real with a box of no grants once Hex vendors this.
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
 
-### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
 
 **Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
@@ -31219,6 +31324,45 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
   reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
   reads as `ConnectionReset`, its `Fault` its source.
+- *Its controller's wake* (Hex's ask D-10). A controller drives all its lanes from one thread
+  without waiting on any: `SocketReader::try_read` and `SocketWriter::try_write` (and
+  `Socket`'s) say `WouldBlock` where nothing has come or the lane has no room, and otherwise
+  answer, end (`Ok(0)` at the socket's FIN) and fault exactly as `read` and `write` do, typed
+  through the same `Fault`. The blocking `read` and `write` are unchanged; both styles share one
+  state (`ReadState`, `WriteState`), and a call says which it is (`Waits`, R04).
+  - *One wake per controller* (`Dialed::wake`, `drive::Wake`), an OS wait's handle: on Unix the
+    read end of an AF_UNIX datagram socket pair, readable while a ring is pending (`AsFd`); on
+    Windows an auto-reset event (`AsHandle`). The driver rings it once in each of its turns
+    (each `Handler` call, and `Controller::run`'s end) in which it told any lane, or any lane's
+    ask, anything: bytes, an end, a fault, room, an answer. Each lane marks what it was told;
+    the turn's end takes the marks, and a sweep takes those of lanes it lets go first, so a
+    lane's last word (a fault, its end) rings though its lane is gone. The driver's end rings
+    too (`Ring`'s drop), so a controller sleeping on it finds every lane's end. No interval
+    and no poll: the driver's own events are the only rings (R03, R05).
+  - *The wake rule.* Level, and drained before the tries: wait (an OS wait, or `Wake::wait`),
+    `Wake::drain`, then try every lane until each says `WouldBlock`, and wait again. The
+    driver sends a lane's words before it rings, so a ring the drain took told what the tries
+    then find, and a ring after the drain stays pending for the next wait: no wake is lost.
+    The wake names no lane: its controller tries them all (a controller's lanes are bounded by
+    its admission's `lanes`).
+  - *Unix: a datagram pair, both ends nonblocking.* A ring with no room in the queue finds one
+    pending (Linux's `max_dgram_qlen`), so rings coalesce. A ring whose wake is gone is an
+    error, never a signal, where a pipe's or a stream's write to a closed reader raises
+    SIGPIPE (pipe(7), unix(7)); and std makes the pair close-on-exec. *Windows: auto-reset*,
+    as shards-netring's doorbell is: the one wait it satisfies resets it atomically
+    (learn.microsoft.com, "CreateEventW": "the system automatically resets the event state to
+    nonsignaled after a single waiting thread has been released"), so the rule leaves its
+    controller no reset to order after its wait. A manual-reset event would need a
+    `ResetEvent` strictly before the tries, and a reset after them loses the ring. `drain` on
+    Windows is a wait of 0.
+  - *Alternatives.* A Linux eventfd or a kqueue `EVFILT_USER` (mio's `Waker`, tokio's) is one
+    platform's, where the pair is every Unix's (R12). The driver's own UDP waker (`net.rs`) is a
+    SOCKET on Windows, which WaitForMultipleObjects cannot wait on. A readiness list naming
+    ready lanes would add a second state beside each lane's channel for a controller of a
+    handful of lanes; trying each is a `try_recv` per lane.
+  - *Literals.* None chosen: poll(2)'s int and WaitForSingleObject's DWORD of milliseconds
+    (`INFINITE`) are the APIs' own, a patience past them waiting until a ring, rounded up so no
+    patience waits less than asked.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and
   generation, which an ask names. One that serves sockets alone knows only the keys its
   connection pinned, and an ask there names the zero run and generation 0, as a controller of
@@ -31288,6 +31432,21 @@ function"), no time chosen.
   reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
   `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
   tests.
+- Its controller's wake (policy df2acf47, implementer): `control::drive::tests`, the wake
+  coalescing a thousand rings into one wait and drained by one drain, the driver's end ringing,
+  and `no_ring_is_lost_while_its_controller_drains` (a thread tells and rings 100,000 words as
+  the controller drains; each wait must ring within the tests' patience); and
+  `control::unix::tests` over the real transport: `a_lanes_bytes_end_and_room_ring_its_controllers_wake`
+  (`WouldBlock` before anything comes; the workload's bytes, written in pieces of every size as
+  the controller drains, then its end, then a write past the lane's room, each found after a
+  ring), `a_lanes_fault_rings_its_controllers_wake` (a cut read and written as
+  `ConnectionReset` through the tries), and `one_thread_drives_several_lanes_on_its_wake` (three
+  echoing lanes, one thread, sleeping on the wake alone).
+  On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 70 tests, `loopback`
+  35, and clippy `--all-targets -D warnings` clean. Its guard mutated: the sweep's taking of
+  the marks of the lanes it lets go removed, `a_lanes_fault_rings_its_controllers_wake` and
+  `one_thread_drives_several_lanes_on_its_wake` fail (`no ring within patience: a wake lost`:
+  a lane's fault, and its end, told as it is let go, never rang); restored, green.
 - Its cut: `control::unix::tests::a_socket_cut_short_resets_its_lane_never_ending_it_in_order`,
   the workload reading all the controller sent and then closing, so that its end comes with
   nothing for the writer to fail on, on every host: red on 8bfa6150e's pump (`Ok(0)` where
@@ -31338,6 +31497,9 @@ function"), no time chosen.
   SO_LINGER {on, 0} is known from these alone: M358 set {on, 5} unchecked, and Microsoft's
   documents name no AF_UNIX case.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
+- Windows: the controller's wake (its auto-reset event, `control::drive::tests`), compiled by
+  CI's Windows legs and run by CI's Windows unit tests; its transport tests are Unix's (their
+  workload is an AF_UNIX listener).
 
 **What would falsify it.**
 - A workload reaching a socket outside its root.
@@ -31399,6 +31561,31 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
 daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
 hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
 endpoint serving no member stream (D238).
+
+**Amended** (Hex's ask, 2026-11-14): every socket the endpoint holds, named; image channel
+version 30.
+- *Why.* The endpoint's hyper-quic driver holds two more loopback UDP sockets beside the one it
+  serves on: its waker and its wake, connected to each other since b6727996c
+  (`shards_remote::net::Driver::bind_with_limits`). Windows' UDP table (`GetExtendedUdpTable`,
+  `Get-NetUDPEndpoint`) shows no UDP socket's peer, so from outside the process they look like
+  listeners nobody granted, and Hex's default-deny check of a run's sockets fails there.
+- *Decided.* The endpoint tells all three: `control::Endpoint::{address, waker, wake}`, from
+  `Driver::local`, `Sender::waker_addr` and `Driver::wake_addr`, each its socket's own
+  `local_addr` (a sender's clones duplicate the one waker descriptor, so its address is theirs
+  too). `ControlAt` carries them, typed and named: `address` (served), `waker`, `wake`, and
+  `ControlAt::sockets()`, all three, so Hex can require that every UDP socket a run holds is
+  exactly one of them. `Started` encodes the two after the microVM key's SHA-256, each an
+  address and a port, inside the control block, so a run without an endpoint encodes as before.
+  The same on every OS: the driver binds both on every one.
+- *Version 30.* A version-29 reader would read the two addresses as the rate period, so the
+  channel's version moves, and a side of version 29 refuses the run by its version as it is
+  asked, never reading a `Started` laid out otherwise.
+- *Tested* (unit): `net::a_driver_tells_every_socket_it_holds` (the three named addresses
+  equal what the sockets report, the waker and wake connected to each other, all three held
+  while the driver lives and free after); `image::wire`'s round-trip of all three, IPv4 and
+  IPv6, and a version-29 request refused; api_run's `control_at` from a bound endpoint equals
+  what its sockets hold.
+- *Owed* (ROOT): Hex's Windows check over a real run's UDP table (WHP).
 
 **Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
 endpoints bind.

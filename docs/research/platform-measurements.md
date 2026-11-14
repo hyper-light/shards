@@ -24823,3 +24823,28 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
   (`cargo test -p shards --test build a_builders_memory_is_plugged_as_fast_as_its_jobs_take_it`,
   `a_build_held_short_of_memory_has_its_builder_give_back`); a driver delayed three
   windows live. Not run on Windows (jupiter offline): the Windows repeat test.
+
+### M582. A Windows socket made from a duplicate's protocol info is inheritable, whatever WSASocketW's flags say (D215, Hex's audit D-5)
+
+- **Question.** `shards_afunix` makes every socket with WSA_FLAG_NO_HANDLE_INHERIT. Hex's
+  audit (D-5) found a clone of a `shards_api::Stream` inheritable on jupiter (rustc 1.99.1).
+  Which of shards' sockets are, and does clearing HANDLE_FLAG_INHERIT after WSASocketW hold?
+- **Method.** A unit test, `cargo test -p shards-afunix --lib no_socket` (crates/afunix/src/lib.rs
+  `tests::no_socket_and_no_duplicate_of_one_is_inheritable`). It reads GetHandleInformation's
+  HANDLE_FLAG_INHERIT of five sockets: a pair's stream, its `try_clone`, a stream
+  `from_shared` with this process, a bound listener, and its `try_clone`. Each duplicate is
+  WSASocketW(FROM_PROTOCOL_INFO, …, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT) of
+  WSADuplicateSocketW's info. Run on the Windows 11 container on adacachy (Windows 10.0.26200,
+  x86_64, rustc 1.99.1, stable-x86_64-pc-windows-msvc), 2026-11-14, at 9f5b1f754 with the test
+  alone, then with the fix.
+- **Results.**
+  - Before: `[("a stream", false), ("its clone", true), ("one shared with this process",
+    true), ("a listener", false), ("its clone", true)]`. Each of the three duplicates was
+    inheritable and each original was not, so WSASocketW keeps the flag for a new socket and
+    not for one made from protocol info.
+  - After `Socket::from_info` cleared HANDLE_FLAG_INHERIT with SetHandleInformation: all five
+    were false. The crate's 12 other tests passed.
+  - The guard removed is the "before" run: the same test fails without it.
+- **Decision.** Clear inheritance where a duplicate is made (D215), and give `shards_api`
+  callers `&dyn Stream` reads and writes and `into_socket`, so none needs a duplicate.
+

@@ -490,13 +490,13 @@ impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
-        self.waiting(waits::READ, || self.read_nowait(buf))
+        Stream::read_shared(self, buf)
     }
 }
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.waiting(waits::WRITE, || self.write_nowait(buf))
+        Stream::write_shared(self, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -522,6 +522,18 @@ impl Stream for Socket {
             });
             Ok(Box::from_raw(at.as_ptr()))
         }
+    }
+
+    fn read_shared(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.waiting(waits::READ, || self.read_nowait(buf))
+    }
+
+    fn write_shared(&self, buf: &[u8]) -> io::Result<usize> {
+        self.waiting(waits::WRITE, || self.write_nowait(buf))
+    }
+
+    fn into_socket(self: Box<Self>) -> crate::OwnedSocket {
+        crate::OwnedSocket::from(self.inner)
     }
 
     fn handle(&self) -> crate::Handle<'_> {
@@ -814,6 +826,71 @@ mod tests {
         let mut buf = [0u8; 8];
         let n = clone.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"now");
+    }
+
+    /// Do: share one stream between two threads as `&dyn Stream`, no clone made: one reads
+    /// what the peer writes while the other writes to it. Expect each way's bytes whole, and
+    /// on Windows the stream's socket, and a clone's, not inheritable, as std's Command would
+    /// hand an inheritable one to every child another thread starts (Hex's audit D-5, PM M582).
+    #[test]
+    fn two_threads_share_a_stream_through_a_reference() {
+        let (a, b) = pair().unwrap();
+        let (a, b): (Box<dyn Stream>, Box<dyn Stream>) = (a.boxed().unwrap(), b.boxed().unwrap());
+        let shared: &dyn Stream = &*a;
+        let (sent, got) = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut got = [0u8; 4];
+                (&*shared).read_exact(&mut got).unwrap();
+                got
+            });
+            let writer = scope.spawn(|| (&*shared).write_all(b"from").unwrap());
+            (&*b).write_all(b"to a").unwrap();
+            writer.join().unwrap();
+            let mut sent = [0u8; 4];
+            (&*b).read_exact(&mut sent).unwrap();
+            (sent, reader.join().unwrap())
+        });
+        assert_eq!((&sent, &got), (b"from", b"to a"));
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket as _;
+            let inheritable = |s: crate::Handle<'_>| {
+                let mut flags = 0u32;
+                // SAFETY: a socket the stream holds open, and a u32 for the call to fill.
+                let ok = unsafe {
+                    windows_sys::Win32::Foundation::GetHandleInformation(
+                        s.as_raw_socket() as windows_sys::Win32::Foundation::HANDLE,
+                        &raw mut flags,
+                    )
+                };
+                assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+                flags & windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT != 0
+            };
+            let clone = Stream::try_clone(&*a).unwrap();
+            assert!(!inheritable(a.handle()), "the stream's socket");
+            assert!(!inheritable(clone.handle()), "its clone's");
+        }
+    }
+
+    /// Do: take a stream's socket. Expect the same connection, owned by the caller: bytes
+    /// written to it reach the peer, and the peer's reach it.
+    #[test]
+    fn a_streams_socket_is_handed_over() {
+        let (a, mut b) = pair().unwrap();
+        let socket = a.boxed().unwrap().into_socket();
+        #[cfg(unix)]
+        let taken = std::os::unix::net::UnixStream::from(socket);
+        #[cfg(windows)]
+        let taken = shards_afunix::UnixStream::from(socket);
+        taken.set_nonblocking(false).unwrap();
+        (&taken).write_all(b"taken").unwrap();
+        let mut got = [0u8; 5];
+        b.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"taken");
+        b.write_all(b"back").unwrap();
+        let mut back = [0u8; 4];
+        (&taken).read_exact(&mut back).unwrap();
+        assert_eq!(&back, b"back");
     }
 
     /// A clone is the same connection: what one writes the peer reads (D215).

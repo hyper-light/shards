@@ -71,8 +71,11 @@ pub use shards_abi::run::nesting::Ready;
 /// side that tells none is never read as having used nothing; 29, the run's GPU report
 /// (D233): the scope its orchestrator names ([`Request::gpu_report`]) and its VM process's
 /// report relayed ([`to_client::GPU_REPORT`]), so that a side that relays none never starts a
-/// GPU run whose orchestrator waits for its renderer's word.
-pub const VERSION: u8 = 29;
+/// GPU run whose orchestrator waits for its renderer's word; 30, every socket the run's
+/// agent-control endpoint holds, each named ([`ControlAt::waker`], [`ControlAt::wake`]; D252),
+/// so that its orchestrator can hold each UDP socket the run holds to exactly those, where its
+/// host's table shows no socket's peer (Windows).
+pub const VERSION: u8 = 30;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -570,11 +573,24 @@ pub struct SocketGrant {
 }
 
 /// Where a run's agent-control endpoint is bound, and the SHA-256 of its microVM's own key,
-/// which its controller pins (D252).
+/// which its controller pins (D252); and the two other sockets it holds (version 30, D252).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlAt {
+    /// Where it serves, which its controller reaches.
     pub address: SocketAddr,
     pub vm: [u8; 32],
+    /// Its driver's waker: a loopback socket connected to `wake`, sending to it alone.
+    pub waker: SocketAddr,
+    /// Its driver's wake: a loopback socket connected to `waker`, taking datagrams from it
+    /// alone.
+    pub wake: SocketAddr,
+}
+
+impl ControlAt {
+    /// Every socket the endpoint holds: its served address, its waker's and its wake's.
+    pub fn sockets(&self) -> [SocketAddr; 3] {
+        [self.address, self.waker, self.wake]
+    }
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
@@ -2414,6 +2430,11 @@ impl Started {
                 w.ip(Some(at.address.ip()));
                 w.u16(at.address.port());
                 w.0.extend_from_slice(&at.vm);
+                // Its waker's and its wake's, in version 30 (D252).
+                for held in [at.waker, at.wake] {
+                    w.ip(Some(held.ip()));
+                    w.u16(held.port());
+                }
             }
         }
         // The rate's period, appended in version 17 (D247).
@@ -2466,9 +2487,16 @@ impl Started {
                 tag: 0,
             })?;
             let port = r.u16()?;
+            let vm = r.array::<32>()?;
+            let mut held = |what| -> Result<SocketAddr, WireError> {
+                let ip = r.ip()?.ok_or(WireError::Tag { what, tag: 0 })?;
+                Ok(SocketAddr::new(ip, r.u16()?))
+            };
             Some(ControlAt {
                 address: SocketAddr::new(ip, port),
-                vm: r.array::<32>()?,
+                vm,
+                waker: held("an endpoint's waker")?,
+                wake: held("an endpoint's wake")?,
             })
         } else {
             None
@@ -3956,6 +3984,12 @@ mod tests {
         v28.truncate(v28.len() - 1);
         v28[0] = 28;
         assert_eq!(Request::decode(&v28), Err(WireError::Version(28)));
+        // One of version 29 asks as version 30 does, but its host tells its endpoint's address
+        // alone, where this side reads its waker's and its wake's after it: refused by its
+        // version (D252), so no orchestrator reads a `Started` laid out otherwise.
+        let mut v29 = request().encode().unwrap();
+        v29[0] = 29;
+        assert_eq!(Request::decode(&v29), Err(WireError::Version(29)));
         // One of version 13 reads a vCPU's unread guest time as free words
         // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
         // client ends the run at a lease its host asks: each refused by its version, before
@@ -4693,18 +4727,29 @@ mod tests {
     }
 
     /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
-    /// key, which the controller pins; a run asked for no endpoint tells none.
+    /// key, which the controller pins, and (version 30) its waker's and its wake's addresses,
+    /// each read back by its name; a run asked for no endpoint tells none.
     #[test]
     fn a_started_run_tells_where_its_endpoint_is_and_its_vms_key() {
+        const {
+            assert!(
+                VERSION >= 30,
+                "the channel's version 30 carries the waker and the wake"
+            )
+        };
         for control in [
             None,
             Some(ControlAt {
                 address: "127.0.0.1:40123".parse().unwrap(),
                 vm: [3u8; 32],
+                waker: "127.0.0.1:50001".parse().unwrap(),
+                wake: "127.0.0.1:50002".parse().unwrap(),
             }),
             Some(ControlAt {
                 address: "[::1]:40123".parse().unwrap(),
                 vm: [4u8; 32],
+                waker: "[::1]:50001".parse().unwrap(),
+                wake: "[::1]:50002".parse().unwrap(),
             }),
         ] {
             let started = Started {
@@ -4714,8 +4759,40 @@ mod tests {
                 rate_period: std::time::Duration::from_millis(100),
                 from: StartedFrom::Restored,
             };
-            assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+            let read = Started::decode(&started.encode().unwrap()).unwrap();
+            assert_eq!(read, started);
+            if let Some(at) = read.control {
+                assert_eq!(at.sockets(), [at.address, at.waker, at.wake]);
+                assert!(at.waker.port() == 50001 && at.wake.port() == 50002, "{at:?}");
+            }
         }
+        // Each of the two cut short, or its address's tag none, is refused, never defaulted.
+        let started = Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: Some(ControlAt {
+                address: "127.0.0.1:40123".parse().unwrap(),
+                vm: [3u8; 32],
+                waker: "127.0.0.1:50001".parse().unwrap(),
+                wake: "127.0.0.1:50002".parse().unwrap(),
+            }),
+            rate_period: std::time::Duration::from_millis(100),
+            from: StartedFrom::Restored,
+        };
+        let bytes = started.encode().unwrap();
+        // The wake's address (a tag, four octets and a port), then the period (8) and how it
+        // started (1), last.
+        let wake = bytes.len() - 9 - (1 + 4 + 2);
+        let waker = wake - (1 + 4 + 2);
+        assert_eq!(bytes[waker], 4);
+        assert_eq!(bytes[waker + 1..waker + 5], [127, 0, 0, 1]);
+        assert_eq!(bytes[wake + 5..wake + 7], 50002u16.to_be_bytes());
+        for (at, what) in [(waker, "an endpoint's waker"), (wake, "an endpoint's wake")] {
+            let mut none = bytes.clone();
+            none[at] = 0;
+            assert_eq!(Started::decode(&none), Err(WireError::Tag { what, tag: 0 }));
+        }
+        assert!(Started::decode(&bytes[..wake + 3]).is_err());
     }
 
     /// D232 through D231 (D234's `gpus=`): the GPUs a run names cross the image channel in

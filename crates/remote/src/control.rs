@@ -46,6 +46,7 @@ pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Granted, Hangup, Input, Link, Linked, Log,
     Logged, McpConnection, Member, MemberControl, MemberEnd, MemberSteering, Output, PendingExec, PendingLog,
     PendingMcp, PendingMember, PendingSocket, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
+    Wake,
 };
 pub use unix::Admission as SocketAdmission;
 
@@ -356,7 +357,13 @@ impl Drop for Revoke {
 /// own, and keep its [`Revoke`].
 pub struct Endpoint {
     driver: Driver<Lanes>,
+    /// Where it serves.
     pub address: SocketAddr,
+    /// Its driver's waker and wake, the other two sockets it holds, on loopback and connected
+    /// to each other ([`Driver::wake_addr`], [`Sender::waker_addr`]): with `address`, every
+    /// socket its run holds for it, which a host's UDP table (Windows' shows no peer) lists.
+    pub waker: SocketAddr,
+    pub wake: SocketAddr,
     /// The SHA-256 of the microVM's key, which its controller pins.
     pub fingerprint: Fingerprint,
 }
@@ -365,6 +372,8 @@ impl std::fmt::Debug for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Endpoint")
             .field("address", &self.address)
+            .field("waker", &self.waker)
+            .field("wake", &self.wake)
             .field("fingerprint", &self.fingerprint)
             .finish()
     }
@@ -455,6 +464,8 @@ impl Endpoint {
             },
         )?;
         let address = driver.local()?;
+        let waker = sender.waker_addr()?;
+        let wake = driver.wake_addr()?;
         let lanes = driver.handler_mut();
         lanes.execs.wake = Some(sender.try_clone()?);
         lanes.sockets.wake = Some(sender.try_clone()?);
@@ -476,6 +487,8 @@ impl Endpoint {
             Endpoint {
                 driver,
                 address,
+                waker,
+                wake,
                 fingerprint: vm.fingerprint(),
             },
             Served {

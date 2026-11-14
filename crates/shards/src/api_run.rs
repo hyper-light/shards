@@ -3942,10 +3942,7 @@ mod hosted {
             let started = wire::Started {
                 members: plan.members.clone(),
                 published,
-                control: control.as_ref().map(|(endpoint, _)| wire::ControlAt {
-                    address: endpoint.address,
-                    vm: endpoint.fingerprint,
-                }),
+                control: control.as_ref().map(|(endpoint, _)| control_at(endpoint)),
                 // The period its VM's governor holds a rate over: this build's hold's, which
                 // the VM process it carries holds by (D36, D247).
                 rate_period: shards_vmm::vm::hold_period(),
@@ -4180,6 +4177,17 @@ mod hosted {
             },
         )
         .map_err(|e| format!("its agent-control endpoint: {e}"))
+    }
+
+    /// What the run's orchestrator is told of its endpoint (D252): where it serves, its
+    /// microVM's key, and the two other sockets it holds, its waker and its wake.
+    pub(super) fn control_at(endpoint: &shards_remote::control::Endpoint) -> wire::ControlAt {
+        wire::ControlAt {
+            address: endpoint.address,
+            vm: endpoint.fingerprint,
+            waker: endpoint.waker,
+            wake: endpoint.wake,
+        }
     }
 
     /// Opens a socket lane (D251) through the run's VM (`LANE_OPEN`): its connection, as the VM
@@ -7816,6 +7824,56 @@ mod tests {
         assert!(served.execs.is_some() && served.members.is_some());
         let (second, _) = hosted::bind_control(&ask, execs).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
+    }
+
+    /// D252, version 30 (Hex's ask): what the orchestrator reads of a run's endpoint names
+    /// every UDP socket it holds, as the host's sockets hold them. Do: bind a real endpoint as
+    /// a run does, tell it through `Started` and read it back as the orchestrator does. Expect:
+    /// its served address, its waker's and its wake's, each the endpoint's own, three distinct
+    /// loopback addresses that the host refuses to bind again while the endpoint lives and
+    /// gives back once it and every handle of it are gone.
+    #[test]
+    fn the_orchestrator_is_told_every_socket_its_runs_endpoint_holds() {
+        let ask = wire::ControlAsk {
+            controller: [7; 32],
+            sockets: Some(wire::SocketGrant {
+                dir: "/run/hex/channel".into(),
+                lanes: 2,
+                window: 4096,
+            }),
+        };
+        let (endpoint, served) = hosted::bind_control(&ask, shards_api::control::exec_admissions()).unwrap();
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: Some(hosted::control_at(&endpoint)),
+            rate_period: Duration::from_millis(100),
+            from: wire::StartedFrom::Booted,
+        };
+        let told = wire::Started::decode(&started.encode().unwrap())
+            .unwrap()
+            .control
+            .unwrap();
+        assert_eq!(told.address, endpoint.address);
+        assert_eq!(told.vm, endpoint.fingerprint);
+        assert_eq!((told.waker, told.wake), (endpoint.waker, endpoint.wake));
+        let sockets = told.sockets();
+        assert!(sockets.iter().all(|a| a.ip().is_loopback()), "{sockets:?}");
+        assert!(
+            sockets[0] != sockets[1] && sockets[1] != sockets[2] && sockets[0] != sockets[2],
+            "{sockets:?}"
+        );
+        for addr in sockets {
+            let again = std::net::UdpSocket::bind(addr);
+            assert!(
+                matches!(&again, Err(e) if e.kind() == std::io::ErrorKind::AddrInUse),
+                "{addr} is not the endpoint's: {again:?}"
+            );
+        }
+        drop((endpoint, served));
+        for addr in sockets {
+            std::net::UdpSocket::bind(addr).unwrap_or_else(|e| panic!("{addr} still held: {e}"));
+        }
     }
 
     /// D232 through D231, what a run naming GPUs asks (2d60abb24 asked none, so its guest had

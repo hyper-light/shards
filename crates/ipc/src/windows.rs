@@ -46,8 +46,9 @@ use crate::signal::SIGKILL;
 
 use windows_sys::Win32::Foundation::{
     DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND,
-    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_PATH_NOT_FOUND, GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT,
-    INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION,
+    GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, LocalFree, SetHandleInformation,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE,
@@ -783,12 +784,94 @@ pub fn sweep(records: &Path) {
         let Ok(held) = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path) else {
             continue;
         };
-        let profile = wide(&name);
-        // SAFETY: a NUL-terminated name. A profile already gone is no error of ours.
-        unsafe { DeleteAppContainerProfile(profile.as_ptr()) };
+        // A profile already gone is no error of ours.
+        let _ = delete_profile(&name);
         drop(held);
         let _ = std::fs::remove_file(&path);
     }
+}
+
+/// What [`release`] did with the profiles one process made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Released {
+    /// Each profile it had recorded deleted, and its record: how many. None where it recorded
+    /// none in these records (another cache's, or none made) or a spawner's [`sweep`] deleted
+    /// them first.
+    Deleted(usize),
+    /// A record of its is held, so nothing was deleted: it lives, a process given its pid
+    /// since holds one of its own, or a spawner sweeping holds it this moment.
+    Held,
+}
+
+/// Deletes the profiles process `maker` made, recorded in `records`, now that it has ended:
+/// what the next spawner's [`sweep`] would, for this maker alone, so that a VM its owner ended
+/// (its job killed, its `shards` with it) leaves no profile for as long as no other starts.
+/// Each record is opened as `sweep` opens one, shared with none, and all are held while their
+/// profiles go; a profile whose deletion fails keeps its record, for a later sweep.
+pub fn release(records: &Path, maker: u32) -> io::Result<Released> {
+    let entries = match std::fs::read_dir(records) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Released::Deleted(0)),
+        Err(e) => return Err(e),
+    };
+    let mut taken = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if made_by(&name) != Some(maker) {
+            continue;
+        }
+        let path = entry.path();
+        match std::fs::OpenOptions::new().read(true).share_mode(0).open(&path) {
+            Ok(file) => taken.push((name, path, file)),
+            Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => {
+                return Ok(Released::Held);
+            }
+            // Swept between the listing and the open.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let deleted = taken.len();
+    for (name, path, file) in taken {
+        delete_profile(&name)?;
+        drop(file);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(Released::Deleted(deleted))
+}
+
+/// The process that made the profile named `name`, `shards.<role>.<pid>.<n>`
+/// ([`AppContainer::new`]); None for any other name.
+fn made_by(name: &OsStr) -> Option<u32> {
+    let mut parts = name.to_str()?.split('.');
+    match (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) {
+        (Some("shards"), Some(_role), Some(pid), Some(n), None) if n.parse::<u64>().is_ok() => {
+            pid.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+/// Deletes the profile named `name`; one that is not there is not an error.
+fn delete_profile(name: &OsStr) -> io::Result<()> {
+    let profile = wide(name);
+    // SAFETY: a NUL-terminated name.
+    let hr = unsafe { DeleteAppContainerProfile(profile.as_ptr()) };
+    let gone = [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_NOT_FOUND].map(hresult);
+    if hr < 0 && !gone.contains(&hr) {
+        return Err(io::Error::from_raw_os_error(hr));
+    }
+    Ok(())
 }
 
 /// Whether this process runs in an AppContainer (TokenIsAppContainer): a VM process
@@ -3238,6 +3321,115 @@ mod tests {
     #[test]
     fn this_process_is_in_no_app_container() {
         assert!(!in_app_container());
+    }
+
+    /// CreateAppContainerProfile of `name`: its HRESULT, the SID it made freed.
+    fn make_profile(name: &str) -> i32 {
+        let name = wide(OsStr::new(name));
+        let mut sid: PSID = std::ptr::null_mut();
+        // SAFETY: NUL-terminated names of ours; the SID made is freed as it drops.
+        let hr = unsafe {
+            CreateAppContainerProfile(
+                name.as_ptr(),
+                name.as_ptr(),
+                name.as_ptr(),
+                std::ptr::null(),
+                0,
+                &raw mut sid,
+            )
+        };
+        if hr >= 0 {
+            drop(Sid(sid));
+        }
+        hr
+    }
+
+    /// The folder Windows keeps a profile's data in, `%LOCALAPPDATA%\Packages\<name>`.
+    fn profile_folder(name: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
+            .join("Packages")
+            .join(name)
+    }
+
+    /// Do: leave what a killed maker leaves (D141): two profiles of one gone pid with their
+    /// records, unheld, one of them a record whose profile has gone already; another gone
+    /// pid's profile and record; and a third pid's record held open. Expect `release` of the
+    /// first pid to delete its profiles (each name makes a new profile again, where it said
+    /// ERROR_ALREADY_EXISTS, and its folder is gone) and its records, and to leave the
+    /// other's; of the third, `Held`, nothing deleted; of a pid with none, nothing.
+    #[test]
+    fn release_deletes_one_ended_makers_profiles_and_records() {
+        let dir = shards_testdir::TempDir::new("release").unwrap();
+        let records = dir.path();
+        // Odd: no process has the pid (Windows' are multiples of four), and no other test
+        // process's names are these.
+        let me = std::process::id();
+        let (gone, other, live) = (me + 1, me + 3, me + 5);
+        let name = |pid: u32, n: u32| format!("shards.test.{pid}.{n}");
+        let (ours, already, others, held) = (name(gone, 0), name(gone, 1), name(other, 0), name(live, 0));
+        for made in [&ours, &others, &held] {
+            assert_eq!(make_profile(made), 0, "{made}");
+            assert!(profile_folder(made).is_dir(), "{made}");
+        }
+        for recorded in [&ours, &already, &others, &held] {
+            std::fs::write(records.join(recorded), b"").unwrap();
+        }
+        let holding = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(records.join(&held))
+            .unwrap();
+
+        assert_eq!(release(records, gone).unwrap(), Released::Deleted(2));
+        assert_eq!(
+            make_profile(&ours),
+            0,
+            "its profile is gone: its name makes one anew"
+        );
+        assert!(delete_profile(OsStr::new(&ours)).is_ok());
+        assert!(!profile_folder(&ours).exists());
+        assert!(!records.join(&ours).exists() && !records.join(&already).exists());
+        assert_eq!(
+            make_profile(&others),
+            hresult(ERROR_ALREADY_EXISTS),
+            "another's is left"
+        );
+        assert!(records.join(&others).exists());
+
+        assert_eq!(release(records, live).unwrap(), Released::Held);
+        assert_eq!(
+            make_profile(&held),
+            hresult(ERROR_ALREADY_EXISTS),
+            "a held one is left"
+        );
+        assert!(records.join(&held).exists());
+        drop(holding);
+        assert_eq!(release(records, live).unwrap(), Released::Deleted(1));
+        assert_eq!(release(records, me + 7).unwrap(), Released::Deleted(0));
+        assert_eq!(
+            release(&records.join("none"), gone).unwrap(),
+            Released::Deleted(0)
+        );
+
+        assert_eq!(release(records, other).unwrap(), Released::Deleted(1));
+        assert!(std::fs::read_dir(records).unwrap().next().is_none());
+    }
+
+    /// Only a profile's name as [`AppContainer::new`] makes it names its maker.
+    #[test]
+    fn a_profiles_maker_is_read_from_its_name_alone() {
+        assert_eq!(made_by(OsStr::new("shards.vm.1234.0")), Some(1234));
+        assert_eq!(made_by(OsStr::new("shards.net.8.17")), Some(8));
+        for not in [
+            "shards.vm.1234",
+            "shards.vm.x.0",
+            "shards.vm.1.0.2",
+            "other.vm.1.0",
+            "shards.vm.1.y",
+        ] {
+            assert_eq!(made_by(OsStr::new(not)), None, "{not}");
+        }
     }
 
     /// Arguments are quoted as CommandLineToArgvW reads them back: plain ones alone; ones
