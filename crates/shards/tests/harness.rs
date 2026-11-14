@@ -19,6 +19,13 @@ const HEARTBEAT: &str = "shards daemon 70625: container 212eb2365f9391311256a9c2
 /// before D215's judge (it says once now, as a start first outlasts the slowest seen).
 const STARTING: &str = "shards daemon 7268: VM 7282: not ready in 10s: its CPU time 3265 ms (+3265 ms in 10s), 2101 page faults (+2101)\n";
 
+/// Names process `pid` `home`'s daemon, as a daemon names itself (`shards_ipc::Named`,
+/// D185): its ID and its start.
+fn name_daemon(home: &std::path::Path, pid: u32) {
+    let start = shards_ipc::started(pid).unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{pid} {start}\n")).unwrap();
+}
+
 fn say(home: &TempDir, what: &str) {
     std::fs::OpenOptions::new()
         .create(true)
@@ -452,7 +459,7 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
             .unwrap()
     };
     let (mut daemon, mut client) = (spawn(), spawn());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     let run = home.join("containers").join("graced");
     std::fs::create_dir_all(&run).unwrap();
     let grace = slowest.saturating_mul(20);
@@ -506,7 +513,7 @@ fn a_patient_wait_goes_on_while_its_party_works() {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+        name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -1167,7 +1174,7 @@ fn an_answer_already_there_teaches_nothing() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     one_state(&home).done();
     let there = one_state(&home).seen();
     let waited = Duration::from_millis(50);
@@ -1262,6 +1269,64 @@ fn cold_following(
     )
 }
 
+/// A guest's stream (`common::Following`) reads before each look, never judging an answer
+/// that has come missing: red at cf13e49e6 on KVM (adacachy2), where a look's `ps` took 16
+/// to 25 ms against a learned W* of 8 ms, `pause` left no time to read between looks, and
+/// vsock.rs' bad handshake, whose close came at once, was refused 128 ms later unread, its
+/// VM process idle waiting on the host. Do: a stream with nothing at its first read and its
+/// answer, one byte and its end, at every read after; its kind taught a W* of a nanosecond,
+/// its party none (no VM process of this test's own). Expect: the byte and the end read.
+#[test]
+fn a_streams_answer_that_has_come_is_read_before_a_look_judges_it() {
+    let stream = Arriving::default();
+    let mut read = Vec::new();
+    let got = std::io::Read::read_to_end(&mut quick_following(&stream), &mut read);
+    assert!(got.is_ok(), "an answer that had come refused: {got:?}");
+    assert_eq!(read, b"x");
+}
+
+/// A stream whose first read finds nothing, and whose reads after find `x`, then its end.
+#[derive(Default)]
+struct Arriving {
+    reads: std::cell::Cell<u32>,
+}
+
+impl common::Timed for Arriving {
+    fn set_read_timeout(&self, _: Option<Duration>) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Read for &Arriving {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        match (n, buf.first_mut()) {
+            (0, _) => Err(std::io::ErrorKind::WouldBlock.into()),
+            (1, Some(b)) => {
+                *b = b'x';
+                Ok(1)
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+/// [`common::Following::of`] at its caller's site, that kind made cold and then taught an
+/// answer a nanosecond long, so that every look past its first is due.
+#[track_caller]
+fn quick_following(stream: &Arriving) -> common::Following<'_, Arriving> {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
+    common::WaitKind::awaiting(site, common::STREAM)
+        .record()
+        .teach(Duration::from_nanos(1), Duration::ZERO);
+    common::Following::of(stream, None)
+}
+
 /// A test's own VM processes (`Party::own`: `Patience::own`, `Patience::of`, a guest's
 /// stream) are those its starts named (`common::OwnVm`), by their IDs, whatever their names:
 /// red at a932bc894 on adacachy2, where they were found by the name `shards-vm` and a Linux
@@ -1347,7 +1412,7 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             .spawn()
             .unwrap(),
     );
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.0.id())).unwrap();
+    name_daemon(&home, daemon.0.id());
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let taught = Duration::from_millis(20);
@@ -1546,7 +1611,7 @@ fn an_unreaped_daemon_is_gone() {
         )
     };
     assert_eq!(exited, 0, "{}", std::io::Error::last_os_error());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", zombie.id())).unwrap();
+    name_daemon(&home, zombie.id());
     let mut patience = Patience::of(&home);
     let began = Instant::now();
     let ended = loop {
