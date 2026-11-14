@@ -86,6 +86,9 @@ struct Warm {
     daemon: Stream,
     /// The VM process's ID, once it is ready: on Windows the child's child.
     vm: Option<u32>,
+    /// One of this test's own VM processes (`common::OwnVm`), the child, for its waits'
+    /// party.
+    _own: common::OwnVm,
     /// On macOS, what grants the VM its files, as the daemon does.
     #[cfg(target_os = "macos")]
     _broker: Broker,
@@ -225,6 +228,7 @@ impl Warm {
         drop(theirs);
         let vm = Some(child.id());
         Warm {
+            _own: common::OwnVm::started(child.id()),
             child,
             daemon,
             vm,
@@ -270,6 +274,7 @@ impl Warm {
         };
         drop(link);
         Warm {
+            _own: common::OwnVm::started(child.id()),
             child,
             daemon,
             vm: None,
