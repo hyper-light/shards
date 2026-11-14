@@ -512,7 +512,7 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.rate(rate, patience)
     }
 
-    fn rate_period(&self) -> Duration {
+    fn rate_period(&self) -> Option<Duration> {
         self.guest.rate_period()
     }
 
@@ -710,8 +710,8 @@ mod tests {
         ) -> Result<Option<std::num::NonZeroU64>, ImageRefusal> {
             none()
         }
-        fn rate_period(&self) -> Duration {
-            Duration::from_millis(100)
+        fn rate_period(&self) -> Option<Duration> {
+            None
         }
         fn started_from(&self) -> wire::StartedFrom {
             wire::StartedFrom::Warm

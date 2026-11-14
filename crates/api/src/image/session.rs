@@ -98,7 +98,10 @@ struct State {
     rooms: Awaited<Option<u64>>,
     /// Each rate asked and still awaited, by its ask's id, and its answer once it came
     /// (D247), as rooms.
-    rates: Awaited<Option<NonZeroU64>>,
+    rates: Awaited<wire::Rated>,
+    /// The period its VM's governor holds a rate over, as its last rate's answer said it
+    /// (D191): none until a rate has been answered.
+    rate_period: Option<Duration>,
     /// Each resize asked and still awaited, by its ask's id, and its answer once it came
     /// (D244), held as [`rooms`](Self::rooms) is.
     resizes: HashMap<u32, Option<Result<(), String>>>,
@@ -408,7 +411,7 @@ impl Shared {
     }
 
     /// Tells the run `rate` (D247) and waits at most `patience` for what its VM holds its
-    /// vCPUs to.
+    /// vCPUs to, keeping the period it holds them over (D191).
     fn rate(&self, rate: Option<NonZeroU64>, patience: Duration) -> Result<Option<NonZeroU64>, ImageRefusal> {
         let asked = Asked {
             kind: wire::to_host::RATE,
@@ -417,7 +420,9 @@ impl Shared {
             awaited: |s| &mut s.rates,
             refused: ImageRefusal::Rate,
         };
-        self.ask(asked, |id| wire::RateAsk { id, rate }.encode(), patience)
+        let rated = self.ask(asked, |id| wire::RateAsk { id, rate }.encode(), patience)?;
+        lock(&self.state).rate_period = Some(rated.period);
+        Ok(rated.milli)
     }
 
     /// Sends `asked`'s ask, numbered by the session, and waits at most `patience` for its
@@ -712,9 +717,6 @@ pub(super) struct Session {
     nesting: bool,
     /// Each member whose spec asked for a terminal of its own (D244), by its index.
     terminals: Vec<u32>,
-    /// The period its VM's governor holds a rate over, as its host said it as the run
-    /// started (D247).
-    rate_period: Duration,
     /// How its microVM started, as its host said it (D253).
     started_from: wire::StartedFrom,
     /// What its GPU report is read against, where its request asked for one (D233).
@@ -1029,7 +1031,6 @@ impl Begun {
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
-            rate_period: started.rate_period,
             started_from: started.from,
             report: request.gpu_report.map(|scope| ReportAsked {
                 scope,
@@ -2135,8 +2136,8 @@ impl ImageGuest for Session {
         self.shared.rate(rate, patience)
     }
 
-    fn rate_period(&self) -> Duration {
-        self.rate_period
+    fn rate_period(&self) -> Option<Duration> {
+        lock(&self.shared.state).rate_period
     }
 
     fn started_from(&self) -> wire::StartedFrom {
@@ -2659,7 +2660,6 @@ mod tests {
             members: vec![info(0, "other"), info(1, "codex")],
             published: Vec::new(),
             control: None,
-            rate_period: Duration::from_millis(100),
             from: wire::StartedFrom::Booted,
         }
         .encode()
@@ -2753,8 +2753,20 @@ mod tests {
         lock(&s.to_host).take();
     }
 
+    /// Run in a test process of its own ([`alone`]): the held writer refuses bytes once no
+    /// process holds the input's reader, and a child another test's thread starts meanwhile
+    /// would hold it. On macOS std makes a socketpair and only then marks its ends
+    /// close-on-exec (no SOCK_CLOEXEC there), and its spawn closes nothing it was not told to
+    /// (no POSIX_SPAWN_CLOEXEC_DEFAULT), so a std child started in that moment holds the
+    /// reader for its life; on Linux a child std forks holds it until its exec. Beside the
+    /// crate's other tests on adas-mac-studio-3 (7 spinners beside) the write was taken in 2
+    /// of 50 runs, and lsof, looking just after, found the reader held nowhere: its holder,
+    /// a short-lived child, had gone.
     #[test]
     fn an_ended_members_idle_input_releases_its_feeder() {
+        if alone("image::session::tests::an_ended_members_idle_input_releases_its_feeder") {
+            return;
+        }
         struct Entered<R> {
             reader: R,
             entered: std::sync::mpsc::Sender<()>,
@@ -2807,9 +2819,29 @@ mod tests {
         );
     }
 
-    /// The variable under which the leak check runs, in a test process of its own.
-    #[cfg(any(target_os = "macos", windows))]
+    /// The variable under which a test runs in a test process of its own ([`alone`]).
     const ALONE: &str = "SHARDS_API_SPAWN_ALONE";
+
+    /// Whether test `name` ran in a test process of its own, this one its parent, which
+    /// started it and found it passed: false in that process, which runs it. No other test's
+    /// thread starts a child there that holds a descriptor it makes.
+    fn alone(name: &str) -> bool {
+        if std::env::var_os(ALONE).is_some() {
+            return false;
+        }
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--test-threads=1"])
+            .env(ALONE, "1")
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        true
+    }
 
     /// A program that reads its stdin to its end, saying each line with its argument in it, by
     /// its path: findstr on Windows, grep on macOS.
@@ -2893,34 +2925,19 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_run_host_holds_no_end_it_was_not_given() {
-        if std::env::var_os(ALONE).is_some() {
-            let (read, write) = io::pipe().unwrap();
-            inheritable(&write);
-            let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
-            drop(write);
-            let gone = writers_gone(&read);
-            drop(host.to_host);
-            host.process.wait().unwrap();
-            assert!(
-                gone,
-                "the run host holds the write end of a pipe it was never given"
-            );
+        if alone("image::session::tests::a_run_host_holds_no_end_it_was_not_given") {
             return;
         }
-        let alone = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "image::session::tests::a_run_host_holds_no_end_it_was_not_given",
-                "--test-threads=1",
-            ])
-            .env(ALONE, "1")
-            .output()
-            .unwrap();
+        let (read, write) = io::pipe().unwrap();
+        inheritable(&write);
+        let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
+        drop(write);
+        let gone = writers_gone(&read);
+        drop(host.to_host);
+        host.process.wait().unwrap();
         assert!(
-            alone.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&alone.stdout),
-            String::from_utf8_lossy(&alone.stderr)
+            gone,
+            "the run host holds the write end of a pipe it was never given"
         );
     }
 
@@ -3334,15 +3351,19 @@ mod tests {
         let s = shared();
         lock(&s.state).rates.insert(4, None);
         let rated = |id, result| wire::RateAnswer { id, result }.encode().unwrap();
+        let held = |milli| wire::Rated {
+            milli: NonZeroU64::new(milli),
+            period: Duration::from_micros(31_250),
+        };
         assert_eq!(
-            take(&s, wire::to_client::RATED, &rated(4, Ok(NonZeroU64::new(1500)))),
+            take(&s, wire::to_client::RATED, &rated(4, Ok(held(1500)))),
             Ok(false)
         );
+        assert_eq!(lock(&s.state).rates.get(&4), Some(&Some(Ok(held(1500)))));
         assert_eq!(
-            lock(&s.state).rates.get(&4),
-            Some(&Some(Ok(NonZeroU64::new(1500))))
+            take(&s, wire::to_client::RATED, &rated(5, Ok(held(0)))),
+            Ok(false)
         );
-        assert_eq!(take(&s, wire::to_client::RATED, &rated(5, Ok(None))), Ok(false));
         assert!(
             !lock(&s.state).rates.contains_key(&5),
             "an answer no ask awaits is dropped"
@@ -3740,7 +3761,6 @@ mod tests {
                     waker: "127.0.0.1:4434".parse().unwrap(),
                     wake: "127.0.0.1:4435".parse().unwrap(),
                 }),
-                rate_period: Duration::from_millis(100),
                 from: wire::StartedFrom::Booted,
             };
             says(&mut h.host, wire::to_client::STARTED, &started.encode().unwrap());
@@ -4079,7 +4099,6 @@ mod tests {
             members: Vec::new(),
             published: Vec::new(),
             control: None,
-            rate_period: Duration::from_millis(100),
             from: wire::StartedFrom::Booted,
         }
         .encode()
@@ -4460,7 +4479,6 @@ mod tests {
             members: Vec::new(),
             published: Vec::new(),
             control: None,
-            rate_period: Duration::from_millis(100),
             from: wire::StartedFrom::Booted,
         }
         .encode()

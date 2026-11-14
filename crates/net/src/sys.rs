@@ -1,6 +1,6 @@
 //! What the network process asks of its host's OS, behind one API: a socket's name as the
 //! poller takes it, a TCP connect that does not wait, a Unix connection to a build's proxy,
-//! entropy, a socket's buffers, and a doorbell drained. POSIX on Unix; Winsock and BCrypt on
+//! entropy, a socket's buffers, and a doorbell drained. POSIX on Unix; Winsock and ProcessPrng on
 //! Windows (D142), where a doorbell is an event (shards-netring) and Unix sockets are
 //! shards-afunix's.
 
@@ -341,27 +341,10 @@ pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
         }
         Ok(())
     }
-    // The system's preferred generator (BCryptGenRandom), as std's own seeds come.
+    // The system's generator, ProcessPrng (shards-ipc's, D195), as std's own seeds come.
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
-        let len = u32::try_from(buf.len()).map_err(|_| io::Error::other("too many random bytes at once"))?;
-        // SAFETY: a buffer of ours, of its length.
-        let status = unsafe {
-            BCryptGenRandom(
-                std::ptr::null_mut(),
-                buf.as_mut_ptr(),
-                len,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        };
-        if status < 0 {
-            return Err(io::Error::other(format!(
-                "BCryptGenRandom: NTSTATUS {:#010x}",
-                status as u32
-            )));
-        }
-        Ok(())
+        Ok(shards_ipc::fill_random(buf)?)
     }
 }
 

@@ -878,9 +878,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // what it holds them to, or why not.
             kind::RATE if matches!(from, From::Daemon(_)) => {
                 if let Some((number, milli)) = rate_asked(&message.payload) {
-                    let answer = match crate::vm_run::hold_rate(milli) {
-                        Ok(held) => {
-                            let held = held.map(|m| m.to_string()).unwrap_or_default();
+                    // Its line a managed machine's (`shards_abi::rate`): what it holds them to
+                    // and the period it derived for them (D191).
+                    let answer = match crate::vm_run::rate_answer(|| crate::vm_run::hold_rate(milli)) {
+                        Ok((milli, period_ns)) => {
+                            let held = shards_abi::rate::answer(&shards_abi::rate::Answer::Held {
+                                milli,
+                                period_ns,
+                            });
                             [&number[..], &[0], held.as_bytes()].concat()
                         }
                         Err(e) => [&number[..], &[1], e.as_bytes()].concat(),

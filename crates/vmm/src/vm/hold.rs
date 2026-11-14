@@ -14,20 +14,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use super::HOLD_PERIOD as PERIOD;
-use super::MILLI_PER_CPU;
 use super::group::GroupCpu;
+use super::{MILLI_PER_CPU, Rated};
 use crate::platform::{ThreadClock, granule};
 use crate::sync::{lock, wait, wait_timeout};
 
 /// The least it waits between reads, however little of the share is left: as closely as
-/// CFS bandwidth control holds a cgroup's threads to its quota, 1 ms. CFS takes no quota
-/// or period below it (kernel/sched/core.c l. 10054, `min_bw_quota_period_us`), and leaves
-/// each CPU that much of its runtime past the quota (kernel/sched/fair.c l. 7179,
-/// `min_cfs_rq_runtime`; Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186; Linux
-/// 1590cf03), as vCPUs read no sooner may each run that far past their share, which comes
-/// off the next period's.
-const SOONEST: Duration = Duration::from_millis(1);
+/// CFS bandwidth control holds a cgroup's threads to its quota (`granule::LEAST_WAIT`), as
+/// vCPUs read no sooner may each run that far past their share, which comes off the next
+/// period's.
+const SOONEST: Duration = granule::LEAST_WAIT;
 
 #[derive(Debug)]
 pub(super) struct Hold {
@@ -52,6 +48,8 @@ struct State {
     milli: u64,
     /// Bumped by each new limit, which begins a period of its own.
     generation: u64,
+    /// The period the limit is held over, derived as it was set (`granule::period`).
+    period: Duration,
     /// Held by its share until its period ends, as the governor said as it held them: a
     /// vCPU goes on at that end by itself, however late the governor wakes to let it go.
     held: Option<Instant>,
@@ -86,22 +84,48 @@ impl Hold {
     }
 
     /// The vCPUs may use `milli` milli-CPU of the host's time together, from now; 0, or as
-    /// much as every vCPU's whole CPU, lets them be. Returns what it holds them to: none
-    /// where it lets them be.
-    pub(super) fn set(&self, milli: u64) -> Option<NonZeroU64> {
+    /// much as every vCPU's whole CPU, lets them be. Returns what it holds them to and over
+    /// what period, derived from g as this process knows it now: its wake and its thread
+    /// clock's step measured the first time, on the calling thread, one shortest wait and a
+    /// spin of two clock steps at most (`granule::measure`). Refused, the hold as it was, where the period outgrows a
+    /// u64 of ns.
+    pub(super) fn set(&self, milli: u64) -> Result<Rated, granule::Outgrown> {
+        let clock = granule::measure();
+        let g = granule::g();
+        let rated = self.set_at(milli, g)?;
+        crate::debug!(
+            "the hold: {milli} milli-CPU, held to {:?} over {:?}, from g {g:?} ({:?}; its clock: {clock:?})",
+            rated.milli,
+            rated.period,
+            granule::step()
+        );
+        Ok(rated)
+    }
+
+    /// [`set`](Self::set), at a g of `g`.
+    fn set_at(&self, milli: u64, g: Duration) -> Result<Rated, granule::Outgrown> {
+        let vcpus = self.vcpus();
+        let held = self.holds(milli);
+        let whole = NonZeroU64::new(vcpus.saturating_mul(MILLI_PER_CPU)).unwrap_or(NonZeroU64::MIN);
+        let period = granule::period(vcpus, held.unwrap_or(whole), g)?;
         let mut s = lock(&self.state);
         s.milli = milli;
+        s.period = period;
         s.generation = s.generation.wrapping_add(1);
         drop(s);
         self.changed.notify_all();
-        self.holds(milli)
+        Ok(Rated { milli: held, period })
+    }
+
+    /// How many vCPUs it holds: one at the least.
+    fn vcpus(&self) -> u64 {
+        u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1)
     }
 
     /// What a hold of `milli` holds these vCPUs to: none for 0, or for as much as every
     /// vCPU's whole CPU, which they can use no more of.
     fn holds(&self, milli: u64) -> Option<NonZeroU64> {
-        let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
-        NonZeroU64::new(milli).filter(|m| m.get() < vcpus.saturating_mul(MILLI_PER_CPU))
+        NonZeroU64::new(milli).filter(|m| m.get() < self.vcpus().saturating_mul(MILLI_PER_CPU))
     }
 
     /// On a vCPU's thread, before it enters its guest: waits while the vCPUs are held,
@@ -254,8 +278,7 @@ impl Hold {
                 None
             }
         };
-        let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
-        let period = u64::try_from(PERIOD.as_nanos()).unwrap_or(u64::MAX);
+        let vcpus = self.vcpus();
         let mut debt = 0u64;
         let mut busy = true;
         // What the period before the last used: none before a machine's first.
@@ -263,7 +286,7 @@ impl Hold {
         let mut start = Instant::now();
         let mut last = None;
         loop {
-            let (milli, generation) = {
+            let (milli, generation, period) = {
                 let mut s = lock(&self.state);
                 // Every vCPU's whole CPU is no hold: they can use no more.
                 let mut held = self.holds(s.milli);
@@ -272,30 +295,27 @@ impl Hold {
                     held = self.holds(s.milli);
                 }
                 match held {
-                    Some(milli) if !s.ended => (milli, s.generation),
+                    Some(milli) if !s.ended => (milli, s.generation, s.period),
                     _ => return,
                 }
             };
             // Periods follow one another on the clock, as late as the governor wakes; a
             // new limit, or a governor fallen a period behind, begins them again now.
             let now = Instant::now();
-            if last != Some(generation) {
-                self.say_derived(vcpus, milli);
-            }
-            if last != Some(generation) || now.saturating_duration_since(start) >= PERIOD {
+            if last != Some(generation) || now.saturating_duration_since(start) >= period {
                 start = now;
             }
             last = Some(generation);
             let base = self.used();
-            let share = share_of(milli, period);
+            let share = share_of(milli, u64::try_from(period.as_nanos()).unwrap_or(u64::MAX));
             let allowed = share.saturating_sub(debt);
             let mut holding = false;
             let mut changed = false;
-            while let Some(left) = PERIOD.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
+            while let Some(left) = period.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
                 let used = self.used().saturating_sub(base);
                 if !holding && used >= allowed {
                     holding = true;
-                    self.set_held(Some(start + PERIOD));
+                    self.set_held(Some(start + period));
                     kick();
                 }
                 let next = if holding || !busy {
@@ -334,29 +354,8 @@ impl Hold {
                     used,
                 )
             };
-            start += PERIOD;
+            start += period;
             self.set_held(None);
-        }
-    }
-
-    /// Says, as a new limit begins, the period D191 derives for it from what this process
-    /// has measured of its governors' step, beside the one in force: what ROOT's measurement
-    /// of the derivation reads (D191, "Its period"). The clock's step is measured the first
-    /// time, on the governor's thread, which spins two of its steps at most.
-    fn say_derived(&self, vcpus: u64, milli: NonZeroU64) {
-        let clock = granule::measure_clock();
-        let step = granule::step();
-        let g = step.g(SOONEST);
-        match (clock, derived_period(vcpus, milli, g)) {
-            (Ok(_), Some(derived)) => crate::debug!(
-                "the hold: {milli} milli-CPU over {PERIOD:?}; derived {derived:?} from g {g:?} ({step:?})"
-            ),
-            (Ok(_), None) => crate::debug!(
-                "the hold: {milli} milli-CPU over {PERIOD:?}; its derived period outgrows a u64 of ns at g {g:?}"
-            ),
-            (Err(granule::Unclocked(why)), _) => crate::debug!(
-                "the hold: {milli} milli-CPU over {PERIOD:?}; no clock step measured ({why}), g {g:?}"
-            ),
         }
     }
 
@@ -370,7 +369,9 @@ impl Hold {
     /// reads): were every vCPU of this machine's to spend it, or, sooner, at that rate,
     /// which its other machines' vCPUs spend too; else once a period, what a quiet machine
     /// gone busy runs past it within that period coming off the group's next ones. With no
-    /// budget written it looks again each period of D191's.
+    /// quota (`cpu.max`'s `max`) it looks again each period of the group's own, as its
+    /// `cpu.max` says it; a budget never written (the daemon writes one before any machine
+    /// maps it, `Running::hold_group`) ends it.
     pub(super) fn govern_group(&self, group: &GroupCpu, kick: &dyn Fn()) {
         let _prioritized = match crate::platform::prioritize_governor_thread() {
             Ok(prioritized) => Some(prioritized),
@@ -379,13 +380,19 @@ impl Hold {
                 None
             }
         };
-        let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
+        let vcpus = self.vcpus();
         let mut last = self.used();
         // The group's last read: when, and how far ahead of its budget's rate it ran.
         let mut seen: Option<(u64, u64)> = None;
         loop {
-            let next = match (group.budget(), crate::platform::monotonic_ns()) {
-                (Some((quota, period)), Ok(now)) => {
+            let Some(budget) = group.budget() else {
+                crate::warn!("the group's governor: its group's CPU budget was never written");
+                self.set_group_held(false);
+                return;
+            };
+            let next = match (budget.quota, crate::platform::monotonic_ns()) {
+                (Some(quota), Ok(now)) => {
+                    let (quota, period) = (quota.get(), budget.period.get());
                     let used = self.used();
                     let ahead = group.charge(now, used.saturating_sub(last), quota, period);
                     last = used;
@@ -420,18 +427,14 @@ impl Hold {
                         }
                     }
                 }
-                (None, _) => {
+                (quota, clock) => {
+                    if let (Some(_), Err(e)) = (quota, clock) {
+                        crate::warn!("the group's governor: the host's clock: {e}");
+                    }
                     self.set_group_held(false);
                     last = self.used();
                     seen = None;
-                    PERIOD
-                }
-                (Some(_), Err(e)) => {
-                    crate::warn!("the group's governor: the host's clock: {e}");
-                    self.set_group_held(false);
-                    last = self.used();
-                    seen = None;
-                    PERIOD
+                    Duration::from_micros(u64::from(budget.period.get()))
                 }
             };
             if self.wait_or_end(next) {
@@ -439,21 +442,6 @@ impl Hold {
             }
         }
     }
-}
-
-/// The period D191 derives for `vcpus` held to `milli` milli-CPU by a governor that resolves
-/// `g` (`platform::granule`): the shortest in which it resolves their share, vcpus × g / share,
-/// the share `milli` over [`MILLI_PER_CPU`] CPUs. None where it outgrows what a `Duration` of
-/// nanoseconds in a u64 holds. Not yet the period in force: `PERIOD` is, until the cost of
-/// the kicks a shorter period makes is measured on each backend and the image API's rate
-/// answer says each rate's period (D191, "Its period").
-pub(super) fn derived_period(vcpus: u64, milli: NonZeroU64, g: Duration) -> Option<Duration> {
-    let ns = g
-        .as_nanos()
-        .checked_mul(u128::from(vcpus))?
-        .checked_mul(u128::from(MILLI_PER_CPU))?
-        .checked_div(u128::from(milli.get()))?;
-    u64::try_from(ns).ok().map(Duration::from_nanos)
 }
 
 /// Whether vCPUs that used `before` and then `used` of a period's CPU time spend `share`
@@ -486,33 +474,6 @@ fn share_of(milli: NonZeroU64, period: u64) -> u64 {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    /// D191's derived period: vcpus × g over the share, the shortest in which the governor
-    /// resolves it. Four vCPUs held under 625 milli-CPU by GetThreadTimes' 15.625 ms ticks
-    /// take past CFS's 100 ms (PM M294); a whole CPU's share of each vCPU's, g; one past what
-    /// a u64 of ns holds, none.
-    #[test]
-    fn a_holds_derived_period_resolves_its_share() {
-        let tick = Duration::from_micros(15_625);
-        let milli = |m| NonZeroU64::new(m).unwrap();
-        assert_eq!(
-            derived_period(4, milli(625), tick),
-            Some(Duration::from_millis(100))
-        );
-        assert_eq!(
-            derived_period(4, milli(500), tick),
-            Some(Duration::from_millis(125))
-        );
-        assert_eq!(derived_period(4, milli(4000), SOONEST), Some(SOONEST));
-        assert_eq!(
-            derived_period(1, milli(250), SOONEST),
-            Some(Duration::from_millis(4))
-        );
-        assert_eq!(
-            derived_period(u64::MAX, milli(1), Duration::from_secs(u64::MAX)),
-            None
-        );
-    }
 
     /// A machine is busy next period where its use grows to its share as its last two
     /// periods foretell: its first, after none, at half the share; one that holds steady
@@ -584,7 +545,7 @@ mod tests {
     /// the most it holds.
     #[test]
     fn a_rates_share_is_its_thousandths_of_the_period() {
-        let period = u64::try_from(PERIOD.as_nanos()).unwrap();
+        let period = 100_000_000;
         let milli = |m| NonZeroU64::new(m).unwrap();
         assert_eq!(share_of(milli(MILLI_PER_CPU), period), period);
         assert_eq!(share_of(milli(3 * MILLI_PER_CPU), period), 3 * period);
@@ -599,15 +560,102 @@ mod tests {
     #[test]
     fn a_hold_holds_a_rate_below_its_vcpus_alone() {
         let hold = Hold::new(2);
-        assert_eq!(hold.set(0), None);
-        assert_eq!(hold.set(1), NonZeroU64::new(1));
-        assert_eq!(hold.set(1500), NonZeroU64::new(1500));
+        let held = |milli| hold.set(milli).unwrap().milli;
+        assert_eq!(held(0), None);
+        assert_eq!(held(1), NonZeroU64::new(1));
+        assert_eq!(held(1500), NonZeroU64::new(1500));
         assert_eq!(
-            hold.set(2 * MILLI_PER_CPU - 1),
+            held(2 * MILLI_PER_CPU - 1),
             NonZeroU64::new(2 * MILLI_PER_CPU - 1)
         );
-        assert_eq!(hold.set(2 * MILLI_PER_CPU), None);
-        assert_eq!(hold.set(u64::MAX), None);
+        assert_eq!(held(2 * MILLI_PER_CPU), None);
+        assert_eq!(held(u64::MAX), None);
+    }
+
+    /// D191's period in force (migrate-09): each limit is held over the period derived from
+    /// g as it is set, vcpus × g over its share, never a fixed one. Four vCPUs at 625
+    /// milli-CPU by GetThreadTimes' 15.625 ms ticks (PM M294) over 100 ms, at 500 over 125;
+    /// let be, over g itself; one whose period outgrows a u64 of ns refused, the hold as it
+    /// was. At this process's g, as it knows it as the limit is set.
+    #[test]
+    fn a_limit_is_held_over_the_period_derived_from_g() {
+        let tick = Duration::from_micros(15_625);
+        let hold = Hold::new(4);
+        let rated = |milli, period| {
+            Ok(Rated {
+                milli: NonZeroU64::new(milli),
+                period,
+            })
+        };
+        assert_eq!(hold.set_at(625, tick), rated(625, Duration::from_millis(100)));
+        assert_eq!(lock(&hold.state).period, Duration::from_millis(100));
+        assert_eq!(hold.set_at(500, tick), rated(500, Duration::from_millis(125)));
+        let fine = Duration::from_micros(1_050);
+        assert_eq!(hold.set_at(2000, fine), rated(2000, Duration::from_micros(2_100)));
+        assert_eq!(hold.set_at(0, fine), rated(0, fine));
+        assert_eq!(hold.set_at(4 * MILLI_PER_CPU, fine), rated(0, fine));
+        let generation = lock(&hold.state).generation;
+        assert!(hold.set_at(1, Duration::from_secs(u64::MAX)).is_err());
+        let s = lock(&hold.state);
+        assert_eq!(
+            (s.generation, s.milli, s.period),
+            (generation, 4 * MILLI_PER_CPU, fine)
+        );
+        drop(s);
+        // Other tests' governors teach the process's g as this runs: it only falls.
+        let before = granule::g();
+        let period = hold.set(MILLI_PER_CPU).unwrap().period;
+        let after = granule::g();
+        assert!(
+            (4 * after..=4 * before).contains(&period),
+            "{period:?}, g {before:?} then {after:?}"
+        );
+        assert!(after >= SOONEST);
+    }
+
+    /// The governor holds each period over the limit's own period: a thread held to half a
+    /// CPU at a g of 5 ms, a period of 10, is held to that period's end, never to a period
+    /// of another's.
+    #[test]
+    fn the_governor_holds_over_the_limits_period() {
+        /// Lets the thread go however the test ends.
+        struct Ends<'a>(&'a Hold, &'a AtomicBool);
+        impl Drop for Ends<'_> {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::Relaxed);
+                self.0.end();
+            }
+        }
+        let hold = Hold::new(1);
+        let period = Duration::from_millis(10);
+        assert_eq!(hold.set_at(500, Duration::from_millis(5)).unwrap().period, period);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let ends = Ends(&hold, &stop);
+            let governor = s.spawn(|| hold.govern(&|| {}));
+            s.spawn(|| {
+                hold.register(0).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    hold.wait(&|| stop.load(Ordering::Relaxed));
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_micros(200) {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+            let t = Instant::now();
+            let until = loop {
+                if let Some(until) = lock(&hold.state).held {
+                    break until;
+                }
+                assert!(t.elapsed() < Duration::from_secs(5), "never held");
+                std::hint::spin_loop();
+            };
+            let left = until.saturating_duration_since(Instant::now());
+            assert!(left <= period, "held {left:?} more, its period {period:?}");
+            drop(ends);
+            governor.join().unwrap();
+        });
     }
 
     /// Three threads held to one CPU use no more of it than the time passing, but what a
@@ -615,7 +663,7 @@ mod tests {
     #[test]
     fn threads_held_use_no_more_than_their_share() {
         let hold = Hold::new(3);
-        hold.set(MILLI_PER_CPU);
+        hold.set(MILLI_PER_CPU).unwrap();
         let (used, wall) = spin(&hold, 3, Duration::from_secs(1));
         // One CPU's time over the window, a period's share more where the window and the
         // periods do not line up, and what three may overrun before they are held, their
@@ -626,6 +674,14 @@ mod tests {
             used >= wall / 4,
             "{used} ns of CPU in {wall} ns: held, and never let go"
         );
+    }
+
+    /// A budget of `quota` µs each 100 ms.
+    fn budget(quota: Option<u32>) -> super::super::group::Budget {
+        super::super::group::Budget {
+            quota: quota.and_then(std::num::NonZeroU32::new),
+            period: std::num::NonZeroU32::new(100_000).unwrap(),
+        }
     }
 
     /// A group's budget file, as the daemon makes it, in `dir`.
@@ -693,7 +749,7 @@ mod tests {
         let file = group_file(&dir);
         GroupCpu::map(file.try_clone().unwrap())
             .unwrap()
-            .set_budget(Some((100_000, 100_000)));
+            .set_budget(budget(Some(100_000)));
         let groups = [
             GroupCpu::map(file.try_clone().unwrap()).unwrap(),
             GroupCpu::map(file).unwrap(),
@@ -730,7 +786,7 @@ mod tests {
         let file = group_file(&dir);
         let daemon = GroupCpu::map(file.try_clone().unwrap()).unwrap();
         // A hundredth of a CPU: spent within the first period.
-        daemon.set_budget(Some((1_000, 100_000)));
+        daemon.set_budget(budget(Some(1_000)));
         let group = GroupCpu::map(file).unwrap();
         let hold = Hold::new(1);
         let stop = AtomicBool::new(false);
@@ -753,7 +809,7 @@ mod tests {
                 assert!(t.elapsed() < Duration::from_secs(5), "never held by its group");
                 std::thread::sleep(Duration::from_millis(1));
             }
-            daemon.set_budget(None);
+            daemon.set_budget(budget(None));
             let t = Instant::now();
             while held() {
                 assert!(
@@ -776,7 +832,7 @@ mod tests {
     #[test]
     fn a_hold_of_every_cpu_holds_nothing() {
         let hold = Hold::new(2);
-        assert_eq!(hold.set(2 * MILLI_PER_CPU), None);
+        assert_eq!(hold.set(2 * MILLI_PER_CPU).unwrap().milli, None);
         let (used, _) = spin(&hold, 2, Duration::from_millis(300));
         assert!(!hold.held.load(Ordering::Acquire));
         // Whatever the host gave them: nothing held them.

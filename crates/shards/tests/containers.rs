@@ -1890,7 +1890,12 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
         .collect();
     std::fs::write(dir.join("odd"), &odd).unwrap();
-    std::fs::write(dir.join("held"), &odd).unwrap();
+    // A size class of its own, odd's bytes first: a cold share maps the first file of each
+    // class it is told of and reads the next through FUSE as it calibrates (memory-09).
+    let held: Vec<u8> = (0..(16u32 << 20) + 5000)
+        .map(|i| (i.wrapping_mul(40_503) >> 8) as u8)
+        .collect();
+    std::fs::write(dir.join("held"), &held).unwrap();
     let pages: Vec<u8> = (0..4u32 << 20)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
         .collect();
@@ -1907,8 +1912,10 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         assert_eq!(r.status, Some(0), "{args:?}: {r}");
         r.stdout
     };
+    // Each the first of its size class this cold share is told of: both mapped, as it
+    // calibrates (memory-09); a fixed 1 MiB read the small one through FUSE.
     let said = exec(&["fs", "dax:/v/big", "dax:/v/small"]);
-    assert_eq!(said, "dax /v/big yes\ndax /v/small no\n");
+    assert_eq!(said, "dax /v/big yes\ndax /v/small yes\n");
     // The guest's page cache, before and after it reads the whole file: a read through
     // FUSE keeps all 8 MiB there, a read through the window none; it may grow by less
     // than half.
@@ -2080,7 +2087,7 @@ fn a_volumes_large_files_go_through_its_dax_window() {
         .set_len(1 << 20);
     let past = if cfg!(windows) {
         assert_eq!(cut.unwrap_err().raw_os_error(), Some(1224));
-        odd[3 << 20]
+        held[3 << 20]
     } else {
         cut.unwrap();
         0
@@ -2205,12 +2212,13 @@ fn a_volumes_large_files_go_through_its_dax_window() {
     assert_eq!(shards(&["rm", "-f", "dax2m"]).status, Some(0));
 }
 
-/// A volume's files are mapped through its microVM's DAX window from `DAX_SMALLEST` bytes
-/// (D189): a file of that size its guest maps, as statx says, and one a byte short it reads
-/// through FUSE; each it reads whole as the host wrote it, what it writes in place the host
-/// reads, and what the host writes in place it reads.
+/// A volume's files are mapped through its microVM's DAX window as its share learns where
+/// that costs less than FUSE (D189, memory-09): cold, the first file of each size class it is
+/// told of is mapped, as statx says, 1 MiB and a byte short of it alike, where a fixed 1 MiB
+/// read the shorter through FUSE; each it reads whole as the host wrote it, what it writes in
+/// place the host reads, and what the host writes in place it reads.
 #[test]
-fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
+fn a_volumes_files_are_mapped_as_its_share_learns() {
     if cannot_run_vms() {
         return;
     }
@@ -2227,7 +2235,7 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
     let pulled = shards(&["pull", "-q", &image]);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     let dir = TempDir::new("containers-daxs-v");
-    let smallest = usize::try_from(shards_vmm::devices::virtio::fs::server::DAX_SMALLEST).unwrap();
+    let smallest = 1usize << 20;
     let bytes =
         |n: usize, by: u32| -> Vec<u8> { (0..n as u32).map(|i| (i.wrapping_mul(by) >> 24) as u8).collect() };
     let files = [
@@ -2251,7 +2259,7 @@ fn a_volumes_files_are_mapped_from_dax_smallest_bytes() {
     };
     assert_eq!(
         exec(&["fs", "dax:/v/at", "dax:/v/short"]),
-        "dax /v/at yes\ndax /v/short no\n"
+        "dax /v/at yes\ndax /v/short yes\n"
     );
     for (name, file) in &files {
         let path = format!("/v/{name}");
@@ -2965,7 +2973,7 @@ exec "$@" </dev/null
 /// files, and reads on within it (D188): under a slice of the user's manager, a microVM
 /// that read 512 MiB through FUSE holds it in its guest's page cache (its daemon gives its
 /// share no window, `SHARDS_SHARE_WINDOW_MIB` 0, on any host: a window maps files of
-/// DAX_SMALLEST, a MiB, or more from its host's page cache, D189, and a host that gives a
+/// the sizes its share learned a window serves best from its host's page cache, D189, and a host that gives a
 /// window by default, an Intel runner's, left its guest nothing to give back); a `MemoryHigh` set
 /// a quarter GiB short of what its slice holds then (memory.current), the daemon, watching
 /// the slice's budget, has it reclaim what it holds cold and report it free at once, idle as

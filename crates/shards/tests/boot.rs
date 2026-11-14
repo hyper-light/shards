@@ -2290,9 +2290,11 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         panic!("asked a quarter CPU: {line:?}");
     };
     assert_eq!(milli, NonZeroU64::new(250));
-    assert_eq!(
-        Duration::from_nanos(period_ns.get()),
-        shards_vmm::vm::hold_period()
+    // D191's period for its one vCPU at a quarter CPU: 4g, g its VM process's own and never
+    // under the governor's least wait.
+    assert!(
+        Duration::from_nanos(period_ns.get()) >= 4 * shards_vmm::platform::granule::LEAST_WAIT,
+        "held over {period_ns} ns"
     );
     let (used, wall) = window();
     let own = free.saturating_sub(free_wall);

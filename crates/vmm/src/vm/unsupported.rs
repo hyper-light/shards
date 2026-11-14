@@ -103,7 +103,7 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn hold_rate(&self, _milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
+    pub fn hold_rate(&self, _milli: u64) -> Result<super::Rated, String> {
         match self.0 {}
     }
 

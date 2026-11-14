@@ -305,6 +305,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup: ReportCleanup::Complete,
+            report_watch: ReportWatch::Unasked,
             ended_cpu: None,
             rate_period: None,
             final_use: None,
@@ -461,6 +462,7 @@ fn launch(
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup: ReportCleanup::Complete,
+            report_watch: ReportWatch::Unasked,
             ended_cpu: None,
             rate_period: None,
             final_use: None,
@@ -842,6 +844,20 @@ struct Shared {
     report: Mutex<Option<crate::physical::report::Receiver>>,
 }
 
+/// A managed guest's report as its watcher follows its VM process (D233): a take with no clock
+/// waits on its report and on this together.
+#[derive(Debug)]
+enum ReportWatch {
+    /// No report was asked, or the guest is no managed launch's.
+    Unasked,
+    /// Its watcher waits on the VM process's end, and tells a waiting take with this as it
+    /// sees it.
+    Watching(crate::physical::report::Ending),
+    /// Its watcher's wait ended: the VM process's end observed (`Released`), or why its
+    /// observation failed, which a take the end found waiting answers.
+    Ended(Result<(), Refusal>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReportCleanup {
     Observing,
@@ -871,6 +887,7 @@ struct State {
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
     report_cleanup: ReportCleanup,
+    report_watch: ReportWatch,
     /// What its VM process had run by its end, read by its watcher before it was reaped
     /// (Unix): what a wait for its end learns from (`progress`).
     ended_cpu: Option<Duration>,
@@ -1861,12 +1878,15 @@ impl std::fmt::Debug for ManagedGuest {
 fn managed_shared(
     keep: usize,
     recovered: bool,
-    report: Option<crate::physical::report::Receiver>,
+    report: Option<(crate::physical::report::Receiver, crate::physical::report::Ending)>,
 ) -> Result<triomphe::Arc<Shared>, Refusal> {
-    let report_cleanup = if report.is_some() {
-        ReportCleanup::Observing
-    } else {
-        ReportCleanup::Complete
+    let (report, report_watch, report_cleanup) = match report {
+        Some((report, ending)) => (
+            Some(report),
+            ReportWatch::Watching(ending),
+            ReportCleanup::Observing,
+        ),
+        None => (None, ReportWatch::Unasked, ReportCleanup::Complete),
     };
     let mut bytes = VecDeque::new();
     bytes
@@ -1893,6 +1913,7 @@ fn managed_shared(
             managed: None,
             managed_ports: Vec::new(),
             report_cleanup,
+            report_watch,
             ended_cpu: None,
             rate_period: None,
             final_use: None,
@@ -2024,6 +2045,39 @@ fn request_report_cleanup(state: &mut State) {
     }
 }
 
+/// Tell a take waiting on the report that the watcher's wait on the VM process has ended, with
+/// how: before the report's cleanup, which waits for that take to let the report go.
+fn end_report_watch(shared: &Shared, observed: Result<(), Refusal>) {
+    let mut state = lock(&shared.state);
+    if !matches!(state.report_watch, ReportWatch::Watching(_)) {
+        return;
+    }
+    let ReportWatch::Watching(ending) =
+        std::mem::replace(&mut state.report_watch, ReportWatch::Ended(observed))
+    else {
+        return;
+    };
+    drop(state);
+    let told = ending.tell();
+    let mut state = lock(&shared.state);
+    if let Err(why) = told
+        && state.managed.is_none()
+    {
+        state.managed = Some(Err(why));
+    }
+    shared.changed.notify_all();
+}
+
+/// What a take that the VM process's end found waiting answers: `Ended`, or why the watcher's
+/// observation of that end failed.
+fn report_ended(shared: &Shared) -> Refusal {
+    match &lock(&shared.state).report_watch {
+        ReportWatch::Ended(Ok(())) => Refusal::GpuProbe(crate::GpuProbeError::Ended),
+        ReportWatch::Ended(Err(why)) => why.clone(),
+        ReportWatch::Unasked | ReportWatch::Watching(_) => Refusal::Launch(crate::LaunchError::Observer),
+    }
+}
+
 fn watch_managed(
     shared: triomphe::Arc<Shared>,
     process: crate::ManagedReceipt,
@@ -2035,6 +2089,7 @@ fn watch_managed(
         Ok(_) => Err(Refusal::Launch(crate::LaunchError::Observer)),
         Err(why) => Err(why),
     };
+    end_report_watch(&shared, observed.as_ref().map(|_| ()).map_err(Refusal::clone));
     finish_managed_report(&shared);
     let said = match writer {
         Some(writer) => lossy_output(finish_drain(&shared, writer).bytes.make_contiguous()),
@@ -2077,8 +2132,8 @@ pub fn boot_managed(
     let (report, gpu_report) = match plan.gpu_report_request() {
         Some(request) => {
             let request = crate::physical::report::Request::copy_from(request)?;
-            let (receiver, writer) = crate::physical::report::Receiver::new(request)?;
-            (Some(receiver), Some(writer))
+            let (receiver, writer, ending) = crate::physical::report::Receiver::new(request)?;
+            (Some((receiver, ending)), Some(writer))
         }
         None => (None, None),
     };
@@ -2147,9 +2202,17 @@ pub fn attach_managed(
 }
 
 impl ManagedGuest {
-    /// Transfer the one private report within the original create deadline.
+    /// Transfer the one private report, by the create's deadline where
+    /// [`with_gpu_report`](crate::PreparedBoot::with_gpu_report) named one ([`Until::At`]) and
+    /// within `patience` (`Duration::MAX`: none of the caller's). With neither
+    /// ([`Until::Released`] and `Duration::MAX`) it waits until the report comes or its VM
+    /// process ends, as its watcher sees that end on its native receipt (D215): refused
+    /// `GpuProbe(Ended)` where it ended first, or with why the watcher's observation failed.
     /// A timeout/EOF/error never proves VM or helper termination. Recovery must
     /// use its already persisted canonical report; it cannot recreate this pipe.
+    ///
+    /// [`Until::At`]: crate::Until::At
+    /// [`Until::Released`]: crate::Until::Released
     pub fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, Refusal> {
         let mut report = self.shared.report.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => Refusal::GpuProbe(crate::GpuProbeError::Pending),
@@ -2158,7 +2221,7 @@ impl ManagedGuest {
         report
             .as_mut()
             .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Unavailable))?
-            .take(patience)
+            .take(patience, || report_ended(&self.shared))
     }
 
     /// Shares the existing protocol/native receipt with checked handle counting.
@@ -3135,6 +3198,123 @@ mod tests {
         (guest, native)
     }
 
+    /// A managed guest whose plan asks for its GPU report with no clock ([`crate::Until::Released`]),
+    /// its stand-in native process holding the report's writer, which the test takes from it to
+    /// hold as another process would; and the report its VM process would write.
+    fn reported_model() -> (
+        ManagedGuest,
+        triomphe::Arc<ModelNative>,
+        io::PipeWriter,
+        crate::physical::GpuReport,
+    ) {
+        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let identity = Identity {
+            pid: 42,
+            started: 7,
+            vsock: root.join("model").join("native").join("v"),
+        };
+        let selected = crate::PhysicalGpu::MetalRegistry(7);
+        let mut spec = spec();
+        spec.gpu = true;
+        spec.gpu_devices = vec![selected];
+        let scope = [0x5a; 16];
+        let plan = prepare_boot(
+            &spec,
+            &root.join("model").join("never-executed"),
+            &identity.vsock,
+            0,
+        )
+        .unwrap()
+        .with_gpu_report(scope, crate::Until::Released)
+        .unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity,
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop: false,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .unwrap();
+        let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
+        let writer = native
+            .state
+            .lock()
+            .unwrap()
+            .io
+            .as_mut()
+            .unwrap()
+            .gpu_report
+            .take()
+            .unwrap();
+        let report = GpuReport {
+            scope,
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical: selected,
+                    uuid: [4; 16],
+                    pci: None,
+                    luid: Some(7u64.to_be_bytes()),
+                    name: None,
+                    device_local_bytes: None,
+                }],
+                host_visible_bytes: 1,
+            },
+        };
+        (guest, native, writer, report)
+    }
+
+    /// D233, Hex's decision 9: a report asked with no clock is waited on until its VM process
+    /// ends, followed by its native receipt as every managed wait is (D215), not by its
+    /// writer's close: the writer still held elsewhere, the take answers `Ended`, typed, once
+    /// the receipt says the VM's scope is released, and not before.
+    #[test]
+    fn a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends() {
+        let (guest, native, writer, _) = reported_model();
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        // No clock of its own: nothing answers while the VM process lives, however long the
+        // least wait this host keeps is.
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        native.publish(crate::TerminalScope::Released);
+        // The watcher's telling of the end, a fact waited for as such; then the take, woken by
+        // it, answers at once: looked at each millisecond (poll(2)'s unit), never found
+        // blocked twice.
+        drop(
+            guest
+                .shared
+                .changed
+                .wait_while(lock(&guest.shared.state), |state| {
+                    !matches!(state.report_watch, ReportWatch::Ended(_))
+                })
+                .unwrap(),
+        );
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Err(Refusal::GpuProbe(crate::GpuProbeError::Ended))
+        );
+        drop(writer);
+    }
+
+    /// D233: a report asked with no clock that comes while its VM process lives is the report,
+    /// waited for until its writer closes after it.
+    #[test]
+    fn a_report_with_no_clock_is_taken_as_it_comes() {
+        use std::io::Write as _;
+        let (guest, native, mut writer, report) = reported_model();
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Ok(report)
+        );
+        native.publish(crate::TerminalScope::Released);
+    }
+
     /// A managed guest's VM process on Linux and macOS is the process its launcher started,
     /// become shards-vm in place: named by its pid and its start as the OS reads them, while
     /// it lives; an identity whose start is another's refused `DifferentStart` with the start
@@ -3661,13 +3841,13 @@ mod tests {
         let request = crate::physical::report::Request {
             scope: [0x93; 16],
             selected: vec![crate::PhysicalGpu::MetalRegistry(7)],
-            deadline: crate::while_runs::latest(),
+            until: crate::Until::At(crate::while_runs::latest()),
         };
-        let (receiver, mut writer) = crate::physical::report::Receiver::new(request).unwrap();
+        let (receiver, mut writer, ending) = crate::physical::report::Receiver::new(request).unwrap();
         // Caller error, first observer error, then the old observer's retry
         // after last-drop. New native-event waiting does not need that retry.
         receiver.fail_cancel_calls_for_test(3);
-        let shared = managed_shared(0, true, Some(receiver)).unwrap();
+        let shared = managed_shared(0, true, Some((receiver, ending))).unwrap();
         let native = triomphe::Arc::try_new(ModelNative {
             identity: Identity {
                 pid: 42,

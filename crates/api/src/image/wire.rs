@@ -42,7 +42,7 @@ pub use shards_abi::run::nesting::Ready;
 /// binds none refuses the run as it is asked; 16, the host GPUs the run names
 /// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
 /// run without them; 17, the period the run's governor holds its rate over
-/// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
+/// (`Started`'s, until version 31 moved it to each rate's answer; D191, D247), so that its orchestrator derives its window from
 /// the run's own period, never from a number of its own; 18, each member's run-time arguments
 /// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
 /// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
@@ -74,8 +74,11 @@ pub use shards_abi::run::nesting::Ready;
 /// GPU run whose orchestrator waits for its renderer's word; 30, every socket the run's
 /// agent-control endpoint holds, each named ([`ControlAt::waker`], [`ControlAt::wake`]; D252),
 /// so that its orchestrator can hold each UDP socket the run holds to exactly those, where its
-/// host's table shows no socket's peer (Windows).
-pub const VERSION: u8 = 30;
+/// host's table shows no socket's peer (Windows); 31, each rate's period with its answer
+/// ([`Rated::period`], D191), which the run's governor derives for that rate from what it has
+/// learned of its step, in place of the one period version 17 told as the run started, so that
+/// a host of an earlier version, which tells a period no rate is held over, starts no run.
+pub const VERSION: u8 = 31;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -658,12 +661,9 @@ pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
     /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
-    /// 15.
+    /// 15. Versions 17 to 30 told a rate's period after it, which each rate's answer carries
+    /// from version 31 ([`Rated::period`]).
     pub control: Option<ControlAt>,
-    /// The period its VM's governor holds a rate over (D191, D247), as its host's build
-    /// holds one: on the channel in nanoseconds, never none; appended in
-    /// version 17.
-    pub rate_period: std::time::Duration,
     /// How its microVM started (D253); appended in version 19.
     pub from: StartedFrom,
 }
@@ -902,12 +902,23 @@ pub struct RateAsk {
     pub rate: Option<NonZeroU64>,
 }
 
-/// What the run's VM holds its vCPUs to, by its ask's id: the milli-CPU, none where it lets
-/// them be (no rate, or every vCPU's whole CPU or more), or why it holds them to nothing.
+/// What the run's VM holds its vCPUs to, by its ask's id, and over what period; or why it
+/// holds them to nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateAnswer {
     pub id: u32,
-    pub result: Result<Option<NonZeroU64>, String>,
+    pub result: Result<Rated, String>,
+}
+
+/// What a run's VM holds its vCPUs to (D191, D247): the milli-CPU, none where it lets them be
+/// (no rate, or every vCPU's whole CPU or more); and the period its governor holds that over,
+/// which it derived for the rate from what it has learned of its step (vcpus × g over the
+/// share; where it lets them be, g), on the channel in nanoseconds, never none; appended in
+/// version 31.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rated {
+    pub milli: Option<NonZeroU64>,
+    pub period: std::time::Duration,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -2437,8 +2448,6 @@ impl Started {
                 }
             }
         }
-        // The rate's period, appended in version 17 (D247).
-        w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
         // How its microVM started, appended in version 19 (D253).
         w.u8(self.from as u8);
         w.done()
@@ -2501,20 +2510,12 @@ impl Started {
         } else {
             None
         };
-        // A governor holds over some time: a period of none is no period.
-        let rate_period = NonZeroU64::new(r.u64()?)
-            .map(|ns| std::time::Duration::from_nanos(ns.get()))
-            .ok_or(WireError::Tag {
-                what: "a rate period",
-                tag: 0,
-            })?;
         let from = started_from(r.u8()?)?;
         r.end()?;
         Ok(Started {
             members,
             published,
             control,
-            rate_period,
             from,
         })
     }
@@ -2927,14 +2928,16 @@ impl RateAsk {
 }
 
 impl RateAnswer {
-    /// Its id, then 0 and the milli-CPU the vCPUs are held to (0 for none), or 1 and why.
+    /// Its id, then 0, the milli-CPU the vCPUs are held to (0 for none) and the period in
+    /// nanoseconds (version 31), or 1 and why.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
         match &self.result {
             Ok(held) => {
                 w.u8(0);
-                w.u64(held.map_or(0, NonZeroU64::get));
+                w.u64(held.milli.map_or(0, NonZeroU64::get));
+                w.u64(u64::try_from(held.period.as_nanos()).map_err(|_| WireError::TooLong)?);
             }
             Err(why) => {
                 w.u8(1);
@@ -2948,7 +2951,18 @@ impl RateAnswer {
         let mut r = Reader(payload);
         let id = r.u32()?;
         let result = match r.u8()? {
-            0 => Ok(NonZeroU64::new(r.u64()?)),
+            0 => {
+                let milli = NonZeroU64::new(r.u64()?);
+                // A governor holds over some time: a period of none is no period.
+                let period = NonZeroU64::new(r.u64()?).ok_or(WireError::Tag {
+                    what: "a rate period",
+                    tag: 0,
+                })?;
+                Ok(Rated {
+                    milli,
+                    period: std::time::Duration::from_nanos(period.get()),
+                })
+            }
             1 => Err(r.text()?),
             tag => {
                 return Err(WireError::Tag {
@@ -3584,7 +3598,6 @@ mod tests {
                 },
             ],
             control: None,
-            rate_period: std::time::Duration::from_millis(100),
             from: StartedFrom::Saved,
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
@@ -3990,6 +4003,12 @@ mod tests {
         let mut v29 = request().encode().unwrap();
         v29[0] = 29;
         assert_eq!(Request::decode(&v29), Err(WireError::Version(29)));
+        // One of version 30 asks as version 31 does, but its host tells a period with `Started`
+        // that no rate is held over, and none with a rate's answer: refused by its version
+        // (D191), so no orchestrator reads a `RATED` laid out otherwise.
+        let mut v30 = request().encode().unwrap();
+        v30[0] = 30;
+        assert_eq!(Request::decode(&v30), Err(WireError::Version(30)));
         // One of version 13 reads a vCPU's unread guest time as free words
         // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
         // client ends the run at a lease its host asks: each refused by its version, before
@@ -4262,10 +4281,16 @@ mod tests {
             let ask = RateAsk { id: 7, rate };
             assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
         }
+        let rated = |milli, ns| {
+            Ok(Rated {
+                milli: NonZeroU64::new(milli),
+                period: std::time::Duration::from_nanos(ns),
+            })
+        };
         for result in [
-            Ok(None),
-            Ok(NonZeroU64::new(1)),
-            Ok(NonZeroU64::new(u64::MAX)),
+            rated(0, 1_050_000),
+            rated(1, 1),
+            rated(u64::MAX, u64::MAX),
             Err("the microVM has not started".to_string()),
         ] {
             let answer = RateAnswer { id: u32::MAX, result };
@@ -4293,7 +4318,7 @@ mod tests {
         assert_eq!(RateAsk::decode(&padded), Err(WireError::Trailing));
         let answer = RateAnswer {
             id: 1,
-            result: Ok(NonZeroU64::new(250)),
+            result: rated(250, 31_250_000),
         }
         .encode()
         .unwrap();
@@ -4321,45 +4346,51 @@ mod tests {
         assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
-    /// The period a run's rate is held over reads back as its host said it, from a
-    /// nanosecond to the most a u64 counts (D247), its eight bytes last; a period of none, or
-    /// one past what a u64 counts in nanoseconds, is no period, refused each way.
+    /// The period a rate is held over reads back with its answer as its VM said it, from a
+    /// nanosecond to the most a u64 counts (D191, version 31), its eight bytes last; a period
+    /// of none, or one past what a u64 counts in nanoseconds, is no period, refused each way.
     #[test]
-    fn a_runs_rate_period_reads_back_as_its_host_said_it() {
+    fn a_rates_period_reads_back_as_its_vm_said_it() {
         use std::time::Duration;
-        let started = |rate_period| Started {
-            members: Vec::new(),
-            published: Vec::new(),
-            control: None,
-            rate_period,
-            from: StartedFrom::Booted,
+        const {
+            assert!(
+                VERSION >= 31,
+                "the channel's version 31 carries each rate's period"
+            )
+        };
+        let answer = |period| RateAnswer {
+            id: 9,
+            result: Ok(Rated {
+                milli: NonZeroU64::new(625),
+                period,
+            }),
         };
         for period in [
             Duration::from_nanos(1),
-            Duration::from_millis(100),
+            Duration::from_micros(31_250),
             Duration::from_nanos(u64::MAX),
         ] {
-            let said = started(period);
+            let said = answer(period);
             let bytes = said.encode().unwrap();
-            let last = bytes.get(bytes.len() - 9..bytes.len() - 1).unwrap();
+            let last = bytes.get(bytes.len() - 8..).unwrap();
             assert_eq!(last, u64::try_from(period.as_nanos()).unwrap().to_be_bytes());
-            assert_eq!(Started::decode(&bytes).unwrap(), said);
+            assert_eq!(RateAnswer::decode(&bytes).unwrap(), said);
         }
-        let mut none = started(Duration::from_millis(100)).encode().unwrap();
-        let at = none.len() - 9;
-        none.get_mut(at..at + 8).unwrap().fill(0);
+        let mut none = answer(Duration::from_millis(100)).encode().unwrap();
+        let at = none.len() - 8;
+        none.get_mut(at..).unwrap().fill(0);
         assert_eq!(
-            Started::decode(&none),
+            RateAnswer::decode(&none),
             Err(WireError::Tag {
                 what: "a rate period",
                 tag: 0
             })
         );
         assert_eq!(
-            started(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
+            answer(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
             Err(WireError::TooLong)
         );
-        assert_eq!(started(Duration::MAX).encode(), Err(WireError::TooLong));
+        assert_eq!(answer(Duration::MAX).encode(), Err(WireError::TooLong));
     }
 
     /// How a run's microVM started (D253) reads back as its host said it, its byte last; a
@@ -4383,7 +4414,6 @@ mod tests {
                 members: Vec::new(),
                 published: Vec::new(),
                 control: None,
-                rate_period: std::time::Duration::from_millis(100),
                 from,
             };
             let mut bytes = said.encode().unwrap();
@@ -4756,7 +4786,6 @@ mod tests {
                 members: Vec::new(),
                 published: Vec::new(),
                 control,
-                rate_period: std::time::Duration::from_millis(100),
                 from: StartedFrom::Restored,
             };
             let read = Started::decode(&started.encode().unwrap()).unwrap();
@@ -4776,7 +4805,6 @@ mod tests {
                 waker: "127.0.0.1:50001".parse().unwrap(),
                 wake: "127.0.0.1:50002".parse().unwrap(),
             }),
-            rate_period: std::time::Duration::from_millis(100),
             from: StartedFrom::Restored,
         };
         let bytes = started.encode().unwrap();
