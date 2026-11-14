@@ -821,13 +821,10 @@ pub fn serve(
         host_net,
     };
     let status = relay(&mut reader, timing, log.as_mut(), started, records);
-    // A relay of its members' output that broke ended the run's connection here, which its
-    // relay failed for: why, in place of that end (capture.rs `relay_ending`).
-    let status = status.map_err(|e| {
-        capture::ended_run().map_or(e, |why| {
-            format!("its members' output could not be relayed: {why}")
-        })
-    });
+    // A relay of its members' output that broke, or its managed control refused or ended
+    // unannounced, ended the run's connection here, which its relay failed for: why, in
+    // place of that end (capture.rs `ENDED_RUN`).
+    let status = status.map_err(|e| capture::ended_run().unwrap_or(e));
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -2479,7 +2476,8 @@ fn dialed(to: &ToGuest, conn: UnixStream) -> Option<(UnixStream, UnixStream)> {
 
 /// Takes the guest's signal connection as it comes, `conn`: its sender starts on a thread of
 /// its own ([`send_frames`]), what waited going first, a managed run's control boundary is
-/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]).
+/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]); a relay
+/// that ends within that boundary has said its end there ([`ended`]).
 fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture::Control, UnixStream)>) {
     let sender = dialed(to, conn).map(|(sending, watched)| {
         let started = std::thread::Builder::new()
@@ -2495,11 +2493,15 @@ fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture
         }
         None => return end_managed(managed),
     };
-    if let Some((control, boundary)) = managed
-        && let Err(e) = control.supervise(&watched, &boundary)
-    {
-        shards_vmm::debug!("managed control boundary ended: {e}");
-        return lose(to, Lost::of(&e));
+    if let Some((control, boundary)) = managed {
+        match control.supervise(&watched, &boundary) {
+            Ok(capture::Served::ControlEnded) => {}
+            Ok(capture::Served::RelayEnded) => return ended(to),
+            Err(e) => {
+                shards_vmm::debug!("managed control boundary ended: {e}");
+                return lose(to, Lost::of(&e));
+            }
+        }
     }
     watch(to, &watched);
 }

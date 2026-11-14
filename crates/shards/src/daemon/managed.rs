@@ -3783,9 +3783,19 @@ mod tests {
         let charged = Arc::clone(&charge);
         let bridges = mcp::Bridges::new(vec![0], run::CHUNK, Arc::clone(&charge));
         let first = run::mcp::ACCEPTED_FIRST;
-        // A connection its VM hands over, held: the harness's end of it.
+        // A connection its VM hands over, made as the daemon's are (daemon.rs' LANE_ACCEPTED):
+        // on Windows one written in messages, whose ends say a half-close, which a pair's
+        // pipe does not (ipc pipe.rs); CI run 43530570785's aarch64-pc-windows-msvc waited
+        // here for its harness's half-close until its step's 35 minutes ran out.
+        let handed = || {
+            #[cfg(unix)]
+            return Stream::pair().unwrap();
+            #[cfg(windows)]
+            Stream::plain_pair().unwrap()
+        };
+        // Held: the harness's end of it.
         let held = |number: u64| {
-            let (harness, ours) = Stream::pair().unwrap();
+            let (harness, ours) = handed();
             bridges.hold(number, 0, ours).unwrap();
             harness
         };
@@ -3859,7 +3869,7 @@ mod tests {
             // No room for another: let go, its harness reading its end.
             let room = *lock(&budget);
             *lock(&budget) = Some(u64::MAX);
-            let (harness, ours) = Stream::pair().unwrap();
+            let (harness, ours) = handed();
             assert!(matches!(
                 bridges.hold(first + 2, 0, ours),
                 Err(mcp::Unheld::Capacity)

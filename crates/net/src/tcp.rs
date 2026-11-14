@@ -22,6 +22,14 @@ use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 /// most this side ever advertises: 4 MiB, with a window scale of 7.
 pub(crate) const TO_HOST: usize = 4 << 20;
 const OUR_WSCALE: u8 = 7;
+
+/// Whether a connection whose injector holds `held` of the guest's bytes, none of them able to
+/// go on, leaves the guest no window: what `window` advertises at the scale this side offers is
+/// zero, so none of the guest's bytes come until some go on. Read at that scale whether or not
+/// the guest scales, which says full up to 2^7 - 1 octets early where it does not.
+pub(crate) fn full(held: usize) -> bool {
+    TO_HOST.saturating_sub(held) >> OUR_WSCALE == 0
+}
 /// The most host bytes a connection holds unacknowledged by the guest.
 pub(crate) const TO_GUEST: usize = 4 << 20;
 /// The largest segment this side takes, and sends: the device's MTU less IPv4 and TCP's
