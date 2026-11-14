@@ -301,7 +301,7 @@ pub(super) fn document(f: &Facts<'_>) -> Value {
         .field("Path", s(&path))
         .field("Args", strs(&args, false))
         .field("State", state(f))
-        .field("Image", s(&image_id))
+        .field("Image", s(image_id))
         // Its files are its guest's: none is the host's to name.
         .field("ResolvConfPath", s(""))
         .field("HostnamePath", s(""))
