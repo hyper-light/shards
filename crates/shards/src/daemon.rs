@@ -16343,7 +16343,7 @@ mod tests {
                     .map(|_| {
                         s.spawn(|| {
                             start.wait();
-                            t.daemon.engine_id()
+                            crate::networks::engine_id(&t.daemon.home)
                         })
                     })
                     .collect();

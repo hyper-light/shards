@@ -437,11 +437,6 @@ impl<D: Disk> Daemon<D> {
         crate::networks::host_ipv6(&self.home)
     }
 
-    /// The home's engine ID, made once (`crate::networks::engine_id`).
-    pub(super) fn engine_id(&self) -> String {
-        crate::networks::engine_id(&self.home)
-    }
-
     /// The networks: dockerd's predefined ones, made here the first time they are
     /// asked for, the bridge's on the subnet this daemon elected, then the user's.
     pub(super) fn all_networks(&self) -> Vec<Network> {
