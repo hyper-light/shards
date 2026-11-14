@@ -32530,7 +32530,9 @@ so A's member stdin never saw EOF, or A's drain never ended.
   `mutate.py`), 19, 18 and 14 of 64 children held 1 to 6 sockets each at 85a2727a1, and 26,
   24 and 23 at f25955697; green, none in any of three runs at f25955697. Beside it: `client::tests` (46), `image::session` (41), the registry's
   `credentials` (20) and shards-ipc's tests (78) pass; clippy, `-D warnings`, for shards-ipc,
-  shards-api, shards-registry and shards on macOS and Windows x86_64 (cargo xwin): WINLINT.
+  shards-api, shards-registry and shards: clean on macOS; on Windows x86_64 (cargo xwin,
+  adas-mac-studio.local) clean for the first three, and shards' one error main's own
+  (`daemon/health.rs`'s fields unread on Windows, runs-11), none of this change's.
 - *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
   run of several images in one process on HVF and WHP; the Windows unit
   `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
