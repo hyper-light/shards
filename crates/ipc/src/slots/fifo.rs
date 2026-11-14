@@ -104,7 +104,8 @@ impl Read for Within<'_> {
 /// that goes whole or not at all (POSIX write(2)), and a FIFO may say it has room while it has
 /// less (macOS's, local stream sockets, writable at their low-water mark: poll(2) said POLLOUT
 /// with 504 bytes free, and a write of 512 then waited, PM M549). A wait that fails, its
-/// reader gone, is told no end.
+/// reader gone, is told no end: past PIPE_BUF its wait ends only with a write after it that
+/// moved bytes, as its reader's end wakes the wait too (waits-04).
 pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> io::Result<()> {
     let mut rest = buf;
     while !rest.is_empty() {
@@ -118,7 +119,7 @@ pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> 
             (&*to).write_all(rest)?;
             rest = &[];
         } else {
-            await_room(to)?;
+            rest = rest.get(write_after_room(to, rest)?..).unwrap_or_default();
         }
         waits(Wait::Ended(began.elapsed()));
     }
@@ -143,6 +144,18 @@ fn write_now(to: &File, buf: &[u8]) -> io::Result<Option<usize>> {
         Err(e) => return Err(e),
     };
     restored.map(|()| wrote)
+}
+
+/// Writes what of `rest` the FIFO `to` takes once its reader has made room: how much, never
+/// none, waiting again where a wake found no room after all. Its reader's end wakes the wait
+/// and fails the write after it (`EPIPE`), so a wait that took nothing returns no count.
+fn write_after_room(to: &File, rest: &[u8]) -> io::Result<usize> {
+    loop {
+        await_room(to)?;
+        if let Some(n) = write_now(to, rest)?.filter(|&n| n > 0) {
+            return Ok(n);
+        }
+    }
 }
 
 /// Waits until the FIFO `to` has room for some of what is left, however long its reader
