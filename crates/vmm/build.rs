@@ -220,7 +220,11 @@ fn shards_version() {
     };
     // The first `version = "…"` line: [package]'s, which comes first in the manifest.
     let version = text.lines().find_map(|line| {
-        let value = line.trim().strip_prefix("version")?.trim_start().strip_prefix('=')?;
+        let value = line
+            .trim()
+            .strip_prefix("version")?
+            .trim_start()
+            .strip_prefix('=')?;
         Some(value.trim().trim_matches('"').to_string())
     });
     match version {

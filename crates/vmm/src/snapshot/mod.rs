@@ -1244,7 +1244,11 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
 pub enum ResumeRefused {
     /// Saved by shards `saved_by`, whose guest's init announced `init_abi` (0: none), where
     /// this build's speaks `ours`.
-    OlderInit { saved_by: String, init_abi: u64, ours: u64 },
+    OlderInit {
+        saved_by: String,
+        init_abi: u64,
+        ours: u64,
+    },
     /// Saved in format `format`, before 30: by a shards that recorded no saver, whose
     /// init's contract cannot be read before its guest runs; and none of those builds' is
     /// this one's, whose format records it.
@@ -1257,10 +1261,13 @@ pub enum ResumeRefused {
 
 impl std::fmt::Display for ResumeRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const AGAIN: &str =
-            "start it again from its image; its volumes are kept, its memory's state is not";
+        const AGAIN: &str = "start it again from its image; its volumes are kept, its memory's state is not";
         match self {
-            ResumeRefused::OlderInit { saved_by, init_abi, ours } => write!(
+            ResumeRefused::OlderInit {
+                saved_by,
+                init_abi,
+                ours,
+            } => write!(
                 f,
                 "this microVM was saved by shards {saved_by}, whose shards-init (contract \
                  {init_abi:016x}) cannot continue in this shards (contract {ours:016x}): {AGAIN}"
@@ -2047,8 +2054,14 @@ mod tests {
         );
         let said = other.to_string();
         assert!(said.contains(&format!("saved by shards {SAVED_BY}")), "{said}");
-        assert!(said.contains("start it again from its image; its volumes are kept"), "{said}");
-        assert!(matches!(refused(&as_saved(None)), ResumeRefused::OlderInit { init_abi: 0, .. }));
+        assert!(
+            said.contains("start it again from its image; its volumes are kept"),
+            "{said}"
+        );
+        assert!(matches!(
+            refused(&as_saved(None)),
+            ResumeRefused::OlderInit { init_abi: 0, .. }
+        ));
         let with_format = |format: u32| {
             let mut bytes = ours.clone();
             bytes[8..12].copy_from_slice(&format.to_le_bytes());
@@ -2056,8 +2069,14 @@ mod tests {
         };
         let released = refused(&with_format(28));
         assert_eq!(released, ResumeRefused::Unrecorded { format: 28 });
-        assert!(released.to_string().contains("saved by shards 0.7.0"), "{released}");
-        assert_eq!(refused(&with_format(VERSION + 1)), ResumeRefused::Newer { format: VERSION + 1 });
+        assert!(
+            released.to_string().contains("saved by shards 0.7.0"),
+            "{released}"
+        );
+        assert_eq!(
+            refused(&with_format(VERSION + 1)),
+            ResumeRefused::Newer { format: VERSION + 1 }
+        );
         // A restore reads none but this build's format.
         let e = decode(&with_format(VERSION - 1)).unwrap_err();
         assert!(e.0.contains(&format!("snapshot format {};", VERSION - 1)), "{e}");
