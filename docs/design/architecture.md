@@ -30632,9 +30632,34 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
 - *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
   microVM has not started` beside its process's use.
-- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
-  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
-  final use needs a path of its own (owed, below).
+- *Managed microVMs* (`ManagedGuest`; the person's filesystem rule: shards' own interfaces
+  are files). A managed VM process has no owner's link and its vsock socket goes with it, so its
+  final use is a file: `<vsock>.used`, beside its vsock socket (`shards_api::final_use_file`), in
+  the directory its launcher made for the guest, which goes with the run (shards-api's own
+  `PrivateDir`, or its launcher's). Written whole, by rename (a temporary beside it, made
+  durable, then renamed over it), before its VM process exits:
+  - The VM process, confined (D30), writes no file: once its machine is down (`supervise`'s
+    `wait_then` free, as the warm VM's) it tells its keeper the use's answer, after its length
+    (a u32, big-endian), on a channel of its own (`--final-use`), which the CLI that becomes it
+    adds where it is booted `--host-managed` with a `--vsock` (final_use.rs).
+  - Unix: the keeper is `shards final-use PATH`, started beside it in its launcher's
+    containment as a managed VM's console recorder is, on a socket pair. It writes the record,
+    then answers one byte; the VM waits for the answer (or the keeper's end) before it goes
+    on to exit. So the record is in place before the VM process, whose end its client
+    watches, ends. Not bounded by a clock: the keeper's work is one local file's write.
+  - Windows: the CLI that waits for its VM keeps it, reading the pipe as it comes (a pipe's
+    buffer may not hold it whole), and joins that before it exits, its client watching the
+    CLI's end.
+  - A VM killed, or one that ended before its machine came down, tells nothing or less than
+    it said it would: no record.
+  - The client: `ManagedGuest::wait_ended(timeout) -> Option<ManagedEnded { end: End,
+    final_use: FinalUse }>`; `host_use` answers `ManagedUsed::Running(ManagedUse)` while it
+    runs and `ManagedUsed::Ended(ManagedEnded)` after, from the same record, read once and
+    kept. No record: `Unused::Killed` where its stop came first, else `Untold`; a record none
+    of the protocol's, `Broken(UseBroken)`, read no further than the longest answer and a
+    byte.
+  - *Literals*: `.used`, the record's name; 4, the length's bytes (a u32, which the longest
+    answer fits); the answer byte 1. `ANSWER_MOST` bounds what is read.
 - *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
   shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
   `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
@@ -30642,11 +30667,20 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `a_runs_end_reads_back_with_its_final_use` (wire) and
   `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
   existing end and lease tests over `RunEnded`.
+  Managed: shards `final_use::tests::a_final_use_told_whole_is_recorded_and_nothing_else_is`
+  and `a_managed_vms_record_is_beside_its_socket`; shards-api
+  `a_managed_guests_final_use_is_its_record_once_it_has_ended` and the existing use tests over
+  `ManagedUsed`.
 - *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
   stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
   time by index, none departed, its process's CPU holding them, and `stats` after it refused
-  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
+  with that end; a stop's end `Killed`); the managed one's, `cargo test --profile
+  test-release -p shards --test boot -- a_managed_guest_records_its_final_use_as_it_ends
+  a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (a spinning managed guest
+  that powers off records its one vCPU's guest time and its process's CPU holding it; one not
+  managed, and one killed, record none; the confined VM process's write to its inherited
+  channel on each OS); Hex's adoption.
 
 ## 4. Start path (≤ 5 ms budget)
 
