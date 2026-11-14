@@ -2838,7 +2838,12 @@ mod tests {
                 (recv(&theirs).unwrap().unwrap(), recv(&theirs).unwrap().unwrap())
             });
             let mut judge = judge_every(Duration::from_millis(10), &asked, None);
-            send_judged(&ours, 7, &payload, &[], &mut judge).unwrap();
+            let sent = send_judged(&ours, 7, &payload, &[], &mut judge);
+            if sent.is_err() {
+                // So that its reader, waiting for the message, ends.
+                end(&ours);
+            }
+            sent.unwrap();
             let (first, judged) = reader.join().unwrap();
             assert_eq!((first.kind, first.payload == payload), (6, true));
             assert_eq!((judged.kind, judged.payload == payload), (7, true));
