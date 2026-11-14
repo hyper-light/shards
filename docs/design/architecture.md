@@ -9512,6 +9512,12 @@ value already in flight, whose acknowledgment remains consumable. Desired room
 and request/reply state have one owner; budget removal cannot disappear behind
 a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
 
+**Review memory-15 (2026-11-14):** a builder booted cold, with all it may have and nothing
+to plug (D133), answers `GIVE_BACK` and `ROOM` as one with memory to plug: its build has
+its cgroup from its start (`plug::hold_build`), which it had only where it plugged, so it
+gave nothing back; it gives back its files' cold pages, and unplugs nothing, having none
+plugged (D133's "Every builder's build has its cgroup").
+
 
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
@@ -19654,6 +19660,20 @@ plug, it gives back its files' cold pages at its build's word (D188), its VM pro
 footprint falling with them, and the home then holds a learned boot under the ceiling, its
 next builder having memory to plug. No test-only knob: the record a first build writes is
 the warm state, as a user's home reaches it.
+
+**Every builder's build has its cgroup (2026-11-14, memory-15's first defect).** On HVF a
+new home's builder gave nothing back (`a_builders_memory_in_a_new_home_is_all_it_may_have`
+red at af629d8ed): its host's `GIVE_BACK` reclaims the build cgroup's cold files
+(`run::reclaim_cold(BUILD)`) and `ROOM` holds it within its room (`plug::hold_within`), but
+`/sys/fs/cgroup/build` was made by `Plug::hold` alone, which a builder with nothing to plug
+never ran: its steps ran under the root's cgroup, and its answerer found no cgroup to give
+from. Now init makes `build`, `build/init` (init) and `build/steps` as every builder starts
+(`plug::hold_build`, `make_build`), its `memory.peak` opened there, and a step's cgroup is
+always under `build` (`build::step_cgroup`, its `plugging` argument gone); what is a
+plugging builder's alone is the hold, `memory.high` and the grower (`Plug::hold`, its grower
+forked in the root cgroup before init moves into `build/init`). Every builder shares its
+budget's page (`plug::make_cap`), as a run's init does, so that a cold builder is held within
+its room as a warm one is (D188). No second path: no builder's steps run outside `build`.
 
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with

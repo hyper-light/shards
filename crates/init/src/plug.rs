@@ -539,38 +539,11 @@ impl Plug {
         Ok(())
     }
 
-    /// Holds the build at the memory the builder has: mounts the builder's cgroup2 (D133),
-    /// makes the build's cgroup with its `memory.high`, starts the process that grows it
-    /// in the root cgroup, which nothing slows, and moves init into the build's. What the
-    /// grower says comes out of the descriptor returned, a line at a time (D137).
-    pub fn hold(&self) -> io::Result<OwnedFd> {
-        mount_cgroups()?;
-        let enable = |dir: &str| {
-            std::fs::write(format!("{dir}/cgroup.subtree_control"), "+memory +cpu +cpuset")
-                .map_err(|e| err(format!("{dir}: enabling controllers: {e}")))
-        };
-        enable("/sys/fs/cgroup")?;
-        for dir in [
-            BUILD.to_string(),
-            format!("{BUILD}/init"),
-            format!("{BUILD}/steps"),
-        ] {
-            match std::fs::create_dir(&dir) {
-                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(err(format!("{dir}: {e}"))),
-                _ => {}
-            }
-        }
-        enable(BUILD)?;
-        enable(&format!("{BUILD}/steps"))?;
-        // Its peak, counted afresh by each giving back through this descriptor
-        // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
-        if let Ok(peak) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(format!("{BUILD}/memory.peak"))
-        {
-            let _ = PEAK.set(peak);
-        }
+    /// Holds the build at the memory the builder has, in its cgroup ([`hold_build`]): its
+    /// `memory.high`, and the process that grows it, started in the root cgroup, which
+    /// nothing slows, as init is still there. What the grower says comes out of the
+    /// descriptor returned, a line at a time (D137).
+    fn hold(&self) -> io::Result<OwnedFd> {
         begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
         self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
@@ -599,8 +572,6 @@ impl Plug {
             grow(*self, &events, &said);
         }
         drop((events, said));
-        std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
-            .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
         Ok(notes)
     }
 
@@ -643,6 +614,58 @@ impl Plug {
         let _ = GROWER.set(pid);
         Ok(())
     }
+}
+
+/// Makes the build's cgroup and moves init into it, every builder's, booted cold with all
+/// it may have or with memory to plug (D133, memory-15): mounts the builder's cgroup2, makes
+/// `build` with `init`, where init goes, and `steps`, where each step has its own, so that
+/// what a build holds is counted (`memory.peak`, `memory.events`, `memory.stat`) for its
+/// needs to be recorded ([`needed`]) and its cold files given back at its host's word
+/// ([`answer_give_backs`], D188). Where it has memory to plug (`plug`), the build is held at
+/// what it has first ([`Plug::hold`]), whose grower it starts before init moves: what the
+/// grower says comes out of the descriptor returned, a line at a time (D137). Called by PID
+/// 1 before it starts any thread.
+pub fn hold_build(plug: Option<Plug>) -> io::Result<Option<OwnedFd>> {
+    mount_cgroups()?;
+    make_build(std::path::Path::new(CGROUPS))?;
+    // Its peak, counted afresh by each giving back through this descriptor
+    // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
+    if let Ok(peak) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{BUILD}/memory.peak"))
+    {
+        let _ = PEAK.set(peak);
+    }
+    let notes = plug.map(|plug| plug.hold()).transpose()?;
+    std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
+        .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
+    Ok(notes)
+}
+
+/// The builder's cgroup2's mount, where [`BUILD`] is.
+const CGROUPS: &str = "/sys/fs/cgroup";
+
+/// Makes the build's cgroup under the cgroup2 at `root`: `build`, `build/init` and
+/// `build/steps`, the controllers a step's limits need enabled down to `steps`, those
+/// made before kept.
+fn make_build(root: &std::path::Path) -> io::Result<()> {
+    let build = root.join("build");
+    let enable = |dir: &std::path::Path| {
+        std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset")
+            .map_err(|e| err(format!("{}: enabling controllers: {e}", dir.display())))
+    };
+    enable(root)?;
+    for dir in [build.clone(), build.join("init"), build.join("steps")] {
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(err(format!("{}: {e}", dir.display())));
+            }
+            _ => {}
+        }
+    }
+    enable(&build)?;
+    enable(&build.join("steps"))
 }
 
 /// The most a run's cgroup may hold that its host's budget leaves its microVM (D188), in
@@ -1187,9 +1210,8 @@ pub fn grower() -> Option<libc::pid_t> {
     GROWER.get().copied()
 }
 
-/// The builder's cgroup2 at /sys/fs/cgroup, mounted once: by [`Plug::hold`], or by the
-/// first step with limits.
-pub fn mount_cgroups() -> io::Result<()> {
+/// The builder's cgroup2 at /sys/fs/cgroup, mounted once, as it starts ([`hold_build`]).
+fn mount_cgroups() -> io::Result<()> {
     let root = std::path::Path::new("/sys/fs/cgroup");
     if root.join("cgroup.controllers").exists() {
         return Ok(());
@@ -1886,6 +1908,26 @@ mod tests {
         cgroup: BUILD,
         whose: "the builder's",
     };
+
+    /// Every builder's build has its cgroup as it starts, with memory to plug or not
+    /// (memory-15): `build`, `build/init` for init and `build/steps` for its steps, the
+    /// controllers enabled down to `steps`; made again over what is there.
+    #[test]
+    fn a_builders_cgroup_is_made_as_it_starts() {
+        let root = shards_testdir::TempDir::new("plug-cgroup").unwrap();
+        for _ in 0..2 {
+            make_build(&root).unwrap();
+        }
+        for dir in ["", "build", "build/steps"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(dir).join("cgroup.subtree_control")).unwrap(),
+                "+memory +cpu +cpuset",
+                "{dir}"
+            );
+        }
+        assert!(root.join("build/init").is_dir());
+        assert!(!root.join("build/init/cgroup.subtree_control").exists());
+    }
 
     /// What a build needed is the least memory in whole blocks whose hold, with nothing
     /// left to plug and its kernel holding what it holds beside it, keeps its peak: a block
