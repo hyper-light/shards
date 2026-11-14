@@ -41,6 +41,8 @@ writer.write_all(&framed).and_then(|()| writer.write_all(&written))
 
 **Confidence:** High for both source paths; live TLS and actual-provider behavior unverified.
 
+**Status (2026-11-13):** fixed in b7b692113 (red `inject::tests::leaks::a_token_responses_head_never_carries_its_tokens_to_the_guest`, `an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest`)
+
 ### creds-02 — P0 / critical — A chunked response can carry the complete credential in an unmasked extension
 
 **Location:** `crates/net/src/inject.rs:877`, `:2142`, `:1349`.
