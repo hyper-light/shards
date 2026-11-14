@@ -156,6 +156,11 @@ pub(super) struct Answers {
     pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
+    /// Room in a run's socket for what the daemon sends its VM (`daemon::RunSocket`, Unix):
+    /// one record for every run's, as a run's own would be cold each run.
+    pub run_send: Record,
+    /// A VM's guest times, its `GUEST_TIMED` after its `GUEST_TIME` (`commands::guest_times_of`).
+    pub guest_time: Record,
     /// Each request for access a starting VM makes, from the answer before or its spawn
     /// (`daemon::grant`, macOS).
     #[cfg(target_os = "macos")]
@@ -177,6 +182,8 @@ impl Default for Answers {
             door: Record::new(),
             link: Record::new(),
             held: Record::new(),
+            run_send: Record::new(),
+            guest_time: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),
@@ -634,7 +641,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         inbox.execs_in_flight.push((number, held));
         let log = std::io::stderr();
         let fds = [handed.as_fd(), pipe.as_fd(), log.as_fd(), log.as_fd()];
-        if let Err(e) = inbox.socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = inbox
+            .socket
+            .send(&self.answers.run_send, shards_ipc::kind::EXEC_RUN, &payload, &fds)
+        {
             inbox.execs_in_flight.retain(|(n, _)| *n != number);
             return Err(e);
         }
@@ -704,7 +714,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         }
         let [stdin, stdout, stderr] = stdio;
         let fds = [handed.as_fd(), stdin, stdout, stderr];
-        if let Err(e) = socket.send(shards_ipc::kind::EXEC_RUN, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, shards_ipc::kind::EXEC_RUN, &payload, &fds) {
             let mut held = lock(&inbox);
             held.execs_in_flight.retain(|(n, _)| *n != number);
             held.exec_ids.retain(|(n, _)| *n != number);

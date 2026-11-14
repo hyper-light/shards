@@ -220,7 +220,9 @@ fn open_layer(at: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// How long a warm VM may take to say it has taken a run: it does so right after it
-/// receives one.
+/// receives one. On Unix every wait it bounded is judged (runs-11 `TAKE_TIMEOUT`); Windows'
+/// are slice (b)'s, owed.
+#[cfg(any(windows, test))]
 const TAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The home's empty directory, every join share's root (D119): its server makes nothing in
@@ -1012,16 +1014,32 @@ struct Keep<'a> {
 /// run to every command (docs/audit/2026-09-30_arc.md).
 /// A run's socket to its VM. A message bigger than the socket's buffer (8 KiB on macOS)
 /// goes out in more than one write, and another sender's between them would spoil both,
-/// and the VM's reading after them: senders take turns. A send waits for room at most
-/// TAKE_TIMEOUT, as a live VM reads what it is sent at once: one that has stopped reading
-/// fails it, rather than every sender after it.
+/// and the VM's reading after them: senders take turns. On Unix a send waits for room while
+/// the VM's process goes on, judged by `record`, the daemon's one record of such sends
+/// (D215's judge, `Answers::run_send`; runs-11 `TAKE_TIMEOUT`): a socket full while that
+/// process ran no CPU over a whole W* is one nothing reads, and its send fails typed
+/// ([`health::Stalled`]), rather than every sender after it waiting. On Windows a send waits
+/// for room at most `TAKE_TIMEOUT` (runs-11 slice (b), owed).
 struct RunSocket {
     stream: UnixStream,
     sending: Mutex<()>,
+    /// Its VM's process, by which each send is judged.
+    #[cfg(unix)]
+    vm: u32,
 }
 
 impl RunSocket {
-    fn new(stream: UnixStream) -> RunSocket {
+    #[cfg(unix)]
+    fn new(stream: UnixStream, vm: u32) -> RunSocket {
+        RunSocket {
+            stream,
+            sending: Mutex::new(()),
+            vm,
+        }
+    }
+
+    #[cfg(windows)]
+    fn new(stream: UnixStream, _vm: u32) -> RunSocket {
         if let Err(e) = shards_ipc::timeout_set(stream.set_write_timeout(Some(TAKE_TIMEOUT))) {
             log(format!("a run's socket: {e}"));
         }
@@ -1031,7 +1049,31 @@ impl RunSocket {
         }
     }
 
-    fn send(&self, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> std::io::Result<()> {
+    /// Sends one message to its VM, judged by `record` on Unix (`Answers::run_send`), whose
+    /// kind learns from each send that went whole.
+    #[cfg(unix)]
+    fn send(
+        &self,
+        record: &shards_api::Record,
+        kind: u8,
+        payload: &[u8],
+        fds: &[BorrowedFd<'_>],
+    ) -> std::io::Result<()> {
+        let _turn = lock(&self.sending);
+        let mut judged = health::Judged::of(self.vm, record);
+        shards_ipc::send_judged(&self.stream, kind, payload, fds, &mut || judged.judge())?;
+        judged.answered();
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn send(
+        &self,
+        _record: &shards_api::Record,
+        kind: u8,
+        payload: &[u8],
+        fds: &[BorrowedFd<'_>],
+    ) -> std::io::Result<()> {
         let _turn = lock(&self.sending);
         shards_ipc::send(&self.stream, kind, payload, fds)
     }
@@ -6019,7 +6061,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Runs last as long as their commands.
         let _ = ready.socket.set_read_timeout(None);
-        let socket = Arc::new(RunSocket::new(ready.socket));
+        let socket = Arc::new(RunSocket::new(ready.socket, ready.vm.id()));
         // On the host's network (D124): its VM's network process, which takes the host's
         // sockets of its guest's binds as they listen.
         let host_net = if egress.as_deref() == Some(&shards_net::HOST_POLICY[..]) {
@@ -6114,7 +6156,9 @@ impl<D: Disk> Daemon<D> {
             let grace = grace.map_or(u64::MAX, |g| u64::try_from(g.as_millis()).unwrap_or(u64::MAX - 1));
             let mut order = signal.unwrap_or(0).to_be_bytes().to_vec();
             order.extend_from_slice(&grace.to_be_bytes());
-            let _ = tracked.socket.send(kind::STOP_ORDER, &order, &[]);
+            let _ = tracked
+                .socket
+                .send(&self.answers.run_send, kind::STOP_ORDER, &order, &[]);
         }
         // As the daemon stops, the stop thread, which this wakes, stops it.
         let pid = tracked.vm.id();
@@ -6255,7 +6299,11 @@ impl<D: Disk> Daemon<D> {
                 // the run does not await is ended, and its init tells its input's end.
                 #[cfg(unix)]
                 kind::MANAGED_INPUT => {
-                    if let Err(e) = inbox.socket.send(kind::MANAGED_INPUT, &m.payload, &[]) {
+                    if let Err(e) =
+                        inbox
+                            .socket
+                            .send(&self.answers.run_send, kind::MANAGED_INPUT, &m.payload, &[])
+                    {
                         log(format!("container {id}: answering its managed input: {e}"));
                     }
                     let member = <[u8; 4]>::try_from(m.payload.as_slice()).map(u32::from_be_bytes);
@@ -6286,7 +6334,12 @@ impl<D: Disk> Daemon<D> {
                         let given = theirs.share().map_err(|e| e.to_string())?;
                         inbox
                             .socket
-                            .send(kind::MANAGED_INPUT, &m.payload, &[given.as_fd()])
+                            .send(
+                                &self.answers.run_send,
+                                kind::MANAGED_INPUT,
+                                &m.payload,
+                                &[given.as_fd()],
+                            )
                             .map_err(|e| format!("giving it its pipe: {e}"))?;
                         Ok(ours)
                     }) {
@@ -6299,7 +6352,12 @@ impl<D: Disk> Daemon<D> {
                         }
                         Err(why) => {
                             log(format!("container {id}: a managed input connection: {why}"));
-                            if let Err(e) = inbox.socket.send(kind::MANAGED_INPUT, &m.payload, &[]) {
+                            if let Err(e) = inbox.socket.send(
+                                &self.answers.run_send,
+                                kind::MANAGED_INPUT,
+                                &m.payload,
+                                &[],
+                            ) {
                                 log(format!("container {id}: answering its managed input: {e}"));
                             }
                         }
@@ -6317,7 +6375,10 @@ impl<D: Disk> Daemon<D> {
                 kind::HOST_NET => {
                     let answer = inbox.host_net.as_mut().and_then(|h| h.ask(&m.payload));
                     if let Some(answer) = answer
-                        && let Err(e) = inbox.socket.send(kind::HOST_BOUND, &answer, &[])
+                        && let Err(e) =
+                            inbox
+                                .socket
+                                .send(&self.answers.run_send, kind::HOST_BOUND, &answer, &[])
                     {
                         log(format!(
                             "container {id}: answering its bind on the host's network: {e}"
@@ -6333,7 +6394,11 @@ impl<D: Disk> Daemon<D> {
                         h.release(u32::from_be_bytes(owner));
                         h.settle();
                     }
-                    if let Err(e) = inbox.socket.send(kind::HOST_RELEASE, &m.payload, &[]) {
+                    if let Err(e) =
+                        inbox
+                            .socket
+                            .send(&self.answers.run_send, kind::HOST_RELEASE, &m.payload, &[])
+                    {
                         log(format!(
                             "container {id}: answering its ports' release on the host's network: {e}"
                         ));
@@ -6382,7 +6447,11 @@ impl<D: Disk> Daemon<D> {
                 // to this microVM. One from a run with no engine of its own is closed.
                 #[cfg(unix)]
                 kind::ENGINE_CONN => {
-                    if let Err(e) = inbox.socket.send(kind::ENGINE_CONN, &m.payload, &[]) {
+                    if let Err(e) =
+                        inbox
+                            .socket
+                            .send(&self.answers.run_send, kind::ENGINE_CONN, &m.payload, &[])
+                    {
                         log(format!("container {id}: answering its engine connection: {e}"));
                     }
                     match (inbox.engine.is_some(), m.fds.into_iter().next()) {
@@ -6411,7 +6480,12 @@ impl<D: Disk> Daemon<D> {
                         let given = theirs.share().map_err(|e| e.to_string())?;
                         inbox
                             .socket
-                            .send(kind::ENGINE_CONN, &m.payload, &[given.as_fd()])
+                            .send(
+                                &self.answers.run_send,
+                                kind::ENGINE_CONN,
+                                &m.payload,
+                                &[given.as_fd()],
+                            )
                             .map_err(|e| format!("giving it its pipe: {e}"))?;
                         Ok(ours)
                     }) {
@@ -6421,7 +6495,11 @@ impl<D: Disk> Daemon<D> {
                         }
                         Err(why) => {
                             log(format!("container {id}: an engine connection: {why}"));
-                            if let Err(e) = inbox.socket.send(kind::ENGINE_CONN, &m.payload, &[]) {
+                            if let Err(e) =
+                                inbox
+                                    .socket
+                                    .send(&self.answers.run_send, kind::ENGINE_CONN, &m.payload, &[])
+                            {
                                 log(format!("container {id}: answering its engine connection: {e}"));
                             }
                         }
@@ -6436,10 +6514,12 @@ impl<D: Disk> Daemon<D> {
                 kind::LANE_ACCEPTED => {
                     let accepted = shards_ipc::Accepted::decode(&m.payload);
                     if let Some(accepted) = &accepted
-                        && let Err(e) =
-                            inbox
-                                .socket
-                                .send(kind::LANE_HELD, &accepted.number.to_be_bytes(), &[])
+                        && let Err(e) = inbox.socket.send(
+                            &self.answers.run_send,
+                            kind::LANE_HELD,
+                            &accepted.number.to_be_bytes(),
+                            &[],
+                        )
                     {
                         log(format!(
                             "container {id}: answering a member's MCP connection: {e}"
@@ -6471,7 +6551,7 @@ impl<D: Disk> Daemon<D> {
                         let shared = theirs.share().map_err(|e| e.to_string())?;
                         inbox
                             .socket
-                            .send(kind::LANE_HELD, &held, &[shared.as_fd()])
+                            .send(&self.answers.run_send, kind::LANE_HELD, &held, &[shared.as_fd()])
                             .map_err(|e| format!("giving it its socket: {e}"))?;
                         Ok(ours)
                     });
@@ -6484,7 +6564,11 @@ impl<D: Disk> Daemon<D> {
                         )),
                         Err(why) => {
                             log(format!("container {id}: a member's MCP connection: {why}"));
-                            if let Err(e) = inbox.socket.send(kind::LANE_HELD, &held, &[]) {
+                            if let Err(e) =
+                                inbox
+                                    .socket
+                                    .send(&self.answers.run_send, kind::LANE_HELD, &held, &[])
+                            {
                                 log(format!(
                                     "container {id}: answering a member's MCP connection: {e}"
                                 ));
@@ -6771,7 +6855,11 @@ impl<D: Disk> Daemon<D> {
                     "container {id}: a VM asked for a log segment out of turn"
                 ));
                 let seq = asked.unwrap_or_default();
-                if let Err(e) = inbox.socket.send(kind::SEGMENT, &seq.to_be_bytes(), &[]) {
+                if let Err(e) =
+                    inbox
+                        .socket
+                        .send(&self.answers.run_send, kind::SEGMENT, &seq.to_be_bytes(), &[])
+                {
                     log(format!("container {id}: answering for its log: {e}"));
                 }
             }
@@ -7477,7 +7565,7 @@ impl<D: Disk> Daemon<D> {
                 let now = Instant::now();
                 let (kill, grace) = match (signal, grace) {
                     (Some(signal), grace) => {
-                        let _ = socket.send(kind::SIGNAL, &signal.to_be_bytes(), &[]);
+                        let _ = socket.send(&self.answers.run_send, kind::SIGNAL, &signal.to_be_bytes(), &[]);
                         let dir = lock(&self.containers).dir(&id);
                         (
                             grace.and_then(|grace| now.checked_add(grace)),
@@ -7528,7 +7616,10 @@ impl<D: Disk> Daemon<D> {
                         // this home's slice (none heard yet: its end alone, its liveness's).
                         let teardown = ends::Followed::of(stop.vm.as_ref().map(|vm| vm.id()));
                         stop.grace = None;
-                        let sent = stop.socket.send(kind::SIGNAL, &9u32.to_be_bytes(), &[]).is_ok();
+                        let sent = stop
+                            .socket
+                            .send(&self.answers.run_send, kind::SIGNAL, &9u32.to_be_bytes(), &[])
+                            .is_ok();
                         let wait = if sent {
                             self.ends.slice(ends::End::Teardown)
                         } else {
@@ -7858,6 +7949,7 @@ impl<D: Disk> Daemon<D> {
         let handed = shards_ipc::handed(&theirs).map_err(|e| format!("a joiner's connection: {e}"))?;
         lock(&inbox).execs_in_flight.push((number, held));
         if let Err(e) = socket.send(
+            &self.answers.run_send,
             kind::JOIN,
             &number.to_be_bytes(),
             &[handed.as_fd(), image.as_fd()],
@@ -8073,7 +8165,12 @@ impl<D: Disk> Daemon<D> {
         // flight once it is sent, where a Unix descriptor is until its receiver has it (M24).
         let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
         socket
-            .send(kind::JOIN_SHARE, &number.to_be_bytes(), &[vms.as_fd()])
+            .send(
+                &self.answers.run_send,
+                kind::JOIN_SHARE,
+                &number.to_be_bytes(),
+                &[vms.as_fd()],
+            )
             .map_err(failed)?;
         shards_ipc::timeout_set(door.set_write_timeout(Some(TAKE_TIMEOUT))).map_err(failed)?;
         Ok((door, process))
@@ -8124,7 +8221,12 @@ impl<D: Disk> Daemon<D> {
         let number = self.next_exec.fetch_add(1, Ordering::Relaxed);
         let held = vms.try_clone().map_err(failed)?;
         lock(inbox).execs_in_flight.push((number, held));
-        if let Err(e) = socket.send(kind::JOIN_SHARE, &number.to_be_bytes(), &[vms.as_fd()]) {
+        if let Err(e) = socket.send(
+            &self.answers.run_send,
+            kind::JOIN_SHARE,
+            &number.to_be_bytes(),
+            &[vms.as_fd()],
+        ) {
             lock(inbox).execs_in_flight.retain(|(n, _)| *n != number);
             // The process ends as the other end of its connection goes, with ours.
             return Err(failed(e));
@@ -10008,14 +10110,15 @@ mod tests {
     #[test]
     fn senders_on_a_run_socket_take_turns() {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let socket = super::RunSocket::new(ours);
+        let socket = super::RunSocket::new(ours, std::process::id());
+        let record = Record::new();
         std::thread::scope(|scope| {
             for sender in 0u8..4 {
-                let socket = &socket;
+                let (socket, record) = (&socket, &record);
                 scope.spawn(move || {
                     let message = vec![sender; 64 << 10];
                     for _ in 0..16 {
-                        socket.send(kind::SIGNAL, &message, &[]).unwrap();
+                        socket.send(record, kind::SIGNAL, &message, &[]).unwrap();
                     }
                 });
             }
@@ -10038,6 +10141,79 @@ mod tests {
     /// The pool of the template in `dir`, in the daemon's own place.
     fn own(dir: impl AsRef<Path>) -> PoolKey {
         PoolKey::new(dir.as_ref(), "")
+    }
+
+    /// A run's VM slow to read what the daemon sends it, its process going on, keeps the send
+    /// however long it takes (runs-11 `TAKE_TIMEOUT`): red before, the send waited 10 s for
+    /// room (`TAKE_TIMEOUT`, picked) and failed, the message cut short. Its kind's record
+    /// learned at 100 ms, the VM (this process, a thread of it busy) reads at 10.5 s. A cold
+    /// record learns from its first send.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_socket_waits_for_room_while_its_vm_runs() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let socket = super::RunSocket::new(ours, std::process::id());
+        let cold = Record::new();
+        socket.send(&cold, kind::SIGNAL, b"one", &[]).unwrap();
+        assert!(matches!(cold.seen(), Seen::Learned { .. }), "{:?}", cold.seen());
+        assert_eq!(shards_ipc::recv(&theirs).unwrap().unwrap().payload, b"one");
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let busy = AtomicBool::new(true);
+        let payload = vec![7u8; shards_ipc::MAX_PAYLOAD];
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                while busy.load(Ordering::Relaxed) {
+                    std::hint::black_box(Instant::now());
+                }
+            });
+            let reader = s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(10_500));
+                shards_ipc::recv(&theirs).unwrap().unwrap()
+            });
+            let sent = socket.send(&record, kind::SIGNAL, &payload, &[]);
+            busy.store(false, Ordering::Relaxed);
+            let m = reader.join().unwrap();
+            sent.unwrap();
+            assert_eq!((m.kind, m.payload == payload), (kind::SIGNAL, true));
+        });
+    }
+
+    /// A run's VM that reads nothing, its process running nothing, fails a send to it typed
+    /// ([`health::Stalled`]) once it has run nothing for a whole W* of its kind's slowest, never
+    /// sooner, rather than holding every sender after it (runs-11 `TAKE_TIMEOUT`).
+    #[cfg(unix)]
+    #[test]
+    fn a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let idle = sleeper(600);
+        let socket = super::RunSocket::new(ours, idle.id());
+        let record = Record::new();
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let (done, finished) = mpsc::channel();
+        let t0 = Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let payload = vec![0u8; shards_ipc::MAX_PAYLOAD];
+                let _ = done.send(socket.send(&record, kind::SIGNAL, &payload, &[]));
+            });
+            let sent = finished.recv_timeout(Duration::from_secs(10));
+            // Closed, so that a send that did not stop ends.
+            drop(theirs);
+            let e = sent
+                .expect("a VM that ran nothing was waited for on")
+                .unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+            assert!(
+                e.get_ref().is_some_and(|inner| inner.is::<health::Stalled>()),
+                "{e:?}"
+            );
+            assert!(t0.elapsed() >= slowest, "{:?}", t0.elapsed());
+        });
+        let _ = idle.kill(shards_ipc::signal::SIGKILL);
+        let _ = idle.wait();
     }
 
     /// A process that does nothing for `secs` seconds and ends, standing in for a VM or a
@@ -16591,7 +16767,7 @@ mod tests {
                 seq: 1,
                 kept: DEFAULT_LOGS,
                 pack: false,
-                socket: Arc::new(RunSocket::new(ours)),
+                socket: Arc::new(RunSocket::new(ours, std::process::id())),
             });
             t.daemon.make_soon(files::Job::Hold(last));
             let (finished, waited) = mpsc::channel();
@@ -16639,7 +16815,7 @@ mod tests {
                 seq: 4,
                 kept: LogRetention { size: 16, files: 8 },
                 pack: false,
-                socket: Arc::new(RunSocket::new(ours)),
+                socket: Arc::new(RunSocket::new(ours, std::process::id())),
             });
             let m = heard_whole(&vm);
             assert_eq!((m.kind, m.fds.len()), (kind::SEGMENT, 2));

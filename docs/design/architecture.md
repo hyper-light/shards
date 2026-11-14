@@ -20868,6 +20868,37 @@ answering at 10.5 s, its process busy) by mutation restoring the 10 s read timeo
 never refusing. Owed to ROOT: a joiner's start with volumes on a loaded host
 (`cargo test -p shards --profile test-release --test daemon`, its join tests) on HVF and KVM.
 
+Slice (c2), 2026-11-14: a run's socket, its guest times and its long answers, on Unix. Every
+send the daemon makes to a run's VM (`RunSocket::send`: signals, execs, attaches, segments,
+saves, moves, devices, cuts, pauses, plugs) waited for room at most `TAKE_TIMEOUT`, a socket
+write timeout whose expiry mid-message left the VM's reader desynchronized. Each is now
+`send_judged`, judged by D215 on the run's VM process (`RunSocket` keeps its ID), by one
+daemon-wide record of such sends (`Answers::run_send`: a run's own would be cold each run),
+taught by each send that went whole. Cold, room or the socket's end alone; learned, a socket
+full while the VM's process ran no CPU over a whole W* (or its counters' resolution, where
+coarser) is one nothing reads, and its send fails `Stalled`, typed, rather than every sender
+after it waiting. The cuts watcher (`cuts.rs`), the process's and no daemon's, keeps a static
+record of its own (`TOLD`). `GUEST_TIME`'s answer (`commands::guest_timed`) was waited for
+`TAKE_TIMEOUT`; it is judged likewise on the VM's process by `Answers::guest_time`, until its
+answer, its run's end (its inbox's sender dropped: "its microVM stopped") or `Stalled`.
+`reclaim::said_if_long`, a note and not a wait, said an answer past `TAKE_TIMEOUT`; it says one
+past the slowest of its kind before it (`past_slowest`: `Answers::reclaim`, `Answers::room`,
+read as the exec begins, since the exec's own answer teaches the record), and nothing cold.
+Each per-send look costs reads of the VM process's start and CPU (`Followed::of_pid`, `Watch`)
+and one more on completion; R14's measure of it is ROOT's. Windows keeps `TAKE_TIMEOUT` in
+`RunSocket` and `guest_timed` until slice (b) gives it `send_judged` and `Judged`; the constant
+is `cfg(any(windows, test))` until then. Red, macOS arm64: `a_run_socket_waits_for_room_while_its_vm_runs`
+(a VM, this process busy, reading at 10.5 s, its kind learned at 100 ms) by mutation restoring
+the 10 s write timeout and plain send; `a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send`
+(a sleep as its process) by mutation never refusing;
+`a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for` by mutation restoring the 10 s
+wait; `a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused` by mutation never
+refusing; `an_answer_is_long_past_its_kinds_slowest_before_it` by mutation restoring the
+`TAKE_TIMEOUT` threshold. Owed to ROOT: each send's and `GUEST_TIME`'s latency on a loaded host
+(`cargo test -p shards --profile test-release --test daemon` through
+`docs/research/measurements/macos-sched/launchd-run.sh` on HVF, and on KVM), n, p50, p90, p99
+and max, and the judged send's per-send cost against 95a057045 (`build-ab/ab.py`).
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")
