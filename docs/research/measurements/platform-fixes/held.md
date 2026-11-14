@@ -39,7 +39,7 @@ With jupiter offline, the takeover lane (branch `p/tk-platwin-v1`) wrote each re
 ran it, the fixes and their guard mutations, in the Windows 11 x86_64 container on adacachy
 (Rust 1.98.1, NTFS): 05–09 fixed, 10 fixed within a process with its cross-process owner
 owed. Results, commands and what stays owed (the real-WHP guest routes of 05/06, 09's
-restore cost, 10's host-wide owner and measurement): [PM M575](../../platform-measurements.md),
+restore cost, 10's host-wide owner and measurement): [PM M577](../../platform-measurements.md),
 D140, D191, D195, D196. The table above stays as the record of what was held.
 
 ## platform-11: online-value design owed, with cold starts

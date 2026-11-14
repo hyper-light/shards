@@ -12202,7 +12202,7 @@ and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on 
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
-**2026-11-14, platform-09 fixed** (6057451cf, 2f88e39b6; red 9c1632a7f; PM M575). A name's
+**2026-11-14, platform-09 fixed** (6057451cf, 2f88e39b6; red 9c1632a7f; PM M577). A name's
 versions (`write_in`, `newest_in`, `remove_in`) are the entries its directory takes for
 `name.~N`: ignoring case (CompareStringOrdinal, Windows' ordinal file-name comparison),
 unless the directory is case-sensitive (FILE_CASE_SENSITIVE_INFO,
@@ -12425,7 +12425,7 @@ waiter lifecycle and chosen pipe quotas require jupiter red/green checks and an 
 capacity/admission design. [Commands and held design](../research/measurements/platform-fixes/held.md)
 retain those obligations; no Windows check or quota replacement is claimed completed.
 
-**2026-11-14, platform-07 and 08 fixed; 11 open** (PM M575, Windows 11 x86_64 unit tests).
+**2026-11-14, platform-07 and 08 fixed; 11 open** (PM M577, Windows 11 x86_64 unit tests).
 - **07** (7905b3c03; red 5260eea78). A confined spawn gives its child copies of the standard
   handles it is lent, inheritable for its handle list alone, as `spawn_env` did; the caller's
   handles are left as lent. A child of std's Command inherits every inheritable handle of
@@ -13033,7 +13033,7 @@ inputs and still-unresolved cross-process budget owner. No scheduler change or n
 performance claim is made by that design record.
 
 **2026-11-14, platform-10 fixed within a process; across processes owed; 11 open** (9f95ae7db,
-f0cd08598; red 190b49d9b; PM M575). The Windows governor also keeps a pool for each set of
+f0cd08598; red 190b49d9b; PM M577). The Windows governor also keeps a pool for each set of
 CPUs its raised threads may run on (GetThreadGroupAffinity: a processor group and a mask,
 read at every look): credited half of each of those CPUs' time, charged what its threads ran
 raised, kept to half a period of each and none; a thread is raised only while its own credit
@@ -18003,7 +18003,7 @@ at once, refusals.
 
 ### D140. microVMs on Windows hosts: the WHP backend
 
-**2026-11-14, platform-05/06 fixed** (3fb6b0c07; red d18cc5040, PM M575). Windows'
+**2026-11-14, platform-05/06 fixed** (3fb6b0c07; red d18cc5040, PM M577). Windows'
 instruction emulator (`Vcpu::emulate`, for the string instructions shards' decoder refuses)
 reaches guest memory through `hv::whp::Ram`: disjoint ranges, a map cutting what it replaces
 before it is recorded (WHvMapGpaRange "replaces any previous mappings"), an unmap cutting its

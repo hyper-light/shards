@@ -24617,7 +24617,7 @@ tests among them, clippy clean on both; the red (no cleanup) and eight more muta
 the guard killed on both hosts. No real VM ran.
 [Sources, red/green, mutants and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).
 
-### M575. Windows' emulator registry, spawn inheritance, slot waits, versioned names and raised CPU sets (platform-05..10, D140, D191, D195, D196)
+### M577. Windows' emulator registry, spawn inheritance, slot waits, versioned names and raised CPU sets (platform-05..10, D140, D191, D195, D196)
 
 Taken over from the Codex lane while jupiter was offline; run in the Windows 11 x86_64
 container on adacachy (Windows 10.0.26200.8037, 8 CPUs, NTFS, Rust 1.98.1,
