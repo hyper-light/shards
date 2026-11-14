@@ -307,6 +307,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             report_cleanup: ReportCleanup::Complete,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -461,6 +462,7 @@ fn launch(
             report_cleanup: ReportCleanup::Complete,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -874,6 +876,9 @@ struct State {
     /// The period a managed guest's governor holds a rate over, as its VM process said it
     /// with its last rate's answer (D255); none until one.
     rate_period: Option<Duration>,
+    /// A managed guest's final use (D260), read from its record once it has ended, kept as
+    /// first read.
+    final_use: Option<crate::image::FinalUse>,
 }
 
 #[derive(Debug)]
@@ -1655,6 +1660,74 @@ pub struct ManagedUse {
     pub answered: Instant,
 }
 
+/// A managed guest's end and what its microVM used in all (D260's final use), as its VM process
+/// recorded it once its machine was down ([`final_use_file`]), the same form as an image run's
+/// ([`RunEnded`](crate::image::RunEnded)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedEnded {
+    pub end: End,
+    pub final_use: crate::image::FinalUse,
+}
+
+/// What [`ManagedGuest::host_use`] answers: a sample while the guest runs, or its end and its
+/// final use once it has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedUsed {
+    Running(ManagedUse),
+    Ended(ManagedEnded),
+}
+
+/// The file a managed guest's final use is recorded in (D260): beside its vsock socket
+/// `vsock`, its name the socket's and `.used`, in the directory its launcher made for the
+/// guest, which goes with it. Written whole, by rename, before its VM process exits, by its
+/// keeper (`shards final-use` on Unix, the CLI that waits for its VM on Windows): the VM
+/// process, confined, writes no file.
+pub fn final_use_file(vsock: &Path) -> PathBuf {
+    let mut name = vsock.as_os_str().to_owned();
+    name.push(".used");
+    PathBuf::from(name)
+}
+
+/// The final use a managed guest's record says (D260), its read `read`: its parts as its VM
+/// process told them, an answer none of the protocol's typed by what breaks it; none where
+/// there is no record, its VM killed (`stopping`, its stop asked) or ended without it.
+fn final_use_of(read: io::Result<Vec<u8>>, stopping: bool) -> Result<crate::image::FinalUse, Refusal> {
+    use crate::image::{FinalUse, Unused};
+    let bytes = match read {
+        Ok(bytes) => bytes,
+        Err(_) if stopping => return Ok(FinalUse::Unread(Unused::Killed)),
+        Err(_) => return Ok(FinalUse::Unread(Unused::Untold)),
+    };
+    let used = match shards_abi::rate::read_used(&bytes) {
+        Ok(used) => used,
+        Err(broken) => return Ok(FinalUse::Unread(Unused::Broken(broken))),
+    };
+    let words = |why: &str| managed_words(format_args!("{why}"));
+    Ok(FinalUse::Read(crate::image::Microvm {
+        guest: match used.guest {
+            Ok(times) => Ok(times),
+            Err(why) => Err(words(why)?),
+        },
+        host: match used.host {
+            Ok(host) => Ok(host),
+            Err(why) => Err(words(why)?),
+        },
+    }))
+}
+
+/// A managed guest's record of its final use ([`final_use_file`]), read whole up to the
+/// longest use answer and a byte past it, so that a longer one reads as broken
+/// (`UseBroken::Long`) without being read whole.
+fn read_final_use(vsock: &Path) -> io::Result<Vec<u8>> {
+    let file = std::fs::File::open(final_use_file(vsock))?;
+    let most = u64::try_from(shards_abi::rate::ANSWER_MOST)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(file, most), &mut bytes)?;
+    Ok(bytes)
+}
+
 /// The existing API protocol around a receipt the native owner already owns.
 pub struct ManagedGuest {
     process: crate::ManagedReceipt,
@@ -1704,6 +1777,7 @@ fn managed_shared(
             report_cleanup,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -2051,13 +2125,13 @@ impl ManagedGuest {
     /// not booted `--host-managed`, or a shards before D260) or does not answer within
     /// `patience`; [`Refusal::ManagedIo`] where its socket fails; and [`Refusal::Ended`] once
     /// the guest has ended.
-    pub fn host_use(&self, patience: Duration) -> Result<ManagedUse, Refusal> {
+    pub fn host_use(&self, patience: Duration) -> Result<ManagedUsed, Refusal> {
         let gone = || {
             self.end(&mut lock(&self.shared.state))
                 .map(|end| end.map(Refusal::Ended))
         };
-        if let Some(ended) = gone()? {
-            return Err(ended);
+        if let Some(ended) = self.ended()? {
+            return Ok(ManagedUsed::Ended(ended));
         }
         let deadline = (patience != Duration::MAX)
             .then(|| Instant::now().checked_add(patience))
@@ -2071,7 +2145,12 @@ impl ManagedGuest {
             patience,
         ) {
             Ok(answer) => answer,
-            Err(refused) => return Err(gone()?.unwrap_or(refused)),
+            Err(refused) => {
+                return match self.ended()? {
+                    Some(ended) => Ok(ManagedUsed::Ended(ended)),
+                    None => Err(gone()?.unwrap_or(refused)),
+                };
+            }
         };
         let answered = Instant::now();
         let used = shards_abi::rate::read_used(&answer).map_err(Refusal::HostUse)?;
@@ -2086,11 +2165,42 @@ impl ManagedGuest {
                 Err(why) => Err(words(why)?),
             },
         };
-        Ok(ManagedUse {
+        Ok(ManagedUsed::Running(ManagedUse {
             microvm,
             asked,
             answered,
-        })
+        }))
+    }
+
+    /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it comes),
+    /// with what its microVM used in all (D260's final use), as its VM process recorded it
+    /// before it exited ([`final_use_file`]): [`Unused::Killed`](crate::image::Unused::Killed)
+    /// where its stop came first and nothing was recorded, `Untold` where it ended without one.
+    pub fn wait_ended(&self, timeout: Duration) -> Result<Option<ManagedEnded>, Refusal> {
+        if Guest::wait_for(self, timeout)?.is_none() {
+            return Ok(None);
+        }
+        self.ended()
+    }
+
+    /// Its end and its final use, once it has ended: its record read the first time, and kept.
+    fn ended(&self) -> Result<Option<ManagedEnded>, Refusal> {
+        let mut state = lock(&self.shared.state);
+        let Some(end) = self.end(&mut state)? else {
+            return Ok(None);
+        };
+        let final_use = match &state.final_use {
+            Some(used) => used.clone(),
+            None => {
+                let stopping = state.stopping;
+                drop(state);
+                let used = final_use_of(read_final_use(&self.process.identity()?.vsock), stopping)?;
+                state = lock(&self.shared.state);
+                state.final_use.get_or_insert(used).clone()
+            }
+        };
+        drop(state);
+        Ok(Some(ManagedEnded { end, final_use }))
     }
 
     /// The room a budget leaves the guest, as an image run's (`ImageGuest::room`, D188, D241):
@@ -2985,7 +3095,7 @@ mod tests {
         );
         let (guest, _native) = managed_model_at(false, socket);
         let before = Instant::now();
-        let used = guest.host_use(Duration::MAX).unwrap();
+        let used = running(guest.host_use(Duration::MAX));
         assert!(before <= used.asked && used.asked <= used.answered);
         let times = crate::image::GuestTimes {
             vcpus: vec![
@@ -3015,11 +3125,11 @@ mod tests {
             }
         );
         assert_eq!(used.microvm.vmm_ns(), Some(1500 - 1005));
-        let unstarted = guest.host_use(Duration::MAX).unwrap().microvm;
+        let unstarted = running(guest.host_use(Duration::MAX)).microvm;
         assert_eq!(unstarted.guest, Err("the microVM has not started".to_string()));
         assert_eq!(unstarted.host.as_ref().map(|h| h.cpu_ns), Ok(70));
         assert_eq!(unstarted.vmm_ns(), None, "no guest time read");
-        let unhosted = guest.host_use(Duration::MAX).unwrap().microvm;
+        let unhosted = running(guest.host_use(Duration::MAX)).microvm;
         assert_eq!(unhosted.host, Err("its VM process: denied".to_string()));
         assert_eq!(unhosted.guest.map(|g| g.total_ns()), Ok(9));
         for broken in [UseBroken::Guest, UseBroken::Text, UseBroken::Word] {
@@ -3035,6 +3145,84 @@ mod tests {
         ));
         let asks = stand_in.join().unwrap();
         assert_eq!(asks, vec![b"USE\n".to_vec(); 7]);
+    }
+
+    /// A managed guest's use while it runs ([`ManagedUsed::Running`]).
+    fn running(used: Result<ManagedUsed, Refusal>) -> ManagedUse {
+        match used {
+            Ok(ManagedUsed::Running(used)) => used,
+            other => panic!("not a running guest's use: {other:?}"),
+        }
+    }
+
+    /// D260's final use, a managed guest's: once it has ended, its use is its end and its final
+    /// use as its record says, asking nothing, the same through `wait_ended` and `host_use`,
+    /// kept as first read; a record none of the protocol's typed by what breaks it; none
+    /// recorded, untold, or killed where its stop came first.
+    #[test]
+    fn a_managed_guests_final_use_is_its_record_once_it_has_ended() {
+        use crate::image::{FinalUse, Unused};
+        let dir = shards_testdir::TempDir::new("api-final").unwrap();
+        let socket = dir.join("v");
+        let used = shards_abi::rate::used(
+            Ok(&crate::image::GuestTimes {
+                vcpus: vec![crate::image::VcpuTime {
+                    index: 0,
+                    guest_ns: 700,
+                    unread: None,
+                }],
+                departed_ns: 0,
+            }),
+            Ok(&crate::image::HostUse {
+                cpu_ns: 900,
+                resident_bytes: 1,
+                footprint_bytes: 2,
+            }),
+        );
+        std::fs::write(final_use_file(&socket), &used).unwrap();
+        let (guest, native) = managed_model_at(false, socket.clone());
+        assert_eq!(guest.wait_ended(Duration::ZERO), Ok(None), "it runs");
+        native.publish(crate::TerminalScope::Released);
+        let read = shards_abi::rate::read_used(used.as_bytes()).unwrap();
+        let ended = ManagedEnded {
+            end: End::PowerOff,
+            final_use: FinalUse::Read(crate::image::Microvm {
+                guest: Ok(read.guest.unwrap()),
+                host: Ok(read.host.unwrap()),
+            }),
+        };
+        assert_eq!(guest.wait_ended(Duration::MAX), Ok(Some(ended.clone())));
+        std::fs::remove_file(final_use_file(&socket)).unwrap();
+        assert_eq!(
+            guest.host_use(Duration::MAX),
+            Ok(ManagedUsed::Ended(ended)),
+            "kept as first read"
+        );
+        let other = dir.join("w");
+        std::fs::write(final_use_file(&other), b"USED\nhost 1 2").unwrap();
+        let (guest, native) = managed_model_at(false, other);
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_ended(Duration::MAX).map(|e| e.map(|e| e.final_use)),
+            Ok(Some(FinalUse::Unread(Unused::Broken(
+                shards_abi::rate::UseBroken::Text
+            ))))
+        );
+        let (guest, native) = managed_model_at(false, dir.join("x"));
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_ended(Duration::MAX).map(|e| e.map(|e| e.final_use)),
+            Ok(Some(FinalUse::Unread(Unused::Untold)))
+        );
+        let (guest, _native) = managed_model_at(false, dir.join("y"));
+        guest.stop().unwrap();
+        assert_eq!(
+            guest.wait_ended(Duration::MAX),
+            Ok(Some(ManagedEnded {
+                end: End::Stopped,
+                final_use: FinalUse::Unread(Unused::Killed),
+            }))
+        );
     }
 
     /// D260: a use its VM process does not answer within its caller's patience is refused as
@@ -3053,7 +3241,13 @@ mod tests {
         drop(listener);
         native.publish(crate::TerminalScope::Released);
         assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
-        assert_eq!(guest.host_use(Duration::MAX), Err(Refusal::Ended(End::PowerOff)));
+        assert_eq!(
+            guest.host_use(Duration::MAX),
+            Ok(ManagedUsed::Ended(ManagedEnded {
+                end: End::PowerOff,
+                final_use: crate::image::FinalUse::Unread(crate::image::Unused::Untold),
+            }))
+        );
     }
 
     /// D255: a managed guest's room is refused, typed, as nothing holds a managed guest
