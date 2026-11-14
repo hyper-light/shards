@@ -4165,8 +4165,8 @@ pub(crate) mod tests {
         slow: bool,
         /// Plaintext read and not yet framed.
         inbox: Vec<u8>,
-        /// The request under way: what came of it, and how much of its body is to come.
-        request: Option<(Vec<u8>, usize)>,
+        /// The request under way: what came of it, and where in its body's framing.
+        request: Option<(Vec<u8>, Framing)>,
         out: Vec<u8>,
         heads: Vec<Vec<u8>>,
         had: Vec<Had>,
@@ -4211,7 +4211,7 @@ pub(crate) mod tests {
         /// Frames what came: a head once it is whole, then its body as it comes.
         fn serve(&mut self) {
             loop {
-                let (mut request, left) = match self.request.take() {
+                let (mut request, mut framing) = match self.request.take() {
                     Some(under_way) => under_way,
                     None => {
                         let Some(end) = self.inbox.windows(4).position(|w| w == b"\r\n\r\n") else {
@@ -4226,17 +4226,31 @@ pub(crate) mod tests {
                             self.tls.writer().write_all(answer.as_bytes()).unwrap();
                             self.tls.writer().write_all(&head).unwrap();
                         }
-                        (head, len)
+                        let chunked = String::from_utf8_lossy(&head)
+                            .to_ascii_lowercase()
+                            .contains("\r\ntransfer-encoding: chunked\r\n");
+                        let framing = if chunked {
+                            Framing::Chunked(Chunk::Size(Vec::new()))
+                        } else {
+                            Framing::Length(len as u64)
+                        };
+                        (head, framing)
                     }
                 };
-                let piece: Vec<u8> = self.inbox.drain(..left.min(self.inbox.len())).collect();
+                let mut piece = Vec::new();
+                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                    let (Piece::Data(b) | Piece::Frame(b)) = p;
+                    piece.extend_from_slice(b);
+                    Ok(())
+                })
+                .unwrap();
+                self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
                 }
                 request.extend_from_slice(&piece);
-                let left = left - piece.len();
-                if left > 0 {
-                    self.request = Some((request, left));
+                if !ended {
+                    self.request = Some((request, framing));
                     return;
                 }
                 if self.answers == H1Answers::Token {
@@ -5503,6 +5517,156 @@ pub(crate) mod tests {
             one.h1().heads.is_empty() && two.h1().heads.is_empty(),
             "a refresh reached the provider"
         );
+    }
+
+    /// A POST of `chunks` to `target` at `host`, chunked (RFC 9112 §7.1), each chunk's size line
+    /// with an extension, its trailer section `trailers` (field lines, each CRLF-ended).
+    fn chunked_post(target: &str, host: &str, chunks: &[&str], trailers: &str) -> Vec<u8> {
+        let mut post = format!(
+            "POST {target} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"
+        );
+        for chunk in chunks {
+            post.push_str(&format!("{:x};piece=\"a b\"\r\n{chunk}\r\n", chunk.len()));
+        }
+        post.push_str(&format!("0\r\n{trailers}\r\n"));
+        post.into_bytes()
+    }
+
+    /// Do: on one connection of the run's Claude Code, captured before, a chunked refresh of its
+    /// refresh placeholder, its JSON split across chunks with extensions, then a chunked
+    /// revocation of it with a trailer section. Expect: neither reaching the host; the refresh
+    /// asked outside once and answered with the sign-in's placeholders; the revocation answered
+    /// 200 here, the trailer field no part of the body asked, and each request's bytes taken
+    /// whole, so that the next head is read where it starts.
+    #[test]
+    fn a_chunked_refresh_and_revocation_are_answered_outside() {
+        let root = root("shards test root");
+        let mut credentials = sign_in_credentials(&root, true);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), token_host(&root));
+        let refresh = refresh_body();
+        let (a, rest) = refresh.split_at(17);
+        let (b, c) = rest.split_at(40);
+        cli.guest
+            .writer()
+            .write_all(&chunked_post("/v1/oauth/token", TOKEN_HOST, &[a, b, c], ""))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            assert!(b.h1().heads.is_empty(), "the refresh reached the host");
+            whole(&b.got)
+        });
+        assert_eq!(broker.provider_calls, 1);
+        let answer = String::from_utf8(cli.got.clone()).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer}");
+        assert!(
+            answer.ends_with(&token_response(SIGNED_ACCESS, SIGNED_REFRESH)),
+            "{answer}"
+        );
+        assert!(!holds(&cli.got, ROTATED_REFRESH.as_bytes()));
+        cli.got.clear();
+        let revoke = format!(
+            r#"{{"token":"{SIGNED_REFRESH}","token_type_hint":"refresh_token","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e"}}"#
+        );
+        let (a, b) = revoke.split_at(9);
+        cli.guest
+            .writer()
+            .write_all(&chunked_post(
+                "/v1/oauth/token/revoke",
+                TOKEN_HOST,
+                &[a, b],
+                "X-Checksum: 1\r\nX-Other: 2\r\n",
+            ))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+            assert!(b.h1().heads.is_empty(), "the revocation reached the host");
+            whole(&b.got)
+        });
+        cli.settle(&mut credentials, &mut |c| broker.serve(c));
+        assert!(cli.got.starts_with(b"HTTP/1.1 200 OK\r\n"));
+        assert_eq!(broker.revoked, 1);
+        assert!(cli.h1().heads.is_empty(), "a request reached the provider");
+        assert!(!cli.closed, "the connection was ended");
+    }
+
+    /// Do: a chunked POST to the token path whose chunking is broken: a size line that is no
+    /// hex, a chunk's data not ended by CRLF, a control byte in an extension. Expect: refused 400
+    /// by the injector, nothing reaching the host or the provider.
+    #[test]
+    fn a_held_post_broken_in_its_chunking_is_refused() {
+        let root = root("shards test root");
+        for broken in ["zz\r\n", "5\r\nhelloXY", "5;a\x01\r\nhello\r\n0\r\n\r\n"] {
+            let mut credentials = sign_in_credentials(&root, true);
+            let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+            let mut cli = Bench::new(
+                guest(credentials.ca.der().to_vec().into(), TOKEN_HOST, None),
+                token_host(&root),
+            );
+            let post = format!(
+                "POST /v1/oauth/token HTTP/1.1\r\nHost: {TOKEN_HOST}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{broken}"
+            );
+            cli.guest.writer().write_all(post.as_bytes()).unwrap();
+            cli.until(&mut credentials, &mut |c| broker.serve(c), |b| {
+                b.closed && whole(&b.got)
+            });
+            assert!(
+                cli.got.starts_with(b"HTTP/1.1 400 Bad Request\r\n"),
+                "{broken:?}: {}",
+                String::from_utf8_lossy(&cli.got)
+            );
+            assert!(cli.h1().heads.is_empty(), "{broken:?} reached the host");
+            assert_eq!(broker.provider_calls, 0);
+        }
+    }
+
+    /// Do: over a connection that holds `TO_HOST`, as tcp.rs' does, a POST to the token path
+    /// whose body the hold cannot take whole: chunked, two chunks of `TO_HOST` octets each, and
+    /// one of a Content-Length of `TO_HOST` exactly, which fits alone but not with its head's
+    /// fields, a sixteenth of it more. Each is past the hold by more than a TLS record, which the
+    /// guest's bytes still being deframed can add to it. Expect: no stall waiting for an end the
+    /// guest has no window to send; each goes on to the host as it came, its head asking
+    /// `identity`, the host's answer reaching the guest.
+    #[test]
+    fn a_token_post_past_the_hold_goes_on() {
+        let root = root("shards test root");
+        let data: Vec<u8> = (0..crate::tcp::TO_HOST).map(|i| b'a' + (i % 26) as u8).collect();
+        let data = String::from_utf8(data).unwrap();
+        for chunked in [true, false] {
+            let mut credentials = sign_in_credentials(&root, true);
+            let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+            let mut cli = Bench::new(
+                guest(credentials.ca.der().to_vec().into(), TOKEN_HOST, None),
+                token_host(&root),
+            );
+            cli.window = crate::tcp::TO_HOST;
+            let post = if chunked {
+                chunked_post("/v1/oauth/token", TOKEN_HOST, &[&data, &data], "")
+            } else {
+                let pad = "p".repeat(data.len() / 16);
+                [
+                    format!(
+                        "POST /v1/oauth/token HTTP/1.1\r\nHost: {TOKEN_HOST}\r\nAccept-Encoding: gzip\r\nX-Pad: {pad}\r\nContent-Length: {}\r\n\r\n",
+                        data.len()
+                    )
+                    .as_bytes(),
+                    data.as_bytes(),
+                ]
+                .concat()
+            };
+            cli.guest.writer().write_all(&post).unwrap();
+            cli.until(&mut credentials, &mut |c| broker.serve(c), |b| whole(&b.got));
+            let end = post.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let had = &cli.h1().had[0].request;
+            assert!(holds(had, b"Accept-Encoding: identity\r\n") && !holds(had, b"gzip"));
+            assert!(had.starts_with(b"POST /v1/oauth/token HTTP/1.1\r\n"));
+            assert_eq!(
+                &had[had.len() - (post.len() - end)..],
+                &post[end..],
+                "chunked: {chunked}"
+            );
+            assert!(cli.got.starts_with(b"HTTP/1.1 400 Bad Request\r\n"));
+            assert_eq!(broker.provider_calls, 0);
+        }
     }
 
     /// Do: ask the endpoint that mints a key with a captured sign-in's access placeholder.
