@@ -3288,6 +3288,13 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
       the guest makes records its maker, root's too, so it stays its maker's whoever a
       later run's user is: a root run's directory refuses a later run of user 1000 (it does
       not turn into theirs). Before that, a root-made file stays unrecorded, as before.
+    - *Native nodes without owner attributes.* Device nodes retain their root owner
+      (the guest opens its own device number); unrecorded symlinks, and Linux FIFOs and
+      sockets, use init's host-file owner mapping. Classification uses their no-follow
+      stat type, never a failed ordinary-file read. These native kinds' existing lack
+      of guest owner-xattr persistence is an exception, not permission to swallow an
+      ordinary file/directory's metadata error. The runs-01 follow-up regression covers
+      host symlink/FIFO mapping and retains the root-owned-device check.
     - *Owner I/O fails closed* (runs-01, 2026-11-13). An ordinary file or directory whose
       maker cannot be persisted is removed and its creation refused with the host errno.
       Failed reads and malformed records refuse lookup; only a missing record uses the
@@ -13334,6 +13341,18 @@ the guest keeps their metadata alone.
   than it was written.
 
 ### D179. Other CPUs' images, emulated in their microVM (parts 1 to 3 built; one platform wherever a command names it)
+
+**Container facts and copy ownership** (runs-06, 2026-11-13). A container's
+`image_manifest` is its selection, even when its index's preferred platform changes.
+Inspect reads that descriptor and its config through the store's existing digest/size
+checks and OCI document/config bounds; ownership-mode copy uses those same facts.
+Only an old record with no selected manifest uses the preference. A recorded selection
+that cannot be read never falls back to another platform: inspect has no image facts,
+and copy refuses with the missing container/config identity. An available config with
+no User keeps OCI's root default; an explicit run user remains authoritative.
+The two-platform store regression changes the preference both ways, checks each selected
+User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
+ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).
 
 Images built on an arm64 Mac usually ship to x86_64 hosts, and the other way round, and a
 build for both (`--platform linux/amd64,linux/arm64`, D87) runs each platform's RUN steps.
@@ -28089,6 +28108,21 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *Every response from a granted host is masked against every value leased toward it (creds-09,
+  amended 2026-11-13).* A response's mask held the values filled into its own request alone, so a
+  request with no placeholder on a granted host's connection got a response with no mask, and a
+  host returning a value leased to the run before (an endpoint that lists keys) gave it to the
+  guest. Now, as a request goes, its mask takes its own values (creds-03) and every value the run
+  holds leased at that instant of a credential granted toward its host (`held_toward`), each the
+  mask's wiped copy until that response ends; and such a request asks `identity` and offers no
+  WebSocket extension as a filled one does (creds-04), its coded response decoded or refused
+  alike. Its bound is the run's leases toward one host, which the run's grants name. A value whose
+  lease lapsed before the request went is held nowhere in this process, so nothing of it is
+  masked: the lease's end is the run's word that the value is no longer the VM's. Tests:
+  `inject::tests::leaks`' H1 request and H2 stream with no placeholder after a filled one, their
+  responses carrying the value in a field and the body, red before (the value reached the
+  guest), green after; the held values left out of the mask, and the `identity` ask left out,
+  each fail them.
 - *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
   chunked body's framing over, so that an echo split across chunks is found; but the framing's
   bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
@@ -29915,6 +29949,13 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
   Its orchestrator hears which (`ImageGuest::started_from`, `wire::StartedFrom`, image channel
   version 19). The run's per-run secrets, its agent-control key above all (D252), are made
   after its VM is ready, so no template carries them.
+- *The preparation lease ends at readiness* (runs-05). Once launch has completed
+  readiness and template settlement, the VM owns its open rootfs and snapshot files
+  (D26). A warm host lets go of `Prepared::lease` before WARMED and before awaiting
+  CREATE; every served run does so before handoff/STARTED. The lease protects
+  preparation, not an idle spare's or workload's life, so unrelated collection can
+  acquire the store afterward. Its live collection/progress proof is owed to ROOT;
+  unit shaping tests do not prove a running VM's file ownership.
 - *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
   RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
   never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.

@@ -2056,10 +2056,11 @@ impl Server {
             caller.1
         };
         let dir = dir_fd(s, parent)?;
-        let mode = match stat_at(dir, name) {
+        let host = stat_at(dir, name);
+        let mode = match &host {
             Ok(host) => kept
                 .mode
-                .filter(|m| *m != mode_of(&host) & 0o7777 || kept.kind.is_some()),
+                .filter(|m| *m != mode_of(host) & 0o7777 || kept.kind.is_some()),
             Err(_) => kept.mode,
         };
         let owner = Owner {
@@ -2077,8 +2078,15 @@ impl Server {
         } else {
             match open_meta(dir, name, None) {
                 Ok(fd) => fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0),
-                // Native special nodes have no owner metadata here and stay root's.
-                Err(ENODATA) if kept.kind.is_none() => Ok(()),
+                // These native kinds cannot carry user.* metadata; regular files must.
+                Err(ENODATA)
+                    if kept.kind.is_none()
+                        && host
+                            .as_ref()
+                            .is_ok_and(|h| native_without_owner(mode_of(h) & S_IFMT)) =>
+                {
+                    Ok(())
+                }
                 Err(e) => Err(e),
             }
         };
@@ -2261,18 +2269,19 @@ impl NodeFd {
 /// Linux gives a special file no `user.` ones (fs/xattr.c `xattr_permission`), the
 /// owner's among them (audit V08). `known` is the node's file type where the caller has
 /// just looked at it, which spares looking again.
+/// Native devices and symlinks cannot be opened for these attributes without
+/// entering a driver or following a link. Linux also disallows user.* on FIFOs/sockets.
+fn native_without_owner(kind: u32) -> bool {
+    (DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK | S_IFLNK))
+        || (cfg!(target_os = "linux") && matches!(kind, S_IFIFO | S_IFSOCK))
+}
+
 fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
     let kind = match known {
         Some(kind) => kind,
         None => mode_of(&stat_at(dir, name)?) & S_IFMT,
     };
-    if DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK | S_IFLNK) {
-        return Err(ENODATA);
-    }
-    // Linux fs/xattr.c xattr_permission permits user.* only on regular files and
-    // directories. Never follow a symlink or open a socket to seek an absent owner.
-    #[cfg(target_os = "linux")]
-    if matches!(kind, S_IFIFO | S_IFSOCK) {
+    if native_without_owner(kind) {
         return Err(ENODATA);
     }
     open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
@@ -2381,7 +2390,26 @@ fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Er
     let unrecorded = unrecorded_owner(s, nodeid);
     let fd = match node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) {
         Ok(fd) => fd,
-        Err(ENODATA) => return Ok(Owner::default()),
+        Err(ENODATA) => {
+            let found;
+            let st = match st {
+                Some(st) => st,
+                None => {
+                    found = node_stat(s, nodeid)?;
+                    &found
+                }
+            };
+            let kind = mode_of(st) & S_IFMT;
+            if !native_without_owner(kind) {
+                return Err(ENODATA);
+            }
+            // Devices remain root's; an unrecorded link/FIFO/socket is a host file.
+            return Ok(if matches!(kind, S_IFCHR | S_IFBLK) {
+                Owner::default()
+            } else {
+                unrecorded
+            });
+        }
         Err(e) => return Err(e),
     };
     match fget_xattr(fd.raw(), &owner_xattr()?)? {
@@ -3932,6 +3960,24 @@ mod tests {
             );
             assert_eq!(owned(&devs, ROOT, "null").1, 0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unrecorded_nondevice_nodes_keep_the_runs_user() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (path, s) = dir();
+        std::fs::write(path.join("target"), b"host").unwrap();
+        std::os::unix::fs::symlink("target", path.join("link")).unwrap();
+        let fifo = CString::new(path.join("fifo").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a live NUL-terminated path of this test's disposable FIFO.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        assert_eq!(owned(&s, ROOT, "link").1, 1000);
+        assert_eq!(owned(&s, ROOT, "fifo").1, 1000);
     }
 
     /// A metadata failure must never turn a guest-made node into the next user's file.
