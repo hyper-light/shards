@@ -11920,6 +11920,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     10.5 ms in, its stand-in still for 3.72 ms past a kept W* of 2.10 ms. `cold_kind` and
     `cold_heard` remove the kept record before the kind's first wait in the process, as
     `cold_patience` does; `a_stopped_…` asserts its teaching wait is not judged.
+  - *A test begins its waits once its daemon has settled its clients' slots* (2026-11-14,
+    judgecli; ROOT's choice of the test's premise over the judge). `a_wait_is_refused_though_its_own_polls_outlast_w_star`
+    was not refused at its look past its first poll on HVF (2 of 4 whole-binary runs), its
+    account "its last progress its daemon N ran": the `shards ps` that started its daemon
+    took a request slot, which the daemon replaces and removes after the client has gone
+    (slots.rs `make_slots`, PM M255), and on a busy host that work landed in the judged
+    window, the party's real progress. Measured on adas-mac-studio.local: a settled daemon
+    ran nothing (`sample`: its 8 threads blocked in 1599 of 1599 samples over 2 s; 0 ns of
+    CPU for 1 to 3 s after `ps` returned, 3 of 3 starts, quiet), and with 14 or 28 busy loops
+    started before it, 65 to 73 µs of CPU 5.3 to 5.9 ms after `ps` returned in 2 of 6 starts.
+    The judge stays as it is: a daemon's run after a client of the waiter's own is real
+    work, and discounting it would refuse waits on a daemon working after a detached client.
+    `common::settled(home)` waits, as a `Patience` (no clock; the daemon's work its
+    progress), until each list (`shards_ipc::slots::FREE`, `FREE_STREAMS`) holds `OFFERED`
+    records unread (FIONREAD of a reader of its own, as `Requests::waiting` counts them) and
+    `requests/` names no slot past them; the test calls it before its waits. Unread on
+    Windows, whose slots are pipe instances no listing shows.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
