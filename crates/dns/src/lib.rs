@@ -735,6 +735,95 @@ mod tests {
         assert_eq!(a_records(&reply).unwrap().ttl, 1, "the shortest lifetime wins");
     }
 
+    /// A record answering a question here, of `class`, `kind`, a TTL of 60 and `data`,
+    /// owned by the name the labels `owner` spell, or `0xc0 0x0c`'s (the question's).
+    fn rr(owner: &[u8], kind: u16, class: u16, data: &[u8]) -> Vec<u8> {
+        let mut r = owner.to_vec();
+        r.extend_from_slice(&kind.to_be_bytes());
+        r.extend_from_slice(&class.to_be_bytes());
+        r.extend_from_slice(&60u32.to_be_bytes());
+        r.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        r.extend_from_slice(data);
+        r
+    }
+
+    /// A response to `q` with `rcode` and these answers.
+    fn response(q: &[u8], rcode: u8, answers: &[Vec<u8>]) -> Vec<u8> {
+        let mut r = q.to_vec();
+        r[2] |= 0x80;
+        r[3] = (r[3] & 0xf0) | rcode;
+        r[6..8].copy_from_slice(&(answers.len() as u16).to_be_bytes());
+        for a in answers {
+            r.extend_from_slice(a);
+        }
+        r
+    }
+
+    /// network-11: a response's addresses are the question's name's alone: records of
+    /// another owner or class, of the other address type, or past the end of its CNAME
+    /// chain say nothing of it, nor does a response that is truncated or an error, so none
+    /// of those addresses becomes the granted name's (D59, D192, D236).
+    #[test]
+    fn only_the_asked_names_own_records_are_its_addresses() {
+        const CNAME: u16 = 5;
+        const CHAOS: u16 = 3;
+        let forbidden = IpAddr::from([203, 0, 113, 9]);
+        let q = query("allowed.example", TYPE_A);
+        let elsewhere = b"\x09forbidden\x07example\x00";
+        let at = |r: &[u8]| a_records(r).map(|found| found.addresses);
+        for (what, answer) in [
+            ("another owner of another class", rr(elsewhere, TYPE_A, CHAOS, &[203, 0, 113, 9])),
+            ("another owner", rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])),
+            ("the name's, of another class", rr(&[0xc0, 0x0c], TYPE_A, CHAOS, &[203, 0, 113, 9])),
+        ] {
+            let got = at(&response(&q, NOERROR, &[answer]));
+            assert!(!got.is_some_and(|a| a.contains(&forbidden)), "{what}");
+        }
+        // An AAAA record answers no A question.
+        let six: Ipv6Addr = "2001:db8::9".parse().unwrap();
+        let got = at(&response(&q, NOERROR, &[rr(&[0xc0, 0x0c], TYPE_AAAA, CLASS_IN, &six.octets())]));
+        assert_eq!(got, Some(Vec::new()));
+        // An error (NXDOMAIN) or a truncated response with records says no addresses.
+        let own = rr(&[0xc0, 0x0c], TYPE_A, CLASS_IN, &[203, 0, 113, 9]);
+        assert_eq!(at(&response(&q, 3, std::slice::from_ref(&own))), None, "NXDOMAIN");
+        assert_eq!(at(&response(&q, SERVFAIL, std::slice::from_ref(&own))), None, "SERVFAIL");
+        let mut cut = response(&q, NOERROR, std::slice::from_ref(&own));
+        cut[2] |= 0x02;
+        assert_eq!(at(&cut), None, "truncated");
+        // A CNAME chain, its targets by labels and by pointer, ends at the name whose
+        // addresses they are; an address of a name the chain passed is none of them.
+        let cdn_at = q.len() + 12;
+        let answers = [
+            rr(&[0xc0, 0x0c], CNAME, CLASS_IN, b"\x03cdn\x07example\x00"),
+            rr(&[0xc0, cdn_at as u8], TYPE_A, CLASS_IN, &[192, 0, 2, 7]),
+            rr(b"\x03CDN\x07example\x00", TYPE_A, CLASS_IN, &[192, 0, 2, 8]),
+            rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9]),
+        ];
+        let reply = response(&q, NOERROR, &answers);
+        assert_eq!(
+            a_records(&reply),
+            Some(Resolved {
+                name: "allowed.example".to_string(),
+                kind: AddressKind::A,
+                addresses: vec![IpAddr::from([192, 0, 2, 7]), IpAddr::from([192, 0, 2, 8])],
+                ttl: 60,
+            })
+        );
+        // A chain that loops resolves to nothing.
+        let looped = [
+            rr(&[0xc0, 0x0c], CNAME, CLASS_IN, b"\x03cdn\x07example\x00"),
+            rr(&[0xc0, cdn_at as u8], CNAME, CLASS_IN, &[0xc0, 0x0c]),
+            rr(&[0xc0, 0x0c], TYPE_A, CLASS_IN, &[203, 0, 113, 9]),
+        ];
+        assert_eq!(at(&response(&q, NOERROR, &looped)), None, "a loop");
+        // So too over TCP: the stream learns no other name's address as the granted one's.
+        let mut s = Stream::new(false, vec!["allowed.example".into()]);
+        s.from_guest(&framed_msg(&q));
+        let other = response(&q, NOERROR, &[rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])]);
+        s.from_host(&framed_msg(&other));
+        assert!(s.learned.iter().all(|found| !found.addresses.contains(&forbidden)));
+    }
+
     #[test]
     fn tcp_questions_go_on_whole_and_only_as_granted() {
         let mut s = Stream::new(false, vec!["mcp.example".into()]);
