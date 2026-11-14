@@ -4067,6 +4067,26 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 - **Sizes by the structure.** KVM's x86-64 structures are each exactly their ioctl's size;
   its XSAVE area at least `struct kvm_xsave`'s and at most what its own CPUID says (leaf
   0DH's ECX, which KVM's KVM_CAP_XSAVE2 says the same of); WHP's APIC state its register page.
+  An XSAVE area of another size than the restoring host's (another host's, D176 part 6) is
+  laid into one of this host's KVM_CAP_XSAVE2 size (amended 2026-11-14, review finding
+  migrate-07): KVM_SET_XSAVE reads that many bytes, and "the offsets of the state save areas
+  in struct kvm_xsave follow the contents of CPUID leaf 0xD on the host" (api.rst §4.43), so
+  `arch::x86_64::xsave::lay_into` keeps the legacy region and header as saved and puts each
+  component the guest enabled (XCR0, from its saved XCRs) or holds (XSTATE_BV) where both
+  hosts' leaf 0xD lay it out alike: the saved vCPU's CPUID, as its own host's KVM offered it,
+  and this host's; the rest is zeros, the initial state XRSTOR gives a component its
+  XSTATE_BV leaves clear (Intel SDM Vol. 1 §13.8.1). A component laid out otherwise or
+  nowhere, a compacted area, one shorter than its header or past either area is refused
+  typed (`XsaveRefused`, `hv::kvm::Error::Xsave`), after the CPU coverage check and before
+  anything of the vCPU is set. Before, an area shorter than this host's was refused: a
+  non-AMX host's 4096 bytes on an AMX host's 11008, under a baseline without AMX. No literal
+  is chosen: the offsets and sizes are the two hosts' CPUID, the header's the SDM's (512 and
+  64 bytes, §13.4.1-13.4.2). Held by `a_smaller_hosts_xsave_area_is_laid_into_a_larger_ones`,
+  `an_xsave_area_laid_out_otherwise_is_refused` and `xcr0_is_read_from_a_vcpus_xcrs`. Owed to
+  ROOT: a move between a non-AMX and an AMX host of one vendor under their common baseline
+  (`SHARDS_MOVE_INVITE=<destination-invitation-file> cargo test -p shards --test moved
+  a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections`), its guest's
+  vector registers checked after.
 - **The hypervisor judges what only it sizes.** A GIC's state on arm64 is its backend's own
   serialization: KVM's and WHP's restores bound theirs (the writes above; WinHvPlatformDefs.h's
   layouts), and Hypervisor.framework refuses a state not its own. WHP's XSAVE area is as long
