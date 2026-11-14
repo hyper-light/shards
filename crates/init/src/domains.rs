@@ -4086,6 +4086,8 @@ mod tests {
                     hide: Vec::new(),
                     hostname: CString::default(),
                     argv: argv.to_vec(),
+                    paths: vec![c"/bin/cat".into()],
+                    explicit: true,
                     envp: vec![std::ptr::null()],
                     hosts: None,
                     resolv: None,

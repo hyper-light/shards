@@ -166,6 +166,36 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Change the applicable runtime capacity/resource envelope and show admission follows its authoritative input rather than 16384; exercise cold start and overflow/loss outcomes separately.
 
+### confine-10 — P1 / high — member exec cannot use its member's signal or abstract-socket scope
+
+**Author:** ROOT, assigned 2026-11-13 after confine-03 through confine-09.
+
+**Location:** `crates/init/src/enter.rs` (`child`, entering confinement independently);
+`docs/design/architecture.md` D243, *Its own Landlock domain*.
+
+**Defect:** Each exec enters a sibling Landlock domain, so signal and abstract Unix
+socket scopes prevent it from interacting with the member's existing processes and
+abstract sockets, breaking exec compatibility.
+
+**Scenario:** `docker exec <c> kill 1`, `pkill`, supervisor CLIs and abstract-socket
+clients must reach their member. Their exec currently has the correct uid and member
+namespaces but is refused by the sibling-domain scope.
+
+**Evidence:** D243 explicitly documents the sibling-domain limitation. Reusing the
+same ruleset fd (confine-01) preserves filesystem grants but a second
+`landlock_restrict_self` still creates a separate domain; it does not join the
+member's existing domain. The required red is an exec signaling a member process and
+connecting to its abstract socket. Runtime reproduction for this new item is pending.
+
+**Fix direction (ROOT):** A trusted starter held by the member's first process, inside
+its Landlock domain, seccomp filter, cgroup and PID namespace, forks execs on a private
+init-only channel. Executables inherit the member's exact domain and no wider rights.
+Member code must never inherit or reach the starter's control channel. Refuse by type
+when the starter is gone. Amend D243; record any design blocker with evidence and stop.
+
+**Confidence:** ROOT's confirmed design/compatibility finding; this lane's red test is
+pending. Work begins after the earlier assigned list.
+
 ## Checked and found sound
 
 - The exec admission fix separates `DOOR` from `WAITERS`, admits while registration holds the waiter lock, matches a complete HELLO by token, and uses nonblocking candidate sockets (`vm/mod.rs:2461`). Token comparison is whole and constant-time. No source-proven recurrence of the ordinary 64-exec busy-lock hang was found. `EXEC_FAILED`, signal-link failure and listener closure resolve their pending waiters. This is source inspection, not a 64-exec pass.
