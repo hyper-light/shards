@@ -2249,7 +2249,7 @@ audit's "Security and test coverage").
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
     runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
     the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2257,19 +2257,23 @@ audit's "Security and test coverage").
     restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
     process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
     kick's does, and runs again.
-    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
-      after as long as the caller's own restriction took (the cold start), then as long
-      as the last answer took, twice as long each time one is still awaited (saturating),
-      at least the monotonic clock's resolution. A short wait only looks sooner.
-    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
-      the second after a wait as long as all before it, waits with it blocked: Mesa's
-      threads block every signal for their lives (u_thread_create). It cannot be asked,
-      and the layer fails, closed: a seal's failure hands its run to another VM
-      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
-      which one look may meet.
+    - Whether a thread can answer is read, not guessed: one that blocks the signal, or a
+      process that ignores it (`/proc/self/task/TID/status`, `SigBlk` and `SigIgn`),
+      cannot, and the layer fails at once, closed, typed (`asked::Unasked::Deaf`): a
+      seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
+      pthread_create blocks every signal for a moment, which a look may meet; that run
+      fails closed too.
+    - Any other thread is waited for as long as it lives, with no timeout and no
+      constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
+      pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls
+      readable as it exits) wakes the wait. A thread that entered its exit as it was asked
+      never answers, and ends. Where the ABI asks each thread (before v8), the filter
+      allows a pidfd of any thread (`pidfd_open` with `PIDFD_THREAD`, its rule beside the
+      one for its own pid: `seccomp` rules on two arguments add up): that says whether a
+      host thread lives, and nothing else a VM process may use (no pidfd_send_signal,
+      pidfd_getfd, setns or waitid) [PM M568].
     - Unverified limits: a thread id reused within one pass would need the kernel's ids
-      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
-      waited for.
+      to wrap as it runs.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
@@ -2571,8 +2575,12 @@ stack inside the VMM, is superseded by it.
   seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
   the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
   is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
-  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
-  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+  Focused amd64 checks pass. Native arm64 GNU unit tests at 53e89b2b8 observe
+  an additional installed filter at the startup boundary and termination on a
+  forbidden syscall; both network crates pass clippy. The compiler is shared
+  with the VM process, including platform-01/02/04 at a729003e9; the initial
+  allowlist uses `compile`, while the VM's later restrictions use `seccomp::layer`.
+  Musl and carried-helper VM smoke remain owed to ROOT/CI. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN
@@ -6973,7 +6981,7 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   Namespaces" and CreateFileW's documentation, the only sources of the set; no number is
   chosen. Linux and macOS take each such name as the name it is there. Refusals are typed
   (`NotAName`), before any file is opened. The build's other words that name paths (`--file`,
-  `--output dest=`, `--iidfile`, a tree's) are not yet held to the copy: owed, below.
+  `--output dest=`, `--iidfile`, a tree's) are held to the copies by remote-09, below.
 - **A client is its key as its connection proved it, judged for each operation (remote-03).**
   The listener judged a connection's key once and kept the client's name: a removed client's
   held connection, or the old key of a name enrolled again under another key, ran new
@@ -6999,11 +7007,44 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   closed `REVOKED`, its `cat` hung up, the name's new key served) and
   `a_removed_clients_connection_closes_as_the_daemon_is_told` (closed at once, a client still
   enrolled served on), `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`.
+- **A build step names no path but its client's copies (remote-09).** remote-01 held a build
+  step's words to a build's, but not their paths: `placed` passed every value that is no
+  marker through, so `--output=type=local,dest=/any/dir` wrote this machine's files
+  (`red_remote09_a_build_steps_output_names_this_machines_path`). `synced::named_paths` now
+  enumerates every path buildx v0.37.1's build grammar takes (crates/cmdline BUILD's
+  path-typed values: the context's argument, `--file`, `--iidfile`, `--metadata-file`,
+  `--output`'s `dest`, `--cache-from` and `--cache-to`'s `src` and `dest`, `--build-context`'s
+  path and `oci-layout://` directory, `--secret`'s `src`, `--ssh`'s paths and `--policy`'s
+  `filename`; its other flags name none). An agent's, harness's or MCP server's build names its
+  directory alone. Each is judged twice:
+  - **Before any file comes** (`held_to_copies`, `Refused::NotHeld`). Each path must be its
+    copy's marker form: the context is `\0context`; the build file is a `\0dockerfile/NAME`;
+    anything written is an `\0out/NAME`; anything read beside the context is a `\0tree/KEY`
+    of 64 hex digits; a secret is one of the `\0secret/N` the step sends (N below their
+    count); an agent is an `\0agent/ID`; and a policy's file is a name within the context.
+    Each NAME and each part is one file's name by `name_alone`, so Windows' forms count.
+    `--secret type=env`, a secret of no `src`, and `--ssh` of no path read the machine's own
+    environment or agent, and are refused as `NotHeld::Machines`.
+  - **Where the build runs for a client** (`refused_for_client`, of `SHARDS_CLIENT`, in
+    `build::build` and the artifacts' `build`). Each placed path must lie beneath the client's
+    copies (`HOME/synced/CLIENT`), lexically and part by part, with no part `..`, a root or a
+    prefix. A secret's or an agent's path must be a descriptor the build was given
+    (`/dev/fd/N`).
+
+  The client's own shards sends nothing else (`context::tests::what_a_client_sends_of_a_build_is_held_to_its_copies`).
+  A path the client sent as it was given because no directory of that name was there (a
+  `--cache-from` or `--build-context` it lacks, a policy outside its context) is now refused
+  on the machine rather than by the build. No number is chosen: the markers and buildx's
+  grammar are the bounds. Tested: `synced::tests::a_clients_build_names_no_path_but_its_copies`,
+  `a_placed_build_names_nothing_outside_its_copies`, `a_build_run_for_a_client_refuses_this_machines_paths`
+  and `daemon::remote::tests::a_build_step_naming_this_machines_path_is_refused_before_its_files`.
 - **Owed (ROOT's).** The real-daemon E2E of each: tests/context.rs's removal with an Engine API
   keep-alive connection held across it and a native connection held across a removal and a
   re-enrollment of its name; a client's raw `--context` and `\0sync build` requests; a Windows
-  listener receiving `C:context`. The per-call record read's cost (R14). A build step's
-  path-naming words held to the copy (above).
+  listener receiving `C:context`; a client's crafted `\0sync build` naming
+  `--output dest=`, `--iidfile`, `--file` and `--secret src=` paths of the machine's, refused
+  with nothing written, and a context build of every path-typed flag still served. The per-call
+  record read's cost (R14).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -9867,6 +9908,9 @@ template pays it once; what its restores pay is to be measured with mappings.
   blocks).
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
+
+Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
+
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a

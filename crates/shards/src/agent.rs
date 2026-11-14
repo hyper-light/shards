@@ -56,6 +56,17 @@ pub fn command(word: &str, args: impl Iterator<Item = OsString>) -> ExitCode {
             let _ = writeln!(io::stdout(), "{text}");
             return Ok(());
         }
+        // A client's build names no directory of this machine's but its own copy's
+        // (remote-09).
+        if action == "build" {
+            let words: Vec<String> = [word.to_string(), action.clone()]
+                .into_iter()
+                .chain(rest.iter().cloned())
+                .collect();
+            if let Some(why) = crate::synced::refused_for_client(&words) {
+                return Err(why);
+            }
+        }
         match action.as_str() {
             "build" => build(kind, rest),
             "push" => push(kind, rest),

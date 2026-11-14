@@ -7687,9 +7687,12 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
 
 **network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
 (Linux amd64) ran three focused network confinement tests and clippy for
-shards-net/shards-net-process, all passing. Native arm64 execution is owed;
-removing the arm64 startup omission is not an arm64 measured result. No VM or
-performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+shards-net/shards-net-process, all passing. Subsequent native ARM GNU evidence
+on adas-mac-studio-3.local's Docker Desktop (Linux aarch64, Rust 1.98.1):
+46e739f13's startup test failed with Seccomp=0; at 53e89b2b8 it passes with one
+additional installed filter, and the forbidden-syscall termination test passes.
+Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
+No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 
 ### M211. The limits a build's `RUN` step starts with
 
@@ -17811,6 +17814,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
+
+
 - **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
 
 
@@ -24251,6 +24257,19 @@ said Ok and the thread read the file: red. `cargo test -p shards-vm-process conf
 kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed to ROOT:
 VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
 through L1, and one on a kernel of ABI 5 to 7.
+
+Amended 2026-11-13 (ROOT: R03, the wait's doubling was a chosen multiplier, D222). The
+wait has no timeout now: an asked thread's answer (an eventfd) or its end (its thread
+pidfd, PIDFD_THREAD) wakes it, and a thread that blocks the asking signal, or a process
+that ignores it (SigBlk, SigIgn), fails the layer at once, typed (`Unasked::Deaf`). On
+adacachy2, `cargo test -p shards-vm-process confine::` 11 of 11, the asked pass run under
+the filter an ABI-5 host has (`confine_as(5)`), `-p shards-syscall-filter` 9 of 9 (rules
+on two arguments added up, against the instruction model), clippy clean for both.
+Mutants, each red: the SigBlk/SigIgn check dropped, the deaf test's pass waited until
+the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
+`a_wait_for_an_answer_ends_with_the_answer_or_the_thread` timed out on a thread that
+ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
+trapped under that filter (exit 159).
 
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 

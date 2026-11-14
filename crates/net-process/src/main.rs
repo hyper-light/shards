@@ -243,10 +243,80 @@ fn run() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     shards_net::confine::at_start(proxy).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
-    shards_net::confine::filter().map_err(|e| format!("its seccomp filter: {e}"))?;
+    syscall_filter().map_err(|e| format!("its seccomp filter: {e}"))?;
     #[cfg(not(target_os = "linux"))]
     let _ = proxy;
     shards_net::serve(region, me, peer, cfg, prepared, controls).map_err(|e| e.to_string())
+}
+
+/// The startup syscall boundary, also exercised without a VM by the native Linux test.
+#[cfg(target_os = "linux")]
+fn syscall_filter() -> std::io::Result<()> {
+    shards_net::confine::filter()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::io::Read as _;
+    use std::os::fd::AsRawFd as _;
+
+    #[test]
+    fn startup_installs_a_native_seccomp_filter() {
+        let field = |status: &str, name: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .and_then(|value| value.parse::<u32>().ok())
+        };
+        let before = std::fs::read_to_string("/proc/self/status").unwrap();
+        let filters = field(&before, "Seccomp_filters:\t").unwrap();
+        let (mut ready, say_ready) = std::io::pipe().unwrap();
+        let (wait, release) = std::io::pipe().unwrap();
+        // SAFETY: forked child uses only the startup filter and raw descriptor syscalls,
+        // then exit_group; none of the test harness's other threads are touched.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: discard the child's inherited copies of the parent's pipe ends;
+            // otherwise its own writer would prevent EOF when the parent releases it.
+            unsafe {
+                libc::close(ready.as_raw_fd());
+                libc::close(release.as_raw_fd());
+            }
+            let installed = u8::from(super::syscall_filter().is_ok());
+            // SAFETY: one-byte buffers and descriptors held by this child. The parent
+            // observes /proc while read keeps this exact process alive.
+            unsafe {
+                libc::write(say_ready.as_raw_fd(), (&raw const installed).cast(), 1);
+                let mut end = [0u8];
+                libc::read(wait.as_raw_fd(), end.as_mut_ptr().cast(), end.len());
+                libc::syscall(libc::SYS_exit_group, 0);
+            }
+        }
+        drop(say_ready);
+        drop(wait);
+        let mut installed = [0];
+        ready.read_exact(&mut installed).unwrap();
+        let observed = std::fs::read_to_string(format!("/proc/{pid}/status"));
+        drop(release);
+        let mut status = 0;
+        // SAFETY: reaping only the child created here; before asserting the verdict.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert_eq!(installed, [1]);
+        let observed = observed.unwrap();
+        assert_eq!(
+            field(&observed, "Seccomp:\t"),
+            Some(2),
+            "startup left its child unfiltered"
+        );
+        assert_eq!(
+            field(&observed, "Seccomp_filters:\t"),
+            filters.checked_add(1),
+            "an inherited filter must not stand in for startup's own filter"
+        );
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
 }
 
 /// On Windows (D142): in an AppContainer of its own from its start, holding the network's
