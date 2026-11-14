@@ -3391,6 +3391,47 @@ mod hosted {
             Ok(())
         }
 
+        /// Ends `key`'s channel `end`: what waits of it goes first, its room or not, as no
+        /// credit after its end could let it go: at most one record's, as `grant` grants the
+        /// guest none while anything waits.
+        fn end_channel(&self, flows: &mut Flows, key: (u32, Channel), end: wire::StreamEnd) -> io::Result<()> {
+            flows.ended.insert(key, true);
+            let rest = flows.waiting.remove(&key).unwrap_or_default();
+            if !rest.is_empty() {
+                self.answers.send(
+                    wire::to_client::OUTPUT,
+                    &[&wire::Output::head(key.0, key.1), &rest],
+                )?;
+            }
+            let end = wire::OutputEnd {
+                member: key.0,
+                channel: key.1,
+                end,
+            };
+            self.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()])
+        }
+
+        /// Its VM's capture over, ends cut every channel its orchestrator was told of or gave
+        /// room to that has no end (control-01's follow-up): nothing more of it can come, so
+        /// what this host holds of it goes, and its end says it was cut, `Aborted(CUT)`,
+        /// rather than its orchestrator waiting for this process's exit to learn it ended.
+        fn cut(&self) -> io::Result<()> {
+            let mut flows = lock(&self.flows);
+            let known: std::collections::HashSet<(u32, Channel)> = flows
+                .room
+                .keys()
+                .chain(flows.granted.keys())
+                .chain(flows.waiting.keys())
+                .copied()
+                .collect();
+            for key in known {
+                if !flows.ended.get(&key).copied().unwrap_or(false) {
+                    self.end_channel(&mut flows, key, wire::StreamEnd::Aborted(CUT))?;
+                }
+            }
+            Ok(())
+        }
+
         /// Sends what waits of `key`'s channel within the orchestrator's room.
         fn flush(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
             let room = flows.room.entry(key).or_insert(0);
@@ -3409,6 +3450,11 @@ mod hosted {
             Ok(())
         }
     }
+
+    /// The errno a channel cut by its VM's capture's end is aborted with: ECONNRESET's Linux
+    /// number (include/uapi/asm-generic/errno.h), as the stream it came on ended under it; a
+    /// guest's errno, as init's own aborts are, whatever this host's own numbers.
+    const CUT: i32 = 104;
 
     fn kind_credit() -> u8 {
         protocol::kind::MANAGED_CREDIT
@@ -4714,9 +4760,14 @@ mod hosted {
     /// in its header or malformed, a record it cannot hold or read) or cannot send its
     /// orchestrator what it has, the run fails in those words: its asks' end
     /// ([`super::AsksEnd`]), and `vm`, its VM, killed for it, so that no run waits for its
-    /// `STOP` on a failure its host saw (D258).
+    /// `STOP` on a failure its host saw (D258). However its reads end, every channel without
+    /// an end is then ended cut (`Live::cut`), what this host held of it first.
     fn records(live: &Live<'_>, capture: Stream, vm: &shards_ipc::Child) {
-        if let Err(why) = read_records(live, capture) {
+        let read = read_records(live, capture);
+        let cut = live
+            .cut()
+            .map_err(|e| format!("its answers to its orchestrator: {e}"));
+        if let Err(why) = read.and(cut) {
             super::say(format_args!("its asks ended: {why}"));
             lock(&live.asks_end).get_or_insert(super::AsksEnd::Failed(why));
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
@@ -4755,26 +4806,9 @@ mod hosted {
                     flows.waiting.entry(key).or_default().extend_from_slice(bytes);
                     live.flush(&mut flows, key)
                 }
-                managed::Event::End | managed::Event::Aborted(_) => {
-                    flows.ended.insert(key, true);
-                    // What waits of it goes first, as its room allows; the rest with its end.
-                    let rest = flows.waiting.remove(&key).unwrap_or_default();
-                    let mut sent = Ok(());
-                    if !rest.is_empty() {
-                        sent = live.answers.send(
-                            wire::to_client::OUTPUT,
-                            &[&wire::Output::head(key.0, key.1), &rest],
-                        );
-                    }
-                    let end = wire::OutputEnd {
-                        member: key.0,
-                        channel: key.1,
-                        end: match parsed.event {
-                            managed::Event::Aborted(errno) => wire::StreamEnd::Aborted(errno),
-                            _ => wire::StreamEnd::Closed,
-                        },
-                    };
-                    sent.and_then(|()| live.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()]))
+                managed::Event::End => live.end_channel(&mut flows, key, wire::StreamEnd::Closed),
+                managed::Event::Aborted(errno) => {
+                    live.end_channel(&mut flows, key, wire::StreamEnd::Aborted(errno))
                 }
             };
             sent.map_err(|e| format!("its answers to its orchestrator: {e}"))?;
@@ -5412,6 +5446,96 @@ mod hosted {
                     let _ = vm.wait();
                 }
             }
+        }
+
+        /// What an `Answers` wrote, read back by the test.
+        #[derive(Clone, Default)]
+        struct Said(std::sync::Arc<Mutex<Vec<u8>>>);
+
+        impl io::Write for Said {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                lock(&self.0).extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        /// A member's bytes its host held past its orchestrator's room reach the orchestrator,
+        /// and the channel's end says it was cut, as its VM's capture ends without the
+        /// channel's end (control-01's follow-up, docs/bugs/2026-11-13/control.md). Do: give
+        /// member 1's stdout 5 bytes of room and the other channel the orchestrator pumps,
+        /// its stderr, room too; have the VM bring a record of 10 bytes of stdout, then end
+        /// its capture. Expect: the 5 the room took, then the 5 held, then each channel's end,
+        /// `Aborted` with ECONNRESET's Linux number, and nothing more. Before, the 5 held and
+        /// both ends were dropped: the orchestrator's pipes waited for its host's exit, and
+        /// ended short.
+        #[test]
+        fn bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut() {
+            let dir = shards_testdir::TempDir::new("api-cut").unwrap();
+            let said = Said::default();
+            let answers = super::super::Answers(Mutex::new(Box::new(said.clone())));
+            let (capture, its_vms) = Stream::pair().unwrap();
+            let (link, _vm_link) = Stream::pair().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            {
+                let mut flows = lock(&live.flows);
+                flows.room.insert((1, Channel::Stdout), 5);
+                flows.room.insert((1, Channel::Stderr), 4096);
+            }
+            let record = managed::Record {
+                member: 1,
+                channel: managed::Channel::Stdout,
+                offset: 0,
+                event: managed::Event::Data(b"0123456789"),
+            };
+            let mut bytes = vec![0u8; record.encoded_len().unwrap()];
+            record.encode(&mut bytes).unwrap();
+            (&its_vms)
+                .write_all(&protocol::header(protocol::kind::MANAGED, bytes.len() as u32))
+                .unwrap();
+            (&its_vms).write_all(&bytes).unwrap();
+            drop(its_vms);
+            let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
+            let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+            records(&live, capture, &vm);
+            assert_eq!(*lock(&live.asks_end), None);
+            let _ = vm.kill(libc::SIGKILL);
+            let _ = vm.wait();
+            let all = lock(&said.0).clone();
+            let mut from = &all[..];
+            let mut out = Vec::new();
+            let mut ends = Vec::new();
+            while let Some((kind, payload)) = wire::read_frame(&mut from).unwrap() {
+                match kind {
+                    wire::to_client::OUTPUT => {
+                        let o = wire::Output::decode(&payload).unwrap();
+                        assert!(
+                            !ends.iter().any(|e: &wire::OutputEnd| e.channel == o.channel),
+                            "output after its channel's end"
+                        );
+                        out.push((o.member, o.channel, o.bytes));
+                    }
+                    wire::to_client::OUTPUT_END => ends.push(wire::OutputEnd::decode(&payload).unwrap()),
+                    other => panic!("an answer of kind {other}"),
+                }
+            }
+            assert_eq!(
+                out,
+                [
+                    (1, Channel::Stdout, b"01234".to_vec()),
+                    (1, Channel::Stdout, b"56789".to_vec())
+                ]
+            );
+            ends.sort_by_key(|e| e.channel as u8);
+            let cut = |channel| wire::OutputEnd {
+                member: 1,
+                channel,
+                end: wire::StreamEnd::Aborted(104),
+            };
+            assert_eq!(ends, [cut(Channel::Stdout), cut(Channel::Stderr)]);
         }
 
         /// A run's share process ends as its run ends, by its own going: [`Shares::end`]
