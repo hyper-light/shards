@@ -12470,6 +12470,32 @@ CPU in 17.694042ms".
   harness binary (r42, the test's first form): its 27 others passed, 3 ignored; clippy of shards (`--all-targets -D warnings`) clean.
   Owed (ROOT): `cargo test -p shards --profile test-release --test moved --
   --test-threads=1` on HVF and KVM.
+- *The old kind's record.* The closure's kind (moved.rs:629:9's `STREAM` record under
+  `target/judge-records`) is read by no wait now: no code reads a kept record of an old
+  kind, and each new site starts cold. The file is inert test-target data; it may be
+  deleted, and no migration is needed.
+- *Not reproduced: a build's refusal in nesting.rs* (HVF, adas-mac-studio.local, main
+  f8f303ae7, `--test-threads=1`, beside other work on that Mac):
+  `a_deadline_given_through_shards_api_is_met_or_said_passed` panicked at nesting.rs:147:14 (`Home::build`'s
+  `shards build image -q -t nesting:1 …`), "made no progress for 731.985502ms, past the
+  slowest answer of its kind seen on this host (389.415459ms), 790.740459ms into its
+  wait". Its account (party, last progress, hold) was not kept. Run again at f8f303ae7
+  with the same warm target, `cargo test -p shards --profile test-release --test nesting
+  -- --test-threads=1`, 20 times beside a cold `cargo build -p shards --profile
+  test-release --tests` of a separate clone (kiln r106, every run's output kept in
+  adas-mac-studio.local:~/g121-tmp/moved-judge-diag/runs): 20 of 20 green, no refusal; and
+  twice unfiltered, side by side: green. The judge is unchanged for it (R09). Two
+  candidates, unconfirmed:
+  - *A party gap in code.* `common::served()`'s registry is threads of the test process
+    (`registry_serving_at`), and a judged command's party is its client, its home's daemon
+    and their descendants by parent, never the test process: a build or pull from it
+    waits on work no party counts. Each request also clones the whole image (manifest and
+    every blob) under one `Mutex` (`image.lock().unwrap().clone()`), so a request waits
+    on others' clones. This gap is real whether or not it caused this refusal.
+  - *Disk I/O with no CPU.* A daemon blocked in an APFS write or fsync runs no CPU, and
+    D215's look does not find it `Held` (runnable on no CPU, or stalled on memory).
+  Owed (ROOT): that command looped on HVF until a refusal, its whole account kept (the
+  "--- its wait" block, stdout/stderr and its process dump).
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
