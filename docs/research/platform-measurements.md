@@ -23890,6 +23890,13 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   [commands and R01–R16 account](measurements/control-fixes-v1/README.md). Real-VM
   aborted-lane resource counts remain ROOT's.
 
+- **Control-03 follow-up (2026-11-13).** The MCP stdio bridge's downward BrokenPipe
+  joined a thread blocked on open idle stdin (red dee36cb5f: Timeout). Its stdio is now
+  owned descriptor loop as landed by inithex-03 (f7d83f73a), whose fix arrived on main
+  before this lane landed; that production implementation was preserved at merge.
+  This lane's candidate at 0a15e5da9 had passed 6 MCP/5 engine/6 lane tests and clippy
+  on adacachy2, but was superseded before landing. The merged guard adds the symmetric
+  input-failure case to inithex-03's tests; [commands, source and remaining VM proof](measurements/control-fixes-v1/README.md).
 - **Control-01 follow-up (2026-11-13).** An orchestrator's session ended a member channel's
   pipe at its first credit refused by the run's end, records already taken left queued, and
   at the run's end itself, while its host may still send output after it. Red at d7b62bd7d
@@ -24208,6 +24215,14 @@ real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
 
+### Control-07: ABI exec-frame admission correction (2026-11-13)
+
+On adas-mac-studio.local (Darwin25.2 arm64), a valid 4,587,877-byte member-exec frame
+failed the ordinary 4 MiB bound, red at 6db1979d6. At 431571292 the ABI spec bound plus
+scope applies at encoding and parsing for that tag alone: 10 control-exec tests and 2
+frame tests passed; shards-remote clippy clean. No large-argv VM run or performance
+measurement is claimed. [Commands and policy account](measurements/control-fixes-v1/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
@@ -24409,6 +24424,22 @@ and policy check passed on macOS arm64. The tests cover chunked/length refresh
 and revoke bodies, partial arrival, retries and a forwarded code exchange. The
 100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
 Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Control-04/05: idle member input and lifetime cap metadata (2026-11-13, D240)
+
+adas-mac-studio.local, Darwin 25.2 arm64, implementer/control, policy df2acf47.
+Control-04: actual idle input reader held its feeder past INPUT_ENDED, red a39889e30
+Err(Timeout), fixed by owning and ending its IPC reader (151642d8c). At 76ace2f18 all
+32 session tests pass, including reader return with its writer retained, then write
+refusal. Control-05: actual cap-loss metadata grew with lifetime evictions, red
+738e3212d tested at ea6614b8b; fixed 76ace2f18 uses a durable cumulative record,
+at most 46 serialized bytes derived from two u64 decimal widths and syntax, legacy
+history streamed with fixed format-derived buffers. All 5 cap tests and clippy for
+shards/API/IPC pass. No VM or helper ran (inert embed inputs for filesystem-only unit
+checks). Windows physical old-version reclamation, fd/heap profiles and real-VM
+lifecycle propagation are owed, not passed. Control-06 needs a real stalled attached
+client red; control-08 remains owed with notification design, no substituted timer.
+[Commands, raw logs, designs and R01–R16 gaps](measurements/control-fixes-v1/README.md).
 
 ### Review memory-16: duplicate head kinds past a selected cap (D190)
 
