@@ -3311,6 +3311,54 @@ mod tests {
         first: Vec<u8>,
     }
 
+    #[test]
+    fn replayed_and_unauthenticated_datagrams_do_not_advance_liveness() {
+        let server = crate::identity::Identity::generate().unwrap();
+        let client = crate::identity::Identity::generate().unwrap();
+        let (heard, _) = mpsc::channel();
+        let (mut driver, _) = Driver::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            Some(crate::tls::server(&server).unwrap()),
+            Party {
+                heard,
+                vanished: false,
+                vanish_at_connect: false,
+            },
+            crate::tls::Known::Never,
+        )
+        .unwrap();
+        let hand = Hand::connect(
+            driver.local().unwrap(),
+            crate::tls::client(&client, server.fingerprint(), crate::tls::Known::Never).unwrap(),
+        );
+        let now = Instant::now();
+        let from = hand.socket.local_addr().unwrap();
+        let key = driver
+            .receive(now, from, BytesMut::from(hand.first.as_slice()))
+            .unwrap()
+            .unwrap();
+        let before = driver.conns.get(&key).unwrap().liveness.last_heard();
+        assert_eq!(before, Some(now), "accept records the first flight");
+        driver
+            .receive(now + ms(1), from, BytesMut::from(hand.first.as_slice()))
+            .unwrap();
+        assert_eq!(
+            driver.conns.get(&key).unwrap().liveness.last_heard(),
+            before,
+            "a replay is no progress"
+        );
+        let mut forged = hand.first.clone();
+        *forged.last_mut().unwrap() ^= 1;
+        driver
+            .receive(now + ms(2), from, BytesMut::from(forged.as_slice()))
+            .unwrap();
+        assert_eq!(
+            driver.conns.get(&key).unwrap().liveness.last_heard(),
+            before,
+            "a forged tag is no progress"
+        );
+    }
+
     impl Hand {
         fn connect(to: SocketAddr, config: ClientConfig) -> Hand {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
