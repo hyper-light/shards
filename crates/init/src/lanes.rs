@@ -259,6 +259,36 @@ mod tests {
         );
     }
 
+    /// A workload that does not accept cannot retain a lane worker after its controller
+    /// leaves: a full Unix backlog is refused with the kernel's EAGAIN, never waited on.
+    #[test]
+    fn a_full_socket_backlog_refuses_a_lane_instead_of_holding_its_worker() {
+        use std::os::fd::AsRawFd;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = shards_testdir::TempDir::new("lane-full").unwrap();
+        let listener = UnixListener::bind(dir.path().join("s")).unwrap();
+        // SAFETY: listen(2) on our listener. Zero gives Linux one pending connection,
+        // since unix_stream_connect tests whether the queue length is greater than backlog.
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 0) }, 0);
+        let _queued = connect(dir.path(), b"/s").unwrap();
+        let root = dir.path().to_owned();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = connect(&root, b"/s").map(drop);
+            tx.send(result).unwrap();
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        // Release a broken implementation too, so that a red test leaves no worker behind.
+        if result.is_err() {
+            let _accepted = listener.accept().unwrap();
+            let _ = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        worker.join().unwrap();
+        assert_eq!(result, Ok(Err(libc::EAGAIN as u32)), "a full backlog retained the lane worker");
+    }
+
     /// The relay between a workload's socket and a stand-in for its vsock connection, as
     /// [`carry`] runs it once connected: the workload's end, the host's end and the relay's
     /// thread, which returns what the pump said.
