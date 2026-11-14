@@ -16360,9 +16360,12 @@ format does (33); a state of 30 to 32 has only its saver's version read, and is 
 once a guest has dialed the run's port and is to be sent a command in shards-init's
 protocol, which a guest of the user's own init never dials, and one that dials it without
 announcing a contract speaks a protocol it has not said it speaks. A move's plan names
-this build's contract for every microVM (`Plan::init`), so a custom-init guest's move is
-not refused at `ready`, and its restore there asks `resumable` of its state as any resume
-does. Red/green: `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` and
+this build's contract for every microVM (`Plan::init`, `u64`), so a custom-init guest's
+move is not refused at `ready`; a saved move's plan asks `resumable` of its save on the
+machine moved from (`Daemon::plan`), which now passes it. That plan's `init` still says
+this build's contract for a guest that runs none: owed, an `Option` taken from the save
+(`resumable` returning its saver's init) and, for a live move, from the running VM
+process's `Control::guest_abi`. Red/green: `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` and
 `resumable_refuses_another_init_and_leaves_the_snapshot` resume a save whose guest announced
 none, red with format 32's record put back. Owed to ROOT: the storm test on HVF past its
 restore.
