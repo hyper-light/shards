@@ -20289,7 +20289,7 @@ were excluded by the review.
 
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
-| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | the run's handoff judged on Unix (runs-11 slice (a), below); Windows' twin (b) and the other sites (c) still picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
 | `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
@@ -20306,6 +20306,43 @@ were excluded by the review.
 | `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
 | `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
 
+
+#### A run's handoff, judged (runs-11 `TAKE_TIMEOUT`, slice (a), 2026-11-14)
+
+A run's handoff to a warm VM (`hand_over`: its `RUN`, its share ends, then its `TAKEN`) waited
+for room to write and for the answer at most `TAKE_TIMEOUT`, 10 s, picked: a healthy VM slower
+than that, on a loaded host, lost its run to another VM, surely untaken, though it would have
+taken it. On Unix it now waits as D215's judge waits on a VM process (`health::Judged`, the
+record `Answers::take`, the run's send to its `TAKEN`): before the kind's first answer, and once
+the VM's process has gone, on the socket's readiness alone, its end ending the wait; then a look
+at the VM's process each W*, and the wait ended, typed (`health::Stalled`, its `Cut`), where it
+ran nothing since the look before or could not be read. A send ended so is surely untaken (the
+VM never had all of it), a wait for `TAKEN` ended so may have been taken, as before.
+
+The waits are shards_ipc's judged send and receive (`send_judged`, `recv_judged`): a message
+written as room comes and read whole as it comes (`Incoming`), each wait in poll(2) until the
+judge's next due, never a socket's send or receive timeout, whose expiry mid-message loses how
+much went (POSIX send(2): a partial count, or EAGAIN once nothing more fits). Writes go by
+sendmsg(2) and send(2) with `MSG_DONTWAIT`, which leaves the socket's mode and timeouts to its
+other users. On macOS `MSG_DONTWAIT` does not keep a send from waiting: a 9,000-byte send with it
+to an empty socketpair (8 KiB buffers) waited on, one of 4,000 bytes went at once, and a peer's
+shutdown(2) both ways gave the writer no room to wait on, its close a POLLHUP
+(`docs/research/measurements/runs-fixes/msg-dontwait.c`, macOS 26 arm64). There a judged send
+waits for poll(2)'s POLLOUT, which XNU gives once the socket's room is at least its send
+low-water mark (`sowriteable`, SO_SNDLOWAT, 2,048 bytes by default), and writes no more than
+that mark at a time, less a first write's control data: a write within it waits for nothing.
+Elsewhere `MSG_DONTWAIT` writes what fits and returns (Linux, `unix_stream_sendmsg`).
+
+Red: `a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff` (a VM, this process busy,
+reading at 10.5 s, its kind learned at 100 ms) by mutation cutting the send at `TAKE_TIMEOUT`;
+`a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff` (a sleep as its process) by
+mutation never refusing; shards_ipc's `a_judged_send_goes_on_where_it_was_as_its_peer_reads` and
+`a_judged_receive_waits_while_its_judge_says_go_on`. Owed: Windows' twin (slice (b): pipe.rs's
+send and receive, judged), and the other `TAKE_TIMEOUT` sites, each with its kind's record
+(slice (c): the run socket's writes, join links and doors, exec answers, reclaim's note); to
+ROOT, each phase's latency on a loaded host per platform (`cargo test -p shards --profile
+test-release --test daemon` through `docs/research/measurements/macos-sched/launchd-run.sh` on
+HVF, and on KVM and WHP), n, p50, p90, p99 and max.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
