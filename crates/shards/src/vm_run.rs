@@ -454,6 +454,14 @@ fn report_target(
     }
 }
 
+/// A report's pipe apart from the VM's link (`--warm`): one descriptor or name is never both.
+fn apart(report: Option<&GpuReportTarget>, link: &LinkArg) -> Result<(), String> {
+    match report {
+        Some(report) if report.to == *link => Err("--gpu-report names the VM's link".into()),
+        _ => Ok(()),
+    }
+}
+
 /// `--gpu-report-scope`'s scope: one, nonzero (D232).
 fn report_scope(value: &str, scope: &mut Option<[u8; 16]>) -> Result<(), String> {
     let given = shards_abi::gpu::uuid_from_hex(value).map_err(|why| why.to_string())?;
@@ -689,6 +697,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         // its run's scope before it launches the VM, as a managed launch's client does; the
         // daemon's warm VMs, started before their requests come, never name one.
         let gpu_report = report_target(gpu_report, gpu_scope, !cfg.gpu_devices.is_empty())?;
+        apart(gpu_report.as_ref(), &fd)?;
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
         if command || common.workload_options || cfg.vsock.is_some() {
             return Err(
@@ -851,6 +860,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     // A warm restore's report (D233), as a warm boot's: its run host's, which names the scope
     // before it launches it; the snapshot's selection is checked as it restores.
     let gpu_report = report_target(gpu_report, gpu_scope, warm.is_some() && !resume)?;
+    if let Some(link) = &warm {
+        apart(gpu_report.as_ref(), link)?;
+    }
     let dir = dir.ok_or("the snapshot directory is required")?;
     if layer_cloned.is_some() && layer.is_none() {
         return Err("--layer-cloned says whose clone --layer's file is: it needs --layer".into());
@@ -3805,6 +3817,9 @@ mod managed_report_tests {
         assert!(restore(&["--warm", link, "--gpu-report", target]).is_err());
         assert!(restore(&["--warm", link, "--gpu-report-scope", &scope]).is_err());
         assert!(restore(&["--warm", link]).unwrap().gpu_report.is_none());
+        let mut aliased = vec!["--warm", target];
+        aliased.extend(report);
+        assert!(restore(&aliased).is_err());
     }
 
     #[test]
@@ -3854,6 +3869,7 @@ mod managed_report_tests {
                 target,
                 "--gpu-report-scope",
                 &scope,
+                // A warm boot reports (D233), but never on its link's own descriptor.
                 "--rootfs",
                 "/image",
                 "--warm",

@@ -2915,7 +2915,7 @@ mod tests {
     /// scoped `[3; 16]`, and what its take reads it against.
     fn reported() -> (Vec<u8>, ReportAsked, crate::physical::GpuReport) {
         use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
-        let selected = crate::PhysicalGpu::Luid(7);
+        let selected = crate::PhysicalGpu::MetalRegistry(7);
         let report = GpuReport {
             scope: [3; 16],
             probe: GpuProbe {
@@ -3032,7 +3032,7 @@ mod tests {
         let refusal = GpuRefusal::Join(JoinError::Missing);
         let frame = crate::physical::GpuReport::refusal([3; 16], refusal).unwrap();
         let request = super::super::request(&ImageSpec {
-            gpu_devices: vec![crate::PhysicalGpu::Luid(7)],
+            gpu_devices: vec![crate::PhysicalGpu::MetalRegistry(7)],
             gpu_report: Some([3; 16]),
             ..stand_in_spec(Path::new("/shards"), Vec::new())
         })
@@ -3873,7 +3873,7 @@ mod tests {
     #[cfg(unix)]
     fn gpu_spec(host: &Path) -> ImageSpec {
         ImageSpec {
-            gpu_devices: vec![crate::PhysicalGpu::Luid(7)],
+            gpu_devices: vec![crate::PhysicalGpu::MetalRegistry(7)],
             gpu_report: Some([3; 16]),
             ..stand_in_spec(host, Vec::new())
         }

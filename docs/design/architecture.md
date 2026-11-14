@@ -26121,7 +26121,7 @@ goal 52 (each test red on the code as it was, green after, red again with its gu
 - refusals typed across the VM process's boundary (*Refusals* above).
 Owed to ROOT: the figure's derivation above, and the real-GPU runs.
 
-### D233. A client that contains its own VM processes launches them through its native owner (built; real-VM validation owed)
+### D233. A client that contains its own VM processes launches them through its native owner (built; an orchestrator's run's report too; real-VM validation owed)
 
 **Why.** shards-api's client spawns the VM process (D215). A client that must contain every
 process it starts, in a cgroup or a Job object (Hex's node, for its accounting and its
@@ -26163,6 +26163,51 @@ API's protocol: its output drained, its end, its connections.
   client process's own, its nonce and counter as its socket directories have: a scope
   names a frame, not a channel, and a pipe named for its scope refused every other report
   of that scope while its one instance lived, ERROR_PIPE_BUSY (PM M533).
+- *Through an orchestrator's run* (Hex lead's ask, Hex goal 39; D231's run host). Hex publishes
+  no GPU box's VM Live without its VM process's own renderer report, checked host-side; an
+  image run gave none (`/run/shards/gpus` is what init was asked, not what the renderer
+  found). Now:
+  - `ImageSpec::gpu_report: Option<[u8; 16]>` names the report's scope, refused as
+    `with_gpu_report` refuses one (`ImageRefusal::GpuProbe`: zero `Scope`, no `gpu_devices`
+    `Empty`), before any run host starts and again as the channel reads it
+    (`WireError::Gpu`). Image channel version 29: `Request::gpu_report`, appended last.
+  - The run host gives its VM process the report pipe as a managed launch's client gives its
+    own: `--gpu-report` and `--gpu-report-scope` (launch.rs `run_reported`, the write end at
+    descriptor 9 on Unix, the one after the release, and by the name `gpu-report` on Windows,
+    the VM's alone once launched). A warm boot and a warm restore take them now, as a direct
+    boot did (vm_run.rs `report_target`): its spawner names the scope before it launches it.
+    A restore's renderer rejoins its snapshot's selection with the writer given
+    (`shards_vmm::vm::restore_reported`, format 29's selection), refused `Empty` for a
+    snapshot of none; so a GPU run restored from its template reports as one booted does.
+  - The run host reads the report to its pipe's end, at most a byte past what a report of its
+    GPUs holds (`report_bytes(n) + 1`, the managed reader's bound): a ready VM's at once, its
+    one writer closed before its guest ran (`write_report`), which its READY follows; one that
+    ended unready after it is reaped. Only the last launch's counts (a template that does
+    not restore is booted again, D253). It relays the frame as written, `GPU_REPORT` (to-client
+    kind 39), before `STARTED`, or before `REFUSED` where the VM did not start.
+  - shards-api holds it typed (session.rs `Report`: Unasked, Awaited, Relayed, Taken): a
+    relay unasked or twice breaks the channel; a start without one asked is refused
+    `ImageRefusal::Host`. `ImageGuest::take_gpu_report(patience)` reads it with the managed
+    launch's own reader (`physical::report::read`, which `Receiver::take` now calls: `Count`,
+    `Syntax`, `Unreported`, `Refused`, the frame's scope and selection), once (`ReportTaken`
+    after, the first take spending it whatever it came to), within the boot's patience and the
+    caller's (`Pending` past either); `Unavailable` for a run that asked none. A boot whose VM
+    its renderer refused is refused `ImageRefusal::GpuProbe(Refused(..))`, typed, in place of
+    the host's words.
+  - A run that asks for its report is no warm pool's (`ImagePools`): a warm host's VM starts
+    before its run names the scope, which the VM frames its report with as its renderer is
+    made. It boots on a host of its own, its pool told nothing; a warm host handed one
+    anyway refuses it `Unfit`. Its template still restores it (D253).
+  - *Literals.* Descriptor 9: the next after the run's release (`VM_RELEASE_FD`), a layout,
+    no tuned figure; the bound is D232's (`report_bytes`). Every wait is the caller's
+    patience or the boot's.
+  - *Evidence.* Unit and stand-in-host tests in shards-api (wire, image, session's
+    `an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`, pool), shards
+    (launch's handing, api-run's bounded read) and shards-vm-process (the warm flags), each
+    guard's removal failing its test (the evidence record in the landing report). Owed to
+    ROOT: real GPU runs through `ImageShards` on Linux (Venus, NVIDIA/AMD), macOS (Metal)
+    and Windows (WHP, a LUID matched against DXGI's), a boot and a template restore each, and
+    the gpu-feature VM process's build of `restore_reported` (scripts/gpu-libs).
 
 **Literals.** None new beyond D232's but SHA-256's 64-byte block (FIPS 180-4 §5.1.1), what an
 image is read in where its file system names no preferred size; every wait is the caller's
