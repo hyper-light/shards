@@ -110,14 +110,12 @@ impl Host for Machine {
             return Err(Error::new(why));
         }
         if args.first().map(String::as_str) == Some(super::COPY_STEP) {
-            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
-            super::log(format!("client {client}: copy step {}", shown.join(" ")));
+            super::log(format!("client {client}: copy step requested"));
             return self.copy_step(args);
         }
         // `shards move vm`'s steps, this machine the one moved to (D176 part 6).
         if args.first().map(String::as_str) == Some(shards_ipc::MOVE_STEP) {
-            let step = args.get(1).map_or("", String::as_str);
-            super::log(format!("client {client}: move step {step}"));
+            super::log(format!("client {client}: move step requested"));
             return self.copy_step(args);
         }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
@@ -128,8 +126,7 @@ impl Host for Machine {
             return bind_step(client, args.get(1).map(String::as_str).unwrap_or_default());
         }
         if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
-            let shown: Vec<String> = args.iter().skip(1).map(|a| a.replace('\0', "")).collect();
-            super::log(format!("client {client}: context step {}", shown.join(" ")));
+            super::log(format!("client {client}: context step requested"));
             return self.sync_step(client, args, request.env, request.terminal);
         }
         // A step of a policy command the client evaluates, this machine its builder: run as
@@ -138,8 +135,7 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(crate::build::policy_command::POLICY_STEP) {
             use crate::build::policy_command::STEP_VAR;
             let step = args.get(1).cloned().unwrap_or_default();
-            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
-            super::log(format!("client {client}: policy step {}", shown.join(" ")));
+            super::log(format!("client {client}: policy step requested"));
             let mut env = self.command_env(client, request.env);
             env.push((STEP_VAR.to_string(), OsString::from(step)));
             let words: Vec<String> = ["buildx", "policy"]
@@ -150,14 +146,13 @@ impl Host for Machine {
             return command(&self.exe, &words, &env, None, None, None);
         }
         if args.first().map(String::as_str) == Some(crate::agent::SIGN_STEP) {
-            let shown: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
-            super::log(format!("client {client}: signature step {}", shown.join(" ")));
+            super::log(format!("client {client}: signature step requested"));
             return self.sign_step(args);
         }
         // Words its shards never sends, which would have this machine's files read or
         // written for the client (D228).
         if let Some(why) = crate::client_grants::refuse_words(&args, crate::context::CIDFILE) {
-            super::log(format!("client {client}: refused {}: {why}", args.join(" ")));
+            super::log(format!("client {client}: refused command: {why}"));
             return Err(Error::new(why));
         }
         // A run's or create's `--cidfile` of the client's (`context::CIDFILE`), the client's
@@ -174,7 +169,9 @@ impl Host for Machine {
                 None => a,
             })
             .collect();
-        super::log(format!("client {client}: shards {}", args.join(" ")));
+        // Arguments may include environment/file expansions, credentials and guest argv.
+        // Operation metadata alone belongs in ordinary logs (remote-05, D180).
+        super::log(format!("client {client}: shards command requested"));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
         let (made, made_w) = match tells {
             true => {
@@ -1057,7 +1054,7 @@ fn keep_relay(client: &str, token: &str, vm: RelayEnd) -> Result<(String, String
     }
     relays.insert(key.clone(), vm);
     drop(relays);
-    super::log(format!("client {client}: serves a directory as {token}"));
+    super::log(format!("client {client}: serves a directory"));
     Ok(key)
 }
 
@@ -1696,6 +1693,46 @@ pub(super) fn listen(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_requests_never_log_argument_values() {
+        const CHILD: &str = "SHARDS_TEST_REMOTE_LOG_ARGUMENTS";
+        const SECRET: &str = "synthetic-private-request-value";
+        if std::env::var_os(CHILD).is_some() {
+            let home = shards_testdir::TempDir::new("remote-log").unwrap();
+            let identity = identity::Identity::generate().unwrap();
+            crate::context::enroll(home.path(), "alice", identity.spki()).unwrap();
+            let machine = Machine {
+                home: home.path().to_path_buf(),
+                exe: home.path().join("unused"),
+                agents: Arc::default(),
+            };
+            let request = Request {
+                args: ["run", "--env-file", SECRET, "image", "true"]
+                    .into_iter()
+                    .map(|word| word.as_bytes().to_vec())
+                    .collect(),
+                env: Vec::new(),
+                terminal: None,
+            };
+            // Refused before any command starts, but its diagnostic still reaches the log.
+            assert!(machine.start("alice", request).is_err());
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon::remote::tests::remote_requests_never_log_argument_values",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {:?}", output.status);
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(log.contains("client alice: refused"), "missing diagnostic");
+        assert!(!log.contains(SECRET), "private request value entered the log");
+    }
 
     #[cfg(unix)]
     /// What a command writes to its terminal is read whole however late its reader comes,
