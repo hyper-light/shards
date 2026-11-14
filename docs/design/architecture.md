@@ -12275,6 +12275,41 @@ no account (the copied minute gave one), and the host, its stream carrying, wait
 (`Heard::of`) to its job's limit. Owed (ROOT): the storm suites (tests/snapshot.rs) on KVM,
 Hypervisor.framework and the nested arm64 Windows host.
 
+**Part 6: a run's stop grace is its daemon's own deadline** (#77, 2026-11-14; ROOT's brief:
+fix the judge's reading, not the bound). HVF at 0ce6cdc66 (adas-mac-studio.local, macOS
+arm64, kiln r2081, `managed_output metrics::task_refusals_export_the_actual_kernel_event_counter`
+alone, daemon.log timestamped by a watcher beside it): `stop daemon` (managed_output.rs:347)
+was refused 259 ms into its wait, "no progress for 45.3 ms" past a W* of 36.0 ms, its last
+progress "process 98449 ran". The daemon said "stepping aside" at 2.612 s, its run's end
+("managed output closed", `Exited (137)`) at 12.632 s: 10.02 s, the default stop grace
+(`STOP_GRACE`, Docker's 10 s) of a `/bin/testguest sleep` main that, its PID namespace's
+init with no handler, ignores SIGTERM from outside its namespace (kernel/signal.c
+`sig_task_ignored`, SIGNAL_UNKILLABLE), until its SIGKILL. Through the grace the daemon's
+stop thread waits on its timer and the guest sleeps: nothing of the party runs, and nothing
+is stalled. The party was whole: the client, the daemon and its tree by parent (spawner,
+VM and network processes) are all members on Unix; it was not missing the spawner's
+children, the first reading of the failure.
+- *The rule.* A run's stop grace is a deadline its daemon holds, set by the run (`stop -t`,
+  `--stop-timeout`) or the daemon's default. From the signal the daemon sends a run's
+  command (its own stop, `stop_each`; a stop of named runs, `end_all`) until
+  that command's SIGKILL or its end, the daemon keeps `stop.grace` in the run's directory
+  (`shards_ipc::GRACE`: the SIGKILL's time, nanoseconds since the Unix epoch, written whole,
+  removed by its guard's drop at the SIGKILL, the run's end or the stop's own end). A
+  look (`Party::look`) that finds a process of its party live and nothing else (`Still`)
+  while a run of its home is within its grace finds it `Held`: the daemon's own deadline.
+  Past the grace it is judged as before, a whole W* without progress refused.
+- *R03.* No literal: the grace is the run's own or the daemon's default, the deadline the
+  daemon itself acts at. The clock is the system clock, the one std reads alike in two
+  processes on every OS; a step of it moves the hold by the step. A grace that cannot be
+  kept (past the clock's reach, a write that fails) is said in the daemon's log and keeps
+  no hold: that wait is judged as before. A negative stop timeout (no SIGKILL at all) keeps
+  none either: its wait follows the judge as before (the gap).
+- *Held by* tests/harness.rs `a_runs_stop_grace_is_its_daemons_and_not_refused` (a
+  sleeping stand-in daemon, a run of its home in its grace for 20 W*, a sleeping client):
+  red with the look's grace arm removed (refused within the grace), green with it (held
+  through the grace, refused once past). Owed (ROOT): `cargo test -p shards --profile
+  test-release --test managed_output -- --test-threads=1` on HVF and KVM.
+
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
 **Why.** The daemon read `-v` as moby's parser for Linux reads it (linux_parser.go), splitting

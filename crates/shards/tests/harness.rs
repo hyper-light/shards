@@ -335,6 +335,72 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
     let _ = stopped.wait();
 }
 
+/// A run's stop grace, which its home's daemon keeps (`shards_ipc::GRACE`), is the daemon's
+/// own deadline: a wait on it is held until then, though nothing of its party runs, and judged
+/// again past it (D209). HVF at 0ce6cdc66 (adas-mac-studio.local, kiln r2081): managed_output's
+/// `stop daemon` refused 259 ms into its wait, "no progress for 45.3 ms" past a W* of 36.0
+/// ms, as its daemon waited out the 10 s grace of a `sleep` that ignores SIGTERM as its PID
+/// namespace's init, its log's next line 10.02 s after "stepping aside", the run `Exited
+/// (137)`. Do: teach a kind its W* by a quick stand-in's end; name a sleeping stand-in its
+/// home's daemon, a run of that home in its grace for 20 W*, and wait on a sleeping client.
+/// Expect: no refusal within the grace; a refusal once it is past.
+#[test]
+fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(false).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let home = TempDir::new("grace");
+    let spawn = || {
+        stand_in_doing("pulse 1 600000")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let (mut daemon, mut client) = (spawn(), spawn());
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    let run = home.join("containers").join("graced");
+    std::fs::create_dir_all(&run).unwrap();
+    let grace = slowest.saturating_mul(20);
+    let until = std::time::SystemTime::now() + grace;
+    std::fs::write(
+        run.join(shards_ipc::GRACE),
+        shards_ipc::grace_text(until).unwrap(),
+    )
+    .unwrap();
+    let mut wait = common::Wait::begin(kind, client.id(), Some(&home), "a stop in its grace");
+    let refused = loop {
+        if let Err(stall) = wait.look(false) {
+            break Some((std::time::SystemTime::now(), wait.refused(&stall)));
+        }
+        // Past its grace, a whole W* still is refused well within this.
+        if std::time::SystemTime::now() > until + slowest.saturating_mul(100).max(Duration::from_secs(10)) {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    for party in [&mut daemon, &mut client] {
+        let _ = party.kill();
+        let _ = party.wait();
+    }
+    let Some((at, said)) = refused else {
+        panic!("never refused past its grace: {}", wait.account());
+    };
+    assert!(
+        at >= until,
+        "refused within its grace, {grace:?} from its start: {said}"
+    );
+}
+
 /// A test's wait on a state its home's daemon comes to (`Patience`) goes on while its party
 /// works, as a command's wait does (the person's ruling of 2026-11-13, D209): its caller
 /// gives it no bound. daemon.rs' and containers.rs' waits on pools and runs were cut at

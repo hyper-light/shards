@@ -3321,7 +3321,8 @@ impl Party {
     /// stalled on its memory, and so running nothing), or stopped or suspended one, which
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
-    /// 2026-11-13); else still; and gone where no process of it runs and its daemon said
+    /// 2026-11-13); or, a process of it live, held where a run of its home is in its stop
+    /// grace ([`graced`](Self::graced)), the daemon's own deadline; else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
     /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
@@ -3424,6 +3425,13 @@ impl Party {
         for pid in gone {
             self.watched.remove(&pid);
         }
+        if live
+            && looked.found == Found::Still
+            && let Some((run, left)) = self.graced()
+        {
+            looked.found = Found::Held;
+            looked.what = format!("its daemon in run {run}'s stop grace, {left:?} more");
+        }
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
             looked.found = Found::Gone;
             looked.what = "none of it runs".into();
@@ -3432,6 +3440,22 @@ impl Party {
             looked.what = "its first look at a process of it".into();
         }
         looked
+    }
+
+    /// The run of its home whose stop grace has longest to go, and how long (`shards_ipc::
+    /// GRACE`): the daemon's own deadline, its SIGKILL, before which it and that run may run
+    /// nothing at all, as a command that ignores its stop signal keeps them, and are not
+    /// stalled (D209). None past every grace, nor where none is kept.
+    fn graced(&self) -> Option<(String, Duration)> {
+        let now = std::time::SystemTime::now();
+        std::fs::read_dir(self.home.as_ref()?.join("containers"))
+            .ok()?
+            .filter_map(|run| {
+                let run = run.ok()?;
+                let left = shards_ipc::grace_until(&run.path())?.duration_since(now).ok()?;
+                Some((run.file_name().to_string_lossy().into_owned(), left))
+            })
+            .max_by_key(|(_, left)| *left)
     }
 
     /// Who it is, for a wait's account of itself.
