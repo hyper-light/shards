@@ -10,6 +10,23 @@ use shards_agentfile::image::{Image as Config, json_string};
 use shards_image::reference::Reference;
 use shards_image::store::Image;
 
+fn shm_owner(
+    mut id: String,
+    mut run: shards_ipc::Run,
+    mut next: impl FnMut(&str, &shards_ipc::Run) -> Option<(String, shards_ipc::Run)>,
+) -> (String, shards_ipc::Run) {
+    for _ in 0..64 {
+        match next(&id, &run) {
+            Some((next_id, next_run)) => {
+                id = next_id;
+                run = next_run;
+            }
+            None => break,
+        }
+    }
+    (id, run)
+}
+
 /// What moby's collectRepoTagsAndDigests makes of an image's references: each name,
 /// familiar (a name with a digest among them); and each name's repository with the
 /// image's ID. Dangling names give neither.
@@ -628,23 +645,18 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// its own, the one it joined (`--network container:`), or the one whose engine made it
     /// (D181). Every run of every limit restores one template (D148): each is told its own.
     pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> u64 {
-        let (mut id, mut run) = (id.to_string(), run.clone());
-        for _ in 0..64 {
+        let (_, run) = shm_owner(id.to_string(), run.clone(), |id, run| {
             let engine_of = super::lock(&self.containers)
-                .get(&id)
+                .get(id)
                 .and_then(|c| c.engine_made.as_ref().map(|m| m.of.clone()));
-            let next = match engine_of {
+            match engine_of {
                 Some(of) => self.stored_run(&of),
                 None => run
                     .network
                     .strip_prefix("container:")
                     .and_then(|r| self.stored_run(r)),
-            };
-            match next {
-                Some(next) => (id, run) = next,
-                None => break,
             }
-        }
+        });
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
         crate::run::shm_bytes(most)
     }
@@ -1220,6 +1232,25 @@ fn query_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shm_owner_follows_every_join_to_the_vm_budget() {
+        let runs: Vec<_> = (0..66)
+            .map(|n| {
+                let mut run = shards_ipc::Run::default();
+                run.resources.memory = if n == 0 { 512 << 20 } else { 0 };
+                if n != 0 {
+                    run.network = format!("container:{}", n - 1);
+                }
+                run
+            })
+            .collect();
+        let (_, owner) = shm_owner("65".into(), runs[65].clone(), |_, run| {
+            let id = run.network.strip_prefix("container:")?;
+            Some((id.into(), runs[id.parse::<usize>().unwrap()].clone()))
+        });
+        assert_eq!(owner.resources.memory, 512 << 20);
+    }
 
     /// As encoding/json's Indent lays out what it is given, by Go's own answers
     /// (docker-images.json, `indents`), strings' punctuation untouched.
