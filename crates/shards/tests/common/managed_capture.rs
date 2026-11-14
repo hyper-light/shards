@@ -645,11 +645,7 @@ fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
         let SocketAddr::V4(at) = address else {
             panic!("an IPv4 observer socket: {address}");
         };
-        let found: Vec<_> = udp_sockets()
-            .into_iter()
-            .filter(|(local, _)| *local == at)
-            .map(|(_, id)| id)
-            .collect();
+        let found = bound(at);
         let [id] = found[..] else {
             panic!("one UDP socket at the observer's {at}: {found:?}");
         };
@@ -659,6 +655,16 @@ fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
     let fds = sockets();
     let held = |id: u64| Held { fd: fds[&id][0], id };
     vec![held(endpoint), held(waker)]
+}
+
+/// The UDP sockets bound at `at`, each by its id, as the kernel lists them.
+#[cfg(unix)]
+pub(super) fn bound(at: std::net::SocketAddrV4) -> Vec<u64> {
+    udp_sockets()
+        .into_iter()
+        .filter(|(local, _)| *local == at)
+        .map(|(_, id)| id)
+        .collect()
 }
 
 /// Which of `held` are not yet returned: still behind a descriptor of this process, or
