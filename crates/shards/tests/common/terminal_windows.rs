@@ -373,6 +373,7 @@ impl Terminal {
 
     /// Once the client exits: what it showed after the last wait, its status, and whether
     /// it left the console's modes as it found them.
+    #[track_caller]
     pub fn exit(&mut self) -> (String, i32, bool) {
         let shown = self.wait_for("exit ");
         let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();

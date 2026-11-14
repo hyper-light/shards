@@ -148,6 +148,7 @@ struct Run<'a> {
     running: bool,
 }
 impl Run<'_> {
+    #[track_caller]
     fn command(&self, words: &[&str]) -> common::Run {
         run_shards_env(&[], words, self.env)
     }

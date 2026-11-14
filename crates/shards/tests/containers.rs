@@ -31,6 +31,7 @@ use common::{shards, shards_vm};
 /// it goes on (`common::run_command`): a large `-m` whose guest plugs and touches gigabytes
 /// on a slow, contended CI runner progresses for minutes (`run_limits_a_microvms_resources`
 /// took 199 s under 32 busy loops where it took 30 idle).
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
@@ -94,6 +95,7 @@ fn oom_said(home: &Path) -> String {
 }
 
 /// A run left going: its client, with the command's first line read.
+#[track_caller]
 fn start(home: &Path, image: &str, options: &[&str], command: &[&str]) -> Child {
     // In the home, and shown where the run ends unready ([`ended`]).
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -8029,6 +8031,7 @@ fn a_command_that_cannot_start_says_why() {
 }
 
 /// `shards ARGS` in `home`, where no run is meant to boot.
+#[track_caller]
 fn without_vms(home: &Path, args: &[&str]) -> Run {
     run_shards_env(&[], args, &[("SHARDS_HOME", home.as_os_str())])
 }
@@ -8245,6 +8248,7 @@ struct Going {
 }
 
 impl Going {
+    #[track_caller]
     fn finish(mut self) -> Run {
         let start = Instant::now();
         let status = exit(&mut self.child, &self.home);
@@ -8916,6 +8920,7 @@ fn serving(home: &Path, image: &str, command: &[&str]) -> (Child, u16) {
 
 /// `shards ARGS` left going, its stderr in the home: its client, and the port its server
 /// says it is ready on (`ready PORT`).
+#[track_caller]
 fn ready_on(home: &Path, args: &[String]) -> (Child, u16) {
     let said = home.join(format!(
         "serving-{}.stderr",

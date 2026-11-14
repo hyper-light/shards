@@ -67,6 +67,7 @@ fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
 }
 
 /// Runs shards with `args`, `stdin` as its input, and a timeout.
+#[track_caller]
 fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
     let mut child = common::command()
         .args(args)

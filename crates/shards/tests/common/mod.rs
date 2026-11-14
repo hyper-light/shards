@@ -27,6 +27,7 @@ use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, 
 /// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
 /// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
 /// restarts add move neither. The home's daemon is stopped, as the next reads them.
+#[track_caller]
 pub fn restarts_cross_at(home: &Path, from: u64) {
     let mib = f64::from(1u32 << 20);
     let (n, top) = (1000.0f64, 64.0 * mib);
@@ -130,6 +131,7 @@ pub fn program_copy(from: &Path, to: &Path) {
 }
 
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
+#[track_caller]
 pub fn home_with(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let args = [
@@ -2029,6 +2031,7 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
 /// A refused client ended: on Unix sent SIGQUIT, on which a Go program writes where each of
 /// its goroutines waits and exits, its exit waited on as judged (its kind this call site's);
 /// then killed.
+#[track_caller]
 fn quit(child: &mut std::process::Child, home: Option<&Path>) {
     #[cfg(unix)]
     {
@@ -4229,6 +4232,7 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
 /// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
 /// What it serves is what a pull of the image for this host's platform fetches, pulled once
 /// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
+#[track_caller]
 pub fn hub(reference: &str) -> String {
     static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     let mut served = SERVED
@@ -4288,6 +4292,7 @@ pub fn hub_bases(agentfile: &str) -> String {
 /// that a build pulls each into from its registry the first time it is asked for, in
 /// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
 /// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+#[track_caller]
 fn hub_seed(reference: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
     let pinned = shards_image::reference::Reference::parse(reference).unwrap();
     assert!(

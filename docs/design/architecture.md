@@ -10615,7 +10615,11 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     compose up`, and no run's own name, path, tag or digest is ever a word: each run of a
     call site keys the same kinds. A wait on no command (`Patience`, `judged`, a guest's)
     keeps its call site's key alone (`WaitKind::at`), its kept record read as before; a
-    command's key with no record is a cold start. Held by harness.rs'
+    command's key with no record is a cold start. The helpers that wrapped a wait without
+    `#[track_caller]` (64 of them across the tests: containers.rs' `shards_in`, `home_with`,
+    `hub`, the terminals' `exit`, the managed tests' `command`s, `quit`) carry it now; a wait
+    made inside a closure, a `Drop` or a `Read` impl keeps that body's site, its commands
+    told apart by their words. Held by harness.rs'
     `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
     moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
     refused in its first quiet window) and `a_commands_words_are_its_subcommands`.

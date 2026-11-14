@@ -30,6 +30,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
@@ -115,6 +116,7 @@ fn at_peer<'a>(args: &[&'a str]) -> Vec<&'a str> {
 
 /// `shards move vm NAME TO` from `here`, each step said (`SHARDS_MOVE_TIMES`): `move: S of
 /// its F files sent` among them once the other machine took it.
+#[track_caller]
 fn move_timed(here: &Path, name: &str, to: &str) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 4] = [
@@ -655,6 +657,7 @@ fn move_live(here: &Path, name: &str) -> (Run, Option<u64>) {
 }
 
 /// [`move_live`], to context `to`.
+#[track_caller]
 fn move_live_to(here: &Path, name: &str, to: &str) -> (Run, Option<u64>) {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 4] = [
