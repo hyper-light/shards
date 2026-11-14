@@ -674,7 +674,8 @@ impl Stream<'_> {
 /// serves, or once it found another that does, so that one gone without a slot has ended.
 /// With where it asked, the daemon the home's `daemon.pid` named as it asked there, by its
 /// ID and start: whose any RESTART is ([`Again`]). Refused where a daemon of a build from
-/// before slots serves the home ([`shards_ipc::PreSlotsDaemon`]): it is never asked.
+/// before slots serves the home ([`shards_ipc::PreSlotsDaemon`]), or one from before
+/// takers named themselves ([`shards_ipc::slots::Taken::NoTakeLock`]): it is never asked.
 #[allow(clippy::too_many_arguments)]
 fn ask_slot(
     home: &Path,
@@ -729,6 +730,7 @@ fn ask_slot(
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
+            Ok(slots::Taken::NoTakeLock) => return Err(slots::Taken::NO_TAKE_LOCK.into()),
             Err(e) => return Err(format!("{}: {e}", home.join(slots::DIR).display())),
         }
     }
@@ -899,6 +901,7 @@ pub fn ask_here(command: &Command, fds: &[Stream<'_>]) -> Result<(u8, Vec<u8>, V
         let client = match slots::take(Path::new("."), opened) {
             Ok(slots::Taken::Slot(client)) => client,
             Ok(slots::Taken::NoDaemon) => return Err("the daemon is shutting down".into()),
+            Ok(slots::Taken::NoTakeLock) => return Err(slots::Taken::NO_TAKE_LOCK.into()),
             Err(e) => return Err(format!("{}: {e}", slots::DIR)),
         };
         // The daemon the slot is of, as `ask_slot` reads it.
@@ -1122,6 +1125,9 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
             Ok(slots::Taken::NoDaemon) => {
                 await_stopping(here).map_err(NotStopped::Failed)?;
                 return shards_ipc::no_pre_slots_daemon(here).map_err(|e| NotStopped::Failed(e.to_string()));
+            }
+            Ok(slots::Taken::NoTakeLock) => {
+                return Err(NotStopped::Failed(slots::Taken::NO_TAKE_LOCK.into()));
             }
             Err(e) => {
                 return Err(NotStopped::Failed(format!(

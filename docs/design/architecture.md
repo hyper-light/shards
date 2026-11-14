@@ -9153,9 +9153,24 @@ daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
   - Windows' slots needed none of it: a client takes an instance by opening it, and its end
     ends the instance's reads (M340), so `Slot::wait` is `Gone` already; `probe` is always
     named and `quiet` never held.
-  - A build before takers: a client finds no `N.taker` and no `taking` and names nothing; a
-    daemon of it makes neither. Either way the slot is served as before, its request reaching
-    the daemon to step aside for its client's build.
+  - The take lock is required (legacy4, 2026-11-14). A daemon makes `requests/taking`
+    before its lists, under `.taking.new` renamed into place, and makes it again so as it
+    makes its lists again (`Requests::renew`), so that every list a client opens has one
+    beside it and its name never names nothing. A client that finds a list with none, the
+    list's name still naming the FIFO it opened, is refused typed (`Taken::NoTakeLock`,
+    "a daemon of a shards from before slots' takers named themselves serves this home ...
+    end that daemon's process") and asks nothing; where the list was made again or went
+    since it opened it, it looks again. Its hold is `Taking(File)`: the `Option` whose
+    `None` took a slot with no hold, "a build's before takers named themselves", is gone,
+    as is a client's naming of nothing where a slot has no `N.taker` (`name_taker`'s
+    NotFound, now passed over as a slot removed since its offer, as ENXIO is). No release
+    made either: the lock and the taker came in 65bf5db0d (2026-11-13), which
+    `git tag --contains` names no `v*` for, and v0.7.0's slots have neither; a client and
+    its daemon are one build (D36), and such a daemon was served only to step aside, which
+    the client now refuses, as it does a daemon from before slots
+    (`shards_ipc::PreSlotsDaemon`). Red/green: `a_list_with_no_take_lock_beside_it_is_refused`
+    (the slot was taken unheld before), whose rows also hold the lock's file made before
+    the lists and anew at a renewal.
   Red, each by mutation: the taker's end not followed (the wait never ends), in
   `slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone`; the lock not
   asked, and names not looked at, in
