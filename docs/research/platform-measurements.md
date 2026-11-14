@@ -24158,3 +24158,12 @@ source revisions, light results and ROOT's remaining gates are in
   clippy -D warnings for shards-vm-process (macOS) and shards-init
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### Review memory-04: a budget removed while its builder's reply was outstanding
+
+The real socket/production watcher regression at e8b687a9e, macOS arm64, failed
+WouldBlock when looking for the removed-budget ROOM frame (resumed kiln r2).
+The pending-room owner is fixed at 27522e6ca/aef83d2c4; the existing late-answer
+test additionally caught acknowledgment accounting, corrected at 8951ffa2d.
+Commands, unit results and the still-owed real builder/pressure variant:
+[the memory fix record](measurements/memory-fixes-v1/README.md).

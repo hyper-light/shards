@@ -8620,6 +8620,14 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
+word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
+unbudgeted word. It transmits that word as the reply is consumed and coalesces a
+value already in flight, whose acknowledgment remains consumable. Desired room
+and request/reply state have one owner; budget removal cannot disappear behind
+a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
+
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
 cache, guest memory the host cannot drop, only swap: a 1 GiB file read from a volume left
