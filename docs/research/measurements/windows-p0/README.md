@@ -79,6 +79,11 @@ restored.
   and shards exit 0 (764f87712). On adas-mac-studio.local, macOS arm64, 764f87712's macOS clippy
   found warm.rs's `window.cut` Result unused (the Unix daemon's CUT); the `let _` and its reason
   came with the fix, and the merged tree's runs are below.
+- **Merged tree** e997f3df1 (main 5ded5b857, platform-03 on it): on Windows `window::tests` 12 of
+  12, `grant_answer::windows_tests` 7 of 7, all four mutants failing their tests, and the three
+  crates' clippy exit 0; on adas-mac-studio.local `devices::virtio::fs::window` 7 of 7 (1 ignored,
+  a measurement), `devices::virtio::fs::tests` 11 of 11, `grant_answer::` 5 of 5, macOS and
+  aarch64-pc-windows-msvc clippy of the three crates exit 0.
 - **Unverified**: a view refused after its section was made (`Unfollowed::View`, `Held::LetGo`
   from `reconcile`), on Windows and in the Unix twin, is unreachable from a unit test (it needs
   MapViewOfFile3 or mmap(MAP_FIXED) to fail on a valid section), and the device's EIO in place
