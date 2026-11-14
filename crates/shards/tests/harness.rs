@@ -377,7 +377,7 @@ fn a_commands_refusal_teaches_its_kind_nothing() {
             let _ = std::fs::remove_file(&kept);
         }
         let run = common::run_command(cmd, &["stand-in".to_string()]);
-        let seen = common::WaitKind::of(site, &words, &line).record().seen();
+        let seen = common::WaitKind::command(site, &words, &line).record().seen();
         (run, seen, std::fs::read_to_string(&kept).unwrap_or_default())
     }
     let run = |doing: &str, forget: bool| {
@@ -426,12 +426,16 @@ fn a_command_is_waited_on_while_it_works() {
 /// looks past W*. Expect: neither refuses it.
 #[test]
 fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
-    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
     let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    assert!(
+        !taught.judged(),
+        "its teaching wait judged by a record kept before it"
+    );
     taught.absent();
     while quick.try_wait().unwrap().is_none() {
         taught.look(false).unwrap();
@@ -487,7 +491,7 @@ fn a_wait_on_this_processs_server_goes_on_while_it_serves() {
 
 /// [`a_wait_on_this_processs_server_goes_on_while_it_serves`]'s stand-in.
 fn serving() {
-    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -551,7 +555,7 @@ fn serving() {
 /// Expect: no refusal within the grace; a refusal once it is past.
 #[test]
 fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
-    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -691,6 +695,15 @@ fn a_guest_wait_goes_on_while_its_party_works() {
 
 /// [`common::Heard::streaming`] at one call site: one kind for every wait made through it.
 fn streaming(vm: u32) -> common::Heard<'static> {
+    cold_heard(vm)
+}
+
+/// [`common::Heard::streaming`] at its caller's call site, its kind made cold as
+/// [`cold_kind`]'s is.
+#[track_caller]
+fn cold_heard(vm: u32) -> common::Heard<'static> {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::PROGRESS, ""));
     common::Heard::streaming(vm, None)
 }
 
@@ -1246,6 +1259,20 @@ fn the_triaged_call_sites_key_their_refused_command_apart() {
     );
 }
 
+/// The kind of its caller's call site ([`common::WaitKind::at`]) made cold: what this host
+/// kept of it removed before its first wait in this process. A test that teaches its kind
+/// W* by a quick stand-in's own end means that end's W*: a record an earlier run kept judged
+/// the teaching wait itself, and refused it (ROOT's whole harness binary on HVF after
+/// 9dd326609: `a_stopped_process_is_its_hosts_hold_and_not_refused`'s quick stand-in, still
+/// for 3.72 ms past a kept W* of 2.10 ms, "Stall { waited: 10480583, over: 3718298, ..
+/// slowest: 2096084 }").
+#[track_caller]
+fn cold_kind() -> &'static common::WaitKind {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, "", ""));
+    common::WaitKind::at(site)
+}
+
 /// [`Patience::of`] at its caller's call site, its kind made cold: what this host kept of it
 /// removed before the kind's first wait in this process.
 #[track_caller]
@@ -1270,7 +1297,7 @@ fn one_state(home: &std::path::Path) -> Patience {
 /// look refuses; the sleeper looked at on is refused, once its looks have seen a whole W*.
 #[test]
 fn a_first_look_past_w_star_judges_nothing() {
-    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
         .spawn()

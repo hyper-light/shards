@@ -11907,7 +11907,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `a_commands_refusal_teaches_its_kind_nothing` (one line from one call site, its record
     removed: a stand-in refusing at once, status 1, then working three times between 200 ms
     of nothing). Waits on no command (`judged`, a guest's, `Patience`) have no status and
-    still learn from each answer.
+    still learn from each answer. Which kinds those are is said where they are made
+    (`WaitKind::command`, `Taught::Served`; `WaitKind::of` for the rest, `Taught::Every`),
+    never inferred from a key: a guest's text-keyed kind has a line too (2026-11-14).
+  - *A harness test's teaching wait starts cold* (2026-11-14, judgecli). harness.rs' tests
+    that teach a kind W* by a quick stand-in's end (`a_stopped_process_is_its_hosts_hold_and_not_refused`,
+    `serving`, `a_runs_stop_grace_is_its_daemons_and_not_refused`,
+    `a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold`,
+    `a_first_look_past_w_star_judges_nothing`) mean that end's W*, but their kinds read the
+    record an earlier run kept, which judged the teaching wait itself: on HVF, after
+    9dd326609 made each teaching wait awaited from its start, `a_stopped_…` was refused
+    10.5 ms in, its stand-in still for 3.72 ms past a kept W* of 2.10 ms. `cold_kind` and
+    `cold_heard` remove the kept record before the kind's first wait in the process, as
+    `cold_patience` does; `a_stopped_…` asserts its teaching wait is not judged.
   - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
     Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
     thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`

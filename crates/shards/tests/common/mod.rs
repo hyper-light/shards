@@ -1975,7 +1975,7 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], ar
 /// judge's look.
 #[track_caller]
 pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Output {
-    let kind = WaitKind::of(
+    let kind = WaitKind::command(
         std::panic::Location::caller(),
         &command_words(cmd),
         &keyed_line(cmd),
@@ -2719,7 +2719,7 @@ fn run_ending(
     end: Option<Duration>,
     leftovers: Leftovers,
 ) -> Result<Run, Ended> {
-    let kind = WaitKind::of(
+    let kind = WaitKind::command(
         std::panic::Location::caller(),
         &command_words(&cmd),
         &keyed_line(&cmd),
@@ -3019,6 +3019,7 @@ pub struct WaitKind {
     site: &'static std::panic::Location<'static>,
     words: String,
     line: String,
+    taught: Taught,
     record: shards_api::Record,
     file: PathBuf,
 }
@@ -3046,8 +3047,27 @@ impl WaitKind {
     /// name of bounded length whatever the line): one a host kept before commands were told
     /// apart, keyed by its call site alone, is read by waits on no command still, and a
     /// command's kind is cold on a host until its own first answer there.
+    pub fn command(
+        site: &'static std::panic::Location<'static>,
+        words: &str,
+        line: &str,
+    ) -> &'static WaitKind {
+        WaitKind::taught(site, words, line, Taught::Served)
+    }
+
+    /// The kind of `site` waiting for `awaited` keyed by `line` (a guest's text,
+    /// [`guest_text`]), or for nothing where both are empty: taught by every answer.
     pub fn of(site: &'static std::panic::Location<'static>, words: &str, line: &str) -> &'static WaitKind {
-        type Kind = (&'static str, u32, u32, String, String);
+        WaitKind::taught(site, words, line, Taught::Every)
+    }
+
+    fn taught(
+        site: &'static std::panic::Location<'static>,
+        words: &str,
+        line: &str,
+        taught: Taught,
+    ) -> &'static WaitKind {
+        type Kind = (&'static str, u32, u32, String, String, Taught);
         static KINDS: std::sync::Mutex<std::collections::BTreeMap<Kind, &'static WaitKind>> =
             std::sync::Mutex::new(std::collections::BTreeMap::new());
         let mut kinds = KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3058,12 +3078,14 @@ impl WaitKind {
                 site.column(),
                 words.to_string(),
                 line.to_string(),
+                taught,
             ))
             .or_insert_with(|| {
                 let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
                     site,
                     words: words.to_string(),
                     line: line.to_string(),
+                    taught,
                     record: shards_api::Record::new(),
                     file: WaitKind::kept_at(site, words, line),
                 }));
@@ -3113,7 +3135,7 @@ impl WaitKind {
     fn learn_kept(&self) {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
         let mut words = kept.split_whitespace();
-        if self.command() && words.next() != Some(SERVED) {
+        if self.served_only() && words.next() != Some(SERVED) {
             return;
         }
         let ns: Option<Vec<u64>> = words.map(|n| n.parse().ok()).collect();
@@ -3125,8 +3147,8 @@ impl WaitKind {
     }
 
     /// Whether it is a command's kind, taught by its served answers alone ([`Wait::unserved`]).
-    fn command(&self) -> bool {
-        !self.line.is_empty()
+    fn served_only(&self) -> bool {
+        self.taught == Taught::Served
     }
 
     /// A kind of its own whose record is kept at `file`: two of them stand for two
@@ -3137,6 +3159,7 @@ impl WaitKind {
             site: std::panic::Location::caller(),
             words: String::new(),
             line: String::new(),
+            taught: Taught::Every,
             record: shards_api::Record::new(),
             file,
         }
@@ -3207,7 +3230,7 @@ impl WaitKind {
             KEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let temporary = dir.join(temporary);
-        let tag = if self.command() {
+        let tag = if self.served_only() {
             format!("{SERVED} ")
         } else {
             String::new()
@@ -3226,6 +3249,15 @@ impl WaitKind {
 /// containers.rs' `a_logs_history_is_what_its_user_set`, W* 5.4 ms), and is read as none:
 /// its kind cold until its next served answer rewrites it.
 const SERVED: &str = "served";
+
+/// Which answers teach a [`WaitKind`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Taught {
+    /// Each: a state, a line, a stream's bytes, a call's return.
+    Every,
+    /// A command's served ones alone, its client's status 0 ([`Wait::unserved`], [`SERVED`]).
+    Served,
+}
 
 /// What a [`Patience`] awaits, and keys its kind by ([`WaitKind::awaiting`]).
 pub const STATE: &str = "a state its party comes to";
