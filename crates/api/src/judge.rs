@@ -238,6 +238,12 @@ pub struct Judge<'a> {
     /// ruling, 2026-11-13).
     since: Instant,
     held: Duration,
+    /// The least window its looks can show a stillness over: the coarsest resolution of the
+    /// counters they read, and the longest a look of this wait took, whichever is longer.
+    /// Its looks come and its refusals stand on W* or this, whichever is longer: a W* below
+    /// it (an answer quicker than one look, or than its counters' least step) is looked at
+    /// no more often, and refuses over no shorter a window, than its looks can resolve.
+    floor: Duration,
 }
 
 impl<'a> Judge<'a> {
@@ -253,6 +259,7 @@ impl<'a> Judge<'a> {
             last: began,
             since: began,
             held: Duration::ZERO,
+            floor: Duration::ZERO,
         }
     }
 
@@ -263,13 +270,19 @@ impl<'a> Judge<'a> {
         Some(self.due()?.max(self.last))
     }
 
-    /// When its next look is due, W* after the look before was meant: none while it is not
-    /// judged.
+    /// When its next look is due, its window ([`window`](Self::window)) after the look before
+    /// was meant: none while it is not judged.
     pub fn due(&self) -> Option<Instant> {
         match self.record.seen() {
-            Seen::Learned { slowest, .. } if self.judged => self.meant.checked_add(slowest),
+            Seen::Learned { slowest, .. } if self.judged => self.meant.checked_add(self.window(slowest)),
             _ => None,
         }
+    }
+
+    /// The window its looks come each of and a stillness is refused over: W* (`slowest`), or
+    /// the least its looks can resolve ([`Judge::floor`]) where that is longer.
+    fn window(&self, slowest: Duration) -> Duration {
+        slowest.max(self.floor)
     }
 
     /// What a look at its party found since the look before, made now: refused where the
@@ -283,10 +296,17 @@ impl<'a> Judge<'a> {
     /// [`found`](Self::found), of a look made over `span`. Its party is judged still only
     /// over what the looks saw: from the end of the look from which it has been still to
     /// this look's beginning, less the time the judge's own looks ran late, and refused only
-    /// where that is a whole window, W* or its counters' resolution where that is coarser
-    /// (#77: a W* below one look's span refused waits whose first look had nothing before it).
-    /// A based look ([`Found::Based`]) starts its evidence anew whether it is due or not.
+    /// where that is a whole window, W* or what its looks can resolve where that is longer:
+    /// its counters' resolution, or the time one of its looks took (#77: a W* below one
+    /// look's span refused waits whose first look had nothing before it; b26: a W* of 9.6 µs,
+    /// a send's that found room at once, refused a live VM process 16.6 µs past its first
+    /// look, its macOS reading moving in steps of a clock tick). A based look
+    /// ([`Found::Based`]) starts its evidence anew whether it is due or not.
     pub fn found_over(&mut self, found: Found, span: Span) -> Result<(), Stall> {
+        self.floor = self
+            .floor
+            .max(span.resolution)
+            .max(span.ended.saturating_duration_since(span.began));
         if found == Found::Based {
             (self.since, self.held, self.last) = (span.ended, Duration::ZERO, span.ended);
         }
@@ -306,7 +326,8 @@ impl<'a> Judge<'a> {
             .saturating_duration_since(due.max(self.last))
             .saturating_sub(span.own);
         self.held = self.held.saturating_add(late);
-        self.meant = Self::latest_meant(due, slowest, now);
+        let window = self.window(slowest);
+        self.meant = Self::latest_meant(due, window, now);
         self.last = span.ended;
         match found {
             Found::Progressed | Found::Held | Found::Based => {
@@ -321,7 +342,7 @@ impl<'a> Judge<'a> {
                 let free = now
                     .saturating_duration_since(self.since)
                     .saturating_sub(self.held);
-                if free < slowest.max(span.resolution) {
+                if free < window {
                     return Ok(());
                 }
                 Err(Stall::new(
@@ -340,14 +361,14 @@ impl<'a> Judge<'a> {
         self.found_over(found, Span::at(now))
     }
 
-    /// The last look's time meant at or before `now`, of those each `slowest` from `due`: a
+    /// The last look's time meant at or before `now`, of those each `window` from `due`: a
     /// judge its host held past several looks makes one, not one at once for each it missed.
-    /// `slowest` is never zero (an answer no time long teaches nothing); past u64's
+    /// `window` is never zero (an answer no time long teaches nothing); past u64's
     /// nanoseconds, or past what an `Instant` holds, it is `now`.
-    fn latest_meant(due: Instant, slowest: Duration, now: Instant) -> Instant {
+    fn latest_meant(due: Instant, window: Duration, now: Instant) -> Instant {
         let behind = now.saturating_duration_since(due).as_nanos();
-        let missed = behind.checked_div(slowest.as_nanos()).unwrap_or(0);
-        let skip = missed.saturating_mul(slowest.as_nanos());
+        let missed = behind.checked_div(window.as_nanos()).unwrap_or(0);
+        let skip = missed.saturating_mul(window.as_nanos());
         u64::try_from(skip)
             .ok()
             .and_then(|ns| due.checked_add(Duration::from_nanos(ns)))
@@ -686,9 +707,10 @@ mod tests {
     /// its first look, which found its processes anew, began as the wait did and ended
     /// about 29 ms in, past its first due (its judged look began 31.066 ms in, after 2 ms of
     /// sleep). Those looks saw 2 ms of stillness, all of it the judge's
-    /// own lateness, not a W*: it goes on. Looked at on time from then, it is refused at the
-    /// first look that has seen a whole W* past the first look's end, the lateness not
-    /// counted: its fourth due.
+    /// own lateness, not a W*: it goes on. Its first look took 29 ms, longer than W*, so its
+    /// looks come and refuse on that (b26: no window shorter than its looks resolve).
+    /// Looked at on time from then, it is refused at the first look that has seen a whole
+    /// such window past the first look's end, the lateness not counted: its third due.
     #[test]
     fn a_window_is_judged_from_its_baselines_end() {
         let us = Duration::from_micros;
@@ -705,10 +727,11 @@ mod tests {
             "2 ms seen of a 14 ms W*"
         );
         let (at, stall) = still_until_refused(&mut judge, Duration::ZERO, 8).unwrap();
-        assert_eq!(at, slowest * 4);
-        let late = us(31_066) - us(29_000);
-        assert_eq!(stall.over(), slowest * 4 - us(29_000) - late);
-        assert_eq!(stall.waited(), slowest * 4);
+        let window = us(29_000);
+        assert_eq!(at, window * 3);
+        let late = us(31_066) - window;
+        assert_eq!(stall.over(), window * 3 - window - late);
+        assert_eq!((stall.waited(), stall.slowest()), (window * 3, slowest));
     }
 
     /// A party read by a counter coarser than W* (one that counts clock ticks, as /proc's
@@ -728,6 +751,40 @@ mod tests {
         let (at, stall) = still_until_refused(&mut judge, tick, 40).unwrap();
         assert_eq!(at, tick);
         assert_eq!((stall.over(), stall.slowest()), (tick, slowest));
+    }
+
+    /// b26's run-socket send (ROOT's HVF batch at 1f71dea19, moved.rs:645: "its process ran no
+    /// CPU in 16.584µs past the slowest answer seen (9.583µs), 29.958µs into the wait"),
+    /// replayed: a W* below what its looks resolve, its first look 13.374 µs long. Of
+    /// counters that show every change, its looks come no more often than one takes; of a
+    /// reading in clock ticks (a macOS process's times, 10 ms), a tick apart, and it is
+    /// refused only once they have seen a whole tick still, never 16.584 µs in.
+    #[test]
+    fn a_w_star_below_what_its_looks_resolve_is_judged_over_what_they_do() {
+        let ns = Duration::from_nanos;
+        let slowest = ns(9_583);
+        let first_look = ns(13_374);
+        let tick = Duration::from_millis(10);
+        let record = Record::new();
+        record.teach(slowest, Duration::ZERO);
+        let mut exact = Judge::begin(&record);
+        let first = span(&exact, Duration::ZERO, first_look, Duration::ZERO);
+        assert_eq!(exact.found_over(Found::Based, first), Ok(()));
+        assert_eq!(
+            exact.due(),
+            Some(exact.began + first_look),
+            "looked at no more often than a look takes"
+        );
+        let mut judge = Judge::begin(&record);
+        let first = span(&judge, Duration::ZERO, first_look, tick);
+        assert_eq!(judge.found_over(Found::Based, first), Ok(()));
+        assert_eq!(judge.due(), Some(judge.began + tick), "looked at a tick apart");
+        let early = span(&judge, ns(29_958), ns(30_000), tick);
+        assert_eq!(judge.found_over(Found::Still, early), Ok(()), "16.584 µs seen");
+        let (at, stall) = still_until_refused(&mut judge, tick, 8).unwrap();
+        assert!(stall.over() >= tick, "{stall:?}");
+        assert!(at >= first_look + tick, "{at:?}");
+        assert_eq!(stall.slowest(), slowest);
     }
 
     /// A based look starts the evidence anew whether or not it is due: one that found a

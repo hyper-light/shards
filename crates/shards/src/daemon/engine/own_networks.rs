@@ -71,10 +71,9 @@ impl<D: Disk> Daemon<D> {
         let quiet = self
             .exec_answered(&scope.provider, &spec, 1 << 12)
             .map_err(|e| format!("its microVM's switch: {e}"))?;
-        let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
-        match quiet.status {
-            Some(0) => Ok(said),
-            _ => Err(said),
+        match (&quiet.cut, quiet.status) {
+            (None, Some(0)) => Ok(String::from_utf8_lossy(&quiet.output).trim().to_string()),
+            _ => Err(crate::daemon::reclaim::said_of(&quiet)),
         }
     }
 

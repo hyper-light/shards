@@ -396,6 +396,9 @@ pub enum ProcessOperation {
     CpuClock,
     /// macOS: mach_timebase_info(3), which converts a VM process's CPU times.
     MachTimebase,
+    /// macOS: sysctl(3) of `kern.clockrate`, the clock tick in whose steps a VM process's
+    /// CPU times show.
+    ClockRate,
     /// Windows: CreateToolhelp32Snapshot, a snapshot of the system's processes.
     Snapshot,
     /// Windows: Process32FirstW or Process32NextW, a snapshot's processes.
