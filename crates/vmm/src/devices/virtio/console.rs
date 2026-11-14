@@ -5,6 +5,7 @@
 //! nothing is lost or held by the device. A snapshot keeps its queues alone.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::queue::{Chain, Queue, QueueError};
@@ -25,6 +26,12 @@ const RECEIVE_SIZE: u16 = 1;
 /// has used it before the next, under the port's lock (virtio_console.c `put_chars`,
 /// l. 1118-1123, and `__send_to_port`, l. 596-640), so one is ever outstanding.
 const TRANSMIT_SIZE: u16 = 1;
+/// The most host input one receive buffer takes: Linux's driver posts a page each
+/// (`fill_queue`, `alloc_buf(.., PAGE_SIZE, ..)`), and shards' guest kernels have 4 KiB
+/// pages (x86-64's one size; arm64's `CONFIG_ARM64_4K_PAGES=y` in resources/kernel's base
+/// configuration). A reader of host input need read no more at once: the rest waits in the
+/// host.
+pub const INPUT_AT_ONCE: usize = 4 << 10;
 /// receiveq 0 and transmitq 1, port 0's (§5.3.2): no MULTIPORT, so no control queues.
 const QUEUES: [u16; 2] = [RECEIVE_SIZE, TRANSMIT_SIZE];
 const RECEIVEQ: usize = 0;
@@ -53,6 +60,8 @@ pub struct Port {
     receive: Mutex<Receive>,
     /// Signalled as the guest posts receive buffers, or the receive queue comes or goes.
     posted: Condvar,
+    /// Whether its guest's kernel said it panicked (`devices::pvpanic`).
+    panicked: AtomicBool,
 }
 
 impl std::fmt::Debug for Port {
@@ -65,6 +74,16 @@ impl Port {
     /// The whole lines of the last bytes its guest wrote to the console, as many as it keeps.
     pub fn said(&self) -> Said {
         lock(&self.out).kept.said()
+    }
+
+    /// Whether its guest's kernel said it panicked, through its machine's pvpanic device.
+    pub fn panicked(&self) -> bool {
+        self.panicked.load(Ordering::Acquire)
+    }
+
+    /// Sets whether its guest's kernel panicked; whether it had already said so.
+    pub(crate) fn tell_panicked(&self, panicked: bool) -> bool {
+        self.panicked.swap(panicked, Ordering::AcqRel)
     }
 
     /// Gives host input to the guest, in the buffers it posted, waiting while it has posted
@@ -183,6 +202,7 @@ impl Console {
             }),
             receive: Mutex::new(Receive::default()),
             posted: Condvar::new(),
+            panicked: AtomicBool::new(false),
         });
         let console = Console {
             port: port.clone(),

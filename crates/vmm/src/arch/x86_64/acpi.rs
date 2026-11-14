@@ -1,10 +1,10 @@
 //! ACPI tables for x86_64 guests (ACPI 6.5; research doc §3.5, §4.4). The guest kernel
 //! has neither MP-table parsing nor `virtio_mmio.device=`, so these are how it finds its
-//! CPUs, the IOAPIC, COM1, the virtio devices, and how it powers off:
+//! CPUs, the IOAPIC, the virtio devices (its console among them), and how it powers off:
 //!
 //! - RSDP (rev 2) → XSDT → FADT (HW-reduced, rev 6.5) + MADT, FADT → DSDT
 //! - MADT: one Local APIC per vCPU (APIC id = index) and the IOAPIC, GSI base 0
-//! - DSDT: COM1 (`PNP0501`), each virtio-mmio device (`LNRO0005`), the VM generation ID
+//! - DSDT: each virtio-mmio device (`LNRO0005`), the pvpanic device (`QEMU0001`), the VM generation ID
 //!   (`VMGENCTR`) with the Generic Event Device (`ACPI0013`) that tells the guest of a
 //!   new one, and `\_S5`
 //! - FADT SLEEP_CONTROL/STATUS registers on a port pair, so `reboot(RB_POWER_OFF)`
@@ -256,15 +256,6 @@ mod aml {
         with_pkg(&[0x11], content)
     }
 
-    /// I/O Port descriptor, 16-bit decode (§6.4.2.5).
-    pub fn io(port: u16, len: u8) -> Vec<u8> {
-        let mut d = vec![0x47, 0x01];
-        d.extend_from_slice(&port.to_le_bytes());
-        d.extend_from_slice(&port.to_le_bytes());
-        d.extend_from_slice(&[1, len]);
-        d
-    }
-
     /// 32-bit Fixed Memory Range descriptor, read/write (§6.4.3.4).
     pub fn memory32_fixed(base: u32, len: u32) -> Vec<u8> {
         let mut d = vec![0x86, 9, 0, 0x01];
@@ -484,15 +475,6 @@ fn mcfg(p: &PciBridge) -> Vec<u8> {
 fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<Vec<u8>, String> {
     let crs = |descriptors: &[Vec<u8>]| aml::name(b"_CRS", aml::resources(descriptors));
     let mut devices = Vec::new();
-    devices.extend(aml::device(
-        "COM1",
-        [
-            aml::name(b"_HID", aml::eisa_id("PNP0501")),
-            aml::name(b"_UID", aml::integer(0)),
-            crs(&[aml::io(layout::COM1, 8), aml::interrupt_edge(layout::GSI_COM1)]),
-        ]
-        .concat(),
-    ));
     // Device order fixes the guest's /dev/vdX names.
     for (i, d) in virtio.iter().enumerate() {
         devices.extend(aml::device(
@@ -510,6 +492,16 @@ fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<
         ));
     }
     devices.extend(vmgenid_devices(vmgenid));
+    // pvpanic-mmio.c's ACPI match, QEMU's own _HID for it (docs/specs/pvpanic.rst).
+    devices.extend(aml::device(
+        "PEVT",
+        [
+            aml::name(b"_HID", aml::string("QEMU0001")),
+            aml::name(b"_UID", aml::integer(0)),
+            crs(&[aml::memory32_fixed(layout::PVPANIC as u32, 0x1000)]),
+        ]
+        .concat(),
+    ));
     if let Some(p) = pci {
         devices.extend(pci_bridge(p)?);
     }
