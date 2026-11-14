@@ -28000,11 +28000,24 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   - *What it waits on now.* The host's exit watcher (`watch`), once the host has exited and
     before it is reaped (its pid, the group's ID, held), ends its group and follows every
     process of it to its exit: `Child::end_group`, the Unix twin of Windows' (above). Each
-    round sends the group SIGKILL, lists its processes that have not exited (Linux `/proc`
-    `stat`: group, state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then
-    `proc_pidinfo` group and not `SZOMB`), and waits on each one's exit word, its end
-    watched before it is seen still the group's so a reused pid is never waited on, until
-    a round lists none. A host that ends as it should has reaped what it started, and its
+    round lists the group's processes that have not exited (Linux `/proc` `stat`: group,
+    state not `Z`/`X`; macOS `proc_listpids(PROC_PGRP_ONLY)`, then `proc_pidinfo` group and
+    not `SZOMB`, asked with a nonzero `arg` so that XNU looks among exiting processes too),
+    watches each one's exit word, its end watched before it is seen still the group's so a
+    reused pid is never waited on, then sends the group SIGKILL and waits on each watch,
+    until a round lists none. Amended 2026-11-14 (groupend lane): XNU hides an exiting
+    process from `proc_find` from `proc_prepareexit` on (`P_REF_DEAD`, before `proc_exit`'s
+    `fdt_invalidate`, `NOTE_EXIT` and `SZOMB`; xnu-12377.1.9 kern_exit.c), and both
+    `proc_pidinfo` without `arg` and a `NOTE_EXIT` watch (`filt_procattach`) ask it. Rounds
+    that signalled first, then looked, read a process our SIGKILL had begun to end as gone,
+    and returned before it was a zombie, its files possibly still open:
+    `a_groups_end_follows_every_process_of_it_to_its_end` failed 1 in 8 and 2 in 40 whole-lib
+    runs on adas-mac-studio-3 at 5231d8279, the leader not yet ended (`has_ended`) or the
+    group's `sleep` still alive. At a failure the leader was in `proc_listpids`' group
+    listing, refused by `proc_pidinfo` and by a `NOTE_EXIT` watch (ESRCH), and its waitid(2)
+    end came 466 µs later. Watched before it is signalled, each process a round ends
+    is waited on by its exit word; one still exiting after it (between `NOTE_EXIT` and
+    `SZOMB`), or exiting before the look, is listed until it is a zombie and looked at again. A host that ends as it should has reaped what it started, and its
     group is empty; one it leaves is ended with it (before, waited on for as long as it
     held the diagnostics). Then its layers are swept, it is reaped, `exited` set, and its
     pipes' readers told (`Gone`, a byte on a pipe of the session's, never its end); each
