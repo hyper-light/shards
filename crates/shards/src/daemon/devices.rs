@@ -614,10 +614,9 @@ impl<D: Disk> Daemon<D> {
         let quiet = self
             .exec_answered(id, &spec, 1 << 12)
             .map_err(|e| format!("its guest: {e}"))?;
-        let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
-        match quiet.status {
-            Some(0) => Ok(said),
-            _ => Err(format!("its guest: {said}")),
+        match (&quiet.cut, quiet.status) {
+            (None, Some(0)) => Ok(String::from_utf8_lossy(&quiet.output).trim().to_string()),
+            _ => Err(format!("its guest: {}", super::reclaim::said_of(&quiet))),
         }
     }
 

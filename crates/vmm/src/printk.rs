@@ -605,6 +605,86 @@ mod tests {
         assert!(backlog(&fake.memory, b"[    2.000000]K").unwrap().is_empty());
     }
 
+    /// A guest's memory holding a ring captured from a real boot of shards' pinned kernels
+    /// (docs/research/measurements/console-cost/capture-ring.py: an x86-64 guest of 1 vCPU
+    /// and 256 MiB, booted with the test guest to its first snapshot): its runs at their
+    /// guest-physical addresses, zeros between them.
+    fn captured(fixture: &[u8]) -> GuestMemory {
+        assert_eq!(&fixture[..8], b"SHRDRING");
+        let count = u32::from_le_bytes(fixture[8..12].try_into().unwrap());
+        let mut at = 12;
+        let mut runs = Vec::new();
+        for _ in 0..count {
+            let gpa = u64::from_le_bytes(fixture[at..at + 8].try_into().unwrap());
+            let len = u32::from_le_bytes(fixture[at + 8..at + 12].try_into().unwrap()) as usize;
+            runs.push((gpa, &fixture[at + 12..at + 12 + len]));
+            at += 12 + len;
+        }
+        let end = runs.iter().map(|(gpa, d)| gpa + d.len() as u64).max().unwrap();
+        let memory = GuestMemory::anonymous(&[(0, end.next_multiple_of(2 << 20) as usize)]).unwrap();
+        let a = memory.access().unwrap();
+        runs.iter().for_each(|(gpa, d)| a.write(*gpa, d).unwrap());
+        drop(a);
+        memory
+    }
+
+    /// The first 16 bytes hvc's console sends of the record of `memory`'s ring that `pick`
+    /// chooses from its records' texts (hvc_console.c N_OUTBUF).
+    fn first_buffer(memory: &GuestMemory, pick: impl Fn(&[Vec<u8>]) -> usize) -> Vec<u8> {
+        let mut all = Vec::new();
+        records(memory, &mut |ns, text| all.push((ns, text.to_vec()))).unwrap();
+        let texts: Vec<Vec<u8>> = all.iter().map(|(_, t)| t.clone()).collect();
+        let (ns, text) = &all[pick(&texts)];
+        prefixed(*ns, text, b"\r\n")[..16].to_vec()
+    }
+
+    /// The unpatched kernel (54fba99afaee) loses what it logged before its console
+    /// registered: its console's first buffer is the record after "console [hvc0]
+    /// enabled", and what it missed is every record from "Linux version" to that one.
+    #[test]
+    fn a_captured_unpatched_kernels_console_is_given_its_boot_from_the_first_line() {
+        let memory = captured(include_bytes!("../testdata/printk/ring-6.18.48-54fba99afaee.bin"));
+        let said = read(&memory, usize::MAX).unwrap();
+        assert!(
+            said.lines.starts_with(b"[    0.000000] Linux version 6.18.48"),
+            "{}",
+            String::from_utf8_lossy(&said.lines[..80])
+        );
+        let enabled = |t: &[Vec<u8>]| {
+            t.iter()
+                .position(|t| t.ends_with(b"console [hvc0] enabled"))
+                .unwrap()
+        };
+        let first = first_buffer(&memory, |t| enabled(t) + 1);
+        let missed = backlog(&memory, &first).unwrap();
+        let text = String::from_utf8_lossy(&missed);
+        assert!(text.starts_with("[    0.000000] Linux version 6.18.48"), "{text}");
+        assert!(
+            text.ends_with("console [hvc0] enabled\r\n"),
+            "{}",
+            String::from_utf8_lossy(&missed[missed.len() - 80..])
+        );
+        assert!(
+            text.contains("smp: Brought up") && text.contains("ACPI: RSDP"),
+            "{text}"
+        );
+    }
+
+    /// The patched kernel (836568f8ad2c, patch 0015) replays its log as its console
+    /// registers: its console's first buffer is the ring's first record, and nothing is
+    /// missed.
+    #[test]
+    fn a_captured_patched_kernels_console_misses_nothing() {
+        let memory = captured(include_bytes!("../testdata/printk/ring-6.18.48-836568f8ad2c.bin"));
+        let first = first_buffer(&memory, |_| 0);
+        assert!(
+            first.starts_with(b"[    0.000000] L"),
+            "{}",
+            String::from_utf8_lossy(&first)
+        );
+        assert!(backlog(&memory, &first).unwrap().is_empty());
+    }
+
     #[test]
     fn a_guest_without_vmcoreinfo_or_with_a_ring_past_its_ram_is_refused() {
         let memory = GuestMemory::anonymous(&[(RAM, LEN)]).unwrap();

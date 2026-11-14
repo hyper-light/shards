@@ -218,8 +218,8 @@ impl<D: Disk> Daemon<D> {
             let q = self
                 .exec_answered(&id, &spec, 1 << 12)
                 .map_err(|e| cannot(e.to_string()))?;
-            if q.status != Some(0) {
-                return Err(cannot(String::from_utf8_lossy(&q.output).trim().to_string()));
+            if q.cut.is_some() || q.status != Some(0) {
+                return Err(cannot(super::reclaim::said_of(&q)));
             }
         }
         run.resources = merged;

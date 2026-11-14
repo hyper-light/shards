@@ -12345,13 +12345,33 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `client_output` refused while its client or its home's daemon worked. Or a host's hold
     (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
   - The gaps. `Party::started` is every child of the test process, so another test's run
-    host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
+    host in the same binary counts as progress, as `Own`'s VM processes do. Kept so (ROOT's
+    question, 2026-11-14): no OS record ties a child to the thread that started it (a
+    parent is a process's, on Linux, macOS and Windows alike), and shards-api starts its
+    run hosts inside its own calls, naming no pid to its caller; a pid-returning API for
+    tests alone is the speculative interface R05 refuses. Under libtest's parallel threads
+    the gap is a quiet one, a judged call never refused while a sibling's processes work,
+    and never a false refusal: E2E binaries run one test at a time, and a harness test that
+    asserts a refusal names a party of its own (`a_judged_calls_own_work_is_its_progress`,
+    da6a3f0a2: 4 of 4 parallel whole binaries on HVF unrefused with `Party::started`, 4 of 4
+    refused as asserted with its stand-in's party). context.rs'
     reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
     hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
     A start-up wait on host system services, such as secinitd or the bookmark agent, is not
     tied to the run; unconfirmed, no account kept (the runsignal lane's 2 of 20 pre-ready
     `Heard::running` refusals, under its mutant; the grants broker is the VM's child, already
     of its party).
+  - *A daemon's helpers serving a waiter's own clients are its daemon's run* (2026-11-14,
+    judgecli). Part 8's rule discounted the daemon's own run in a window in which the
+    waiter began a client of its home, not its helper processes'. On KVM (adacachy2,
+    1f71dea19) `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` was not
+    refused in 13 of 30 whole harness binaries once its kind's kept W* had grown to
+    693 ms: every window held a `ps` poll, and a process under the daemon (its pid +1 or
+    +2) ran serving it, "its last progress process N ran 3-321 ms ago". A member under the
+    daemon with no VM process (`shards-vm`, `shards-vm-gpu`) between them is its helper
+    (`Party::members`), and its run is said as `daemon_ran`, under the same rule; a VM
+    process's run stays its party's progress. Windows' party follows trees through
+    shards-api and names no helper: unchanged there.
   - *A machine's party reads each thread beside its waiter, and a runnable one that ran
     nothing is its host's hold* (2026-11-14, judgecli). `a_machines_host_work_is_its_progress`
     was refused on HVF in 2 of 3 whole-binary runs under 14 busy loops started before it
@@ -21008,6 +21028,23 @@ before its own judge takes over, as the give-back's test does. Owed to ROOT: the
 their sleeps and pipes' one-message window, pipe.rs `MESSAGE_FRAME`) and the WHP latency of each
 send and `GUEST_TIME`.
 
+Amended 2026-11-14 (stopregress lane): a judged wait looks at its socket before it asks its
+judge again. `await_events` returned "not ready" without a poll where the judge's due had
+already passed, and the judge's first look (`Follow::begin`'s reading of the VM process) can
+itself outlast a W* of tens of µs on a loaded host: on macOS, where a judged send waits for
+POLLOUT before its first write, the send then asked its judge with nothing looked at, and an
+idle VM, which runs no CPU, was refused `Stalled` with its socket empty. The daemon's stop
+(`stop_each`) sends a run's stop signal so and drops a refused one: the run was SIGKILLed at its
+grace's end, `stop_ends_runs_and_waiting_vms` failing 137 (HVF batch 26 at 1f71dea19) or 125
+(the SIGKILL refused too, its VM killed). Reproduced on adas-mac-studio-3 (M4 Max) with six
+copies of the test at once: 9 of 72 stops refused 50 to 90 µs in, SO_NWRITE 0 before and after
+each refusal, the VM process's threads all sleeping (ps -M); 0 of 10 alone. Now a due already
+past is a poll of 0 ms, and only a poll that found nothing by its due asks the judge. Red as a
+unit test, macOS arm64: `a_judged_wait_looks_before_its_judge_is_asked_again` (a judge whose
+first due has passed and that refuses at its next ask) fails `TimedOut` with the early return
+put back. Linux's judged send writes before it waits, and Windows' `read_by` looks
+(`available`) before its deadline: neither met this.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")
@@ -27762,6 +27799,46 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (#77, ROOT's KVM run c33's same refusal): each of its stages is a kind of its own
       (call site and awaited text, numbers generic), and a machine of the test's process
       progresses while its process's threads beside its waiter run.
+    - *No window shorter than its looks resolve* (b26, ROOT's HVF batch at 1f71dea19, PM
+      M592). The run socket's judged send (`RunSocket::send`, `Answers::run_send`) teaches its
+      kind from every send, and one that found room at once taught a W* of about one look's
+      cost: 9.583 µs. A later send that did wait was refused 16.584 µs past its first look,
+      29.958 µs in ("its process ran no CPU in 16.584µs past the slowest answer seen
+      (9.583µs)", moved.rs:645 and three more moved.rs tests, containers.rs:2257; KVM's
+      plug.rs:177 said "its guest: " and nothing, the DEVICE exec's cut dropped). Over such a
+      window a reading shows nothing of a run: XNU adds a thread's run to its task's times
+      (proc_pid_rusage) as the thread leaves its CPU or enters the kernel, which its quantum
+      timer makes one each tick, and Linux's process CPU clock, read from another process,
+      holds a thread running on another CPU as of that CPU's last tick (kernel/sched/cputime.c
+      `thread_group_cputime`; CI's aarch64 run 43575280954 saw 2.6 ms of a spinning thread
+      unshown). Measured (PM M592): a spinning child's macOS times grew in steps of p50 12 µs,
+      p90 182 µs, p99 3.7 ms, max 12.9 ms. So a reading's resolution (`Watch::resolution`) is
+      its step, not its unit: the counter's unit or the kernel's tick, whichever is longer,
+      each the OS's own statement where it runs, none chosen: macOS's tick is
+      `kern.clockrate`'s `tick` (sysctl(3) KERN_CLOCKRATE; 10 ms, hz 100, on macOS 26), Linux's
+      the resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2): one jiffy, `LOW_RES_NSEC`).
+      Windows' reading, QueryProcessCycleTime, keeps its resolution of none: whether it
+      shows a thread running on another CPU before its next interrupt is unmeasured (owed).
+      The judge then looks, and refuses, on a window of W* or its floor, whichever is longer
+      (`Judge::window`): the floor is the coarsest resolution of its looks' counters and the
+      longest of its looks, each learned from the wait's own spans (`Span`), so a W* below
+      what its looks resolve is looked at no more often than a look takes or a tick passes
+      (main's looked each 9.583 µs) and refuses over no shorter a window. Cold start: before
+      its first look a judge has no floor, and every judged wait's first look is its based
+      one, taken as it begins (`Follow::begin`), which sets it before its first due. Failure:
+      a tick that cannot be read refuses the follow typed (`ProcessFailure`, macOS's
+      `ProcessOperation::ClockRate`), never taken for no progress. The daemon's other
+      readers keep the same standard: a cgroup's emptying (`parents::emptied`) judges its
+      looks over its readings' resolution, and an end's watcher (`ends::Followed::goes_on`)
+      takes a look sooner than its reading's step after the look before as no evidence, its
+      end going on, the look before kept. An exec the judge ended says so wherever its
+      answer is read (`reclaim::said_of`: a DEVICE step, a resource update, a network's
+      switch), where plug said "its guest: " with nothing after. Red/green: health.rs'
+      `a_wait_is_never_refused_within_what_its_reading_resolves` (a 10 µs W*, an idle
+      process: refused only once a whole tick, read apart from shards-api, has shown it
+      still; red with the unit as the resolution, refused microseconds in) and judge.rs'
+      `a_w_star_below_what_its_looks_resolve_is_judged_over_what_they_do` (the moved.rs run's
+      own times). Whether the five HVF tests and plug.rs pass on real VMs is ROOT's run's.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
       test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
       answer not yet found missing; `Awaited`, found missing at least once, by a look
@@ -34873,8 +34950,10 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   - KVM x86-64 at 83d6e8613: boot.rs's three tests with the unpatched kernel 54fba99afaee 3/3,
     where they failed 3/3 before; with the patched 836568f8ad2c 3/3. Manual boots of each at 1
     and 4 vCPUs start at "Linux version", with exactly one.
-  - Owed: unit tests against rings captured from those kernels' memory (synthetic rings so far),
-    and HVF and WHP runs.
+  - Unit tests against rings captured from those kernels' memory (crates/vmm testdata/printk,
+    `capture-ring.py`, KVM boots to a snapshot): the unpatched kernel's console is given every
+    record from "Linux version" to "console [hvc0] enabled"; the patched one's, none.
+  - Owed: HVF and WHP runs.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

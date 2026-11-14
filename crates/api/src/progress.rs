@@ -652,13 +652,36 @@ mod os {
         read_clock(pid, libc::clock_gettime)
     }
 
-    /// The resolution of process `pid`'s CPU clock (clock_getres(2)), the least time a
-    /// change of it stands for: one nanosecond for the scheduler's clock that
-    /// clock_getcpuclockid(3) names (kernel/time/posix-cpu-timers.c,
-    /// `posix_cpu_clock_getres`), a clock tick for one that counts ticks. None where it has
-    /// gone.
+    /// The least time a change of process `pid`'s CPU clock shows: its resolution
+    /// (clock_getres(2); one nanosecond for the scheduler's clock that clock_getcpuclockid(3)
+    /// names, kernel/time/posix-cpu-timers.c `posix_cpu_clock_getres`), or the kernel's tick
+    /// where that is longer. Read from another process, that clock brings only the reader's
+    /// own thread up to date: a thread of `pid` running on another CPU is in it as of that
+    /// CPU's last tick or scheduler event (kernel/sched/cputime.c `thread_group_cputime`,
+    /// `read_sum_exec_runtime`), so between ticks it shows none of that thread's run (CI's
+    /// aarch64 run 43575280954: a thread spinning throughout, its process's clock unchanged
+    /// for 2.6 ms). The tick is the kernel's own, the resolution of its coarse clock
+    /// (clock_getres(2) of CLOCK_MONOTONIC_COARSE: `LOW_RES_NSEC`, one jiffy,
+    /// kernel/time/posix-timers.c `posix_get_coarse_res`). None where it has gone.
     pub(super) fn resolution(pid: u32) -> Result<Option<Duration>, ProcessFailure> {
-        read_clock(pid, libc::clock_getres)
+        let Some(clock) = read_clock(pid, libc::clock_getres)? else {
+            return Ok(None);
+        };
+        Ok(Some(clock.max(tick()?)))
+    }
+
+    /// The kernel's tick: the resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2)).
+    fn tick() -> Result<Duration, ProcessFailure> {
+        // SAFETY: a timespec, plain data, for the call to fill.
+        let mut at: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: clock_getres(2) of a clock every Linux since 2.6.32 has, into a local.
+        if unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC_COARSE, &raw mut at) } != 0 {
+            return Err(crate::taken::io_failure(
+                ProcessOperation::CpuClock,
+                std::io::Error::last_os_error(),
+            ));
+        }
+        timespec(&at)
     }
 
     /// `read` (clock_gettime(2) or clock_getres(2)) of process `pid`'s CPU clock; none where
@@ -694,13 +717,17 @@ mod os {
             }
             return Err(crate::taken::io_failure(ProcessOperation::CpuClock, e));
         }
-        // A timespec's nanoseconds are below a second's (POSIX <time.h>).
+        timespec(&at).map(Some)
+    }
+
+    /// A timespec as a duration; its nanoseconds are below a second's (POSIX <time.h>).
+    fn timespec(at: &libc::timespec) -> Result<Duration, ProcessFailure> {
         let secs = u64::try_from(at.tv_sec).map_err(|_| ProcessFailure::InvalidCpuTime)?;
         let nanos = u32::try_from(at.tv_nsec)
             .ok()
             .filter(|n| *n < 1_000_000_000)
             .ok_or(ProcessFailure::InvalidCpuTime)?;
-        Ok(Some(Duration::new(secs, nanos)))
+        Ok(Duration::new(secs, nanos))
     }
 }
 
@@ -857,13 +884,71 @@ mod os {
         Ok(Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX)))
     }
 
-    /// The least time a change of a process's CPU times stands for: one Mach absolute-time
-    /// unit, rounded up to whole nanoseconds (42 ns on Apple silicon's 125/3), the units in
-    /// which proc_pid_rusage(2) keeps them. Every process's alike.
+    /// The least time a change of a process's CPU times shows: one Mach absolute-time unit,
+    /// rounded up to whole nanoseconds (42 ns on Apple silicon's 125/3), the units in which
+    /// proc_pid_rusage(2) keeps them; or its kernel's clock tick where that is longer
+    /// (`kern.clockrate`'s `tick`, sysctl(3) KERN_CLOCKRATE: 10,000 µs, hz 100, on macOS 26).
+    /// XNU adds a thread's run to its task's times as the thread leaves its CPU or enters the
+    /// kernel, of which its scheduler's quantum timer makes one each quantum (osfmk
+    /// sched_prim.c, `default_preemption_rate`, 100 a second, as hz): a thread running
+    /// throughout shows nothing between. Measured
+    /// (docs/research/measurements/judge-resolution/rusage-steps.c, Mac17,6, macOS 26, load
+    /// 30): a spinning child's times read back to back, each read about 1 µs, grew in steps
+    /// of p50 12 µs, p90 182 µs, p99 3.7 ms, max 12.9 ms; the test judge's `Beside` saw none
+    /// of a spinning thread within 450 µs windows on HVF. Every process's alike.
     pub(super) fn resolution(_pid: u32) -> Result<Option<Duration>, ProcessFailure> {
         let (numer, denom) = timebase()?;
         let ns = numer.div_ceil(denom);
-        Ok(Some(Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX))))
+        let unit = Duration::from_nanos(u64::try_from(ns).unwrap_or(u64::MAX));
+        Ok(Some(unit.max(tick()?)))
+    }
+
+    /// The kernel's clock tick, `kern.clockrate`'s `tick` (sys/time.h `struct clockinfo`,
+    /// microseconds).
+    fn tick() -> Result<Duration, ProcessFailure> {
+        #[repr(C)]
+        struct Clockinfo {
+            hz: libc::c_int,
+            tick: libc::c_int,
+            tickadj: libc::c_int,
+            stathz: libc::c_int,
+            profhz: libc::c_int,
+        }
+        let mut info = Clockinfo {
+            hz: 0,
+            tick: 0,
+            tickadj: 0,
+            stathz: 0,
+            profhz: 0,
+        };
+        let mut len = size_of::<Clockinfo>();
+        // SAFETY: sysctlbyname(3) of a NUL-terminated name, writing at most `len` bytes into
+        // `info`, a struct clockinfo's layout, and its length into `len`; nothing is set.
+        let code = unsafe {
+            libc::sysctlbyname(
+                c"kern.clockrate".as_ptr(),
+                (&raw mut info).cast(),
+                &raw mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if code != 0 {
+            return Err(crate::taken::io_failure(
+                ProcessOperation::ClockRate,
+                std::io::Error::last_os_error(),
+            ));
+        }
+        // An answer of another size is no clockinfo, refused as `timebase` refuses a zero
+        // denominator: by the call's own code.
+        if len != size_of::<Clockinfo>() {
+            return Err(ProcessFailure::Os {
+                operation: ProcessOperation::ClockRate,
+                code,
+            });
+        }
+        let us = u64::try_from(info.tick).map_err(|_| ProcessFailure::InvalidCpuTime)?;
+        Ok(Duration::from_micros(us))
     }
 
     /// mach_timebase_info(3)'s numerator and denominator, the denominator never zero.
