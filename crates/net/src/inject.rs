@@ -852,9 +852,17 @@ struct Parked {
 struct Holding {
     whole: Whole,
     framing: Framing,
+    expectation: Expectation,
     /// How much of `pending` its framing has read.
     read: usize,
     body: Vec<u8>,
+}
+
+/// The gateway owns a held request's Continue response (RFC 9110 §10.1.1).
+enum Expectation {
+    Unrequested,
+    Waiting,
+    Sent,
 }
 
 /// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
@@ -2181,16 +2189,34 @@ impl Ended {
                     Framing::Chunked(_) => true,
                     Framing::Close => false,
                 };
-                (ours && fits).then(|| Holding {
-                    whole: Whole {
-                        cli,
-                        method: method.clone(),
-                        target: target.clone(),
-                        content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
-                    },
-                    framing: body.clone(),
-                    read: 0,
-                    body: Vec::new(),
+                (ours && fits).then(|| {
+                    let expectation = if values(&head, &fields, "expect")
+                        .any(|v| v.eq_ignore_ascii_case(b"100-continue"))
+                    {
+                        // This hop answers it. A body later passed upstream must not ask
+                        // that hop to send another Continue after we already admitted it.
+                        edits.extend(
+                            fields
+                                .iter()
+                                .filter(|f| f.name == "expect")
+                                .map(|f| (f.line.clone(), Vec::new())),
+                        );
+                        Expectation::Waiting
+                    } else {
+                        Expectation::Unrequested
+                    };
+                    Holding {
+                        whole: Whole {
+                            cli,
+                            method: method.clone(),
+                            target: target.clone(),
+                            content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                        },
+                        framing: body.clone(),
+                        expectation,
+                        read: 0,
+                        body: Vec::new(),
+                    }
                 })
             }
             None => {
@@ -2236,7 +2262,14 @@ impl Ended {
     /// its head as it came but for its hop-by-hop fields and its placeholders, each filled in
     /// and audited; refused where a lease is; parked again while one is asked.
     fn go(&mut self, mut parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
-        if let Some(whole) = parked.whole.take() {
+        if let Some(mut whole) = parked.whole.take() {
+            if matches!(whole.expectation, Expectation::Waiting) {
+                self.guest
+                    .writer()
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .map_err(|e| Refusal::Upstream(e.to_string()))?;
+                whole.expectation = Expectation::Sent;
+            }
             match self.outside(&parked, whole, run)? {
                 Outside::Waiting(whole) => {
                     parked.whole = Some(whole);
@@ -7529,6 +7562,7 @@ pub(crate) mod tests {
         assert!(!bench.closed);
     }
 
+    mod expectations;
     /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
     mod leaks;
 }

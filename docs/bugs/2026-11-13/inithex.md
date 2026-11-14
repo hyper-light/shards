@@ -43,6 +43,8 @@ POLICY_READ — role: adversarial reviewer, area `inithex`; coordinator of this 
 
 **Catching test:** In ROOT's disposable GPU VM, run the default grant profile as root; verify ungranted card0 open is denied; query/get-FD/detach all visible device programs; require card0 open still fails while renderD128 works and child stricter programs still attach. Record actual detach results, remaining attachment state, forbidden open and cleanup. Existing `a_granted_runs_boxes_...` GPU case should include this hostile variant. A GPU-free twin can attempt an ungranted real guest block device.
 
+**Status (2026-11-13):** fixed in 390c5995a (red `on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits`, crates/init/src/run.rs, on a real Linux x86_64 kernel in a delegated scope: with the namespace rooted at the workload's cgroup, as at the base, the standby's own and a fresh cgroup2 mount name the cgroup the device program is on; after, neither does). Confirmed at the source and by that precondition, not by a live detach: the bpf(2) steps need init's privileges. D234 amended; ROOT's real-VM twin `nesting.rs a_granted_workload_cannot_detach_its_device_program` owed.
+
 ### inithex-02 — P0 / critical — per-member narrowing overlooks reach through image-wide ports
 
 **Location at head:** `crates/shards/src/api_run.rs:814`; supporting gap `crates/agentfile/src/agentfile.rs:2291`.
