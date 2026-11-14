@@ -2542,6 +2542,12 @@ stack inside the VMM, is superseded by it.
     each new connection's queue 2.9%; as built, none measurable. A host connect the
     process itself could not make (descriptors, ports, buffers) is said, beside the reset
     the guest hears.
+- **Native Linux filter (network-02, 2026-11-13).** The network helper requests
+  seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
+  the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
+  is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
+  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
+  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN
@@ -6894,6 +6900,75 @@ window; a slow start, a slow join and a slow verdict on one key holding up no ot
 stranger refused once its verdict is let go, red with each on the driver; and the relays'
 backpressure as before: 8 MiB crossing whole, a command that reads no stdin holding up no
 other).
+
+#### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
+
+The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
+reached more than its enrollment grants. Each was reproduced red at 9efde7252 before its fix
+(the tests named below, run on macOS arm64, and the Windows one on the Windows 11 guest).
+
+- **An owner's command is judged as it runs, not as its first word reads (remote-01).** The
+  daemon judged `Request.args`' first word; the child shards took a context's choice off the
+  front (`--context NAME`, `-c NAME`, `--context=NAME`) and ran the rest, so
+  `--context default client grant alice --dir /` granted a client this machine's root
+  (`red_remote01_an_owners_command_behind_a_prefix`: chosen `Here`, child's first word
+  `client`, the daemon's `owners` none). Now `daemon/remote.rs` `judge` refuses any context's
+  choice outright (`Refused::Context`: a client's command runs on this machine and reaches no
+  other context of its owner's), and judges the words `cli::command_words` gives, which are
+  `dispatch`'s own: `help CMD…` as `CMD… --help`, and shards' grammar said as its command, to
+  a fixpoint, a turn back to words already given ending it (no count of turns is chosen). The
+  file-reaching words (`client_grants::refuse_words`) are judged of the same words. A build
+  step's command (`\0sync build KEY WORDS…`), which no `owners` judged, must be a build's
+  (`commands::build`, or an agent's, harness's or MCP server's `build`), else
+  `Refused::NotABuild`, before any of its files come. And independently of the daemon, the
+  child refuses a `context`, `client` or `invitation` command wherever it runs for a client
+  (`cli::owners_alone`, of `SHARDS_CLIENT`, which the listener sets last): what reaches the
+  administration handlers is judged there too. The refusals are typed (`Refused`), the wire
+  carrying their text as `Tag::Refused` as before.
+- **A build file's name is one file's as the machine's paths read it (remote-02).** The name's
+  check refused `/`, `\`, NUL, `.` and `..`, but on Windows `C:context` is a path of drive C's
+  current directory, which `PathBuf::join` takes in place of the copy's directory: the
+  daemon's home's `context` or `identity` was overwritten
+  (`red_remote02_a_drive_relative_name_escapes_the_copy`, the Windows guest: the file written
+  in the test's current directory). `synced::name_alone` now refuses, on Windows, a colon (a
+  drive's prefix, or an alternate data stream), the characters no Win32 name holds
+  (`< > " | ? *` and controls 1-31, which also cover `\\?\` and `\\.\`), a trailing dot or
+  space, and a device's name with any extension (`CON PRN AUX NUL COM0-9 LPT0-9`, superscript
+  1-3 too, and CreateFileW's `CONIN$ CONOUT$`): Microsoft's "Naming Files, Paths, and
+  Namespaces" and CreateFileW's documentation, the only sources of the set; no number is
+  chosen. Linux and macOS take each such name as the name it is there. Refusals are typed
+  (`NotAName`), before any file is opened. The build's other words that name paths (`--file`,
+  `--output dest=`, `--iidfile`, a tree's) are not yet held to the copy: owed, below.
+- **A client is its key as its connection proved it, judged for each operation (remote-03).**
+  The listener judged a connection's key once and kept the client's name: a removed client's
+  held connection, or the old key of a name enrolled again under another key, ran new
+  commands, and an Engine API connection kept open served calls after the removal
+  (`red_remote03_an_old_keys_connection_runs_a_new_command`: `echo again` ran). Now each
+  command's start judges again, apart from the driver, whether the machine enrolls the key
+  its connection proved under the name it was judged (`server::start_apart`); one it does not
+  is refused (`REVOKED_WORDS`) and its connection closed with code `REVOKED` (3, an
+  application error code of RFC 9000 §20.2's space beside `UNENROLLED`'s 2: an identifier,
+  not a tunable), its commands hung up as a lost connection's are, and its client says why.
+  The daemon watches the home's `clients` directory (`platform::FileWatch`, one instance
+  for the daemon's life) and tells the listener each change (`Stopper::revalidate`), and once
+  as the watch begins, for a removal before it: every connection whose key the machine no
+  longer enrolls so is closed at once. An Engine API connection a client opened through its
+  context carries the key it proved (`context::Proved`), and each call on it is judged by
+  whether the home's record still holds that key, refused 403 (RFC 9110 §15.5.4) and the
+  connection ended where it does not. A command or a call under way as its client is removed
+  is hung up as the connection closes; none is judged anew mid-flight. The record is read for
+  each judgment, no cache kept: it is the one account of whom the home enrolls. Where the
+  watch cannot be made (a host's inotify instances spent, PM M257), the daemon says so in its
+  log, and a removed client's held connection is refused at its next command instead.
+  Tested: `tests/loopback.rs` `a_removed_clients_held_connection_runs_nothing_more` (refused,
+  closed `REVOKED`, its `cat` hung up, the name's new key served) and
+  `a_removed_clients_connection_closes_as_the_daemon_is_told` (closed at once, a client still
+  enrolled served on), `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`.
+- **Owed (ROOT's).** The real-daemon E2E of each: tests/context.rs's removal with an Engine API
+  keep-alive connection held across it and a native connection held across a removal and a
+  re-enrollment of its name; a client's raw `--context` and `\0sync build` requests; a Windows
+  listener receiving `C:context`. The per-call record read's cost (R14). A build step's
+  path-naming words held to the copy (above).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
