@@ -279,13 +279,26 @@ static EMPTIED: shards_api::Record = shards_api::Record::new();
 /// whole W* shows none of them ran any CPU, its host not the reason. Whether it emptied
 /// (none where `events` is gone, the cgroup with it); its emptying teaches `record`. It was a
 /// window of `IDLE_VM_CPU`'s 10 s, judged by an idle microVM's CPU (ROOT's (3), 2026-11-13).
+#[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io::Result<bool> {
+    let parent = events.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let opened = match std::fs::File::open(events) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    // kernfs_notify_workfn emits FS_MODIFY for cgroup.events (Linux v6.18,
+    // fs/kernfs/file.c); FileWatch shares this process's inotify instance. Arm before
+    // the first state read, and clear before each read, so no intervening change is lost.
+    let mut changed = shards_vmm::platform::FileWatch::new(&shards_vmm::platform::open_dir(parent)?)?;
+    changed.file(&opened)?;
     let mut judge = shards_api::Judge::begin(record);
     // Each process as it was first seen: its pid, its watch, and what it had run then.
     let mut watched: Vec<(u32, shards_api::Watch, std::time::Duration)> = Vec::new();
     let mut ran = std::time::Duration::ZERO;
     loop {
+        changed.clear();
         let text = match std::fs::read_to_string(events) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -336,7 +349,8 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 ))
             })?;
         }
-        super::slept(std::time::Duration::from_millis(10));
+        let timeout = judge.due().map(|due| due.saturating_duration_since(std::time::Instant::now()));
+        super::timed(timeout, || shards_ipc::await_any_within(&[changed.fd()], timeout))?;
     }
 }
 
