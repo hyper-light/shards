@@ -6123,7 +6123,13 @@ impl Workload {
                                 // Gone: what was asked of it is refused; what it started ends
                                 // with it, told by each one's pidfd.
                                 Err(_) => {
-                                    d.starter = None;
+                                    if let Err(e) = d.starter_gone() {
+                                        let _ = writeln!(
+                                            io::stderr(),
+                                            "shards-init: {}: its pids.max as its starter went: {e}",
+                                            d.label
+                                        );
+                                    }
                                     for e in execs.iter_mut() {
                                         if matches!(&e.member, Some(MemberExec::Asked(a)) if a.member == member)
                                         {

@@ -43,6 +43,18 @@ mod admission;
 pub const FIRST_ID: u32 = shards_abi::DOMAIN_FIRST_ID;
 /// Where the domains' cgroups are.
 const CGROUPS: &str = "/sys/fs/cgroup/run/domains";
+
+/// The tasks of a member's cgroup that its starter is (D243, confine-11): one, a process of
+/// one thread ([`crate::starter`] starts none), which the pids controller counts as every
+/// task (cgroup-v2.rst, "PID").
+const STARTER_TASKS: u64 = 1;
+
+/// The `pids.max` of a member that declares `declared` processes: those, and its starter,
+/// so that its own number what it declared, as a container's do under runc, whose exec
+/// helper is gone once its command runs. None where it overflows.
+fn with_starter(declared: u64) -> Option<u64> {
+    declared.checked_add(STARTER_TASKS)
+}
 /// The `PATH` a domain starts with: Docker's default (moby oci/defaults.go).
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// The nodes a domain's `/dev` holds, as Docker's containers' (moby oci/defaults.go,
@@ -762,15 +774,34 @@ pub struct Started {
     /// Init's end of its starter, which starts each command run in it (confine-10,
     /// [`crate::starter`]); none once it has gone.
     pub starter: Option<crate::starter::Starter>,
+    /// The processes it declared (`pids.max` less its starter's, confine-11): its cgroup's
+    /// limit once its starter has gone.
+    pub pids: Option<u64>,
 }
 
 impl Started {
+    /// Its starter has gone (confine-11): its `pids.max` is what it declared, so that a
+    /// member that ended its starter, and reaped it, is given no process more.
+    pub fn starter_gone(&mut self) -> io::Result<()> {
+        self.starter = None;
+        held_to(&self.cgroup, self.pids)
+    }
+
     pub fn abort_output(&mut self, errno: i32) {
         self.stdout.abort();
         self.stderr.abort();
         if matches!(self.output_control, crate::capture::OutputControl::Active) {
             self.output_control = crate::capture::OutputControl::Pending(errno);
         }
+    }
+}
+
+/// `cgroup`'s `pids.max`, the directory of a member that declared `pids` processes, set to
+/// them; none where it declared none, as its limit is then the microVM's.
+fn held_to(cgroup: &str, pids: Option<u64>) -> io::Result<()> {
+    match pids {
+        Some(n) => std::fs::write(format!("{cgroup}/pids.max"), n.to_string()),
+        None => Ok(()),
     }
 }
 
@@ -1987,9 +2018,13 @@ pub fn start(
             d.id.checked_sub(FIRST_ID)
                 .ok_or("a domain's identity precedes its declared range")?;
         let group = format!("{CGROUPS}/{}", d.cgroup);
+        let pids = d
+            .pids
+            .map(|n| with_starter(n).ok_or_else(|| format!("{}: {n} processes and its starter overflow", d.label)))
+            .transpose()?;
         let admitted = admission
             .prepare_child(&d.cgroup)
-            .and_then(|p| p.commit(d.pids, d.memory))
+            .and_then(|p| p.commit(pids, d.memory))
             .map_err(|e| e.message(&d.label))?;
         let cgroup = admitted.group();
         let filter = filters
@@ -2377,6 +2412,7 @@ pub fn start(
             confinement,
             terminal: master,
             starter: Some(starter),
+            pids: d.pids,
         });
     }
     drop(joined);
@@ -4314,6 +4350,135 @@ mod tests {
         });
         let Some(said) = said else { return };
         assert_eq!(said, format!("starter: false; listed: [{name:?}]"));
+    }
+
+    /// What `argv`, asked of the starter of a member that declares `declared` processes,
+    /// came to, as `command_in` says it: the member's first process is moved into a cgroup
+    /// of the test's own, of the `pids.max` `start` commits ([`with_starter`]), before it is
+    /// confined and forks its starter. Run with SHARDS_TEST_CGROUP naming a cgroup this test
+    /// may write, holding no process and offering pids (a delegated scope's: `systemd-run
+    /// --user --scope -p Delegate=yes`, its processes moved into a leaf of its own), as root
+    /// of IDs past its own (`unshare --map-auto --map-root-user`); else a SKIP.
+    fn in_a_member_declaring(declared: u64, argv: &[&CStr]) -> Option<String> {
+        let Ok(base) = std::env::var("SHARDS_TEST_CGROUP") else {
+            eprintln!("SKIP: SHARDS_TEST_CGROUP names no cgroup of the test's own");
+            return None;
+        };
+        let c = member_confinement(1000, Vec::new(), "/");
+        let group = format!("{base}/c11-{}-{declared}", std::process::id());
+        as_root_of_own_mounts(|| {
+            // SAFETY: unshare(2) of this single-threaded child: its next child is PID 1 of a
+            // PID namespace of its own, whose end ends the member and its starter.
+            if unsafe { libc::unshare(libc::CLONE_NEWPID) } != 0 {
+                return format!("SKIP: unshare: {}", io::Error::last_os_error());
+            }
+            let made = std::fs::write(format!("{base}/cgroup.subtree_control"), "+pids")
+                .and_then(|()| std::fs::create_dir(&group))
+                .and_then(|()| std::fs::write(format!("{group}/pids.max"), with_starter(declared).unwrap().to_string()));
+            if let Err(e) = made {
+                return format!("SKIP: its cgroup: {e}");
+            }
+            let said = in_child(|| {
+                let (starter, theirs) = crate::starter::channel().unwrap();
+                let mut fds = [0 as RawFd; 4];
+                // SAFETY: pipe2(2) twice, into two-element halves of this array.
+                unsafe {
+                    assert_eq!(libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC), 0);
+                    assert_eq!(libc::pipe2(fds.as_mut_ptr().add(2), libc::O_CLOEXEC), 0);
+                }
+                // SAFETY: all four descriptors were just made, and are owned here alone.
+                let [go_r, go_w, ready_r, ready_w] = fds.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) });
+                // SAFETY: fork(2) of a process of one thread; the child waits to be moved,
+                // confines itself, forks its starter and holds.
+                let member = unsafe { libc::fork() };
+                assert!(member >= 0, "fork: {}", io::Error::last_os_error());
+                if member == 0 {
+                    // SAFETY: read(2), the member's first process's last steps and write(2)
+                    // of a byte of this stack's, in a child of one thread, which holds or
+                    // exits.
+                    unsafe {
+                        let mut byte = [0u8; 1];
+                        if libc::read(go_r.as_raw_fd(), byte.as_mut_ptr().cast(), 1) != 1
+                            || rules(&c, c.ruleset.as_raw_fd())
+                                .and_then(|()| confine(&c, c.ruleset.as_raw_fd()))
+                                .is_err()
+                        {
+                            libc::_exit(1);
+                        }
+                        libc::dup3(theirs.as_raw_fd(), crate::starter::STARTER_FD, libc::O_CLOEXEC);
+                        crate::starter::fork();
+                        libc::close(crate::starter::STARTER_FD);
+                        libc::close(theirs.as_raw_fd());
+                        libc::write(ready_w.as_raw_fd(), b"r".as_ptr().cast(), 1);
+                        loop {
+                            libc::pause();
+                        }
+                    }
+                }
+                drop((theirs, go_r, ready_w));
+                let moved = std::fs::write(format!("{group}/cgroup.procs"), member.to_string());
+                let mut byte = [0u8; 1];
+                // SAFETY: write(2) and read(2) of a byte of this stack's.
+                let ready = unsafe {
+                    libc::write(go_w.as_raw_fd(), b"g".as_ptr().cast(), 1);
+                    libc::read(ready_r.as_raw_fd(), byte.as_mut_ptr().cast(), 1) == 1
+                };
+                let said = match (moved, ready) {
+                    (Err(e), _) => format!("not moved: {e}"),
+                    (Ok(()), false) => "not confined".into(),
+                    (Ok(()), true) => command_in(&starter, argv),
+                };
+                // SAFETY: kill(2) and waitpid(2) of this process's own child.
+                unsafe {
+                    libc::kill(member, libc::SIGKILL);
+                    libc::waitpid(member, std::ptr::null_mut(), 0);
+                }
+                said
+            });
+            // Its PID namespace has ended, and with it every task of the cgroup.
+            let _ = std::fs::remove_dir(&group);
+            said
+        })
+    }
+
+    /// confine-11: a member's cgroup gives the member as many processes as it declared, its
+    /// starter apart ([`with_starter`]), as runc's exec helper is gone from a container's
+    /// once its command runs. A member that declares two, its first process and a command
+    /// run in it, runs that command: with its starter counted against what it declared, the
+    /// command's fork met `pids.max` (and a member that declared one had no starter at all,
+    /// every command run in it refused `NoStarter`).
+    #[test]
+    fn a_member_runs_as_many_processes_as_it_declares_its_starter_apart() {
+        let Some(said) = in_a_member_declaring(2, &[c"/bin/true"]) else { return };
+        assert_eq!(said, "exited 0");
+    }
+
+    /// confine-11: a command past what its member declared is refused, its starter's fork's
+    /// EAGAIN said to init (`Refusal::Processes`). The kernel writes a pidfd's number before
+    /// it charges the fork to `pids.max` (kernel/fork.c `copy_process`), and lets it go as it
+    /// refuses it; the starter that sent it as the command's failed EBADF and answered
+    /// nothing, so that the exec waited for ever (reproduced at with_starter's mutant, Linux
+    /// 7.3.3 x86_64).
+    #[test]
+    fn a_command_past_what_its_member_declared_is_refused() {
+        let Some(said) = in_a_member_declaring(1, &[c"/bin/true"]) else { return };
+        assert_eq!(said, format!("not born: Ok(Some(NotBorn {{ id: 7, errno: {} }}))", libc::EAGAIN));
+    }
+
+    /// confine-11: a member whose starter has gone is given what it declared, no more: its
+    /// cgroup's `pids.max` goes back to it, the one its starter took handed back to no one,
+    /// as a member that ended its starter and reaped it (`__WALL`) would have it.
+    #[test]
+    fn a_member_whose_starter_went_is_held_to_what_it_declared() {
+        let dir = shards_testdir::TempDir::new("c11-pids").unwrap();
+        let cgroup = dir.to_str().unwrap().to_string();
+        std::fs::write(dir.join("pids.max"), with_starter(5).unwrap().to_string()).unwrap();
+        assert_eq!(with_starter(5), Some(6));
+        assert_eq!(with_starter(u64::MAX), None);
+        held_to(&cgroup, Some(5)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max")).unwrap(), "5");
+        held_to(&cgroup, None).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max")).unwrap(), "5");
     }
 
     /// The starter's terminal path in the member as init starts it, PID 1 of a PID namespace

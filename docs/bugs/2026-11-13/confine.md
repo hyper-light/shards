@@ -216,6 +216,51 @@ pending. Work begins after the earlier assigned list.
 
 **Follow-up (2026-11-14, P0, found by ROOT on real VMs):** with the starter born, member_exec's `a_command_run_in_a_member_has_a_terminal_that_resizes` hung on KVM (adacachy2, 8fdd66512) and HVF (0ce6cdc66): the exec on a terminal started, but its host's resizes reached nothing. The starter's path (53b5654b5) said `STARTED` for a member exec without marking it a terminal's (`Exec::tty` stayed false; the path before it set it from `Started::tty`), and `EXEC_RESIZE` looked only for an exec with `tty` set, so no SIGWINCH came and the harness waited for its `resized` line for ever. Fixed in e5dc26322: one lookup, `Exec::terminal`, gives the master the ask holds while asked and born, and the stdout once running, which `member_launched` marks. The starter's own terminal path is sound: the new `domains::tests::a_command_run_in_a_member_on_a_terminal_has_it_as_its_sessions` (member PID 1 of its PID namespace, real pty, `stty size`, `/dev/tty`, the master read to EIO) is green on the starter as it was, and red with `TIOCSCTTY` removed (`/dev/tty: No such device or address`). Red `run::exec_link_tests::a_command_run_in_a_member_on_a_terminal_is_sized_by_its_host` with main's lookup (`born, before it execs`: `None`) and with the running exec unmarked (`running`: `None`), green after; Linux x86_64 adacachy2, 7.3.3, under `unshare --map-auto --map-root-user` (D243 *Its terminal*). Owed to ROOT, real VMs: `cargo test -p shards --profile test-release --test member_exec -- --test-threads=1` on KVM and HVF.
 
+### confine-11 — P3 / medium — a member's starter as the member sees it: `top` and `pids.max`
+
+**Author:** ROOT, assigned 2026-11-14 (owed-findings brief, `/tmp/g121-shot/review/owed-brief.md`), from confine-10's
+status above: its parity row, the starter in `shards top` and in `pids.max`.
+
+**Location:** `crates/init/src/procs.rs` (`dump`, which processes are init's own);
+`crates/init/src/domains.rs` (`start`'s `pids.max`, `Started`); `crates/init/src/starter.rs` (`start`'s answer);
+`docs/design/architecture.md` D243, *Costs* and *Typed refusals*.
+
+**Defect (as assigned):** `shards top` of a run lists each member's starter (its name `starter`), where `docker top`
+lists a container's own processes and not runc's exec helper; and the starter counts against the member's
+`pids.max`, which its declared processes alone should number.
+
+**Status (2026-11-14):** fixed in SLICE_TOP and SLICE_PIDS (Linux 7.3.3 x86_64, adacachy2, under `unshare --map-auto
+--map-root-user`; the cgroup tests in a `systemd-run --user --scope -p Delegate=yes` scope with SHARDS_TEST_CGROUP).
+- *`top`*: the starter was not listed at 6f3cd4428 (`domains::tests::a_members_top_lists_its_own_processes_alone`,
+  the starter alive, green before and after): `dump` left out every process whose `/proc/PID/exe` read the same path
+  as init's own, and the starter is a fork of init that never execs. That leave-out was by a name, though: the link
+  reads a program's path in its own mounts (d_path(9) from a root they do not reach), so a member's program at init's
+  path in its own mounts (an image's `/init`) was left out as one of init's forks. Red
+  `a_members_program_at_inits_path_is_listed` at 6f3cd4428 (`/bin/sleep` bound over the test's program in the
+  member's mounts: `listed: []`), green after: init's own processes are known by the file they run, the device and
+  inode of `/proc/PID/exe` (procs.rs `image`), one way, the path compare gone; nothing reads the name `starter`.
+  ROOT's directive (the starter's PID from its channel) was weighed: a PID leave-out for starters would sit beside
+  the standby forks' leave-out, which needs the file identity anyway, two mechanisms for one class; the file
+  identity covers both, no member can run init's file (outside its root; the processes that run it in the member
+  are not dumpable), and it needs no new message.
+- *`pids.max`*: `start` commits a member's `pids.max` as what it declares plus its starter's one task
+  (`with_starter`), and lowers it to what it declared once the starter has gone (`Started::starter_gone`), so a
+  member never gains a process by ending its starter. The starter stays in the member's cgroup: it cannot start
+  commands into another without a capability (`CLONE_INTO_CGROUP`'s `cgroup.procs` write), and a starter outside
+  would start them outside the member's limits. Red/green below.
+- *Found on the way, P1:* the starter's refusal at `pids.max` was never sent. The kernel writes a `CLONE_PIDFD`
+  number before it charges the fork to the cgroup and lets it go as it refuses it (kernel/fork.c `copy_process`,
+  Linux 7.2-rc4 :2335, :2394, :2568); the starter sent that closed descriptor with its `NOT_BORN`, sendmsg failed
+  EBADF, and the exec waited for ever where `Refusal::Processes` was due. Reproduced live with `with_starter`
+  mutated to the declared count: the test's init end polled with nothing queued, the starter back in recvmsg, the
+  member's `pids.events` `max 1`. Fixed in SLICE_PIDS (a pidfd sent only with a command born); guard
+  `a_command_past_what_its_member_declared_is_refused` (`NotBorn { errno: EAGAIN }`).
+- RESULTS_LINE
+- member_exec's `confined pid=4 procs=4` stands: the starter is in the member's PID namespace, as it must be to bear
+  commands there, and a command counting that namespace's processes counts it (D243 *Costs*).
+- Owed to ROOT, real VMs: `cargo test -p shards --profile test-release --test member_exec -- --test-threads=1` on KVM
+  and HVF, and `shards top vm` of a run with a running member (its program listed, its starter not).
+
 ## Checked and found sound
 
 - The exec admission fix separates `DOOR` from `WAITERS`, admits while registration holds the waiter lock, matches a complete HELLO by token, and uses nonblocking candidate sockets (`vm/mod.rs:2461`). Token comparison is whole and constant-time. No source-proven recurrence of the ordinary 64-exec busy-lock hang was found. `EXEC_FAILED`, signal-link failure and listener closure resolve their pending waiters. This is source inspection, not a 64-exec pass.

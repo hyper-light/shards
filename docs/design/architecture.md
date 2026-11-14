@@ -30674,10 +30674,48 @@ ruleset, the run's seccomp filter.
     started) or that a process of the member's ended is `Refusal::NoStarter` (wire code 7,
     `docker exec`'s 126); its commands running then end with it, their end SIGKILL, as the
     reaper reaps them. A command it could not fork is `Processes` at `pids.max`, `Ended` in a
-    namespace whose first process has gone (ENOMEM), else `Joining(errno)`.
-  - *Costs.* One process of the member's, counted in its `pids.max`, for the member's life;
-    `shards top` shows it (its name `starter`). It is a fork of init's address space as the
+    namespace whose first process has gone (ENOMEM), else `Joining(errno)`. The starter
+    sends a pidfd only with a command born: the kernel writes a `CLONE_PIDFD` number before
+    it charges the fork to `pids.max` and lets it go as it refuses it (kernel/fork.c
+    `copy_process`, Linux 7.2-rc4 :2335 `put_user(pidfd, ...)`, :2394 `cgroup_can_fork`,
+    :2568), so the first cut sent a closed descriptor as a refusal's, its sendmsg failed
+    EBADF, and the exec waited for ever where `Processes` was due (confine-11, reproduced at
+    `with_starter`'s mutant: init's end polled with nothing queued, `pids.events` `max 1`).
+  - *Costs* (confine-11, 2026-11-14, [docs/bugs/2026-11-13/confine.md](../bugs/2026-11-13/confine.md)).
+    One process of the member's for the member's life, a fork of init's address space as the
     member's first process was, its pages shared copy-on-write until either writes.
+    - *Its own processes number what it declared.* The starter is one task of the member's
+      cgroup, which the pids controller counts as every task (cgroup-v2.rst, "PID"), and it
+      cannot be elsewhere: what it forks is born in its cgroup, and a process of no
+      capability cannot put a child into another (clone3 `CLONE_INTO_CGROUP` asks write
+      access to the target's `cgroup.procs`), so a starter outside the member's cgroup would
+      start commands outside its `pids.max`, `memory.max` and freezing. So `start` commits
+      the member's `pids.max` as what it declares and its starter's one task
+      (`STARTER_TASKS`, `with_starter`; an overflow refuses the member's start), as a
+      container's processes number its `--pids-limit` under runc, whose exec helper is gone
+      once its command runs. Counted against what it declared, a member of `processes: 1`
+      had no starter (its fork EAGAIN) and every command run in it was refused `NoStarter`,
+      and one of two had a command refused at its first. Once its starter has gone
+      (`Started::starter_gone`, as init reads its channel's end) its `pids.max` is what it
+      declared again, so that a member that ended its starter and reaped it (`__WALL`) is
+      given no process more; one that leaves its starter's zombie unreaped holds one less,
+      its own doing. A write that fails is said on init's console and leaves the one task.
+    - *`top` leaves it out*, with init's standby forks, by the file it runs: every process
+      of init's own program, known by the device and inode of its `/proc/PID/exe`
+      (procs.rs `image`), never by a name. It was left out by the path that link reads,
+      which is a program's path in its own mounts (d_path(9) from a root its mounts do not
+      reach), so a member whose image had its program where init's is, as an image's
+      `/init` is, was left out of `top` as init's own fork (red
+      `a_members_program_at_inits_path_is_listed` at 6f3cd4428, `listed: []`). The
+      starter's name, `starter`, which any member's program could take, decides nothing. A
+      process of the member's can run no copy of init's file: it is outside the member's
+      root, and the processes that run it there, the starter and a command born of it before
+      it execs, are not dumpable, so their `/proc/PID/exe` is refused it.
+    - *The member's own `/proc` shows it*: it is a process of the member's PID namespace, as
+      it must be to bear commands there, so a command that counts that namespace's
+      processes counts it (member_exec's `confined pid=4 procs=4`), where runc's `runc init`
+      shows only while an exec starts. A member may signal it, and ends what it runs then
+      (above).
   - *Alternatives.* Starting from init and entering the member's ruleset: a sibling domain
     (above). The member's namespace init as starter: init's sealed reaper is outside the
     member's Landlock domain and seccomp filter, so what it forks is too. The member's first
@@ -30688,7 +30726,10 @@ ruleset, the run's seccomp filter.
     member_exec -- --nocapture`, with an exec that runs `kill -0 1` and `kill -TERM 1` in its
     member and connects to an abstract socket the member's program listens on, and an exec
     asked after the member killed its starter (`Refusal::NoStarter`); E2E tests that count a
-    member's processes see its starter.
+    member's processes see its starter. confine-11's: `shards top vm` of a run whose member
+    runs lists the member's program and not its starter, and `shards exec vm --for MEMBER`
+    of a member that declares `processes: 2` runs one command and refuses a second held open
+    beside it (`Refusal::Processes`, status 126).
 - *Refused environment values* (confine-07): validation returns only the typed
   cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
   Display are value-free, and the existing member refusal wire renders only that
@@ -30749,7 +30790,16 @@ request with its member (ipc); `exec --help`'s Shards options (cmdline). On a Li
 with Landlock, as root of IDs past the test's own (`unshare --map-auto --map-root-user`):
 `domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`
 (confine-01's member and its command, through `rules` and `confine`, on Linux 7.3.3
-x86_64: red before, `member refused (13); command written`). Real VMs, ROOT's
+x86_64: red before, `member refused (13); command written`). confine-11's, Linux 7.3.3
+x86_64 (adacachy2): `a_members_top_lists_its_own_processes_alone` (the starter alive, left
+out; green before, as main's path compare matched it too),
+`a_members_program_at_inits_path_is_listed` (red at 6f3cd4428: `listed: []`), and with
+SHARDS_TEST_CGROUP in a delegated scope
+`a_member_runs_as_many_processes_as_it_declares_its_starter_apart` and
+`a_command_past_what_its_member_declared_is_refused` (`with_starter` mutated to the declared
+count: the first `not born: NotBorn { errno: 11 }`, the second `not asked: Gone`, its member
+of one process left no starter; before the starter's pidfd fix the first waited for ever),
+and `a_member_whose_starter_went_is_held_to_what_it_declared`. Real VMs, ROOT's
 (`cargo test -p shards --profile test-release --test member_exec`):
 `a_command_run_in_a_member_is_confined_as_the_member_is` (uid, PID namespace, name, caps and
 `no_new_privs`, signals, Landlock on files and TCP, seccomp, cgroup and network, another
