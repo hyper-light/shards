@@ -9265,6 +9265,13 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
 
 ### M248. A process placed in a slice of the user's service manager: what it costs, and where its memory is charged (D183)
 
+**2026-11-13 cleanup correction (platform-12):** this placement measurement does not
+derive the former 10 ms cleanup polling interval. Cleanup now waits on the existing
+shared file-change notification and the learned judge deadline. The cold-leaf regression
+failed before the change and passed after it; all six parents unit tests and shards
+clippy passed on Linux x86_64. [Commands, source revisions, logs and real-cgroup work owed](measurements/platform-fixes/platform12.md).
+No new performance or placement-cost claim is made by those unit results.
+
 - **Question.** `--cgroup-parent` puts a microVM's processes under a slice the user's own
   systemd manages, so that the slice's limits and accounting cover them. What does asking
   the user's manager for that cost the daemon, per microVM, from an ssh login (a session
@@ -13391,6 +13398,11 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
   CPUs.
 
 ### M317. A busy microVM's threads under XNU's real-time fail-safe, and its device workers on a busy host (D4)
+
+**2026-11-13, platform-11:** this measured policy comparison does not establish fixed
+computation/constraint literals as host-independent bounds. [Online-value/cold-start
+design and evidence still owed](measurements/platform-fixes/held.md) keep that R03
+finding open; no new scheduling or host-fairness result is claimed.
 
 - **Question.** A microVM's vCPU threads run at Mach's time-constraint policy (D4, M8, M10),
   and D4 left open what XNU does to them when a guest keeps them busy. A gate's block
