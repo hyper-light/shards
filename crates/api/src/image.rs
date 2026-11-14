@@ -502,7 +502,8 @@ pub trait ImageGuest: Send + Sync {
     fn published(&self) -> &[Bound];
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
-    /// unchanged until it ends.
+    /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its
+    /// wake ([`ControlAt::sockets`], all three): every UDP socket the endpoint holds.
     fn control(&self) -> Option<&ControlAt>;
     /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
     /// them, ending at the channel's end; once each. What no one reads backs up into that

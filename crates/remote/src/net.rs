@@ -1383,6 +1383,14 @@ impl<H: Handler> Driver<H> {
             .map_err(|e| Error::new(format!("the driver's socket: {e}")))
     }
 
+    /// Where its wake is bound ([`Driver::wake`]): with [`Driver::local`] and its senders'
+    /// [`Sender::waker_addr`], every socket a driver and its senders hold.
+    pub fn wake_addr(&self) -> Result<SocketAddr, Error> {
+        self.wake
+            .local_addr()
+            .map_err(|e| Error::new(format!("the driver's wake: {e}")))
+    }
+
     /// What the kernel holds for its sockets' queues: the one it serves on and its wake's.
     pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
         socket_buffers(&self.socket)?
@@ -2544,28 +2552,81 @@ mod tests {
         worker.join().unwrap().unwrap();
     }
 
+    /// A handler that serves nothing, for tests of the driver's own sockets.
+    struct Idle;
+    impl Handler for Idle {
+        type Command = ();
+        fn connected(&mut self, _: &mut Io<'_>, _: ConnKey, _: &[u8]) -> Result<(), Close> {
+            Ok(())
+        }
+        fn opened(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn readable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn writable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+        fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, _: Option<u64>) {}
+        fn command(&mut self, _: &mut Io<'_>, _: ()) {}
+        fn done(&self) -> bool {
+            false
+        }
+    }
+
+    /// A driver tells every socket it and its senders hold, each by name (Hex's default-deny
+    /// check, where Windows' UDP table shows no socket's peer): the one it serves on, its
+    /// wake and its senders' waker, as the sockets themselves report them, three distinct
+    /// addresses, each held while the driver lives and free once it and its senders are gone.
+    #[test]
+    fn a_driver_tells_every_socket_it_holds() {
+        for at in ["127.0.0.1:0", "[::1]:0"] {
+            if UdpSocket::bind(at).is_err() {
+                // A host without IPv6 loopback has no [::1] driver to test either.
+                continue;
+            }
+            let (driver, sender) =
+                Driver::bind(at.parse().unwrap(), None, Idle, crate::tls::Known::Never).unwrap();
+            let clone = sender.try_clone().unwrap();
+            let told = [
+                driver.local().unwrap(),
+                driver.wake_addr().unwrap(),
+                sender.waker_addr().unwrap(),
+            ];
+            let reported = [
+                driver.socket.local_addr().unwrap(),
+                driver.wake.local_addr().unwrap(),
+                sender.waker.local_addr().unwrap(),
+            ];
+            assert_eq!(told, reported, "{at}");
+            assert_eq!(
+                clone.waker_addr().unwrap(),
+                told[2],
+                "{at}: a clone holds the same waker"
+            );
+            // The wake and the waker, connected to each other.
+            assert_eq!(driver.wake.peer_addr().unwrap(), told[2], "{at}");
+            assert_eq!(sender.waker.peer_addr().unwrap(), told[1], "{at}");
+            assert!(
+                told[0] != told[1] && told[1] != told[2] && told[0] != told[2],
+                "{at}: {told:?}"
+            );
+            for addr in told {
+                let again = UdpSocket::bind(addr);
+                assert!(
+                    matches!(&again, Err(e) if e.kind() == std::io::ErrorKind::AddrInUse),
+                    "{at}: {addr} is not held: {again:?}"
+                );
+            }
+            drop((driver, sender, clone));
+            for addr in told {
+                UdpSocket::bind(addr).unwrap_or_else(|e| panic!("{at}: {addr} still held: {e}"));
+            }
+        }
+    }
+
     /// The driver's wake takes datagrams from its own waker alone: one another local socket
     /// sends it is dropped by the kernel (the two connected to each other), so no other process
     /// can wake, or spam, a run's driver, and neither socket is open to every peer. The wake
     /// through a clone of its sender, sent after the stranger's, is the first and only one read.
     #[test]
     fn the_wake_takes_datagrams_from_its_own_waker_alone() {
-        struct Idle;
-        impl Handler for Idle {
-            type Command = ();
-            fn connected(&mut self, _: &mut Io<'_>, _: ConnKey, _: &[u8]) -> Result<(), Close> {
-                Ok(())
-            }
-            fn opened(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
-            fn readable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
-            fn writable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
-            fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
-            fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, _: Option<u64>) {}
-            fn command(&mut self, _: &mut Io<'_>, _: ()) {}
-            fn done(&self) -> bool {
-                false
-            }
-        }
         for at in ["127.0.0.1:0", "[::1]:0"] {
             let Ok(stranger) = UdpSocket::bind(at) else {
                 // A host without IPv6 loopback has no [::1] driver to test either.

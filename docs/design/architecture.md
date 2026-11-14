@@ -27236,6 +27236,7 @@ API's protocol: its output drained, its end, its connections.
     `with_gpu_report` refuses one (`ImageRefusal::GpuProbe`: zero `Scope`, no `gpu_devices`
     `Empty`), before any run host starts and again as the channel reads it
     (`WireError::Gpu`). Image channel version 29: `Request::gpu_report`, appended last.
+    Version 30 (D252's amendment, the endpoint's waker and wake) follows it.
   - The run host gives its VM process the report pipe as a managed launch's client gives its
     own: `--gpu-report` and `--gpu-report-scope` (launch.rs `run_reported`, the write end at
     descriptor 9 on Unix, the one after the release, and by the name `gpu-report` on Windows,
@@ -31489,6 +31490,31 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
 daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
 hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
 endpoint serving no member stream (D238).
+
+**Amended** (Hex's ask, 2026-11-14): every socket the endpoint holds, named; image channel
+version 30.
+- *Why.* The endpoint's hyper-quic driver holds two more loopback UDP sockets beside the one it
+  serves on: its waker and its wake, connected to each other since b6727996c
+  (`shards_remote::net::Driver::bind_with_limits`). Windows' UDP table (`GetExtendedUdpTable`,
+  `Get-NetUDPEndpoint`) shows no UDP socket's peer, so from outside the process they look like
+  listeners nobody granted, and Hex's default-deny check of a run's sockets fails there.
+- *Decided.* The endpoint tells all three: `control::Endpoint::{address, waker, wake}`, from
+  `Driver::local`, `Sender::waker_addr` and `Driver::wake_addr`, each its socket's own
+  `local_addr` (a sender's clones duplicate the one waker descriptor, so its address is theirs
+  too). `ControlAt` carries them, typed and named: `address` (served), `waker`, `wake`, and
+  `ControlAt::sockets()`, all three, so Hex can require that every UDP socket a run holds is
+  exactly one of them. `Started` encodes the two after the microVM key's SHA-256, each an
+  address and a port, inside the control block, so a run without an endpoint encodes as before.
+  The same on every OS: the driver binds both on every one.
+- *Version 30.* A version-29 reader would read the two addresses as the rate period, so the
+  channel's version moves, and a side of version 29 refuses the run by its version as it is
+  asked, never reading a `Started` laid out otherwise.
+- *Tested* (unit): `net::a_driver_tells_every_socket_it_holds` (the three named addresses
+  equal what the sockets report, the waker and wake connected to each other, all three held
+  while the driver lives and free after); `image::wire`'s round-trip of all three, IPv4 and
+  IPv6, and a version-29 request refused; api_run's `control_at` from a bound endpoint equals
+  what its sockets hold.
+- *Owed* (ROOT): Hex's Windows check over a real run's UDP table (WHP).
 
 **Literals.** None new. The window and lanes are the caller's (R03). Loopback is where step 5's
 endpoints bind.

@@ -3572,6 +3572,8 @@ mod tests {
                 control: key.map(|vm| wire::ControlAt {
                     address: "127.0.0.1:4433".parse().unwrap(),
                     vm,
+                    waker: "127.0.0.1:4434".parse().unwrap(),
+                    wake: "127.0.0.1:4435".parse().unwrap(),
                 }),
                 rate_period: Duration::from_millis(100),
                 from: wire::StartedFrom::Booted,
