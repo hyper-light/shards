@@ -27752,6 +27752,46 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (#77, ROOT's KVM run c33's same refusal): each of its stages is a kind of its own
       (call site and awaited text, numbers generic), and a machine of the test's process
       progresses while its process's threads beside its waiter run.
+    - *No window shorter than its looks resolve* (b26, ROOT's HVF batch at 1f71dea19, PM
+      M592). The run socket's judged send (`RunSocket::send`, `Answers::run_send`) teaches its
+      kind from every send, and one that found room at once taught a W* of about one look's
+      cost: 9.583 µs. A later send that did wait was refused 16.584 µs past its first look,
+      29.958 µs in ("its process ran no CPU in 16.584µs past the slowest answer seen
+      (9.583µs)", moved.rs:645 and three more moved.rs tests, containers.rs:2257; KVM's
+      plug.rs:177 said "its guest: " and nothing, the DEVICE exec's cut dropped). Over such a
+      window a reading shows nothing of a run: XNU adds a thread's run to its task's times
+      (proc_pid_rusage) as the thread leaves its CPU or enters the kernel, which its quantum
+      timer makes one each tick, and Linux's process CPU clock, read from another process,
+      holds a thread running on another CPU as of that CPU's last tick (kernel/sched/cputime.c
+      `thread_group_cputime`; CI's aarch64 run 43575280954 saw 2.6 ms of a spinning thread
+      unshown). Measured (PM M592): a spinning child's macOS times grew in steps of p50 12 µs,
+      p90 182 µs, p99 3.7 ms, max 12.9 ms. So a reading's resolution (`Watch::resolution`) is
+      its step, not its unit: the counter's unit or the kernel's tick, whichever is longer,
+      each the OS's own statement where it runs, none chosen: macOS's tick is
+      `kern.clockrate`'s `tick` (sysctl(3) KERN_CLOCKRATE; 10 ms, hz 100, on macOS 26), Linux's
+      the resolution of CLOCK_MONOTONIC_COARSE (clock_getres(2): one jiffy, `LOW_RES_NSEC`).
+      Windows' reading, QueryProcessCycleTime, keeps its resolution of none: whether it
+      shows a thread running on another CPU before its next interrupt is unmeasured (owed).
+      The judge then looks, and refuses, on a window of W* or its floor, whichever is longer
+      (`Judge::window`): the floor is the coarsest resolution of its looks' counters and the
+      longest of its looks, each learned from the wait's own spans (`Span`), so a W* below
+      what its looks resolve is looked at no more often than a look takes or a tick passes
+      (main's looked each 9.583 µs) and refuses over no shorter a window. Cold start: before
+      its first look a judge has no floor, and every judged wait's first look is its based
+      one, taken as it begins (`Follow::begin`), which sets it before its first due. Failure:
+      a tick that cannot be read refuses the follow typed (`ProcessFailure`, macOS's
+      `ProcessOperation::ClockRate`), never taken for no progress. The daemon's other
+      readers keep the same standard: a cgroup's emptying (`parents::emptied`) judges its
+      looks over its readings' resolution, and an end's watcher (`ends::Followed::goes_on`)
+      takes a look sooner than its reading's step after the look before as no evidence, its
+      end going on, the look before kept. An exec the judge ended says so wherever its
+      answer is read (`reclaim::said_of`: a DEVICE step, a resource update, a network's
+      switch), where plug said "its guest: " with nothing after. Red/green: health.rs'
+      `a_wait_is_never_refused_within_what_its_reading_resolves` (a 10 µs W*, an idle
+      process, an answer half a resolution in: refused on main, whose resolution was the
+      unit, taken now; refused only over a whole resolution) and judge.rs'
+      `a_w_star_below_what_its_looks_resolve_is_judged_over_what_they_do` (the moved.rs run's
+      own times). Whether the five HVF tests and plug.rs pass on real VMs is ROOT's run's.
     - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
       test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
       answer not yet found missing; `Awaited`, found missing at least once, by a look
