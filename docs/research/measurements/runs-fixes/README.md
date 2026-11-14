@@ -534,3 +534,7 @@ adas-mac-studio-3.local (kiln r24, r43):
   LockFileEx over the whole file bars other readers). D185.
   [runs11-takeover-red.log](runs11-takeover-red.log),
   [runs11-takeover-green.log](runs11-takeover-green.log).
+- `LOG_SEGMENT`: 8f7036683. S = √(H · U) in whole units within [U, H / 2]; cold, H / 2; every
+  run's log held to its bound in bytes at each rotation (D240's `cap::hold`), ROOT's ruling
+  for logs that outlive the binary. D186. [runs11-logseg-red.log](runs11-logseg-red.log),
+  [runs11-logseg-green.log](runs11-logseg-green.log).

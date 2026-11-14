@@ -9175,12 +9175,11 @@ configurable".
   is no cache, which a change could find stale; a change takes at the next run or build,
   whether the daemon runs or not.
 - **A log's history** is the most of the disk a run's log takes, records' framing
-  included (13 bytes a record), as written: equal segments of at most 20 MiB, two at
-  least, so that it holds at most its history and, once its oldest segment has gone, its
-  history less a segment at least (half of it below 40 MiB; for the default 1 GiB, 52
-  segments of 20,648,881 bytes, 51/52 of it). Whole 20 MiB segments enough to hold it
-  would hold up to 1,040 MiB where 1 GiB was asked, and a history in one segment would
-  keep nothing just after each rotation. A run's own `--log-opt max-size` and
+  included (13 bytes a record), as written: equal segments, two at least, so that it holds
+  at most its history and, once its oldest segment has gone, its history less two segments
+  at least (one gone, and what a whole number of segments leaves). A history in one segment
+  would keep nothing just after each rotation. The segments' size is derived (runs-11,
+  below; it was 20 MiB, Docker's `local` driver's, copied). A run's own `--log-opt max-size` and
   `max-file` still bound its log (D161), and the daemon's environment
   (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`), where it is set, wins over the file.
 - **The build cache's bounds.** A share is that much of the disk's bytes, exactly, 0% none,
@@ -9210,6 +9209,56 @@ configurable".
   owned staging removed, the base's transaction, both fail (the later snapshot drops
   `log-history`; another writer's `.disk.new` is published).
   [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-09).
+- **A segment's size, derived (runs-11 `LOG_SEGMENT`, 2026-11-14).** ROOT's objective: a
+  reader resuming from a cursor reads at most one segment to find its place, while rotation
+  keeps a run's log cap whole; the size from the cap and the file system's allocation unit.
+  A cursor (`Pos`: its segment's number, its record's, its byte) names its segment, which a
+  reader opens by name and enters by its index (8 bytes a record) and, packed, its seek
+  table's one frame (D162); `--since` reads from the newest segment that begins no later
+  than it, that one whole (D187): either way one segment is the most a resuming reader reads
+  to find its place, so its cost grows with the size `S`. So does what a rotation takes from
+  the cap: one segment. Each segment also costs its own making and going, whatever its size:
+  a warm VM's `LOG_SEGMENT` ask, two files made, two removed, a pack, and a name every reader
+  lists (`LogFile::segments`): `H / S` of them for a history `H`. Counted in the file
+  system's own unit `U` (an allocation unit read or written each per-segment step, one per
+  unit of a segment), `H / S + S / U` is least at `S = √(H · U)` (its derivative
+  `−H / S² + 1 / U` is zero there), taken in whole units, since each file takes whole units
+  of its disk, at least one unit and at most `H / 2`, the two segments a cap needs; then
+  `H / S` segments, whole, so that they hold no more than `H` (`disk::log_retention`). `U`
+  is the home's (`platform::allocation_unit`: statvfs(3)'s `f_frsize`, "file system fragment
+  size"; Windows' sectors per cluster times bytes per sector, GetDiskFreeSpaceW), read as
+  each run starts, beside the settings; a unit that cannot be read refuses the run, typed as
+  the settings' own failures are. Its cold start, where no unit is known (a log's flags read
+  without a log written, `--log-driver none`'s run head, the record of processes when the
+  settings fail, the events' journal whose home's unit is unread): the cap's two halves, the
+  bound the cap alone sets. 1 GiB on 4 KiB units: 512 segments of 2 MiB (was 52 of
+  20,648,881 bytes); on 64 KiB clusters, 128 of 8 MiB; 64 KiB on 4 KiB, 4 of 16 KiB (was 2
+  of 32 KiB). The events' journal (D187) keeps its history so too.
+- **Every run's log held to its bound in bytes at each rotation (runs-11, ROOT's ruling).** A
+  writer's retention lets go of one segment a rotation, `seq − files` (segments.rs): a log
+  continued under segments of another size (one a daemon of 20 MiB segments began) or a
+  smaller `--log-history` kept the segments it held past its new bound, until as many
+  rotations had passed them, or for ever below `seq − files`. Now, as the daemon makes a
+  run's next segment (files.rs), the run's logs are held to their bound by D240's rule
+  (`managed/cap.rs` `hold`): a run whose members' logs are kept, all together within its one
+  cap, as before; any other, its command's log alone within `size × files` bytes of output,
+  its oldest let go first, never its newest, each loss in its `log.capped` (which `logs`
+  says), as D240's are. One rule for every run, and no migration: a home's logs from before
+  are held as any log is. Each hold weighs every segment from what the log records (its
+  index's time, its log's length, a packed one's seek table), an open and a read each: O(files)
+  a rotation, files at most `H / U` (`H / S` with `S ≥ U`); 512 for the default on 4 KiB
+  units. In steady state, segments of the log's own size within its own count, it lets go
+  of nothing. Red: `disk::tests::settings_read_back_and_come_to_their_amounts`, by mutation
+  putting back 20 MiB segments; `daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments`
+  by mutation holding runs without members' logs by their count alone (three segments of 64
+  bytes kept past a 128-byte bound). The cost model's weighting (a per-segment step and a
+  unit's read alike) is the model's; owed to ROOT: `logs -f` resume latency and rotation
+  cost against segment size, sizes from one allocation unit to the cap's half, n, p50, p90,
+  p99 and max per size, on APFS, ext4 or btrfs, and NTFS, by a harness under
+  `docs/research/measurements/`, which confirms the balance or gives the weights their
+  measured ratio; and
+  `cargo test -p shards --profile test-release --test containers a_logs_history_is_what_its_user_set`
+  (its segments now the derivation's) on HVF, KVM and WHP.
 - **A file that does not read**, edited by hand: a run is refused, saying the file and its
   line; a build's collection collects nothing and says so at every build (`WARNING: the
   build cache was not collected: ...`), the build itself done; `--reset` mends it.
@@ -9250,7 +9299,8 @@ happened before, where Docker's daemon, which runs on, says its last 256.
   as the listener came, then heard. A segment that ends in a line cut short, by a crash
   mid-write, is let be and the next begun past it; a line that does not read is passed by.
 - **Its history is a log's** (D186): `configure disk --events-history SIZE`, at most that
-  many bytes of the newest events, in equal segments of at most 20 MiB, two at least, the
+  many bytes of the newest events, in equal segments, two at least, their size a log's
+  (D186's runs-11 derivation, from the history and the home's allocation unit), the
   oldest removed as the newest begins; by default a log's 1 GiB, the user's call for a log
   (2026-10-18), the home's events being the home's log. The setting is read as each
   segment begins, so a change takes at the next.
