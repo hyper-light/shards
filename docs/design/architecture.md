@@ -12335,13 +12335,33 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `client_output` refused while its client or its home's daemon worked. Or a host's hold
     (ETXTBSY, a killed daemon's descriptors, a scanner's handle) cut.
   - The gaps. `Party::started` is every child of the test process, so another test's run
-    host in the same binary counts as progress, as `Own`'s VM processes do. context.rs'
+    host in the same binary counts as progress, as `Own`'s VM processes do. Kept so (ROOT's
+    question, 2026-11-14): no OS record ties a child to the thread that started it (a
+    parent is a process's, on Linux, macOS and Windows alike), and shards-api starts its
+    run hosts inside its own calls, naming no pid to its caller; a pid-returning API for
+    tests alone is the speculative interface R05 refuses. Under libtest's parallel threads
+    the gap is a quiet one, a judged call never refused while a sibling's processes work,
+    and never a false refusal: E2E binaries run one test at a time, and a harness test that
+    asserts a refusal names a party of its own (`a_judged_calls_own_work_is_its_progress`,
+    da6a3f0a2: 4 of 4 parallel whole binaries on HVF unrefused with `Party::started`, 4 of 4
+    refused as asserted with its stand-in's party). context.rs'
     reads follow the laptop's daemon, not the machine it relays to. A cold `said_by` on a
     hung daemon holds the failure it adds to until its CI job's limit, as any cold wait does.
     A start-up wait on host system services, such as secinitd or the bookmark agent, is not
     tied to the run; unconfirmed, no account kept (the runsignal lane's 2 of 20 pre-ready
     `Heard::running` refusals, under its mutant; the grants broker is the VM's child, already
     of its party).
+  - *A daemon's helpers serving a waiter's own clients are its daemon's run* (2026-11-14,
+    judgecli). Part 8's rule discounted the daemon's own run in a window in which the
+    waiter began a client of its home, not its helper processes'. On KVM (adacachy2,
+    1f71dea19) `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` was not
+    refused in 13 of 30 whole harness binaries once its kind's kept W* had grown to
+    693 ms: every window held a `ps` poll, and a process under the daemon (its pid +1 or
+    +2) ran serving it, "its last progress process N ran 3-321 ms ago". A member under the
+    daemon with no VM process (`shards-vm`, `shards-vm-gpu`) between them is its helper
+    (`Party::members`), and its run is said as `daemon_ran`, under the same rule; a VM
+    process's run stays its party's progress. Windows' party follows trees through
+    shards-api and names no helper: unchanged there.
   - *A machine's party reads each thread beside its waiter, and a runnable one that ran
     nothing is its host's hold* (2026-11-14, judgecli). `a_machines_host_work_is_its_progress`
     was refused on HVF in 2 of 3 whole-binary runs under 14 busy loops started before it
