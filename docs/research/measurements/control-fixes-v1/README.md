@@ -198,7 +198,7 @@ cache, production timer or learned cold-start estimate is introduced.
 
 The existing keeper lock serializes cap updates; concurrent readers get an old
 whole or new whole record. Atomic replacement creates mode 0644 on Unix inside
-the existing private run/member directories, so its authority boundary remains
+the daemon's existing private home, so its authority boundary remains
 that directory; the metadata has aggregate counts only. Windows can retain older
 versions while an external reader holds them: bounded current format is proved,
 physical retention under Windows holds is not. Legacy open time remains linear
@@ -296,3 +296,19 @@ its only conflict was the platform-measurements append, resolved by preserving
 both the control and memory-16 records. No init/ABI/dependency/lock inputs differ
 from the native-tested source (git diff --stat 4ce3d80a4..7765f515d over those
 paths is empty). Mac focused checks are rerun after this documentation conflict.
+
+R14 on 7765f515d, after the append conflict: 5 cap, 34 session, 10 exec and 2
+frame tests passed; all-target clippy for shards, API, IPC and remote clean on
+adas-mac-studio.local arm64. [Final merged green](logs/r14-final-merge-green.log).
+No executable change follows that test source in this lane's evidence commits.
+
+Additional existing real-VM commands owed to ROOT (not run by this implementer):
+
+- `cargo test -p shards --test api_image a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end -- --exact --nocapture` (extend for end/drop with retained writer and native resource return).
+- `cargo test -p shards --test api_image stop_ends_the_run_at_once -- --exact --nocapture` (same retained-writer witness).
+- `cargo test -p shards --test managed_output the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_its_bound -- --nocapture` (cap/cursor integration).
+- Control-07 still needs a new guest fixture with sufficient stack rlimit and argv encoding above 4 MiB. No existing real-VM test command alone establishes that large-argv case; the unit test proves frame admission only.
+
+The 02 nesting, 03 API MCP and 06/08 missing fault witnesses/commands are specified
+in their sections above. All VM commands need ROOT's actual carried helpers, not
+the inert embed inputs used in the filesystem-only unit checks here.

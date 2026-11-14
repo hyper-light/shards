@@ -27426,7 +27426,7 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     two decimal u64 counters, their separator and newline. Its maximum serialized size is
     therefore 46 bytes; counters use checked addition and malformed/overflowing old records
     return InvalidData. The keeper serializes updates, disk remains authoritative, no cache
-    or timer is introduced. The private run/member directories retain the metadata's owner
+    or timer is introduced. The daemon's private home retains the metadata's owner
     boundary. Control-05 red/green and remaining Windows/version/profile checks:
     [record](../research/measurements/control-fixes-v1/README.md).
   - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
