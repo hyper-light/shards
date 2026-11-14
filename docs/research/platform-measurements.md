@@ -8904,6 +8904,9 @@ performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/REA
 
 ### M240. A microVM's I/O limits, from its guest's writes (D178)
 
+Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limiter tests, macOS arm64; 7 block and 4 limiter tests green with VMM clippy. See `measurements/device-fixes/README.md`. This is cancellation evidence, not a new throughput or hardware-VM measurement.
+
+
 - **Question.** Does a microVM whose VMM paces its volume's writes at `--io-maxbandwidth`
   write at that rate, never above it, on a quiet host and on a loaded one; and what does
   the limiter cost a write it does not hold back?
@@ -24284,7 +24287,7 @@ Unit-level functional evidence, no real VM: `confine` refuses any process outsid
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
 
-### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+### M571. Credential lease budgets, live waiters, exact signing and Continue (D242, creds-05..08)
 
 2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
 Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
@@ -24309,3 +24312,12 @@ Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32
 all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
 verifier coverage remains independent. No performance result; linked credential
 record above has commands, evidence, and real-VM coverage owed.
+
+creds-08: headers alone with Expect: 100-continue reproduced a stalled held POST at
+021d13e20. The gateway now owns the one Continue and removes its answered Expect
+field before eventual upstream forwarding (49e4c2967, scoped by 888dcb884).
+Merged 62bfef2e5: 46 injector tests passed, 2 ignored, shards-net all-target clippy
+and policy check passed on macOS arm64. The tests cover chunked/length refresh
+and revoke bodies, partial arrival, retries and a forwarded code exchange. The
+100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
+Commands, red/green excerpts, exact source revisions and unrun work are linked above.
