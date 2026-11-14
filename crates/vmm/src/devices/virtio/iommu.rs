@@ -811,40 +811,77 @@ fn answer(chain: &Chain, mem: &Access<'_>, state: &Mutex<Translation>) -> u32 {
         }
         len += take;
     }
-    let writable: Vec<_> = chain.writable().collect();
-    let total: usize = writable.iter().map(|d| d.len as usize).sum();
-    if total < 4 {
+    // Used lengths are u32 (virtio §2.7.8). Validate every writable span before
+    // allocating or applying a request: an unreachable reply must change no domain.
+    let total = chain.writable().try_fold(0u32, |n, d| {
+        if d.len != 0 && mem.memory().io_ptr(d.addr, d.len as usize).is_err() {
+            return None;
+        }
+        n.checked_add(d.len)
+    });
+    let Some(total) = total.filter(|n| *n >= 4) else {
+        return 0;
+    };
+    // One host page bounds staging independently of the guest's offered capacity.
+    // Page size is queried from this host, not a selected transfer-size constant.
+    let Ok(page) = crate::platform::page_size() else {
+        return 0;
+    };
+    let chunk = page.min(total as usize);
+    if chunk == 0 {
         return 0;
     }
+    let mut out = Vec::new();
+    if out.try_reserve_exact(chunk).is_err() {
+        return 0;
+    }
+    out.resize(chunk, 0u8);
     let (status, props) = {
         let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
         let (status, props) = answer_request(&mut state, req.get(..len).unwrap_or_default());
-        // PROBE's properties must fit before the tail.
-        if props.len() > total - 4 {
+        if props.len() > total as usize - 4 {
             (S_DEVERR, Vec::new())
         } else {
             (status, props)
         }
     };
-    let mut out = vec![0u8; total];
-    if let Some(at) = out.get_mut(..props.len()) {
-        at.copy_from_slice(&props);
-    }
-    if let Some(tail) = out.get_mut(total - 4) {
-        *tail = status;
-    }
+    // struct virtio_iommu_req_tail (§5.13.6): status and three reserved bytes.
+    let tail = [status, 0, 0, 0];
     let mut at = 0usize;
-    for d in writable {
-        let n = d.len as usize;
-        let Some(part) = out.get(at..at + n) else {
-            return 0;
-        };
-        if mem.write(d.addr, part).is_err() {
-            return 0;
+    for d in chain.writable() {
+        let mut done = 0usize;
+        while done < d.len as usize {
+            let n = (d.len as usize - done).min(out.len());
+            out.fill(0);
+            for (start, bytes) in [(0, props.as_slice()), (total as usize - 4, tail.as_slice())] {
+                let first = at.max(start);
+                let end = (at + n).min(start + bytes.len());
+                if first < end {
+                    let Some(to) = out.get_mut(first - at..end - at) else {
+                        return 0;
+                    };
+                    let Some(from) = bytes.get(first - start..end - start) else {
+                        return 0;
+                    };
+                    to.copy_from_slice(from);
+                }
+            }
+            let Some(part) = out.get(..n) else {
+                return 0;
+            };
+            // The whole descriptor was validated above; checked addition also guards
+            // this step if the range-validation implementation changes.
+            let Some(addr) = d.addr.checked_add(done as u64) else {
+                return 0;
+            };
+            if mem.write(addr, part).is_err() {
+                return 0;
+            }
+            done += n;
+            at += n;
         }
-        at += n;
     }
-    total as u32
+    total
 }
 
 /// The device: its translation, which the functions' DMA shares, and its request queue's
@@ -1106,6 +1143,52 @@ mod tests {
         };
         assert_eq!(answer(&chain, &a, &state), 0);
         assert!(!state.lock().unwrap().attached.contains_key(&8));
+    }
+
+    #[test]
+    fn padded_probe_response_streams_across_descriptors() {
+        use crate::devices::virtio::queue::Descriptor;
+        let page = crate::platform::page_size().unwrap();
+        let base = 0x8000_0000;
+        let mem = GuestMemory::anonymous(&[(base, 4 * page)]).unwrap();
+        let a = mem.access().unwrap();
+        let mut req = vec![T_PROBE, 0, 0, 0];
+        req.extend_from_slice(&8u32.to_le_bytes());
+        req.resize(PROBE_READABLE, 0);
+        a.write(base, &req).unwrap();
+        let first = base + page as u64;
+        let next = base + 2 * page as u64;
+        let chain = Chain {
+            head: 0,
+            descriptors: vec![
+                Descriptor {
+                    addr: base,
+                    len: req.len() as u32,
+                    writable: false,
+                },
+                Descriptor {
+                    addr: first,
+                    len: 1,
+                    writable: true,
+                },
+                Descriptor {
+                    addr: next,
+                    len: page as u32 + 3,
+                    writable: true,
+                },
+            ],
+        };
+        let state = Mutex::new(Translation::new(vec![8], MSI));
+        let total = page + 4;
+        let (_, props) = answer_request(&mut state.lock().unwrap(), &req);
+        a.write(next, &vec![0xff; page + 3]).unwrap();
+        assert_eq!(answer(&chain, &a, &state), total as u32);
+        let mut response = vec![0u8; total];
+        a.read(first, &mut response[..1]).unwrap();
+        a.read(next, &mut response[1..]).unwrap();
+        assert_eq!(&response[..props.len()], props);
+        assert!(response[props.len()..total - 4].iter().all(|b| *b == 0));
+        assert_eq!(&response[total - 4..], &[S_OK, 0, 0, 0]);
     }
 
     #[test]
