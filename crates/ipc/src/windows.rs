@@ -104,25 +104,6 @@ const WIN32K_DISABLED: u64 = 1 << 28;
 /// meanwhile would have been made on that one.
 static STATION_SWITCH: RwLock<()> = RwLock::new(());
 
-/// Held to read by each of shards' spawns while it holds a handle inheritable, made so for
-/// its child's handle list alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), and to write by each
-/// spawn of std's ([`spawn_std`]): a child std makes inherits every inheritable handle of this
-/// process (CreateProcessW's bInheritHandles, TRUE in std, whose own lock, CREATE_PROCESS_LOCK,
-/// is private to it), so one made meanwhile took another child's handles with it (platform-07).
-static INHERITING: RwLock<()> = RwLock::new(());
-
-/// [`crate::spawn_std`] on Windows: `command` spawned while none of shards' own spawns holds a
-/// handle inheritable ([`INHERITING`]).
-pub fn spawn_std(command: &mut std::process::Command) -> io::Result<std::process::Child> {
-    let _alone = INHERITING.write().unwrap_or_else(PoisonError::into_inner);
-    command.spawn()
-}
-
-/// [`INHERITING`] held to read: while a spawn of shards' holds a handle inheritable.
-fn inheriting() -> std::sync::RwLockReadGuard<'static, ()> {
-    INHERITING.read().unwrap_or_else(PoisonError::into_inner)
-}
-
 /// Whether this Windows refuses the second mitigation word (windows-2022, M201): found by
 /// the first child made, which then goes without it.
 static NO_SECOND_WORD: AtomicBool = AtomicBool::new(false);
@@ -476,6 +457,14 @@ pub struct Child {
     /// Its AppContainer, where it holds one ([`Child::hold`]): its profile goes as this
     /// drops, after its Job has ended it (fields drop in order).
     container: Option<AppContainer>,
+}
+
+/// Its process handle, of every access it was made with: for what reads its times or
+/// duplicates it, as std's `Child` lends its own.
+impl std::os::windows::io::AsHandle for Child {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        self.process.as_handle()
+    }
 }
 
 impl Child {
@@ -1880,7 +1869,14 @@ pub fn spawn_with(
     detach: bool,
     set: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
-    spawn_env(program, args, fds, detach, this_env_with(set), None, None)
+    spawn_env(
+        command_line(program, args),
+        fds,
+        detach,
+        this_env_with(set),
+        None,
+        None,
+    )
 }
 
 /// [`spawn_with`]'s child, not detached, made in a job of its own, its group: nested under
@@ -1896,9 +1892,29 @@ pub fn spawn_grouped(
     set: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
     let job = GroupJob::new()?;
-    let mut child = spawn_env(program, args, fds, false, this_env_with(set), Some(&job), None)?;
+    let mut child = spawn_env(
+        command_line(program, args),
+        fds,
+        false,
+        this_env_with(set),
+        Some(&job),
+        None,
+    )?;
     child.processes = Some(ProcessGroup::new(job));
     Ok(child)
+}
+
+/// The variables `env` alone, and what Windows needs of this process's ([`KEPT`]) where
+/// `env` does not name it.
+fn env_alone(env: &[(&str, &OsStr)]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    kept.chain(given).collect()
 }
 
 /// This process's environment, with `set` over it, and no grants pipe of its own.
@@ -1921,22 +1937,31 @@ pub fn spawn_in(
     detach: bool,
     env: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
-    let kept = KEPT
-        .iter()
-        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
-        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
-    let given = env
-        .iter()
-        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
     spawn_env(
-        program,
-        args,
+        command_line(program, args),
         fds,
         detach,
-        kept.chain(given).collect(),
+        env_alone(env),
         None,
         None,
     )
+}
+
+/// [`spawn_in`], its command line `program` and then `raw` as it is, unquoted: for a program
+/// that reads its command line its own way, not as CommandLineToArgvW does (cmd.exe's `/C`,
+/// whose text keeps its own quotes), as std's `CommandExt::raw_arg` passes one.
+pub fn spawn_in_raw(
+    program: &Path,
+    raw: &OsStr,
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let mut line = command_line(program, &[]);
+    line.pop();
+    line.push(u16::from(b' '));
+    line.extend(raw.encode_wide());
+    line.push(0);
+    spawn_env(line, fds, false, env_alone(env), None, None)
 }
 
 /// [`spawn_in`], made in the pseudoconsole `console` (ConPTY): what of `fds` it is given,
@@ -1950,19 +1975,11 @@ pub fn spawn_in_console(
     env: &[(&str, &OsStr)],
     console: &PseudoConsole,
 ) -> io::Result<Child> {
-    let kept = KEPT
-        .iter()
-        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
-        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
-    let given = env
-        .iter()
-        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
     spawn_env(
-        program,
-        args,
+        command_line(program, args),
         fds,
         false,
-        kept.chain(given).collect(),
+        env_alone(env),
         None,
         Some(console),
     )
@@ -2138,19 +2155,11 @@ pub fn spawn_in_job(
     fds: &[(BorrowedHandle<'_>, i32)],
     env: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
-    let kept = KEPT
-        .iter()
-        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
-        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
-    let given = env
-        .iter()
-        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
     spawn_env(
-        program,
-        args,
+        command_line(program, args),
         fds,
         false,
-        kept.chain(given).collect(),
+        env_alone(env),
         group,
         None,
     )
@@ -2171,14 +2180,14 @@ pub fn spawn_detached(
     fds: &[(BorrowedHandle<'_>, i32)],
     env: &[(&str, &OsStr)],
 ) -> io::Result<Child> {
-    let kept = KEPT
-        .iter()
-        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
-        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
-    let given = env
-        .iter()
-        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
-    spawn_env(program, args, fds, true, kept.chain(given).collect(), group, None)
+    spawn_env(
+        command_line(program, args),
+        fds,
+        true,
+        env_alone(env),
+        group,
+        None,
+    )
 }
 
 /// Whether this process has a console: a child that would share it has none else, and is
@@ -2201,8 +2210,7 @@ fn has_console() -> bool {
 
 /// [`spawn`]'s child, its environment `env`.
 fn spawn_env(
-    program: &Path,
-    args: &[&OsStr],
+    mut line: Vec<u16>,
     fds: &[(BorrowedHandle<'_>, i32)],
     detach: bool,
     mut env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
@@ -2221,9 +2229,7 @@ fn spawn_env(
         }
     }
     // Copies of its standard handles made to be inherited, the caller's own left as they
-    // are; no spawn by std meanwhile takes them, nor its grants pipe's read end
-    // ([`INHERITING`]).
-    let inheriting = inheriting();
+    // are: each child's handle list names its own alone.
     let copies: Vec<(usize, OwnedHandle)> = stdio
         .iter()
         .enumerate()
@@ -2249,7 +2255,6 @@ fn spawn_env(
             .find(|(at, _)| *at == i)
             .map_or(std::ptr::null_mut(), |(_, c)| c.as_raw_handle())
     };
-    let mut line = command_line(program, args);
     let block = environment_of(&env);
     // Made in a pseudoconsole, it holds that console alone, and none of this process's: it
     // breaks away from this process's Job as a detached child does. One made in a group's
@@ -2299,7 +2304,6 @@ fn spawn_env(
         drop(read);
         write
     });
-    drop(inheriting);
     // SAFETY: the handles CreateProcessW returned, owned from here on.
     let (process, thread) = unsafe {
         (
@@ -2505,7 +2509,6 @@ pub fn given_fd(n: i32) -> io::Result<Option<OwnedHandle>> {
 /// [`spawn`], left suspended: for a spawner that hands another child this one's process
 /// before either runs.
 pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
-    let inheriting = inheriting();
     let (pipe_read, pipe_write) = pipe()?;
     let pipe_value = pipe_read.as_raw_handle() as usize;
     let pipe_arg = pipe_value.to_string();
@@ -2565,7 +2568,6 @@ pub fn spawn_suspended(s: &Spawn<'_>) -> io::Result<Suspended> {
         container: None,
     };
     drop(pipe_read);
-    drop(inheriting);
     let mut told = String::new();
     for g in s.given {
         let theirs = child.give(g.handle).map_err(|e| {
@@ -2961,6 +2963,23 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    /// A raw command line reaches cmd.exe as it is: its quotes kept, as `/C` reads them,
+    /// where CommandLineToArgvW's quoting would have escaped them.
+    #[test]
+    fn a_raw_command_line_keeps_its_quotes() {
+        use std::io::Read as _;
+        use std::os::windows::io::AsHandle as _;
+        let cmd = crate::on_path(Path::new("cmd.exe"), None).unwrap();
+        let (mut said, says) = std::io::pipe().unwrap();
+        let line = OsStr::new("/C \"echo \"a b\"\"");
+        let child = spawn_in_raw(&cmd, line, &[(says.as_handle(), 1)], &[]).unwrap();
+        drop(says);
+        let mut out = String::new();
+        said.read_to_string(&mut out).unwrap();
+        assert_eq!(child.wait().unwrap(), 0, "{out}");
+        assert_eq!(out.trim_end(), "\"a b\"");
+    }
+
     use super::*;
 
     /// Whether `handle` is inheritable (GetHandleInformation).
@@ -3003,68 +3022,6 @@ mod tests {
         let after = inheritable(out.as_raw_handle());
         drop(made);
         assert!(!after, "the lent handle left inheritable");
-    }
-
-    /// Do: hold a pipe's write end inheritable, as a spawn of shards' holds its child's
-    /// handles until it is made, while another thread starts a child by std's Command
-    /// ([`spawn_std`]) that runs for seconds; then close every write end this process holds.
-    /// Expect the pipe's writers all gone while that child runs: std's child, made once the
-    /// spawn let go of its inheritable handles, took none of them; one made meanwhile kept a
-    /// write end, and the pipe open, until it ended (platform-07).
-    #[test]
-    fn a_child_of_stds_takes_no_handle_held_inheritable_for_another() {
-        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
-        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
-        let (read, write) = pipe().unwrap();
-        // The read end pipe() makes inheritable; the write end the child would hold.
-        // SAFETY: our own handle, made not inheritable again.
-        let set = unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
-        assert_ne!(set, 0);
-        let (started, start) = std::sync::mpsc::channel();
-        let child = std::thread::scope(|s| {
-            let held = INHERITING.read().unwrap_or_else(PoisonError::into_inner);
-            let copy = inheritable_copy(write.as_raw_handle()).unwrap();
-            let std_child = s.spawn(move || {
-                started.send(()).unwrap();
-                let shell = std::env::var_os("ComSpec").unwrap();
-                spawn_std(
-                    std::process::Command::new(shell)
-                        .args(["/c", "ping -n 4 127.0.0.1 >NUL"])
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null()),
-                )
-                .unwrap()
-            });
-            start.recv().unwrap();
-            // Long enough for a spawn that does not wait to have made its child.
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            drop(copy);
-            drop(held);
-            std_child.join().unwrap()
-        });
-        drop(write);
-        let mut ready = 0u32;
-        // SAFETY: a pipe handle `read` holds; only the count asked for.
-        let ok = unsafe {
-            PeekNamedPipe(
-                read.as_raw_handle(),
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                &raw mut ready,
-                std::ptr::null_mut(),
-            )
-        };
-        // SAFETY: no arguments.
-        let broken = ok == 0 && unsafe { GetLastError() } == ERROR_BROKEN_PIPE;
-        let mut child = child;
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(
-            broken,
-            "std's child holds a write end made inheritable for another"
-        );
     }
 
     /// A detached child runs, its end and status seen as any child's, though it is in no
