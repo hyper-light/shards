@@ -182,6 +182,8 @@ Some(Lease::Asked { waiting, .. }) => {
 
 **Confidence:** High for the scope gap under RFC semantics; actual TLS verifier execution unrun. Medium reflects the existing outer exact-SNI guard.
 
+**Status (2026-11-13):** fixed in 09ffbfd32 (red `ca::tests::creds_07_ungranted_descendants_and_addresses_are_not_signed` at 6eb3ad718). The signer rejects ungranted descendants and addresses as typed `LeafError::Ungranted` before key generation/signing; 4 CA tests and shards-net all-target clippy passed on macOS arm64. Certificate DNS constraints remain subtrees, and the exact-host signing guard enforces the narrower grant.
+
 ### creds-08 — P3 / medium — A sign-in POST with Expect: 100-continue stalls before its headers can reach the origin
 
 **Location:** `crates/net/src/inject.rs:1874`, `:2032`.
