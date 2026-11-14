@@ -2249,7 +2249,7 @@ audit's "Security and test coverage").
     caller's new domain atomically. On every ABI from v5, the primitive every kernel it
     runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
     the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
-    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    answers on an eventfd, as glibc's setxid broadcast makes setuid(2) every thread's,
     until a listing of `/proc/self/task` names no thread not settled. A thread is settled
     by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
     and drops a signal sent to it alone). A thread started after its creator answered is
@@ -2257,19 +2257,23 @@ audit's "Security and test coverage").
     restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
     process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
     kick's does, and runs again.
-    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
-      after as long as the caller's own restriction took (the cold start), then as long
-      as the last answer took, twice as long each time one is still awaited (saturating),
-      at least the monotonic clock's resolution. A short wait only looks sooner.
-    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
-      the second after a wait as long as all before it, waits with it blocked: Mesa's
-      threads block every signal for their lives (u_thread_create). It cannot be asked,
-      and the layer fails, closed: a seal's failure hands its run to another VM
-      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
-      which one look may meet.
+    - Whether a thread can answer is read, not guessed: one that blocks the signal, or a
+      process that ignores it (`/proc/self/task/TID/status`, `SigBlk` and `SigIgn`),
+      cannot, and the layer fails at once, closed, typed (`asked::Unasked::Deaf`): a
+      seal's failure hands its run to another VM (daemon.rs, `hand_over`). glibc's
+      pthread_create blocks every signal for a moment, which a look may meet; that run
+      fails closed too.
+    - Any other thread is waited for as long as it lives, with no timeout and no
+      constant: its answer (an eventfd its handler writes) or its end (its thread pidfd,
+      pidfd_open(2) `PIDFD_THREAD`, Linux 6.9, older than the v5 a VM needs, which polls
+      readable as it exits) wakes the wait. A thread that entered its exit as it was asked
+      never answers, and ends. Where the ABI asks each thread (before v8), the filter
+      allows a pidfd of any thread (`pidfd_open` with `PIDFD_THREAD`, its rule beside the
+      one for its own pid: `seccomp` rules on two arguments add up): that says whether a
+      host thread lives, and nothing else a VM process may use (no pidfd_send_signal,
+      pidfd_getfd, setns or waitid) [PM M568].
     - Unverified limits: a thread id reused within one pass would need the kernel's ids
-      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
-      waited for.
+      to wrap as it runs.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
@@ -2571,8 +2575,12 @@ stack inside the VMM, is superseded by it.
   seccomp on arm64 as on amd64 before serving frames; the shared compiler checks
   the native AUDIT_ARCH and libc supplies native syscall identities. epoll_wait
   is x86_64's legacy entry; both use epoll_pwait. No compat ABI is admitted.
-  Focused amd64 checks pass; native arm64 execution and carried-helper smoke
-  remain owed to ROOT, not inferred from amd64's result. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+  Focused amd64 checks pass. Native arm64 GNU unit tests at 53e89b2b8 observe
+  an additional installed filter at the startup boundary and termination on a
+  forbidden syscall; both network crates pass clippy. The compiler is shared
+  with the VM process, including platform-01/02/04 at a729003e9; the initial
+  allowlist uses `compile`, while the VM's later restrictions use `seccomp::layer`.
+  Musl and carried-helper VM smoke remain owed to ROOT/CI. [Evidence](../research/measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 - **Receive-sequence validation (network-01, 2026-11-13).** Before an established
   segment's ACK or FIN changes a connection, its original sequence must overlap the
   advertised receive window (RFC 9293 §3.10.7.4, table 6); ACK is required, and a FIN
@@ -6973,7 +6981,7 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   Namespaces" and CreateFileW's documentation, the only sources of the set; no number is
   chosen. Linux and macOS take each such name as the name it is there. Refusals are typed
   (`NotAName`), before any file is opened. The build's other words that name paths (`--file`,
-  `--output dest=`, `--iidfile`, a tree's) are not yet held to the copy: owed, below.
+  `--output dest=`, `--iidfile`, a tree's) are held to the copies by remote-09, below.
 - **A client is its key as its connection proved it, judged for each operation (remote-03).**
   The listener judged a connection's key once and kept the client's name: a removed client's
   held connection, or the old key of a name enrolled again under another key, ran new
@@ -6999,11 +7007,44 @@ reached more than its enrollment grants. Each was reproduced red at 9efde7252 be
   closed `REVOKED`, its `cat` hung up, the name's new key served) and
   `a_removed_clients_connection_closes_as_the_daemon_is_told` (closed at once, a client still
   enrolled served on), `context::tests::a_proved_client_is_enrolled_while_its_record_holds_its_key`.
+- **A build step names no path but its client's copies (remote-09).** remote-01 held a build
+  step's words to a build's, but not their paths: `placed` passed every value that is no
+  marker through, so `--output=type=local,dest=/any/dir` wrote this machine's files
+  (`red_remote09_a_build_steps_output_names_this_machines_path`). `synced::named_paths` now
+  enumerates every path buildx v0.37.1's build grammar takes (crates/cmdline BUILD's
+  path-typed values: the context's argument, `--file`, `--iidfile`, `--metadata-file`,
+  `--output`'s `dest`, `--cache-from` and `--cache-to`'s `src` and `dest`, `--build-context`'s
+  path and `oci-layout://` directory, `--secret`'s `src`, `--ssh`'s paths and `--policy`'s
+  `filename`; its other flags name none). An agent's, harness's or MCP server's build names its
+  directory alone. Each is judged twice:
+  - **Before any file comes** (`held_to_copies`, `Refused::NotHeld`). Each path must be its
+    copy's marker form: the context is `\0context`; the build file is a `\0dockerfile/NAME`;
+    anything written is an `\0out/NAME`; anything read beside the context is a `\0tree/KEY`
+    of 64 hex digits; a secret is one of the `\0secret/N` the step sends (N below their
+    count); an agent is an `\0agent/ID`; and a policy's file is a name within the context.
+    Each NAME and each part is one file's name by `name_alone`, so Windows' forms count.
+    `--secret type=env`, a secret of no `src`, and `--ssh` of no path read the machine's own
+    environment or agent, and are refused as `NotHeld::Machines`.
+  - **Where the build runs for a client** (`refused_for_client`, of `SHARDS_CLIENT`, in
+    `build::build` and the artifacts' `build`). Each placed path must lie beneath the client's
+    copies (`HOME/synced/CLIENT`), lexically and part by part, with no part `..`, a root or a
+    prefix. A secret's or an agent's path must be a descriptor the build was given
+    (`/dev/fd/N`).
+
+  The client's own shards sends nothing else (`context::tests::what_a_client_sends_of_a_build_is_held_to_its_copies`).
+  A path the client sent as it was given because no directory of that name was there (a
+  `--cache-from` or `--build-context` it lacks, a policy outside its context) is now refused
+  on the machine rather than by the build. No number is chosen: the markers and buildx's
+  grammar are the bounds. Tested: `synced::tests::a_clients_build_names_no_path_but_its_copies`,
+  `a_placed_build_names_nothing_outside_its_copies`, `a_build_run_for_a_client_refuses_this_machines_paths`
+  and `daemon::remote::tests::a_build_step_naming_this_machines_path_is_refused_before_its_files`.
 - **Owed (ROOT's).** The real-daemon E2E of each: tests/context.rs's removal with an Engine API
   keep-alive connection held across it and a native connection held across a removal and a
   re-enrollment of its name; a client's raw `--context` and `\0sync build` requests; a Windows
-  listener receiving `C:context`. The per-call record read's cost (R14). A build step's
-  path-naming words held to the copy (above).
+  listener receiving `C:context`; a client's crafted `\0sync build` naming
+  `--output dest=`, `--iidfile`, `--file` and `--secret src=` paths of the machine's, refused
+  with nothing written, and a context build of every path-typed flag still served. The per-call
+  record read's cost (R14).
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
@@ -8782,6 +8823,21 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
+fallback cadence, DAX crossover and cached headroom coefficient remain owed to
+ROOT. Their proposed runtime observations, cold starts, typed unavailable states
+and validation commands are in
+`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
+are not evidence that these policy choices satisfy R03.
+
+**Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
+word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
+unbudgeted word. It transmits that word as the reply is consumed and coalesces a
+value already in flight, whose acknowledgment remains consumable. Desired room
+and request/reply state have one owner; budget removal cannot disappear behind
+a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
+
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
 cache, guest memory the host cannot drop, only swap: a 1 GiB file read from a volume left
@@ -9867,6 +9923,12 @@ template pays it once; what its restores pay is to be measured with mappings.
   blocks).
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
+
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
+
+Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
+
 
 **Why.** The long-session roadmap's item 6 (2026-10-18): a microVM that runs for hours is
 given what it needs as it goes, not only what it booted with. Every shards device was a
@@ -12792,6 +12854,15 @@ the user told).
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
 
+**Review memory-16 (2026-11-13):** saving a head compares a nonzero block with
+every distinct block already retained. The bound is the input's block count;
+there is no selected limit on how many kinds can share. Cold saves start with
+no retained kinds, and existing file errors propagate. This preserves the
+documented “each kept block once” contract after the sixty-fourth kind too.
+Worst-case comparisons are quadratic in input blocks; their cost is unmeasured
+and owed to ROOT. Red/green and scope:
+`docs/research/measurements/memory-fixes-v1/README.md`.
+
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
 with its microVM unless packed as it stopped (D37). A test suite's build there ran its 8
@@ -13537,6 +13608,9 @@ stays; a load of the other alone from an archive of both, run emulated.
 
 ### D178. A microVM's I/O limits, kept outside it
 
+Review devices-04 (2026-11-14): a block device's stop cancels its own limiter wait under the limiter mutex before joining its worker. This neither pauses other devices nor erases debt; reset cannot lift the shared limit. Its owned token is cleared for a new worker only after the old worker joined. Malformed descriptor work is checked before charging bytes. Source/test evidence: `docs/research/measurements/device-fixes/README.md`; no fixed production timeout is introduced.
+
+
 `--io-maxbandwidth BYTES` and `--io-maxiops N`, on `shards run vm` and `create` and in the
 Engine API's `HostConfig.IOMaximumBandwidth` and `IOMaximumIOps`, are the most bytes and
 requests a second of a microVM's I/O to the host's storage: its volumes (virtio-fs) and its
@@ -13932,6 +14006,34 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
+  machine moved to puts the stream's entries in a directory of the move's own
+  (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
+  component) is not yet one that stays there: a link the stream made earlier is a way out.
+  Until this, the placer joined each name to that directory and made it by path
+  (`create_dir_all`, `open`, the share server's makers from the parent's path), every
+  component followed: `LINK volumes/data/_data/out -> /some/dir` and then `FILE
+  volumes/data/_data/out/new-file` made `new-file` in `/some/dir`, as the daemon's user
+  (`a_streams_symlinks_never_lead_out_of_its_directory`, red at 9efde7252). Now each entry
+  is reached from the move's directory held open, a component at a time, never through a
+  symlink (`server::guest::Beneath`: openat(2) with `O_DIRECTORY | O_NOFOLLOW`, as the share
+  server's own `open_beneath` walks, each component checked a directory once open; on
+  Windows NtCreateFile relative to its parent's handle with FILE_OPEN_REPARSE_POINT, which
+  opens a junction as itself, refused as no directory), made there by its name and never over
+  anything there (`O_CREAT | O_EXCL`), and given its metadata there. A symlink is data, made
+  as its guest made it and never followed; what a stream names below one, or below a file, is
+  refused, by an absolute or a relative target. And a symlink is taken only where a guest
+  makes one, in a volume's files (`volumes/V/_data/…`, `holds_links`): shards makes none in a
+  microVM's own directory or at the files its snapshot restores against, and the move's later
+  steps (`adopt`: its record, `key-replaced` and request written, the files sent moved into
+  `backing/`, a live move's rounds laid under its last save) reach those by their paths, where
+  a link the stream put there would be followed. Held by that test (moves.rs, absolute and
+  relative links, a file, directory, node and link below each, the outside left empty, and a
+  link refused in the microVM's directory, at `key-replaced`, at a file its snapshot restores
+  against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
+  (`server::guest`, every target). Not an
+  archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
+  its own format (version 2).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -14408,7 +14510,19 @@ page by page as each came; resumed there; and stopped here once it runs there.
     written. Each bit is a host page, given the loop as the 4 KiB units it sends.
   - On Hypervisor.framework, its writable memory taken away for writing at stage 2
     (`hv_vm_protect`) and each page given back whole as its guest writes it, noted, the
-    working-set recorder's mechanism (D25).
+    working-set recorder's mechanism (D25), with which it shares the one stage 2: what a page
+    of each region has until its guest faults on it is the two's together (`Watch::rest`),
+    nothing while a working set is recorded, all but its writes while the move watches them,
+    else all of it, put back as either starts or ends, under both locks (the recording's,
+    then the watch's, as each fault takes them). Until 2026-11-13 a recording's end gave the
+    guest all its memory back whatever watched it (migrate-02): a warm run's recording, ended
+    by its timer (D25) as a live move's rounds ran, left every page writable unwatched, its
+    writes in no round and not in the last save, the restored guest finding the bytes it had
+    before; and a watch begun within a recording gave the guest reads of pages the recorder
+    had taken away. Held on the framework by `vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`
+    (hv::hvf, the crate's one test with a VM): a guest's read within a recording the watch
+    began in is recorded, and a page it writes after a recording ended, the watch begun
+    within it or it within the watch, is `written` each time (red at 9efde7252: none was).
   - On WHP, its dirty page tracking (`WHvCapabilityCodeFeatures`' DirtyPageTracking): each
     writable range the partition maps mapped again in place with
     `WHvMapGpaRangeFlagTrackDirtyPages` as the watch begins, as WHvMapGpaRange "replaces
@@ -17990,6 +18104,12 @@ changes.
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
 
+**R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
+retry count, growth/retention ratios and boot floor remain owed to ROOT with
+designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+Each needs a justified startup rule and typed uncertainty before replacement;
+this review does not approve another chosen number.
+
 A builder may have what its host can give and its home's builds have needed, but the memory
 a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
 builder of 64 GiB 1.4 GiB and 434 ms (PM M82). A builder now boots with 512 MiB, and is
@@ -20073,15 +20193,36 @@ The research, every finding graded with its sources:
   `security.nesting` and shards' own builds under `--allow` (f32).
 - *What it gives the workload, and each exec into it.* An exec takes the workload's
   process spec, as runc's does and D42's filter is:
-  - **A writable, delegated cgroup subtree.** Its cgroup namespace stays rooted at
-    `run/workload`, and that hierarchy is mounted writable in its mount namespace
-    (`cgroups-rw`, f7). Its command starts in the leaf `run/workload/init`, so its
-    namespace root holds no process and it may enable cpu, cpuset, io, memory and pids for
-    children beside the leaf at once (f8, f9). Each exec joins the leaf, never the root,
-    so no exec races the workload's controllers (moby's hack/dind loops on that race,
-    f35).
+  - **A writable, delegated cgroup subtree.** Its cgroup namespace is rooted at
+    `run/workload/delegated`, beneath the workload's cgroup, and that hierarchy is mounted
+    writable in its mount namespace (`cgroups-rw`, f7). Its command starts in the leaf
+    `run/workload/delegated/init`, so its namespace root holds no process and it may enable
+    cpu, cpuset, io, memory and pids for children beside the leaf at once (f8, f9). Each
+    exec joins the leaf, never the root nor the workload's cgroup above it, so no exec races
+    the workload's controllers (moby's hack/dind loops on that race, f35).
     nsdelegate keeps the root's own limits init's, and every process inside the subtree
-    (f6).
+    (f6). The workload's limits and its device program stay on `run/workload`, above the
+    namespace's root (amended 2026-11-13, inithex-01): a command with CAP_SYS_ADMIN and the
+    default profile's bpf(2) detaches a cgroup device program attached at a cgroup it can
+    open (BPF_PROG_QUERY, BPF_PROG_GET_FD_BY_ID, BPF_PROG_DETACH: kernel/bpf/syscall.c at
+    79eb6679e, `bpf_prog_query`, `bpf_prog_get_fd_by_id`, `bpf_prog_detach`; kernel/bpf/
+    cgroup.c `cgroup_bpf_prog_detach`, which refuses no namespace root), and the root of its
+    own namespace was that cgroup. No process of the command's can name one above its root:
+    its mounts show the namespace's root (cgroup_namespaces(7)), it sees no process outside
+    its PID namespace (`--pid host` refused), and the `--init` reaper, the one process of
+    init's in that namespace, takes a cgroup namespace of its own rooted at the leaf. So the
+    standby, as it applies `nesting` (`setup::delegate`), enters `delegated`, enables the
+    workload's controllers for it (nsdelegate lets a namespace's root write its
+    `cgroup.subtree_control`), unshares a cgroup namespace rooted there, mounts the hierarchy
+    afresh over its old mount, and enters the leaf. Seen from inside, the root's own
+    memory.max and pids.max read `max`: the limits are its parent's, which hold it all the
+    same (cgroup-v2.rst, "Top-down Constraint"). *Alternatives*: a BPF link
+    (BPF_LINK_CREATE) is detached as a program is, by any holder of CAP_SYS_ADMIN that takes
+    it by ID (BPF_LINK_GET_FD_BY_ID, BPF_LINK_DETACH); a seccomp rule on bpf(2)'s command
+    cannot see BPF_PROG_ATTACH's BPF_F_REPLACE, which is in memory, and a nested runtime
+    needs BPF_PROG_ATTACH, BPF_PROG_QUERY and BPF_PROG_DETACH for its boxes' own programs
+    (runc's devicefilter); the program on `run` would bound joiners and domains, whose
+    device rules are their own. None taken.
   - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
     boxes' namespaces, mounts and pivot_root, their loopback, and their device programs.
     Like every run's capabilities (D42), they are the command's while it runs as root. A
@@ -20115,8 +20256,10 @@ The research, every finding graded with its sources:
     process bound and no others, the identities Hex's node keys its GPUs by (packed PCI
     address, Metal registry ID), never text a caller could word as it likes (f22, f39). A box
     sees them only where its runtime puts them. Render nodes come only through D44's rules
-    (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI, so
-    it still bounds any device programs the workload puts on its boxes (f20, f21).
+    (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI on
+    the workload's cgroup, above the command's namespace root, so it still bounds any device
+    programs the workload puts on its boxes (f20, f21), and the workload cannot take it off
+    (inithex-01, above).
   - **A readiness word**: `NOTIFY_SOCKET=/run/shards/notify`, sd_notify's datagram socket
     (f26). `READY=1` from one of the workload's own processes moves its readiness (below),
     writes WORKLOAD_READY on the control page, and tells the host.
@@ -20359,7 +20502,25 @@ the host test's bound (HVF at fafe35efc). With both, nesting.rs passed whole on 
 (ROOT, adacachy2, e72239dd3) and on HVF (ROOT, macOS 26 arm64, 2b89e8504): 11 of 11, one
 ignored. Hex's node, as a granted command, meets the same rule.
 
+**inithex-01's fix** (2026-11-13): red and green on a real kernel, Linux x86_64 (adacachy2,
+a delegated scope of the user's own, `systemd-run --user --scope -p Delegate=yes`, a user
+namespace standing in for init's privileges):
+`on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits` now asks whether
+the standby's own mount or a fresh cgroup2 mount it makes shows the cgroup the device program
+is on (its inode): `ceiling=hidden` with `setup::delegate`; with its namespace left rooted at
+the workload's cgroup, as before the fix (the mutant), `ceiling=named`. Mutation of the exec's
+guard (an exec let into the namespace's root): `a_granted_runs_execs_join_its_leaf_never_its_root`
+fails. The bpf(2) steps themselves need init's privileges, which no unit test has: the
+real-VM twin below is owed. The reaper's own cgroup namespace has no unit test reaching it.
+
 **Evidence owed** (ROOT):
+- inithex-01's real-VM twin: `cargo test -p shards --profile test-release --test nesting
+  a_granted_workload_cannot_detach_its_device_program` (testguest `nesting ceiling`: the
+  queried programs' descriptors taken and detached from the namespace's root, none detached,
+  the microVM's own disk refused before and after), with the rest of nesting.rs (its runc
+  boxes' controllers and device programs under the new root); red at 9efde7252 (detached all,
+  the disk opened after), and with `setup::delegate` mutated back; and the GPU case's hostile
+  twin, card0 opened after the detach attempts;
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
   or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs
   on nested arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through
@@ -20378,6 +20539,7 @@ The evidence record is
 - Hex's node needing a capability or syscall beyond these to make its boxes. That one
   would then be added, by name, with its reason.
 - A box reaching past the workload's subtree, its devices or its filter.
+- A granted workload that names the workload's cgroup, or detaches a program bounding it.
 - A domain's or another run's process reachable from a granted workload.
 
 ### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
@@ -27989,28 +28151,59 @@ docs/research/s33-veil-creds/STEP3.md).
   `inject::tests::leaks::a_chunked_token_responses_trailers_are_no_part_of_its_body` (a trailer
   field, and none), red before (502), green after; trailers given as data again fails it,
   `chunked_bodies_are_read_strictly` and `a_chunked_refresh_and_revocation_are_answered_outside`.
-- *Coded responses are refused (creds-04, amended 2026-11-13).* The mask reads a response's bytes
-  as they come, so an echo inside a body coded gzip, br, deflate, zstd or any other content coding
-  (RFC 9110 §8.4), or a transfer coding (RFC 9112 §7), or a WebSocket message compressed by
-  permessage-deflate (RFC 7692), passed unmasked and decoded to the value in the guest: once a
-  recorded residual, a leak. Decoding, masking and coding again was refused: a decoder of every
-  coding in the network process (zstd and br beside gzip), its output bounded only by a ratio no
-  spec gives, and a coded body whose length changes. So a request with a value filled in asks its
-  response as its sender writes it: its Accept-Encoding lines cut and `Accept-Encoding: identity`
-  added (`uncoded`; HTTP/2's `ask_identity`), as no field means any coding is acceptable (§12.5.3),
-  and its WebSocket extension offer cut (RFC 6455 §9.1: a server takes none not offered). A final
-  or 101 response to it whose content coding is not `identity`, whose transfer coding is not
-  `chunked` (one a guest's TE asked included), or that takes a WebSocket extension, is refused
-  before any of it goes: `Refusal::Unmaskable(Unmaskable::Coded | Extended)`, 502 on HTTP/1.1
-  (the connection closing) and on its HTTP/2 stream alone (`maskable`), as §12.5.3 lets a server
-  code a response anyway. A request with no value filled in asks and gets what it likes. The cost
-  is that an injected exchange's body travels uncoded between the network process and its host.
-  Tests: `inject::tests::leaks`' gzip echo over HTTP/1.1 as a content coding and as a transfer
-  coding and over HTTP/2, red before (the coded echo reached the guest and decoded to the value),
-  green after, and a filled WebSocket upgrade whose host takes permessage-deflate anyway; each of
-  the two response checks and the two request rewrites removed fails them. Still residual: a
-  tunnel's own framing (a value split across WebSocket frames, or a protocol other than WebSocket
-  after a 101), which the mask reads as bytes.
+- *A coded response to a filled request is decoded, masked and sent as identity (creds-04,
+  amended 2026-11-13, twice).* The mask reads a response's bytes as they come, so an echo inside a
+  body coded gzip, br, deflate, zstd or any other content coding (RFC 9110 §8.4), or a transfer
+  coding (RFC 9112 §7), or a WebSocket message compressed by permessage-deflate (RFC 7692), passed
+  unmasked and decoded to the value in the guest: once a recorded residual, a leak. So a request
+  with a value filled in asks its response as its sender writes it: its Accept-Encoding lines cut
+  and `Accept-Encoding: identity` added (`uncoded`; HTTP/2's `ask_identity`), as no field means
+  any coding is acceptable (§12.5.3), and its WebSocket extension offer cut (RFC 6455 §9.1: a
+  server takes none not offered). A server may code its response anyway (§12.5.3), and CDNs do;
+  the first form of this fix refused every such response 502, which broke a harness behind one
+  (ROOT's zero-breaks ask). Now a response to a filled request with a body naming one coding this
+  side decodes is decoded in the network process (`decode::Decoder`: gzip, `x-gzip` and deflate,
+  zlib-wrapped or raw as some servers send it, by flate2 over zlib-rs; zstd by ruzstd, read a
+  frame header and a block at a time so that its decoder never meets a part of one; the decoders
+  the image store and the registry's client already link), its decoded bytes masked as any body's,
+  and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
+  Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
+  chunk (`chunk`), each chunk's size line this side's own and held to `Mask::holds` as creds-02's
+  are, one holding a value breaking the message (creds-12, amended 2026-11-13: red before, a
+  value of hex digits written as a size line, green after; the check removed fails it), its end
+  the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
+  length), its DATA's credit given back to the host's window once its decoding has reached the
+  guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
+  host's bytes decodes to is at most `TO_GUEST`, what the connection already holds toward the
+  guest (on HTTP/2, a stream's DATA held for the guest and its decoding together), and past it
+  the message breaks (`Undecodable::PastBudget`): a decoding ratio no spec bounds is never held;
+  a zstd window past RFC 9659 §3's 8 MiB, or a frame that needs a dictionary, is refused
+  (`Unsupported`); a zstd block past RFC 8878 §3.1.1.2.3's 128 KiB is corrupt; a stream that is
+  no stream of its coding (`Corrupt`), or that ends before its coding's end, gzip's CRC and length
+  checked (`Truncated`), breaks the message, never a truncated body that looks whole. Refused 502
+  before any of it goes, `Refusal::Unmaskable(Coded)`: a coding no decoder here reads (br: no
+  vetted decoder in the workspace; `compress`; any unknown name), more than one coding, or a
+  decodable one toward a guest that spoke HTTP/1.0, which no chunked body reaches; and
+  `Unmaskable(Extended)`, a 101 that takes a WebSocket extension anyway. A response with no body
+  (HEAD's, 204, 304) passes as it came. A request with no value filled in asks and gets what it
+  likes. Not chosen: buffering a coded body whole to recompute its Content-Length, which holds a
+  streamed response (server-sent events) until its end. Tests (macOS arm64,
+  adas-mac-studio-3.local): `inject::tests::leaks`' coded echo over HTTP/1.1 as gzip and zstd
+  framed by length, `x-gzip` and `gzip, chunked` chunked, and over HTTP/2 as gzip, each red
+  against 3a87f3b39's injector (refused 502) and green after: decoded, every echo masked, no
+  coding field; br and gzip twice refused 502; `decode::tests`: each coding whole and a byte at a
+  time, truncated, past its budget, and a zstd window of 16 MiB refused. Mutations: the H1 decoder
+  bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
+  budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
+  split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
@@ -28208,7 +28401,12 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
   sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
   connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
-  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`). For a held
+  HTTP/1.1 POST with `Expect: 100-continue`, the gateway emits Continue before waiting
+  for the body, once (Unrequested/Waiting/Sent, creds-08; RFC 9110 §10.1.1), for
+  Content-Length and chunked bodies alike. Its answered Expect field is cut if the
+  body is later forwarded as an exchange. No timer or chosen wait is added; evidence:
+  docs/research/measurements/creds-fixes-v1/README.md. Every flow of the run that asks the
   sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
   runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
   runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
@@ -30869,9 +31067,34 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
 - *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
   microVM has not started` beside its process's use.
-- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
-  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
-  final use needs a path of its own (owed, below).
+- *Managed microVMs* (`ManagedGuest`; the person's filesystem rule: shards' own interfaces
+  are files). A managed VM process has no owner's link and its vsock socket goes with it, so its
+  final use is a file: `<vsock>.used`, beside its vsock socket (`shards_api::final_use_file`), in
+  the directory its launcher made for the guest, which goes with the run (shards-api's own
+  `PrivateDir`, or its launcher's). Written whole, by rename (a temporary beside it, made
+  durable, then renamed over it), before its VM process exits:
+  - The VM process, confined (D30), writes no file: once its machine is down (`supervise`'s
+    `wait_then` free, as the warm VM's) it tells its keeper the use's answer, after its length
+    (a u32, big-endian), on a channel of its own (`--final-use`), which the CLI that becomes it
+    adds where it is booted `--host-managed` with a `--vsock` (final_use.rs).
+  - Unix: the keeper is `shards final-use PATH`, started beside it in its launcher's
+    containment as a managed VM's console recorder is, on a socket pair. It writes the record,
+    then answers one byte; the VM waits for the answer (or the keeper's end) before it goes
+    on to exit. So the record is in place before the VM process, whose end its client
+    watches, ends. Not bounded by a clock: the keeper's work is one local file's write.
+  - Windows: the CLI that waits for its VM keeps it, reading the pipe as it comes (a pipe's
+    buffer may not hold it whole), and joins that before it exits, its client watching the
+    CLI's end.
+  - A VM killed, or one that ended before its machine came down, tells nothing or less than
+    it said it would: no record.
+  - The client: `ManagedGuest::wait_ended(timeout) -> Option<ManagedEnded { end: End,
+    final_use: FinalUse }>`; `host_use` answers `ManagedUsed::Running(ManagedUse)` while it
+    runs and `ManagedUsed::Ended(ManagedEnded)` after, from the same record, read once and
+    kept. No record: `Unused::Killed` where its stop came first, else `Untold`; a record none
+    of the protocol's, `Broken(UseBroken)`, read no further than the longest answer and a
+    byte.
+  - *Literals*: `.used`, the record's name; 4, the length's bytes (a u32, which the longest
+    answer fits); the answer byte 1. `ANSWER_MOST` bounds what is read.
 - *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
   shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
   `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
@@ -30879,11 +31102,20 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `a_runs_end_reads_back_with_its_final_use` (wire) and
   `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
   existing end and lease tests over `RunEnded`.
+  Managed: shards `final_use::tests::a_final_use_told_whole_is_recorded_and_nothing_else_is`
+  and `a_managed_vms_record_is_beside_its_socket`; shards-api
+  `a_managed_guests_final_use_is_its_record_once_it_has_ended` and the existing use tests over
+  `ManagedUsed`.
 - *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
   stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
   time by index, none departed, its process's CPU holding them, and `stats` after it refused
-  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
+  with that end; a stop's end `Killed`); the managed one's, `cargo test --profile
+  test-release -p shards --test boot -- a_managed_guest_records_its_final_use_as_it_ends
+  a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (a spinning managed guest
+  that powers off records its one vCPU's guest time and its process's CPU holding it; one not
+  managed, and one killed, record none; the confined VM process's write to its inherited
+  channel on each OS); Hex's adoption.
 
 ## 4. Start path (≤ 5 ms budget)
 

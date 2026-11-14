@@ -1092,6 +1092,25 @@ impl crate::build::policy::Resolve for PolicyBuilder<'_> {
     }
 }
 
+/// A build's `words` as the machine is sent them: before its context, each of `secrets`, by
+/// id, as the pipe it is read from there (`synced::SECRET`), and each of `agents`, by id, as
+/// the agent it reaches there (`synced::AGENT_SOCKET`).
+fn sent_words(words: &[String], secrets: &[&str], agents: &[&str]) -> Vec<String> {
+    let mut words = words.to_vec();
+    let at = words
+        .iter()
+        .position(|w| w == crate::synced::CONTEXT)
+        .unwrap_or(words.len());
+    for id in agents.iter().rev() {
+        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
+    }
+    for (i, id) in secrets.iter().enumerate().rev() {
+        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
+        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
+    }
+    words
+}
+
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
 /// of the context, and what keeps the copy in step.
 struct Built {
@@ -1866,18 +1885,9 @@ fn build_there(
             *keys = crate::build::sshkey::keyring(std::mem::take(keys));
         }
     }
-    let mut words = built.words.clone();
-    let at = words
-        .iter()
-        .position(|w| w == crate::synced::CONTEXT)
-        .unwrap_or(words.len());
-    for id in agents.keys().rev() {
-        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
-    }
-    for (i, (id, _)) in secrets.iter().enumerate().rev() {
-        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
-        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
-    }
+    let secret_ids: Vec<&str> = secrets.iter().map(|(id, _)| id.as_str()).collect();
+    let agent_ids: Vec<&str> = agents.keys().map(String::as_str).collect();
+    let words = sent_words(&built.words, &secret_ids, &agent_ids);
     // This client's own paths, which what the build prints there says in place of its
     // copies': its context's, its build file's directory's, and each tree's, by its key.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
@@ -4109,6 +4119,36 @@ mod tests {
         );
         // And the command there takes the JSON as the profile.
         assert_eq!(crate::cli::request::seccomp_profile(json), Ok(json.to_string()));
+    }
+
+    /// remote-09: what this client's shards sends of a build naming every kind of path a build
+    /// names, here, is held to its copies there (`synced::held_to_copies`), so that the
+    /// machine's refusal of any other path refuses no build of a client's.
+    #[test]
+    fn what_a_client_sends_of_a_build_is_held_to_its_copies() {
+        let dir = shards_testdir::TempDir::new("ctx-held").unwrap();
+        let t = AsRef::<Path>::as_ref(&dir).to_str().unwrap().to_string();
+        for sub in ["ctx", "cachein", "named", "layout"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(dir.join("ctx").join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("ctx").join("p.rego"), "package docker\n").unwrap();
+        let words: Vec<String> = "build --output=type=local,dest=T/out --iidfile=T/iid --metadata-file=T/meta --cache-to=type=local,dest=T/cache --cache-from=type=local,src=T/cachein --build-context=n=T/named --build-context=l=oci-layout://T/layout:v1 --policy=filename=T/ctx/p.rego --secret=id=s,src=T/s --ssh=default -f T/ctx/Dockerfile T/ctx"
+            .split(' ')
+            .map(|w| w.replace('T', &t))
+            .collect();
+        let built = building(&words, &|| Ok(Vec::new())).unwrap().unwrap();
+        let sent = sent_words(&built.words, &["s"], &["default"]);
+        assert_eq!(crate::synced::held_to_copies(&sent, 1), Ok(()), "{sent:?}");
+        let artifact = artifact_building(&[
+            "build".to_string(),
+            "agent".to_string(),
+            dir.join("ctx").to_str().unwrap().to_string(),
+            "-t".to_string(),
+            "a".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(crate::synced::held_to_copies(&artifact.words, 0), Ok(()));
     }
 
     /// What a context carries, and what it refuses until it carries it.

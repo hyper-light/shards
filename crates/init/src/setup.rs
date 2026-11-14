@@ -613,10 +613,10 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         let flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
         mount("", "/sys/fs/cgroup", "", flags, "")?;
     } else if entry == shards_abi::run::nesting::GRANT {
-        // The nesting grant (D234): the command into its leaf, the hierarchy made writable
-        // by the `cgroups-rw` before this entry, its namespace still rooted at the workload's
-        // cgroup.
-        enter_leaf("/sys/fs/cgroup").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        // The nesting grant (D234): the command into a cgroup namespace rooted beneath the
+        // workload's cgroup, which holds its device program, then into its leaf; the
+        // hierarchy made writable by the `cgroups-rw` before this entry.
+        delegate("/sys/fs/cgroup").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if let Some(list) = entry.strip_prefix(shards_abi::run::nesting::GPUS) {
         // The grant's GPUs (D234), where its command reads them.
         write_gpus(std::path::Path::new(GPUS_FILE), list)
@@ -634,15 +634,54 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
-/// Puts this process, the command's standby, in the leaf [`crate::run::LEAF`] of `root`,
-/// its cgroup namespace's root as its own mount shows it: under the nesting grant (D234) its
-/// command starts there, so that the root holds no process and the workload may enable
-/// controllers for children beside the leaf (cgroup-v2.rst, "no internal processes").
-pub fn enter_leaf(root: &str) -> io::Result<()> {
-    let mut procs = std::fs::OpenOptions::new()
-        .write(true)
-        .open(format!("{root}/{}/cgroup.procs", crate::run::LEAF))?;
-    io::Write::write_all(&mut procs, b"0")
+/// Hands this process, the command's standby under the nesting grant (D234), the subtree
+/// [`crate::run::DELEGATED`] of `root`, the workload's cgroup as its own mount shows it:
+/// into that subtree; the workload's controllers enabled for it, which no cgroup holding a
+/// process may enable (cgroup-v2.rst, "no internal processes"), and nsdelegate lets a
+/// namespace's root write (its `cgroup.subtree_control`); a cgroup namespace of its own
+/// rooted there; the hierarchy mounted afresh, writable, over `root`, in place of the mount
+/// that showed the workload's cgroup; then into the leaf [`crate::run::LEAF`].
+///
+/// The workload's cgroup holds its device program (`devices::confine_by_default`, D44):
+/// every process its command makes is beneath it, so the program bounds each, and the
+/// boxes' own programs beneath (BPF_F_ALLOW_MULTI, kernel/bpf/cgroup.c
+/// compute_effective_progs). With CAP_SYS_ADMIN a process may detach a program it can name
+/// the cgroup of (BPF_PROG_QUERY, BPF_PROG_GET_FD_BY_ID, BPF_PROG_DETACH): no process of the
+/// command's has any way to name the workload's cgroup, above its namespace's root
+/// (inithex-01). Its command's root holds none, and no limit, which stay the workload's.
+pub fn delegate(root: &str) -> io::Result<()> {
+    let enter = |dir: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("{dir}/cgroup.procs"))
+            .and_then(|mut procs| io::Write::write_all(&mut procs, b"0"))
+    };
+    let delegated = format!("{root}/{}", crate::run::DELEGATED);
+    enter(&delegated)?;
+    let controllers = std::fs::read_to_string(format!("{root}/cgroup.controllers"))?;
+    let enable: Vec<String> = controllers.split_whitespace().map(|c| format!("+{c}")).collect();
+    if !enable.is_empty() {
+        std::fs::write(format!("{root}/cgroup.subtree_control"), enable.join(" "))?;
+    }
+    let path = c(root).ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: unshare(2), umount2(2) and mount(2) of NUL-terminated strings that outlive
+    // the calls, in the standby, a single-threaded fork of init, in a mount namespace of
+    // its own.
+    let done = unsafe {
+        libc::unshare(libc::CLONE_NEWCGROUP) == 0
+            && libc::umount2(path.as_ptr(), libc::MNT_DETACH) == 0
+            && libc::mount(
+                c"cgroup2".as_ptr(),
+                path.as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV,
+                std::ptr::null(),
+            ) == 0
+    };
+    if !done {
+        return Err(io::Error::last_os_error());
+    }
+    enter(&format!("{root}/{}", crate::run::LEAF))
 }
 
 /// Where a run given the nesting grant finds the GPUs it names (D234): one identity a line,
@@ -1310,7 +1349,8 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if entry == shards_abi::run::nesting::GRANT {
         return format!(
-            "moving the command into its cgroup's leaf, {}, for its nesting grant: {err}",
+            "moving the command into its cgroup, {}/{}, for its nesting grant: {err}",
+            crate::run::DELEGATED,
             crate::run::LEAF
         );
     }
@@ -1456,33 +1496,21 @@ mod tests {
         }
     }
 
-    /// A cgroup tree of plain files, as a test may make one: its root's and its leaf's
-    /// `cgroup.procs`, each empty.
-    fn tree(name: &str) -> shards_testdir::TempDir {
-        let dir = shards_testdir::TempDir::new(name).unwrap();
-        std::fs::create_dir(dir.path().join(crate::run::LEAF)).unwrap();
-        std::fs::write(dir.path().join("cgroup.procs"), b"").unwrap();
-        std::fs::write(dir.path().join(crate::run::LEAF).join("cgroup.procs"), b"").unwrap();
-        dir
-    }
-
-    /// Under the nesting grant (D234) the command's standby enters the leaf `init` of its
-    /// cgroup namespace's root, and never the root, which holds no process of it.
+    /// Under the nesting grant (D234) a standby whose workload's cgroup has no subtree for
+    /// its command starts none: init makes the subtree before any process of the command's
+    /// is born, and the standby changes nothing of its namespaces before it is in it (the
+    /// whole of `delegate`, on a real kernel: run.rs's nesting tests).
     #[test]
-    fn a_granted_command_starts_in_its_leaf() {
-        let dir = tree("leaf");
+    fn a_granted_command_starts_in_no_cgroup_but_its_subtree() {
+        let dir = shards_testdir::TempDir::new("leaf").unwrap();
+        std::fs::write(dir.path().join("cgroup.procs"), b"").unwrap();
         let root = dir.path().to_str().unwrap();
-        enter_leaf(root).unwrap();
-        assert_eq!(std::fs::read(dir.path().join("init/cgroup.procs")).unwrap(), b"0");
+        assert_eq!(delegate(root).unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(
             std::fs::read(dir.path().join("cgroup.procs")).unwrap(),
             b"",
-            "the root holds none"
+            "the workload's cgroup holds none"
         );
-        // No leaf, no start: init makes it before any process of the command's is born.
-        std::fs::remove_dir_all(dir.path().join("init")).unwrap();
-        assert_eq!(enter_leaf(root).unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(std::fs::read(dir.path().join("cgroup.procs")).unwrap(), b"");
     }
 
     /// The run's GPUs, one identity a line in D232's grammar, in a file every user of the

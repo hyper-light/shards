@@ -7681,9 +7681,12 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
 
 **network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
 (Linux amd64) ran three focused network confinement tests and clippy for
-shards-net/shards-net-process, all passing. Native arm64 execution is owed;
-removing the arm64 startup omission is not an arm64 measured result. No VM or
-performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+shards-net/shards-net-process, all passing. Subsequent native ARM GNU evidence
+on adas-mac-studio-3.local's Docker Desktop (Linux aarch64, Rust 1.98.1):
+46e739f13's startup test failed with Seccomp=0; at 53e89b2b8 it passes with one
+additional installed filter, and the forbidden-syscall termination test passes.
+Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
+No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 
 ### M211. The limits a build's `RUN` step starts with
 
@@ -8900,6 +8903,9 @@ performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/REA
   restore, the VM process's start, the snapshot restored, and the guest dialing back in.
 
 ### M240. A microVM's I/O limits, from its guest's writes (D178)
+
+Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limiter tests, macOS arm64; 7 block and 4 limiter tests green with VMM clippy. See `measurements/device-fixes/README.md`. This is cancellation evidence, not a new throughput or hardware-VM measurement.
+
 
 - **Question.** Does a microVM whose VMM paces its volume's writes at `--io-maxbandwidth`
   write at that rate, never above it, on a quiet host and on a loaded one; and what does
@@ -17802,6 +17808,12 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
+Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
+
+
 - **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
 
 
@@ -24206,6 +24218,15 @@ source revisions, light results and ROOT's remaining gates are in
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
 
+### Review memory-04: a budget removed while its builder's reply was outstanding
+
+The real socket/production watcher regression at e8b687a9e, macOS arm64, failed
+WouldBlock when looking for the removed-budget ROOM frame (resumed kiln r2).
+The pending-room owner is fixed at 27522e6ca/aef83d2c4; the existing late-answer
+test additionally caught acknowledgment accounting, corrected at 8951ffa2d.
+Commands, unit results and the still-owed real builder/pressure variant:
+[the memory fix record](measurements/memory-fixes-v1/README.md).
+
 ### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24247,6 +24268,19 @@ kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed t
 VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
 through L1, and one on a kernel of ABI 5 to 7.
 
+Amended 2026-11-13 (ROOT: R03, the wait's doubling was a chosen multiplier, D222). The
+wait has no timeout now: an asked thread's answer (an eventfd) or its end (its thread
+pidfd, PIDFD_THREAD) wakes it, and a thread that blocks the asking signal, or a process
+that ignores it (SigBlk, SigIgn), fails the layer at once, typed (`Unasked::Deaf`). On
+adacachy2, `cargo test -p shards-vm-process confine::` 11 of 11, the asked pass run under
+the filter an ABI-5 host has (`confine_as(5)`), `-p shards-syscall-filter` 9 of 9 (rules
+on two arguments added up, against the instruction model), clippy clean for both.
+Mutants, each red: the SigBlk/SigIgn check dropped, the deaf test's pass waited until
+the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
+`a_wait_for_an_answer_ends_with_the_answer_or_the_thread` timed out on a thread that
+ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
+trapped under that filter (exit 159).
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24285,7 +24319,7 @@ Unit-level functional evidence, no real VM: `confine` refuses any process outsid
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
 
-### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+### M571. Credential lease budgets, live waiters, exact signing and Continue (D242, creds-05..08)
 
 2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
 Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
@@ -24310,6 +24344,23 @@ Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32
 all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
 verifier coverage remains independent. No performance result; linked credential
 record above has commands, evidence, and real-VM coverage owed.
+
+creds-08: headers alone with Expect: 100-continue reproduced a stalled held POST at
+021d13e20. The gateway now owns the one Continue and removes its answered Expect
+field before eventual upstream forwarding (49e4c2967, scoped by 888dcb884).
+Merged 62bfef2e5: 46 injector tests passed, 2 ignored, shards-net all-target clippy
+and policy check passed on macOS arm64. The tests cover chunked/length refresh
+and revoke bodies, partial arrival, retries and a forwarded code exchange. The
+100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
+Commands, red/green excerpts, exact source revisions and unrun work are linked above.
+
+### Review memory-16: duplicate head kinds past a selected cap (D190)
+
+On adas-mac-studio.local, macOS arm64, red 5ede7aecb (resumed r16) saved an equal
+block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
+removes the 64-kind comparison cutoff; the input's block count bounds the search.
+The sparse-file/index regression checks actual retained identity and length.
+[Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
 
 ### M572. A registry's trouble past the longest its path passed runs out, told once, and the pull follows liveness; buffered reads, named waits and late routes (D222, waits-05, -06, -07)
 

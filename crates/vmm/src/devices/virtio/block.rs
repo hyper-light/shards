@@ -8,7 +8,7 @@
 
 use std::fs::File;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::limit::Limiter;
@@ -58,9 +58,7 @@ enum Store {
     /// grew to as the machine ran ([`DiskSize::grow`]).
     File {
         file: File,
-        capacity: AtomicU64,
-        /// How many times it grew: what its configuration changed by on its own.
-        grown: AtomicU32,
+        size: Mutex<FileSize>,
         /// The device's interrupt while the driver has it, to say the capacity grew, as a
         /// join disk's ([`Join`]).
         interrupt: Mutex<Option<Arc<DeviceInterrupt>>>,
@@ -69,11 +67,19 @@ enum Store {
     Join(&'static Join),
 }
 
+/// Capacity and generation are one publication. Every configuration access and
+/// grow holds this mutex; a split guest read detects growth through generation.
+#[derive(Debug)]
+struct FileSize {
+    sectors: u64,
+    generation: u32,
+}
+
 impl Backend {
     /// The disk's capacity in sectors, as the driver reads it now.
     fn capacity(&self) -> u64 {
         match &self.store {
-            Store::File { capacity, .. } => capacity.load(Ordering::Acquire),
+            Store::File { size, .. } => size.lock().unwrap_or_else(PoisonError::into_inner).sectors,
             Store::Join(join) => join.capacity(),
         }
     }
@@ -86,6 +92,11 @@ impl Backend {
 #[derive(Debug, Clone)]
 pub struct DiskSize(Arc<Backend>);
 
+#[cfg(test)]
+std::thread_local! {
+    static GROW_PUBLISHED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl DiskSize {
     /// Takes its file's length now as the disk's capacity, where it grew, and tells the
     /// driver: what its host made it, `set_len`, before. Returns its capacity in bytes. An
@@ -94,20 +105,20 @@ impl DiskSize {
     pub fn grow(&self) -> Result<u64, String> {
         let Store::File {
             file,
-            capacity,
-            grown,
+            size,
             interrupt,
         } = &self.0.store
         else {
             return Err("a join disk grows as it is given files".into());
         };
+        let mut size = size.lock().unwrap_or_else(PoisonError::into_inner);
         let bytes = file.metadata().map_err(|e| format!("its file: {e}"))?.len();
         if bytes % SECTOR != 0 {
             return Err(format!(
                 "its file of {bytes} bytes: not whole sectors of {SECTOR}"
             ));
         }
-        let now = capacity.load(Ordering::Acquire);
+        let now = size.sectors;
         let sectors = bytes / SECTOR;
         if sectors < now {
             return Err(format!(
@@ -116,8 +127,14 @@ impl DiskSize {
             ));
         }
         if sectors > now {
-            capacity.store(sectors, Ordering::Release);
-            grown.fetch_add(1, Ordering::AcqRel);
+            size.sectors = sectors;
+            #[cfg(test)]
+            GROW_PUBLISHED.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().take() {
+                    hook();
+                }
+            });
+            size.generation = size.generation.wrapping_add(1);
             if let Some(interrupt) = interrupt.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
                 interrupt.config_change();
             }
@@ -684,6 +701,7 @@ pub struct Block {
     /// What a worker needs besides its queue, from activation until reset.
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
     worker: Option<Worker>,
+    stopping: Arc<AtomicBool>,
     /// The queue while paused.
     paused: Option<Queue>,
     /// Its microVM's I/O limits (D178), and whether this device holds them paused.
@@ -718,8 +736,10 @@ impl Block {
         Ok(Block::of(Backend {
             store: Store::File {
                 file,
-                capacity: AtomicU64::new(bytes / SECTOR),
-                grown: AtomicU32::new(0),
+                size: Mutex::new(FileSize {
+                    sectors: bytes / SECTOR,
+                    generation: 0,
+                }),
                 interrupt: Mutex::new(None),
             },
             read_only,
@@ -761,6 +781,7 @@ impl Block {
             backend: Arc::new(backend),
             context: None,
             worker: None,
+            stopping: Arc::new(AtomicBool::new(false)),
             paused: None,
             limit: None,
             holds_limit: false,
@@ -775,7 +796,9 @@ impl Block {
             return Err("virtio-blk started before activation".into());
         };
         let (backend, mem, limit) = (self.backend.clone(), memory.clone(), self.limit);
-        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit);
+        self.stopping.store(false, Ordering::Release);
+        let stopping = self.stopping.clone();
+        let answer = move |chain: &Chain| handle(chain, &mem, &backend, limit, &stopping);
         match Worker::start("virtio-blk", queue, memory, interrupt, answer) {
             Ok(worker) => {
                 self.worker = Some(worker);
@@ -790,7 +813,11 @@ impl Block {
 
     /// Stops the worker after the request it is executing; returns its queue.
     fn stop(&mut self) -> Option<Queue> {
-        self.worker.take()?.stop()
+        let worker = self.worker.take()?;
+        if let Some(limit) = self.limit {
+            limit.cancel(&self.stopping);
+        }
+        worker.stop()
     }
 
     /// The device's interrupt, given at activation and taken at reset: who tells the
@@ -856,7 +883,7 @@ impl VirtioDevice for Block {
     /// accesses sees whether it grew between them.
     fn config_generation(&self) -> u32 {
         match &self.backend.store {
-            Store::File { grown, .. } => grown.load(Ordering::Acquire),
+            Store::File { size, .. } => size.lock().unwrap_or_else(PoisonError::into_inner).generation,
             Store::Join(_) => 0,
         }
     }
@@ -935,7 +962,13 @@ impl Drop for Block {
 }
 
 /// Executes one request; returns the bytes written into the driver's buffers.
-fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Limiter>) -> u32 {
+fn handle(
+    chain: &Chain,
+    mem: &GuestMemory,
+    backend: &Backend,
+    limit: Option<&Limiter>,
+    stopping: &AtomicBool,
+) -> u32 {
     // The status byte is the last byte of the last writable descriptor.
     let Some(last) = chain.writable().last().copied() else {
         debug!("virtio-blk: request without a status byte");
@@ -947,7 +980,7 @@ fn handle(chain: &Chain, mem: &GuestMemory, backend: &Backend, limit: Option<&Li
     let Some(status_at) = last.addr.checked_add(u64::from(last.len) - 1) else {
         return 0;
     };
-    let (status, data_written) = match execute(chain, last, mem, backend, limit) {
+    let (status, data_written) = match execute(chain, last, mem, backend, limit, stopping) {
         Ok(n) => (S_OK, n),
         Err(status) => (status, 0),
     };
@@ -965,6 +998,7 @@ fn execute(
     mem: &GuestMemory,
     backend: &Backend,
     limit: Option<&Limiter>,
+    stopping: &AtomicBool,
 ) -> Result<u32, u8> {
     let mut header = [0u8; 16];
     let body = gather_header(chain, &mem.access().map_err(|_| S_IOERR)?, &mut header)?;
@@ -979,7 +1013,25 @@ fn execute(
         && matches!(kind, T_IN | T_OUT)
     {
         let data = if kind == T_IN { &out } else { &body };
-        limit.take(data.iter().map(|d| u64::from(d.len)).sum());
+        if kind == T_OUT && backend.read_only {
+            return Err(S_IOERR);
+        }
+        // Validate the claimed work before charging it: malformed spans must not
+        // accumulate years of debt without moving a byte.
+        let total: u64 = data.iter().map(|d| u64::from(d.len)).sum();
+        let end = sector
+            .checked_mul(SECTOR)
+            .and_then(|start| start.checked_add(total))
+            .ok_or(S_IOERR)?;
+        if end > backend.capacity().saturating_mul(SECTOR) {
+            return Err(S_IOERR);
+        }
+        for d in data {
+            mem.io_ptr(d.addr, d.len as usize).map_err(|_| S_IOERR)?;
+        }
+        if !limit.take_until(total, stopping) {
+            return Err(S_IOERR);
+        }
     }
     match kind {
         T_IN => transfer(&out, sector, mem, backend, Direction::Read),
@@ -1199,6 +1251,87 @@ mod tests {
         assert!(b.worker.is_some() && b.paused.is_none());
         drop(b);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reset_cancels_only_its_own_limiter_wait() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        static LIMIT: Limiter = Limiter::new();
+        LIMIT.set(1, 0);
+        LIMIT.take(3600);
+        let dir = shards_testdir::TempDir::new("reset-limit").unwrap();
+        std::fs::write(dir.join("disk"), [0; 512]).unwrap();
+        let mut block = Block::open(&dir.join("disk"), false, "reset")
+            .unwrap()
+            .with_limit(Some(&LIMIT));
+        let base = 0x8000_0000;
+        let page = platform::page_size().unwrap();
+        let memory = Arc::new(GuestMemory::anonymous(&[(base, 4 * page)]).unwrap());
+        let cfg = QueueConfig {
+            size: 8,
+            desc: base,
+            avail: base + page as u64,
+            used: base + 2 * page as u64,
+            ready: true,
+        };
+        let irq = Arc::new(DeviceInterrupt::new(Arc::new(Line)));
+        // One valid read request: header, sector, status, in separate descriptors.
+        let data = base + 3 * page as u64;
+        let a = memory.access().unwrap();
+        a.write(data, &[0u8; 16]).unwrap();
+        for (i, (addr, len, flags, next)) in [
+            (data, 16u32, 1u16, 1u16),
+            (data + 16, 512, 3, 2),
+            (data + 528, 1, 2, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let at = base + i as u64 * 16;
+            a.write_obj(at, addr).unwrap();
+            a.write_obj(at + 8, len).unwrap();
+            a.write_obj(at + 12, flags).unwrap();
+            a.write_obj(at + 14, next).unwrap();
+        }
+        a.write_obj(cfg.avail + 4, 0u16).unwrap();
+        a.write_obj(cfg.avail + 2, 1u16).unwrap();
+        drop(a);
+        block
+            .activate(Activation {
+                memory: memory.clone(),
+                queues: vec![Queue::new(cfg, 8, &memory, feature::VERSION_1).unwrap()],
+                interrupt: irq,
+                features: feature::VERSION_1,
+                restored: false,
+            })
+            .unwrap();
+        LIMIT.wait_for_waiter();
+        let (send, receive) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            block.reset();
+            send.send(()).unwrap();
+        });
+        let completed = receive.recv_timeout(Duration::from_secs(1)).is_ok();
+        if !completed {
+            LIMIT.pause();
+        }
+        thread.join().unwrap();
+        if !completed {
+            LIMIT.resume();
+        }
+        assert!(completed, "reset joined a worker still waiting on I/O debt");
+        // An unrelated device still owes its debt: reset must not pause the shared limiter.
+        let (send, receive) = mpsc::channel();
+        let other = std::thread::spawn(move || {
+            LIMIT.take(1);
+            send.send(()).unwrap();
+        });
+        LIMIT.wait_for_waiter();
+        assert!(receive.try_recv().is_err());
+        LIMIT.pause();
+        other.join().unwrap();
+        LIMIT.resume();
     }
 
     /// A join disk (D119): of no capacity until an image is given a range; each range from
@@ -1547,6 +1680,44 @@ mod tests {
         assert_eq!(unsafe { JOIN.read_at(ptr, 512, 0) }, Err(S_IOERR));
         // SAFETY: the mapping made above.
         unsafe { libc::munmap(host, 2 * p) };
+    }
+
+    #[test]
+    fn capacity_and_generation_are_published_together() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = shards_testdir::TempDir::new("capacity-publish").unwrap();
+        let file = File::create(dir.join("disk")).unwrap();
+        file.set_len(SECTOR).unwrap();
+        let block = Block::open(&dir.join("disk"), false, "capacity").unwrap();
+        let size = block.size().unwrap();
+        let (published, saw_publish) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        file.set_len(2 * SECTOR).unwrap();
+        let grower = std::thread::spawn(move || {
+            GROW_PUBLISHED.set(Some(Box::new(move || {
+                published.send(()).unwrap();
+                released.recv().unwrap();
+            })));
+            size.grow().unwrap();
+        });
+        saw_publish.recv().unwrap();
+        let (read, read_result) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut cap = [0u8; 8];
+            block.read_config(0, &mut cap);
+            read.send((u64::from_le_bytes(cap), block.config_generation()))
+                .unwrap();
+        });
+        let early = read_result.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        grower.join().unwrap();
+        reader.join().unwrap();
+        assert!(
+            early.is_err(),
+            "configuration exposed a partially published growth: {early:?}"
+        );
+        assert_eq!(read_result.recv().unwrap(), (2, 1));
     }
 
     #[test]

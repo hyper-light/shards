@@ -34,6 +34,7 @@ use rustls::{ClientConfig, ClientConnection, ConnectionCommon, ServerConfig, Ser
 use zeroize::Zeroizing;
 
 use crate::Credentials;
+use crate::decode::{Coding, Decoder};
 use crate::dns::credential::{self, Fill};
 use crate::hpack;
 use crate::http2::{self, Code, End, Scope};
@@ -726,8 +727,10 @@ impl Refusal {
 /// mask reads the bytes as they come, and these are not the ones its guest decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Unmaskable {
-    /// A content coding but `identity` (RFC 9110 §8.4) or a transfer coding but `chunked`
-    /// (RFC 9112 §7): gzip, br, deflate, zstd or any other, which a value's echo passes coded.
+    /// A content coding (RFC 9110 §8.4) or a transfer coding but `chunked` (RFC 9112 §7) this
+    /// side does not decode (`decode::Coding`: br, compress, any unknown one, or more than one
+    /// coding), which a value's echo would pass coded; or one it decodes toward a guest that
+    /// spoke HTTP/1.0, which no chunked body reaches.
     Coded,
     /// A WebSocket extension taken (RFC 6455 §9.1), permessage-deflate's compression among them
     /// (RFC 7692).
@@ -743,18 +746,69 @@ impl fmt::Display for Unmaskable {
     }
 }
 
-/// Whether a response's `fields` (names and values) let its mask read its bytes as its guest
-/// decodes them (creds-04): no content or transfer coding but `identity` and `chunked`, and no
-/// WebSocket extension.
-fn maskable<'f>(fields: &[(&'f [u8], &'f [u8])]) -> Result<(), Unmaskable> {
-    signin::readable_fields(fields.iter().copied()).map_err(|_| Unmaskable::Coded)?;
+/// How a response's `fields` (names and values) let its mask read its bytes as its guest
+/// decodes them (creds-04): as they come, where it names no content or transfer coding but
+/// `identity` and `chunked`; decoded here first, where it names one coding this side decodes;
+/// refused, where it names another or takes a WebSocket extension.
+fn maskable<'f>(fields: &[(&'f [u8], &'f [u8])]) -> Result<Option<Coding>, Unmaskable> {
     if fields
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(b"sec-websocket-extensions"))
     {
         return Err(Unmaskable::Extended);
     }
-    Ok(())
+    let codings: Vec<&[u8]> = fields
+        .iter()
+        .flat_map(|&(name, value)| {
+            let content = name.eq_ignore_ascii_case(b"content-encoding");
+            let transfer = name.eq_ignore_ascii_case(b"transfer-encoding");
+            list(value).filter(move |c| {
+                (content || transfer)
+                    && !c.eq_ignore_ascii_case(b"identity")
+                    && !(transfer && c.eq_ignore_ascii_case(b"chunked"))
+            })
+        })
+        .collect();
+    match codings.as_slice() {
+        [] => Ok(None),
+        [one] => Coding::named(one).map(Some).ok_or(Unmaskable::Coded),
+        _ => Err(Unmaskable::Coded),
+    }
+}
+
+/// A decoded response's head as its guest gets it (creds-04): its Content-Encoding,
+/// Transfer-Encoding and Content-Length lines cut and `Transfer-Encoding: chunked` written, as
+/// its decoded length is not known before its end (RFC 9112 §6.1, §7.1).
+fn decoded_head(head: &[u8], fields: &[Field]) -> Vec<(Range<usize>, Vec<u8>)> {
+    let end = head.len().saturating_sub(2);
+    fields
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.name.as_str(),
+                "content-encoding" | "transfer-encoding" | "content-length"
+            )
+        })
+        .map(|f| (f.line.clone(), Vec::new()))
+        .chain([(end..end, b"Transfer-Encoding: chunked\r\n".to_vec())])
+        .collect()
+}
+
+/// `b`, a decoded response's bytes as its mask let them go, as one chunk (RFC 9112 §7.1), its
+/// size line this side's own and held to `mask` as creds-02's are (creds-12).
+fn chunk(guest: &mut ServerConnection, mask: &Mask, b: &[u8]) -> Result<(), Broken> {
+    if b.is_empty() {
+        return Ok(());
+    }
+    let line = format!("{:x}\r\n", b.len());
+    if mask.holds(line.as_bytes()) {
+        return Err(Broken("a chunk's size that is a value filled in"));
+    }
+    let mut w = guest.writer();
+    w.write_all(line.as_bytes())
+        .and_then(|()| w.write_all(b))
+        .and_then(|()| w.write_all(b"\r\n"))
+        .map_err(|_| Broken("its bytes could not be queued"))
 }
 
 /// What the host owes for the request it was last given, until its final response ends.
@@ -766,6 +820,8 @@ struct Owed {
     connect: bool,
     /// It asked an upgrade (RFC 9110 §7.8): a 101 makes the connection a tunnel.
     upgrade: bool,
+    /// It was HTTP/1.0's, to which no chunked body goes (RFC 9112 §7.1: HTTP/1.1's).
+    http10: bool,
 }
 
 /// Where the guest's requests stand (R04).
@@ -807,9 +863,17 @@ struct Parked {
 struct Holding {
     whole: Whole,
     framing: Framing,
+    expectation: Expectation,
     /// How much of `pending` its framing has read.
     read: usize,
     body: Vec<u8>,
+}
+
+/// The gateway owns a held request's Continue response (RFC 9110 §10.1.1).
+enum Expectation {
+    Unrequested,
+    Waiting,
+    Sent,
 }
 
 /// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
@@ -1346,7 +1410,13 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
 /// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
-fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
+fn filled_in(
+    mask: &mut Mask,
+    sent: &[(&str, &[u8])],
+    host: &str,
+    grants: &[crate::Grant],
+    audit: &mut Vec<Audit>,
+) {
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1437,7 +1507,12 @@ impl Mask {
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    fn push(
+        &mut self,
+        bytes: &[u8],
+        data: bool,
+        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
@@ -1493,14 +1568,17 @@ impl Mask {
     fn size(&mut self, size: u64, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         let line = format!("{size:x}\r\n");
         let line = line.as_bytes();
-        if self
-            .filled
-            .iter()
-            .any(|f| line.windows(f.value.len()).any(|w| w == f.value.as_slice()))
-        {
+        if self.holds(line) {
             return Err(io::Error::other(Holds));
         }
         self.push(line, false, out)
+    }
+
+    /// Whether a value filled in lies in `bytes`.
+    fn holds(&self, bytes: &[u8]) -> bool {
+        self.filled
+            .iter()
+            .any(|f| bytes.windows(f.value.len()).any(|w| w == f.value.as_slice()))
     }
 
     /// Lets the first `n` bytes go on.
@@ -1672,6 +1750,10 @@ struct Ended {
     answered: bool,
     /// The values filled into that request, masked in its response.
     mask: Mask,
+    /// Where that response came coded (creds-04): its decoder, and what one turn of the host's
+    /// bytes may yet decode to (`tcp::TO_GUEST` a turn).
+    decoding: Option<Box<Decoder>>,
+    decode_left: usize,
     /// Why the host's TLS failed, before anything of it reached the guest.
     failed: Option<String>,
     /// Whose sign-in's token host this is, where it is one (D242, step 8): no value is filled
@@ -1704,6 +1786,8 @@ impl Ended {
             owed: None,
             answered: false,
             mask: Mask::default(),
+            decoding: None,
+            decode_left: crate::tcp::TO_GUEST,
             failed,
             sign_in,
             refused: None,
@@ -1773,6 +1857,7 @@ impl Ended {
     fn host_bytes(&mut self, bytes: &[u8], run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
         let mut rest = bytes;
         let mut closed = false;
+        self.decode_left = crate::tcp::TO_GUEST;
         while !rest.is_empty() {
             let read = self.host.read_tls(&mut rest);
             let processed = read.as_ref().ok().map(|_| self.host.process_new_packets());
@@ -1799,6 +1884,7 @@ impl Ended {
     }
 
     fn host_ended(&mut self, run: &mut Run<'_>, q: &mut Queues<'_>) -> Said {
+        self.decode_left = crate::tcp::TO_GUEST;
         let _ = self.host.read_tls(&mut &[][..]);
         let _ = self.host.process_new_packets();
         let mut got = Vec::new();
@@ -1847,6 +1933,14 @@ impl Ended {
         if matches!(self.response, Response::Capturing { .. }) {
             self.host_closed = true;
             return Said::Going;
+        }
+        if matches!(self.response, Response::Body(Framing::Close)) && self.decoding.is_some() {
+            if let Err(Broken(why)) = self.decoded(&[], true) {
+                say(&self.sni, format_args!("the host's response is broken: {why}"));
+                return Said::Reset;
+            }
+            self.response = Response::Head(Vec::new());
+            self.exchange_ended();
         }
         if matches!(self.response, Response::Body(Framing::Close) | Response::Tunnel) {
             let Ended { mask, guest, .. } = self;
@@ -1932,9 +2026,10 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
-                            host.writer().write_all(b)
-                        }
+                        Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b) => host.writer().write_all(b),
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -2093,6 +2188,7 @@ impl Ended {
             head: method.eq_ignore_ascii_case("HEAD"),
             connect: method.eq_ignore_ascii_case("CONNECT"),
             upgrade: fields.iter().any(|f| f.name == "upgrade"),
+            http10: minor == 0,
         };
         let grants = &run.credentials.grants;
         if credential::decide(grants, &self.sni, &host, None) == Fill::Misdirected {
@@ -2119,16 +2215,34 @@ impl Ended {
                     Framing::Chunked(_) => true,
                     Framing::Close => false,
                 };
-                (ours && fits).then(|| Holding {
-                    whole: Whole {
-                        cli,
-                        method: method.clone(),
-                        target: target.clone(),
-                        content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
-                    },
-                    framing: body.clone(),
-                    read: 0,
-                    body: Vec::new(),
+                (ours && fits).then(|| {
+                    let expectation = if values(&head, &fields, "expect")
+                        .any(|v| v.eq_ignore_ascii_case(b"100-continue"))
+                    {
+                        // This hop answers it. A body later passed upstream must not ask
+                        // that hop to send another Continue after we already admitted it.
+                        edits.extend(
+                            fields
+                                .iter()
+                                .filter(|f| f.name == "expect")
+                                .map(|f| (f.line.clone(), Vec::new())),
+                        );
+                        Expectation::Waiting
+                    } else {
+                        Expectation::Unrequested
+                    };
+                    Holding {
+                        whole: Whole {
+                            cli,
+                            method: method.clone(),
+                            target: target.clone(),
+                            content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                        },
+                        framing: body.clone(),
+                        expectation,
+                        read: 0,
+                        body: Vec::new(),
+                    }
                 })
             }
             None => {
@@ -2174,7 +2288,14 @@ impl Ended {
     /// its head as it came but for its hop-by-hop fields and its placeholders, each filled in
     /// and audited; refused where a lease is; parked again while one is asked.
     fn go(&mut self, mut parked: Box<Parked>, run: &mut Run<'_>) -> Result<bool, Refusal> {
-        if let Some(whole) = parked.whole.take() {
+        if let Some(mut whole) = parked.whole.take() {
+            if matches!(whole.expectation, Expectation::Waiting) {
+                self.guest
+                    .writer()
+                    .write_all(b"HTTP/1.1 100 Continue\r\n\r\n")
+                    .map_err(|e| Refusal::Upstream(e.to_string()))?;
+                whole.expectation = Expectation::Sent;
+            }
             match self.outside(&parked, whole, run)? {
                 Outside::Waiting(whole) => {
                     parked.whole = Some(whole);
@@ -2276,6 +2397,21 @@ impl Ended {
                     let head = std::mem::take(buf);
                     self.response_head(head)?;
                 }
+                Response::Body(framing) if self.decoding.is_some() => {
+                    let mut coded = Zeroizing::new(Vec::new());
+                    let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
+                        if let Piece::Data(b) = p {
+                            signin::append(&mut coded, b);
+                        }
+                        Ok(())
+                    })?;
+                    bytes = bytes.get(taken..).unwrap_or_default();
+                    self.decoded(&coded, ended)?;
+                    if ended {
+                        self.response = Response::Head(Vec::new());
+                        self.exchange_ended();
+                    }
+                }
                 Response::Body(framing) => {
                     let Ended { mask, guest, .. } = self;
                     // A chunk's size line goes as its size alone, its extensions cut (creds-02):
@@ -2283,7 +2419,9 @@ impl Ended {
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
                         // A trailer section is fields, which an echo may lie in, as a head's.
-                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        Piece::Data(b) | Piece::Trailers(b) => {
+                            mask.push(b, true, &mut |b| guest.writer().write_all(b))
+                        }
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -2427,19 +2565,32 @@ impl Ended {
         } else {
             response_framing(status, owed, &head, &fields)?
         };
-        if self.mask.masks() && !interim {
+        let mut coding = None;
+        if self.mask.masks() && !interim && (tunnel || framing != Framing::Length(0)) {
             let read: Vec<(&[u8], &[u8])> = fields
                 .iter()
                 .map(|f| (f.name.as_bytes(), head.get(f.value.clone()).unwrap_or_default()))
                 .collect();
-            if let Err(why) = maskable(&read) {
-                self.refused = Some(Refusal::Unmaskable(why));
+            match maskable(&read) {
+                Ok(c) if !tunnel => coding = c,
+                Ok(_) => {}
+                Err(why) => {
+                    self.refused = Some(Refusal::Unmaskable(why));
+                    return Ok(());
+                }
+            }
+            if coding.is_some() && owed.http10 {
+                self.refused = Some(Refusal::Unmaskable(Unmaskable::Coded));
                 return Ok(());
             }
         }
-        let cut = hop_by_hop(&head, &fields);
+        let mut cut = hop_by_hop(&head, &fields);
+        if coding.is_some() {
+            cut.extend(decoded_head(&head, &fields));
+        }
         let edits: Vec<(Range<usize>, &[u8])> = cut.iter().map(|(r, v)| (r.clone(), v.as_slice())).collect();
         let passed = rewrite(&head, &edits);
+        self.decoding = coding.map(|c| Box::new(Decoder::new(c)));
         // A sign-in's token host's final response with a body is read whole before any of it
         // goes, so that its tokens are taken outside (D242, step 8).
         if self.sign_in.is_some() && !tunnel && !interim && framing != Framing::Length(0) {
@@ -2476,11 +2627,54 @@ impl Ended {
         Ok(())
     }
 
+    /// A coded response's `coded` bytes, decoded, masked and sent as chunks (creds-04); at its
+    /// `end`, what its decoder still holds, and the last chunk. One past what a turn may decode
+    /// to, or that is no stream of its coding, breaks the message.
+    fn decoded(&mut self, coded: &[u8], end: bool) -> Result<(), Broken> {
+        let Ended {
+            mask,
+            guest,
+            decoding,
+            decode_left,
+            ..
+        } = self;
+        let Some(decoder) = decoding else {
+            return Ok(());
+        };
+        let mut plain = Zeroizing::new(Vec::new());
+        let fed = decoder.feed(coded, &mut plain, *decode_left);
+        let fed = fed.and_then(|()| match end {
+            true => {
+                let left = decode_left.saturating_sub(plain.len());
+                decoder.finish(&mut plain, left)
+            }
+            false => Ok(()),
+        });
+        fed.map_err(|why| Broken(why.why()))?;
+        *decode_left = decode_left.saturating_sub(plain.len());
+        let mut released = Zeroizing::new(Vec::new());
+        let mut out = |b: &[u8]| {
+            signin::append(&mut released, b);
+            Ok(())
+        };
+        let queued = |_: io::Error| Broken("its bytes could not be queued");
+        mask.push(&plain, true, &mut out).map_err(queued)?;
+        if end {
+            mask.end_message(&mut out).map_err(queued)?;
+        }
+        chunk(guest, mask, &released)?;
+        if end {
+            guest.writer().write_all(b"0\r\n\r\n").map_err(queued)?;
+        }
+        Ok(())
+    }
+
     /// The final response to the request under way has ended: nothing is owed, its values are
     /// masked no more, and the next request may come.
     fn exchange_ended(&mut self) {
         self.owed = None;
         self.mask.clear();
+        self.decoding = None;
         if matches!(self.request, Request::Sent) {
             self.request = Request::Head;
         }
@@ -2608,6 +2802,10 @@ struct Stream {
     down_data: Vec<u8>,
     down_last: Option<Last>,
     mask: Mask,
+    /// Where its response came coded (creds-04): its decoder, and the host's DATA octets it took
+    /// whose decoding has not all reached the guest, given back to the host's window once it has.
+    decoding: Option<Box<Decoder>>,
+    coded: usize,
     /// Its response, where it is a token host's read whole.
     token: Option<TokenResponse>,
 }
@@ -2627,6 +2825,8 @@ impl Stream {
             down_data: Vec::new(),
             down_last: None,
             mask: Mask::default(),
+            decoding: None,
+            coded: 0,
             token: None,
         }
     }
@@ -3868,6 +4068,11 @@ impl H2 {
             .send_data(gid, &s.down_data, end, &mut self.to_guest);
         s.down_data.drain(..n.min(s.down_data.len()));
         if let (Upward::Sent { id, .. }, None) = (&s.up, &s.token) {
+            let n = match s.decoding {
+                Some(_) if s.down_data.is_empty() => std::mem::take(&mut s.coded),
+                Some(_) => 0,
+                None => n,
+            };
             self.host_hop.released(*id, n, &mut self.to_host);
         }
         if !s.down_data.is_empty() {
@@ -4017,11 +4222,20 @@ impl H2 {
         if !informational {
             s.down = Down::Body;
         }
-        if !informational && s.mask.masks() {
+        if !informational && s.mask.masks() && !block.end_stream {
             let read: Vec<(&[u8], &[u8])> = fields.iter().map(|f| (&f.name[..], &f.value[..])).collect();
-            if let Err(why) = maskable(&read) {
-                self.answer(gid, Refusal::Unmaskable(why));
-                return Ok(());
+            match maskable(&read) {
+                Ok(None) => {}
+                Ok(Some(coding)) => {
+                    // Decoded here and given on as `identity`, its length unknown until its end
+                    // (RFC 9113 §8.1.1 lets a response name none).
+                    s.decoding = Some(Box::new(Decoder::new(coding)));
+                    fields.retain(|f| f.name != b"content-encoding" && f.name != b"content-length");
+                }
+                Err(why) => {
+                    self.answer(gid, Refusal::Unmaskable(why));
+                    return Ok(());
+                }
             }
         }
         // A sign-in's token host's final response with a body is read whole before any of it goes,
@@ -4119,8 +4333,31 @@ impl H2 {
                 mask,
                 down_data,
                 down_last,
+                decoding,
+                coded,
                 ..
             } = &mut *s;
+            let mut plain = Zeroizing::new(Vec::new());
+            let data = match decoding {
+                // Decoded within what the connection holds toward the guest, its DATA's credit
+                // given back as its decoding reaches the guest (`flush_down`).
+                Some(d) => {
+                    let most = crate::tcp::TO_GUEST.saturating_sub(down_data.len());
+                    let fed = d.feed(data, &mut plain, most).and_then(|()| match end {
+                        true => {
+                            let left = most.saturating_sub(plain.len());
+                            d.finish(&mut plain, left)
+                        }
+                        false => Ok(()),
+                    });
+                    if let Err(why) = fed {
+                        return Err(stream_error(head.stream, Code::Internal, why.why()));
+                    }
+                    *coded = coded.saturating_add(data.len());
+                    &plain[..]
+                }
+                None => data,
+            };
             let mut out = |b: &[u8]| {
                 down_data.extend_from_slice(b);
                 Ok(())
@@ -4429,12 +4666,16 @@ pub(crate) mod tests {
                     }
                 };
                 let mut piece = Vec::new();
-                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
-                    piece.extend_from_slice(b);
-                    Ok(())
-                })
-                .unwrap();
+                let (n, ended) =
+                    walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                        let (Piece::Data(b)
+                        | Piece::Size { line: b, .. }
+                        | Piece::Trailers(b)
+                        | Piece::Frame(b)) = p;
+                        piece.extend_from_slice(b);
+                        Ok(())
+                    })
+                    .unwrap();
                 self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
@@ -4580,6 +4821,9 @@ pub(crate) mod tests {
         waiter: u64,
         /// The window its connection advertises the guest (`WINDOW`, unless a test sets it).
         window: usize,
+        /// Whether a test expects the flow to be reset, and whether it was.
+        may_reset: bool,
+        reset: bool,
     }
 
     impl Bench {
@@ -4602,6 +4846,8 @@ pub(crate) mod tests {
                 passed: false,
                 waiter: 7,
                 window: WINDOW,
+                may_reset: false,
+                reset: false,
             }
         }
 
@@ -4683,7 +4929,11 @@ pub(crate) mod tests {
                     }
                 }
                 Said::Close => self.closed = true,
-                Said::Reset => panic!("the flow was reset"),
+                Said::Reset => {
+                    assert!(self.may_reset, "the flow was reset");
+                    self.reset = true;
+                    self.flow = None;
+                }
             }
         }
 
@@ -7360,6 +7610,7 @@ pub(crate) mod tests {
         assert!(!bench.closed);
     }
 
+    mod expectations;
     /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
     mod leaks;
 }

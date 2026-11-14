@@ -53,6 +53,7 @@ pub fn nesting(args: &[String]) -> i32 {
         "first-step" => first_step(),
         "ready" => ready(arg(1).parse().unwrap_or(0)),
         "gpu" => gpu(),
+        "ceiling" => ceiling(),
         "exit" => exit_leaving_a_box(arg(1).parse().unwrap_or(1)),
         "hold" => hold(),
         "listen" => listen(arg(1), args.get(2..).unwrap_or_default()),
@@ -539,6 +540,171 @@ fn gpu() -> i32 {
         );
         delete(id);
     }
+    0
+}
+
+/// `union bpf_attr` for BPF_PROG_QUERY (include/uapi/linux/bpf.h): the cgroup, the attach
+/// type, the query's flags, then where the kernel writes the programs' IDs and their count.
+#[repr(C)]
+#[derive(Default)]
+struct Query {
+    target_fd: u32,
+    attach_type: u32,
+    query_flags: u32,
+    attach_flags: u32,
+    prog_ids: u64,
+    prog_cnt: u32,
+    _pad: u32,
+    prog_attach_flags: u64,
+}
+
+/// `union bpf_attr` for BPF_PROG_GET_FD_BY_ID.
+#[repr(C)]
+#[derive(Default)]
+struct ById {
+    prog_id: u32,
+    next_id: u32,
+    open_flags: u32,
+}
+
+/// `union bpf_attr` for BPF_PROG_DETACH.
+#[repr(C)]
+#[derive(Default)]
+struct Detach {
+    target_fd: u32,
+    attach_bpf_fd: u32,
+    attach_type: u32,
+    attach_flags: u32,
+    replace_bpf_fd: u32,
+}
+
+/// bpf(2) `cmd` of `attr`: its result, or the errno.
+fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> Result<i64, i32> {
+    // SAFETY: bpf(2) of a `union bpf_attr` prefix this process owns, its size given.
+    let r = unsafe {
+        libc::syscall(
+            libc::SYS_bpf,
+            cmd,
+            std::ptr::from_mut(attr),
+            std::mem::size_of::<T>() as libc::c_uint,
+        )
+    };
+    if r < 0 {
+        Err(io::Error::last_os_error().raw_os_error().unwrap_or(0))
+    } else {
+        Ok(r)
+    }
+}
+
+/// Case (g): the workload, root with CAP_SYS_ADMIN and the default seccomp profile's bpf(2),
+/// tries to take the device program off that bounds it (inithex-01): a node of the
+/// microVM's own disk, which its device rules never give it, refused it first; then each
+/// BPF_CGROUP_DEVICE program its cgroup namespace's root holds and each one that bounds it,
+/// queried (BPF_PROG_QUERY, BPF_F_QUERY_EFFECTIVE), each one's descriptor taken
+/// (BPF_PROG_GET_FD_BY_ID) and detached from that root (BPF_PROG_DETACH); then the node
+/// opened again, which is refused as the program still bounds it.
+fn ceiling() -> i32 {
+    const BPF_PROG_DETACH: libc::c_long = 9;
+    const BPF_PROG_GET_FD_BY_ID: libc::c_long = 13;
+    const BPF_PROG_QUERY: libc::c_long = 16;
+    const BPF_CGROUP_DEVICE: u32 = 6;
+    const BPF_F_QUERY_EFFECTIVE: u32 = 1;
+    let disk = std::fs::read_dir("/sys/class/block").ok().and_then(|dir| {
+        dir.flatten().find_map(|e| {
+            let dev = std::fs::read_to_string(e.path().join("dev")).ok()?;
+            let (major, minor) = dev.trim().split_once(':')?;
+            Some((
+                e.file_name(),
+                major.parse::<u32>().ok()?,
+                minor.parse::<u32>().ok()?,
+            ))
+        })
+    });
+    let Some((name, major, minor)) = disk else {
+        say("ceiling: no block device");
+        return 1;
+    };
+    let node = "/run/ceiling-disk";
+    let path = std::ffi::CString::new(node).unwrap_or_default();
+    // SAFETY: mknod(2) of a NUL-terminated path in the run's own /run.
+    let made = unsafe { libc::mknod(path.as_ptr(), libc::S_IFBLK | 0o600, libc::makedev(major, minor)) };
+    say(&format!(
+        "ceiling disk {}: mknod {}",
+        name.to_string_lossy(),
+        if made == 0 {
+            "done".to_string()
+        } else {
+            errno(&io::Error::last_os_error())
+        }
+    ));
+    let opened = |when: &str| {
+        let said = match std::fs::File::open(node) {
+            Ok(_) => "done".to_string(),
+            Err(e) => errno(&e),
+        };
+        say(&format!("ceiling {when}: {said}"));
+    };
+    opened("before");
+    let root = match std::fs::File::open(CGROUP) {
+        Ok(f) => f,
+        Err(e) => {
+            say(&format!("ceiling root: {}", errno(&e)));
+            return 1;
+        }
+    };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&root) as u32;
+    let mut ids: Vec<u32> = Vec::new();
+    for (what, flags) in [("attached", 0), ("effective", BPF_F_QUERY_EFFECTIVE)] {
+        let mut found = [0u32; 64];
+        let mut q = Query {
+            target_fd: fd,
+            attach_type: BPF_CGROUP_DEVICE,
+            query_flags: flags,
+            prog_ids: found.as_mut_ptr() as u64,
+            prog_cnt: found.len() as u32,
+            ..Query::default()
+        };
+        match bpf(BPF_PROG_QUERY, &mut q) {
+            Ok(_) => {
+                let n = (q.prog_cnt as usize).min(found.len());
+                say(&format!("ceiling query {what}: {n}"));
+                for id in found.iter().take(n) {
+                    if !ids.contains(id) {
+                        ids.push(*id);
+                    }
+                }
+            }
+            Err(e) => say(&format!("ceiling query {what}: errno {e}")),
+        }
+    }
+    let mut detached = 0;
+    for id in &ids {
+        let mut by_id = ById {
+            prog_id: *id,
+            ..ById::default()
+        };
+        let prog = match bpf(BPF_PROG_GET_FD_BY_ID, &mut by_id) {
+            Ok(prog) => prog as u32,
+            Err(e) => {
+                say(&format!("ceiling program {id}: errno {e}"));
+                continue;
+            }
+        };
+        let mut d = Detach {
+            target_fd: fd,
+            attach_bpf_fd: prog,
+            attach_type: BPF_CGROUP_DEVICE,
+            ..Detach::default()
+        };
+        match bpf(BPF_PROG_DETACH, &mut d) {
+            Ok(_) => detached += 1,
+            Err(e) => say(&format!("ceiling detach {id}: errno {e}")),
+        }
+        // SAFETY: close(2) of the program's descriptor this process was just given.
+        unsafe { libc::close(prog as libc::c_int) };
+    }
+    say(&format!("ceiling detached: {detached} of {}", ids.len()));
+    opened("after");
     0
 }
 

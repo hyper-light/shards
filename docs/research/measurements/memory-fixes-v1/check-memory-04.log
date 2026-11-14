@@ -1,0 +1,50 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 5d822e8fe Merge current run and FUSE fixes before memory-04 landing
+HEAD is now at 2389f0afb Merge latest main before builder compile gate
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-abi v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/abi)
+    Checking shards-template v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/template)
+    Checking shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/dns)
+    Checking shards-erofs v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/erofs)
+    Checking shards-image v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/image)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/ipc)
+    Checking shards-cmdline v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/cmdline)
+    Checking shards-apple v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/apple)
+    Checking shards-agentfile v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/agentfile)
+    Checking shards-verify v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/verify)
+    Checking shards-gitsign v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/gitsign)
+    Checking shards-netring v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/netring)
+    Checking shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/tuf)
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Checking shards-remote v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/remote)
+    Checking shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/registry)
+    Checking shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/build)
+    Checking shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/api)
+    Checking shards-git v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/git)
+    Checking shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/sigstore)
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/net)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Checking shards-rego v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/rego)
+    Checking shards-seccomp v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/seccomp)
+    Checking shards-testguest v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/testguest)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/testdir)
+    Checking shards-archive v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/archive)
+    Checking shards-zstd v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/zstd)
+    Checking shards-gateway v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/gateway)
+    Checking shards-tui v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/tui)
+    Checking shards-flate v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/flate)
+    Checking shards-user v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/user)
+    Checking shards-ext4 v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/ext4)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 37.64s
