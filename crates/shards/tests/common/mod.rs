@@ -3137,6 +3137,8 @@ pub struct Party {
     looked: bool,
     /// A machine of this process's: what this process's threads beside its waiter ran.
     beside: Option<Beside>,
+    /// What this process's serving threads had run at the look before ([`Server`]).
+    served: Option<u64>,
 }
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
@@ -3223,6 +3225,7 @@ impl Party {
             cpu: Cpu::Progress,
             looked: false,
             beside: None,
+            served: None,
         }
     }
 
@@ -3279,8 +3282,10 @@ impl Party {
     }
 
     /// What it did since the look before: progressed where its daemon said something or a
-    /// process of it ran (D215's look: any CPU at all, or an end under way), its CPU read as
-    /// [`Cpu::Progress`]; else held where its host held one from running (runnable on no CPU,
+    /// process of it ran (D215's look: any CPU at all, or an end under way), or a serving
+    /// thread of this process did ([`Server`]: a test registry's, which its daemon may wait
+    /// on), its CPU read as [`Cpu::Progress`]; else held where its host held one of those
+    /// from running (runnable on no CPU,
     /// stalled on its memory, and so running nothing), or stopped or suspended one, which
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
@@ -3326,6 +3331,18 @@ impl Party {
                     }
                 }
             }
+        }
+        // This process's serving threads: what any party may be waiting on (D209 Part 8).
+        let (served, serving) = servers_ran();
+        let mut server_held = false;
+        if let Some(before) = self.served.replace(served)
+            && self.cpu == Cpu::Progress
+        {
+            if served > before && looked.found != Found::Progressed {
+                looked.found = Found::Progressed;
+                looked.what = "this process's serving threads ran".into();
+            }
+            server_held = served == before && serving;
         }
         // Whether a process of it was found live: one found anew, or one still to be read.
         let mut live = false;
@@ -3387,6 +3404,10 @@ impl Party {
         }
         for pid in gone {
             self.watched.remove(&pid);
+        }
+        if server_held && looked.found == Found::Still {
+            looked.found = Found::Held;
+            looked.what = "its host held a serving thread of this process from running".into();
         }
         if live
             && looked.found == Found::Still
@@ -3665,6 +3686,201 @@ fn cpu_clock(
     ))
 }
 
+/// The threads of this process that serve other processes' requests: a test registry's
+/// connections ([`registry_serving_at`]). A command a test judges waits on them (a pull's
+/// or a build's daemon on the blob it asked for), yet they are threads of the test's own
+/// process, which no party's members by parent include (D209 Part 8): each wait's party
+/// counts what they run as its progress, and one held from running as its host's hold
+/// ([`Party::look`]). Each thread is followed from its [`Server::begin`] to its end; what
+/// it ran is kept as it ends, so that the total never falls.
+struct Servers {
+    live: std::collections::BTreeMap<u64, ServerThread>,
+    /// What the threads that ended ran, in their OS's units ([`ServerThread::ran`]).
+    ended: u64,
+    next: u64,
+}
+
+static SERVERS: std::sync::Mutex<Servers> = std::sync::Mutex::new(Servers {
+    live: std::collections::BTreeMap::new(),
+    ended: 0,
+    next: 0,
+});
+
+fn servers() -> std::sync::MutexGuard<'static, Servers> {
+    SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A serving thread of this process, followed as [`Servers`] says while it lives: made by the
+/// thread itself, its end as it drops.
+pub struct Server(u64);
+
+impl Server {
+    /// The calling thread, followed from now until this drops on it.
+    pub fn begin() -> Server {
+        let mut servers = servers();
+        let id = servers.next;
+        servers.next = id.wrapping_add(1);
+        servers.live.insert(id, ServerThread::this());
+        Server(id)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let mut servers = servers();
+        if let Some(mut thread) = servers.live.remove(&self.0) {
+            let ran = thread.ran();
+            servers.ended = servers.ended.saturating_add(ran);
+        }
+    }
+}
+
+/// What this process's serving threads have run in all, in their OS's units, and whether one
+/// is runnable as it is read (Linux: its state `R`; macOS: `TH_STATE_RUNNING`, running or
+/// waiting for a CPU): one that ran nothing since a look before is held by its host.
+fn servers_ran() -> (u64, bool) {
+    let mut servers = servers();
+    let mut ran = servers.ended;
+    let mut runnable = false;
+    for thread in servers.live.values_mut() {
+        ran = ran.saturating_add(thread.ran());
+        runnable |= thread.runnable();
+    }
+    (ran, runnable)
+}
+
+/// A serving thread as its OS lets another thread of its process read it, and what it was
+/// last read to have run: a read that fails counts that, so the total never falls.
+struct ServerThread {
+    #[cfg(target_os = "linux")]
+    tid: libc::pid_t,
+    /// Its Mach port (pthread_mach_thread_np(3)): held by its thread, valid while it lives,
+    /// which it does while it is followed.
+    #[cfg(target_os = "macos")]
+    port: libc::mach_port_t,
+    #[cfg(windows)]
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    last: u64,
+}
+
+// SAFETY: a thread's handle is a kernel object's, usable from any thread of its process.
+#[cfg(windows)]
+unsafe impl Send for ServerThread {}
+
+impl ServerThread {
+    #[cfg(target_os = "linux")]
+    fn this() -> ServerThread {
+        // SAFETY: gettid(2) takes nothing and always succeeds.
+        let tid = unsafe { libc::gettid() };
+        ServerThread { tid, last: 0 }
+    }
+
+    /// Its own CPU clock, `make_thread_cpuclock`'s (see [`other_threads_cpu`]), in
+    /// nanoseconds.
+    #[cfg(target_os = "linux")]
+    fn read(&self) -> Option<u64> {
+        let clock = (!self.tid).checked_shl(3)? | 6;
+        u64::try_from(cpu_clock(clock, libc::clock_gettime)?.as_nanos()).ok()
+    }
+
+    /// Its state (`/proc/self/task/<tid>/stat` field 3, after its command's closing
+    /// parenthesis, proc(5)) is `R`.
+    #[cfg(target_os = "linux")]
+    fn runnable(&self) -> bool {
+        std::fs::read_to_string(format!("/proc/self/task/{}/stat", self.tid))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim_start().starts_with('R'))
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn this() -> ServerThread {
+        // SAFETY: this thread's own pthread, whose port it returns without a new reference.
+        let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+        ServerThread { port, last: 0 }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn info(&self) -> Option<libc::thread_basic_info> {
+        // SAFETY: plain data, for thread_info to fill.
+        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).ok()?;
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        // SAFETY: THREAD_BASIC_INFO of a live thread's port into a thread_basic_info of its
+        // count's size (mach/thread_info.h).
+        let code = unsafe { libc::thread_info(self.port, flavor, (&raw mut info).cast(), &raw mut count) };
+        (code == libc::KERN_SUCCESS).then_some(info)
+    }
+
+    /// Its user and system time (`thread_basic_info`), in nanoseconds.
+    #[cfg(target_os = "macos")]
+    fn read(&self) -> Option<u64> {
+        let info = self.info()?;
+        let us = |t: libc::time_value_t| {
+            u64::try_from(t.seconds)
+                .ok()?
+                .checked_mul(1_000_000)?
+                .checked_add(u64::try_from(t.microseconds).ok()?)
+        };
+        us(info.user_time)?
+            .checked_add(us(info.system_time)?)?
+            .checked_mul(1000)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn runnable(&self) -> bool {
+        self.info()
+            .is_some_and(|info| info.run_state == libc::TH_STATE_RUNNING)
+    }
+
+    #[cfg(windows)]
+    fn this() -> ServerThread {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThreadId, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: a handle of this thread's own, closed as it drops.
+        let handle = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, GetCurrentThreadId()) };
+        ServerThread { handle, last: 0 }
+    }
+
+    /// Its cycles (QueryThreadCycleTime), exact, their time undocumented (as [`Beside`]'s).
+    #[cfg(windows)]
+    fn read(&self) -> Option<u64> {
+        let mut cycles = 0u64;
+        // SAFETY: a thread handle of ours, or null, which the call refuses; a count to write.
+        let read = unsafe {
+            windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(self.handle, &mut cycles)
+        };
+        (read != 0).then_some(cycles)
+    }
+
+    /// Unread on Windows, which keeps a thread's state only in its whole-system listing.
+    #[cfg(windows)]
+    fn runnable(&self) -> bool {
+        false
+    }
+
+    fn ran(&mut self) -> u64 {
+        if let Some(now) = self.read() {
+            self.last = self.last.max(now);
+        }
+        self.last
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ServerThread {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: the handle `this` opened, closed once.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+        }
+    }
+}
+
 /// A wait of the tests' own on a party ([`Party`]), judged by its kind's record ([`WaitKind`])
 /// as D215's judge judges a wait (`shards_api::Judge`): cold, its party's liveness alone,
 /// which its caller holds (its client's end); learned, looked at each W* past its start and
@@ -3700,6 +3916,9 @@ pub struct Wait {
     daemon_ran: Option<String>,
     live: Live,
     stage: Stage,
+    /// Whether it waits on a command of its thread's own ([`Wait::begin`]): its span is its
+    /// thread's own work ([`OWN`]) as it ends.
+    command: bool,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -3727,6 +3946,29 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
+thread_local! {
+    /// The spans this thread waited on its own commands ([`Wait::begin`]'s waits, each kept as
+    /// it ends), and how many of its waits live: a look of another of its waits that its
+    /// commands made late was late for its own work, no hold of its host's (D209 Part 8).
+    /// Let go of as its last live wait ends.
+    static OWN: std::cell::RefCell<(usize, Vec<(Instant, Instant)>)> =
+        const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// The time from `from` to `to` this thread spent waiting on its own commands ([`OWN`]).
+fn own_work(from: Instant, to: Instant) -> Duration {
+    OWN.with(|own| {
+        own.borrow()
+            .1
+            .iter()
+            .rev()
+            .take_while(|(_, ended)| *ended > from)
+            .fold(Duration::ZERO, |sum, (began, ended)| {
+                sum.saturating_add((*ended).min(to).saturating_duration_since((*began).max(from)))
+            })
+    })
+}
+
 /// The clients this thread has begun against `home`, none where it has none.
 fn asked_of(home: Option<&Path>) -> u64 {
     home.map_or(0, |home| {
@@ -3744,13 +3986,19 @@ impl Wait {
                 *n = n.saturating_add(1);
             });
         }
-        Wait::on(kind, Party::client(client, home), asked)
+        let mut wait = Wait::on(kind, Party::client(client, home), asked);
+        wait.command = true;
+        wait
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
     fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
         let polls = asked_of(party.home.as_deref());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_add(1);
+        });
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
@@ -3768,6 +4016,7 @@ impl Wait {
             daemon_ran: None,
             live: Live::new(),
             stage: Stage::Begun,
+            command: false,
         }
     }
 
@@ -3821,6 +4070,10 @@ impl Wait {
         if now < self.next && due.is_none_or(|due| now < due) {
             return Ok(());
         }
+        let own = self
+            .judge
+            .late_from()
+            .map_or(Duration::ZERO, |from| own_work(from, now));
         let mut looked = self.party.look();
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
@@ -3829,6 +4082,7 @@ impl Wait {
             began: now,
             ended: Instant::now(),
             resolution: looked.resolution,
+            own,
         };
         self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
@@ -3941,6 +4195,21 @@ impl Wait {
             stall.waited(),
             self.account()
         )
+    }
+}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        let span = (self.began, Instant::now());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_sub(1);
+            if own.0 == 0 {
+                own.1.clear();
+            } else if self.command {
+                own.1.push(span);
+            }
+        });
     }
 }
 
@@ -4474,13 +4743,56 @@ pub fn tar_symlink(path: &str, target: &str) -> Vec<u8> {
     h.to_vec()
 }
 
-/// An image a registry serves: its manifest, and its blobs.
-pub type Served = Arc<std::sync::Mutex<(Vec<u8>, Vec<Vec<u8>>)>>;
+/// The image a registry serves, which a test may replace: each request takes the image as
+/// it is then, shared, never copied, its lock held only to take it (D209 Part 8: a clone of
+/// the whole image under one lock for each request had each request wait on the others').
+#[derive(Clone)]
+pub struct Served(Arc<std::sync::Mutex<Arc<Image>>>);
+
+/// A served image: its manifest and its blobs, each with its digest.
+struct Image {
+    manifest: Vec<u8>,
+    digest: String,
+    blobs: Vec<(String, Vec<u8>)>,
+}
+
+impl Served {
+    /// Serving `manifest` and `blobs`.
+    pub fn new((manifest, blobs): (Vec<u8>, Vec<Vec<u8>>)) -> Served {
+        Served(Arc::new(std::sync::Mutex::new(Image::of(manifest, blobs))))
+    }
+
+    /// Serving `manifest` and `blobs` from the next request on.
+    pub fn set(&self, (manifest, blobs): (Vec<u8>, Vec<Vec<u8>>)) {
+        *self.0.lock().unwrap() = Image::of(manifest, blobs);
+    }
+
+    fn now(&self) -> Arc<Image> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl Image {
+    fn of(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> Arc<Image> {
+        Arc::new(Image {
+            digest: sha256_digest(&manifest),
+            manifest,
+            blobs: blobs.into_iter().map(|b| (sha256_digest(&b), b)).collect(),
+        })
+    }
+
+    fn blob(&self, digest: &str) -> Option<&[u8]> {
+        self.blobs
+            .iter()
+            .find(|(d, _)| d == digest)
+            .map(|(_, b)| b.as_slice())
+    }
+}
 
 /// A registry that serves `test/image:v1` (manifest, config, layer) over plain HTTP, and
 /// counts the requests it answers.
 pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
-    let (port, served, _) = registry_of(Arc::new(std::sync::Mutex::new((manifest, blobs))));
+    let (port, served, _) = registry_of(Served::new((manifest, blobs)));
     (port, served)
 }
 
@@ -4497,8 +4809,7 @@ pub fn registry_stalling_blobs(
     blobs: Vec<Vec<u8>>,
 ) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let stalls = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
-    let (port, _, _) = registry_serving(image, Some(stalls.clone()));
+    let (port, _, _) = registry_serving(Served::new((manifest, blobs)), Some(stalls.clone()));
     (port, stalls.0, stalls.1)
 }
 
@@ -4517,8 +4828,7 @@ fn registry_serving(
 /// [`registry`], listening at `ip`: a registry off loopback where `ip` is this host's on
 /// its route out ([`routable_v4`]).
 pub fn registry_at(ip: std::net::IpAddr, manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
-    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
-    let (port, served, _) = registry_serving_at(ip, image, None);
+    let (port, served, _) = registry_serving_at(ip, Served::new((manifest, blobs)), None);
     (port, served)
 }
 
@@ -4548,6 +4858,7 @@ fn registry_serving_at(
             let Ok(stream) = stream else { return };
             let (image, count, stalls) = (serving.clone(), count.clone(), stalls.clone());
             std::thread::spawn(move || {
+                let _serving = Server::begin();
                 // Asked for TLS, it answers as Go's net/http, and so a registry, answers a
                 // request it cannot read (server.go, publicErr).
                 let mut first = [0u8; 1];
@@ -4555,6 +4866,9 @@ fn registry_serving_at(
                     let _ = (&stream).write_all(GO_BAD_REQUEST);
                     return;
                 }
+                // A head and its body go as two writes: unsent, its head would wait for an
+                // ACK the client delays (Nagle's algorithm, RFC 896; RFC 1122 4.2.3.2).
+                let _ = stream.set_nodelay(true);
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
                 loop {
@@ -4567,7 +4881,7 @@ fn registry_serving_at(
                         header.clear();
                     }
                     count.fetch_add(1, Ordering::SeqCst);
-                    let (manifest, blobs) = image.lock().unwrap().clone();
+                    let image = image.now();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
                     if let Some((begun, ended)) = &stalls
@@ -4594,37 +4908,38 @@ fn registry_serving_at(
                             "application/vnd.oci.image.manifest.v1+json"
                         }
                     };
-                    let body = if path == "/v2/test/image/manifests/v1"
-                        || path == format!("/v2/test/image/manifests/{}", sha256_digest(&manifest))
-                    {
-                        Some((manifest.clone(), kind(&manifest)))
-                    } else if let Some(d) = path.strip_prefix("/v2/test/image/manifests/") {
-                        // The manifests an index names, kept among the blobs.
-                        blobs
-                            .iter()
-                            .find(|b| sha256_digest(b) == d)
-                            .map(|b| (b.clone(), kind(b)))
+                    let body = if let Some(d) = path.strip_prefix("/v2/test/image/manifests/") {
+                        if d == "v1" || d == image.digest {
+                            Some((
+                                image.digest.as_str(),
+                                image.manifest.as_slice(),
+                                kind(&image.manifest),
+                            ))
+                        } else {
+                            // The manifests an index names, kept among the blobs.
+                            image.blob(d).map(|b| (d, b, kind(b)))
+                        }
                     } else {
                         path.strip_prefix("/v2/test/image/blobs/")
-                            .and_then(|d| blobs.iter().find(|b| sha256_digest(b) == d))
-                            .map(|b| (b.clone(), "application/octet-stream"))
+                            .and_then(|d| Some((d, image.blob(d)?, "application/octet-stream")))
                     };
-                    let response = match body {
-                        Some((bytes, kind)) => {
-                            let mut r = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nDocker-Content-Digest: {}\r\nContent-Length: {}\r\n\r\n",
-                                sha256_digest(&bytes),
+                    let sent = match body {
+                        Some((digest, bytes, kind)) => {
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nDocker-Content-Digest: {digest}\r\nContent-Length: {}\r\n\r\n",
                                 bytes.len()
-                            )
-                            .into_bytes();
-                            if method != "HEAD" {
-                                r.extend(bytes);
-                            }
-                            r
+                            );
+                            out.write_all(head.as_bytes()).and_then(|()| {
+                                if method == "HEAD" {
+                                    Ok(())
+                                } else {
+                                    out.write_all(bytes)
+                                }
+                            })
                         }
-                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                        None => out.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"),
                     };
-                    if out.write_all(&response).is_err() {
+                    if sent.is_err() {
                         return;
                     }
                 }
@@ -5762,6 +6077,15 @@ where
         }
     }
 
+    /// A read of what is there now, waiting for nothing: WouldBlock where nothing is.
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut stream = self.stream;
+        stream.set_nonblocking(true)?;
+        let read = stream.read(buf);
+        stream.set_nonblocking(false)?;
+        read
+    }
+
     /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
     /// liveness alone.
     fn took(&mut self, n: usize) {
@@ -5788,11 +6112,7 @@ where
         // Until a read finds nothing there yet, what it reads was there as its wait began:
         // read without waiting, its end then no answer it waited for (#77 waits-03).
         if !self.wait.awaited() {
-            let mut stream = self.stream;
-            stream.set_nonblocking(true)?;
-            let read = stream.read(buf);
-            stream.set_nonblocking(false)?;
-            match read {
+            match self.read_now(buf) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait.absent(),
                 Ok(n) => {
                     self.took(n);
@@ -5803,23 +6123,26 @@ where
         }
         loop {
             let left = self.wait.next_look();
-            // A judged wait's look due now looks before it reads again.
+            // Every look comes after a read, without waiting where the look is due now: an
+            // answer there is read, never judged missing. A look that costs more than the
+            // judge's W* leaves none to wait (`pause` at most what is left), and a loop of
+            // looks with no read between them refused answers that had come (KVM at
+            // cf13e49e6: each look's `ps` 16 to 25 ms against a W* of 8 ms; a guest's close
+            // there 128 ms unread, its VM process idle waiting on the host's next word).
             let read = if left.is_zero() {
-                None
+                self.read_now(buf)
             } else {
                 let mut stream = self.stream;
-                Some(
-                    stream
-                        .set_read_timeout(self.wait.judged().then_some(left))
-                        .and_then(|()| stream.read(buf)),
-                )
+                stream
+                    .set_read_timeout(self.wait.judged().then_some(left))
+                    .and_then(|()| stream.read(buf))
             };
             match read {
-                Some(Ok(0)) => {
+                Ok(0) => {
                     self.wait.answered();
                     return Ok(0);
                 }
-                Some(Ok(n)) => {
+                Ok(n) => {
                     self.took(n);
                     self.wait.look(true).map_err(|stall| {
                         io::Error::new(io::ErrorKind::TimedOut, self.wait.refused(&stall))
@@ -5827,7 +6150,7 @@ where
                     return Ok(n);
                 }
                 // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
-                Some(Err(e))
+                Err(e)
                     if !matches!(
                         e.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
@@ -5835,7 +6158,7 @@ where
                 {
                     return Err(e);
                 }
-                None | Some(Err(_)) => {}
+                Err(_) => {}
             }
             self.wait
                 .look(false)

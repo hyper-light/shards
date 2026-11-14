@@ -3894,7 +3894,20 @@ D12's too, derived apart):
   overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
   typed or pasted is lost: what the guest has not drained waits in the host's own pipe or
   terminal. A loopback write past the room overruns, as the datasheet's does. A
-  snapshot's receiver restores whole however long an older build made it.
+  snapshot's receiver restores whole up to the FIFO's 16 bytes, the most it holds in
+  either mode; one that holds more is refused as a malformed state (`DecodeError`, "the
+  console's receiver"), never restored (legacy3, 2026-11-14). Only builds before
+  66652aafb (2026-11-09) kept up to 4096 (`RX_CAPACITY`): v0.6.0's and v0.7.0's snapshots
+  (formats 24 and 28) among them; every format-29 writer (83b09843a, 2026-11-11, after
+  66652aafb) bounded it. Refused, not migrated: a template is a cache the daemon makes
+  again, keyed by the snapshot format (D25), so this build never looks up an older
+  format's, and one that does not restore is removed and booted and saved again (D25,
+  *Later runs restore it*); its receiver is filled only by `run --kernel`'s console
+  (`forward_stdin`), typed input the guest had not read as it was saved, which no
+  rewrite could give back to a 16-byte receiver without dropping it. The reader of the
+  older 4096 bytes is gone. Red/green: serial.rs
+  `a_receiver_past_the_fifos_depth_is_refused` (16 restore; 17 and 4096 refused), which
+  restored the 4096 before.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
@@ -4132,7 +4145,11 @@ Held by `iommu::tests::the_longest_readable_part_is_probes` and
   but 0xFF, the broadcast, which Linux ignores in a Local APIC entry and which is past its
   xAPIC driver's highest, 0xFE: 255. 254 had come from Firecracker's MP table, whose IOAPIC
   takes an APIC id; shards' MADT gives its IOAPIC id 0, another namespace. KVM's and WHP's
-  limits and WHP's snapshot decoder take the one constant (`acpi::MAX_VCPUS`). On arm64, a
+  limits and WHP's snapshot decoder take the one constant (`acpi::MAX_VCPUS`), and so, since
+  2026-11-14, does the machine's own reader of its vCPU states (vm/x86_64.rs
+  `decode_vcpus`), which had kept 254: every 255-vCPU machine's snapshot, and so its move,
+  was refused as it restored ("sequence of 255 (limit 254)", snapshot.rs' storm on KVM);
+  unit test `a_snapshot_holds_a_state_for_each_vcpu_a_machine_may_have`. On arm64, a
   machine has as many as its memory map has GICv3 redistributors for (`layout::MAX_VCPUS`,
   123), which a snapshot's decoder takes too.
 - **A kernel's program headers are as many as its ELF header says**, below the gABI's escape
@@ -9037,8 +9054,19 @@ process.
   as crates/api's taken.rs reads it; Windows `GetProcessTimes`' creation time), and a
   daemon lives only where the process of that ID started then. A client's wait for a slot
   (`daemon_lives`, `exiting`) and the macOS list watcher's wait for its daemon's exit could
-  wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
-  (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
+  wait for ever on an unrelated process given a dead daemon's ID. `PID START` alone is
+  read: a record by its ID alone is refused typed (`shards_ipc::NotNamed::IdAlone`; other
+  forms `Malformed`) and is stale, as a dead process's record is, never a live daemon
+  (legacy3, 2026-11-14). Every release to v0.7.0 wrote `PID` alone (v0.7.0's daemon.rs
+  `format!("{}\n", std::process::id())`; the start came in fb1f28d42, 2026-11-09, in no
+  release: `git tag --contains fb1f28d42` names no `v*`), so such a record is a daemon of
+  another build's (D36), which this build never waits on by its ID: the home's lock is
+  what its successor waits on (`take_lock`; `judge_holder` follows a holder the home
+  names no living process for by its lock alone), and a slot it offers is asked and steps
+  aside as any other build's. The `Option` start, which read such a record by its ID
+  alone and so could wait on whatever process held that ID since, is gone. Red/green:
+  `a_record_by_its_id_alone_is_stale` (crates/ipc), and `a_daemon_is_exiting_while_its_process_lives`'s
+  ID-alone row now `false`. crates/api's reader is its crate's own
   (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
   starts itself, the same way, and Windows' besides. A process that has exited lives no
   more though its parent has not reaped it (review waits-08, PM M576): a zombie answers
@@ -11987,6 +12015,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `vsock_handshake` now says a read's refusal (`no answer after "…": <the wait's
     account>`) apart from the device's close (`refused after "…"`), which it had folded
     into one text.
+  - *Amended (2026-11-14): a stream is read before every look.* Traced on one monotonic
+    clock across the test and its VM process on adacachy2 (KVM) at cf13e49e6: a greeting
+    the device had written was read 40 ms late, a refused port's close 85 ms late, and a
+    bad handshake's close, made at once, never: its wait was refused 128 ms later. Each look
+    at the party spawned `ps` (16 to 25 ms there) against a learned W* of 8 ms, `pause` is
+    at most what is left before the judge's look, so none was, and `Following` looked again
+    without reading, its VM process idle meanwhile because it waited on the host. Every look
+    now comes after a read, one that waits for nothing where the look is due. Red/green:
+    harness.rs `a_streams_answer_that_has_come_is_read_before_a_look_judges_it` (a stream
+    whose answer is there from its second read, its kind taught a W* of a nanosecond).
 - **A direct boot's waits follow its guest and its VM process** (every host). boot.rs'
   `a_guest_grows_and_gives_back_its_memory` failed on the arm64 Windows host with no
   `SHARDS-TEST PLUGGED` a minute from the test's start, while its guest, booted in 13 s of
@@ -12620,6 +12658,124 @@ CPU in 17.694042ms".
     D215's look does not find it `Held` (runnable on no CPU, or stalled on memory).
   Owed (ROOT): that command looped on HVF until a refusal, its whole account kept (the
   "--- its wait" block, stdout/stderr and its process dump).
+
+**Part 8: this process's servers are every party's; a waiter's own polls are no hold**
+(#77 follow-ups, 2026-11-14; ROOT's brief from Part 7's two candidates and a load-sensitive
+harness test).
+- *A party gap: the test registry's threads.* `common::served()`'s registry
+  (`registry_serving_at`) answers on threads of the test process. A judged command's party
+  is its client, its home's daemon and their descendants by parent, never the test process,
+  so a pull or build from that registry waited on work no party counted: a registry thread
+  working for a request, its client and daemon blocked on the socket, was a still party.
+  - *The fix.* Each connection's thread is followed as a server (`common::Server`, made by
+    the thread itself, dropped as it ends), and every party's look counts what the
+    process's servers ran since the look before as its progress, and one runnable that ran
+    nothing as its host's hold (`Party::look`, under `Cpu::Progress` alone, as `Beside`
+    counts a machine's threads). Each server is read where it runs, by its own counter, as
+    its OS keeps one for another thread to read: Linux its CPU clock
+    (`make_thread_cpuclock`, as `Beside`'s other threads) and its `/proc/self/task/<tid>/stat`
+    state `R`; macOS `thread_info(THREAD_BASIC_INFO)` of its Mach port
+    (pthread_mach_thread_np(3)), user plus system time and `TH_STATE_RUNNING` (running or
+    waiting for a CPU, mach/thread_info.h); Windows QueryThreadCycleTime of a handle it opens
+    for itself (cycles, exact; no state read, so no hold seen there). A server's last
+    reading is kept as it ends, so the total never falls. No literal: any growth of a
+    counter is a run, as D215's look counts any CPU at all.
+  - *Its limit.* The servers are the process's, not one party's: a binary whose tests pull
+    from registries at once has each pull's serving the other waits' progress, a stall
+    shown only once the serving ends, as `Beside` says of two machines.
+  - *The registry's own cost.* Each request cloned the whole image (manifest and every
+    blob) under one `Mutex` and hashed every blob to find the one asked for, so a request
+    waited on the others' clones and on CPU proportional to the image. The image is now an
+    `Arc` taken under its lock and let go of at once (`common::Served`, `set` to replace it),
+    each blob's digest computed once as it is set, and a body written from the shared bytes,
+    its head first with `TCP_NODELAY` so the head is not held for the client's delayed ACK
+    (RFC 896, RFC 1122 4.2.3.2). Its cost before and after is unmeasured (R14, ROOT's).
+  - *Held by* tests/harness.rs `a_wait_on_this_processs_server_goes_on_while_it_serves` (in
+    a stand-in, whose process nothing else runs in: a kind taught W* by a quick stand-in's
+    end, then a stand-in that asks a `Server` thread of its process, which works 3 W* of CPU
+    before it answers), on adas-mac-studio-3.local (macOS arm64, kiln r224, the tree of
+    commit 37ecff8e1, test-release): green; red with the servers left uncounted (`Party::
+    look` reading none), "refused 95.909834ms into its server's 114.523251ms of work: a
+    stand-in asking this process made no progress for 57.591376ms, past the slowest answer
+    of its kind seen on this host (38.174417ms), 78.591334ms into its wait".
+- *A waiter's own polls taken for its host's hold.* harness.rs
+  `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` failed 3 of 4 on
+  adas-mac-studio-3.local while it was busy (2 of 14 cores idle), "not refused 177-197 ms in
+  (W* 59.554375ms)", and passed 6 of 6 quieter.
+  - *The cause, from its looks' times.* The test's waiter polls `ps -a -q` between looks,
+    synchronously. Its looks' times, kept on that host under load (a busy `yes` per core
+    and per core twice and six times beside it, a diagnostic print of each poll's span
+    and the wait's account, not committed; logs in
+    adas-mac-studio-3.local:~/g121-tmp/judge-party/runs, `base-*`, `red*`, `diag-*`): its base look about 25-33 ms, each
+    poll 35-50 ms, each look about 25-30 ms (each reads the process table through `ps -A`).
+    The judge counts the time a look runs late, past its due or the look before's end, as
+    its host's hold of the judge (ROOT's ruling, 2026-11-13), and takes it out of the
+    party's window. A look here is late because its waiter was polling, not because its
+    host held it: with polls and looks as long as W*, nearly every look is late, its
+    window keeps only the looks' own durations and the on-time remainder of each W*, and
+    the refusal comes only once those add up to a whole W*. With W* taught on a quiet
+    host (59.6 ms) and polls and looks slower under load, that was past the test's 2 W*.
+    Under the loads above the test passed (alone 6 of 6, 4 of 4 and 6 of 6; with the whole
+    binary 4 of 4 and 3 of 3): each run teaches its kind its own poll as it begins, and the record keeps
+    the slowest, so W* rose with the load (58, 80, 95 ms); the red needs polls slower than
+    the W* taught, as the busy host's were.
+  - *The fix: the waiter's own work is no hold* (`shards_api::Span::own`). Each `Wait` a
+    thread makes on a command of its own (`Wait::begin`, run_command's) keeps its span as
+    it ends (`common::OWN`, let go of as the thread's last wait ends); a look of another of
+    its waits passes the judge the time those spans cover within its lateness, from
+    `Judge::late_from` (its due, or the look before's end) to its beginning, and the judge
+    takes only the rest for its host's hold. A look late for any other reason (its thread
+    held, a frozen process) is held as before. shards-api's own `Follow` makes no polls
+    between looks: its `own` is zero. No literal.
+  - *Held by* crates/api judge.rs `a_look_its_caller_made_late_by_its_own_work_is_not_held`
+    (the busy host's look replayed on an injected clock: base 0-33 ms, a poll 33-93 ms, a
+    look 93-123 ms; its lateness its host's, 26 ms seen of a W* and it goes on; its
+    caller's own, 60 ms, refused) and harness.rs
+    `a_wait_is_refused_though_its_own_polls_outlast_w_star` (a daemon that runs no microVM;
+    a kind taught W* by a state found at its first look; then a state that never comes,
+    polled between looks by a stand-in of the test's own busy a whole W*: refused at the
+    look after the first poll). On adas-mac-studio-3.local (kiln r224, 37ecff8e1's tree):
+    green; red with `own` not subtracted, judge.rs's test failed and harness.rs's "not
+    refused at its look past its first poll ... 115.439625ms in ... its record W*
+    27.602875ms". Under a busy `yes` per core: the whole harness binary 3 of 3 (30 passed,
+    3 ignored each), the three tests above 6 of 6.
+- *A test's own VM processes leaked to every party.* At the merge of main ff437eddd, harness.rs
+  `a_tests_own_vm_processes_are_known_by_their_ids` (5ee39c0ab) registered a busy stand-in
+  as one of the test process's own VM processes (`common::OwnVm`), which every
+  `Party::own` in the binary follows: run beside it, the two poll tests above were not
+  refused, "its last progress process 89935 ran", that stand-in, 3 of 3 runs of the whole
+  binary on adas-mac-studio-3.local. It now runs in a stand-in of its own, as `serving` and
+  `spinner` do: the whole binary 3 of 3 green, and 3 of 3 under a busy `yes` per core (32
+  passed, 3 ignored each); clippy of shards and shards-api (`--all-targets -D warnings`)
+  clean there, and of 37ecff8e1's tree on adacachy2 (Linux x86_64, `SHARDS_HELPERS=skip`).
+  Owed (ROOT): Windows (the servers' QueryThreadCycleTime reading) is unbuilt here; CI's
+  matrix builds it.
+- *Not reproduced: two moved.rs refusals* (ROOT, HVF, adas-mac-studio.local, main
+  8d1c89a05, one run of `--test moved -- --test-threads=1`, 14 of 16):
+  - moved.rs:62:19 `a_cpu_baseline_is_all_its_guest_finds_and_goes_with_it`: "shards run
+    daemon --detached --listen 127.0.0.1:0 made no progress for 258.80546ms, past the
+    slowest answer of its kind seen on this host (139.745917ms), 287.551833ms into its
+    wait".
+  - moved.rs:410:15 `a_microvm_moved_saved_keeps_its_cpu_image_files_and_connections`:
+    "shards run -d --init --pull never --name mover 127.0.0.1:64972/test/image:v1 counter
+    20 made no progress for 149.459707ms, past the slowest answer of its kind seen on this
+    host (88.809208ms), 269.855625ms into its wait".
+  Their accounts were not kept. From the code: `run daemon --detached` spawns the daemon as
+  its client's own child (daemon.rs `detach`, one posix_spawn with setsid) and waits on its
+  ready pipe, so while the client lives the daemon is of its party by parent; and :410's
+  run is `--pull never`, pulling nothing from the test registry. Run again at main
+  b4a018090 on the same host, `SHARDS_REQUIRE_VMS=1 cargo test -p shards --profile
+  test-release --test moved -- --test-threads=1`, 10 times (kiln r151, outputs in
+  adas-mac-studio.local:~/g121-tmp/jp-runs): 9 of 10 green, neither refusal; run 2 failed
+  once elsewhere, moved.rs:652:20 (`a_moved_microvms_published_port_answers_there`, the
+  restored guest's first answer, Part 7's own kind): "a guest's stream made no progress for
+  21.490209ms, past the slowest answer of its kind seen on this host (20.331ms),
+  71.553208ms into its wait ... (this test's own VM processes, its CPU its liveness alone,
+  daemon 60782 of …/ports-t-12) ... its last progress its daemon said something
+  64.252916ms ago; its host not holding it; its record W* 20.331ms, R* 0ns of CPU in
+  20.331ms". That kind's party is its words alone (`Cpu::Liveness`), so a restored guest's
+  first answer slower than the slowest seen of it is refused while its VM process faults its
+  memory back: open, ROOT's.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -14749,6 +14905,17 @@ reference's preference, another platform's facts where it changed (legacy-audit,
 2026-11-14: the preference read for such a record before it): inspect has no image facts,
 and copy refuses with the missing container/config identity. An available config with
 no User keeps OCI's root default; an explicit run user remains authoritative.
+A record with no image ID is refused by `cp -a` too (`CopyUserRefusal::NoImage`, "its
+record names no image, so its user is unknown"), where it was copied as root, an empty
+user (legacy3, 2026-11-14). That was a security-relevant fallback: an ownership-mode
+copy into a microVM whose image runs as a non-root user would have left root-owned files
+its user could not change, and a user nobody recorded was taken for the most privileged
+one. No release made such a record: `image_id` came in 993756c9e (2026-10-02), before
+v0.3.0, the first release, and in every release (`git grep 'image_id: ' TAG` for v0.3.0 to v0.7.0)
+the daemon's one record maker writes `Some(prepared.image_id)`, the `None`s in test
+modules alone. So there is nothing to migrate; the refusal stands where no image is named.
+Red/green: commands.rs `a_copy_as_the_user_of_a_record_with_no_image_is_refused`, a record
+read without its `image_id` key, answered root before.
 The two-platform store regression changes the preference both ways, checks each selected
 User/Env/descriptor and a missing manifest. Real guest/inspect/copy agreement remains
 ROOT's live check in the [runs fix record](../research/measurements/runs-fixes/README.md).

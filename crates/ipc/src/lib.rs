@@ -159,26 +159,45 @@ pub fn no_pre_slots_daemon(here: &Path) -> Result<(), PreSlotsDaemon> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Named {
     pub pid: u32,
-    /// Its start ([`started`]); `None` in a file a build from before starts were kept
-    /// wrote, whose daemon is known by its ID alone.
-    pub start: Option<u64>,
+    /// Its start ([`started`]).
+    pub start: u64,
+}
+
+/// Why a home's [`PID`] or [`STOPPING`], or a slot's taker, names no process: what this build
+/// writes is `PID START` ([`this_process`]), and nothing else is read as a process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotNamed {
+    /// An ID with no start: written by a `shards` from before starts were kept (v0.7.0 and
+    /// before), so of another build, whose daemon this one never waits on by its ID (D36,
+    /// D185 *A daemon is known by its process ID and start*). Its record is stale, as a dead process's is.
+    IdAlone,
+    /// Not `PID START`: empty, words that are no numbers, or more than two.
+    Malformed,
 }
 
 impl Named {
-    /// What a file names: `PID START`, or `PID` alone.
-    pub fn parse(text: &str) -> Option<Named> {
+    /// What a file names: `PID START`, or why it names no process.
+    pub fn parse(text: &str) -> Result<Named, NotNamed> {
         let mut words = text.split_ascii_whitespace();
-        let pid = words.next()?.parse().ok()?;
+        let pid = words
+            .next()
+            .and_then(|pid| pid.parse().ok())
+            .ok_or(NotNamed::Malformed)?;
         let start = match words.next() {
-            Some(start) => Some(start.parse().ok()?),
-            None => None,
+            Some(start) => start.parse().map_err(|_| NotNamed::Malformed)?,
+            None => return Err(NotNamed::IdAlone),
         };
-        words.next().is_none().then_some(Named { pid, start })
+        match words.next() {
+            Some(_) => Err(NotNamed::Malformed),
+            None => Ok(Named { pid, start }),
+        }
     }
 
-    /// What the file at `path` names, where it names one process.
+    /// What the file at `path` names, where it names one process: none where there is no
+    /// file, or one that names none ([`NotNamed`]), a stale record whose writer is gone or
+    /// of another build.
     pub fn read(path: &Path) -> Option<Named> {
-        Named::parse(&std::fs::read_to_string(path).ok()?)
+        Named::parse(&std::fs::read_to_string(path).ok()?).ok()
     }
 
     /// Whether it lives: its ID's process lives, and is the one that started when it did.
@@ -187,10 +206,7 @@ impl Named {
         let alive = unix::alive;
         #[cfg(windows)]
         let alive = windows::alive;
-        alive(self.pid)
-            && self
-                .start
-                .is_none_or(|start| started(self.pid).is_ok_and(|now| now == start))
+        alive(self.pid) && started(self.pid).is_ok_and(|now| now == self.start)
     }
 }
 
@@ -3047,8 +3063,9 @@ mod tests {
         let me = std::process::id();
         for (said, is) in [
             (this_process().unwrap().trim().to_string(), true),
-            // A build's from before starts were kept: by its ID alone.
-            (me.to_string(), true),
+            // A build's from before starts were kept (v0.7.0): by its ID alone, a stale
+            // record, though its ID's process lives.
+            (me.to_string(), false),
             (gone_pid.to_string(), false),
             ("0".to_string(), false),
             ("-1".to_string(), false),
@@ -3073,13 +3090,7 @@ mod tests {
         let start = started(me).unwrap();
         assert_eq!(started(me).unwrap(), start, "a start read twice differs");
         let written = this_process().unwrap();
-        assert_eq!(
-            Named::parse(&written),
-            Some(Named {
-                pid: me,
-                start: Some(start)
-            })
-        );
+        assert_eq!(Named::parse(&written), Ok(Named { pid: me, start }));
         std::fs::write(home.join(PID), &written).unwrap();
         assert!(daemon_lives(&home), "{written}");
         for other in [start.wrapping_add(1), start.wrapping_sub(1), 0] {
@@ -3114,6 +3125,28 @@ mod tests {
         }
     }
 
+    /// A record by its ID alone, as v0.7.0 and every `shards` before starts were kept wrote
+    /// `daemon.pid` and `daemon.stopping`, names no process (`NotNamed::IdAlone`): its daemon
+    /// is of another build (D36), so the record is stale, as a dead process's is, though its
+    /// ID's process lives. Red before legacy3, where such a record named a live daemon by its
+    /// ID alone.
+    #[test]
+    fn a_record_by_its_id_alone_is_stale() {
+        let home = shards_testdir::TempDir::new("ipc-id-alone").unwrap();
+        let me = std::process::id();
+        assert_eq!(Named::parse(&format!("{me}\n")), Err(NotNamed::IdAlone));
+        for malformed in ["", "daemon", "-1 2", &format!("{me} start"), &format!("{me} 1 2")] {
+            assert_eq!(Named::parse(malformed), Err(NotNamed::Malformed), "{malformed:?}");
+        }
+        std::fs::write(home.join(PID), format!("{me}\n")).unwrap();
+        std::fs::write(home.join(STOPPING), format!("{me}\n")).unwrap();
+        assert_eq!(Named::read(&home.join(PID)), None);
+        assert!(!daemon_lives(&home), "{me} by its ID alone lives as a daemon");
+        assert!(!exiting(&home), "{me} by its ID alone is ending its runs");
+        std::fs::write(home.join(PID), this_process().unwrap()).unwrap();
+        assert!(daemon_lives(&home), "this process, by its ID and start");
+    }
+
     /// A daemon that has exited lives no more while its parent has not reaped it (waits-08):
     /// its ID's process still answers kill(2) and keeps its start (Linux's `/proc/PID/stat`,
     /// macOS's `proc_pid_rusage`), so a client that waits on it while it lives would wait for
@@ -3138,10 +3171,7 @@ mod tests {
         let start = started(pid).expect("an unreaped child's start");
         std::fs::write(home.join(PID), format!("{pid} {start}\n")).unwrap();
         std::fs::write(home.join(STOPPING), format!("{pid} {start}\n")).unwrap();
-        let named = Named {
-            pid,
-            start: Some(start),
-        };
+        let named = Named { pid, start };
         assert!(!named.lives(), "{pid}, exited and unreaped, lives");
         assert!(!daemon_lives(&home), "{pid}, exited and unreaped, lives");
         assert!(!exiting(&home), "{pid}, exited and unreaped, is ending its runs");

@@ -19,6 +19,13 @@ const HEARTBEAT: &str = "shards daemon 70625: container 212eb2365f9391311256a9c2
 /// before D215's judge (it says once now, as a start first outlasts the slowest seen).
 const STARTING: &str = "shards daemon 7268: VM 7282: not ready in 10s: its CPU time 3265 ms (+3265 ms in 10s), 2101 page faults (+2101)\n";
 
+/// Names process `pid` `home`'s daemon, as a daemon names itself (`shards_ipc::Named`,
+/// D185): its ID and its start.
+fn name_daemon(home: &std::path::Path, pid: u32) {
+    let start = shards_ipc::started(pid).unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{pid} {start}\n")).unwrap();
+}
+
 fn say(home: &TempDir, what: &str) {
     std::fs::OpenOptions::new()
         .create(true)
@@ -54,12 +61,15 @@ fn a_daemons_whole_lines_are_its_words() {
 /// The stand-in a test's wait follows here: this test binary run again for this test alone,
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
-/// milliseconds, then its answer written there and its end; `idle`, nothing at all until
+/// milliseconds, then its answer written there and its end; `fetch PORT`, a request
+/// written to loopback's PORT, its answer read to the connection's end; `idle`, nothing at all until
 /// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
 /// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
 /// give-back ([`falls`]); `leaves MS`, a stand-in `pulse 1 MS` started on its stdout and
 /// stderr, "holder PID" said there, and its own end, the holder left holding them; `stages`
-/// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]).
+/// and `spinner`, a machine's waits in a process of their own ([`stages`], [`spinner`]);
+/// `serving`, a wait on a server thread of its own process ([`serving`]); `own-vms`, waits
+/// on VM processes of its own ([`own_vms`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -82,6 +92,12 @@ fn stand_in() {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
         to.write_all(ANSWER).unwrap();
+    } else if let Some(port) = asked.strip_prefix("fetch ").and_then(|p| p.parse::<u16>().ok()) {
+        let mut from = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        from.write_all(b"GET\n").unwrap();
+        let mut got = Vec::new();
+        from.read_to_end(&mut got).unwrap();
+        assert_eq!(got, ANSWER);
     } else if let Some((rounds, ms)) = asked
         .strip_prefix("pulse ")
         .and_then(|a| a.split_once(' '))
@@ -99,6 +115,10 @@ fn stand_in() {
         stages();
     } else if asked == "spinner" {
         spinner();
+    } else if asked == "serving" {
+        serving();
+    } else if asked == "own-vms" {
+        own_vms();
     } else if let Some(ms) = asked.strip_prefix("leaves ") {
         #[allow(
             clippy::zombie_processes,
@@ -335,6 +355,78 @@ fn a_stopped_process_is_its_hosts_hold_and_not_refused() {
     let _ = stopped.wait();
 }
 
+/// A command waiting on this test process's own registry is held while the registry works
+/// for it (D209 Part 8): its serving threads are the test process's, which no party's
+/// members by parent include, so a pull or build from `common::served()`'s registry waited
+/// on work no party counted. Red so (a mutation that leaves the serving threads uncounted):
+/// refused once its client sat idle a whole W*. Do: teach a kind its W* by a quick
+/// stand-in's end; then judge a stand-in that asks a server thread of this process, followed
+/// as the registry's are (`common::Server`), which works 3 W* of CPU before it answers; all
+/// in a stand-in, whose process nothing else runs in, so that its server's work is no other
+/// test's progress. Expect: never refused; the asking stand-in's own end, with the answer.
+#[test]
+fn a_wait_on_this_processs_server_goes_on_while_it_serves() {
+    let run = common::run_command(
+        stand_in_doing("serving"),
+        &["stand-in".to_string(), "serving".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_wait_on_this_processs_server_goes_on_while_it_serves`]'s stand-in.
+fn serving() {
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut quick = stand_in_doing("exit")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut taught = common::Wait::begin(kind, quick.id(), None, "a quick stand-in");
+    while quick.try_wait().unwrap().is_none() {
+        taught.look(false).unwrap();
+    }
+    taught.answered();
+    let shards_api::Seen::Learned { slowest, .. } = kind.record().seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let work = slowest.saturating_mul(3);
+    let server = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let (mut asked, _) = listener.accept().unwrap();
+        let _serving = common::Server::begin();
+        asked.read_exact(&mut [0u8; 4]).unwrap();
+        let began = Instant::now();
+        let mut spun = 0u64;
+        while began.elapsed() < work {
+            spun = std::hint::black_box(spun.wrapping_add(1));
+        }
+        asked.write_all(ANSWER).unwrap();
+    });
+    let mut client = stand_in_doing(&format!("fetch {port}"))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut wait = common::Wait::begin(kind, client.id(), None, "a stand-in asking this process");
+    let began = Instant::now();
+    let status = loop {
+        if let Some(status) = client.try_wait().unwrap() {
+            break status;
+        }
+        if let Err(stall) = wait.look(false) {
+            let _ = client.kill();
+            panic!(
+                "refused {:?} into its server's {work:?} of work: {}",
+                began.elapsed(),
+                wait.refused(&stall)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    server.join().unwrap();
+    assert!(status.success(), "{status}");
+}
+
 /// A run's stop grace, which its home's daemon keeps (`shards_ipc::GRACE`), is the daemon's
 /// own deadline: a wait on it is held until then, though nothing of its party runs, and judged
 /// again past it (D209). HVF at 0ce6cdc66 (adas-mac-studio.local, kiln r2081): managed_output's
@@ -367,7 +459,7 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
             .unwrap()
     };
     let (mut daemon, mut client) = (spawn(), spawn());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     let run = home.join("containers").join("graced");
     std::fs::create_dir_all(&run).unwrap();
     let grace = slowest.saturating_mul(20);
@@ -421,7 +513,7 @@ fn a_patient_wait_goes_on_while_its_party_works() {
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+        name_daemon(&home, daemon.id());
         let mut patience = Patience::of(&home);
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -827,6 +919,69 @@ fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
     );
 }
 
+/// A wait's looks that its waiter's own polls made late are no hold of its host's (D209
+/// Part 8): on adas-mac-studio-3.local, busy, the test above was "not refused 177-197 ms in
+/// (W* 59.554375ms)", each `ps` poll and each look slower than when W* was taught, every
+/// look so late past its due that the judge took the time for its host's hold of it, and
+/// its party's window saw only the looks' own durations. Red so: a look that saw a whole
+/// W* of its own polling past its first goes on. Do: start a daemon that runs no microVM;
+/// teach a wait's kind its W* by a state found at its first look; then wait for a state that
+/// never comes, polling between looks with a stand-in of this test's own busy a whole W*.
+/// Expect: refused at the look after the first poll, which says so at the next.
+#[test]
+fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
+    let home = TempDir::new("outlast");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", std::ffi::OsStr::new("none")),
+    ];
+    let started = common::command()
+        .arg("ps")
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let _served = Served(&env);
+    let mut taught = outlasted(&home);
+    let _ = taught.holds();
+    taught.done();
+    let shards_api::Seen::Learned { slowest, .. } = outlasted(&home).seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let busy = format!("busy {}", slowest.as_millis().saturating_add(1));
+    let poll = || {
+        let run = common::run_command(stand_in_doing(&busy), &["stand-in".to_string(), busy.clone()]);
+        assert_eq!(run.status, Some(0), "{run}");
+        assert!(
+            run.elapsed > slowest,
+            "a poll of {:?} within W* {slowest:?}",
+            run.elapsed
+        );
+    };
+    let mut patience = outlasted(&home);
+    assert!(patience.holds(), "refused at its start");
+    poll();
+    // Its first look past W*: a refusal there is said at the next.
+    let _ = patience.holds();
+    poll();
+    assert!(
+        !patience.holds(),
+        "a wait for a state that never comes, each poll its waiter's own and longer than W* \
+         {slowest:?}, not refused at its look past its first poll: {}",
+        patience.account()
+    );
+}
+
+/// [`Patience::of`] at one call site: one kind for every wait made through it.
+fn outlasted(home: &std::path::Path) -> Patience {
+    Patience::of(home)
+}
+
 /// A command's wait is keyed by its call site and its whole command line, what a run mints
 /// of its own made generic (ROOT's ruling (a), 2026-11-13, #77): one call site's quick
 /// refused command is kept apart from its real one, as build.rs' `builds_push_what_they_build`
@@ -1019,7 +1174,7 @@ fn an_answer_already_there_teaches_nothing() {
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    name_daemon(&home, daemon.id());
     one_state(&home).done();
     let there = one_state(&home).seen();
     let waited = Duration::from_millis(50);
@@ -1114,16 +1269,87 @@ fn cold_following(
     )
 }
 
+/// A guest's stream (`common::Following`) reads before each look, never judging an answer
+/// that has come missing: red at cf13e49e6 on KVM (adacachy2), where a look's `ps` took 16
+/// to 25 ms against a learned W* of 8 ms, `pause` left no time to read between looks, and
+/// vsock.rs' bad handshake, whose close came at once, was refused 128 ms later unread, its
+/// VM process idle waiting on the host. Do: a stream with nothing at its first read and its
+/// answer, one byte and its end, at every read after; its kind taught a W* of a nanosecond,
+/// its party none (no VM process of this test's own). Expect: the byte and the end read.
+#[test]
+fn a_streams_answer_that_has_come_is_read_before_a_look_judges_it() {
+    let stream = Arriving::default();
+    let mut read = Vec::new();
+    let got = std::io::Read::read_to_end(&mut quick_following(&stream), &mut read);
+    assert!(got.is_ok(), "an answer that had come refused: {got:?}");
+    assert_eq!(read, b"x");
+}
+
+/// A stream whose first read finds nothing, and whose reads after find `x`, then its end.
+#[derive(Default)]
+struct Arriving {
+    reads: std::cell::Cell<u32>,
+}
+
+impl common::Timed for Arriving {
+    fn set_read_timeout(&self, _: Option<Duration>) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl std::io::Read for &Arriving {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.reads.get();
+        self.reads.set(n + 1);
+        match (n, buf.first_mut()) {
+            (0, _) => Err(std::io::ErrorKind::WouldBlock.into()),
+            (1, Some(b)) => {
+                *b = b'x';
+                Ok(1)
+            }
+            _ => Ok(0),
+        }
+    }
+}
+
+/// [`common::Following::of`] at its caller's site, that kind made cold and then taught an
+/// answer a nanosecond long, so that every look past its first is due.
+#[track_caller]
+fn quick_following(stream: &Arriving) -> common::Following<'_, Arriving> {
+    let site = std::panic::Location::caller();
+    let _ = std::fs::remove_file(common::WaitKind::kept_at(site, common::STREAM, ""));
+    common::WaitKind::awaiting(site, common::STREAM)
+        .record()
+        .teach(Duration::from_nanos(1), Duration::ZERO);
+    common::Following::of(stream, None)
+}
+
 /// A test's own VM processes (`Party::own`: `Patience::own`, `Patience::of`, a guest's
 /// stream) are those its starts named (`common::OwnVm`), by their IDs, whatever their names:
 /// red at a932bc894 on adacachy2, where they were found by the name `shards-vm` and a Linux
 /// VM process started through its descriptor was named `5`, so a stream's party had none and
 /// its wait was refused while its VM process worked. Do: a stand-in, named as this test binary
 /// is, one of this test's own VM processes, busy for 100 ms and then for a second; wait for
-/// each one's end from one call site, its kind cold before the first. Expect: each wait holds
-/// until it ends, the second's past the W* the first taught.
+/// each one's end from one call site, its kind cold before the first; all in a stand-in,
+/// whose process nothing else runs in: a test's own VM processes are its process's, and a
+/// busy one here was every other test's party's progress (D209 Part 8: harness.rs' two poll
+/// tests not refused, "its last progress process 89935 ran", that stand-in's ID, 3 of 3 runs
+/// of the binary on adas-mac-studio-3.local). Expect: each wait holds until it ends, the
+/// second's past the W* the first taught.
 #[test]
 fn a_tests_own_vm_processes_are_known_by_their_ids() {
+    let run = common::run_command(
+        stand_in_doing("own-vms"),
+        &["stand-in".to_string(), "own-vms".to_string()],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
+
+/// [`a_tests_own_vm_processes_are_known_by_their_ids`]'s stand-in.
+fn own_vms() {
     for (round, busy) in [Duration::from_millis(100), Duration::from_secs(1)]
         .into_iter()
         .enumerate()
@@ -1186,7 +1412,7 @@ fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
             .spawn()
             .unwrap(),
     );
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.0.id())).unwrap();
+    name_daemon(&home, daemon.0.id());
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let taught = Duration::from_millis(20);
@@ -1385,7 +1611,7 @@ fn an_unreaped_daemon_is_gone() {
         )
     };
     assert_eq!(exited, 0, "{}", std::io::Error::last_os_error());
-    std::fs::write(home.join("daemon.pid"), format!("{}\n", zombie.id())).unwrap();
+    name_daemon(&home, zombie.id());
     let mut patience = Patience::of(&home);
     let began = Instant::now();
     let ended = loop {

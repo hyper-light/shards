@@ -334,8 +334,7 @@ fn read_taker(fifo: &File) -> io::Result<crate::Named> {
     name.get(..got)
         .filter(|_| got <= TAKER_MOST)
         .and_then(|name| std::str::from_utf8(name).ok())
-        .and_then(crate::Named::parse)
-        .filter(|named| named.start.is_some())
+        .and_then(|name| crate::Named::parse(name).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker's name that names no process"))
 }
 
