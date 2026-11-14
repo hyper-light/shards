@@ -122,6 +122,36 @@ pub fn daemon_lives(home: &Path) -> bool {
     named_lives(&home.join(PID))
 }
 
+/// A daemon of a build from before request slots (D185) serves the home: its socket there,
+/// `daemon.sock`, takes a connection. This build never asks it anything: a client and its
+/// daemon are one build (D36), and that daemon hears nothing but its socket. So a client or
+/// daemon that finds it refuses, naming what to end, as no slot reaches it. Only Unix's: no
+/// daemon ran on Windows before slots. `here` is best the home as the working directory
+/// (`.`), whose relative name fits a socket address whatever the home's path (PM M26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreSlotsDaemon;
+
+impl std::fmt::Display for PreSlotsDaemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a daemon of a shards from before request slots serves this home at daemon.sock: \
+             this shards does not speak to it; end that daemon's process",
+        )
+    }
+}
+
+/// [`PreSlotsDaemon`] where one serves the home `here`, by its socket's taking a connection,
+/// which is closed unasked; none where none does (no socket, or one no process listens at).
+pub fn no_pre_slots_daemon(here: &Path) -> Result<(), PreSlotsDaemon> {
+    #[cfg(unix)]
+    if std::os::unix::net::UnixStream::connect(here.join("daemon.sock")).is_ok() {
+        return Err(PreSlotsDaemon);
+    }
+    #[cfg(not(unix))]
+    let _ = here;
+    Ok(())
+}
+
 /// A process as a home's [`PID`] and [`STOPPING`] name it: its ID, and its start, which tells
 /// it from a process given that ID once it has gone. An ID alone is reused (Linux hands
 /// them out again once `pid_max` wraps, proc(5); XNU and Windows likewise), so a client
@@ -2396,6 +2426,8 @@ pub const MAX_FDS: usize = run_fds::CLIENT
 
 mod host_memory;
 pub use host_memory::{holdable, holdable_known, host_available, host_memory};
+mod window;
+pub use window::{Window, WindowRefusal};
 pub mod slots;
 #[cfg(unix)]
 mod spawner;
@@ -2409,8 +2441,8 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, hung_up, input_pair, readable_raw, recv, recv_by, send,
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
+    await_streams, byte_pair, end, fill_random, hung_up, input_pair, readable_raw, recv, recv_by, send,
 };
 #[cfg(windows)]
 mod windows;
@@ -2658,6 +2690,21 @@ pub fn timeout_set(set: std::io::Result<()>) -> std::io::Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A daemon of a build from before slots (D185) that serves a home, its `daemon.sock`
+    /// listening, is refused typed, never asked; a home with none, or with a socket no
+    /// process listens at any more, has none. Red before: the client sent it its request.
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_slots_daemon_is_refused_never_asked() {
+        let home = shards_testdir::TempDir::new("pre-slots").unwrap();
+        assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
+        let listening = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
+        assert_eq!(super::no_pre_slots_daemon(&home), Err(super::PreSlotsDaemon));
+        drop(listening);
+        assert!(home.join("daemon.sock").exists());
+        assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
+    }
+
     /// A timeout set after its peer wrote its answer and closed (PM M579): macOS refuses the
     /// option itself (EINVAL), which `timeout_set` takes for none needed, and the answer is
     /// read whole, then its end, at once. Red where the refusal is the caller's error: a fully

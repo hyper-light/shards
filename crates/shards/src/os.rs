@@ -8,6 +8,17 @@ use std::io;
 /// The null device's path: what reads nothing and takes all that is written to it.
 pub(crate) const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
+/// A share's stream on Windows (D197): a byte pipe's two ends, each way holding a share's
+/// longest frame on it (`fs::STREAM_FRAME`, its window, platform-11).
+#[cfg(windows)]
+pub(crate) fn share_pipe() -> io::Result<(
+    std::os::windows::io::OwnedHandle,
+    std::os::windows::io::OwnedHandle,
+)> {
+    let window = shards_ipc::Window::frame(shards_vmm::devices::virtio::fs::STREAM_FRAME)?;
+    shards_ipc::byte_pair(window)
+}
+
 /// The null device, open to read and to write.
 pub(crate) fn null() -> io::Result<File> {
     OpenOptions::new().read(true).write(true).open(NULL)

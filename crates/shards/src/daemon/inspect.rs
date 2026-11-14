@@ -964,9 +964,12 @@ fn image_facts_in(
     else {
         return (None, None);
     };
-    // Old records have no selected manifest. Only those use the reference's preference.
-    let preferred = image.manifest.to_string();
-    let ours = chosen.unwrap_or(&preferred);
+    // A record with no selected manifest (one made before 2026-11-03 kept it) names no
+    // platform's facts: never the reference's preference now, which may be another platform
+    // than the one its microVM ran (D179).
+    let Some(ours) = chosen else {
+        return (None, None);
+    };
     let descriptor = if image.target.digest == ours {
         Some(image.target)
     } else {
@@ -1364,11 +1367,8 @@ mod tests {
                 assert_eq!(config["Env"][0], format!("PLATFORM={arch}"));
                 assert_eq!(descriptor.unwrap()["digest"], selected.digest);
             }
-            let (old, _) = image_facts_in(&store, &id.to_string(), None);
-            assert_eq!(
-                old.unwrap()["User"],
-                if preferred == &arm { "1100" } else { "2200" }
-            );
+            // A record with no selection has no facts, whatever the preference.
+            assert_eq!(image_facts_in(&store, &id.to_string(), None), (None, None));
         }
         let missing = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(b"missing"));
         assert_eq!(

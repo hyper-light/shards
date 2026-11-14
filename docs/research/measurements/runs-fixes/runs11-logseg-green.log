@@ -1,0 +1,14 @@
+# runs-11 LOG_SEGMENT green: adas-mac-studio-3.local (macOS arm64), kiln run, branch
+# p/runs11-owed-logseg-v1 at 9c396a5ca (8f7036683 + docs + merge a0c5cb86d of origin/main b4a018090
+# + the test's wait fix); CARGO_INCREMENTAL=0, debug test profile.
+$ cargo test -p shards --bin shards -- disk::tests:: daemon::events:: daemon::tests::a_runs_log daemon::managed:: daemon::logs::
+test disk::tests::settings_read_back_and_come_to_their_amounts ... ok
+test daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments ... ok
+test daemon::tests::a_runs_log_segments_are_made_in_turn ... ok
+test daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment ... ok
+test daemon::managed::cap::tests::a_caps_loss_record_is_bounded_by_its_totals_not_its_history ... ok
+test result: ok. 84 passed; 0 failed; 6 ignored; 0 measured; 873 filtered out; finished in 93.36s
+$ cargo clippy -p shards --all-targets -- -D warnings      (at 9c396a5ca)
+exit 0
+$ cargo clippy -p shards -p shards-vmm --all-targets -- -D warnings      (at a0c5cb86d, the same code but the test)
+exit 0

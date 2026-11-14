@@ -1259,6 +1259,162 @@ fn cold_following(
     )
 }
 
+/// A test's own VM processes (`Party::own`: `Patience::own`, `Patience::of`, a guest's
+/// stream) are those its starts named (`common::OwnVm`), by their IDs, whatever their names:
+/// red at a932bc894 on adacachy2, where they were found by the name `shards-vm` and a Linux
+/// VM process started through its descriptor was named `5`, so a stream's party had none and
+/// its wait was refused while its VM process worked. Do: a stand-in, named as this test binary
+/// is, one of this test's own VM processes, busy for 100 ms and then for a second; wait for
+/// each one's end from one call site, its kind cold before the first. Expect: each wait holds
+/// until it ends, the second's past the W* the first taught.
+#[test]
+fn a_tests_own_vm_processes_are_known_by_their_ids() {
+    for (round, busy) in [Duration::from_millis(100), Duration::from_secs(1)]
+        .into_iter()
+        .enumerate()
+    {
+        let began = Instant::now();
+        let mut vm = stand_in_doing(&format!("busy {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let own = common::OwnVm::started(vm.id());
+        let mut patience = own_patience();
+        while vm.try_wait().unwrap().is_none() {
+            if !patience.holds() {
+                let _ = vm.kill();
+                let _ = vm.wait();
+                panic!(
+                    "a VM process busy for {busy:?} cut {:?} into its wait, round {round}: {}",
+                    began.elapsed(),
+                    patience.account()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        patience.done();
+        drop(own);
+        assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+    }
+}
+
+/// [`Patience::own`] at its caller's site, that kind made cold as [`cold_following`]'s is.
+#[track_caller]
+fn own_patience() -> Patience {
+    let file = common::WaitKind::kept_at(std::panic::Location::caller(), common::STATE, "");
+    static REMOVED: std::sync::Once = std::sync::Once::new();
+    REMOVED.call_once(|| {
+        let _ = std::fs::remove_file(&file);
+    });
+    Patience::own()
+}
+
+/// A guest's stream (`common::Following`: `vsock_connect`'s handshake, `echo`, vsock.rs'
+/// greeting) follows its party's CPU as progress until its first byte, while its peer starts
+/// it, and its bytes alone after (D209), as a streaming guest's wait does its first line
+/// (`Heard::streaming`). Red at a932bc894 on KVM (adacachy2, Linux x86_64): its CPU read as
+/// liveness from its start, a handshake learned at 9 ms was refused 10.7 ms into the next,
+/// whose guest's vsock device and kernel were at work on its answer
+/// (snapshot.rs' storm: "telling the guest it may finish: refused after \"\""), and vsock.rs'
+/// greeting the same at 12.7 ms. Do: a home whose daemon is a stand-in that spins; through
+/// one call site, teach its kind an answer 20 ms in; then follow a peer that sends a byte at
+/// once and nothing more while the party spins; then one that sends its first byte a second
+/// in. Expect: the first byte's stream refused while its party spins; the late one read whole,
+/// held to its byte.
+#[test]
+fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
+    use std::io::Read as _;
+    let home = TempDir::new("starts");
+    let daemon = Ended(
+        stand_in_doing("busy 600000")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.0.id())).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let taught = Duration::from_millis(20);
+    let late = Duration::from_secs(1);
+    // Each round: when its peer sends its byte, and whether it closes then or holds its end
+    // until the round's read has ended.
+    for (round, (delay, closes)) in [(taught, true), (Duration::ZERO, false), (late, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let (end, ended) = std::sync::mpsc::channel::<()>();
+        let listener = &listener;
+        let (read, took, kind) = std::thread::scope(|scope| {
+            let peer = scope.spawn(move || {
+                let (mut to, _) = listener.accept().unwrap();
+                std::thread::sleep(delay);
+                to.write_all(b"x").unwrap();
+                if !closes {
+                    let _ = ended.recv();
+                }
+            });
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let began = Instant::now();
+            let (mut following, kind) = home_stream(&stream, &home);
+            let mut got = Vec::new();
+            let read = following.read_to_end(&mut got).map(|_| got);
+            drop(end);
+            peer.join().unwrap();
+            (read, began.elapsed(), kind)
+        });
+        if closes {
+            assert!(
+                matches!(&read, Ok(got) if got == b"x"),
+                "round {round}: a stream whose first byte came {delay:?} in, its party busy, ended {took:?} in with {read:?}"
+            );
+        } else {
+            assert!(
+                read.is_err(),
+                "round {round}: a stream silent past its first byte while its party spun was never refused"
+            );
+        }
+        if round == 0 {
+            let seen = kind.record().seen();
+            assert!(
+                matches!(seen, shards_api::Seen::Learned { slowest, .. } if slowest < late),
+                "its kind learned no answer below {late:?}: {seen:?}"
+            );
+        }
+    }
+}
+
+/// A stand-in ended as it drops, the test's end or its failure.
+struct Ended(std::process::Child);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// [`common::Following::of_home`] at its caller's site, that kind made cold as
+/// [`cold_following`]'s is, with the kind.
+#[track_caller]
+fn home_stream<'a>(
+    stream: &'a std::net::TcpStream,
+    home: &std::path::Path,
+) -> (
+    common::Following<'a, std::net::TcpStream>,
+    &'static common::WaitKind,
+) {
+    let site = std::panic::Location::caller();
+    let file = common::WaitKind::kept_at(site, common::STREAM, "");
+    static REMOVED: std::sync::Once = std::sync::Once::new();
+    REMOVED.call_once(|| {
+        let _ = std::fs::remove_file(&file);
+    });
+    (
+        common::Following::of_home(stream, home),
+        common::WaitKind::awaiting(site, common::STREAM),
+    )
+}
+
 /// A guest's stream read after its microVM moved, a restored guest's first answer, is judged
 /// by its own kind, never by the W* its answer before the move taught (D209 Part 7). HVF at
 /// 6f3cd4428 and KVM at 8fdd66512 and 3f2705f8d: moved.rs'

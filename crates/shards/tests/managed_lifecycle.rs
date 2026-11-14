@@ -31,7 +31,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         ("harness", "healthy", "managed-lifecycle-challenge"),
     ] {
         std::fs::create_dir(ctx.join(directory)).unwrap();
-        common::program_copy(common::test_guest(), &ctx.join(directory).join("probe"));
+        shards_testdir::program_copy(common::test_guest(), &ctx.join(directory).join("probe")).unwrap();
         let path = if directory == "faulty" {
             "/bad/result"
         } else {
@@ -152,7 +152,7 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         ),
     ] {
         std::fs::create_dir(ctx.join(name)).unwrap();
-        common::program_copy(common::test_guest(), &ctx.join(name).join("probe"));
+        shards_testdir::program_copy(common::test_guest(), &ctx.join(name).join("probe")).unwrap();
         let manifest = serde_json::json!({"entrypoint": "probe", "options": options});
         std::fs::write(ctx.join(name).join(format!("{kind}.json")), manifest.to_string()).unwrap();
     }
@@ -326,7 +326,7 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
     ];
     let ctx = TempDir::new("managed-life-context");
     std::fs::create_dir(ctx.join("agent")).unwrap();
-    common::program_copy(common::test_guest(), &ctx.join("agent/probe"));
+    shards_testdir::program_copy(common::test_guest(), &ctx.join("agent/probe")).unwrap();
     std::fs::write(
         ctx.join("agent/agent.json"),
         br#"{"entrypoint":"probe","options":["managed-lifecycle","/probe/result"]}"#,

@@ -2,19 +2,21 @@
 //! overlapped read end; only its synchronous owned writer leaves the API. It is a
 //! named pipe, as Windows makes its anonymous pipes, with a name of this process's
 //! alone (`private_name`): one named for its scope refused a second report of that
-//! scope, its one instance still live, ERROR_PIPE_BUSY (PM M533).
+//! scope, its one instance still live, ERROR_PIPE_BUSY (PM M533). A pending read is waited on
+//! with the VM process's end beside it: the handle that holds that process (`super::Vm`),
+//! which Windows signals as it exits (WaitForMultipleObjects).
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
 use std::io;
 use std::mem::ManuallyDrop;
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
 use std::time::Instant;
 
 use windows_sys::Win32::{
     Foundation::{
         ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED,
-        GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        GENERIC_WRITE, GetLastError, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
@@ -26,12 +28,23 @@ use windows_sys::Win32::{
             CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_TYPE_BYTE, PIPE_WAIT,
         },
-        Threading::{CreateEventW, INFINITE, ResetEvent, WaitForSingleObject},
+        Threading::{CreateEventW, INFINITE, ResetEvent, WaitForMultipleObjects, WaitForSingleObject},
     },
 };
 
-use super::{io_error, pending};
+use super::{Read, io_error, pending};
 use crate::{GpuProbeError, Refusal};
+
+/// What a pending read's wait came to.
+#[derive(Debug, Clone, Copy)]
+enum Got {
+    /// Bytes, and more may follow.
+    More,
+    /// The writer's close.
+    Closed,
+    /// The VM process's end, the read still pending: cancelled, its cells kept.
+    Ended,
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Operation {
@@ -170,10 +183,10 @@ impl Reader {
         ))
     }
 
-    fn completed(&mut self, count: u32) -> Result<bool, Refusal> {
+    fn completed(&mut self, count: u32) -> Result<Got, Refusal> {
         self.state = Operation::Idle;
         if count == 0 {
-            return Ok(true);
+            return Ok(Got::Closed);
         }
         let count = usize::try_from(count).map_err(|_| Refusal::GpuProbe(GpuProbeError::Count))?;
         self.used = self
@@ -181,23 +194,58 @@ impl Reader {
             .checked_add(count)
             .filter(|used| *used <= self.bytes.len())
             .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
-        Ok(false)
+        Ok(Got::More)
     }
 
-    fn await_read(&mut self, deadline: Instant) -> Result<bool, Refusal> {
+    /// The pending read's result, by `deadline` where there is one, or the VM process's end
+    /// as `exit` is signalled (none: it had ended before it was held): the read checked once
+    /// more without waiting, and cancelled, its cells kept, where it is still pending.
+    fn await_read(
+        &mut self,
+        deadline: Option<Instant>,
+        exit: Option<BorrowedHandle<'_>>,
+    ) -> Result<Got, Refusal> {
         loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                self.cancel()?;
-                return Err(pending());
-            }
-            // DWORD milliseconds; MAX is INFINITE, so the largest finite value
-            // is MAX-1. Longer finite budgets are split only at that ABI limit.
-            let millis = left
-                .as_millis()
-                .checked_add(u128::from(!left.subsec_nanos().is_multiple_of(1_000_000)))
-                .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
-            let timeout = u32::try_from(millis).unwrap_or(u32::MAX - 1).min(u32::MAX - 1);
+            // DWORD milliseconds; MAX is INFINITE, the OS's own "no timeout", for a wait with
+            // no deadline, so the largest finite value is MAX-1. Longer finite budgets are
+            // split only at that ABI limit.
+            let timeout = match deadline {
+                None => INFINITE,
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        self.cancel()?;
+                        return Err(pending());
+                    }
+                    let millis = left
+                        .as_millis()
+                        .checked_add(u128::from(!left.subsec_nanos().is_multiple_of(1_000_000)))
+                        .ok_or(Refusal::GpuProbe(GpuProbeError::Count))?;
+                    u32::try_from(millis).unwrap_or(u32::MAX - 1).min(u32::MAX - 1)
+                }
+            };
+            let told = match exit {
+                Some(exit) => {
+                    let events = [self.event.as_raw_handle(), exit.as_raw_handle()];
+                    // SAFETY: the owned live event and the held process's live handle, which
+                    // has SYNCHRONIZE, their count the array's; the wait retains nothing
+                    // after it returns.
+                    let woke = unsafe { WaitForMultipleObjects(2, events.as_ptr(), 0, timeout) };
+                    if woke == WAIT_FAILED {
+                        return Err(io_error("GPU report wait", io::Error::last_os_error()));
+                    }
+                    if woke == WAIT_TIMEOUT {
+                        continue;
+                    }
+                    let told = woke == WAIT_OBJECT_0 + 1;
+                    if woke != WAIT_OBJECT_0 && !told {
+                        return Err(Refusal::Launch(crate::LaunchError::Observer));
+                    }
+                    told
+                }
+                // Ended before it was held: the read checked once, without waiting.
+                None => true,
+            };
             let operation = self
                 .operation
                 .first()
@@ -206,22 +254,20 @@ impl Reader {
             let mut count = 0;
             // SAFETY: the same live server and heap-stable OVERLAPPED submitted
             // for this pending read. Its event/buffer remain owned and untouched.
-            if unsafe { GetOverlappedResultEx(self.pipe.as_raw_handle(), operation, &mut count, timeout, 0) }
-                != 0
-            {
+            if unsafe { GetOverlappedResultEx(self.pipe.as_raw_handle(), operation, &mut count, 0, 0) } != 0 {
                 return self.completed(count);
             }
             // SAFETY: immediately reads this thread's failed native call status.
             let error = unsafe { GetLastError() };
             match error {
-                WAIT_TIMEOUT | ERROR_IO_INCOMPLETE if Instant::now() < deadline => continue,
-                WAIT_TIMEOUT | ERROR_IO_INCOMPLETE => {
+                WAIT_TIMEOUT | ERROR_IO_INCOMPLETE if told => {
                     self.cancel()?;
-                    return Err(pending());
+                    return Ok(Got::Ended);
                 }
+                WAIT_TIMEOUT | ERROR_IO_INCOMPLETE => continue,
                 ERROR_BROKEN_PIPE => {
                     self.state = Operation::Idle;
-                    return Ok(true);
+                    return Ok(Got::Closed);
                 }
                 ERROR_OPERATION_ABORTED => {
                     self.state = Operation::Idle;
@@ -246,17 +292,23 @@ impl Reader {
     /// read waits (`await_read`), so that a read is always under way by then: one the
     /// deadline finds pending is left so, its cells kept, until its cancellation completes
     /// (`finish`, `wait_for_completion`). Judged before a read was issued too, a deadline
-    /// already past as it was called refused with no read pending.
-    pub fn frame(&mut self, deadline: Instant) -> Result<&[u8], Refusal> {
+    /// already past as it was called refused with no read pending. The VM process's end,
+    /// signalled on `exit` as a read waits (none: it had ended before it was held), is answered
+    /// once that read is found still pending; a pipe its watcher closed (after that end) is the
+    /// end too.
+    pub fn frame(
+        &mut self,
+        deadline: Option<Instant>,
+        exit: Option<BorrowedHandle<'_>>,
+    ) -> Result<Read<'_>, Refusal> {
         loop {
             match self.state {
-                Operation::Closed => return Err(Refusal::GpuProbe(GpuProbeError::Unavailable)),
-                Operation::Pending => {
-                    if self.await_read(deadline)? {
-                        break;
-                    }
-                    continue;
-                }
+                Operation::Closed => return Ok(Read::Ended),
+                Operation::Pending => match self.await_read(deadline, exit)? {
+                    Got::Closed => break,
+                    Got::More => continue,
+                    Got::Ended => return Ok(Read::Ended),
+                },
                 Operation::Idle => {}
             }
             let count = self
@@ -317,7 +369,9 @@ impl Reader {
         // SAFETY: no operation is pending; UnsafeCell<u8> has u8's layout, and
         // the initialized, stable allocation contains at least used bytes. This
         // slice borrow prevents another mutable operation until parsing ends.
-        Ok(unsafe { std::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.used) })
+        Ok(Read::Frame(unsafe {
+            std::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.used)
+        }))
     }
 
     fn cancel(&self) -> Result<(), Refusal> {
@@ -397,7 +451,7 @@ impl Reader {
             // retains the same cells/handles throughout this lifecycle wait.
             let returned = unsafe { WaitForSingleObject(self.event.as_raw_handle(), INFINITE) };
             if returned != WAIT_OBJECT_0 {
-                return Err(if returned == windows_sys::Win32::Foundation::WAIT_FAILED {
+                return Err(if returned == WAIT_FAILED {
                     io_error("GPU report native completion event", io::Error::last_os_error())
                 } else {
                     Refusal::Launch(crate::LaunchError::Observer)
@@ -448,6 +502,11 @@ mod tests {
     #[test]
     fn pending_private_read_keeps_cells_until_positive_cancel_completion() {
         let (mut reader, writer) = Reader::new(64).unwrap();
+        // Its VM process this test process, which outlives the test: the deadline alone ends
+        // the wait.
+        let pid = std::process::id();
+        let this =
+            crate::client::borrowed_windows::Held::find(pid, crate::taken::started(pid).unwrap()).unwrap();
         let operation = reader.operation.first().unwrap().get();
         let buffer = reader.bytes.as_ptr();
         // The least wait this host's streams keep, measured, from after its measure: no frame
@@ -457,7 +516,7 @@ mod tests {
         let kept = crate::while_runs::kept_wait();
         let deadline = Instant::now().checked_add(kept).unwrap();
         assert!(matches!(
-            reader.frame(deadline),
+            reader.frame(Some(deadline), Some(this.exit())),
             Err(Refusal::GpuProbe(GpuProbeError::Pending))
         ));
         assert!(matches!(reader.state, Operation::Pending));

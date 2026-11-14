@@ -341,11 +341,10 @@ fn threads_of(pid: i32) -> String {
 /// A client that must wait for its daemon to start ends of SIGTERM at once, as the Docker
 /// CLI ends before its microVM is made: with 128 and the signal's number, nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext). Its daemon cannot start here, the
-/// home's lock held; then it goes, seeing one listen (`take_lock`), before anything is
-/// asserted, so that a failing test leaves no process behind. Windows sends a console
-/// process no SIGTERM: there its interrupt ([`interrupt`]) ends it so, with 128 and
-/// SIGINT's number, and its daemon, which no daemon of an older build listens beside, is
-/// ended by its pid, which its log's lines begin with.
+/// home's lock held; then it is ended by its pid, which its log's lines begin with, before
+/// anything is asserted, so that a failing test leaves no process behind. Windows sends a
+/// console process no SIGTERM: there its interrupt ([`interrupt`]) ends it so, with 128 and
+/// SIGINT's number.
 #[test]
 fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
@@ -422,31 +421,11 @@ fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
                 .parse::<i32>()
                 .ok()
         });
-    // Its daemon, waiting for the lock, sees one listen and goes: looked for while it goes
-    // on (`common::Wait`), and while it lives.
-    #[cfg(unix)]
-    let looked = daemon.is_some_and(|pid| {
-        let listener = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let kind = WaitKind::at(std::panic::Location::caller());
-        let mut looking = Wait::begin(kind, pid.unsigned_abs(), Some(&home), "its daemon's look");
-        loop {
-            if listener.accept().is_ok() {
-                looking.answered();
-                return true;
-            }
-            if !alive(pid) || looking.look(false).is_err() {
-                return false;
-            }
-            std::thread::sleep(looking.next_look());
-        }
-    });
     // Its daemon ended.
-    #[cfg(windows)]
     let looked = daemon.inspect(|&pid| kill_now(pid)).is_some();
     let status = status.expect("the client waited on past its signal");
     assert_eq!((status.code(), said.as_str()), (Some(ended), ""), "{status:?}");
-    assert!(looked, "the client's daemon never looked");
+    assert!(looked, "the client's daemon was not found in its log");
 }
 
 #[test]
@@ -1053,20 +1032,19 @@ fn a_rebuilt_binary_replaces_the_daemon() {
     let before = daemon_pid(&home).expect("a daemon pid");
     let bin = TempDir::new("daemon-rebuilt-bin");
     let other = bin.join(format!("shards{}", std::env::consts::EXE_SUFFIX));
-    // A copy this process wrote is open for writing in each child another test's thread
-    // forks meanwhile, until that child execs, and running it fails with ETXTBSY until then
-    // (x86_64 CI, 2026-10-11): `common::spawn` waits that out.
-    std::fs::copy(shards(), &other).unwrap();
-    let mut run = common::spawn(
-        Command::new(&other)
+    // Copied by a process of its own: a copy this process wrote is open for writing in each
+    // child another test's thread forks meanwhile, until that child execs, and running it
+    // fails with ETXTBSY until then (x86_64 CI, 2026-10-11).
+    shards_testdir::program_copy(shards(), &other).unwrap();
+    let mut run = Command::new(&other)
             .args(["run", "-i", "--pull", "never", &image, "cat"])
             .env("SHARDS_HOME", &*home)
             .env("SHARDS_LOCAL_STORE", "none")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .unwrap();
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
     let said = "given before the old daemon stepped aside\n";
     run.stdin.take().unwrap().write_all(said.as_bytes()).unwrap();
     // Its output read as it comes, and the client ended past the deadline: a stdin lost
@@ -1781,7 +1759,7 @@ fn a_request_past_a_sockets_buffer_is_served() {
     let home = TempDir::new("daemon-large");
     let env = [("SHARDS_HOME", home.as_os_str())];
     // Windows takes a command line of 32,767 characters (CreateProcessW): there its 300 KB,
-    // past the 64 KiB a slot's line holds (ipc pipe.rs `LINE_BUFFER`, a Linux FIFO's), go
+    // past what a slot's line holds (the system's default, ipc's `Window::System`), go
     // as three labels of 100 KB from a file.
     if cfg!(windows) {
         let file = home.join("labels");
@@ -1969,7 +1947,7 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 /// there each answer's first message is a microVM made with 100 KiB of labels from a file,
 /// more than std's pipes take (64 KiB, its child pipes' quota), and for the one 4,500 names
 /// nothing has follow, their errors one message of 123 KiB, more than a slot's line takes
-/// (a Linux FIFO's 64 KiB, ipc pipe.rs `LINE_BUFFER`).
+/// (the system's default, ipc's `Window::System`, as a Linux FIFO's 64 KiB).
 #[test]
 fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
     let home = TempDir::new("daemon-unread");

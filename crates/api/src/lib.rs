@@ -106,8 +106,30 @@ pub struct PreparedBoot {
     output_bytes: usize,
     runtime_paths: Option<RuntimePaths>,
     gpu_devices: Vec<PhysicalGpu>,
-    gpu_report: Option<([u8; 16], std::time::Instant)>,
+    gpu_report: Option<([u8; 16], Until)>,
     startup: native::Inputs,
+}
+
+/// How long a managed launch's GPU report is waited on (D233): the create's own budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Until {
+    /// By this instant, a finite create budget: a take that reaches it is refused
+    /// `GpuProbe(Pending)`.
+    At(std::time::Instant),
+    /// No clock: until the report comes or its VM process ends, followed by its native
+    /// receipt's end (`TerminalScope::Released`) as every managed wait follows it (D215). A take
+    /// that its VM process's end finds waiting is refused `GpuProbe(Ended)`.
+    Released,
+}
+
+impl Until {
+    /// Its instant, where it has one.
+    pub fn instant(self) -> Option<std::time::Instant> {
+        match self {
+            Self::At(at) => Some(at),
+            Self::Released => None,
+        }
+    }
 }
 
 /// Pure immutable request. The final native launcher separately owns and renders
@@ -116,7 +138,7 @@ pub struct PreparedBoot {
 pub struct GpuReportRequest<'a> {
     scope: [u8; 16],
     selected: &'a [PhysicalGpu],
-    deadline: std::time::Instant,
+    until: Until,
 }
 
 impl GpuReportRequest<'_> {
@@ -126,8 +148,8 @@ impl GpuReportRequest<'_> {
     pub fn selected(&self) -> &[PhysicalGpu] {
         self.selected
     }
-    pub fn deadline(&self) -> std::time::Instant {
-        self.deadline
+    pub fn until(&self) -> Until {
+        self.until
     }
 }
 
@@ -159,9 +181,10 @@ impl PreparedBoot {
         Ok(self)
     }
 
-    /// Bind a private renderer report to the original native scope and finite
-    /// absolute create budget. No channel or foreign process is created here.
-    pub fn with_gpu_report(mut self, scope: [u8; 16], deadline: std::time::Instant) -> Result<Self, Refusal> {
+    /// Bind a private renderer report to the original native scope and the create's
+    /// budget, `until` ([`Until`]): an instant, or none but its VM process's end. No channel
+    /// or foreign process is created here.
+    pub fn with_gpu_report(mut self, scope: [u8; 16], until: Until) -> Result<Self, Refusal> {
         if self.gpu_report.is_some() {
             return Err(Refusal::GpuProbe(GpuProbeError::ReportTaken));
         }
@@ -172,17 +195,17 @@ impl PreparedBoot {
         if self.gpu_devices.is_empty() {
             return Err(Refusal::GpuProbe(GpuProbeError::Empty));
         }
-        if std::time::Instant::now() >= deadline {
+        if until.instant().is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(Refusal::GpuProbe(GpuProbeError::Pending));
         }
-        self.gpu_report = Some((scope, deadline));
+        self.gpu_report = Some((scope, until));
         Ok(self)
     }
 
     pub fn gpu_report_request(&self) -> Option<GpuReportRequest<'_>> {
-        self.gpu_report.map(|(scope, deadline)| GpuReportRequest {
+        self.gpu_report.map(|(scope, until)| GpuReportRequest {
             scope,
-            deadline,
+            until,
             selected: &self.gpu_devices,
         })
     }
@@ -614,9 +637,9 @@ pub enum Refusal {
 /// process has gone, it is [`Refusal::Process`] or [`Refusal::Ended`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmProcessRefusal {
-    /// On Windows, its `shards` has not recorded the VM process it starts yet
-    /// ([`vm_process_file`]): it has not started it, or it is a `shards` from before the
-    /// record.
+    /// On Windows, no record names the VM process ([`vm_process_file`]): its `shards` has not
+    /// started it yet, as it writes the record before that process runs; a launch whose
+    /// record could not be written ends. No other cause is read into it.
     Unrecorded,
     /// Its record names no process as `PID START` does.
     Broken,

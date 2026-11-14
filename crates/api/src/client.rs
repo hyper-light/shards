@@ -1625,7 +1625,7 @@ mod borrowed_tests;
 mod spawns;
 
 #[cfg(windows)]
-mod borrowed_windows {
+pub(crate) mod borrowed_windows {
     use crate::{ProcessFailure, ProcessOperation};
     use std::io;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -1644,10 +1644,11 @@ mod borrowed_windows {
         }
     }
 
-    pub(super) struct Held(OwnedHandle);
+    #[derive(Debug)]
+    pub(crate) struct Held(OwnedHandle);
 
     impl Held {
-        pub(super) fn find(pid: u32, expected: u64) -> Result<Self, ProcessFailure> {
+        pub(crate) fn find(pid: u32, expected: u64) -> Result<Self, ProcessFailure> {
             // SAFETY: only query/synchronize access; non-inheritable and no termination right.
             let handle =
                 unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
@@ -1668,7 +1669,7 @@ mod borrowed_windows {
 
         /// What its end is waited on through beside a socket: the handle, signalled once
         /// its process has exited.
-        pub(super) fn exit(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        pub(crate) fn exit(&self) -> std::os::windows::io::BorrowedHandle<'_> {
             std::os::windows::io::AsHandle::as_handle(&self.0)
         }
 
@@ -1863,10 +1864,9 @@ fn managed_shared(
     recovered: bool,
     report: Option<crate::physical::report::Receiver>,
 ) -> Result<triomphe::Arc<Shared>, Refusal> {
-    let report_cleanup = if report.is_some() {
-        ReportCleanup::Observing
-    } else {
-        ReportCleanup::Complete
+    let report_cleanup = match report {
+        Some(_) => ReportCleanup::Observing,
+        None => ReportCleanup::Complete,
     };
     let mut bytes = VecDeque::new();
     bytes
@@ -2035,6 +2035,15 @@ fn watch_managed(
         Ok(_) => Err(Refusal::Launch(crate::LaunchError::Observer)),
         Err(why) => Err(why),
     };
+    // An observation that failed is said at once: a take under way holds the report, which
+    // the cleanup below waits for, until the VM process it waits on itself ends.
+    if let Err(why) = &observed {
+        let mut state = lock(&shared.state);
+        if state.managed.is_none() {
+            state.managed = Some(Err(why.clone()));
+        }
+        shared.changed.notify_all();
+    }
     finish_managed_report(&shared);
     let said = match writer {
         Some(writer) => lossy_output(finish_drain(&shared, writer).bytes.make_contiguous()),
@@ -2074,15 +2083,14 @@ pub fn boot_managed(
     plan: crate::PreparedBoot,
     launcher: &mut dyn crate::ManagedLauncher,
 ) -> Result<ManagedGuest, Refusal> {
-    let (report, gpu_report) = match plan.gpu_report_request() {
+    let (opened, gpu_report) = match plan.gpu_report_request() {
         Some(request) => {
             let request = crate::physical::report::Request::copy_from(request)?;
-            let (receiver, writer) = crate::physical::report::Receiver::new(request)?;
-            (Some(receiver), Some(writer))
+            let (opened, writer) = crate::physical::report::Opened::new(request)?;
+            (Some(opened), Some(writer))
         }
         None => (None, None),
     };
-    let shared = managed_shared(plan.output_bytes, false, report)?;
     let drain_name = owned_text("shards-api-managed-drain")?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let (output, writer) = io::pipe().map_err(|e| managed_io("output pipe", e))?;
@@ -2111,6 +2119,30 @@ pub fn boot_managed(
         process.stop()?;
         return Err(Refusal::Launch(crate::LaunchError::Observer));
     }
+    // The report's take waits on the launched process itself, held from here (D233).
+    let report = match opened
+        .map(|opened| {
+            crate::physical::report::Vm::of(identity.pid, identity.started).map(|vm| opened.follow(vm))
+        })
+        .transpose()
+    {
+        Ok(report) => report,
+        Err(failure) => {
+            process.stop()?;
+            return Err(Refusal::Process {
+                pid: identity.pid,
+                expected_started: identity.started,
+                failure,
+            });
+        }
+    };
+    let shared = match managed_shared(plan.output_bytes, false, report) {
+        Ok(shared) => shared,
+        Err(why) => {
+            process.stop()?;
+            return Err(why);
+        }
+    };
     lock(&shared.state).managed_ports = plan.ports;
     let drainer = shared.clone();
     if let Err(error) = std::thread::Builder::new()
@@ -2147,9 +2179,17 @@ pub fn attach_managed(
 }
 
 impl ManagedGuest {
-    /// Transfer the one private report within the original create deadline.
+    /// Transfer the one private report, by the create's deadline where
+    /// [`with_gpu_report`](crate::PreparedBoot::with_gpu_report) named one ([`Until::At`]) and
+    /// within `patience` (`Duration::MAX`: none of the caller's). With neither
+    /// ([`Until::Released`] and `Duration::MAX`) it waits until the report comes or its VM
+    /// process ends, as its kernel says, on the process held from its launch: refused
+    /// `GpuProbe(Ended)` where it ended first.
     /// A timeout/EOF/error never proves VM or helper termination. Recovery must
     /// use its already persisted canonical report; it cannot recreate this pipe.
+    ///
+    /// [`Until::At`]: crate::Until::At
+    /// [`Until::Released`]: crate::Until::Released
     pub fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, Refusal> {
         let mut report = self.shared.report.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => Refusal::GpuProbe(crate::GpuProbeError::Pending),
@@ -3135,6 +3175,144 @@ mod tests {
         (guest, native)
     }
 
+    /// A managed guest whose plan asks for its GPU report with no clock ([`crate::Until::Released`]),
+    /// its VM process a stand-in ([`waiter`], waiting `until`) that its stand-in native receipt
+    /// names, which holds the report's writer: the test takes it from the receipt to hold as
+    /// another process would. And the report its VM process would write.
+    fn reported_model(
+        until: &str,
+    ) -> (
+        ManagedGuest,
+        triomphe::Arc<ModelNative>,
+        Child,
+        io::PipeWriter,
+        crate::physical::GpuReport,
+    ) {
+        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let vm = waiter(until);
+        let identity = Identity {
+            pid: vm.id(),
+            started: crate::taken::started(vm.id()).unwrap(),
+            vsock: root.join("model").join("native").join("v"),
+        };
+        let selected = crate::PhysicalGpu::MetalRegistry(7);
+        let mut spec = spec();
+        spec.gpu = true;
+        spec.gpu_devices = vec![selected];
+        let scope = [0x5a; 16];
+        let plan = prepare_boot(
+            &spec,
+            &root.join("model").join("never-executed"),
+            &identity.vsock,
+            0,
+        )
+        .unwrap()
+        .with_gpu_report(scope, crate::Until::Released)
+        .unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity,
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop: false,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .unwrap();
+        let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
+        let writer = native
+            .state
+            .lock()
+            .unwrap()
+            .io
+            .as_mut()
+            .unwrap()
+            .gpu_report
+            .take()
+            .unwrap();
+        let report = GpuReport {
+            scope,
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical: selected,
+                    uuid: [4; 16],
+                    pci: None,
+                    luid: Some(7u64.to_be_bytes()),
+                    name: None,
+                    device_local_bytes: None,
+                }],
+                host_visible_bytes: 1,
+            },
+        };
+        (guest, native, vm, writer, report)
+    }
+
+    /// D233, Hex's decision 9: a report asked with no clock is waited on until its VM process
+    /// ends, as its kernel says on the process held from its launch, not by its writer's close:
+    /// the writer still held elsewhere, the take answers `Ended`, typed, once the VM process
+    /// has exited, and not before.
+    #[test]
+    fn a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends() {
+        let (guest, native, mut vm, writer, _) = reported_model("stdin");
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        // No clock of its own: nothing answers while the VM process lives, however long the
+        // least wait this host keeps is.
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        // Its stdin ended, it exits; its exit, reaped, a fact waited for as such. Then the
+        // take, woken by its kernel, answers at once: looked at each millisecond (poll(2)'s
+        // unit), never found blocked twice.
+        drop(vm.stdin.take());
+        assert!(vm.wait().unwrap().success());
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Err(Refusal::GpuProbe(crate::GpuProbeError::Ended))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(writer);
+    }
+
+    /// D233: a report asked with no clock whose VM process is killed outright (SIGKILL,
+    /// TerminateProcess) wakes from its kernel alone: its native receipt says nothing of the
+    /// end before the take answers `Ended`, so no signal of the watcher's (D233's first event
+    /// and end pipe, whose failure left such a take unwoken) has any part in it.
+    #[test]
+    fn a_report_with_no_clock_wakes_as_its_vm_process_is_killed() {
+        let (guest, native, mut vm, writer, _) = reported_model("ended");
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        vm.kill().unwrap();
+        assert!(!vm.wait().unwrap().success());
+        assert!(crate::ManagedProcess::terminal(&*native).unwrap().is_none());
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Err(Refusal::GpuProbe(crate::GpuProbeError::Ended))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(writer);
+    }
+
+    /// D233: a report asked with no clock that comes while its VM process lives is the report,
+    /// waited for until its writer closes after it.
+    #[test]
+    fn a_report_with_no_clock_is_taken_as_it_comes() {
+        use std::io::Write as _;
+        let (guest, native, mut vm, mut writer, report) = reported_model("ended");
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Ok(report)
+        );
+        vm.kill().unwrap();
+        vm.wait().unwrap();
+        native.publish(crate::TerminalScope::Released);
+    }
+
     /// A managed guest's VM process on Linux and macOS is the process its launcher started,
     /// become shards-vm in place: named by its pid and its start as the OS reads them, while
     /// it lives; an identity whose start is another's refused `DifferentStart` with the start
@@ -3661,9 +3839,13 @@ mod tests {
         let request = crate::physical::report::Request {
             scope: [0x93; 16],
             selected: vec![crate::PhysicalGpu::MetalRegistry(7)],
-            deadline: crate::while_runs::latest(),
+            until: crate::Until::At(crate::while_runs::latest()),
         };
-        let (receiver, mut writer) = crate::physical::report::Receiver::new(request).unwrap();
+        let (opened, mut writer) = crate::physical::report::Opened::new(request).unwrap();
+        // Its VM process this test process, which outlives the case.
+        let pid = std::process::id();
+        let receiver =
+            opened.follow(crate::physical::report::Vm::of(pid, crate::taken::started(pid).unwrap()).unwrap());
         // Caller error, first observer error, then the old observer's retry
         // after last-drop. New native-event waiting does not need that retry.
         receiver.fail_cancel_calls_for_test(3);
@@ -4422,20 +4604,11 @@ mod tests {
         assert_ne!(dir.0, again.0);
     }
 
-    /// A stand-in script at `bin`, `body` its text: written beside it and installed by
-    /// install(1), so no descriptor of this process ever writes the file it executes (one a
-    /// test beside it forked while open would fail its exec ETXTBSY, execve(2)).
+    /// A stand-in script at `bin`, `body` its text, written by a process of its own
+    /// (`shards_testdir::program`): no exec of it fails ETXTBSY.
     #[cfg(unix)]
     fn installed(bin: &Path, body: &str) {
-        let source = bin.with_extension("sh");
-        std::fs::write(&source, body).unwrap();
-        let done = Command::new("install")
-            .args(["-m", "755"])
-            .arg(&source)
-            .arg(bin)
-            .status()
-            .unwrap();
-        assert!(done.success());
+        shards_testdir::program(bin, body).unwrap();
     }
 
     /// A guest's socket and its muxer's side of one connection, answering `answer` to the
@@ -5237,21 +5410,47 @@ mod tests {
         assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
     }
 
-    /// Set in the process `waiting` starts: it waits until it is ended.
-    #[cfg(windows)]
+    /// Set in the process [`waiter`] starts: `ended`, it waits until it is ended; `stdin`, until
+    /// its stdin ends too, then exits.
     const WAITER: &str = "SHARDS_API_WAITER";
 
-    /// The process `waiting` starts, a stand-in for the `shards` that booted a guest's VM on
-    /// Windows: it waits until it is ended.
-    #[cfg(windows)]
+    /// The process [`waiter`] starts, a stand-in for a guest's VM process, or on Windows for the
+    /// `shards` that booted it.
     #[test]
-    #[ignore = "a child of the Windows take-back tests"]
+    #[ignore = "a child of the take-back and report tests"]
     fn child_a_process_that_waits() {
-        if std::env::var_os(WAITER).is_some() {
-            loop {
-                std::thread::park();
+        match std::env::var_os(WAITER) {
+            Some(until) if until == "stdin" => {
+                io::copy(&mut io::stdin(), &mut io::sink()).unwrap();
             }
+            Some(_) => loop {
+                std::thread::park();
+            },
+            None => {}
         }
+    }
+
+    /// A process of this test binary's, this process's child, that waits until it is ended
+    /// (`ended`), or until it is ended or its stdin, which the child's handle holds, ends
+    /// (`stdin`).
+    fn waiter(until: &str) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "client::tests::child_a_process_that_waits",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(WAITER, until)
+            .stdin(if until == "stdin" {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 
     /// A process that waits until it is ended, this process's child, and its identity, as a
@@ -5259,18 +5458,7 @@ mod tests {
     /// directory `PrivateDir::new` made, which nothing removes until a guest taken back drops.
     #[cfg(windows)]
     fn waiting() -> (Child, Identity) {
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "client::tests::child_a_process_that_waits",
-                "--ignored",
-                "--test-threads=1",
-            ])
-            .env(WAITER, "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let child = waiter("ended");
         let dir = PrivateDir::new().unwrap();
         let vsock = dir.0.join("v");
         std::mem::forget(dir);
