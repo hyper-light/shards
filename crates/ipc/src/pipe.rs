@@ -715,6 +715,9 @@ fn pair_with_client(buffer: u32, messages: bool, overlapped: bool) -> io::Result
 /// The reader uses the stream's overlapped cancellation; the PipeWriter's client handle
 /// is synchronous, as std's Write implementation requires. Bytes have no message framing.
 pub fn input_pair(room: u32) -> io::Result<(Stream, io::PipeWriter)> {
+    if room == 0 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
     let (server, client) = pair_with_client(room, false, false)?;
     Ok((
         Stream::of(server, Way::Plain, false)?,

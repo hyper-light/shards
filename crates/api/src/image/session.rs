@@ -1876,9 +1876,15 @@ impl ImageGuest for Session {
         std::thread::Builder::new()
             .name("shards-api-input".into())
             .spawn(move || feed(&shared, index, reader))
-            .map_err(|e| ImageRefusal::Os {
-                what: "a member's stdin feed",
-                kind: e.kind(),
+            .map_err(|e| {
+                if let Some(flow) = lock(&self.shared.state).inputs.get_mut(&index) {
+                    flow.close();
+                    flow.taken = false;
+                }
+                ImageRefusal::Os {
+                    what: "a member's stdin feed",
+                    kind: e.kind(),
+                }
             })?;
         Ok(writer)
     }
