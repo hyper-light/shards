@@ -1195,9 +1195,7 @@ fn serve(bindings: &[Binding], target: Ipv4Addr, mut told: std::fs::File) {
                     Bound::Tcp(listener, port) => {
                         relay_tcp(listener, SocketAddr::new(IpAddr::V4(target), *port))
                     }
-                    Bound::Udp(sock, port) => {
-                        relay_udp(sock, SocketAddr::new(IpAddr::V4(target), *port))
-                    }
+                    Bound::Udp(sock, port) => relay_udp(sock, SocketAddr::new(IpAddr::V4(target), *port)),
                 });
         }
     });

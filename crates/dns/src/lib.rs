@@ -861,21 +861,38 @@ mod tests {
         let elsewhere = b"\x09forbidden\x07example\x00";
         let at = |r: &[u8]| a_records(r).map(|found| found.addresses);
         for (what, answer) in [
-            ("another owner of another class", rr(elsewhere, TYPE_A, CHAOS, &[203, 0, 113, 9])),
-            ("another owner", rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])),
-            ("the name's, of another class", rr(&[0xc0, 0x0c], TYPE_A, CHAOS, &[203, 0, 113, 9])),
+            (
+                "another owner of another class",
+                rr(elsewhere, TYPE_A, CHAOS, &[203, 0, 113, 9]),
+            ),
+            (
+                "another owner",
+                rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9]),
+            ),
+            (
+                "the name's, of another class",
+                rr(&[0xc0, 0x0c], TYPE_A, CHAOS, &[203, 0, 113, 9]),
+            ),
         ] {
             let got = at(&response(&q, NOERROR, &[answer]));
             assert!(!got.is_some_and(|a| a.contains(&forbidden)), "{what}");
         }
         // An AAAA record answers no A question.
         let six: Ipv6Addr = "2001:db8::9".parse().unwrap();
-        let got = at(&response(&q, NOERROR, &[rr(&[0xc0, 0x0c], TYPE_AAAA, CLASS_IN, &six.octets())]));
+        let got = at(&response(
+            &q,
+            NOERROR,
+            &[rr(&[0xc0, 0x0c], TYPE_AAAA, CLASS_IN, &six.octets())],
+        ));
         assert_eq!(got, Some(Vec::new()));
         // An error (NXDOMAIN) or a truncated response with records says no addresses.
         let own = rr(&[0xc0, 0x0c], TYPE_A, CLASS_IN, &[203, 0, 113, 9]);
         assert_eq!(at(&response(&q, 3, std::slice::from_ref(&own))), None, "NXDOMAIN");
-        assert_eq!(at(&response(&q, SERVFAIL, std::slice::from_ref(&own))), None, "SERVFAIL");
+        assert_eq!(
+            at(&response(&q, SERVFAIL, std::slice::from_ref(&own))),
+            None,
+            "SERVFAIL"
+        );
         let mut cut = response(&q, NOERROR, std::slice::from_ref(&own));
         cut[2] |= 0x02;
         assert_eq!(at(&cut), None, "truncated");
@@ -910,7 +927,11 @@ mod tests {
         s.from_guest(&framed_msg(&q));
         let other = response(&q, NOERROR, &[rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])]);
         s.from_host(&framed_msg(&other));
-        assert!(s.learned.iter().all(|found| !found.addresses.contains(&forbidden)));
+        assert!(
+            s.learned
+                .iter()
+                .all(|found| !found.addresses.contains(&forbidden))
+        );
     }
 
     #[test]

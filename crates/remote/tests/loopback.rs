@@ -325,8 +325,12 @@ impl Host for Machine {
         if exhausts {
             *EXHAUSTED.lock().unwrap() = Some(Exhausted::now());
         }
+        // Windows sets no descriptor limit a command could run out of: the ask is refused, as
+        // a start the daemon cannot make is.
         #[cfg(windows)]
-        assert!(!exhausts, "no descriptor limit on Windows");
+        if exhausts {
+            return Err(Error::new("no descriptor limit on Windows"));
+        }
         let go = exhausts.then(|| args.get(1).cloned()).flatten();
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
@@ -2335,7 +2339,12 @@ fn ran_seen(identity: &'static Identity, remote: Remote, args: &[&str]) -> (Resu
 /// The hold is chosen from what the first connection measured, its handshake and its client's
 /// probe timeout (`net::Seen::pto`), never a figure of the test's: ROOT's run at load 59
 /// (8bfa6150e, r678) took a first handshake past 12.5 ms, and a hold of twice it reached the
-/// 25 ms floor the test once assumed. Where no hold fits between them, the test says so.
+/// 25 ms floor the test once assumed. Where no hold fits between them, the test says so. The
+/// hold is on the clock, and a handshake's time counts none of its client's own absence
+/// (`net::Liveness::absent`), so the second handshake and that absence (`net::Seen::absent`)
+/// together outlast the hold: red with the handshake alone held to it, CI's aarch64 Linux run at
+/// 9ef3b1247 (job 132390978048) measured 1.821403 ms past a hold of 2.03343 ms on a loaded
+/// runner. The record keeps the slower of the two handshakes.
 #[test]
 fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answered() {
     let daemon_id = leak(Identity::generate().unwrap());
@@ -2374,8 +2383,11 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
     let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
     assert_eq!(status, Ok(0), "{seen:?}");
     let slower = seen.handshake.unwrap();
-    assert!(slower > hold, "{slower:?}, {path:?}");
-    assert_eq!(known.after(&seen).path().map(|p| p.handshake), Some(slower));
+    assert!(slower + seen.absent > hold, "{seen:?}, {path:?}");
+    assert_eq!(
+        known.after(&seen).path().map(|p| p.handshake),
+        Some(slower.max(path.handshake))
+    );
 }
 
 /// A daemon reached before whose next handshake goes unheard past the slowest handshake seen

@@ -682,7 +682,11 @@ mod platform {
         // (network-12).
         loop {
             // Short: macOS bounds these names at 31 bytes (PSHMNAMLEN).
-            let name = format!("/sf{}.{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed));
+            let name = format!(
+                "/sf{}.{}",
+                std::process::id(),
+                NAMES.fetch_add(1, Ordering::Relaxed)
+            );
             let c = std::ffi::CString::new(name).map_err(|_| io::Error::other("a name with NUL"))?;
             // SAFETY: shm_open(2) with a NUL-terminated name.
             let fd =
@@ -1025,7 +1029,8 @@ mod tests {
             .collect();
         for c in &taken {
             // SAFETY: shm_open(2) of a NUL-terminated name, its descriptor closed at once.
-            let fd = unsafe { libc::shm_open(c.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600) };
+            let fd =
+                unsafe { libc::shm_open(c.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600) };
             assert!(fd >= 0, "{c:?}: {}", io::Error::last_os_error());
             // SAFETY: the descriptor just made.
             unsafe { libc::close(fd) };
