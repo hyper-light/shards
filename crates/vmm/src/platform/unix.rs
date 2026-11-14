@@ -3196,29 +3196,112 @@ mod usage_tests {
         assert_eq!(mach_ns(u128::MAX), u64::MAX);
     }
 
-    /// A thread's clock, read from another thread, counts what it spins: about no more
-    /// than the wall time, and on a host that lets it run, a share of it.
+    /// The runtime the kernel has charged a thread, read apart from its [`ThreadClock`]: on
+    /// Linux its schedstat's first field, the scheduler's `se.sum_exec_runtime`, which leaves
+    /// out the part of a run under way that the clock counts (Documentation/scheduler/
+    /// sched-stats.rst; kernel/sched/core.c, `task_sched_runtime`); on macOS
+    /// thread_info(THREAD_BASIC_INFO)'s user and system times, in microseconds
+    /// (mach/thread_info.h).
+    #[cfg(target_os = "linux")]
+    fn charged_ns(tid: libc::pid_t) -> u64 {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/schedstat")).unwrap();
+        stat.split_ascii_whitespace().next().unwrap().parse().unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn charged_ns(port: libc::mach_port_t) -> u64 {
+        // SAFETY: zeroed plain data, which thread_info fills.
+        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        // SAFETY: a port of a live thread of this process; a buffer of `count` words.
+        let r = unsafe {
+            libc::thread_info(
+                port,
+                libc::THREAD_BASIC_INFO as libc::thread_flavor_t,
+                (&raw mut info).cast(),
+                &raw mut count,
+            )
+        };
+        assert_eq!(r, libc::KERN_SUCCESS);
+        let ns = |t: libc::time_value_t| {
+            u64::try_from(t.seconds).unwrap() * 1_000_000_000 + u64::try_from(t.microseconds).unwrap() * 1_000
+        };
+        ns(info.user_time) + ns(info.system_time)
+    }
+
+    /// Wall time in nanoseconds in the timebase each kernel charges runtime by, which no time
+    /// service slews: CLOCK_MONOTONIC_RAW on Linux (clock_gettime(2)), CLOCK_UPTIME_RAW,
+    /// mach_absolute_time's, on macOS.
+    fn raw_ns() -> u64 {
+        #[cfg(target_os = "macos")]
+        let id = libc::CLOCK_UPTIME_RAW;
+        #[cfg(not(target_os = "macos"))]
+        let id = libc::CLOCK_MONOTONIC_RAW;
+        let mut t = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: a system clock, and a timespec to write.
+        assert_eq!(unsafe { libc::clock_gettime(id, &raw mut t) }, 0);
+        u64::try_from(t.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap()
+    }
+
+    /// A thread's clock, read from another thread, counts what it runs: it never falls; it
+    /// never says more than the wall time since before its thread began; and read after the
+    /// kernel's own count of its runtime, it says at least as much, so it grows across a span
+    /// in which the kernel saw its thread run. The thread spins until the kernel's count passes
+    /// the clock's first reading, however long a loaded host takes to run it.
     #[test]
     fn a_threads_clock_counts_what_it_runs() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        /// Stops the spinner as it drops, a failed assertion's unwinding too, so the scope
+        /// joins it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel();
+        let born = raw_ns();
         std::thread::scope(|s| {
             s.spawn(|| {
-                tx.send(ThreadClock::current().unwrap()).unwrap();
+                let clock = ThreadClock::current().unwrap();
+                #[cfg(target_os = "linux")]
+                // SAFETY: gettid(2) has no preconditions.
+                let id = unsafe { libc::gettid() };
+                #[cfg(target_os = "macos")]
+                let id = clock.0;
+                tx.send((clock, id)).unwrap();
                 while !stop.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
             });
-            let clock = rx.recv().unwrap();
-            let (t0, before) = (std::time::Instant::now(), clock.read().unwrap());
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let spun = clock.read().unwrap() - before;
-            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
-            stop.store(true, Ordering::Relaxed);
-            // A read may lag what its thread has run by what it ran since its last tick.
-            assert!(spun <= wall + wall / 10, "{spun} ns of CPU in {wall} ns");
-            assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
+            let _stop = Stop(&stop);
+            let (clock, id) = rx.recv().unwrap();
+            let read = |last: u64| {
+                let ns = clock.read().unwrap();
+                let lived = raw_ns() - born;
+                assert!(ns >= last, "its clock fell from {last} to {ns} ns");
+                assert!(ns <= lived, "{ns} ns of CPU in {lived} ns of its life");
+                ns
+            };
+            let first = read(0);
+            let mut last = first;
+            loop {
+                let charged = charged_ns(id);
+                last = read(last);
+                assert!(
+                    last >= charged,
+                    "its clock says {last} ns, after its kernel charged {charged}"
+                );
+                if charged > first {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            assert!(last > first, "{first} ns, then {last}");
         });
     }
 
