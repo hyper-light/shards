@@ -4178,6 +4178,144 @@ mod tests {
         assert_eq!(said, "its wait sees no child; command exited 0");
     }
 
+    /// What `top` lists (procs.rs) in a PID namespace of the test's own, whose `/proc` lists
+    /// nothing of the host's, of a member whose first process runs `member` with the
+    /// starter's end of a starter channel and execs `sleep 1000` (whatever file it runs): the
+    /// names the dump gives its processes, read once that exec is done (its command line
+    /// says it), and whether a starter (by its name, which the test alone reads) was born.
+    /// The test's PID namespace ends with it, its starter with it. Run as root of IDs past
+    /// its own (`unshare --map-auto --map-root-user`); else a SKIP.
+    fn top_of_a_member(member: impl FnOnce(RawFd)) -> Option<String> {
+        as_root_of_own_mounts(|| {
+            // SAFETY: unshare(2) of this single-threaded child: its next child is PID 1 of a
+            // PID namespace of its own.
+            if unsafe { libc::unshare(libc::CLONE_NEWPID) } != 0 {
+                return format!("SKIP: unshare: {}", io::Error::last_os_error());
+            }
+            in_child(|| {
+                // SAFETY: mount(2) of NUL-terminated literals over /proc, in this test's own
+                // mounts: its PID namespace's /proc.
+                let proc = unsafe {
+                    libc::mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), 0, std::ptr::null())
+                };
+                if proc != 0 {
+                    return format!("SKIP: its /proc: {}", io::Error::last_os_error());
+                }
+                let (starter, theirs) = crate::starter::channel().unwrap();
+                // SAFETY: fork(2) of a process of one thread; the child runs `member`, which
+                // execs, or exits.
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0, "fork: {}", io::Error::last_os_error());
+                if pid == 0 {
+                    member(theirs.as_raw_fd());
+                    // SAFETY: _exit(2) of a child whose `member` did not exec.
+                    unsafe { libc::_exit(1) }
+                }
+                drop(theirs);
+                let cmdline = format!("/proc/{pid}/cmdline");
+                while !std::fs::read(&cmdline).unwrap_or_default().starts_with(b"sleep\x001000\x00") {
+                    // SAFETY: waitpid(2) of this process's own child, not waiting.
+                    if unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } == pid {
+                        return "the member ended before its exec".into();
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let comm = |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+                let born = std::fs::read_dir("/proc")
+                    .unwrap()
+                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .any(|pid| comm(&pid).trim() == "starter");
+                let dump = crate::procs::dump(None, crate::procs::Members::Workload);
+                let listed: Vec<String> = dump
+                    .split(|&b| b == 0x1e)
+                    .skip(1)
+                    .filter_map(|record| {
+                        let stat = String::from_utf8_lossy(record.split(|&b| b == 0x1f).next()?).into_owned();
+                        Some(stat.get(stat.find('(')? + 1..stat.rfind(')')?)?.to_string())
+                    })
+                    .collect();
+                // SAFETY: kill(2) and waitpid(2) of this process's own child.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, std::ptr::null_mut(), 0);
+                }
+                drop(starter);
+                format!("starter: {born}; listed: {listed:?}")
+            })
+        })
+    }
+
+    /// confine-11 (docs/bugs/2026-11-13/confine.md): the top of a member lists the member's
+    /// own processes alone, as `docker top` lists a container's, where runc's exec helper is
+    /// gone by the time its command runs: the member's starter (D243), a fork of this
+    /// program's that never execs, is left out with this program's other forks, by the file
+    /// it runs. The member is confined, forks its starter as a member's first process does,
+    /// and execs `sleep`; the dump is read with its starter alive.
+    #[test]
+    fn a_members_top_lists_its_own_processes_alone() {
+        let c = member_confinement(1000, Vec::new(), "/");
+        let said = top_of_a_member(|theirs| {
+            // SAFETY: the member's first process's last steps, in a child of one thread:
+            // confined, its starter's end at its place, its starter forked, its program run.
+            unsafe {
+                if rules(&c, c.ruleset.as_raw_fd())
+                    .and_then(|()| confine(&c, c.ruleset.as_raw_fd()))
+                    .is_err()
+                {
+                    return;
+                }
+                libc::dup3(theirs, crate::starter::STARTER_FD, libc::O_CLOEXEC);
+                crate::starter::fork();
+                let argv = [c"sleep".as_ptr(), c"1000".as_ptr(), std::ptr::null()];
+                libc::execv(c"/bin/sleep".as_ptr(), argv.as_ptr());
+            }
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, r#"starter: true; listed: ["sleep"]"#);
+    }
+
+    /// confine-11: a member's program at the path this program runs from, in the member's own
+    /// mounts, is listed. `/proc/PID/exe` reads a program's path as its own mounts have it
+    /// (d_path(9), from a root its mounts do not reach), so a member whose image has its
+    /// program where init's is (an image's `/init`) read as init's own fork, and `top` left
+    /// it out; init's forks are known by the file itself. The member, in mounts of its own,
+    /// binds `/bin/sleep` over this test's program and execs it there; its name is that
+    /// path's last part, as execve(2) names a process (`TASK_COMM_LEN`, 15 bytes).
+    #[test]
+    fn a_members_program_at_inits_path_is_listed() {
+        let path = std::fs::read_link("/proc/self/exe").unwrap();
+        let name: String = path.file_name().unwrap().to_str().unwrap().chars().take(15).collect();
+        let mine = CString::new(path.into_os_string().into_encoded_bytes()).unwrap();
+        let said = top_of_a_member(|_| {
+            // SAFETY: unshare(2), mount(2) and execv(2) of NUL-terminated strings of this
+            // stack's, in a child of one thread, which execs or returns to exit.
+            unsafe {
+                if libc::unshare(libc::CLONE_NEWNS) != 0
+                    || libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    ) != 0
+                    || libc::mount(
+                        c"/bin/sleep".as_ptr(),
+                        mine.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_BIND,
+                        std::ptr::null(),
+                    ) != 0
+                {
+                    return;
+                }
+                let argv = [c"sleep".as_ptr(), c"1000".as_ptr(), std::ptr::null()];
+                libc::execv(mine.as_ptr(), argv.as_ptr());
+            }
+        });
+        let Some(said) = said else { return };
+        assert_eq!(said, format!("starter: false; listed: [{name:?}]"));
+    }
+
     /// The starter's terminal path in the member as init starts it, PID 1 of a PID namespace
     /// of its own: a command asked for with `tty` is the leader of a session of its own whose
     /// controlling terminal is its stdio, init's pty's peer (`enter::terminal`, 24 by 80), as
