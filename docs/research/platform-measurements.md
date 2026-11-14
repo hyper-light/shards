@@ -23756,3 +23756,61 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   waits for none); R04 `Upward` and `Downward`, `Said::HungUp` and `Said::Shut` typed; R09,
   R10 red on main's code on both hosts, green after; R11 Unix and Windows written, macOS and
   Linux run; R15, R16 implementer, its runner targets removed after landing.
+
+### M560. CI's musl test job: its build and its tests as steps of their own, each limit derived (M420, M547)
+
+- **Question.** In CI run 43513425954 (main 70eba153d) the x86_64-unknown-linux-musl test job
+  (job 132194139799) spent 46.3 of its Alpine step's 60 minutes building the tests, and the
+  limit cut the tests in tests/containers.rs. That limit (M235's) was never derived as M420
+  derived the native jobs' (M547). What does each part of the step take, and what limits
+  does M420's rule (a third above the slowest measured) give them?
+- **Method.** `docs/research/measurements/ci-musl-limits/fetch.py` (2026-11-14): the CI
+  workflow's newest 1000 runs created since 2026-11-08 (728 completed that ran over 30
+  minutes, 2026-11-09 21:45 to 11-13 21:57 UTC), each one's musl and x86_64 gnu jobs' step
+  times, and 612 test jobs' logs: x86_64 musl's all, aarch64 musl's and x86_64 gnu's from
+  11-12 06:00. `phases.py` splits each musl test log's Alpine step at cargo's `Finished
+  test-release` line into the tests' build (setup included) and the tests (the `guest`
+  builds the tests start included), and, as M420 did, puts each run the limit cut at its cut
+  binary's start plus the most the runs that ran through took from that binary on. Output in
+  `results.txt`.
+- **Found** (minutes; n, p50, p90, p99, max).
+  - x86_64 musl's step ran through in 7 of 413 (p50 50.4, max 57.3), and 355 of its 404 logs
+    end at the limit. Of those, 353 had been in their last test binary for 5.1 (p50) to 36.5:
+    many were hangs (11-12's run of 64 in tests/api_image.rs, 17 to 36 minutes in it), and
+    the rest were runs still going.
+  - The tests' build: 404, 32.5, 37.2, 39.6, 46.3 (43513425954's). By day the p50 was 34.8
+    (11-09, 6 jobs), 32.3, 32.1, 32.7, 31.1 (11-13): the build has not grown since 11-10, and
+    46.3 is a slow runner's, 1.5 times its day's p50. aarch64's (no KVM) was 107, 25.1, 26.5,
+    28.5, 29.1, at p50 25.1 on 11-12 and 25.0 on 11-13. Setup before cargo's first line:
+    x86_64 0.5 at p50, 4.5 at most.
+  - The tests, in their own container (each run's setup and tests): x86_64 357 runs, 30.3,
+    32.4, 34.7, 42.9 (42723613885, 4cd00dcdb, cut in tests/oracle.rs at 38.5); the four that
+    ran through every binary (11-13) 25.4 to 27.7. aarch64 10, 14.6 at p50, 15.0 at most.
+    x86_64 gnu's same tests (KVM, ubuntu-24.04), the 9 that ran through: 31.0 at p50, 34.7 at
+    most, and its build 18.6 and 20.0.
+  - The test jobs' other steps, where gdb's install went through: x86_64 413, 1.5, 2.4, 4.3,
+    5.8 (42748601186); aarch64 0.2 at most. gdb's install failed at 25.4 in the 11-11
+    14:16-16:19 mirror outage, ending those jobs before their Alpine step.
+  - The release jobs' step: x86_64 372, 31.3, 37.3, 40.4, 43.8 (43474661701); aarch64 at most
+    38.3. A third above 43.8 is 58.4, under its 60.
+  - No job of ci.yml keeps a cargo build cache (the GPU renderer's alone), so the musl job
+    lacks none the others have.
+- **Decided.** The test job builds the tests (`MUSL_CI=test-build`, `cargo test --no-run`)
+  and runs them (`MUSL_CI=test`) in two steps, two containers (`scripts/ci/alpine`), the
+  second finding the first's target/ in the checkout and its user's home (cargo's registry,
+  zig's cache) in `$RUNNER_TEMP/alpine-home`, mounted as that home in both; no build input
+  differs between them (build.rs watches sources and named variables alone). Each limit is
+  a third above its slowest, rounded up: the build step 62 (46.3), the tests' step 58 (42.9),
+  the job 128 (62 + 58 + a third above 5.8). aarch64's test job shares them, as the native
+  jobs share M420's. The release jobs keep 60 and 70. Python 3 is added where tests run
+  (`test`, `release`, `all`), as 413713885 set, and not to the build-only parts.
+- **Owed.** Proven only by the next CI runs: the tests' step must show no `Compiling` line
+  of the workspace's (the build found fresh), and both steps must run within their limits.
+  The hangs are not this entry's: tests/api_image.rs on 11-12 (17 to 36 minutes) and the
+  binaries cut minutes after their last result belong to their own steps' owners; a tests
+  step of its own now cuts a hang at 58 minutes of tests rather than at what the build left.
+- **Rules** (policy df2acf47, role implementer): R02, R03 CI's own records, every limit M420's
+  rule over them, the slowest runs cited; R09, R10 the overrun is 43513425954's log and the
+  harness is committed; red and green are the next CI runs, unrun here; R11 both musl
+  architectures measured and limited; R15 implementer, no CI or VM run started; R16 the
+  fetched logs (0.3 GB) are removed after landing.
