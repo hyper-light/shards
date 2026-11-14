@@ -24047,6 +24047,19 @@ At 29196c6b3 both pass; memory::tests:: 25/25 and vmm clippy pass (r7).
 This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
+
+### Remote-05. Private request arguments in the daemon log (2026-11-13)
+
+This is correctness evidence, not a performance measurement. An enrolled fixture's
+refused request put its synthetic private argument in captured daemon stderr at
+`144818a4a` (1 regression failed); omitting raw argument/relay-token values at
+`68b43042c` passed all 5 remote module unit tests and shards all-target clippy on
+macOS arm64, Rust 1.98.1. Existing client/operation diagnostics remain. No new
+constant, cache, wait or platform branch. Exact commands, source revisions, logs,
+policy receipt and outstanding live-context checks are in
+[the evidence record](measurements/remote-fixes-v1/README.md). Guest execution and
+cross-machine/Windows checks are owed to ROOT; no performance claim is made.
+
 ### M564. MCP bridge termination with the harness stdin writer retained (D254)
 
 Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
@@ -24055,3 +24068,13 @@ copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-i
 all-target clippy passed. Normal socket half-close still delivers later stdin.
 This is functional evidence, not a performance measurement or real-VM result.
 [Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
+
+### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
+
+Linux x86_64, adacachy2, 2026-11-13: at 8e8e1c439 both Agentfile endpoint and
+init netplan tests fail `mcp.example.` versus `mcp.example` (kiln r7). At 79019fa55,
+3 focused Agentfile MCP tests, 8 init netplan tests, and both crates' all-target
+clippy pass (r8). These are functional unit results, not a real DNS-provider or
+real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
+no chosen runtime value, wait or cache is added.
+[Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).

@@ -34,6 +34,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test (ROOT, real guest):** Seed the two volumes above with ownership assigned to the member. Have its original process show `open("/proc/self/comm", O_WRONLY)` fails under Landlock, perform the rename/symlink mutation, then run a member exec that tries the same operation. Assert it is refused or stays denied. Check the actual proc write effect, not only the reported ruleset. Remove the identity guard independently to restore the widened effect.
 
+**Status (2026-11-14):** fixed in cd9f710fb (red `domains::tests::a_command_run_in_a_member_gains_no_landlock_right_its_member_lacks`: at 8ab0e2d1e, Linux 7.3.3 x86_64 musl under `unshare --map-auto --map-root-user`, `member refused (13); command written`; green after; mutant re-adding the rules in `confine` red again). Init makes the member's ruleset, its first process adds the rules, every command enters that one ruleset (D243).
+
 ### confine-02 — P0 / critical — initial cwd entry bypasses member DAC permissions
 
 **Location at HEAD:** `crates/init/src/domains.rs:3065`.
@@ -49,6 +51,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 **Fix direction:** Enter cwd with member credentials and confinement already active, retaining typed launch failure. If resolution is prepared earlier, do not turn a root-opened directory into authority the member could not obtain.
 
 **Catch test:** Boot the fixture image above and attempt the relative sentinel read. Require startup refusal/EACCES and no sentinel output. Independently move cwd entry ahead of credential drop to show that the test observes the actual forbidden read.
+
+**Status (2026-11-14):** fixed in e1a3a2433 (red `domains::tests::a_member_starts_in_no_working_directory_it_could_not_enter`: at 8ab0e2d1e, same host, `allowed | sentinel`; green after; mutant moving `chdir` back ahead of `confine` red again). The working directory is entered after `confine` (D240).
 
 ### confine-03 — P1 / high — staged HOME files are written behind nested mounts
 

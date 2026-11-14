@@ -86,6 +86,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** retain an actual zone-1 tuple to A, force the allocator close to wrap in a disposable fixture, hand the port to B, then resend the same client tuple. Require B to receive it and A to observe nothing. Also test a non-forced full-cycle campaign under ROOT's resource limits.
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`, extended with a retained zone-1 tuple and forced allocator wrap. The existing one-handoff fixture does not reproduce wrap. Retirement design and owner-failure requirements: `docs/research/measurements/network-fixes-v1/README.md#network-04-conntrack-zone-retirement`. No allocator patch or passing reproduction is claimed.
+
 ### network-05 — P2 / high: Hex/API-run never programs the IPv6 uplink that daemon runs receive
 
 **Location:** `crates/shards/src/api_run.rs:2544`, `:3072`; supporting paths `:2841`, `crates/init/src/links.rs:1213`. API-run was added in the review range.
