@@ -32,8 +32,13 @@ use crate::sync::lock;
 /// A failed KVM call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    Call { op: &'static str, error: String },
+    Call {
+        op: &'static str,
+        error: String,
+    },
     Guest(String),
+    /// A snapshot's XSAVE area this host's cannot take (migrate-07).
+    Xsave(crate::arch::x86_64::xsave::XsaveRefused),
 }
 
 impl fmt::Display for Error {
@@ -41,6 +46,7 @@ impl fmt::Display for Error {
         match self {
             Error::Call { op, error } => write!(f, "{op} failed: {error}"),
             Error::Guest(msg) => f.write_str(msg),
+            Error::Xsave(refused) => refused.fmt(f),
         }
     }
 }
