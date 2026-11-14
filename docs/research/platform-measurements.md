@@ -23873,3 +23873,56 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   plant one data range per 64 MiB file. R11 the Linux behaviour (ext4 on CI) and Windows'
   whole read are unrun here. R15: no VM or CI run started; the api_image E2E rerun is
   ROOT's. R16: the fetched logs (1.9 GB) are removed after landing.
+
+### M562. "The guest stopped before the command ended" on CI's x86_64 runners: the run host cut its own run's connection
+
+- **Question.** From 740fa3726 (2026-11-13), api_image's `staged_credentials_…`,
+  `a_run_keeping_nothing_…` and `a_members_arguments_…`, and managed_output's log lanes and
+  member stdin cases, failed on CI's x86_64 runners (and ROOT's KVM run at c120c8a95, at
+  `--test-threads=1`) with the run Failed("its VM could not serve its run: the guest stopped
+  before the command ended: failed to fill whole buffer"), the harness's end `WithRun`. Who
+  ended the run's connection?
+- **Method.** The failed x86_64 gnu and musl test jobs of CI runs created since 2026-11-12
+  15:00Z (424 runs, 146 failed jobs), fetched with `gh` as
+  `docs/research/measurements/ci-musl-limits/control_cut.py` says, and that script's tally
+  (`control_cut.txt`).
+- **Found.**
+  - 6 jobs hold the run's "guest stopped" end, every one from 740fa3726 on. In all 5 that print
+    the run host's or daemon's log, its VM process said, just before it, "the guest's signal
+    connection is lost: invalid data" (e.g. job 132194139799, VM uptime 994 ms; ROOT's KVM run,
+    158 ms). The member-args case keeps no run-host log: unconfirmed.
+  - The only InvalidData without an OS code on that connection is the VM process's
+    `Control::serve` (crates/shards/src/workload/capture.rs) refusing a frame of a run whose
+    members are managed; `supervise` then ended its copy of the run's connection
+    (workload.rs: `boundary`, a clone of `conn`), and the relay read that end at a frame
+    boundary (workload.rs `relay_frames`): the guest had not stopped.
+  - The frame: init ends a relay that a failure broke (`break 'relay` with `fatal`) by writing
+    `SIGNALS_END` on the signal connection (crates/init/src/run.rs `say_signals_end`, after the
+    loop), and only then `SYSTEM_ERR` and `EXIT` on the run's connection (run.rs l. 340-350). Its
+    managed control's `MANAGED_CONTROL_END` is queued and sent only on the loop's own way out,
+    so after a fatal break serve reads `SIGNALS_END` first and refused it as "managed abort
+    frame". Reproduced without a VM: the unit test below with serve's `SIGNALS_END` arm removed
+    fails with `Custom { kind: InvalidData, error: "managed abort frame" }`.
+  - Ruled out: D251's cut rule (e7c275363, 18:56Z on 11-13), which landed after the first
+    failing run, 740fa3726 at 15:50Z; framing on the run's connection, whose header read met a
+    clean end at a frame boundary (`failed to fill whole buffer`, never `the guest stopped
+    mid-frame`); a race between the end frame and init's close, as init had sent no end before
+    the host's cut. The older `WithRun` failures (11-12, 83f0549ad to a84cd6abb) printed no run
+    host log; whether they are this is unknown.
+- **Decided.** `Control::serve` takes `SIGNALS_END` as its scope's end with its relay's
+  (`Served::RelayEnded`): the signal connection's watch ends as a relay's end does
+  (workload.rs `ended`), nothing is cut, and the guest's own words and end come on the run's
+  connection. A control refused or ended unannounced still cuts the run, and why is kept
+  (`ENDED_RUN`, "its managed control ended: …", beside a broken output relay's), so the run
+  fails in those words, never as the guest's stop.
+- **Open.** Which failure breaks init's relay as those members end is not found: with this
+  change the run says it (init's `SYSTEM_ERR`), for ROOT's KVM loop to read.
+- **Rules** (policy df2acf47, role implementer): R01 no new panic path; R03 no constant;
+  R04 the scope's end is a typed `Served`, and its refusal a kept reason; R09 the symptom
+  is CI's and ROOT's logs, and the unit test reproduces its exact error; R10
+  `a_relays_end_within_the_control_scope_ends_it_and_leaves_the_run_open` red under
+  guard removal (InvalidData "managed abort frame"), green with it, and the unannounced-EOF
+  test red without the kept reason; workload:: 40 of 40 on adas-mac-studio.local (macOS arm64);
+  clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
+  aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
+  the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
