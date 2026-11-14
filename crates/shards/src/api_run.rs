@@ -1037,19 +1037,23 @@ fn held_of(room: Option<i64>, out: &[u8]) -> Result<Option<u64>, String> {
 }
 
 /// How a run ended, from its VM's link (D249): why the link failed, else its `DONE`. That is
-/// the command's status and, where the command never started (its guest said no `STARTED`),
-/// why not, read as the daemon reads them (warm.rs `finish`, daemon.rs `run_ended`). Such a
-/// run failed, in its VM's words: the status alone, the code dockerd gives a run whose
-/// command never started, would read as the command's own exit.
+/// the status its microVM keeps and, where its init said why its run failed (`SYSTEM_ERR`),
+/// init's words (warm.rs `done`). Such a run failed, in init's words, whether before its guest
+/// said `STARTED` (its command never started) or after (its init failed it as it ran): the
+/// status alone, the code dockerd gives it, would read as the command's own exit.
 fn run_end(failed: Option<String>, done: Option<&[u8]>, started: bool) -> wire::RunEnd {
     if let Some(why) = failed {
         return wire::RunEnd::Failed(why);
     }
     match done.and_then(<[u8]>::split_first) {
-        Some((status, said)) if !started && !said.is_empty() => wire::RunEnd::Failed(format!(
-            "its command never started (status {status}): {}",
-            String::from_utf8_lossy(said)
-        )),
+        Some((status, words)) if !words.is_empty() => {
+            let words = String::from_utf8_lossy(words);
+            wire::RunEnd::Failed(if started {
+                format!("its init failed after its command started: {words}")
+            } else {
+                format!("its command never started (status {status}): {words}")
+            })
+        }
         Some((status, _)) => wire::RunEnd::Exited(u32::from(*status)),
         None => wire::RunEnd::Failed(
             "the VM ended without its run's end; its last words are on this host's stderr".into(),
@@ -6277,17 +6281,14 @@ mod tests {
 
     /// Do end a run whose guest said `STARTED` with a `DONE` of a status alone; one whose
     /// guest never did with a status and the words of a command that never started (warm.rs
-    /// `finish`); one that started with such words; one after a broken link; and one with no
-    /// `DONE`. Expect: the status as the run's exit; a failure saying the command never
-    /// started, its status and the VM's words, never that status as an exit; the status, as
-    /// the daemon keeps a started command's (daemon.rs `run_ended`); the link's failure; a
-    /// failure.
+    /// `done`); one after a broken link; and one with no `DONE`. Expect: the status as the
+    /// run's exit; a failure saying the command never started, its status and init's words,
+    /// never that status as an exit; the link's failure; a failure.
     #[test]
     fn a_command_that_never_started_ends_its_run_failed_saying_why() {
         assert_eq!(run_end(None, Some(&[3]), true), wire::RunEnd::Exited(3));
         assert_eq!(run_end(None, Some(&[0]), true), wire::RunEnd::Exited(0));
         let never = b"\x80exec: \"/bin/sh\": operation not permitted";
-        assert_eq!(run_end(None, Some(never), true), wire::RunEnd::Exited(128));
         match run_end(None, Some(never), false) {
             wire::RunEnd::Failed(why) => assert_eq!(
                 why,
@@ -6300,6 +6301,31 @@ mod tests {
             wire::RunEnd::Failed("the VM's link: reset".into())
         );
         assert!(matches!(run_end(None, None, false), wire::RunEnd::Failed(_)));
+    }
+
+    /// Do end a run whose guest said `STARTED` and whose init then failed it: `SYSTEM_ERR`'s
+    /// words and `EXIT` 125 from init (init run.rs, the relay's failure), kept by its VM as
+    /// dockerd keeps a run's (128, warm.rs `finish`), its `DONE` that code and init's words.
+    /// Expect: the run failed in init's words, typed (the person's decision, 2026-11-14), never
+    /// `Exited(128)`, which reads as its command's own exit (the apiend128 lane's report).
+    #[test]
+    fn an_init_that_fails_a_started_run_ends_it_failed_in_inits_words() {
+        let words = "its capture: the managed output's control connection ended";
+        let done = [&[128u8][..], words.as_bytes()].concat();
+        assert_eq!(
+            run_end(None, Some(&done), true),
+            wire::RunEnd::Failed(format!("its init failed after its command started: {words}"))
+        );
+        let told = Told {
+            started: true,
+            unserved: None,
+            done: Some(done),
+            used: None,
+        };
+        assert_eq!(
+            told.end(None),
+            wire::RunEnd::Failed(format!("its init failed after its command started: {words}"))
+        );
     }
 
     /// Do end a run whose VM could not serve it, as warm.rs `finish` tells it: why, then a

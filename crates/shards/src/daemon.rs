@@ -7044,13 +7044,13 @@ impl<D: Disk> Daemon<D> {
         // failed. It is not started again, by its policy or otherwise, nor removed with its
         // snapshots: `restore vm` resumes it.
         let saved = inbox.saved_as.take();
-        // DONE carries the status, and for a command that never started what dockerd
-        // would say and the code its microVM keeps (warm.rs finish).
+        // DONE carries the code its microVM keeps and, for a command that never started,
+        // init's words (warm.rs `done`), said here as dockerd says them (D249).
         let (status, said) = match done.and_then(<[u8]>::split_first) {
             _ if saved.is_some() => (shards_ipc::SAVED_STATUS, None),
-            Some((&status, said)) => (
+            Some((&status, words)) => (
                 status,
-                (!started).then(|| String::from_utf8_lossy(said).into_owned()),
+                (!started).then(|| shards_cmdline::commands::start_failed(&String::from_utf8_lossy(words)).0),
             ),
             // A VM that ended without a word leaves its command's status unknown: 255, as
             // dockerd reports a container whose process it lost.

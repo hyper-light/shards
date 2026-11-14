@@ -1697,6 +1697,18 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     Ok(())
 }
 
+/// A run's `DONE`: the status its microVM keeps, then, where its guest said why its command
+/// did not run or its run failed (`SYSTEM_ERR`, `not_run`), init's own words, which each
+/// reader renders at its own boundary (D249): the daemon as dockerd says them
+/// (`start_failed`), the run host as its run's typed failure.
+fn done(status: u8, not_run: Option<&str>) -> Vec<u8> {
+    let words = not_run.map_or(&[][..], str::as_bytes);
+    let mut done = Vec::with_capacity(1 + words.len());
+    done.push(status);
+    done.extend_from_slice(words);
+    done
+}
+
 /// Tells the daemon how a joiner ended, then its client, as [`finish`] tells a run's: what
 /// kept its command from starting goes to the client's stderr first. Unlike a run's, the
 /// VM's own stdio is not the joiner's, and stays as it is.
@@ -1730,11 +1742,7 @@ fn joined_finish(
             let _ = to_daemon(link, kind::PIDS, facts, &[]);
         }
     }
-    let mut done = vec![status];
-    if let Some((said, _)) = &failed {
-        done.extend_from_slice(said.as_bytes());
-    }
-    let _ = to_daemon(link, kind::DONE, &done, &[]);
+    let _ = to_daemon(link, kind::DONE, &done(status, not_run.as_deref()), &[]);
     if let Some(client) = client {
         // Its client's stderr is the one its request gave, not this process's.
         if let (Some(text), Some(mut stderr)) = (text, stderr) {
@@ -2107,10 +2115,7 @@ pub fn finish(
     if let Ok(null) = workload::null() {
         let_go(&null);
     }
-    let mut done = vec![status];
-    if let Some((said, _)) = &failed {
-        done.extend_from_slice(said.as_bytes());
-    }
+    let done = done(status, not_run);
     if let Ok(ended) = &served {
         tell_lost(&link.daemon, ended);
     }
@@ -2513,6 +2518,17 @@ fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Ve
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Do write the `DONE` of a run that ended, of one whose init said why it failed with words
+    /// dockerd amends (`start_failed`: "not a directory"), and the code its microVM keeps.
+    /// Expect: the status alone; the status, then init's words as init said them, which the
+    /// daemon says as dockerd does and the run host types as its failure (D249).
+    #[test]
+    fn a_runs_done_carries_inits_own_words() {
+        assert_eq!(done(3, None), [3]);
+        let words = "mkdir /data: not a directory";
+        assert_eq!(done(127, Some(words)), [&[127u8][..], words.as_bytes()].concat());
+    }
 
     /// A side [`pass`] reads: its bytes, then how it ends (`Ok(0)`, its writes' end, or an
     /// error).
