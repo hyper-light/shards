@@ -10604,7 +10604,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
     each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
     both `shards build`; every `buildx policy eval` `shards buildx policy`. So a command's
-    kind is `WaitKind::of(site, words, command_line(cmd))`, kept as
+    kind is `WaitKind::of(site, words, keyed_line(cmd))`, kept as
     `<call site>-<words>-<the line's SHA-256, its first 16 hex digits>`. The line is its
     program's file stem and every argument, each value the run minted said as the
     placeholder its minting helper registered (`common::minted`), longest first: a

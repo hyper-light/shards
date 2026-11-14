@@ -1012,7 +1012,7 @@ pub struct Listed {
 }
 
 /// Every process of the system's ([`processes`]), each with its command line, read
-/// through the process's own handle ([`command_line`]), not WMI: CIM's Win32_Process
+/// through the process's own handle ([`keyed_line`]), not WMI: CIM's Win32_Process
 /// answers a standard user logged on over SSH, a network logon, "Access denied"
 /// (0x80041003; root\cimv2 grants remote enable to administrators alone), and tests run
 /// so (step 10's arm64 Windows host) found no warm or restored VM while the daemon's log
@@ -1979,7 +1979,7 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
     let kind = WaitKind::of(
         std::panic::Location::caller(),
         &command_words(cmd),
-        &command_line(cmd),
+        &keyed_line(cmd),
     );
     let asked = format!("{cmd:?}");
     let mut child = cmd
@@ -2558,7 +2558,7 @@ fn run_ending(
     let kind = WaitKind::of(
         std::panic::Location::caller(),
         &command_words(&cmd),
-        &command_line(&cmd),
+        &keyed_line(&cmd),
     );
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
@@ -2708,7 +2708,7 @@ pub fn command_words(cmd: &Command) -> String {
 
 /// A value this run minted of its own, which a command's line carries (a directory, a port,
 /// a name made of this process's ID), and the placeholder its kind's key says it as
-/// ([`command_line`]): each registered by the helper that mints it ([`minted`]), so that
+/// ([`keyed_line`]): each registered by the helper that mints it ([`minted`]), so that
 /// every run of a call site keys its commands as the run before did (ROOT's ruling (a),
 /// 2026-11-13, #77).
 struct Minted {
@@ -2763,7 +2763,7 @@ pub fn minted_port(port: u16) -> u16 {
 /// So one call site's quick refused command is kept apart from its real one (build.rs'
 /// `build --push CTX` and `build --push -t localhost:PORT/team/built:1 CTX`), and each run
 /// keys its commands as the run before did, adding no record of its own.
-pub fn command_line(cmd: &Command) -> String {
+pub fn keyed_line(cmd: &Command) -> String {
     minted(&std::process::id().to_string(), "{pid}");
     let program = Path::new(cmd.get_program())
         .file_stem()
@@ -2836,7 +2836,7 @@ impl WaitKind {
     }
 
     /// The kind of `site` waiting on the command whose words are `words` ([`command_words`])
-    /// and whose whole line is `line` ([`command_line`]), kept apart from its call site's
+    /// and whose whole line is `line` ([`keyed_line`]), kept apart from its call site's
     /// other commands'. Its record is kept beside the call site's own
     /// (`FILE-LINE-COLUMN-WORDS-HASH`, HASH the first 16 hex digits of the line's SHA-256, a
     /// name of bounded length whatever the line): one a host kept before commands were told

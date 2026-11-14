@@ -664,7 +664,7 @@ fn the_triaged_call_sites_key_their_refused_command_apart() {
     let shards = |args: &[&str]| {
         let mut cmd = std::process::Command::new("/t/shards");
         cmd.args(args);
-        common::command_line(&cmd)
+        common::keyed_line(&cmd)
     };
     let mut rounds = Vec::new();
     for _ in 0..2 {
