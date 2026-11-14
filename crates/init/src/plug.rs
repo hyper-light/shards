@@ -1262,13 +1262,18 @@ pub fn startup_said() -> Option<String> {
 /// [`working_room`]) beside what the kernel uses and the [`reserve`] (its slack: the
 /// kernel's `overshoot` and what it adds uncharged, cold, its use so far, [`Uncharged`];
 /// the page structures of what it may still plug, at most a 64th of `t`; its CPUs' lists,
-/// an eighth): `t − t/64 − t/8 ≥ 2·used + overshoot + working`, so `t ≥ 64/55` of it.
+/// an eighth): `t − t/64 − t/8 ≥ 2·used + overshoot + working`, so `t ≥ 64/55` of it, the
+/// share the reserve's two fractions leave a hold, `1 − 1/MEMMAP − 1/PCP_FRACTION`.
 fn startup(used: u64, overshoot: u64, working: u64) -> u64 {
+    // struct page's 64 bytes for each 4 KiB page: a 64th, [`reserve`]'s page structures.
+    const MEMMAP: u64 = 64;
+    let whole = MEMMAP * PCP_FRACTION;
+    let left = whole - PCP_FRACTION - MEMMAP;
     used.saturating_mul(2)
         .saturating_add(overshoot)
         .saturating_add(working)
-        .saturating_mul(64)
-        .div_ceil(55)
+        .saturating_mul(whole)
+        .div_ceil(left)
 }
 
 /// What the build has needed of its builder's memory so far, for its host to record

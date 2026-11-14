@@ -93,16 +93,6 @@ mod init {
 
 /// `fuse_attr.flags`' FUSE_ATTR_DAX: the guest maps this file into its DAX window (D189).
 const ATTR_DAX: u32 = 1 << 1;
-/// The smallest file the guest is told to map into its DAX window, 1 MiB: the smallest of
-/// the sizes measured from 4 KiB to 2 MiB at which, and at each larger one, a file read,
-/// re-read and overwritten through a window was no worse than through FUSE at p50 and p99
-/// beyond the rounds' spread, held no more memory, and left a working tree's files no slower
-/// to read, on the Mac and on Fedora's performance and efficient cores (PM M338): from
-/// 256 KiB on the Mac and Fedora's efficient cores, from 1 MiB on its performance cores,
-/// where a 256 KiB file's cold overwrite took 251 to 258 µs at p50 through a window and 202
-/// to 209 through FUSE. Smaller files are read through FUSE, which a mapping, a round trip
-/// to the share process and a host mmap(2), costs them more than it saves.
-pub const DAX_SMALLEST: u64 = 1 << 20;
 
 mod fattr {
     pub const MODE: u32 = 1 << 0;
@@ -1295,16 +1285,16 @@ impl Server {
     }
 
     /// Whether the guest is told to map node `node`'s file, `st`, into its DAX window
-    /// (D189): a regular file of at least [`DAX_SMALLEST`] the server may read, as a
-    /// mapping does; and write, in a volume the guest may write, wherever a mapping's
-    /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
+    /// (D189): a regular file the server may read, as a mapping does; and write, in a
+    /// volume the guest may write, wherever a mapping's descriptor is opened to write too
+    /// (window::SHARED_NEEDS_WRITE). Of these, its device maps those of the sizes it learned
+    /// its window serves for less than FUSE (memory-09, `crossover`); the rest it reads.
     fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
         if s.windowless {
             return false;
         }
         let euid = served_by();
         let mode = mode_of(st);
-        let size = st.size;
         // The owner's bits where the server owns it, else others': a group's members are
         // not looked up, and a file only a group gives is read through FUSE.
         #[allow(clippy::unnecessary_cast)]
@@ -1313,10 +1303,10 @@ impl Server {
         } else {
             (host::S_IROTH as u32, host::S_IWOTH as u32)
         };
-        let large = mode & S_IFMT == S_IFREG && size >= DAX_SMALLEST;
+        let regular = mode & S_IFMT == S_IFREG;
         let reachable = mode & read != 0
             && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
-        large && reachable
+        regular && reachable
     }
 
     /// A descriptor of node `node`'s file for a DAX window's mapping of it (D189), opened
@@ -3729,17 +3719,10 @@ mod tests {
         std::fs::set_permissions(p, perms).unwrap();
     }
 
-    /// DAX_SMALLEST is what PM M338's measurement found by its rule: 1 MiB, the smallest
-    /// measured size from which a window was no worse than FUSE on the Mac (from 256 KiB)
-    /// and on Fedora's performance cores (from 1 MiB) and efficient ones (from 256 KiB).
-    #[test]
-    fn dax_smallest_is_what_its_measurement_found() {
-        assert_eq!(DAX_SMALLEST, 1 << 20, "PM M338");
-    }
-
     /// A guest that maps files into a DAX window (D189) is told the host's page size its
-    /// mappings' offsets are whole multiples of, and which files to map: a regular file of
-    /// `DAX_SMALLEST` bytes or more the server may read, never one a byte short, and where a
+    /// mappings' offsets are whole multiples of, and which files may be mapped: a regular
+    /// file the server may read, whatever its size (which of them are is its device's to
+    /// learn, memory-09: a file a byte short of 1 MiB was never offered), and where a
     /// mapping's descriptor is opened to write too (Hypervisor.framework's), one it may
     /// write, in a share written to. A mapping's file, which the guest names by its node
     /// alone, is opened to read, and to write too where the share is written to; never a
@@ -3747,9 +3730,9 @@ mod tests {
     #[test]
     fn dax_is_offered_for_files_a_window_maps() {
         let (p, s) = dir();
-        std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
-        std::fs::write(p.join("small"), vec![1u8; DAX_SMALLEST as usize - 1]).unwrap();
-        std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
+        std::fs::write(p.join("big"), vec![1u8; 1 << 20]).unwrap();
+        std::fs::write(p.join("small"), vec![1u8; (1 << 20) - 1]).unwrap();
+        std::fs::write(p.join("kept"), vec![1u8; 1 << 20]).unwrap();
         host_read_only(&p.join("kept"), true);
         let mut init = Vec::new();
         for word in [
@@ -3782,7 +3765,7 @@ mod tests {
         let (_, small_flags) = looked("small");
         let (_, kept_flags) = looked("kept");
         assert_eq!(big_flags & ATTR_DAX, ATTR_DAX);
-        assert_eq!(small_flags & ATTR_DAX, 0);
+        assert_eq!(small_flags & ATTR_DAX, ATTR_DAX);
         let read_alone = if super::super::window::SHARED_NEEDS_WRITE {
             0
         } else {
