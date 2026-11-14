@@ -389,3 +389,48 @@ state/resource/compatibility requirements above are designs, not compliance resu
 D99/D122 and finding statuses retain these gaps. No platform or performance result
 is inferred from this documentation. Network-03 target cleanup r24 exited0; all
 owned ARM test containers are --rm, and no run remains active.
+
+## network-03: native macOS readiness regression
+
+ROOT reported two failures on macOS arm64 at main6389b6e09, first-address admission
+at lib.rs4076, before the replacement assertion. Urgent follow-up takes priority;
+network08 is held unlanded on p/fix-network-v1 at74ea2d725, and its green run r26
+failed GitHub DNS before any cargo. This fix is isolated on
+p/fix-network-03-macos-v1, based91cba0180. Full policy/brief readback was repeated;
+policy hashes above unchanged, implementer role, owned net test and these records.
+The amended brief now stops self-landing after two lost ff-push races.
+
+Native red: Mac3 (adas-mac-studio-3.local), Darwin arm64, Rust1.98.1, own cold
+~/g121-tmp/network-dns03-macos-v1/target, incremental0/jobs4. At exact main
+6389b6e09671c7a89288fbb2224b1648b5e4dd16, Kiln r27:
+`cargo test -p shards-net --profile test-release --lib dns_answers_replace_the_names_previous_authority`
+failed first-answer admission, exit101 ([raw output](mac03-red.log)). This is
+not the historical replacement red: no first answer had yet been processed.
+Earlier Linux arm64 GNU runs passed this test in the test profile; they did not
+establish macOS behavior or an optimized-profile platform comparison.
+
+Hypotheses: an immediate nonblocking receive can precede loopback delivery;
+otherwise parser/admission or registration would still fail after readiness. The
+production dispatcher already waits for the UDP token to be readable before
+calling on_udp. The test called on_udp immediately after send_to, which is no
+readiness witness. [POSIX sendto](https://pubs.opengroup.org/onlinepubs/9699919799/functions/sendto.html)
+does not promise message delivery from successful output. No XNU implementation
+mechanism is assumed from the failure alone.
+
+Fix68968478b waits on the actual stack poller, dispatching only its readable UDP
+token, for each answer, with the existing test's five-second failure bound. There
+is no sleep or platform cfg, and both new-flow admission and stale-address denial
+assertions remain. Production code and DNS authority semantics are unchanged.
+No public interface, cache, production constant, state machine or architecture
+is added. Native green, mutation and merged-source outcomes follow below.
+
+R01/R04/R06/R07/R13: test-only assertions and the same readiness transition as the
+real dispatcher; bounded failure if the token never arrives. R02/R03/R05/R12:
+existing cross-platform poller and POSIX socket contract, no production policy
+choice or copied platform workaround. R09/R10: exact native red and retained
+revision/commands, pending green below. R11: native macOS check required explicitly
+by ROOT; no skipped platform reported passed. R08/R14: no performance/resource
+claim. R15/R16: one permitted Mac, no local cargo/delegation/VM runs; owned target
+cleanup after landing. ROOT inbox rejected urgent status with429backpressure,
+so delivery is not claimed. r28 was not dispatched before Kiln server timeout;
+read-only r29 found old6389 source and no own cargo, so it is no test verdict.
