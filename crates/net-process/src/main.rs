@@ -280,6 +280,12 @@ mod tests {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
+            // SAFETY: discard the child's inherited copies of the parent's pipe ends;
+            // otherwise its own writer would prevent EOF when the parent releases it.
+            unsafe {
+                libc::close(ready.as_raw_fd());
+                libc::close(release.as_raw_fd());
+            }
             let installed = u8::from(super::syscall_filter().is_ok());
             // SAFETY: one-byte buffers and descriptors held by this child. The parent
             // observes /proc while read keeps this exact process alive.
