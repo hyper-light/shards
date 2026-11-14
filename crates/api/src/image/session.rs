@@ -2062,13 +2062,18 @@ mod tests {
 
     /// Do pump the outputs of a run whose end came before them, its host's channel closed by
     /// it, as a run that ends at once has (WHP at 3a05bc3f1: a template's run of `exit 3`,
-    /// restored, ended before its first credit went). Expect: a pipe for each channel of each
-    /// running member alone, each ending as the run has, and no refusal: the run started, and
-    /// its end is the session's to tell, never a boot refused `BrokenPipe`.
+    /// restored, ended before its first credit went), its host's answers over. Expect: a pipe
+    /// for each channel of each running member alone, each ending as its host's answers have,
+    /// and no refusal: the run started, and its end is the session's to tell, never a boot
+    /// refused `BrokenPipe`.
     #[test]
     fn a_run_ended_before_its_first_credit_still_has_its_outputs() {
         let shared = Arc::new(shared());
-        lock(&shared.state).end = Some(RunEnd::Exited(3));
+        {
+            let mut state = lock(&shared.state);
+            state.end = Some(RunEnd::Exited(3));
+            state.answered = true;
+        }
         let member = |index, runs| MemberInfo {
             index,
             kind: wire::MemberKind::Harness,
@@ -2850,6 +2855,86 @@ mod tests {
         let (kind, payload) = wire::read_frame(sent).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::LEASED);
         wire::LeaseAnswer::decode(&payload).unwrap()
+    }
+
+    /// A running member's stdout, as `pumped` gives the run's owner its pipe.
+    fn member_stdout(shared: &Arc<Shared>) -> io::PipeReader {
+        let running = MemberInfo {
+            index: 1,
+            kind: wire::MemberKind::Harness,
+            name: "m1".into(),
+            runs: true,
+        };
+        let mut outputs = pumped(shared, &[running]).unwrap();
+        let at = outputs
+            .iter()
+            .position(|(key, _)| *key == (1, Channel::Stdout))
+            .unwrap();
+        outputs.swap_remove(at).1
+    }
+
+    fn says_output(host: &mut io::PipeWriter, bytes: &[u8]) {
+        let payload = [&wire::Output::head(1, Channel::Stdout)[..], bytes].concat();
+        says(host, wire::to_client::OUTPUT, &payload);
+    }
+
+    /// Waits for the session's reader to take the run's end, which closes the host's stdin.
+    fn until_its_channel_closes(shared: &Shared) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while lock(&shared.to_host).is_some() {
+            assert!(Instant::now() < deadline, "the run's end never closed its host's channel");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A member's output the session took before the run's end reaches its owner whole
+    /// (control-01, docs/bugs/2026-11-13/control.md): its credits can no longer go, as the
+    /// run's end closed the host's channel, which is no reason to drop what was taken. Do:
+    /// have the host say two records of a member's stdout, its channel's end and the run's
+    /// end, and once the session has taken them all, start the member's pump. Expect: the
+    /// owner reads both records, once each, then its end, while the host's answers are still
+    /// open: the channel's own end ends it. Before, the pump wrote the first record, found
+    /// its credit refused `BrokenPipe` and ended the pipe, the second record left queued.
+    #[test]
+    fn output_taken_before_the_runs_end_reaches_its_owner_whole() {
+        let mut h = hosted(None, &[]);
+        says_output(&mut h.host, b"first record\n");
+        says_output(&mut h.host, b"second record\n");
+        let end = wire::OutputEnd {
+            member: 1,
+            channel: Channel::Stdout,
+            end: wire::StreamEnd::Closed,
+        };
+        says(&mut h.host, wire::to_client::OUTPUT_END, &end.encode());
+        says(&mut h.host, wire::to_client::ENDED, &RunEnd::Exited(0).encode().unwrap());
+        until_its_channel_closes(&h.shared);
+        let mut read = Vec::new();
+        member_stdout(&h.shared).read_to_end(&mut read).unwrap();
+        assert_eq!(read, b"first record\nsecond record\n");
+        assert!(!lock(&h.shared.state).answered, "ended by its host's answers, not its channel's end");
+        drop(h.host);
+        h.reader.join().unwrap();
+    }
+
+    /// A member's output its host says after the run's end still reaches its owner, as the
+    /// run host says the end as its VM goes while its capture's reader may still be sending
+    /// (api_run.rs `serve`'s `following` beside `records`). Do: have the host say the run's
+    /// end; start the member's pump; then have the host say a record of its stdout and close
+    /// its answers without the channel's end, as a capture cut by its VM's end does. Expect:
+    /// the owner reads the record, then its end, which comes with the host's answers' end.
+    /// Before, the pump took the run's end for its channel's and ended the pipe empty.
+    #[test]
+    fn output_said_after_the_runs_end_reaches_its_owner_before_its_end() {
+        let mut h = hosted(None, &[]);
+        says(&mut h.host, wire::to_client::ENDED, &RunEnd::Exited(0).encode().unwrap());
+        until_its_channel_closes(&h.shared);
+        let mut owner = member_stdout(&h.shared);
+        says_output(&mut h.host, b"the last of it\n");
+        drop(h.host);
+        let mut read = Vec::new();
+        owner.read_to_end(&mut read).unwrap();
+        assert_eq!(read, b"the last of it\n");
+        h.reader.join().unwrap();
     }
 
     /// A run with grants, its leases asked by its host on their first use and given by a
