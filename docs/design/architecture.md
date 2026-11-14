@@ -25895,7 +25895,10 @@ named a host (D59 part seven); a run's command had D192's.
   on a TCP port that one member reaches by name (a destination, or a remote MCP server), every
   other member granted the port is granted the same names and none a port grant of it; else
   the image is refused, naming both members and what each reaches. Remote MCP servers beside
-  another member's other grants on one port, which passed before, are refused alike.
+  another member's other grants on one port, which passed before, are refused alike. Every
+  member granted the port to any address (the image's port grant alone, or beside a name) is
+  alike there and passes: it reaches any address on the port, so every name on it too, and
+  D246's hold of a narrowed run counts those names as its reach (inithex-02, 2026-11-13).
 - *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
   3), never add one, and may hold each member to its own of those kept (D246, version 12). The
   build labels them (`vnd.osi.agentfile.destinations`) for Docker and Kubernetes; the daemon
@@ -27962,6 +27965,21 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
+  placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
+  HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
+  `Set-Cookie`, the reason phrase) put the real token in the guest beside the placeholders. Now, once the body names
+  its tokens, every place of the response that goes to the guest as it came is read for each token, access, refresh
+  and ID, as it came and with its percent-encoding and quoted-pairs decoded (`signin::unechoed`): an HTTP/1.1 head
+  whole, each HTTP/2 field's name and value, its trailers'. One found is refused 502 (`signin::Refusal::Echoed`)
+  before the tokens are asked outside, as `read` refuses a token echoed in another of the body's strings: the guest
+  gets none of the response and nothing is captured. A chunked HTTP/1.1 response's trailer section is no part of what
+  goes (`Piece::Trailers`, dropped). Masking the head with the placeholders instead was refused: it would hand the
+  guest a response the body's own rule refuses. Tests (macOS arm64): `inject::tests::leaks`' token response
+  repeating its tokens in a field, a cookie and the reason phrase over HTTP/1.1, and in a field and in the trailers
+  over HTTP/2, red before (a real token reached the guest), green after, and each escaped form found; the check
+  removed, and HTTP/2's trailers left out of it, each fail them. Still unread: an informational (1xx) response,
+  which goes before the body names its tokens.
 
 **Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
 refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;
@@ -28819,9 +28837,14 @@ grants each name who, to whom, which port and which way, so Hex refused every de
   version 11. A request of version 11 is refused by its version, as every older one is.
 - *What a member reaches* (`agentfile::named_reach`): of each member its Agentfile declares,
   its networks' destinations (D236) and its remote MCP servers' (§4.4), as its init lets it
-  out to them; the reading `held` makes (`tcp_reach`). The run host reads it with the
-  Agentfile it holds a run to (`Agentfile::named`). Of those a member reaches the ones kept,
-  destinations and remote MCP servers alike.
+  out to them; the reading `held` makes (`tcp_reach`); and every other name the image grants
+  (any member's destination or remote MCP server) on a TCP port its networks open it to any
+  address (amended 2026-11-13, inithex-02): its init lets it out on that port to any
+  address, and the network process admits a kept name's addresses for whichever member asks
+  them, as it holds no member apart, so the member reaches that name by its address once any
+  member has resolved it. The run host reads it with the Agentfile it holds a run to
+  (`Agentfile::named`). Of those a member reaches the ones kept, destinations and remote MCP
+  servers alike.
 - *Held* (`api_run::held_apart`, before anything starts): every member the image declares,
   named in the request or not, reaches of the names kept exactly its entry's names (sorted,
   each once; a member in no entry, nothing). Else the run is refused as a widening of what was
@@ -28855,6 +28878,14 @@ an agent joining no network, each member's the same read back as the run host re
 let nothing, let more, or let less than a kept remote MCP server, refused as a widening in
 those words; an undeclared member the image's refusal, a second entry the request's; no hold,
 nothing kept, and no Agentfile with no entry pass.
+Through a port grant (inithex-02, red at 9efde7252 and green after, on macOS arm64,
+adas-mac-studio-3): `a_port_grant_reaches_every_name_the_image_grants_on_it` (agentfile: a
+and b both granted 443 to any address, a reaching a provider on 443 by name, c another port
+alone: a and b reach the provider, c nothing; red, b reached nothing) and
+`a_member_granted_a_names_port_is_held_to_that_name` (the run host, the reach derived from
+that Agentfile as `agentfile::agentfile` derives it: 443's grant dropped, the provider kept and
+a alone let it, refused as a widening naming b; both let it, passes; red, accepted). Mutation:
+the port range's lower bound made strict (`lo < port`) fails the first.
 
 **Evidence owed** (ROOT, real VMs: KVM, HVF, WHP).
 `cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`:
@@ -28864,8 +28895,15 @@ provider and the host's service and nothing else, another member none of them: H
 image_grants_real, once Hex vendors this revision.
 
 **What would falsify it.** A member that reaches a kept name its entry does not let it (then
-`named_reach` misses a rule init's netplan follows); a run refused where every member's reach is
-exact (then the narrowing's names and the build's `host:port` are written apart).
+`named_reach` misses a rule init's netplan follows: a port grant to any address was one,
+inithex-02); a run refused where every member's reach is exact (then the narrowing's names and
+the build's `host:port` are written apart).
+
+**Evidence owed for inithex-02** (ROOT, real VMs): the
+`api_image what_the_image_does_not_grant_is_refused_before_boot` run above, and a live twin of
+the finding's fixture: a resolves and dials a controlled provider on 443; b, granted 443 to any
+address and let nothing, dials its known address directly. The request letting b nothing is
+refused before boot; with this guard removed it boots and b's dial connects.
 
 ### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
 
