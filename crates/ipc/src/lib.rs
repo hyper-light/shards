@@ -2460,7 +2460,8 @@ mod pipe;
 #[cfg(windows)]
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
-    await_streams, byte_pair, end, fill_random, hung_up, input_pair, readable_raw, recv, recv_by, send,
+    await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair, readable_raw, recv, recv_by,
+    send,
 };
 #[cfg(windows)]
 mod windows;
