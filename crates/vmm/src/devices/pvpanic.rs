@@ -65,7 +65,7 @@ mod tests {
     /// else is.
     #[test]
     fn a_panic_written_is_told_and_nothing_else() {
-        let (_console, port) = Console::new(Box::new(std::io::sink()), 0).unwrap();
+        let (_console, port) = Console::new(Box::new(std::io::sink()), 0, false).unwrap();
         let p = PvPanic::new(port.clone());
         let mut b = [0xffu8];
         p.read(0, &mut b);

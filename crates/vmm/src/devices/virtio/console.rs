@@ -210,9 +210,28 @@ struct Tx {
     /// The transmit queue while it is served, with what serving it needs: none before
     /// activation, while paused, after a reset, or once its ring was found malformed.
     queue: Mutex<Option<Served>>,
+    /// Whether the first buffer a fresh activation's guest sends still waits for what its
+    /// console missed before it registered ([`crate::printk::backlog`], D261).
+    first: AtomicBool,
 }
 
 impl Tx {
+    /// What the guest's kernel logged before its console registered, where the buffer
+    /// `first` is the first since a fresh activation and the kernel was told no level to
+    /// print at; none else, or where its log cannot be read.
+    fn missed(&self, first: &[u8]) -> Vec<u8> {
+        if !self.first.swap(false, Ordering::AcqRel) {
+            return Vec::new();
+        }
+        let Some(memory) = lock(&self.queue).as_ref().map(|(_, memory, _)| memory.clone()) else {
+            return Vec::new();
+        };
+        crate::printk::backlog(&memory, first).unwrap_or_else(|e| {
+            debug!("virtio-console: what the console missed: {e}");
+            Vec::new()
+        })
+    }
+
     /// Takes the guest's next buffer into the slot, where it is free; the writer comes back
     /// for the guest's next as it is done. A malformed ring needs reset (virtio 1.3 §2.1.2).
     fn serve(&self) {
@@ -267,9 +286,16 @@ impl Tx {
                     s = wait(&port.filled, s);
                 }
             };
+            let missed = self.missed(&bytes);
             // Console output is best effort: a closed stdout must not stop the guest.
-            let _ = to.write_all(&bytes).and_then(|()| to.flush());
-            lock(&port.kept).push(&bytes);
+            let _ = to
+                .write_all(&missed)
+                .and_then(|()| to.write_all(&bytes))
+                .and_then(|()| to.flush());
+            let mut kept = lock(&port.kept);
+            kept.push(&missed);
+            kept.push(&bytes);
+            drop(kept);
             lock(&port.slot).writing = false;
             port.drained.notify_all();
             self.serve();
@@ -286,6 +312,10 @@ pub struct Console {
     transmit_paused: Option<Queue>,
     /// The receive queue while paused.
     receive: Option<Queue>,
+    /// Whether a fresh activation gives the console what its kernel logged before it
+    /// registered: where the kernel was told no level, so that every record it logged is
+    /// one its console prints (VMCOREINFO says no record's level).
+    backfill: bool,
 }
 
 impl std::fmt::Debug for Console {
@@ -297,7 +327,12 @@ impl std::fmt::Debug for Console {
 impl Console {
     /// A console writing to `out`, that keeps its last `keep` bytes ([`Port::said`]); its
     /// port, for its VM's handle. A writer thread the system refuses is an error.
-    pub fn new(out: Box<dyn Write + Send>, keep: usize) -> Result<(Console, Arc<Port>), String> {
+    /// `backfill`: a fresh activation gives the console what it missed ([`Tx::missed`]).
+    pub fn new(
+        out: Box<dyn Write + Send>,
+        keep: usize,
+        backfill: bool,
+    ) -> Result<(Console, Arc<Port>), String> {
         let port = Arc::new(Port {
             kept: Mutex::new(Kept::new(keep)),
             slot: Mutex::new(Slot::default()),
@@ -310,6 +345,7 @@ impl Console {
         let tx = Arc::new(Tx {
             port: port.clone(),
             queue: Mutex::new(None),
+            first: AtomicBool::new(false),
         });
         let writing = tx.clone();
         // Not joined as the device drops: a write blocked on its output would hold the
@@ -324,6 +360,7 @@ impl Console {
             context: None,
             transmit_paused: None,
             receive: None,
+            backfill,
         };
         Ok((console, port))
     }
@@ -381,8 +418,11 @@ impl VirtioDevice for Console {
             memory,
             mut queues,
             interrupt,
+            restored,
             ..
         } = activation;
+        // A restored guest's console registered before its snapshot.
+        self.tx.first.store(self.backfill && !restored, Ordering::Release);
         if queues.len() != QUEUES.len() {
             return Err(format!(
                 "virtio-console has {} queues, not {}",
@@ -536,7 +576,7 @@ mod tests {
 
     fn active_to(out: Box<dyn Write + Send>, keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>) {
         let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
-        let (mut console, port) = Console::new(out, keep).unwrap();
+        let (mut console, port) = Console::new(out, keep, true).unwrap();
         let queues = (0..2)
             .map(|q| {
                 let cfg = QueueConfig {
@@ -695,7 +735,7 @@ mod tests {
     /// zeros that ignores writes.
     #[test]
     fn the_device_is_one_port_of_two_queues() {
-        let (mut c, _) = Console::new(Box::new(std::io::sink()), 0).unwrap();
+        let (mut c, _) = Console::new(Box::new(std::io::sink()), 0, true).unwrap();
         assert_eq!((c.device_id(), c.features()), (3, feature::VERSION_1));
         assert_eq!(c.queue_max_sizes(), [1, 1]);
         c.write_config(0, &[9; 12]);
