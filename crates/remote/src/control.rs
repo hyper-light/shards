@@ -44,8 +44,8 @@ pub mod unix;
 pub use crate::tls::Negotiated;
 pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Granted, Hangup, Input, Link, Linked, Log,
-    Logged, McpConnection, Member, MemberControl, MemberEnd, MemberSteering, Output, Socket, SocketReader,
-    SocketWriter, Sockets, Subscriptions,
+    Logged, McpConnection, Member, MemberControl, MemberEnd, MemberSteering, Output, PendingExec, PendingLog,
+    PendingMcp, PendingMember, PendingSocket, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
 };
 pub use unix::Admission as SocketAdmission;
 
@@ -1115,6 +1115,15 @@ mod tests {
 
     /// How long a test waits for what it awaits: a patience of its own.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A lane's ask, its answer waited for within the tests' patience: what it answered, or
+    /// why not.
+    macro_rules! answered {
+        ($ask:expr) => {
+            $ask.and_then(|mut ask| ask.wait(PATIENCE))
+                .map(|got| got.expect("answered within the tests' patience"))
+        };
+    }
 
     fn transport(serves: bool) -> TransportConfig {
         let mut transport = TransportConfig::default();
@@ -2445,7 +2454,7 @@ mod tests {
                 stderr,
                 stdin,
                 mut control,
-            } = execs.exec(0, spec.clone()).unwrap();
+            } = answered!(execs.exec(0, spec.clone())).unwrap();
             let (mut stderr, mut stdin) = (stderr.unwrap(), stdin.unwrap());
             let line = b"\x00\xff typed, no newline";
             assert_eq!(stdin.write(line).unwrap(), line.len());
@@ -2480,7 +2489,7 @@ mod tests {
             assert_eq!(stderr.next_record().unwrap(), Got::Finished);
             assert_eq!(control.wait(), Ok(0));
             assert_eq!(
-                execs.exec(0, spec).map(|_| ()),
+                answered!(execs.exec(0, spec)).map(|_| ()),
                 Err(Fault::Unstarted(exec::Unstarted::Refused))
             );
             host.join().unwrap();
@@ -2567,7 +2576,7 @@ mod tests {
                 mut from,
                 mut to,
                 mut end,
-            } = execs.mcp(0).unwrap();
+            } = answered!(execs.mcp(0)).unwrap();
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             assert_eq!(to.write(request).unwrap(), request.len());
             assert_eq!(
@@ -2581,7 +2590,7 @@ mod tests {
             assert_eq!(from.next_record().unwrap(), Got::Finished);
             assert_eq!(end.wait(), Ok(0));
             assert_eq!(
-                execs.mcp(0).map(|_| ()),
+                answered!(execs.mcp(0)).map(|_| ()),
                 Err(Fault::Unstarted(exec::Unstarted::Refused))
             );
             host.join().unwrap();
@@ -2633,7 +2642,7 @@ mod tests {
                     mut from,
                     mut to,
                     mut end,
-                } = execs.mcp(5).unwrap();
+                } = answered!(execs.mcp(5)).unwrap();
                 assert_eq!(to.write(request).unwrap(), request.len());
                 assert_eq!(
                     from.next_record().unwrap(),
@@ -2647,7 +2656,7 @@ mod tests {
                 assert_eq!(end.wait(), Ok(0));
             }
             assert!(matches!(
-                execs.member(5),
+                answered!(execs.member(5)),
                 Ok(crate::control::Member::Ended(exec::End::Exited(7)))
             ));
             host.join().unwrap();
@@ -2892,46 +2901,188 @@ mod tests {
             let crate::control::Member::Running(crate::control::MemberControl {
                 mut steering,
                 mut end,
-            }) = execs.member(0).unwrap()
+            }) = answered!(execs.member(0)).unwrap()
             else {
                 panic!("member 0 runs");
             };
-            assert_eq!(steering.signal(15), Ok(()));
-            assert_eq!(steering.signal(0), Err(Fault::Refused(Reason::Protocol)));
+            assert_eq!(steering.signal(15, PATIENCE), Ok(Some(())));
             assert_eq!(
-                steering.signal(shards_abi::run::NSIG + 1),
+                steering.signal(0, PATIENCE),
                 Err(Fault::Refused(Reason::Protocol))
             );
             assert_eq!(
-                steering.resize(size),
+                steering.signal(shards_abi::run::NSIG + 1, PATIENCE),
+                Err(Fault::Refused(Reason::Protocol))
+            );
+            assert_eq!(
+                steering.resize(size, PATIENCE),
                 Err(Fault::Unsteered(exec::Unsteered::Terminal))
             );
             assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
             assert_eq!(end.wait(), Ok(exec::End::Exited(143)));
-            assert_eq!(steering.signal(9), Err(Fault::Unsteered(exec::Unsteered::Ended)));
             assert_eq!(
-                steering.resize(size),
+                steering.signal(9, PATIENCE),
+                Err(Fault::Unsteered(exec::Unsteered::Ended))
+            );
+            assert_eq!(
+                steering.resize(size, PATIENCE),
                 Err(Fault::Unsteered(exec::Unsteered::Ended))
             );
             assert!(matches!(
-                execs.member(0),
+                answered!(execs.member(0)),
                 Ok(crate::control::Member::Ended(exec::End::Exited(0)))
             ));
-            let crate::control::Member::Running(mut termed) = execs.member(0).unwrap() else {
+            let crate::control::Member::Running(mut termed) = answered!(execs.member(0)).unwrap() else {
                 panic!("member 0 runs");
             };
             assert_eq!(termed.end.wait(), Ok(exec::End::Signaled(15)));
             assert_eq!(exec::End::Signaled(15).status(), 143);
             assert!(matches!(
-                execs.member(0),
+                answered!(execs.member(0)),
                 Ok(crate::control::Member::Ended(exec::End::Signaled(9)))
             ));
             assert_eq!(
-                execs.member(0).map(|_| ()),
+                answered!(execs.member(0)).map(|_| ()),
                 Err(Fault::Unstarted(exec::Unstarted::Failed))
             );
-            assert_eq!(execs.member(9).map(|_| ()), Err(Fault::Refused(Reason::Scope)));
+            assert_eq!(
+                answered!(execs.member(9)).map(|_| ()),
+                Err(Fault::Refused(Reason::Scope))
+            );
             host.join().unwrap();
+        }
+
+        /// Hex's decision 9: a lane's ask goes at once, and each wait for its answer gives way
+        /// within its caller's patience, the ask still pending, so that an orchestrator waits
+        /// within its own bound and tells its run-out once, without a thread of its own; a later
+        /// wait follows the same ask on, and no second ask reaches the endpoint. A member's
+        /// steer is followed on the same way, and a second steer while one awaits its answer is
+        /// refused, typed, and never sent.
+        #[test]
+        fn a_lane_ask_is_sent_once_and_waited_for_within_each_waits_patience() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, members) = Serving::with_members(&vm, kiln.fingerprint());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(exec_admissions()),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+            // The host answers each only on the test's word, and says what it was handed.
+            let (go, held) = mpsc::channel::<()>();
+            let (seen_tx, seen) = mpsc::channel::<&'static str>();
+            let short = std::time::Duration::from_millis(20);
+            let host = std::thread::spawn(move || {
+                let running = members.recv_timeout(PATIENCE).unwrap();
+                seen_tx.send("asked").unwrap();
+                held.recv().unwrap();
+                running.replies.tell(exec::Reply::Running);
+                assert_eq!(running.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(15)));
+                seen_tx.send("signalled").unwrap();
+                held.recv().unwrap();
+                running.replies.tell(exec::Reply::Steered(Ok(())));
+                // The resize refused while the signal awaited its answer never came.
+                assert_eq!(running.steer.recv_timeout(PATIENCE), Ok(exec::Steer::Signal(9)));
+                running.replies.tell(exec::Reply::Steered(Ok(())));
+                // One ask reached the endpoint, however many waits followed it.
+                assert!(matches!(members.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                running
+            });
+            let mut ask = execs.member(0).unwrap();
+            assert_eq!(seen.recv_timeout(PATIENCE), Ok("asked"), "sent before any wait");
+            assert!(matches!(ask.wait(std::time::Duration::ZERO), Ok(None)));
+            assert!(matches!(ask.wait(short), Ok(None)));
+            go.send(()).unwrap();
+            let Some(crate::control::Member::Running(crate::control::MemberControl {
+                mut steering,
+                end: _end,
+            })) = ask.wait(PATIENCE).unwrap()
+            else {
+                panic!("member 0 runs");
+            };
+            assert!(matches!(
+                ask.wait(std::time::Duration::ZERO),
+                Err(Fault::Unawaited)
+            ));
+            assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));
+            assert_eq!(steering.signal(15, std::time::Duration::ZERO), Ok(None));
+            assert_eq!(seen.recv_timeout(PATIENCE), Ok("signalled"));
+            assert_eq!(steering.steered(short), Ok(None));
+            assert_eq!(
+                steering.resize(shards_abi::run::Size { rows: 24, cols: 80 }, PATIENCE),
+                Err(Fault::Awaiting)
+            );
+            go.send(()).unwrap();
+            assert_eq!(steering.steered(PATIENCE), Ok(Some(())));
+            assert_eq!(steering.steered(std::time::Duration::ZERO), Err(Fault::Unawaited));
+            assert_eq!(steering.signal(9, std::time::Duration::MAX), Ok(Some(())));
+            drop(host.join().unwrap());
+        }
+
+        /// A lane's ask let go before it took its answer leaves nothing held: its lane, which
+        /// its host opens after its asker has gone, is closed, its endpoint told as a cut lane's
+        /// is (RESET_STREAM and STOP_SENDING, D251), which closes its host's steering and so
+        /// hangs a member's lane or an exec up; an exec's with the stdio its start made.
+        #[test]
+        fn a_lane_ask_let_go_unanswered_is_closed_as_its_lane_opens() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let (serving, starts, members) =
+                Serving::bind_with(&vm, kiln.fingerprint(), Some(exec_admissions()));
+            let (starts, members) = (starts.unwrap(), members.unwrap());
+            let (outputs, inputs) = all(0);
+            let (dialed, _driver) = drive(
+                &kiln,
+                vm.fingerprint(),
+                serving.address,
+                Subscriptions {
+                    outputs: &outputs,
+                    inputs: &inputs,
+                    execs: Some(exec_admissions()),
+                    sockets: None,
+                },
+            );
+            let execs = dialed.execs.as_ref().unwrap();
+
+            let ask = execs.member(0).unwrap();
+            let running = members.recv_timeout(PATIENCE).unwrap();
+            drop(ask);
+            running.replies.tell(exec::Reply::Running);
+            assert_eq!(
+                running.steer.recv_timeout(PATIENCE),
+                Err(mpsc::RecvTimeoutError::Disconnected),
+                "the member's lane, opened after its asker had gone, is closed"
+            );
+
+            let spec = shards_abi::run::Spec {
+                argv: vec![b"cat".to_vec()],
+                stdin: true,
+                ..shards_abi::run::Spec::default()
+            };
+            let ask = execs.exec(0, spec).unwrap();
+            let start = starts.recv_timeout(PATIENCE).unwrap();
+            drop(ask);
+            start.replies.tell(exec::Reply::Started);
+            assert_eq!(
+                start.steer.recv_timeout(PATIENCE),
+                Err(mpsc::RecvTimeoutError::Disconnected),
+                "the exec, started after its asker had gone, is hung up"
+            );
+
+            // The connection goes on: a lane asked after is answered.
+            let ask = execs.member(0);
+            let running = members.recv_timeout(PATIENCE).unwrap();
+            running.replies.tell(exec::Reply::Exited(0));
+            assert!(matches!(
+                answered!(ask),
+                Ok(crate::control::Member::Ended(exec::End::Exited(0)))
+            ));
         }
 
         /// The production controller (`drive.rs`), dialed at `to` for `subscriptions`, its
@@ -3591,9 +3742,9 @@ mod tests {
                 }
             };
             // Every record from the oldest kept, the long one in two of the lane's room.
-            let mut whole = execs
-                .log(LogSource::Member(0), LogChannels::BOTH, LogCursor::OLDEST, false)
-                .unwrap();
+            let mut whole =
+                answered!(execs.log(LogSource::Member(0), LogChannels::BOTH, LogCursor::OLDEST, false))
+                    .unwrap();
             let mut expected = kept[..3].to_vec();
             expected.push(LogRecord::Output {
                 channel: Channel::Stdout,
@@ -3626,7 +3777,7 @@ mod tests {
                 stdout: true,
                 stderr: false,
             };
-            let mut rest = execs.log(LogSource::Member(0), stdout, from, false).unwrap();
+            let mut rest = answered!(execs.log(LogSource::Member(0), stdout, from, false)).unwrap();
             assert_eq!(read_all(&mut rest), expected[4..].to_vec());
             assert_eq!(
                 rest.cursor(),
@@ -3641,21 +3792,17 @@ mod tests {
                 stderr: None,
             };
             assert_eq!(
-                execs
-                    .log(LogSource::Member(0), LogChannels::BOTH, older, false)
-                    .map(|_| ()),
+                answered!(execs.log(LogSource::Member(0), LogChannels::BOTH, older, false)).map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Rotated { oldest: at(1, 0, 0) }))
             );
             assert_eq!(
-                execs
-                    .log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false)
+                answered!(execs.log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false))
                     .map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Unknown))
             );
             // Followed from where the first got to: what comes, as it comes, then the end.
-            let mut followed = execs
-                .log(LogSource::Command, LogChannels::BOTH, whole.cursor(), true)
-                .unwrap();
+            let mut followed =
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, whole.cursor(), true)).unwrap();
             let late = LogRecord::Output {
                 channel: Channel::Stderr,
                 pos: at(3, 0, 0),
@@ -3667,9 +3814,8 @@ mod tests {
             drop(more_tx);
             assert_eq!(followed.next_record(), Ok(Logged::Finished));
             // Let go after its first record: its host's stream goes under it.
-            let mut dropped = execs
-                .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true)
-                .unwrap();
+            let mut dropped =
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true)).unwrap();
             assert_eq!(dropped.next_record(), Ok(Logged::Record(kept[0].clone())));
             drop(dropped);
             assert_eq!(host.join().unwrap(), [false, false, false, false, false, true]);
@@ -3726,7 +3872,7 @@ mod tests {
                     .collect::<Vec<_>>()
             });
             for source in sources {
-                let mut lane = execs.log(source, LogChannels::BOTH, past, false).unwrap();
+                let mut lane = answered!(execs.log(source, LogChannels::BOTH, past, false)).unwrap();
                 assert_eq!(lane.next_record(), Ok(Logged::Finished), "{source:?}");
                 assert_eq!(lane.cursor(), past, "{source:?}");
             }

@@ -144,3 +144,45 @@ pub(crate) fn path_id(path: &std::path::Path) -> Option<(u64, u64)> {
         shards_ipc::Identity::of(path).ok().map(|i| (i.dev, i.ino))
     }
 }
+
+/// What tells open file `file` from every other file of its host, whatever its path: its
+/// device and inode on Unix (POSIX `<sys/stat.h>`: st_dev and st_ino identify a file); on
+/// Windows its volume's serial number and its 128-bit file ID (FILE_ID_INFO), which ReFS
+/// needs where NTFS's 64-bit index would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FileId {
+    pub volume: u64,
+    pub file: u128,
+}
+
+pub(crate) fn file_id(file: &File) -> io::Result<FileId> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = file.metadata()?;
+        Ok(FileId {
+            volume: m.dev(),
+            file: u128::from(m.ino()),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        };
+        let mut info = FILE_ID_INFO::default();
+        let size = u32::try_from(size_of::<FILE_ID_INFO>()).map_err(io::Error::other)?;
+        // SAFETY: a file the caller holds open, and a structure of `size` bytes to fill.
+        let read = unsafe {
+            GetFileInformationByHandleEx(file.as_raw_handle(), FileIdInfo, (&raw mut info).cast(), size)
+        };
+        if read == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(FileId {
+            volume: info.VolumeSerialNumber,
+            file: u128::from_le_bytes(info.FileId.Identifier),
+        })
+    }
+}

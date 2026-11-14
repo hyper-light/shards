@@ -187,12 +187,13 @@ type Env = Vec<(&'static str, OsString)>;
 
 /// The VM process's binary for its command `args`, its environment, and whether it runs a
 /// GPU: the GPU's build where its command asks for one (D144), which on Unix says MoltenVK's
-/// errors alone (`MVK_CONFIG_LOG_LEVEL` 1, MoltenVK's errors-only level); else `vm`.
+/// errors alone (`MVK_CONFIG_LOG_LEVEL` 1, MoltenVK's errors-only level); else `vm`. Either
+/// is checked against this build's digest as it is about to start (`helpers::verified`).
 fn program(args: &[&OsStr], vm: &Path) -> Result<(PathBuf, Env, bool), String> {
     #[cfg_attr(windows, allow(unused_mut))]
     let mut env = crate::netproc::child_env();
     if !args.iter().any(|a| *a == "--gpu") {
-        return Ok((vm.to_path_buf(), env, false));
+        return Ok((crate::helpers::checked(vm)?, env, false));
     }
     #[cfg(unix)]
     env.push(("MVK_CONFIG_LOG_LEVEL", "1".into()));

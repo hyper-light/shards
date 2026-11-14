@@ -301,58 +301,146 @@ pub struct Resolved {
     pub ttl: u32,
 }
 
-/// A response's question name, lowered and without its last dot, and the addresses of
-/// its answers' A and AAAA records (RFC 1035 §4.1, RFC 3596 §2.2): what a name granted to
-/// agents resolved to (D59). None for what is no response of one question.
+/// A name in `msg` at `at`, each label lowered (names compare without case, RFC 4343
+/// §3), and where what follows it starts: labels, ending in a zero byte or in a pointer to
+/// a prior name (RFC 1035 §4.1.4), at most 255 bytes in all (§2.3.4). A pointer that goes
+/// nowhere before it is refused, so each loop through pointers passes a label, which the
+/// 255 bytes end.
+fn name_at(msg: &[u8], mut at: usize) -> Option<(Vec<Vec<u8>>, usize)> {
+    let mut labels = Vec::new();
+    let mut end = None;
+    let mut length = 0usize;
+    loop {
+        let len = *msg.get(at)?;
+        match len & 0xc0 {
+            0xc0 => {
+                let to = usize::from(u16::from_be_bytes([len & 0x3f, *msg.get(at + 1)?]));
+                if to >= at {
+                    return None;
+                }
+                end.get_or_insert(at + 2);
+                at = to;
+            }
+            0 => {
+                let len = usize::from(len);
+                length = length.checked_add(1 + len)?;
+                if length > 255 {
+                    return None;
+                }
+                if len == 0 {
+                    return Some((labels, end.unwrap_or(at + 1)));
+                }
+                labels.try_reserve(1).ok()?;
+                labels.push(msg.get(at + 1..at + 1 + len)?.to_ascii_lowercase());
+                at += 1 + len;
+            }
+            // 0x40 and 0x80: label types no response here uses (RFC 6891 §5).
+            _ => return None,
+        }
+    }
+}
+
+/// One record of a response's answer section (RFC 1035 §4.1.3).
+struct Record {
+    owner: Vec<Vec<u8>>,
+    kind: u16,
+    class: u16,
+    ttl: u32,
+    /// Where its RDATA starts in the message, and its length.
+    data: usize,
+    length: usize,
+}
+
+const TYPE_CNAME: u16 = 5;
+
+/// A response's question name, lowered and without its last dot, and the addresses its
+/// answer section gives that name (RFC 1035 §4.1, RFC 3596 §2.2): what a name granted to
+/// agents resolved to (D59, D192, D236). The addresses are those of the question's type
+/// and class owned by the name, or by the end of the chain of CNAMEs from it (RFC 1034
+/// §§3.6.2, 4.3.2); records of any other owner, class or type say nothing of it. None for
+/// what is no whole answer to one standard query: a query, a truncated response (RFC 2181
+/// §9: its records are not to be used), an error (RCODE, RFC 1035 §4.1.1), or a chain
+/// that loops. Learning from it never adds an address the resolver did not give the name.
 pub fn a_records(msg: &[u8]) -> Option<Resolved> {
     // DNS-over-TCP's two-byte length bounds an admitted answer (RFC 1035 §4.2.2).
     u16::try_from(msg.len()).ok()?;
     let be16 = |at: usize| Some(u16::from_be_bytes([*msg.get(at)?, *msg.get(at + 1)?]));
-    if msg.get(2)? & 0x80 == 0 || be16(4)? != 1 {
+    let flags = be16(2)?;
+    // QR set, OPCODE 0 (QUERY), TC clear, RCODE 0 (NOERROR); one question.
+    if flags & 0x8000 == 0 || flags & 0x7800 != 0 || flags & 0x0200 != 0 || flags & 0x000f != 0 {
         return None;
     }
-    let (labels, end) = qname(msg.get(12..)?)?;
+    if be16(4)? != 1 {
+        return None;
+    }
+    let (labels, _) = qname(msg.get(12..)?)?;
     let name = labels.join(".").to_ascii_lowercase();
-    let kind = match be16(12 + end)? {
-        TYPE_A => AddressKind::A,
-        TYPE_AAAA => AddressKind::Aaaa,
+    let (question, past) = name_at(msg, 12)?;
+    let (kind, wanted) = match be16(past)? {
+        TYPE_A => (AddressKind::A, TYPE_A),
+        TYPE_AAAA => (AddressKind::Aaaa, TYPE_AAAA),
         _ => return None,
     };
-    // Past the question's type and class.
-    let mut at = 12 + end + 4;
-    let mut out = Vec::new();
-    let mut ttl = None::<u32>;
+    if be16(past + 2)? != CLASS_IN {
+        return None;
+    }
+    let mut at = past + 4;
+    let mut records = Vec::new();
     for _ in 0..be16(6)? {
-        // An owner name: labels, ending in a zero byte or a two-byte pointer.
-        loop {
-            let len = *msg.get(at)?;
-            if len & 0xc0 == 0xc0 {
-                at += 2;
-                break;
-            }
-            at += 1 + usize::from(len);
-            if len == 0 {
-                break;
-            }
+        let (owner, next) = name_at(msg, at)?;
+        let raw_ttl = u32::from_be_bytes(*msg.get(next + 4..next + 8)?.first_chunk::<4>()?);
+        let (data, length) = (next + 10, usize::from(be16(next + 8)?));
+        msg.get(data..data + length)?;
+        records.try_reserve(1).ok()?;
+        records.push(Record {
+            owner,
+            kind: be16(next)?,
+            class: be16(next + 2)?,
+            // RFC 2181 §8: a set sign bit means zero.
+            ttl: if raw_ttl > i32::MAX as u32 { 0 } else { raw_ttl },
+            data,
+            length,
+        });
+        at = data + length;
+    }
+    // The chain from the question's name: each alias's target, its RDATA a name that
+    // fills it (RFC 1035 §3.3.1). Each step uses a record, so one with more steps than
+    // records loops.
+    let mut target = question;
+    let mut ttl = None::<u32>;
+    let mut steps = 0usize;
+    while let Some(alias) = records
+        .iter()
+        .find(|r| r.kind == TYPE_CNAME && r.class == CLASS_IN && r.owner == target)
+    {
+        if steps == records.len() {
+            return None;
         }
-        let (kind, length) = (be16(at)?, usize::from(be16(at + 8)?));
-        let raw_ttl = u32::from_be_bytes(*msg.get(at + 4..at + 8)?.first_chunk::<4>()?);
-        // RFC 2181 §§5.2, 8: the lowest TTL wins; a set sign bit means zero.
-        let life = if raw_ttl > i32::MAX as u32 { 0 } else { raw_ttl };
-        if matches!(kind, TYPE_A | TYPE_AAAA | 5) {
-            ttl = Some(ttl.map_or(life, |was| was.min(life)));
+        steps += 1;
+        let (next, end) = name_at(msg, alias.data)?;
+        if end != alias.data + alias.length {
+            return None;
         }
-        at += 10;
-        if kind == TYPE_A && length == 4 {
-            let o = msg.get(at..at + 4)?.first_chunk::<4>()?;
-            out.try_reserve(1).ok()?;
-            out.push(IpAddr::V4(Ipv4Addr::from(*o)));
-        } else if kind == TYPE_AAAA && length == 16 {
-            let o = msg.get(at..at + 16)?.first_chunk::<16>()?;
-            out.try_reserve(1).ok()?;
-            out.push(IpAddr::V6(Ipv6Addr::from(*o)));
-        }
-        at += length;
+        target = next;
+        ttl = Some(ttl.map_or(alias.ttl, |was| was.min(alias.ttl)));
+    }
+    let mut out = Vec::new();
+    for r in records
+        .iter()
+        .filter(|r| r.kind == wanted && r.class == CLASS_IN && r.owner == target)
+    {
+        let address = match (r.kind, msg.get(r.data..r.data + r.length)?) {
+            (TYPE_A, &[a, b, c, d]) => IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
+            (TYPE_AAAA, data) => match <[u8; 16]>::try_from(data) {
+                Ok(o) => IpAddr::V6(Ipv6Addr::from(o)),
+                Err(_) => continue,
+            },
+            _ => continue,
+        };
+        // RFC 2181 §5.2: the lowest TTL of what the answer rests on wins.
+        ttl = Some(ttl.map_or(r.ttl, |was| was.min(r.ttl)));
+        out.try_reserve(1).ok()?;
+        out.push(address);
     }
     Some(Resolved {
         name,
@@ -633,10 +721,11 @@ mod tests {
     fn a_responses_addresses_are_read() {
         let mut m = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 3, 0, 0, 0, 0];
         m.extend_from_slice(b"\x03MCP\x07example\x00\x00\x01\x00\x01");
-        // A CNAME by pointer, then two As, one by labels.
-        m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, 2, 0xc0, 0x0c]);
-        m.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
-        m.extend_from_slice(b"\x01x\x00");
+        // A CNAME by pointer to `x.mcp.example` (offset 41), then two As of it, one by
+        // pointer, one by labels.
+        m.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, 4, 1, b'x', 0xc0, 0x0c]);
+        m.extend_from_slice(&[0xc0, 41, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+        m.extend_from_slice(b"\x01X\x03mcp\x07example\x00");
         m.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 10]);
         assert_eq!(
             a_records(&m),
@@ -733,6 +822,95 @@ mod tests {
         reply[7] = 2;
         reply.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 203, 0, 113, 8]);
         assert_eq!(a_records(&reply).unwrap().ttl, 1, "the shortest lifetime wins");
+    }
+
+    /// A record answering a question here, of `class`, `kind`, a TTL of 60 and `data`,
+    /// owned by the name the labels `owner` spell, or `0xc0 0x0c`'s (the question's).
+    fn rr(owner: &[u8], kind: u16, class: u16, data: &[u8]) -> Vec<u8> {
+        let mut r = owner.to_vec();
+        r.extend_from_slice(&kind.to_be_bytes());
+        r.extend_from_slice(&class.to_be_bytes());
+        r.extend_from_slice(&60u32.to_be_bytes());
+        r.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        r.extend_from_slice(data);
+        r
+    }
+
+    /// A response to `q` with `rcode` and these answers.
+    fn response(q: &[u8], rcode: u8, answers: &[Vec<u8>]) -> Vec<u8> {
+        let mut r = q.to_vec();
+        r[2] |= 0x80;
+        r[3] = (r[3] & 0xf0) | rcode;
+        r[6..8].copy_from_slice(&(answers.len() as u16).to_be_bytes());
+        for a in answers {
+            r.extend_from_slice(a);
+        }
+        r
+    }
+
+    /// network-11: a response's addresses are the question's name's alone: records of
+    /// another owner or class, of the other address type, or past the end of its CNAME
+    /// chain say nothing of it, nor does a response that is truncated or an error, so none
+    /// of those addresses becomes the granted name's (D59, D192, D236).
+    #[test]
+    fn only_the_asked_names_own_records_are_its_addresses() {
+        const CNAME: u16 = 5;
+        const CHAOS: u16 = 3;
+        let forbidden = IpAddr::from([203, 0, 113, 9]);
+        let q = query("allowed.example", TYPE_A);
+        let elsewhere = b"\x09forbidden\x07example\x00";
+        let at = |r: &[u8]| a_records(r).map(|found| found.addresses);
+        for (what, answer) in [
+            ("another owner of another class", rr(elsewhere, TYPE_A, CHAOS, &[203, 0, 113, 9])),
+            ("another owner", rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])),
+            ("the name's, of another class", rr(&[0xc0, 0x0c], TYPE_A, CHAOS, &[203, 0, 113, 9])),
+        ] {
+            let got = at(&response(&q, NOERROR, &[answer]));
+            assert!(!got.is_some_and(|a| a.contains(&forbidden)), "{what}");
+        }
+        // An AAAA record answers no A question.
+        let six: Ipv6Addr = "2001:db8::9".parse().unwrap();
+        let got = at(&response(&q, NOERROR, &[rr(&[0xc0, 0x0c], TYPE_AAAA, CLASS_IN, &six.octets())]));
+        assert_eq!(got, Some(Vec::new()));
+        // An error (NXDOMAIN) or a truncated response with records says no addresses.
+        let own = rr(&[0xc0, 0x0c], TYPE_A, CLASS_IN, &[203, 0, 113, 9]);
+        assert_eq!(at(&response(&q, 3, std::slice::from_ref(&own))), None, "NXDOMAIN");
+        assert_eq!(at(&response(&q, SERVFAIL, std::slice::from_ref(&own))), None, "SERVFAIL");
+        let mut cut = response(&q, NOERROR, std::slice::from_ref(&own));
+        cut[2] |= 0x02;
+        assert_eq!(at(&cut), None, "truncated");
+        // A CNAME chain, its targets by labels and by pointer, ends at the name whose
+        // addresses they are; an address of a name the chain passed is none of them.
+        let cdn_at = q.len() + 12;
+        let answers = [
+            rr(&[0xc0, 0x0c], CNAME, CLASS_IN, b"\x03cdn\x07example\x00"),
+            rr(&[0xc0, cdn_at as u8], TYPE_A, CLASS_IN, &[192, 0, 2, 7]),
+            rr(b"\x03CDN\x07example\x00", TYPE_A, CLASS_IN, &[192, 0, 2, 8]),
+            rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9]),
+        ];
+        let reply = response(&q, NOERROR, &answers);
+        assert_eq!(
+            a_records(&reply),
+            Some(Resolved {
+                name: "allowed.example".to_string(),
+                kind: AddressKind::A,
+                addresses: vec![IpAddr::from([192, 0, 2, 7]), IpAddr::from([192, 0, 2, 8])],
+                ttl: 60,
+            })
+        );
+        // A chain that loops resolves to nothing.
+        let looped = [
+            rr(&[0xc0, 0x0c], CNAME, CLASS_IN, b"\x03cdn\x07example\x00"),
+            rr(&[0xc0, cdn_at as u8], CNAME, CLASS_IN, &[0xc0, 0x0c]),
+            rr(&[0xc0, 0x0c], TYPE_A, CLASS_IN, &[203, 0, 113, 9]),
+        ];
+        assert_eq!(at(&response(&q, NOERROR, &looped)), None, "a loop");
+        // So too over TCP: the stream learns no other name's address as the granted one's.
+        let mut s = Stream::new(false, vec!["allowed.example".into()]);
+        s.from_guest(&framed_msg(&q));
+        let other = response(&q, NOERROR, &[rr(elsewhere, TYPE_A, CLASS_IN, &[203, 0, 113, 9])]);
+        s.from_host(&framed_msg(&other));
+        assert!(s.learned.iter().all(|found| !found.addresses.contains(&forbidden)));
     }
 
     #[test]

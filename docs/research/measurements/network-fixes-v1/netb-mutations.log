@@ -1,0 +1,12 @@
+# network part B guard mutations, each alone on tree dbb7175de, its focused test run (want: fails).
+# adas-mac-studio-3.local, Darwin 25.2.0 arm64, rustc 1.98.1, kiln run r1803 (mut-mac.sh):
+listener-free (Listeners::take's free-list push removed): host_network_bind_close_cycles_keep_no_listener_history FAILED: 64 listener slots kept for at most one live listener
+listener-generation (Listeners::of's generation check removed): a_listener_let_go_of_leaves_its_socket_value_to_the_next FAILED: round 1: an old token taken (left Some(0), right None)
+dns-owner (owner == target removed): only_the_asked_names_own_records_are_its_addresses FAILED: another owner
+dns-class (class == IN removed): only_the_asked_names_own_records_are_its_addresses FAILED: the name's, of another class
+dns-rcode (RCODE check removed): only_the_asked_names_own_records_are_its_addresses FAILED: NXDOMAIN (left Some([203.0.113.9]), right None)
+dns-loop (loop return None -> break): only_the_asked_names_own_records_are_its_addresses FAILED: a loop (left Some([]), right None)
+ipv6-hop-by-hop (hop-by-hop-first check removed): ipv6_headers_read_back_as_written FAILED: hop-by-hop after another
+# adacachy2, Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1, kiln run r1804 (mut-linux.sh):
+revoked-asker (serve_connection's None => break -> continue): an_existing_tcp_session_uses_the_members_current_names FAILED: called `Result::unwrap()` on an `Err` value: Os { code: 11, kind: WouldBlock } (the revoked asker's session stayed open, unanswered)
+address-check (link alone, address dropped): agentdns tests 3 passed; informational, no test holds a link re-admitted without its address

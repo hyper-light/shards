@@ -86,6 +86,19 @@ remote target, exit 0. ROOT notification was rejected by Kiln inbox backpressure
 
 ## network-04: conntrack zone retirement
 
+**Fixed 2026-11-14 (Claude takeover lane, network part A), superseding the design below.**
+Zones are not retired or reused at all: each UDP candidate of each contest has a zone
+of its own for the chooser's life, assigned 1 up as it starts, so an entry conntrack
+keeps in a zone is only ever translated to that zone's one holder, whichever turn
+of holding made it. That closes the collision without a timer, a ctnetlink delete
+or a terminal notification: the bound is the kernel's u16 zone identity (0 the
+default zone), refused at start as `ZonesExhausted` before any domain runs.
+Red/green/mutation: [init0406-red-green.log](init0406-red-green.log) (kiln r1774,
+adacachy2, `cargo test -p shards-init --profile test-release --bins chooser::`; m1
+gives every candidate zone 1, failing the zone, split-port and exhaustion tests).
+The live wrap campaign below is no longer the fix's red; ROOT still owes the
+A-B-A-B handoff on real microVMs (D122).
+
 **Owed to ROOT; not fixed or live-confirmed.** Its decisive red is a kernel NAT
 binding being reused, not merely observing u16 arithmetic. The fix brief reserves
 real-VM/kernel campaigns to ROOT. The chooser still wraps its zone to 1, and
@@ -348,6 +361,13 @@ claiming this design implemented.
 
 ### network-06
 
+**Fixed 2026-11-14 (Claude takeover lane).** Per-port holders inside each contest
+(`Choices`), coalesced into runs at each holder's own ports, and contests cut
+where clipped ranges meet in part, with `pre` programming only uncontested rests.
+Red/green and mutations m2 (any port listened takes all) and m3 (contested only
+where equal): [init0406-red-green.log](init0406-red-green.log). The real-VM
+split-listener fixture below stays ROOT's.
+
 Starting command:
 `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`.
 Extend to one unmapped 7000–7001 EXPOSE, web only7000 and api only7001, then close
@@ -458,6 +478,19 @@ the contention rule. Native target cleanup r31 exited0. ROOT notification was
 rejected by Kiln429backpressure; acceptance is not claimed. Network08 resumed
 only after that landing, on p/fix-network-v1, preserving its unlanded work.
 
+### network-03 loop at main (2026-11-14, Claude takeover lane)
+
+ROOT asked whether the failure was intermittent at main. On one loaded Mac
+(adas-mac-studio-3, arm64), the pre-fix test at 6389b6e09 failed 20 of 20 runs
+alone; at main 97f404be8, with 68968478b's wait on the stack's own poller, it passed
+50 of 50 alone and the whole shards-net lib 10 of 10 ([log](mac03-loop.log)). The
+pre-fix test also failed one of two whole-lib runs: alone it loses the race between
+loopback delivery and its immediate nonblocking receive every time, beside other
+tests' threads only sometimes, which is why a whole-lib run could pass. The test
+depended on no other ordering: the resolver's question is read with a blocking
+`recv_from`, the poller's `wait` empties its event list first (poll.rs), and
+`a_records` parses deterministically. Fixed by 68968478b.
+
 ## network-08: independent DNS relay clients
 
 Red7aa3c4a34, Kiln r25, Mac3 Docker native Linux6.12.65-linuxkit aarch64 /
@@ -530,3 +563,80 @@ and TCP clients resolve a live peer, withhold one upstream UDP reply, and verify
 progress before that connection closes. Add failed spawn, FD/memory pressure,
 relay death and guest end witnesses under ROOT's campaign bounds. Existing serial
 DNS latency M247 is not such evidence. No such VM/cost campaign ran here.
+
+Network08 landed main97f404be8e0cda228f12f924d3517a1e6afb4a3c (code74ea2d725).
+Focused tested merge4b7e93f10. New mainf8e5948bc touched init/mcp, so merge
+1304c74e4 passed warm `cargo check -p shards-init --tests`, r33, exit0
+([output](check08-landing.log)). First ff-push was refused. Final97f404be8 adds
+only disjoint shards/helpers and docs from f89d7a03d and was pushed immediately,
+with no conflict, as the contention rule permits. Every commit/merge has one
+gpgsig. Owned Linux target cleanup is recorded next.
+
+## network-09-11: part B (Claude implementer)
+
+POLICY_READ at `97f404be8e0cda228f12f924d3517a1e6afb4a3c` (the SHA-256s above);
+role implementer, ROOT coordinator; branch `p/fix-network-b-v1`. The Codex lane's
+red e862cfddd (network-09) is cherry-picked as 8c99b9816, its authorship kept.
+All runs below are on merge 38bd7a9d0 (main 2e00a1043 with these commits), each red
+the same tree with the fix commits reverted, through a carrier (blobless clone plus a
+bundle of the branch), `--profile test-release` on the Mac, dev on Linux.
+
+### network-09: a TCP DNS session judged by its asker as it stands
+
+Red (adacachy2, Linux 7.3.3 x86_64, rustc 1.98.1, fix 339d16ab1 reverted):
+`cargo test -p shards-init -- an_existing_tcp_session_uses_the_members_current_names`
+failed, `the old TCP session kept a departed member` (left 0, right 5): the worker
+answered from the table it cloned at accept. Green after 339d16ab1: that test and the
+other four agentdns/dnsrelay tests pass (5 of 5), `cargo clippy -p shards-init
+--all-targets -- -D warnings` clean ([log](netb-linux.log)).
+
+Fix: `serve_tcp` keeps only the connection's link and source address (`Who`); each
+question is judged under the relay's live askers (`Asker::verdict`: `Here`,
+`Upstream`, `Refused`), so names and grants are as `admit`/`release` last left them
+(D181). An asker let go of, or whose link no longer has the address, has its
+connection closed (`None => break`). In-flight upstream questions finish on their
+own connection; the next question is judged afresh. Mutation: `None => continue`
+leaves a revoked asker's session open, and the test fails ([log](netb-mutations.log)).
+
+### network-10: listener slots reused under generation-safe tokens
+
+Red (adas-mac-studio-3.local, macOS 25.2 arm64, rustc 1.98.1, fixes reverted):
+`host_network_bind_close_cycles_keep_no_listener_history` failed, `64 listener slots
+kept for at most one live listener`, through the real `NET_PUBLISHED` handler and
+`unpublish`. Green after acd4a34a8/cf6084eab/dbb7175de: it, the reworked
+`a_listener_let_go_of_leaves_its_socket_value_to_the_next` (every round in slot 0
+under a new token, the last round's token refused) and `a_hosted_port_is_let_go_by_its_number` pass.
+
+Fix: `Listeners` holds slots and a free list, as `Tcp` does for connections; each
+slot's generation rides in its poll token (`token::of`'s 24 bits), and dispatch
+takes a listener only for its own token (`Listeners::of`). Storage is the most ever
+published at once; UNPUBLISH frees every slot without dropping storage. Mutations:
+the free list's push removed (64 slots again) and the generation check removed (an
+old token names the next listener) each fail their test. Windows' poller
+registration rule (forget before close) is unchanged; ROOT owes the real guest
+host-network bind/close loop on Linux, macOS and Windows with an fd/RSS witness.
+
+### network-11: a response's addresses are its question's name's alone
+
+Red (Mac as above): `cargo test -p shards-dns --lib -- only_the_asked_names_own_records_are_its_addresses`
+failed (an unrelated owner's CH-class A became `allowed.example`'s address), and
+`cargo test -p shards-net --lib -- a_named_grant_learns_only_its_names_own_records`
+failed, `another owner`: `Config::allows` granted 203.0.113.9 at the named port.
+Green after 658eec242: all 12 shards-dns tests, the net test, network-03's
+`dns_authority_expires_without_retaining_answer_history` and
+`dns_answers_replace_the_names_previous_authority` pass; clippy of shards-dns,
+shards-net and shards-netring clean ([log](netb-mac.log)).
+
+Rules and sources: a whole response (QR, OPCODE 0, TC clear, RFC 2181 §9) without
+error (RCODE 0, RFC 1035 §4.1.1) to one IN question; records of the question's type
+and class IN, owned by its name or by the end of its CNAME chain (RFC 1034 §§3.6.2,
+4.3.2); names compared without case (RFC 4343 §3) and read with compression
+(RFC 1035 §4.1.4; pointers strictly backward, 255 bytes, §2.3.4, which together
+end every walk); TTL the least of the chain's and the addresses' records (RFC 2181
+§5.2). A chain longer than the records is a loop and says nothing. Both transports
+use this one parser (UDP `on_udp`, TCP `Stream::from_host`). The old
+`a_responses_addresses_are_read` expected an unrelated owner's A: it now spells a
+real CNAME target. Mutations: owner, class, RCODE and loop checks each removed fail
+the test ([log](netb-mutations.log)). Question-ID correlation is not added: the
+host socket is connected to the one resolver and the flow's answers are that
+resolver's, so the owner chain is what ties records to the granted name.
