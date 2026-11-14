@@ -108,6 +108,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     }
 }
 

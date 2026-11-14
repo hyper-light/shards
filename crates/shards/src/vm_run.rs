@@ -439,6 +439,30 @@ fn gpu_report_arg(value: String) -> Result<LinkArg, String> {
     Ok(value)
 }
 
+/// The report `--gpu-report` and `--gpu-report-scope` ask for (D232, D233), where they ask
+/// for one: both, of a VM that `may` report, its renderer made of its selection before its guest
+/// runs (a direct boot's, a warm boot's or a warm restore's).
+fn report_target(
+    to: Option<LinkArg>,
+    scope: Option<[u8; 16]>,
+    may: bool,
+) -> Result<Option<GpuReportTarget>, String> {
+    match (to, scope) {
+        (None, None) => Ok(None),
+        (Some(to), Some(scope)) if may => Ok(Some(GpuReportTarget { to, scope })),
+        _ => Err("a GPU report requires one exact selection/scope and a fresh direct boot".into()),
+    }
+}
+
+/// `--gpu-report-scope`'s scope: one, nonzero (D232).
+fn report_scope(value: &str, scope: &mut Option<[u8; 16]>) -> Result<(), String> {
+    let given = shards_abi::gpu::uuid_from_hex(value).map_err(|why| why.to_string())?;
+    if given == [0; 16] || scope.replace(given).is_some() {
+        return Err("--gpu-report-scope must name one nonzero native scope".into());
+    }
+    Ok(())
+}
+
 /// `--gpu-device`'s identity, checked alone and added to `selection`, which `parse_run` checks
 /// whole once every flag is read (D232): checked whole after each flag, it was copied and
 /// sorted again for every one, quadratic in the flags given.
@@ -488,13 +512,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     return Err("--gpu-report given twice".into());
                 }
             }
-            "--gpu-report-scope" => {
-                let scope = shards_abi::gpu::uuid_from_hex(&text(value("--gpu-report-scope")?)?)
-                    .map_err(|why| why.to_string())?;
-                if scope == [0; 16] || gpu_scope.replace(scope).is_some() {
-                    return Err("--gpu-report-scope must name one nonzero native scope".into());
-                }
-            }
+            "--gpu-report-scope" => report_scope(&text(value("--gpu-report-scope")?)?, &mut gpu_scope)?,
             "--kernel" => kernel = Some(PathBuf::from(value("--kernel")?)),
             "--initrd" => cfg.initrd = Some(PathBuf::from(value("--initrd")?)),
             "--init" => cfg.init = Some(PathBuf::from(value("--init")?)),
@@ -667,9 +685,10 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         return Err("--gpu-probe cannot boot a workload, attach devices or write a snapshot".into());
     }
     if let Some(fd) = warm {
-        if gpu_report.is_some() || gpu_scope.is_some() {
-            return Err("a warm guest cannot carry another native scope's GPU report".into());
-        }
+        // A warm boot's report is its spawner's to ask (D233): an orchestrator's run host names
+        // its run's scope before it launches the VM, as a managed launch's client does; the
+        // daemon's warm VMs, started before their requests come, never name one.
+        let gpu_report = report_target(gpu_report, gpu_scope, !cfg.gpu_devices.is_empty())?;
         let rootfs = rootfs.ok_or("--warm needs --rootfs")?;
         if command || common.workload_options || cfg.vsock.is_some() {
             return Err(
@@ -692,7 +711,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             attach,
             said_to: None,
             final_use: None,
-            gpu_report: None,
+            gpu_report,
             managed: false,
         });
     }
@@ -704,13 +723,11 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         None if gpu_probe => Mode::GpuProbe,
         None => Mode::Plain,
     };
-    let gpu_report = match (gpu_report, gpu_scope) {
-        (None, None) => None,
-        (Some(to), Some(scope)) if matches!(mode, Mode::Plain) && !cfg.gpu_devices.is_empty() => {
-            Some(GpuReportTarget { to, scope })
-        }
-        _ => return Err("a GPU report requires one exact selection/scope and a fresh direct boot".into()),
-    };
+    let gpu_report = report_target(
+        gpu_report,
+        gpu_scope,
+        matches!(mode, Mode::Plain) && !cfg.gpu_devices.is_empty(),
+    )?;
     // Quoted as it fails where it is supervised to its end (`supervise`), not where it
     // serves a command.
     if matches!(mode, Mode::Plain | Mode::Template(_)) {
@@ -742,6 +759,9 @@ struct Restore {
     resume: bool,
     /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
     said_to: Option<LinkArg>,
+    /// Where a warm restore writes its GPU report, and its scope (D233): its renderer's as it
+    /// rejoins its snapshot's selection.
+    gpu_report: Option<GpuReportTarget>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
@@ -751,6 +771,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     let mut layer = None;
     let mut layer_cloned = None;
     let mut working_set_to = None;
+    let (mut gpu_report, mut gpu_scope) = (None, None);
     // Each word with the value `spec::next_vm_word` gives it, a value only for a flag
     // `spec::RUN_VALUED` or `spec::RESTORE_VALUED` lists, as the command line is read ahead
     // of this (cli/mod.rs `vm_options`).
@@ -785,6 +806,14 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
                 working_set_to = Some(link_arg("--working-set", text(value("--working-set")?)?)?)
             }
             "--warm" => warm = Some(link_arg("--warm", text(value("--warm")?)?)?),
+            // Its renderer's report as it rejoins its snapshot's selection (D233).
+            "--gpu-report" => {
+                let to = gpu_report_arg(text(value("--gpu-report")?)?)?;
+                if gpu_report.replace(to).is_some() {
+                    return Err("--gpu-report given twice".into());
+                }
+            }
+            "--gpu-report-scope" => report_scope(&text(value("--gpu-report-scope")?)?, &mut gpu_scope)?,
             // A run's snapshot (D176): served as a warm VM's run is, its command running
             // already.
             "--resume" => {
@@ -819,6 +848,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     if warm.is_some() && working_set_to.is_some() {
         return Err("--warm hands its working set to the daemon: no --working-set".into());
     }
+    // A warm restore's report (D233), as a warm boot's: its run host's, which names the scope
+    // before it launches it; the snapshot's selection is checked as it restores.
+    let gpu_report = report_target(gpu_report, gpu_scope, warm.is_some() && !resume)?;
     let dir = dir.ok_or("the snapshot directory is required")?;
     if layer_cloned.is_some() && layer.is_none() {
         return Err("--layer-cloned says whose clone --layer's file is: it needs --layer".into());
@@ -861,6 +893,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         working_set_to,
         resume,
         said_to: common.said_to.take(),
+        gpu_report,
     })
 }
 
@@ -1706,7 +1739,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
             supervise(start(&cfg), cfg.console, true, said_to, input, None)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
-        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
+        Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd, gpu_report),
     }
 }
 
@@ -1718,12 +1751,23 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         working_set_to,
         resume,
         said_to,
+        gpu_report,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
     };
+    let gpu_report = match gpu_report
+        .map(|request| handed("--gpu-report", request.to).map(|writer| (request.scope, writer)))
+        .transpose()
+    {
+        Ok(report) => report,
+        Err(why) => {
+            report(why);
+            return ExitCode::FAILURE;
+        }
+    };
     if let Some(fd) = warm {
-        return warm_restore(cfg, fd, resume);
+        return warm_restore(cfg, fd, resume, gpu_report);
     }
     let to = match working_set_to.map(WorkingSetTo::new).transpose() {
         Ok(to) => to,
@@ -1908,8 +1952,14 @@ enum Source<'a> {
 /// the device, its path in the workload and its access (D144).
 const RENDER_NODE: &[u8] = b"devices=-\0d\0/dev/dri/renderD128\0/dev/dri/renderD128\0rwm\0";
 
-/// A warm VM's restore: `vm restore DIR --warm FD`, or a run's, `--resume FD` (D176).
-fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
+/// A warm VM's restore: `vm restore DIR --warm FD`, or a run's, `--resume FD` (D176); a warm
+/// one's GPU report written to `report_to` as its renderer rejoins its selection (D233).
+fn warm_restore(
+    mut cfg: RestoreConfig,
+    fd: LinkArg,
+    resume: bool,
+    report_to: Option<([u8; 16], std::fs::File)>,
+) -> ExitCode {
     let flag = if resume { "--resume" } else { "--warm" };
     let daemon = match daemon_link(flag, fd) {
         Ok(link) => link,
@@ -1921,12 +1971,18 @@ fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
         cfg.vsock = Some(vsock);
-        restore_vm(cfg).map_err(vm::StartError::from)
+        restore_reported(cfg, report_to).map_err(vm::StartError::from)
     })
 }
 
-/// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`.
-fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
+/// A warm VM's boot: `vm run --rootfs IMAGE [--snapshot-dir DIR] --warm FD`, its GPU report
+/// written to `report_to` as its renderer is made (D233).
+fn warm_boot(
+    mut cfg: Config,
+    rootfs: PathBuf,
+    fd: LinkArg,
+    report_to: Option<([u8; 16], std::fs::File)>,
+) -> ExitCode {
     let daemon = match daemon_link("--warm", fd) {
         Ok(link) => link,
         Err(e) => {
@@ -1940,7 +1996,7 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
     crate::warm::HOST_DEVICES.store(!cfg.vfio.is_empty(), std::sync::atomic::Ordering::Relaxed);
     serve_workload(None, Source::Warm(daemon, false), move |vsock| {
         cfg.vsock = Some(vsock);
-        start(&cfg)
+        start_reported(&cfg, report_to)
     })
 }
 
@@ -2652,7 +2708,16 @@ fn snapshots() -> Result<(), String> {
 }
 
 /// [`start`] for a restore: the snapshot's directory, and the files it restores against.
-fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
+fn restore_vm(cfg: RestoreConfig) -> Result<(Handle, Running), String> {
+    restore_reported(cfg, None)
+}
+
+/// [`restore_vm`], its renderer's report written to `report_to` as it rejoins its snapshot's
+/// selection, before any guest vCPU runs (D233), as [`start_reported`]'s boot writes its own.
+fn restore_reported(
+    mut cfg: RestoreConfig,
+    report_to: Option<([u8; 16], std::fs::File)>,
+) -> Result<(Handle, Running), String> {
     for path in std::iter::once(&mut cfg.dir)
         .chain(cfg.snapshot.as_mut().map(|p| &mut p.dir))
         .chain(cfg.vsock.as_mut().and_then(|v| v.path.as_mut()))
@@ -2780,7 +2845,17 @@ fn restore_vm(mut cfg: RestoreConfig) -> Result<(Handle, Running), String> {
     if pinned.snapshot.config.join_share {
         cfg.join_share = Some(give_join_share());
     }
-    vm::restore_from(&cfg, pinned)
+    match report_to {
+        None => vm::restore_from(&cfg, pinned),
+        Some((scope, writer)) => {
+            let mut writer = Some(writer);
+            vm::restore_reported(
+                &cfg,
+                pinned,
+                Some(&mut |selection| write_report(&mut writer, scope, selection)),
+            )
+        }
+    }
 }
 
 /// `path` made whole against the working directory, and normalized as
@@ -3695,6 +3770,41 @@ mod managed_report_tests {
         ];
         args.extend_from_slice(extra);
         parse_run(args.into_iter().map(OsString::from))
+    }
+
+    /// D233: a warm boot and a warm restore write a GPU report of the scope their spawner (an
+    /// orchestrator's run host) names, as a direct boot does; a warm boot of no selection, a
+    /// resumed run's restore, a restore not warm, and either flag alone are refused.
+    #[test]
+    fn a_warm_boot_and_a_warm_restore_report_their_spawners_scope() {
+        let scope = "03".repeat(16);
+        let target = if cfg!(windows) { "gpu-report" } else { "9" };
+        let link = if cfg!(windows) { "daemon" } else { "3" };
+        let report = ["--gpu-report", target, "--gpu-report-scope", scope.as_str()];
+        let words = |w: &[&str]| w.iter().map(OsString::from).collect::<Vec<_>>();
+        let mut warm = vec!["--rootfs", "/image", "--warm", link];
+        warm.extend(report);
+        let run = parse(&warm).unwrap();
+        assert!(matches!(run.mode, Mode::Warm { .. }));
+        assert_eq!(run.gpu_report.unwrap().scope, [3; 16]);
+        let mut bare = vec!["--kernel", "/k", "--rootfs", "/image", "--warm", link];
+        bare.extend(report);
+        assert!(parse_run(words(&bare).into_iter()).is_err());
+        let restore = |extra: &[&str]| {
+            let mut w = vec!["/t"];
+            w.extend_from_slice(extra);
+            parse_restore(words(&w).into_iter())
+        };
+        let mut warmed = vec!["--warm", link];
+        warmed.extend(report);
+        assert_eq!(restore(&warmed).unwrap().gpu_report.unwrap().scope, [3; 16]);
+        let mut resumed = vec!["--resume", link];
+        resumed.extend(report);
+        assert!(restore(&resumed).is_err());
+        assert!(restore(&report).is_err());
+        assert!(restore(&["--warm", link, "--gpu-report", target]).is_err());
+        assert!(restore(&["--warm", link, "--gpu-report-scope", &scope]).is_err());
+        assert!(restore(&["--warm", link]).unwrap().gpu_report.is_none());
     }
 
     #[test]

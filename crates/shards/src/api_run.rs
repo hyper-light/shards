@@ -2242,6 +2242,8 @@ mod hosted {
         /// The host directories its shares give its guest, canonical: where no save of it is
         /// made (D259).
         reached: Vec<PathBuf>,
+        /// Its GPU report's scope, where its orchestrator asked for one (D233).
+        gpu_report: Option<[u8; 16]>,
     }
 
     pub(super) fn run(
@@ -2658,6 +2660,7 @@ mod hosted {
                 .iter()
                 .filter_map(|s| std::fs::canonicalize(&s.host).ok())
                 .collect(),
+            gpu_report: request.gpu_report,
         })
     }
 
@@ -2744,6 +2747,9 @@ mod hosted {
         credentials: bool,
         server: Option<&'a Path>,
         microvm: &'a super::Microvm,
+        /// Its GPU report's scope (D233): a run's, never a warm host's shape's, whose VM starts
+        /// before its run names one.
+        gpu_report: Option<[u8; 16]>,
     }
 
     impl Plan {
@@ -2755,6 +2761,7 @@ mod hosted {
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
                 microvm: &self.microvm,
+                gpu_report: self.gpu_report,
             }
         }
     }
@@ -2768,6 +2775,7 @@ mod hosted {
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
                 microvm: &self.microvm,
+                gpu_report: None,
             }
         }
     }
@@ -2776,8 +2784,10 @@ mod hosted {
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
-    /// each is made in a job of this process's that ends them as it ends (D141, D197).
-    fn launch(home: &Path, plan: &Launch<'_>) -> Result<Launched, No> {
+    /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
+    /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
+    /// ready one's, or the one's whose start failed last.
+    fn launch(home: &Path, plan: &Launch<'_>, reported: &mut Option<Vec<u8>>) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -2803,11 +2813,14 @@ mod hosted {
                 ends: &ends,
                 #[cfg(windows)]
                 job: &job,
+                reported: None,
             };
             let template = plan.microvm.template.as_ref().map(|t| t.dir.as_path());
-            super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists))
+            let started = super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists));
+            *reported = host.reported.take();
+            started
         });
-        let ((launched, link, _), from, held) = match started {
+        let ((launched, link, _, _), from, held) = match started {
             Ok(started) => started,
             Err(e) => {
                 if let Some(shares) = shares {
@@ -2838,13 +2851,40 @@ mod hosted {
         ends: &'a Ends,
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
+        /// What its last VM wrote of its GPU report (D233), read once that VM was ready or
+        /// ended.
+        reported: Option<Vec<u8>>,
+    }
+
+    /// What a VM wrote of its GPU report (D232, D233), its pipe read to its end, which the VM's
+    /// close of its one writer is (vm_run.rs `write_report`, before its guest runs): at most a
+    /// byte past what a report of `gpus` GPUs holds, so that its orchestrator refuses a longer
+    /// one (`Count`), as a managed launch's client reads its own, with no more of it read.
+    pub(super) fn read_report(from: io::PipeReader, gpus: usize) -> Vec<u8> {
+        let most = shards_abi::gpu::report_bytes(gpus).map_or(0, |bytes| bytes.saturating_add(1));
+        let mut frame = Vec::new();
+        if let Err(e) = from
+            .take(u64::try_from(most).unwrap_or(u64::MAX))
+            .read_to_end(&mut frame)
+        {
+            super::say(format_args!("its VM's GPU report: {e}"));
+        }
+        frame
     }
 
     impl super::Machine for Host<'_> {
-        type Vm = (crate::launch::Launched, Stream, Option<crate::daemon::LayerFile>);
+        /// Its VM, its link, its writable layer's file until it is ready, and its GPU report's
+        /// pipe until it is read (D233).
+        type Vm = (
+            crate::launch::Launched,
+            Stream,
+            Option<crate::daemon::LayerFile>,
+            Option<io::PipeReader>,
+        );
         type Held = shards_vmm::snapshot::Held;
 
         fn launch(&mut self, way: &super::Way) -> Result<Self::Vm, String> {
+            self.reported = None;
             let plan = self.plan;
             let cfg = &plan.microvm.cfg;
             let rootfs = &plan.prepared.rootfs;
@@ -2913,19 +2953,30 @@ mod hosted {
             };
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
-            let (launched, link) = crate::launch::run(crate::launch::Plan {
-                args: &argv,
-                vm: self.vm,
-                network,
-                ends: self.ends,
-                #[cfg(unix)]
-                group: None,
-                #[cfg(windows)]
-                group: Some(self.job),
-                #[cfg(target_os = "macos")]
-                grants: crate::launch::Grants::Answered,
-            })?;
-            Ok((launched, link, layer))
+            // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
+            let (report, reader) = match plan.gpu_report {
+                Some(scope) => {
+                    let (reader, to) = io::pipe().map_err(|e| format!("its GPU report's pipe: {e}"))?;
+                    (Some(crate::launch::Report { scope, to }), Some(reader))
+                }
+                None => (None, None),
+            };
+            let (launched, link) = crate::launch::run_reported(
+                crate::launch::Plan {
+                    args: &argv,
+                    vm: self.vm,
+                    network,
+                    ends: self.ends,
+                    #[cfg(unix)]
+                    group: None,
+                    #[cfg(windows)]
+                    group: Some(self.job),
+                    #[cfg(target_os = "macos")]
+                    grants: crate::launch::Grants::Answered,
+                },
+                report,
+            )?;
+            Ok((launched, link, layer, reader))
         }
 
         fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String> {
@@ -2937,14 +2988,26 @@ mod hosted {
             };
             // Its writable layer's file is its VM's once it is ready or has failed (D190).
             vm.2 = None;
+            // A ready VM's GPU report was written, and its writer closed, before its guest ran
+            // (D233): read now, at once. One not ready is read once it has ended (`end`).
+            if said.is_ok()
+                && let Some(report) = vm.3.take()
+            {
+                self.reported = Some(read_report(report, self.plan.microvm.cfg.gpu_devices.len()));
+            }
             said
         }
 
         fn end(&mut self, vm: Self::Vm) {
-            let (launched, link, layer) = vm;
+            let (launched, link, layer, report) = vm;
             drop(link);
             launched.end(self.ends);
             drop(layer);
+            // Its GPU report, what it wrote of it before it ended: a refusal its renderer typed,
+            // or none (D232, D233).
+            if let Some(report) = report {
+                self.reported = Some(read_report(report, self.plan.microvm.cfg.gpu_devices.len()));
+            }
         }
 
         fn record(&mut self, dir: &Path) -> Result<(), String> {
@@ -3562,8 +3625,19 @@ mod hosted {
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
-        let launched = launch(home, &plan.launch())?;
-        serve_launched(answers, input, home, plan, launched)
+        let mut reported = None;
+        let launched = launch(home, &plan.launch(), &mut reported);
+        // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
+        // VM did not start.
+        if let Some(frame) = reported
+            && let Err(e) = answers.send(wire::to_client::GPU_REPORT, &[&frame])
+        {
+            if let Ok(launched) = launched {
+                end(home, Some(launched), &plan.made);
+            }
+            return Err(No(Cause::Boot, format!("its orchestrator: {e}")));
+        }
+        serve_launched(answers, input, home, plan, launched?)
     }
 
     /// A warm run host (D253's pools): its microVM made of `exemplar` and started, and once
@@ -3578,7 +3652,7 @@ mod hosted {
     ) -> Result<(), No> {
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let mut shaped = shape(exemplar, &home)?;
-        let launched = match launch(&home, &shaped.launch()) {
+        let launched = match launch(&home, &shaped.launch(), &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -3612,6 +3686,14 @@ mod hosted {
                 return Err(No(
                     Cause::Unfit,
                     "its run asks for another microVM than the one it made ready".into(),
+                ));
+            }
+            // Its VM process started before the run named its GPU report's scope (D233), which
+            // that process frames its report with as its renderer is made.
+            if request.gpu_report.is_some() {
+                return Err(No(
+                    Cause::Unfit,
+                    "its run asks for a GPU report, which a VM started before its run cannot frame".into(),
                 ));
             }
             let ready_by = super::deadline(request.ready_by, std::time::SystemTime::now())?;
@@ -5919,10 +6001,29 @@ mod tests {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])
     }
 
+    /// D233: a VM's GPU report is read to its pipe's end, at most a byte past what a report of
+    /// its GPUs holds, so that its orchestrator refuses a longer one (`Count`) with no more of
+    /// it read; none written is none read.
+    #[test]
+    fn a_vms_gpu_report_is_read_to_its_end_within_its_bound() {
+        use std::io::Write as _;
+        let most = shards_abi::gpu::report_bytes(1).unwrap();
+        for (wrote, read) in [(5, 5), (most, most), (most + 10, most + 1), (0, 0)] {
+            let (from, mut to) = std::io::pipe().unwrap();
+            // On a thread of its own: past a pipe's buffer, a write waits for its reader.
+            let writer = std::thread::spawn(move || {
+                let _ = to.write_all(&vec![b'x'; wrote]);
+            });
+            assert_eq!(hosted::read_report(from, 1).len(), read, "{wrote} written");
+            writer.join().unwrap();
+        }
+    }
+
     /// D259: a save is its run owner's alone, asked on the run's own channel. Do: read a `SAVE`
     /// as the run's asks read its owner's frames, a malformed one, and one come before the
     /// run's request, as on a warm host's channel, its pool's. Expect: the owner's decoded, its
     /// directory whole; the malformed one breaking the channel; the early one refusing the run
+
     /// (`Cause::Request`), so that no save is served on a channel no run owner holds.
     #[test]
     fn a_save_is_served_on_its_run_owners_channel_alone() {
@@ -6298,6 +6399,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
         }
     }
 

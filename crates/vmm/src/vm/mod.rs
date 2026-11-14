@@ -226,7 +226,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, start_gpu_report, working_set_limit,
+    restore_from, restore_reported, restores_here, start, start_gpu_report, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -258,6 +258,15 @@ pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
     restore_from, restores_here, start, working_set_limit,
 };
+
+#[cfg(not(hv))]
+pub fn restore_reported(
+    cfg: &RestoreConfig,
+    pinned: crate::snapshot::Pinned,
+    _report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Handle, Running), String> {
+    restore_from(cfg, pinned)
+}
 
 #[cfg(not(hv))]
 pub fn start_gpu_report(

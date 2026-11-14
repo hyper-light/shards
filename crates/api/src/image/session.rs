@@ -119,6 +119,45 @@ struct State {
     said_all: bool,
     /// The leases its host asked (D242).
     leases: Leases,
+    /// The run's GPU report (D233), as its host relays it.
+    report: Report,
+}
+
+/// The run's GPU report as its session holds it (D233, R04): not asked; asked, its host's relay
+/// awaited; relayed, its VM process's frame as that process wrote it; or taken, which every take
+/// after is refused as. Unasked to awaited as the run's request names a scope (`Begun::create`);
+/// awaited to relayed as its host relays it ([`take`], once, before its start or its refusal);
+/// awaited or relayed to taken at the first take ([`Session::take_gpu_report`]).
+#[derive(Debug, Default)]
+enum Report {
+    #[default]
+    Unasked,
+    Awaited,
+    Relayed(Vec<u8>),
+    Taken,
+}
+
+/// What a session reads its run's GPU report against (D233): the scope its request named, the
+/// selection it named, and the boot's deadline, the end of its patience; none where its
+/// patience had none.
+#[derive(Debug)]
+struct ReportAsked {
+    scope: [u8; 16],
+    selected: Vec<crate::PhysicalGpu>,
+    deadline: Option<Instant>,
+}
+
+/// The selection a run's VM was refused by its renderer, where the report its host relayed
+/// before its refusal (D232, D233) says so: what its boot is refused as, typed, in place of
+/// the host's words.
+fn gpu_refused(s: &State, request: &wire::Request) -> Option<ImageRefusal> {
+    let (Report::Relayed(frame), Some(scope)) = (&s.report, request.gpu_report) else {
+        return None;
+    };
+    match crate::physical::report::read(frame, scope, &request.gpu_devices) {
+        Err(why @ crate::GpuProbeError::Refused(_)) => Some(ImageRefusal::GpuProbe(why)),
+        _ => None,
+    }
 }
 
 /// A lease of the run's, as its orchestrator's side holds it (D242, R04): asked of the run's
@@ -608,6 +647,8 @@ pub(super) struct Session {
     rate_period: Duration,
     /// How its microVM started, as its host said it (D253).
     started_from: wire::StartedFrom,
+    /// What its GPU report is read against, where its request asked for one (D233).
+    report: Option<ReportAsked>,
 }
 
 /// A run host started, its threads reading its answers, keeping its last diagnostics and
@@ -699,7 +740,13 @@ impl Begun {
         *lock(&self.shared.lessor) = lessor;
         *lock(&self.shared.granted) = request.credentials.iter().map(|g| g.reference.clone()).collect();
         *lock(&self.shared.sign_ins) = request.sign_ins.clone();
-        lock(&self.shared.state).asked_inputs = State::asking(&request.members).asked_inputs;
+        {
+            let mut state = lock(&self.shared.state);
+            state.asked_inputs = State::asking(&request.members).asked_inputs;
+            if request.gpu_report.is_some() {
+                state.report = Report::Awaited;
+            }
+        }
         self.send(wire::to_host::CREATE, request)
     }
 
@@ -754,6 +801,10 @@ impl Begun {
         patience: Duration,
         stop: &super::BootStop,
     ) -> Result<Session, (ImageRefusal, bool)> {
+        // The end of the boot's patience, which its GPU report is taken within (D233).
+        let deadline = (patience != Duration::MAX)
+            .then(|| Instant::now().checked_add(patience))
+            .flatten();
         // The host is the session's from here, ended by it, or here where its run does not
         // start.
         self.armed = false;
@@ -779,6 +830,10 @@ impl Begun {
                 if s.refused.is_some() {
                     if !(s.gone() && s.said_all) {
                         return None;
+                    }
+                    if let Some(refused) = gpu_refused(s, request) {
+                        s.refused = None;
+                        return Some(Err(refused));
                     }
                     return s.refused.take().map(|r| Err(with_said(r, &s.said)));
                 }
@@ -833,6 +888,11 @@ impl Begun {
                 end_it(&shared);
                 let mut state = lock(&shared.state);
                 // Refused, by a host that has not yet exited: its refusal still.
+                if state.refused.is_some()
+                    && let Some(refused) = gpu_refused(&state, request)
+                {
+                    return Err((refused, false));
+                }
                 if let Some(r) = state.refused.take() {
                     return Err((with_said(r, &state.said), state.unfit));
                 }
@@ -850,6 +910,17 @@ impl Begun {
             return Err((
                 ImageRefusal::Host(
                     "the run host's start told an agent-control endpoint other than the run asked".into(),
+                ),
+                false,
+            ));
+        }
+        // Its GPU report relayed before its start where its run asked for one (D233): a host
+        // that starts the run unreported, or relays one unasked, broke the channel's contract.
+        if request.gpu_report.is_some() != matches!(lock(&shared.state).report, Report::Relayed(_)) {
+            end_it(&shared);
+            return Err((
+                ImageRefusal::Host(
+                    "the run host's start came without the GPU report its run asked for".into(),
                 ),
                 false,
             ));
@@ -878,6 +949,11 @@ impl Begun {
             terminals,
             rate_period: started.rate_period,
             started_from: started.from,
+            report: request.gpu_report.map(|scope| ReportAsked {
+                scope,
+                selected: request.gpu_devices.clone(),
+                deadline,
+            }),
         };
         session.pump_outputs().map_err(|e| (e, false))?;
         Ok(session)
@@ -1359,6 +1435,11 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             }
         }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
+        k::GPU_REPORT => match state.report {
+            Report::Awaited => state.report = Report::Relayed(payload.to_vec()),
+            Report::Unasked => return Err("a GPU report its run asked none of".into()),
+            Report::Relayed(_) | Report::Taken => return Err("a GPU report told twice".into()),
+        },
         k::INPUT_ROOM => {
             let room = wire::InputRoom::decode(payload).map_err(bad)?;
             let flow = state
@@ -2079,6 +2160,41 @@ impl ImageGuest for Session {
             kind: e.kind(),
         })
     }
+
+    /// Its VM process's report, relayed before its start (`started` refuses a start without
+    /// it), read as a managed launch's is (`physical::report::read`), within the boot's deadline
+    /// and `patience` from now, as `ManagedGuest::take_gpu_report` takes its own.
+    fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, ImageRefusal> {
+        take_report(&self.shared, self.report.as_ref(), patience)
+    }
+}
+
+/// [`Session::take_gpu_report`] of the session `shared` is, its report read against `asked`.
+fn take_report(
+    shared: &Shared,
+    asked: Option<&ReportAsked>,
+    patience: Duration,
+) -> Result<crate::physical::GpuReport, ImageRefusal> {
+    use crate::GpuProbeError;
+    let refused = |why| Err(ImageRefusal::GpuProbe(why));
+    let Some(asked) = asked else {
+        return refused(GpuProbeError::Unavailable);
+    };
+    let held = std::mem::replace(&mut lock(&shared.state).report, Report::Taken);
+    let frame = match held {
+        Report::Relayed(frame) => frame,
+        Report::Taken => return refused(GpuProbeError::ReportTaken),
+        Report::Unasked | Report::Awaited => return refused(GpuProbeError::Unreported),
+    };
+    let now = Instant::now();
+    let deadline = match (now.checked_add(patience), asked.deadline) {
+        (Some(caller), Some(boot)) => Some(caller.min(boot)),
+        (caller, boot) => caller.or(boot),
+    };
+    if deadline.is_some_and(|at| now >= at) {
+        return refused(GpuProbeError::Pending);
+    }
+    crate::physical::report::read(&frame, asked.scope, &asked.selected).map_err(ImageRefusal::GpuProbe)
 }
 
 /// Its run ends with it: one still running is stopped; one ended has its host's stdin
@@ -2793,6 +2909,151 @@ mod tests {
             Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
         );
         assert!(lock(&s.state).resizes.is_empty());
+    }
+
+    /// A GPU report as its run host relays it (D233): its VM process's frame of one GPU,
+    /// scoped `[3; 16]`, and what its take reads it against.
+    fn reported() -> (Vec<u8>, ReportAsked, crate::physical::GpuReport) {
+        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
+        let selected = crate::PhysicalGpu::Luid(7);
+        let report = GpuReport {
+            scope: [3; 16],
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical: selected,
+                    uuid: [4; 16],
+                    pci: None,
+                    luid: Some(7u64.to_be_bytes()),
+                    name: None,
+                    device_local_bytes: None,
+                }],
+                host_visible_bytes: 1,
+            },
+        };
+        let asked = ReportAsked {
+            scope: [3; 16],
+            selected: vec![selected],
+            deadline: Instant::now().checked_add(BOUND),
+        };
+        (report.encode().unwrap().into_bytes(), asked, report)
+    }
+
+    /// D233: a run's GPU report is its host's to relay once, for a run that asked for one, as
+    /// its VM process wrote it: one unasked, or told twice, breaks the channel.
+    #[test]
+    fn a_gpu_report_is_relayed_once_and_for_a_run_that_asked() {
+        let (frame, _, _) = reported();
+        let s = shared();
+        assert!(take(&s, wire::to_client::GPU_REPORT, &frame).is_err(), "unasked");
+        lock(&s.state).report = Report::Awaited;
+        assert_eq!(take(&s, wire::to_client::GPU_REPORT, &frame), Ok(false));
+        assert!(matches!(&lock(&s.state).report, Report::Relayed(kept) if *kept == frame));
+        assert!(take(&s, wire::to_client::GPU_REPORT, &frame).is_err(), "twice");
+    }
+
+    /// D233, as `ManagedGuest::take_gpu_report` takes a managed launch's: the report its host
+    /// relayed, read against the run's scope and selection, taken once (`ReportTaken` after,
+    /// whatever the first came to); `Unavailable` for a run that asked none; `Pending` past the
+    /// boot's deadline or the caller's patience, which spends it; a frame of another scope, a
+    /// torn one, one past its bound or none at all refused as a managed launch's are; and a
+    /// refusal its renderer typed is that refusal.
+    #[test]
+    fn a_runs_gpu_report_is_taken_once_within_its_boots_deadline() {
+        use crate::GpuProbeError as E;
+        use crate::physical::{GpuRefusal, JoinError};
+        let relayed = |frame: &[u8]| {
+            let s = shared();
+            lock(&s.state).report = Report::Relayed(frame.to_vec());
+            s
+        };
+        let (frame, asked, report) = reported();
+        let s = relayed(&frame);
+        assert_eq!(take_report(&s, Some(&asked), BOUND), Ok(report));
+        assert_eq!(
+            take_report(&s, Some(&asked), BOUND),
+            Err(ImageRefusal::GpuProbe(E::ReportTaken))
+        );
+        assert_eq!(
+            take_report(&relayed(&frame), None, BOUND),
+            Err(ImageRefusal::GpuProbe(E::Unavailable))
+        );
+        let s = relayed(&frame);
+        assert_eq!(
+            take_report(&s, Some(&asked), Duration::ZERO),
+            Err(ImageRefusal::GpuProbe(E::Pending))
+        );
+        assert_eq!(
+            take_report(&s, Some(&asked), BOUND),
+            Err(ImageRefusal::GpuProbe(E::ReportTaken))
+        );
+        let past = ReportAsked {
+            deadline: Some(Instant::now()),
+            ..reported().1
+        };
+        assert_eq!(
+            take_report(&relayed(&frame), Some(&past), BOUND),
+            Err(ImageRefusal::GpuProbe(E::Pending))
+        );
+        let unbounded = ReportAsked {
+            deadline: None,
+            ..reported().1
+        };
+        assert!(take_report(&relayed(&frame), Some(&unbounded), Duration::MAX).is_ok());
+        let other_scope = ReportAsked {
+            scope: [9; 16],
+            ..reported().1
+        };
+        assert!(take_report(&relayed(&frame), Some(&other_scope), BOUND).is_err());
+        assert!(take_report(&relayed(&frame[..frame.len() - 2]), Some(&asked), BOUND).is_err());
+        let long = vec![b'x'; crate::physical::report_bytes(1).unwrap() + 1];
+        assert_eq!(
+            take_report(&relayed(&long), Some(&asked), BOUND),
+            Err(ImageRefusal::GpuProbe(E::Count))
+        );
+        assert_eq!(
+            take_report(&relayed(&[]), Some(&asked), BOUND),
+            Err(ImageRefusal::GpuProbe(E::Unreported))
+        );
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let refused = crate::physical::GpuReport::refusal([3; 16], refusal).unwrap();
+        assert_eq!(
+            take_report(&relayed(refused.as_bytes()), Some(&asked), BOUND),
+            Err(ImageRefusal::GpuProbe(E::Refused(refusal)))
+        );
+    }
+
+    /// D232, D233: a run whose VM its renderer refused its selection is refused as that
+    /// refusal, typed, where its host relayed its report before its refusal; a receipt, or a
+    /// run that asked no report, leaves the host's own refusal.
+    #[test]
+    fn a_boot_refused_its_gpus_is_refused_as_its_renderer_typed_it() {
+        use crate::GpuProbeError as E;
+        use crate::physical::{GpuRefusal, JoinError};
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let frame = crate::physical::GpuReport::refusal([3; 16], refusal).unwrap();
+        let request = super::super::request(&ImageSpec {
+            gpu_devices: vec![crate::PhysicalGpu::Luid(7)],
+            gpu_report: Some([3; 16]),
+            ..stand_in_spec(Path::new("/shards"), Vec::new())
+        })
+        .unwrap();
+        let mut state = State {
+            report: Report::Relayed(frame.into_bytes()),
+            ..State::default()
+        };
+        assert_eq!(
+            gpu_refused(&state, &request),
+            Some(ImageRefusal::GpuProbe(E::Refused(refusal)))
+        );
+        let unasked = wire::Request {
+            gpu_report: None,
+            ..request.clone()
+        };
+        assert_eq!(gpu_refused(&state, &unasked), None);
+        state.report = Report::Relayed(reported().0);
+        assert_eq!(gpu_refused(&state, &request), None);
+        state.report = Report::Awaited;
+        assert_eq!(gpu_refused(&state, &request), None);
     }
 
     /// A save's answer is kept for the ask awaiting it alone, as a room's is (D259): one for an
@@ -3570,6 +3831,7 @@ mod tests {
             lessor: None,
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            gpu_report: None,
             shares: Vec::new(),
             nesting: false,
             ready_by: None,
@@ -3588,6 +3850,115 @@ mod tests {
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// A stand-in run host that says `frames` (each a kind and its payload) as it starts, then
+    /// reads its channel to its end, or, `exits`, reads its request's first byte and exits.
+    #[cfg(unix)]
+    fn saying(dir: &Path, frames: &[(u8, Vec<u8>)], exits: bool) -> PathBuf {
+        let octal: String = frames
+            .iter()
+            .flat_map(|(kind, payload)| wire::frame(*kind, payload).unwrap())
+            .map(|b| format!("\\{b:03o}"))
+            .collect();
+        let after = if exits {
+            "head -c 1 >/dev/null\nexit 0"
+        } else {
+            "exec cat >/dev/null"
+        };
+        stand_in(dir, &format!("#!/bin/sh\nprintf '{octal}'\n{after}\n"))
+    }
+
+    /// A run of `host` naming one GPU, its report scoped `[3; 16]` (D233).
+    #[cfg(unix)]
+    fn gpu_spec(host: &Path) -> ImageSpec {
+        ImageSpec {
+            gpu_devices: vec![crate::PhysicalGpu::Luid(7)],
+            gpu_report: Some([3; 16]),
+            ..stand_in_spec(host, Vec::new())
+        }
+    }
+
+    /// D233 through D231, its host a stand-in: a run whose host relays its VM's report before
+    /// its start boots, and its report is taken whole once, `ReportTaken` after; a host that
+    /// starts the run without it broke the channel's contract, and the boot is refused; a host
+    /// whose VM its renderer refused relays that refusal before its own, and the boot is
+    /// refused as the renderer typed it.
+    #[cfg(unix)]
+    #[test]
+    fn an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does() {
+        use crate::GpuProbeError as E;
+        use crate::physical::{GpuRefusal, JoinError};
+        let (frame, _, report) = reported();
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            rate_period: Duration::from_millis(100),
+            from: wire::StartedFrom::Booted,
+        }
+        .encode()
+        .unwrap();
+        let ended = untold(RunEnd::Exited(0)).encode().unwrap();
+        let boot = |host: &Path| {
+            Session::start(
+                &gpu_spec(host),
+                &super::super::request(&gpu_spec(host)).unwrap(),
+                BOOT_BOUND,
+                &super::super::BootStop::new(),
+            )
+        };
+
+        let dir = shards_testdir::TempDir::new("gpurep").unwrap();
+        let host = saying(
+            dir.path(),
+            &[
+                (wire::to_client::GPU_REPORT, frame.clone()),
+                (wire::to_client::STARTED, started.clone()),
+                (wire::to_client::ENDED, ended.clone()),
+            ],
+            false,
+        );
+        let session = boot(&host).unwrap();
+        assert_eq!(session.take_gpu_report(BOOT_BOUND), Ok(report));
+        assert_eq!(
+            session.take_gpu_report(BOOT_BOUND),
+            Err(ImageRefusal::GpuProbe(E::ReportTaken))
+        );
+        drop(session);
+
+        let dir = shards_testdir::TempDir::new("gpuunrep").unwrap();
+        let host = saying(
+            dir.path(),
+            &[
+                (wire::to_client::STARTED, started.clone()),
+                (wire::to_client::ENDED, ended.clone()),
+            ],
+            false,
+        );
+        assert!(matches!(boot(&host), Err(ImageRefusal::Host(_))));
+
+        let dir = shards_testdir::TempDir::new("gpuref").unwrap();
+        let refusal = GpuRefusal::Join(JoinError::Missing);
+        let refused_frame = crate::physical::GpuReport::refusal([3; 16], refusal).unwrap();
+        let host_refused = wire::Refused {
+            cause: wire::Cause::Boot,
+            why: "the VM ended before it was ready".into(),
+        }
+        .encode()
+        .unwrap();
+        let host = saying(
+            dir.path(),
+            &[
+                (wire::to_client::GPU_REPORT, refused_frame.into_bytes()),
+                (wire::to_client::REFUSED, host_refused),
+            ],
+            true,
+        );
+        assert_eq!(
+            boot(&host).err(),
+            Some(ImageRefusal::GpuProbe(E::Refused(refusal)))
+        );
     }
 
     /// A FIFO at `path`.
