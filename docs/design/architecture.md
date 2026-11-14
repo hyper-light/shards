@@ -10593,6 +10593,39 @@ An allocation failure of the answer ends the VM's link, which its asker reads as
 `ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
 an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
 Red/green: docs/research/measurements/device-fixes/README.md.
+
+**Amended 2026-11-14 (devices-08, R03): what of a plug was a picked figure.**
+- Its guest's steps (find, mount, unmount, grow, a function's release) had 30 s
+  (`GUEST_TIMEOUT`), the one clock left after init's waits went to the kernel's word
+  (above). They are waited for as the daemon's other built-ins are (`exec_answered`, D215's
+  judge): while the microVM's process runs, before the built-in's first answer its liveness
+  alone, then past the slowest seen ended where a whole one shows it ran no CPU, its host not
+  the reason. Cold: the first plug of a daemon waits until its guest answers or its microVM
+  ends. Its failure is the judge's typed cut (stalled, or its process unreadable). No figure
+  of its own. Owed to ROOT: `cargo test -p shards --test plug` with a guest made slow, its
+  plug done past 30 s.
+- Owed, each with its derivation, not swapped for another figure:
+  - the 4 KiB of a step's answer kept (`1 << 12`, shared with the daemon's other built-ins'
+    reads): init's DEVICE answers a device name or a refusal naming a path (Linux `PATH_MAX`,
+    4096, include/uapi/linux/limits.h), so its longest answer is init's longest refusal
+    line, which init's own words bound; to be derived from them in init and the daemon
+    together.
+  - the run's 4 PCI slots (`pci_slots`): a bus has 32 device numbers (PCI Express Base 6.0
+    §7.2.2); a slot is reserved as the microVM boots, into its template, so it cannot grow on
+    demand. The derivation is every free device number less what a slot costs a boot (MSI
+    routes, the window, an IOMMU endpoint): ROOT owes the boot latency and memory of a bus
+    of 0, 1, 2, 4, 8, 16 and every free slot (`docs/research/measurements/build-ab/ab.py`,
+    PM M430's method, each restoring one template, n, p50/p90/p99/max) before the default
+    moves.
+  - virtio-blk's, the GPU control ring's and virtio-iommu's queue sizes (256, 256, 64): the
+    queue audit's Little's-law derivation above, owed its service and refill times.
+  - `THROUGH_MAX` (1 MiB, a range's relay): the most one virtio-blk request carries is what
+    the device advertises, `seg_max` × `size_max` (virtio 1.3 §5.2.4); it advertises
+    `seg_max` alone today (254), so a request's length is the guest kernel's choice. With
+    `VIRTIO_BLK_F_SIZE_MAX` advertised, one request is one round trip of at most their
+    product; that changes the device's features, held in snapshots, and is owed with
+    ROOT's run of `cargo test -p shards --test build` over a range (PM M442's case).
+
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -26362,22 +26395,28 @@ reboots, driver updates or hot plug; a device's own identity does.
   that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
   nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
-**Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
-from Hex's scheduler's u16 device index, to which they hold a context's selection
-(`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
-host's Vulkan devices and device groups (`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`,
-physical-*.patch). Shards takes no selection its renderer refuses, so its own checks hold the
-same figure (`check_selection`, `probe_bytes`, the join's and `host_visible`'s host counts,
-format 29's reader, `--gpu-device`). Below it a count is bounded by what carries it: a
-receipt's by the device lines its own bytes hold, each at least its UUID's 32 hex digits and
-its end, before anything is reserved for them (`probe.rs`); a snapshot's by its remaining
-bytes (`codec::Reader::seq`); and, once the VM process enumerates the host's GPUs, by those,
-each named once (`selection::resolve`). The figure is still owed its derivation (R03): the
-protocol's own bounds are Vulkan's `uint32_t` counts, for which every patch already
-allocates overflow-checked, and the transport's `uint32_t byte_count` over its 33-byte
-stride (`UINT32_MAX / 33`, 130,150,524, which `virgl_device_selection_payload_size` already
-checks). Moving to them changes the C patches, which only a renderer build and a real GPU can
-check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
+**Literals.** `MAX_PHYSICAL_GPUS`, 130,150,524 (devices-09, 2026-11-14; was 65,536, Hex's
+scheduler's u16 device index copied, with no derivation): a selection's bound is what carries
+it to the renderer, its payload's length a `uint32_t` (`virgl_device_selection_payload_size`,
+physical-transport-*.patch) of `SELECTION_STRIDE` bytes a GPU, its Vulkan deviceUUID's 16
+bytes (`VK_UUID_SIZE`) as 32 hex digits and a NUL: `UINT32_MAX / 33`. The patches hold a
+context's selection to the same (`VIRGL_DEVICE_UUID_MAX_COUNT`,
+`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, each now `UINT32_MAX` over its stride), so Shards takes
+no selection its renderer refuses (`selection_fits`, used by `check_selection`, the nesting
+grant's `gpus=` and `--gpu-device`). A host's Vulkan devices and device groups are counted by
+Vulkan's own `uint32_t` (`MAX_HOST_GPUS`; the patches' host-count checks keep only their
+zero and `SIZE_MAX` checks before each `calloc`, their copied bound gone), and a selection
+names each at most once. Hex's scheduler indexes its own devices by u16: that bound is
+Hex's to hold its selections to (hex-api `MAX_DEVICES`, hex-runtime `cdi_for`), not this
+transport's. Below the bound a count is bounded by what carries it: a receipt's by the
+device lines its own bytes hold, each at least its UUID's 32 hex digits and its end, before
+anything is reserved for them (`probe.rs`); a snapshot's by its remaining bytes
+(`codec::Reader::seq`); a command line's by its arguments; and, once the VM process
+enumerates the host's GPUs, by those, each named once (`selection::resolve`); each reserved
+fallibly. The patches were dry-run applied to both pinned sources (virglrenderer 1.3.0 and
+0.10.4e-krunkit, `patchcheck.sh`); building the renderer from them and a real GPU's
+selection are owed to ROOT: `scripts/gpu-libs` on Linux and macOS, then `cargo test -p shards
+--test gpu` on its Linux Vulkan fixture and a Mac.
 `GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
 (`probe.rs`, derived from it); a refusal's record and frame are bounded by the receipt and the

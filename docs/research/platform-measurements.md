@@ -17849,6 +17849,8 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-08 and devices-09 (2026-11-14, D214's and D232's amendments): a plug's guest steps on D215's learned judge in place of 30 s; a GPU selection bounded by its renderer transport (`UINT32_MAX / 33`) in Rust and the renderer patches, the host catalog by Vulkan's `uint32_t`. Unit and clippy green on macOS arm64 and Linux x86_64; patches dry-run applied to both pinned renderer sources. No renderer build, GPU or real VM run; the remaining device literals' measurements are owed (D214). See `measurements/device-fixes/README.md`.
+
 Review devices-10 (2026-11-14, D214's amendment): device refusals typed across DEVICE/DEVICED; codec red/green, VMM, daemon and clippy green on macOS arm64, Linux x86_64 clippy. No real VM run. See `measurements/device-fixes/README.md`.
 
 Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
