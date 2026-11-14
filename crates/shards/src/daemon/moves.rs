@@ -2862,7 +2862,7 @@ mod tests {
         writer.finish().unwrap();
         let to = shards_testdir::TempDir::new("mv-hto").unwrap();
         let allows = |_: &str| true;
-        let mut placer = Placer::new(&to, &allows);
+        let mut placer = Placer::new(&to, &allows, &allows).unwrap();
         let mut input = bytes.as_slice();
         read_plan(&mut input).unwrap();
         read_entries(&mut input, &mut |entry| placer.take(entry)).unwrap();
