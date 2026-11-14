@@ -709,7 +709,7 @@ fn kill(conn: &shards_ipc::Stream) {
 }
 
 /// How long the daemon waits for the end of an exec of its own.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(super) enum Wait<'a> {
     /// Until it ends.
     Ending,
@@ -725,6 +725,11 @@ pub(super) enum Wait<'a> {
     /// under comes as its host lets it run (D188; PM M467). An answer there as the wait
     /// begins teaches nothing: it was waited for not at all (D222).
     WhileRuns(u32, &'a Record),
+    /// A group member's word, judged as WhileRuns, with its refusal told immediately:
+    /// the group must not invent an elapsed-time verdict while this wait still progresses,
+    /// nor wait for a stalled guest to acknowledge its exec's kill before judging the round.
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    GroupWord(u32, &'a Record, &'a (dyn Fn(&Cut) + Sync)),
 }
 
 /// Waits on `ours` for an exec's end, ending it (SIGKILL) as `wait` says, and waiting on for
@@ -734,14 +739,19 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
         // Its answer there as its wait begins was waited for not at all: read as it is, it
         // teaches its kind nothing (D222's wait of nothing), as a slot's rest is learned only
         // where it was waited for (D185's `Asked::waited`).
-        Wait::WhileRuns(..) if super::readable_within(ours, Some(Duration::ZERO)) => (None, None),
-        Wait::WhileRuns(vm, record) => match following(vm, record) {
+        Wait::WhileRuns(..) | Wait::GroupWord(..) if super::readable_within(ours, Some(Duration::ZERO)) => {
+            (None, None)
+        }
+        Wait::WhileRuns(vm, record) | Wait::GroupWord(vm, record, _) => match following(vm, record) {
             Ok(follow) => (follow, None),
             Err(cut) => (None, Some(cut)),
         },
         Wait::Ending | Wait::For(_) => (None, None),
     };
-    if cut.is_some() {
+    if let Some(cut) = &cut {
+        if let Wait::GroupWord(_, _, refused) = wait {
+            refused(cut);
+        }
         kill(ours);
     }
     let status = loop {
@@ -751,7 +761,7 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
             (None, Wait::For(timeout)) => Some(timeout),
             // Until the judge's next look, made first where it is due now: none while the
             // wait follows liveness alone (its kind cold, or its process gone).
-            (None, Wait::WhileRuns(..)) => {
+            (None, Wait::WhileRuns(..) | Wait::GroupWord(..)) => {
                 let left = follow
                     .as_ref()
                     .and_then(Follow::due)
@@ -759,6 +769,9 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
                 if left.is_some_and(|left| left.is_zero()) {
                     if let Some(Err(why)) = follow.as_mut().map(Follow::look) {
                         cut = Some(Cut::from(why));
+                        if let (Wait::GroupWord(_, _, refused), Some(cut)) = (wait, &cut) {
+                            refused(cut);
+                        }
                         kill(ours);
                     }
                     continue;
@@ -791,7 +804,7 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
                         kill(ours);
                     }
                     // Its look is due: made as the loop goes round.
-                    Wait::WhileRuns(..) => {}
+                    Wait::WhileRuns(..) | Wait::GroupWord(..) => {}
                     // A read with no timeout set times out only on a descriptor that does not
                     // block, which ends the wait as any failed read does.
                     Wait::Ending => break None,
@@ -852,6 +865,28 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn a_group_word_reports_its_refusal_before_the_kill_is_acknowledged() {
+        let idle = sleeper();
+        let record = learned(Duration::from_millis(50));
+        let refused = std::sync::atomic::AtomicBool::new(false);
+        let report = |cut: &Cut| {
+            assert!(matches!(cut, Cut::Stalled(_)));
+            refused.store(true, Ordering::SeqCst);
+        };
+        let ended = waited(Wait::GroupWord(idle.0.id(), &record, &report), |theirs| {
+            let kill = shards_ipc::recv(&theirs).unwrap().unwrap();
+            assert_eq!(kill.kind, shards_ipc::kind::SIGNAL);
+            assert!(
+                refused.load(Ordering::SeqCst),
+                "the group still waits for its own verdict"
+            );
+            shards_ipc::send(&theirs, shards_ipc::kind::EXIT, &[137], &[]).unwrap();
+        });
+        assert!(matches!(ended.cut, Some(Cut::Stalled(_))));
+    }
+
+    #[cfg(unix)]
     fn sleeper() -> Killed {
         Killed(
             std::process::Command::new("/bin/sleep")
@@ -876,7 +911,8 @@ mod tests {
         let shards_api::Seen::Learned { slowest, .. } = record.seen() else {
             panic!("its answer taught nothing");
         };
-        assert!(slowest >= after, "{slowest:?}");
+        // The answer thread starts before await_exit begins its measured wait.
+        assert!(!slowest.is_zero(), "its genuine wait taught no interval");
     }
 
     /// An exec's answer there as its wait begins was waited for not at all: it is taken, and

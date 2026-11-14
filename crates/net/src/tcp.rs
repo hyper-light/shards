@@ -19,14 +19,25 @@ use crate::sys::{AsRawSock, RawSock, UnixStream};
 use crate::wire::{self, ACK, FIN, PSH, RST, SYN};
 
 /// What a connection holds of the guest's bytes the host has not taken yet, and so the
-/// most this side ever advertises: 4 MiB, with a window scale of 7.
+/// most this side ever advertises: 4 MiB.
 pub(crate) const TO_HOST: usize = 4 << 20;
-const OUR_WSCALE: u8 = 7;
+/// The window scale this side offers: the least that lets its 16-bit window field say
+/// all of `TO_HOST` (RFC 7323 §2.3), 14 at most (§2.3's limit).
+const OUR_WSCALE: u8 = wscale_for(TO_HOST);
+
+/// The least shift by which a 16-bit window says `bytes`, at most 14 (RFC 7323 §2.3).
+const fn wscale_for(bytes: usize) -> u8 {
+    let mut shift = 0u8;
+    while shift < 14 && (u16::MAX as usize) << shift < bytes {
+        shift += 1;
+    }
+    shift
+}
 
 /// Whether a connection whose injector holds `held` of the guest's bytes, none of them able to
 /// go on, leaves the guest no window: what `window` advertises at the scale this side offers is
 /// zero, so none of the guest's bytes come until some go on. Read at that scale whether or not
-/// the guest scales, which says full up to 2^7 - 1 octets early where it does not.
+/// the guest scales, which says full up to 2^OUR_WSCALE - 1 octets early where it does not.
 pub(crate) fn full(held: usize) -> bool {
     TO_HOST.saturating_sub(held) >> OUR_WSCALE == 0
 }
@@ -1340,6 +1351,18 @@ fn connect_unix(path: &Path) -> io::Result<UnixStream> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// network-12: the window scale offered is the least that says the whole queue a
+    /// connection holds of the guest's bytes (RFC 7323 §2.3), derived from it.
+    #[test]
+    fn the_window_scale_offered_is_the_least_that_says_the_whole_queue() {
+        assert!(usize::from(u16::MAX) << OUR_WSCALE >= TO_HOST);
+        assert!(OUR_WSCALE == 0 || usize::from(u16::MAX) << (OUR_WSCALE - 1) < TO_HOST);
+        assert_eq!(
+            [1, 65535, 65536, 1 << 20, 4 << 20, usize::MAX].map(wscale_for),
+            [0, 0, 1, 5, 7, 14]
+        );
+    }
 
     /// What a connection sent the guest: each segment's sequence, acknowledgement, flags
     /// and bytes. A full ring refuses segments of bytes, as the stack's does.

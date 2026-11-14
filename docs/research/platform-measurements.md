@@ -17849,6 +17849,11 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
+
+Review devices-07 follow-up (2026-11-14, D156's amendment): a 66-run join chain's /dev/shm owner red (the 64-link walk sized it by run 1's allowance, 0 vs 536870912), green with 4 inspect tests and shards clippy on macOS arm64. See `measurements/device-fixes/README.md`. No real VM mount or new performance measurement was run.
+
+
 Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
 
 
@@ -24373,6 +24378,22 @@ filter's tests and clippy for both crates clean on adacachy2. Owed to ROOT: a GP
 template's save and its run on a kernel of ABI 5 to 7 (no host here has one), and
 tests/gpu.rs on the GPU hosts.
 
+Amended a third time 2026-11-13 (ROOT: a run must not fail because the SigBlk look met
+pthread_create's window, glibc's or musl's). A thread seen blocking the asking signal
+(SIGSYS) is sent it anyway and looked at again, the pass yielding between looks, until it
+unblocks (and answers), ends, or has run since the first look (utime plus stime grown) and
+still blocks: deaf, failed closed. `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`
+holds a thread with every signal blocked asleep on an eventfd across the first look, a
+helper releasing it once SIGSYS shows pending for it (after the look), and it then
+unblocks: the layer is Ok and the thread is refused a file outside its paths. Mutant
+"a block is deaf" (the earlier rule): `applied: Err("thread … blocks or ignores signal 31
+…")`, and the thread read the file: red. `a_thread_that_cannot_be_asked_fails_the_layer`
+now has its thread block every signal and run on (spinning): the pass fails closed;
+mutant "a block is waited for as a thread that hears": the pass waited on it until the
+180 s bound killed it (exit 124): red. confine:: 12 of 12 and clippy for both crates clean
+on adacachy2. Owed to ROOT: a kernel of ABI 5 to 7, and a measure of the pass's yields
+while a thread sits in the window.
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24595,3 +24616,45 @@ arm64 (adas-mac-studio-3) and 89/89 on Linux x86_64 (adacachy2), the seven memor
 tests among them, clippy clean on both; the red (no cleanup) and eight more mutants of
 the guard killed on both hosts. No real VM ran.
 [Sources, red/green, mutants and owed VM/platform work](measurements/memory-fixes-v1/memory-18.md).
+
+### M575. A group member's own exec judge owns its refusal (review waits-01)
+
+At `bb799b90d`, the focused real groups-verdict unit test
+`a_pending_member_word_is_not_a_failed_give_back` failed: a pending word past W*
+was treated as a completed failed pass (Kiln r5, adas-mac-studio.local, macOS arm64).
+At `8168e33f5`, the groups tests (7) and parallel-member test (1) passed and
+`cargo clippy -p shards --all-targets -- -D warnings` passed (r6, same host).
+`Wait::GroupWord` now publishes its own typed refusal before its kill-ack wait;
+the group consumes that outcome instead of running a second wall-clock timer.
+Cold waits remain unbounded by another word's later answer.
+[Commands, logs, policy accounting and owed real-VM checks](measurements/waits-fixes-v1/README.md).
+This is scoped unit red/green evidence, not a real-VM or performance result.
+
+### M576. A word's refusal is its own exec's, a reader's end no take, a zombie no daemon, a kept record one transaction (review waits-01, -04, -08, -11; D183, D185)
+
+Focused unit tests, macOS arm64 (adas-mac-studio-3.local), each red on the commit before its
+fix, at `21f8bee02`, and green on the fixed tip and on its merge with main:
+- waits-01's remainder (D183): `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`,
+  a member whose room was refused in round 1 and whose give-back was then under way, cold,
+  was counted in round 2 as one that gave nothing: its group past its max, it was OOM-killed
+  before its round-2 word came (red: "asked 4 where an exec was due", kind 4 the kill, 24
+  an exec). Each exec of a word now begins `Waiting`.
+- waits-04 (D185): `slots::fifo::tests::a_readers_end_is_no_take`, a FIFO filled, more than
+  PIPE_BUF left, its reader closed as the wait began: red `[Began, Ended(57.125µs)]`, a take
+  learned from a client that took nothing; now `[Began]` and BrokenPipe. Its twin, a reader
+  draining at each wait, is a take each.
+- waits-08 (D185): `tests::an_unreaped_daemon_does_not_live`, a child exited and left a zombie
+  (waitid `WNOWAIT`), named by its ID and start: red "exited and unreaped, lives"; now neither
+  `Named::lives`, `daemon_lives` nor `exiting`.
+- waits-11 (the tests' waits): `harness.rs::concurrent_keeps_never_shrink_a_kept_record`, a
+  keep of 100 ms tried inside one of 10 ms between its read and its rename: red, it landed
+  (`Some(true)`), and the 10 ms rename over it would shrink W*; now held off, kept after, 100 ms.
+
+Each red is its guard's mutation: the fix's own lines removed. The merged tree also passed
+shards-ipc's lib (66), daemon::groups (7), health (13), reclaim (1), the parallel-member,
+room-footprint and give-back daemon tests, harness `an_answer_already_there_teaches_nothing`,
+and `cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings`.
+`harness.rs::a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy` fails as its
+daemon cannot start under `SHARDS_HELPERS=skip` (exit 1 before it served), at the base
+`97f404be8` too: not these changes'. Linux's `/proc` state read and Windows ran on CI only.
+[Commands and owed runs](measurements/waits-fixes-v1/README.md).

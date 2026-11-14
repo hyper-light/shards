@@ -1383,6 +1383,8 @@ struct Daemon<D: Disk = Real> {
     plugged: Mutex<devices::PluggedMap>,
     /// Each running microVM's device steps, one at a time (D214).
     device_steps: devices::Steps,
+    /// Which runs have each disk file plugged in, by its identity (devices-11, D214).
+    disk_claims: devices::DiskClaims,
     /// Each running microVM's join share process (D119), by the ID of the microVM whose
     /// run it is: the daemon's connection to it, on which each joiner's link to it goes.
     /// Made as the first joiner of that microVM's network brings volumes.
@@ -2212,6 +2214,7 @@ impl<D: Disk> Daemon<D> {
             paused: Mutex::default(),
             plugged: Mutex::default(),
             device_steps: devices::Steps::default(),
+            disk_claims: devices::DiskClaims::default(),
             join_shares: Mutex::default(),
             shared_by: Mutex::default(),
             noticing: Mutex::default(),
@@ -3790,7 +3793,7 @@ impl<D: Disk> Daemon<D> {
             .and_then(|opened| {
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
-                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run)))?;
+                    crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
                 // An emulated command is never PID 1 of its namespace, but under shards'
                 // reaper, as `--init` runs one (D179, PM M251): the emulator ends a program
                 // that dies of a signal by sending itself that signal, which a namespace's
@@ -10506,7 +10509,7 @@ mod tests {
 
     /// What a test's disk lets through as its test ends, failing or not, so that no
     /// daemon thread waits on it past its test ([`Ending`]).
-    trait Opens {
+    pub(super) trait Opens {
         fn open(&self) {}
     }
 
@@ -10541,15 +10544,15 @@ mod tests {
     /// A daemon of a home of its own, which starts no VM itself: its tests play the warm
     /// VMs, over socket pairs, and hold each step of a run's start as long as they like
     /// (audit A06).
-    struct Test<D: Disk + Opens = Real> {
-        daemon: Daemon<D>,
+    pub(super) struct Test<D: Disk + Opens = Real> {
+        pub(super) daemon: Daemon<D>,
         home: shards_testdir::TempDir,
         /// The processes of the warm VMs played, ended with the test.
         vms: Mutex<Vec<Arc<shards_ipc::Child>>>,
     }
 
     impl Test {
-        fn new(tag: &str) -> Test {
+        pub(super) fn new(tag: &str) -> Test {
             Test::on(tag, Real)
         }
     }
@@ -13375,8 +13378,7 @@ mod tests {
     /// group's verdict (D183, slice 3): each member is told its room and asked to give back
     /// on a thread of its own, its wait judged as D215's judge judges one, and the groups'
     /// thread waits on none. One of group one never answers the room it is told before the
-    /// daemon has seen any answered, which a wait follows while its VM process lives; beside
-    /// it are one that answers and group two's. Each group past its memory.max with nothing
+    /// room's kind is learned; beside it are one that answers and group two's. Each group past its memory.max with nothing
     /// given back, each group's largest is stopped, OOM-killed: the one that never answered
     /// once its word has run past the slowest room answered. Red with a groups' thread that
     /// told one member after another and so waited on it while it lived.
@@ -13385,6 +13387,12 @@ mod tests {
     fn a_member_that_never_answers_holds_up_no_other_member_or_group() {
         let t = Test::new("group-words");
         t.run(|t| {
+            // A cold word deliberately has no stall bound. This fixture tests a word
+            // whose own exec judge can refuse it, not an outside clock ending a cold wait.
+            t.daemon
+                .answers
+                .room
+                .teach(Duration::from_millis(20), Duration::ZERO);
             let mib = |n: u64| n << 20;
             for (group, max) in [("one", mib(1000)), ("two", mib(200))] {
                 let dir = groups::made(&t.daemon.home, group).unwrap();
@@ -13394,7 +13402,7 @@ mod tests {
             }
             t.t.daemon.start_groups(t.threads);
             let (stuck, _stuck_run, stuck_vm, _) = running_under(t, "stuck", "one", mib(600));
-            // Its room, told before any was answered: never answered.
+            // Its room: never answered, and refused by its own exec judge.
             let held = heard_whole(&stuck_vm);
             assert_eq!(held.kind, kind::EXEC_RUN);
             let (_, _answers_run, answers_vm, _) = running_under(t, "answers", "one", mib(500));
@@ -13421,6 +13429,82 @@ mod tests {
                     stopped(&stuck),
                 );
             });
+        });
+    }
+
+    /// A refusal is its own exec's alone (D183, waits-01): a member whose room was refused,
+    /// its kill acknowledged, and whose give-back then follows its VM's liveness (the
+    /// give-back's kind cold) is still asked by the round opened next, not counted as one
+    /// that gave nothing. Here `a` (600 MiB, under a high of 500 and a max of 1000) has its
+    /// room refused in round 1 and its give-back held; `b` (500 MiB) joins, opening round 2,
+    /// and gives nothing; `a` then gives 1 MiB back in round 2. Red with the room's refusal
+    /// left standing through the give-back: round 2 counted `a` as nothing given, its group
+    /// past its max, and OOM-killed `a` before its round-2 word came.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_refused_room_is_not_the_next_rounds_verdict() {
+        let t = Test::new("group-stale");
+        t.run(|t| {
+            t.daemon
+                .answers
+                .room
+                .teach(Duration::from_millis(20), Duration::ZERO);
+            let mib = |n: u64| n << 20;
+            let dir = groups::made(&t.daemon.home, "g").unwrap();
+            std::fs::write(dir.join("memory.high"), format!("{}\n", mib(500))).unwrap();
+            std::fs::write(dir.join("memory.max"), format!("{}\n", mib(1000))).unwrap();
+            t.t.daemon.start_groups(t.threads);
+            let builtin = |m: &shards_ipc::Message| {
+                assert_eq!(m.kind, kind::EXEC_RUN, "asked {} where an exec was due", m.kind);
+                m.payload
+                    .get(9..)
+                    .and_then(shards_abi::run::Spec::decode)
+                    .unwrap()
+                    .builtin
+            };
+            let (a, _a_run, a_vm, _) = running_under(t, "first", "g", mib(600));
+            // Round 1: its room never answered, refused by its own judge, the kill answered.
+            let room = heard_whole(&a_vm);
+            assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
+            let conn = stream_of(&room.fds[0]);
+            let killed = shards_ipc::recv(&conn).unwrap().unwrap();
+            assert_eq!((killed.kind, killed.payload), signal(9));
+            shards_ipc::send(&conn, kind::EXIT, &[137], &[]).unwrap();
+            drop((conn, room));
+            // Its give-back of round 1, held: its kind cold, it follows liveness alone.
+            let give = heard_whole(&a_vm);
+            assert_eq!(builtin(&give), shards_abi::run::builtin::RECLAIM);
+            let (b, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
+            let _ends = Ends {
+                held: None,
+                vms: vec![(&a_vm, 0), (&b_vm, 0)],
+            };
+            // Round 2: b gives nothing.
+            for (said, what) in [
+                (&b"0"[..], shards_abi::run::builtin::ROOM),
+                (b"0 0\n", shards_abi::run::builtin::RECLAIM),
+            ] {
+                let m = heard_whole(&b_vm);
+                assert_eq!(builtin(&m), what);
+                answer_exec(&m, said, 0);
+            }
+            t.until("b's give-back taken", |d| !d.watching.giving(&b));
+            // a's give-back of round 1 answered, then its words of round 2: 1 MiB given back.
+            answer_exec(&give, b"0 0\n", 0);
+            drop(give);
+            for (said, what) in [
+                (&b"0"[..], shards_abi::run::builtin::ROOM),
+                (b"1048576 0\n", shards_abi::run::builtin::RECLAIM),
+            ] {
+                let m = heard_whole(&a_vm);
+                assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
+                answer_exec(&m, said, 0);
+            }
+            t.until("a's give-back taken", |d| !d.watching.giving(&a));
+            assert!(
+                !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
+                "a, asked in round 2 and giving back, was OOM-killed"
+            );
         });
     }
 

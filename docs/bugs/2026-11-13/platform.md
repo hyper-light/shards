@@ -44,7 +44,7 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
 
-**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568.
+**Follow-up (2026-11-13):** 33f370d67 (no multiplier: a thread that blocks or ignores the asking signal fails the layer at once, typed; any other is waited for as long as it lives, its PIDFD_THREAD pidfd waking the wait) and b92a75e83 (asked by SIGSYS, which Mesa's threads leave unblocked; red: a Mesa-like thread kept writing the sealed directory). PM M568. And 6bf478ea1: a thread inside pthread_create's all-blocked window is waited for until it unblocks, ends, or runs on still blocking (deaf, failed closed); red `a_thread_inside_pthread_creates_window_is_asked_once_it_unblocks`.
 
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 

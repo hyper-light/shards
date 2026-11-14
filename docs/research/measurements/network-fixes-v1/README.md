@@ -651,3 +651,94 @@ real CNAME target. Mutations: owner, class, RCODE and loop checks each removed f
 the test ([log](netb-mutations.log)). Question-ID correlation is not added: the
 host socket is connected to the one resolver and the flow's answers are that
 resolver's, so the owner chain is what ties records to the granted name.
+
+### network-12: the network controls' derivations, row by row
+
+Each row of the review's inventory, with what it is now. "Fixed" rows changed code
+on this branch, tested on merges of main through the carrier on adas-mac-studio-3.local
+(macOS arm64, `--profile test-release`) ([log](netb-mac.log), [mutations](netb-mutations.log)).
+"Owed" rows keep their value in force: no other picked number replaces one. Each owed
+row's design and the exact measurement ROOT owes follow the table.
+
+| Row | Now | Basis |
+| --- | --- | --- |
+| wire.rs at most eight IPv6 extension headers | fixed 6fb0a6f66 (red 59d06bed7, `wire::tests::ipv6_headers_read_back_as_written`: "nine extension headers"; mutation of the hop-by-hop-first check fails) | RFC 8200 §4.1: any order, any number, hop-by-hop first alone; each header ≥ 8 bytes read within the packet, so the packet's length bounds the walk |
+| wire.rs TTL / hop limit 64 | named 51a4b86fb (`DEFAULT_TTL`) | the Assigned Numbers default (RFC 1700, IANA ip-parameters), which RFC 1122 §3.2.1.7 and RFC 4861 §6.3.2 (CurHopLimit) have hosts use: a registered value, not a choice |
+| ring.rs 4096 page fallback | fixed d0d8abdc5 | an OS that gives no page size (or one not a power of two) is an `io::Error` the queue's growth already returns; no guessed size |
+| netring 16 shared-memory name tries (macOS) | fixed 685d9c214 (red 26e3bce81, `shared_memory_passes_over_every_name_taken`: "no free shared memory name" after 40 taken names) | each refused name is an object another process holds, each try a new name: the OS's finite object table bounds the loop |
+| tcp.rs window scale 7 | derived 41e40fe0a (`wscale_for(TO_HOST)`, test `the_window_scale_offered_is_the_least_that_says_the_whole_queue`) | RFC 7323 §2.3: the least shift whose 16-bit window says the whole queue, 14 at most |
+| lib.rs 64 KiB peer read | derived 41e40fe0a | one whole message of the peer stream: its 4-byte length and `MAX_FRAME` |
+| tcp.rs TO_HOST / TO_GUEST 4 MiB | owed | below |
+| tcp.rs RTO 200 ms, 8 retries, IDLE = RTO | owed | below |
+| tcp.rs window update at a doubling | owed | below |
+| lib.rs BUDGET 64 | owed | below |
+| lib.rs UDP 30 s / 120 s / 2 s | owed | below |
+| lib.rs BACKLOG 1024; Windows UDP_WAITING 16 | owed | below |
+| poll.rs 256 events a wait | owed | below |
+| netring 1 MiB ring | owed | below |
+| init dnsrelay / agentdns WAIT 5 s | owed | below |
+| shards daemon/publish.rs 10 bind tries | owed | below |
+| init chooser.rs 8192 / 16 KiB scratch, 1024 privileged-port fallback | owed to the chooser's lane | network-06/07's lane rewrote chooser.rs on main meanwhile (04f590670); part B left it alone |
+
+Designs and the measurements ROOT owes, each a learned or cited value with its cold
+start and its failure typed:
+
+- **Queues (TO_HOST, TO_GUEST).** A connection's guest-side queue exists to cover what
+  its host socket can take or give while the guest's side is behind. Learn it per
+  connection from the host socket's own buffer (SO_RCVBUF / SO_SNDBUF as the kernel
+  autotunes them, read where the queue would grow), cold start the socket's initial
+  buffer as getsockopt(2) reports it, never above the host's own maximum
+  (Linux `tcp_rmem`/`tcp_wmem`, macOS `net.inet.tcp.autorcvbufmax`/`autosndbufmax`,
+  Windows' autotuning level). A failed getsockopt is a typed refusal of the
+  connection's growth, not a default. The window scale then follows the learned
+  ceiling (`wscale_for`, already in place), fixed at the SYN as RFC 7323 requires, so
+  the SYN's ceiling is the host maximum. ROOT owes: PM M210's bulk-transfer and
+  1,000-idle-connection RSS runs, before and after, on macOS, Linux and Windows.
+- **Retransmission (RTO, RETRIES, IDLE).** RFC 6298's estimator per connection: SRTT and
+  RTTVAR from the guest's ACKs of segments sent once (Karn), RTO = SRTT + max(G,
+  4·RTTVAR), cold start RFC 6298 §2.1's 1 s until the first sample, backoff doubling
+  (§5.5). The floor is the open question: RFC 6298 §2.4 says 1 s, Linux takes 200 ms;
+  the guest's delayed-ACK bound (RFC 9293 §3.8.6.3, under 0.5 s) is what a floor must
+  exceed for a lone segment, and the estimator learns it where samples include it.
+  Give up on time, not a count: RFC 1122 §4.2.3.5's R2, at least 100 s, from the first
+  unanswered retransmission. IDLE becomes the connection's current RTO (RFC 7661 §4.4).
+  ROOT owes: spurious-retransmission counts under a loaded host (vCPUs descheduled,
+  macos-sched/launchd-run.sh on Mac) with the learned RTO and each candidate floor, and
+  M210's idle-memory run with IDLE = current RTO.
+- **Window updates.** RFC 9293 §3.8.6.2.2's receiver rule announces a window that grew
+  by min(RCV.BUFF/2, Eff.snd.MSS); the code announces at a doubling (Linux's
+  `tcp_cleanup_rbuf`). ROOT owes: an A/B of bulk throughput and ACK frames per MiB under
+  each rule (`docs/research/measurements/build-ab/ab.py`'s method), before switching.
+- **BUDGET.** Turn fairness by deficit round robin (Shreedhar and Varghese, SIGCOMM
+  1995): a byte quantum of one largest frame (`MAX_FRAME`) per socket per turn, the
+  paper's O(1) condition, carried over turns; datagram paths stop early when the ring
+  has no room (backpressure, not a count). ROOT owes: per-flow latency p50/p99 with one
+  flooded published port beside a quiet one, before and after.
+- **UDP lifetimes.** RFC 4787 REQ-5: a UDP mapping MUST NOT expire in under 2 min (5 min
+  RECOMMENDED); REQ-5a allows shorter timers only for a well-known destination port's
+  own application. The 30 s unreplied lifetime (Linux conntrack's) breaks REQ-5 for
+  ports past 1023. Design: 120 s at least for every mapping, a DNS transaction (port
+  53) ending at its answer; admission of new flows by the process's real descriptor
+  limit (RLIMIT_NOFILE less open), a refusal typed as the table's. ROOT owes: descriptor
+  and RSS under a churn of 10,000 one-datagram flows, before and after.
+- **BACKLOG, UDP_WAITING.** Bound the frames waiting for the ring in bytes by one ring
+  (`RING`), which is what one drain of the guest moves; Windows' datagrams waiting for
+  the dialer by the dialer socket's send buffer (SO_SNDBUF). ROOT owes: drop counts of
+  a UDP flood into a slow guest, before and after.
+- **poll's 256.** Size each wait's buffer to the handles registered (counted at `set`
+  and `forget`; kqueue counts a filter each), so one wait takes every ready handle;
+  allocation failure is the wait's error. ROOT owes: wait counts and latency with 10,000
+  connections ready at once.
+- **Ring 1 MiB.** Learn it from the host's measured doorbell wake latency times the
+  device's line rate (PM M83's harness), the region's size fixed at the VM's start.
+  ROOT owes: M83's throughput and per-VM memory at each candidate size.
+- **DNS WAIT.** The asker's own retry timer is what the relay's wait serves: shards
+  writes each agent's resolv.conf without `options timeout:`, so its asker waits its
+  libc's documented RES_TIMEOUT (resolv.conf(5), glibc and musl: 5 s). Better, learned:
+  a question is let go when its asker asks it again (same question, same link, a new
+  ID), or answered, with Flight's share as its bound. ROOT owes: real-guest ID-holding
+  and answer latency under a withheld upstream, before and after.
+- **publish.rs 10 tries.** Try each port of the kernel's ephemeral range
+  (`ip_local_port_range`, `net.inet.ip.portrange.first/last`, Windows' dynamic port
+  range) at most once after the kernel's pick collides, a typed refusal once the range
+  is spent. ROOT owes: the daemon's publish tests with a range mostly held.
