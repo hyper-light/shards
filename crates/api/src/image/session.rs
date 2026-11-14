@@ -1131,7 +1131,7 @@ fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
 }
 
 /// The owner's write end, and the reader driven by its member's feeder.
-fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl io::Read + Send, io::PipeWriter)> {
+fn input_pipe(_shared: &Shared, _member: u32) -> io::Result<(impl io::Read + Send + use<>, io::PipeWriter)> {
     io::pipe()
 }
 
