@@ -1164,7 +1164,7 @@ fn input_pipe(shared: &Shared, member: u32) -> io::Result<(impl io::Read + Send 
             shards_ipc::read(&self.0, out)
         }
     }
-    let (reader, writer) = shards_ipc::input_pair()?;
+    let (reader, writer) = shards_ipc::input_pair(shards_abi::run::CHUNK as u32)?;
     let cancel = reader.try_clone()?;
     let mut state = lock(&shared.state);
     if state.end.is_some() || state.answered {
@@ -2407,7 +2407,7 @@ mod tests {
             said_to: Mutex::new(None),
         });
         lock(&s.state).inputs.insert(1, InputFlow::default());
-        let (reader, mut writer) = io::pipe().unwrap();
+        let (reader, mut writer) = input_pipe(&s, 1).unwrap();
         let feeding = {
             let s = s.clone();
             std::thread::spawn(move || feed(&s, 1, reader))
