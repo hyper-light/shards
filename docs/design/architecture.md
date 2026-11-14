@@ -2929,6 +2929,19 @@ rather than a container on the build host's kernel.
 
 ### One binary (D36)
 
+**GPU publication (runs-08).** Each lazy GPU writer creates its own staging
+file with create_new, using PID, clock nanoseconds and a process sequence as
+identity discriminators (platform write_in's scheme). A collision or sequence
+wrap refuses creation; it never unlinks another writer's file. Zero/one are
+sequence initialization/increment, not selected operational limits. It writes,
+syncs and closes the writable handle before renaming that same file into place:
+Linux can reject a writable executable with ETXTBSY
+([execve(2)](https://man7.org/linux/man-pages/man2/execve.2.html)). Ordinary errors
+remove only the owned staging path. The two-writer regression formerly observed
+empty final bytes; both writers now publish complete closed files. Real carried
+executables, signatures, GPU and crash-debris checks remain owed in the
+[runs record](../research/measurements/runs-fixes/README.md).
+
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
 
@@ -4315,6 +4328,18 @@ A slow client holds the command's output back: what a command writes is never ke
 without bound.
 
 ### Networks of microVMs (D46)
+
+**Relay progress correction (network-08, 2026-11-13).** A persistent TCP client's
+lifetime no longer owns 127.0.0.11's UDP/accept loop. Each TCP worker owns its
+client and upstream sockets; observed descriptor capacity admits it, counting
+three possible sockets through every return/spawn failure. Both guest resolvers
+share one in-flight DNS-ID owner, bounded by the complete 16-bit ID space and
+current per-asker share. Responses/expiry release ownership; allocation/clock/full
+refusals admit no untracked query. Waits use readiness or the earliest deadline,
+including agentdns's former periodic expiry probe. The inherited five-second
+timing and worker memory-envelope validation remain owed under network-12/R14.
+Four functional unit tests and init clippy pass on Linux arm64 GNU; real guest,
+fault and resource coverage remain ROOT's. [Evidence and exact remaining runs](../research/measurements/network-fixes-v1/README.md#network-08-independent-dns-relay-clients).
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -8111,6 +8136,16 @@ ends no helper; one that ends the helper alone and not its group (its script's c
 holds its output open); the answer waited for under the hosts' lock; a wait never said.
 
 ### D185. The client and its daemon meet through files in the home (built)
+
+**Control-08 follow-up (2026-11-13), owed to ROOT.** The inherited `UNWATCHED`
+250 ms fallback in log lanes remains picked and violates R03; it is not validated by
+its reuse. Proposed design: notify the authoritative writer's append, rotation and
+terminal transitions over a shared per-run notification source, subscribing before
+checking the current segment to avoid a lost wakeup. Member append already crosses
+the host keeper; command append in the VM needs a compatible host notification. Cold
+start must establish that source or return typed watch-unavailable, rather than choose
+a first polling period. Cancellation and source end must wake the same wait. No new
+protocol or timing behavior is implemented here; [required fault scenario and proof](../research/measurements/control-fixes-v1/README.md).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -12745,6 +12780,10 @@ Established TCP flows keep their opening authorization until their normal close;
 expiry/replacement affects new flows. Clock overflow/allocation failure refuses new
 learned authority through the existing policy denial, with io::Error from admission.
 Answer owner/class/CNAME validation remains network-11, a separate pending finding.
+Native macOS test correction68968478b waits on UDP readiness before invoking the
+receive handler, as the real dispatcher does; send completion alone was no delivery
+witness. It changes no production authority rule. Native red and merged gates are
+in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
@@ -14151,6 +14190,35 @@ other's but what the move sends, and what the other takes by content:
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
   its own format (version 3; readers also take version 2).
+- **Nor does any name it gives** (migrate-11, 2026-11-13). Beside its stream's entries, a
+  move gives names the machine moved to makes paths of its home of: its plan's ID
+  (`containers/ID`), its snapshot's (`containers/ID/snapshots/S`, which a live move's rounds
+  are laid under and `snapshot::relocate` rewrites), its volumes' (`volumes/V`, renamed into
+  place), and the volume names its record's mounts carry, each of which becomes the host
+  directory its guest is shared (`volumes/V/_data`); and the machine it ran on joins the
+  snapshot `done` names to its directory before `snapshot::remove`. None was checked, and
+  `Path::join` takes `..` as it is and an absolute name as the whole path: a record mounting
+  `/etc` would have had its guest shared `/etc/_data`, an ID of `../x` its directory
+  outside `containers/`. Each is now one name of its kind (`Named::takes`), every rule from
+  its own source: an ID as `containers::new_id` makes one, `2 × MICROVM_ID_BYTES` (32,
+  moby's `stringid`) bytes in lowercase hex; a snapshot's one file's name by
+  `synced::name_alone`'s Windows rules (Microsoft's "Naming Files, Paths, and Namespaces"),
+  the stricter, on every host, so that what one host takes every host takes; a volume's the
+  local driver's (`Store::valid`, moby's validateName) and one file's name too, as the
+  driver's rule takes a trailing dot and Windows' device names. Each refuses a separator,
+  `.`, `..`, a root and a drive's colon, so none is more than one component; none is a
+  chosen number (R03). A name that is not is refused typed (`Refused::NotAName`: the
+  microVM, the field, the value), which the mover matches as it matches `ready`'s: `ready`
+  checks the plan before anything else, `import` right after it reads the plan and before
+  any entry is placed, `adopt` takes every name it joins through the same check
+  (`one_name`), and `done` its snapshot before it resolves the microVM. `server::guest::Beneath`
+  is not the seam for these: it places under a held root but renames nothing, and `adopt`'s
+  steps are renames and reads by path, each now of one checked component. Held by
+  `daemon::moves::tests::a_moves_names_are_each_one_name_of_their_kind` (each rule's
+  takes and refusals) and `daemon::tests::a_moves_names_that_are_no_one_name_are_refused_typed_and_reach_nothing`
+  (`ready`, `import` with a stream cut past its plan, `import` of a whole record whose mount
+  names `../../x`, and `done`: each refused typed, the home's tree unchanged and no staging
+  left), with a mutation of each check red (docs/bugs/2026-11-13/migrate.md, migrate-11).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -26927,6 +26995,11 @@ member's are, so one stdio protocol carries both. The pieces:
 - *Its connection*: an exec belongs to the connection that asked for it. That connection gone,
   or the lane stopped, hangs the exec up: its steering is dropped, its streams are let go.
 
+*Exec framing correction (control-07).* Both writer and parser admit MemberExec up to
+`exec::ASK_MOST`, the ABI spec payload plus its scope, rather than an ordinary frame's
+4 MiB cap. Other tags retain their existing bound; an overlarge exec header is refused
+before waiting for its bytes. Framed storage reserves fallibly. [Red/green record](../research/measurements/control-fixes-v1/README.md).
+
 *The controller's execs* (`control::Execs`, `Exec`, `ExecControl`). A controller dialed with
 `Subscriptions::execs` asks for one with `Execs::exec(member, spec)`, and its lane opens with the
 ask. Once the endpoint says `Started`, the controller opens the exec's stdio lanes, from their
@@ -27500,6 +27573,14 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   (AES-256-GCM, D239; the owner's key pinned), one record in flight, resumed a record behind and
   never ahead; an owner's lost connection takes nothing from the member. Design, literals and
   tests: D180's "A member's stdin, a stream its owner writes";
+  An orchestrator's session owns a cancellation handle for each taken input
+  (`session.rs`, control-04): member input end, run end, host answer end and session drop
+  end the actual reader, including one idle in a read. Its public writer stays a
+  `PipeWriter`; Unix uses the existing byte Stream pair, Windows an overlapped Stream
+  reader with a synchronous byte-pipe writer. Its Windows quota is the admitted ABI
+  `run::CHUNK`, not an upstream default. A post-read lifecycle check sends no newly read
+  bytes after a known end; a failed feeder spawn releases its cancellation handle.
+  [Red/green and Windows execution owed](../research/measurements/control-fixes-v1/README.md).
   record: [member-stdin-v1](../research/measurements/member-stdin-v1/README.md). Its
   connections are admitted as an exec's are (D16, "An exec's connection").
 - *stdout and stderr, captured whole* (P3). Each channel apart, its bytes as the member wrote
@@ -27581,7 +27662,10 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     (`daemon/files.rs`, once the VM has its next segment): the command's newest grows unseen between
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
-    log: a line of the segment and its output's bytes. `logs` says, on stderr, before what is kept,
+    log: cumulative segment and byte counts, durably replaced by the existing platform
+    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
+    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
+    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the
@@ -27592,8 +27676,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     left. A hold that fails (its disk) is said in the daemon's log, and holds again once a bound's
     worth more is kept; its logs keep their output meanwhile.
   - *Literals.* None chosen: the bound is the person's configured cap or the run's own log options;
-    `log.capped` is a name no segment takes (`logs::segment_of`); each record's line is the segment's
-    number and its bytes.
+    `log.capped` is a name no segment takes (`logs::segment_of`); its summary is `sum `,
+    two decimal u64 counters, their separator and newline. Its maximum serialized size is
+    therefore 46 bytes; counters use checked addition and malformed/overflowing old records
+    return InvalidData. The keeper serializes updates, disk remains authoritative, no cache
+    or timer is introduced. The daemon's private home retains the metadata's owner
+    boundary. Control-05 red/green and remaining Windows/version/profile checks:
+    [record](../research/measurements/control-fixes-v1/README.md).
   - *Tested* (light, on macOS arm64), red first, each with its behaviour absent (record:
     [agent-control-v1](../research/measurements/agent-control-v1/README.md)):
     - `daemon::managed::drain::tests::a_members_log_is_kept_and_counted_in_its_runs_cap`

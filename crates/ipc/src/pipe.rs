@@ -690,6 +690,10 @@ fn more_data(e: &io::Error) -> bool {
 /// end opened at once, which no other process can then open (M340); written in `messages`
 /// where each end says the end of its writes ([`instance`]).
 pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
+    pair_with_client(buffer, messages, true)
+}
+
+fn pair_with_client(buffer: u32, messages: bool, overlapped: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
     static MADE: AtomicU64 = AtomicU64::new(0);
     let name = wide(&format!(
         r"\\.\pipe\shards-{}-{}-{}",
@@ -698,7 +702,7 @@ pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, Owne
         random_hex(8)?
     ));
     let server = instance(&name, true, true, buffer, messages)?;
-    let client = open(&name, true)?;
+    let client = open(&name, overlapped)?;
     if messages {
         read_in_messages(&client)?;
     }
@@ -706,6 +710,19 @@ pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, Owne
         return Err(io::Error::other("a pipe pair did not connect"));
     }
     Ok((server, client))
+}
+
+/// The reader uses the stream's overlapped cancellation; the PipeWriter's client handle
+/// is synchronous, as std's Write implementation requires. Bytes have no message framing.
+pub fn input_pair(room: u32) -> io::Result<(Stream, io::PipeWriter)> {
+    if room == 0 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let (server, client) = pair_with_client(room, false, false)?;
+    Ok((
+        Stream::of(server, Way::Plain, false)?,
+        io::PipeWriter::from(client),
+    ))
 }
 
 /// A connected pair of a pipe's ends, of bytes alone and overlapped, made as a [`Stream`]'s

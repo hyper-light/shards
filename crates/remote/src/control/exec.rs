@@ -1870,6 +1870,34 @@ impl super::Lanes {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_exec_ask_uses_its_run_spec_bound_beyond_an_ordinary_frame() {
+        let mut argv = vec![b"/bin/true".to_vec()];
+        argv.extend((0..70).map(|_| vec![b'x'; 65_536]));
+        let spec = Spec {
+            argv,
+            ..Spec::default()
+        };
+        let size = spec.encoded_len().unwrap();
+        assert!(size > frame::MAX_FRAME);
+        assert!(size < run::MAX_PAYLOAD as usize);
+        let ask = Ask {
+            run: RunId([4; 32]),
+            generation: 9,
+            member: 2,
+            kind: Kind::Exec(Box::new(spec)),
+        };
+        let framed = ask.frame().expect("a valid run spec must fit its control lane");
+        assert_eq!(Ask::decode(&framed), Ok(ask));
+        // The larger admission belongs to this tag alone, and is still bounded before
+        // any payload arrives.
+        let mut ordinary = framed;
+        ordinary[0] = Tag::Stdin as u8;
+        assert!(frame::peek(&ordinary).is_err());
+        let past = u32::try_from(ASK_MOST + 1).unwrap().to_be_bytes();
+        assert!(frame::peek(&[&[Tag::MemberExec as u8][..], &past].concat()).is_err());
+    }
+
     /// An ask's frame reads back as it was sent: an exec's with step 6's spec byte for byte, an
     /// MCP connection's and a member's own lane's with their scope alone. One cut short, an
     /// exec's of a spec the run protocol would not take, an MCP or member ask that carries more
