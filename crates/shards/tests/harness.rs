@@ -329,12 +329,14 @@ fn a_patient_wait_goes_on_while_its_party_works() {
     let home = TempDir::new("patient");
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut daemon = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
         std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
-        let began = Instant::now();
         let mut patience = Patience::of(&home);
         while daemon.try_wait().unwrap().is_none() {
             if !patience.holds() {
@@ -372,11 +374,13 @@ fn a_patient_wait_goes_on_while_its_party_works() {
 fn a_guest_wait_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let mut heard = common::Heard::running(party.id());
         while party.try_wait().unwrap().is_none() {
             if let Err(refused) = heard.look(true) {
@@ -480,11 +484,13 @@ fn a_streaming_guests_cpu_is_its_liveness_and_its_stop_its_hosts_hold() {
 fn a_judged_call_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut party = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let ended = judged_end(&mut party);
         assert!(
             ended.is_ok(),
@@ -574,11 +580,13 @@ fn judged_read(
 fn a_retry_goes_on_while_what_this_test_started_works() {
     let busy = Duration::from_secs(1);
     for round in 0..2 {
+        // Begun before its spawn: the stand-in's busy clock starts as it runs, which can
+        // be before spawn returns here (CI run 43530570785: "it ended 998.689681ms in").
+        let began = Instant::now();
         let mut anchor = stand_in_doing(&format!("busy {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let began = Instant::now();
         let mut patience = Patience::started();
         while anchor.try_wait().unwrap().is_none() {
             if !patience.holds() {

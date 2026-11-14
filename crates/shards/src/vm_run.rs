@@ -3476,6 +3476,20 @@ mod rate_tests {
         let (ours, mut used) = shards_vmm::platform::UnixStream::pair().unwrap();
         asks.send((ours, shards_abi::rate::Asked::Use)).unwrap();
         drop(asks);
+        // CPU spent until this process's own use shows some: Linux counts it in clock ticks
+        // (proc(5), `utime`), and a test process younger than one reads none (CI run
+        // 43530570785, aarch64 gnu: `host 0 …`).
+        let mut x = 0u64;
+        while shards_vmm::platform::process_usage(std::process::id())
+            .unwrap()
+            .cpu_ns
+            == 0
+        {
+            for i in 0..1_000_000u64 {
+                x = std::hint::black_box(x.wrapping_add(i.wrapping_mul(i)));
+            }
+        }
+        std::hint::black_box(x);
         serve_rates(&asked);
         let mut line = String::new();
         theirs.read_to_string(&mut line).unwrap();
