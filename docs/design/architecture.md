@@ -12305,9 +12305,12 @@ children, the first reading of the failure.
   no hold: that wait is judged as before. A negative stop timeout (no SIGKILL at all) keeps
   none either: its wait follows the judge as before (the gap).
 - *Held by* tests/harness.rs `a_runs_stop_grace_is_its_daemons_and_not_refused` (a
-  sleeping stand-in daemon, a run of its home in its grace for 20 W*, a sleeping client):
-  red with the look's grace arm removed (refused within the grace), green with it (held
-  through the grace, refused once past). Owed (ROOT): `cargo test -p shards --profile
+  sleeping stand-in daemon, a run of its home in its grace for 20 W*, a sleeping client),
+  on adas-mac-studio-3.local (macOS arm64, kiln r2083, at 58ddf5b9d): red with the look's
+  grace arm removed, refused 148.2 ms into a grace of 1.454 s (W* 72.7 ms); green with it,
+  held through the grace and refused once past; harness.rs 27 passed, 3 ignored; clippy of
+  shards and shards-ipc clean. The daemon's side (the file kept and removed) has no unit
+  test: the real-VM run is its evidence. Owed (ROOT): `cargo test -p shards --profile
   test-release --test managed_output -- --test-threads=1` on HVF and KVM.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
