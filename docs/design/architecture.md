@@ -10908,9 +10908,37 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     "sent no request in" round is gone: no such word exists since PM M545, the daemon waiting
     on a silent client as long as it lives, which also makes the cap test's and the silent
     stop's "short of the 10 s request deadline" moot.
+  - *containers.rs.* `TIMEOUT` and every bound of 5, 10, 30, 60, 120 and 600 s go. Bounded
+    waits on a state are `Patience`s (the charge of a slice or a delegated cgroup, a leaf after
+    its daemon's stop, the stats table, the group's processes, the host's give-back word, a
+    lost link said, layers kept and given back, the log's segments packed, the swap file gone,
+    the RT governor's thread, the nesting word, the listening sockets, the unified log's and
+    ETW's entries); a process's end is `process_ended`, a `Wait` on it (`stop_run`'s
+    post-mortem, `ended`, a VM past its killed daemon, the M419 and M481 harnesses' caps); a
+    channel's next is `sent` (the joiner's echo, the follower's line, the publisher's loads,
+    the events stream, the Splunk, CloudWatch and Google fakes); a datagram's is `received`, a
+    `Patience`-paced read timeout, each read one datagram whole (UDP answers, the syslog,
+    GELF and journald sockets); a published port's or log server's stream is read through
+    `Following::of_home` (`talk`, the exchange, syslog's, GELF's), fluentd's and TLS's through
+    `Answering`, which writes as `Following` reads; a log server's accept is a `Patience`.
+    Sleeps that stood for an event are the event: the follower's first line (200 ms); the
+    exec that runs after `kill -s TERM` (1 s, the command heard nothing); a group's `cpu.max`
+    read by two of the daemon's passes over it after the change, each marked by the
+    `memory.current` it writes last (`group_read`, for `PRESSURE_WINDOW` times 2 and 3 and
+    the joiner's read's re-reads, whose `reads < 4` goes); the vCPU policy watch until the
+    burn returns (5.5 s for a 5 s burn); "stopped, it restarts no more" (500 ms) a run like it
+    begun after the stop restarting once more than the stopped one had, its waits doubling
+    from the same command's cost (restart.rs). The frozen joiner's "no echo in 500 ms" is
+    one look after two `inspect` answers that follow the write. Upper bounds with no later
+    event are measurements: the `--init` joiner's stop (its 143 shows SIGTERM ended it), the
+    SIGCHLD stop past its own 1 s, `exec -d` answered, the push's and pull's let-go and the
+    stops beside them, the frozen VM process's CPU a second.
   - Left as they are, being no wait: the poll paces in judged loops; the measurement windows
     (the cost test's 5 s settle and 10 s idle window, the idle-wakes 3 s window, the starved
-    daemon's 1 s window); the pools test's own inputs (`SHARDS_POOL_KEEP`'s 15 s, the runs'
+    daemon's 1 s window; containers.rs' 1 s of a host's given CPU, the M370, M180 and M419
+    harnesses' windows and moments); failure-only diagnostics (a mapper's byte read again
+    2 s on, `catch_holder`'s 2 s); a fake registry's paced body and a test's own pacing of
+    words and pauses (`Saying`, the 700 ms pause rounds); a `-t` the test gives; the pools test's own inputs (`SHARDS_POOL_KEEP`'s 15 s, the runs'
     spacing from a second, doubling); lower bounds from a test's own inputs (a stop past its
     35 s stop timeout's 30 s).
   - Red at 68770070f (tests/harness.rs `red_a_judged_read_goes_on_while_its_party_works`,
@@ -10930,7 +10958,12 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     marks it waiting at its list), and a collection due under the store's lease found not yet
     collected as the lease ends (nothing marks the collector waiting on it); the waiters
     test's `wait` client has no word of its own, ordered only by its start before the
-    follower's. ROOT owes the real-VM runs of warm.rs, budget.rs and daemon.rs.
+    follower's. Left for a decision of ROOT's, as no event marks it: containers.rs'
+    `what_a_microvm_holds_cold_is_given_back_at_its_hosts_word` waits for its microVM idle "once it holds what it booted
+    with and has stopped giving back", two samples 500 ms apart within 4 MiB; the update
+    stress's `STALLED` (5 s) is a copy of init's plug.rs constant. `stats`' frozen microVM
+    under 5 % is a reading of `stats`, not a wait, and stays. ROOT owes the real-VM runs of
+    warm.rs, budget.rs, daemon.rs and containers.rs.
 - **Part 3, the rest (part B)** (#77, W6's last test constants, 2026-11-13; ROOT's ruling on
   claims that a thing does not happen within a time: a judged wait cannot refuse them, as idle
   CPU is progress, so each is an order or a causal claim against a later event that shows, or,
