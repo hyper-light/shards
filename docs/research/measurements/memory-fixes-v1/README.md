@@ -213,3 +213,11 @@ These were not run by this implementer. No 4–5x or resource-improvement ratio 
 After memory-16 landed, resumed r19 removed only
 `~/g121-tmp/fix-memory-v1/target` on the Mac and verified it absent. The source
 checkout and all committed evidence remain. No daemons or VMs were started.
+
+Later merges: `7b1d79ac3` was disjoint from init inputs; `8a63a5d2b` brought
+main `4ce420fd2` with a DNS dependency change and passed the Linux compile check
+(resumed r22, `check-memory-17.log`). Merge `bae738bd3` brought main `33d28bf88`;
+its only conflict was between appended PM records (memory-17 and M572). Both
+were retained. Per the conflict rule, resumed r23 reran all 28 selected tests and
+init all-target clippy on that merge: both green. The output is
+`green-memory-17-merged.log`. No production conflict was resolved.

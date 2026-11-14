@@ -1,0 +1,20 @@
+From https://github.com/hyper-light/shards
+ * branch              main       -> FETCH_HEAD
+   9dc406b0..33d28bf8  main       -> origin/main
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-linux-carrier-745e9da803/change.bundle
+ * branch              HEAD       -> FETCH_HEAD
+Previous HEAD position was 29e8e3cb Record signed decimal frame derivation and head landing check
+HEAD is now at 8a63a5d2 Merge concurrent main for the tested ROOM bound fast-forward
+Linux 7.3.3-1-cachyos x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+    Checking shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/template)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/cmdline)
+    Checking shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/abi)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/testdir)
+    Checking shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/archive)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/dns)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/user)
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-memory-v1-linux/src/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.29s
