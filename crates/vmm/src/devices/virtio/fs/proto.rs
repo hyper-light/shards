@@ -109,6 +109,13 @@ pub fn unreachable(req: &[u8]) -> Option<Vec<u8>> {
     failed(req, EIO)
 }
 
+/// The answer to a request whose reply would tell its guest a size of a file that its DAX
+/// window could not follow (`window::Window::reconcile`), of which `req` holds the first
+/// [`HEADER_BYTES`]: EIO, or none for a request that takes no reply.
+pub fn unfollowed(req: &[u8]) -> Option<Vec<u8>> {
+    failed(req, EIO)
+}
+
 /// `errno` as the answer to `req`, from the first [`HEADER_BYTES`] of its header.
 fn failed(req: &[u8], errno: Errno) -> Option<Vec<u8>> {
     let opcode = u32::from_le_bytes(req.get(4..8)?.try_into().ok()?);

@@ -94,16 +94,26 @@ pub struct Mapped {
 /// A mapping, and what it maps.
 struct Entry {
     mapped: Mapped,
-    /// Whether committed zeros stand in for its server's section ([`Window::map_zeros`]);
-    /// else each of its ranges is a view of it.
-    zeros: bool,
+    held: Held,
     /// Where it maps a share's own file: how many of its bytes the file's views hold, the
     /// file's bytes in it as the window last looked, zeros after them. None where a
     /// server's section fills every range.
     file_to: Option<u64>,
-    /// Its views let go of before its guest cuts its file short ([`Window::evict`]), its
-    /// ranges placeholders until they are made what the file is again.
-    evicted: bool,
+}
+
+/// What a mapping's ranges are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Views of its server's section, or of its file to `file_to` and zeros after.
+    Views,
+    /// Committed zeros in place of a server's section a restore cannot have
+    /// ([`Window::map_zeros`]).
+    Zeros,
+    /// Placeholders: its views let go of before its guest cuts its file short
+    /// ([`Window::evict`]), or ones its file's views could not be made in again
+    /// ([`Window::reconcile`]), never zeros in place of its file's bytes. A vCPU that
+    /// reaches one waits until it is made again or unmapped.
+    LetGo,
 }
 
 /// What a range of a mapping is made of: a view of `n` bytes of its file's section, the
@@ -116,10 +126,10 @@ enum Part {
 
 /// What range `i` of `e`'s ranges is made of.
 fn part(e: &Entry, i: u64) -> Part {
-    match e.file_to {
-        _ if e.zeros => Part::Zeros,
-        None => Part::View(RANGE),
-        Some(to) => part_to(to, i),
+    match (e.held, e.file_to) {
+        (Held::Zeros, _) => Part::Zeros,
+        (_, None) => Part::View(RANGE),
+        (_, Some(to)) => part_to(to, i),
     }
 }
 
@@ -132,11 +142,16 @@ fn part_to(to: u64, i: u64) -> Part {
 }
 
 /// A node the window maps: how many of its mappings do, and its file, where its share's own
-/// server gave it, of which the window makes its sections and reads its size.
+/// server gave it, of which the window makes its sections and reads its size, and whether
+/// that handle was given for a mapping to be written (window.rs's twin): a section to write
+/// is made only of a handle opened to write too (CreateFileMappingW, PAGE_READWRITE; PM
+/// M412), and a share's server opens one to read alone for a mapping to be read
+/// (`SHARED_NEEDS_WRITE`).
 #[derive(Default)]
 struct Node {
     count: usize,
     file: Option<OwnedHandle>,
+    writable: bool,
 }
 
 /// A window's mappings, by window offset; the nodes they map; and which of its ranges are
@@ -160,12 +175,18 @@ impl Table {
             .collect()
     }
 
-    /// Keeps `entry` at `moffset`, and its node's `file` where the node has none yet.
+    /// Keeps `entry` at `moffset`, and `file`, the handle its node's file was given for it,
+    /// where the node has none yet, or has one given to read alone and this was given to
+    /// write (memory-01: one kept to read alone made no section to write as the file grew).
     fn insert(&mut self, moffset: u64, entry: Entry, file: Option<OwnedHandle>) {
+        let writable = entry.mapped.writable;
         let node = self.nodes.entry(entry.mapped.node).or_default();
         node.count += 1;
-        if node.file.is_none() {
-            node.file = file;
+        if let Some(file) = file
+            && (node.file.is_none() || (writable && !node.writable))
+        {
+            node.file = Some(file);
+            node.writable = writable;
         }
         self.ranges.insert(moffset, entry);
     }
@@ -190,12 +211,12 @@ impl Table {
             .collect()
     }
 
-    /// Whether the mapping that holds window offset `at` was let go of for a cut.
-    fn evicted_at(&self, at: u64) -> bool {
+    /// Whether the mapping that holds window offset `at` is let go of ([`Held::LetGo`]).
+    fn let_go_at(&self, at: u64) -> bool {
         self.ranges
             .range(..=at)
             .next_back()
-            .is_some_and(|(start, e)| at < start.saturating_add(e.mapped.len) && e.evicted)
+            .is_some_and(|(start, e)| at < start.saturating_add(e.mapped.len) && e.held == Held::LetGo)
     }
 
     fn is_standing(&self, range: u64) -> bool {
@@ -705,9 +726,8 @@ impl Window {
                     foffset,
                     writable,
                 },
-                zeros: false,
+                held: Held::Views,
                 file_to,
-                evicted: false,
             },
             file,
         );
@@ -750,9 +770,8 @@ impl Window {
                     foffset,
                     writable,
                 },
-                zeros: true,
+                held: Held::Zeros,
                 file_to: None,
-                evicted: false,
             },
             None,
         );
@@ -777,7 +796,7 @@ impl Window {
     /// let go of for a cut is its placeholders already.
     fn forget(&self, table: &mut Table, moffset: u64, len: u64) {
         for (at, n) in table.meeting(moffset, len) {
-            if let Some(e) = table.remove(at).filter(|e| !e.evicted) {
+            if let Some(e) = table.remove(at).filter(|e| e.held != Held::LetGo) {
                 for i in 0..n / RANGE {
                     self.free(at / RANGE + i, part(&e, i));
                 }
@@ -798,9 +817,16 @@ impl Window {
     /// file grown is the file's, and what one cut short has no more, zeros; and a mapping
     /// let go of for its guest's cut is made again, its waiting vCPUs told. A server's
     /// section, which reaches past every range asked of it, changes not.
-    pub fn reconcile(&self, nodes: &[u64]) {
+    ///
+    /// Never zeros in place of a file's bytes (memory-01): a mapping's new section is made
+    /// before anything of it is let go of, and where none can be, or its size cannot be
+    /// read, the mapping is left as it was; where a view cannot be placed once its old ones
+    /// are freed, its ranges are let go of ([`Held::LetGo`]). Each is refused, the first
+    /// returned, for the reply to refuse its guest what it would tell it.
+    pub fn reconcile(&self, nodes: &[u64]) -> Result<(), super::Unfollowed> {
         let mut table = self.lock();
         let mut changed = false;
+        let mut refused = None;
         for &node in nodes {
             let size = table
                 .nodes
@@ -823,24 +849,40 @@ impl Window {
                 else {
                     continue;
                 };
-                // A file whose size cannot be read is left as it was, but one let go of,
-                // which is made zeros, as past its end.
-                let to = size.map_or(0, |size| len.min(size.saturating_sub(foffset)));
-                if !e.evicted && (size.is_none() || to == was) {
+                let let_go = e.held == Held::LetGo;
+                let Some(size) = size else {
+                    refused.get_or_insert(super::Unfollowed::Size { node });
+                    continue;
+                };
+                let to = len.min(size.saturating_sub(foffset));
+                if !let_go && to == was {
                     continue;
                 }
-                let (first, evicted) = (at / RANGE, e.evicted);
-                if !evicted {
+                let section = match to {
+                    0 => None,
+                    _ => match table
+                        .nodes
+                        .get(&node)
+                        .and_then(|n| n.file.as_ref())
+                        .and_then(|f| section_of(f, writable))
+                    {
+                        Some(section) => Some(section),
+                        None => {
+                            crate::debug!(
+                                "virtio-fs: a section of node {node}'s file for its DAX range at {:#x}: {}",
+                                self.gpa.saturating_add(at),
+                                std::io::Error::last_os_error()
+                            );
+                            refused.get_or_insert(super::Unfollowed::Section { node, writable });
+                            continue;
+                        }
+                    },
+                };
+                let first = at / RANGE;
+                if !let_go {
                     (0..len / RANGE).for_each(|i| self.free(first + i, part_to(was, i)));
                 }
-                let section = table
-                    .nodes
-                    .get(&node)
-                    .and_then(|n| n.file.as_ref())
-                    .filter(|_| to > 0)
-                    .and_then(|f| section_of(f, writable));
-                let to = if section.is_some() { to } else { 0 };
-                let mut zeros = false;
+                let mut held = Held::Views;
                 for i in 0..len / RANGE {
                     if !self.place(
                         first + i,
@@ -849,18 +891,14 @@ impl Window {
                         part_to(to, i),
                         writable,
                     ) {
-                        // What a placement that failed leaves is its placeholder: the mapping
-                        // zeros, as past its file's end.
                         (0..i).for_each(|j| self.free(first + j, part_to(to, j)));
-                        (0..len / RANGE).for_each(|j| {
-                            let _ = self.place(first + j, None, 0, Part::Zeros, writable);
-                        });
-                        zeros = true;
+                        held = Held::LetGo;
+                        refused.get_or_insert(super::Unfollowed::View { node, moffset: at });
                         break;
                     }
                 }
                 if let Some(e) = table.ranges.get_mut(&at) {
-                    (e.file_to, e.zeros, e.evicted) = (Some(to), zeros, false);
+                    (e.file_to, e.held) = (Some(to), held);
                 }
                 changed = true;
             }
@@ -870,12 +908,13 @@ impl Window {
             self.changes.fetch_add(1, Ordering::AcqRel);
             self.restored.notify_all();
         }
+        refused.map_or(Ok(()), Err)
     }
 
     /// Another process cut node `node`'s file short: its ranges made what it is now, as
     /// [`Window::reconcile`] makes them; on NTFS none does while a view of it is mapped.
-    pub fn cut(&self, node: u64) {
-        self.reconcile(&[node]);
+    pub fn cut(&self, node: u64) -> Result<(), super::Unfollowed> {
+        self.reconcile(&[node])
     }
 
     /// Lets go of node `node`'s views before its guest cuts its file short, which NTFS
@@ -889,13 +928,13 @@ impl Window {
             let Some(e) = table.ranges.get_mut(&at) else {
                 continue;
             };
-            if e.evicted || e.zeros || e.file_to.is_none() {
+            if e.held != Held::Views || e.file_to.is_none() {
                 continue;
             }
             for i in 0..e.mapped.len / RANGE {
                 self.free(at / RANGE + i, part(e, i));
             }
-            e.evicted = true;
+            e.held = Held::LetGo;
             changed = true;
         }
         drop(table);
@@ -918,11 +957,11 @@ impl Window {
             return false;
         };
         let table = self.lock();
-        // A mapping let go of for its guest's cut: run again once it is made again.
-        if table.evicted_at(at) {
+        // A mapping let go of: run again once it is made again, or unmapped.
+        if table.let_go_at(at) {
             drop(
                 self.restored
-                    .wait_while(table, |t| t.evicted_at(at))
+                    .wait_while(table, |t| t.let_go_at(at))
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
             return true;
@@ -1021,6 +1060,7 @@ mod tests {
     };
     use windows_sys::Win32::System::Threading::CreateEventW;
 
+    use super::super::Unfollowed;
     use super::*;
 
     const MIB: u64 = 1 << 20;
@@ -1180,7 +1220,7 @@ mod tests {
         // Past the page that held its end, which its view held whole already.
         std::os::windows::fs::FileExt::seek_write(&file, &[0x33; 8192], MIB + 4096).unwrap();
         assert_eq!(read(&w, MIB + 8192), 0, "not yet followed");
-        w.reconcile(&[9]);
+        assert_eq!(w.reconcile(&[9]), Ok(()));
         assert_eq!((read(&w, MIB + 8192), read(&w, 2 * MIB + 299)), (0x33, 0x5a));
         assert_eq!(read(&w, 2 * MIB + 300), 0);
         assert_eq!(read(&w, 3 * MIB), 0);
@@ -1200,7 +1240,7 @@ mod tests {
                 "waits while its mapping is let go of"
             );
             file.set_len(4096).unwrap();
-            w.reconcile(&[9]);
+            assert_eq!(w.reconcile(&[9]), Ok(()));
             assert!(ran.recv().unwrap(), "run again");
         });
         assert_eq!(
@@ -1244,7 +1284,7 @@ mod tests {
         assert_eq!(read(&w, 2 * MIB + 4096), 0x5a);
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         std::os::windows::fs::FileExt::seek_write(&file, &[0x77; 4096], SIZE + 4096).unwrap();
-        let _ = w.reconcile(&[9]);
+        assert_eq!(w.reconcile(&[9]), Ok(()));
         assert_eq!(read(&w, 2 * MIB + 4096), 0x5a, "its file's bytes, not zeros");
         assert_eq!(read(&w, 3 * MIB + 4096), 0x77, "its grown bytes, the file's");
         write(&w, 2 * MIB + 4096, 0xa5);
@@ -1253,11 +1293,27 @@ mod tests {
         assert_eq!(now[(2 * MIB + 4096) as usize], 0xa5, "the guest's store is the file's");
     }
 
+    /// Whether a vCPU's fault at window offset `at` waits: one that does is let run again
+    /// by unmapping its range.
+    fn waits(w: &Window, at: u64) -> bool {
+        std::thread::scope(|scope| {
+            let (done, ran) = std::sync::mpsc::channel();
+            scope.spawn(move || done.send(w.memory_fault(Some(GPA + at))).unwrap());
+            let waited = ran.recv_timeout(std::time::Duration::from_millis(200)).is_err();
+            if waited {
+                w.unmap(at - at % RANGE, RANGE).unwrap();
+                assert!(ran.recv().unwrap(), "run again once it is unmapped");
+            }
+            waited
+        })
+    }
+
     /// Do: map a range to be written, wholly past its file's end, through a handle opened to
     /// read alone, as no server should give one; grow the file into it and follow it; let
-    /// it go of for a cut, and follow it again. Expect each follow refused, typed, the range
-    /// left as it was, never zeros in place of the file's bytes: no section to write can be
-    /// made of that handle (PM M412), and a vCPU that reaches the range let go of waits.
+    /// it go of for a cut, and follow it again. Expect each follow refused, typed, never
+    /// zeros in place of the file's bytes, as no section to write can be made of that
+    /// handle (PM M412): the range left as it was by the first, its memory there, and let
+    /// go of still after the second, a vCPU that reaches it waiting.
     #[test]
     fn a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros() {
         let dir = shards_testdir::TempDir::new("whp-ro").unwrap();
@@ -1270,20 +1326,15 @@ mod tests {
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len(3 * MIB).unwrap();
         std::os::windows::fs::FileExt::seek_write(&file, &[0x77; 4096], 2 * MIB).unwrap();
-        let _ = w.reconcile(&[9]);
-        w.evict(9);
-        let _ = w.reconcile(&[9]);
-        std::thread::scope(|scope| {
-            let (done, ran) = std::sync::mpsc::channel();
-            let w = &w;
-            scope.spawn(move || done.send(w.memory_fault(Some(GPA + 4096))).unwrap());
-            assert!(
-                ran.recv_timeout(std::time::Duration::from_millis(200)).is_err(),
-                "waits while its range is no view of its file"
-            );
-            w.unmap(0, 2 * MIB).unwrap();
-            assert!(ran.recv().unwrap(), "run again once it is unmapped");
+        let refused = Err(Unfollowed::Section {
+            node: 9,
+            writable: true,
         });
+        assert_eq!(w.reconcile(&[9]), refused, "a section to write of a handle to read");
+        assert!(!waits(&w, 4096), "left as it was");
+        w.evict(9);
+        assert_eq!(w.reconcile(&[9]), refused, "made again of no view");
+        assert!(waits(&w, 4096), "let go of still");
     }
 
     #[test]

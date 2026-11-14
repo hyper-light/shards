@@ -925,8 +925,11 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         .get()
                         .and_then(|s| s.get(u32::from_be_bytes(*share) as usize))
                         .and_then(|slot| slot.window());
+                    // A cut its window cannot follow tells its guest nothing here: the next
+                    // request about the file follows it again, and is refused its reply
+                    // where it still cannot (memory-01's twin).
                     if let Some(window) = window {
-                        window.cut(u64::from_be_bytes(*node));
+                        let _ = window.cut(u64::from_be_bytes(*node));
                     }
                 }
             }

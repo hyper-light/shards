@@ -730,7 +730,10 @@ impl Window {
 
     /// Makes `e`'s range, at window offset `at`, what its file is now, `size` bytes (none
     /// where it could not be looked at): its pages to the one that holds its end, where it
-    /// has grown since, and zeros past that, where it was cut short. Whether it changed.
+    /// has grown since, and zeros past that, where it was cut short. Whether it changed; or,
+    /// where its file's pages could not be mapped there, refused, zeros past the end its
+    /// guest was last told, for the reply that would tell it more to be refused it
+    /// (memory-01's twin).
     fn follow(
         &self,
         at: u64,
@@ -738,22 +741,22 @@ impl Window {
         file: Option<BorrowedFd<'_>>,
         page: u64,
         size: Option<u64>,
-    ) -> bool {
+    ) -> Result<bool, super::Unfollowed> {
         #[cfg(test)]
         FOLLOWED.set(FOLLOWED.get() + 1);
         let Some(size) = size else {
-            return false;
+            return Ok(false);
         };
         let file_to = file_end(size, e.mapped.foffset, e.mapped.len, page);
         if file_to == e.file_to {
-            return false;
+            return Ok(false);
         }
         let (from, to) = (file_to.min(e.file_to), file_to.max(e.file_to));
         let Some((host, size)) = at
             .checked_add(from)
             .and_then(|off| self.host_at(off, to.saturating_sub(from)))
         else {
-            return false;
+            return Ok(false);
         };
         let (gpa, writable) = (
             self.gpa.saturating_add(at).saturating_add(from),
@@ -773,13 +776,16 @@ impl Window {
                 let start = self.gpa.saturating_add(at);
                 crate::debug!("virtio-fs: the DAX range at {start:#x} is its file's to {file_to:#x}");
                 e.file_to = file_to;
-                true
+                Ok(true)
             }
             Err(err) => {
                 // What a failed MAP_FIXED leaves there is unknown: zeros, as past the end.
                 crate::debug!("virtio-fs: following a file at {gpa:#x}: {err}");
                 let _ = zeros(host, size, writable);
-                false
+                Err(super::Unfollowed::View {
+                    node: e.mapped.node,
+                    moffset: at,
+                })
             }
         };
         // SAFETY: the file's mapping or zeros, which the window holds until it replaces them.
@@ -792,43 +798,57 @@ impl Window {
     /// Makes the ranges of the files of `nodes` what each file is now ([`follow`]): called
     /// before the guest is told anything of their sizes, by the reply to a request that may
     /// tell it, so that what it may read of a file grown is the file's, and what a file cut
-    /// short has no more, zeros.
+    /// short has no more, zeros. Where a file's size cannot be read, or its pages cannot be
+    /// mapped, refused, the first returned, for that reply to be refused its guest.
     ///
     /// [`follow`]: Self::follow
-    pub fn reconcile(&self, nodes: &[u64]) {
+    pub fn reconcile(&self, nodes: &[u64]) -> Result<(), super::Unfollowed> {
         if nodes.is_empty() {
-            return;
+            return Ok(());
         }
         let Some(page) = page() else {
-            return;
+            return Ok(());
         };
         let mut table = self.lock();
         let Table {
             ranges,
             nodes: by_node,
         } = &mut *table;
-        let mut changed = false;
+        let (mut changed, mut refused) = (false, None);
         for node in nodes {
             let Some(n) = by_node.get_mut(node) else {
                 continue;
             };
             // Its file's size, looked at once, through any of its ranges' descriptors; its
             // ranges followed only where it changed since they last did.
+            // Its size unread where it has a file: zeros a restore mapped (`map_zeros`) have
+            // none, and follow none.
             let size = n.file.as_ref().and_then(size_of);
+            if size.is_none() && n.file.is_some() {
+                refused.get_or_insert(super::Unfollowed::Size { node: *node });
+            }
             if size.is_some() && size == n.followed {
                 continue;
             }
             let file = n.file.as_ref().map(|f| f.as_fd());
+            let mut followed = size;
             for &(_, at) in &n.ranges {
                 if let Some(e) = ranges.get_mut(&at) {
-                    changed |= self.follow(at, e, file, page, size);
+                    match self.follow(at, e, file, page, size) {
+                        Ok(moved) => changed |= moved,
+                        Err(why) => {
+                            refused.get_or_insert(why);
+                            followed = None;
+                        }
+                    }
                 }
             }
-            n.followed = size;
+            n.followed = followed;
         }
         if changed {
             self.changes.fetch_add(1, Ordering::AcqRel);
         }
+        refused.map_or(Ok(()), Err)
     }
 
     /// Lets go of node `node`'s ranges before its guest cuts its file short: nothing here,
@@ -838,8 +858,8 @@ impl Window {
     /// Node `node`'s file was cut short by another process, its watch says: its ranges are
     /// what it is now, zeros where it has no pages, and a vCPU that spun on one of those
     /// pages runs on (PM M273).
-    pub fn cut(&self, node: u64) {
-        self.reconcile(&[node]);
+    pub fn cut(&self, node: u64) -> Result<(), super::Unfollowed> {
+        self.reconcile(&[node])
     }
 
     /// A guest's access to memory the host could not give, at `gpa` where the hypervisor
@@ -866,7 +886,7 @@ impl Window {
             let node = e.mapped.node;
             let size = sizes.of(node, nodes);
             let file = nodes.get(&node).and_then(|n| n.file.as_ref()).map(|f| f.as_fd());
-            changed |= self.follow(at, e, file, page, size);
+            changed |= self.follow(at, e, file, page, size).unwrap_or(false);
             // Its node's ranges no longer all follow one size.
             if let Some(n) = nodes.get_mut(&e.mapped.node) {
                 n.followed = None;
@@ -1195,7 +1215,7 @@ mod tests {
             .unwrap()
             .write_all(&vec![2u8; MIB as usize])
             .unwrap();
-        w.reconcile(&[7]);
+        assert_eq!(w.reconcile(&[7]), Ok(()));
         // SAFETY: the window's own range, for as long as `w` is.
         let seen = unsafe { std::slice::from_raw_parts(w.host().add(1000 << 20), 2 << 20) };
         assert!(seen[..1 << 20].iter().all(|&b| b == 1));
@@ -1221,7 +1241,7 @@ mod tests {
         }
         assert_eq!(w.mappings().len(), 8);
         let before = SIZES_LOOKED.get();
-        w.reconcile(&[7]);
+        assert_eq!(w.reconcile(&[7]), Ok(()));
         assert_eq!(SIZES_LOOKED.get() - before, 1);
     }
 
@@ -1242,7 +1262,7 @@ mod tests {
         }
         let followed = |nodes: &[u64]| {
             let before = FOLLOWED.get();
-            w.reconcile(nodes);
+            w.reconcile(nodes).unwrap();
             FOLLOWED.get() - before
         };
         assert_eq!(followed(&[7]), 4);
@@ -1304,7 +1324,7 @@ mod tests {
         assert!(seen[from..].iter().all(|&b| b == 0), "zeros past the end");
         // Nothing to follow: nothing changes, and a fault in the range is told once.
         told.0.lock().unwrap().clear();
-        w.reconcile(&[7]);
+        assert_eq!(w.reconcile(&[7]), Ok(()));
         assert!(told.0.lock().unwrap().is_empty());
         assert!(!w.memory_fault(Some(GPA)), "no range holds the fault");
         assert!(w.memory_fault(Some(GPA + 4 * MIB + 5)), "told once");
@@ -1314,9 +1334,9 @@ mod tests {
         let grown: Vec<u8> = (0..MIB).map(|i| pattern(i) ^ 0x5a).collect();
         crate::platform::write_all_at(&file, &grown, 3 * MIB).unwrap();
         assert!(seen[from..].iter().all(|&b| b == 0), "not followed yet");
-        w.reconcile(&[8, 9]);
+        assert_eq!(w.reconcile(&[8, 9]), Ok(()));
         assert!(seen[from..].iter().all(|&b| b == 0), "another node's");
-        w.reconcile(&[9, 7]);
+        assert_eq!(w.reconcile(&[9, 7]), Ok(()));
         assert_eq!(&seen[MIB as usize..2 * MIB as usize], &grown[..]);
         let rest = 2 * MIB as usize - from;
         assert_eq!(
@@ -1335,7 +1355,7 @@ mod tests {
         // Cut short under the mapping: its watch says so, and zeros stand where the file
         // has no pages; the rest is the file's still.
         file.set_len(2 * MIB + 10).unwrap();
-        w.cut(7);
+        assert_eq!(w.cut(7), Ok(()));
         let kept = 10usize.next_multiple_of(page as usize);
         assert!(seen[kept..].iter().all(|&b| b == 0));
         assert!(
@@ -1406,10 +1426,10 @@ mod tests {
                 })
                 .collect()
         };
-        w.reconcile(&[7]);
+        assert_eq!(w.reconcile(&[7]), Ok(()));
         eprintln!(
             "reconcile, its size unchanged: {}",
-            summary(time(2000, &|_| w.reconcile(&[7])))
+            summary(time(2000, &|_| w.reconcile(&[7]).unwrap()))
         );
         eprintln!(
             "rerecord, a range's first: {}",
