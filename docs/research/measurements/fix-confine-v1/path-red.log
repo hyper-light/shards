@@ -1,0 +1,24 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+Previous HEAD position was 5bcf4565 confine-03: route staged files through their visible mount topology
+HEAD is now at 265894e9 confine-04 red: resolve relative PATH in the member working directory
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.42s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_init-c8e65a6b116a2bb8)
+
+running 1 test
+
+thread 'domains::tests::a_members_relative_path_is_resolved_in_its_working_directory' (2534957) panicked at crates/init/src/domains.rs:3543:77:
+called `Result::unwrap()` on an `Err` value: "agent a: \"tool\" is on no directory of PATH"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test domains::tests::a_members_relative_path_is_resolved_in_its_working_directory ... FAILED
+
+failures:
+
+failures:
+    domains::tests::a_members_relative_path_is_resolved_in_its_working_directory
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 274 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+
