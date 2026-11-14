@@ -728,10 +728,15 @@ fn judge(
         let at = Instant::now();
         match &mut phase {
             Phase::Starting { looked } => {
-                let progresses = patience.as_mut().is_some_and(Patience::holds);
+                // The slice read first, at the look's own time: read after its patience's
+                // look, which lists the host's processes, the next look, due a window past
+                // this one's time, could read it again at once, and find a slice its host
+                // holds all along held by nothing (adacachy2 at 4449dcff0, 7b9ef4b1f and
+                // a35f11f7d: a start held 220 to 340 ms in refused).
                 let now = stalled(cgroup);
                 let held = now > stalls;
                 stalls = now;
+                let progresses = patience.as_mut().is_some_and(Patience::holds);
                 if !progresses && !held {
                     return Err(Stalled::Unstarted {
                         waited: at.saturating_duration_since(began),
