@@ -595,7 +595,7 @@ fn follow(
         cmd.env(k, v);
     }
     let began = Instant::now();
-    let mut child = common::spawn(&mut cmd).unwrap();
+    let mut child = cmd.spawn().unwrap();
     let pid = child.id();
     let (tell, heard) = mpsc::channel();
     // Read on threads of their own, as `run_command` reads: a pipe another process still

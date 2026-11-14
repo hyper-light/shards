@@ -8138,7 +8138,7 @@ impl Gated {
         for (from, to) in [(shards(), "shards")] {
             // A link where there can be one: macOS assesses a copy as a new binary.
             if std::fs::hard_link(from, dir.join(to)).is_err() {
-                std::fs::copy(from, dir.join(to)).unwrap();
+                shards_testdir::program_copy(from, &dir.join(to)).unwrap();
             }
         }
         let vm = dir.join("shards-vm");
@@ -8150,7 +8150,7 @@ impl Gated {
             vm = shards_vm().display()
         );
         // Exec'd by the daemon's spawner.
-        common::program(&vm, &script);
+        shards_testdir::program(&vm, &script).unwrap();
         Gated { dir }
     }
 
@@ -8200,18 +8200,16 @@ impl Gated {
     /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
     /// init, left going.
     fn start(&self, home: &Path, args: &[&str]) -> Going {
-        // Its copy of shards was written a moment ago.
-        let mut child = common::spawn(
-            common::as_tests_run(&mut self.command())
+        let mut child = common::as_tests_run(&mut self.command())
                 .args(args)
                 .env("SHARDS_HOME", home)
                 .env("SHARDS_KERNEL", kernel())
                 .env("SHARDS_INIT", self.init())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .unwrap();
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
         let collect = |mut from: Box<dyn std::io::Read + Send>| {
             std::thread::spawn(move || {
                 let mut text = String::new();
@@ -11226,11 +11224,8 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
 fn an_interrupted_save_leaves_nothing_behind() {
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
     let home = TempDir::new("save-int");
-    // A daemon that never answers: on Unix one of an older build listening at daemon.sock;
-    // on Windows the home's lock held, which the daemon its client starts waits for.
-    #[cfg(unix)]
-    let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
-    #[cfg(windows)]
+    // A daemon that never answers: the home's lock held, which the daemon its client starts
+    // waits for (flock(2) on Unix, LockFileEx on Windows, as the daemon takes it).
     let lock = {
         let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
         lock.try_lock().unwrap();
@@ -11286,22 +11281,23 @@ fn an_interrupted_save_leaves_nothing_behind() {
         }
         assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
     }
-    // The daemon its client started, which waits for the lock, ended: named by its log's
+    // The daemons its clients started, which wait for the lock, ended: named by their log's
     // lines (`shards daemon PID: ...`).
-    #[cfg(windows)]
-    {
-        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-        if let Some(pid) = log.lines().find_map(|l| {
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let pids: std::collections::BTreeSet<i32> = log
+        .lines()
+        .filter_map(|l| {
             l.strip_prefix("shards daemon ")?
                 .split_once(':')?
                 .0
                 .parse::<i32>()
                 .ok()
-        }) {
-            common::kill_now(pid);
-        }
-        drop(lock);
+        })
+        .collect();
+    for pid in pids {
+        common::kill_now(pid);
     }
+    drop(lock);
     // A client that can reach no daemon fails, and leaves nothing either: its home is a
     // file, where no daemon can be.
     let nowhere = out.join("not-a-home");

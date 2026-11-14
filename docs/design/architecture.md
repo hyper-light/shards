@@ -8678,18 +8678,35 @@ descriptors.
   what the daemon writes, what it reads); a run's, an exec's and an attach's, its stdin
   filled into `in`, and `out` and `err` shown as they come, unbuffered, all of them before
   it ends; a detached run's none. Its signals and resizes go on its slot's `say` beside its
-  request (`slots::Sender`, each message written whole). A daemon of an older build, which
-  offers no slots, is still reached on its socket, so that it steps aside for this one's.
+  request (`slots::Sender`, each message written whole). A daemon of a build from before
+  slots (v0.5.0's), which offers none, is never asked: see *No `daemon.sock`*.
 - On macOS every read of a FIFO waits first in select(2) (M253 part 3): the slots', the
   client's copies, and `shards_ipc::read` of a FIFO, a run's stdin in its VM among them;
   all but a client's wait on its list for a slot (M262, below).
 
 - **No `daemon.sock`** (slice 4). The daemon makes its lists as soon as it holds the
   home's lock, so that a client that finds them waits on them for its slot rather than
-  start a second daemon; an older build's socket left there goes. A home is served while
+  start a second daemon. A home is served while
   its list `free` has a reader, the daemon's own (`slots::served`): a starting daemon
-  waiting for the lock (`take_lock`) and a context's look at its machine ask that, or
-  whether an older build's socket answers. `daemon stop` asks through a slot and waits for
+  waiting for the lock (`take_lock`) and a context's look at its machine ask that.
+  *No path to a pre-slots daemon* (legacy-audit, 2026-11-14; runs-11 found it): the client
+  asked a daemon of a build from before slots (v0.5.0, the last release with
+  `daemon.sock`) on that socket, its run's, command's and stop's requests sent there, so
+  that it stepped aside, and `take_lock` took its socket's answer for a served home. All of
+  it is gone (`Asked::Socket`, `Says::Socket`, `stop_socket`, `shards_ipc::SOCKET`, the
+  run client's socket-peer reading of an end): a client and its daemon are one build
+  (D36), and a daemon of another build is stopped through its slots by the rule above,
+  which a pre-slots one cannot hear. Where one still serves a home (its socket takes a
+  connection, closed unasked), the client's ask and stop and a starting daemon's
+  `take_lock` refuse, typed (`shards_ipc::PreSlotsDaemon`, `no_pre_slots_daemon`),
+  saying to end that daemon's process, rather than wait on a holder that offers no slot. Unix
+  only: no daemon ran on Windows before slots. The Engine API's `engine.sock` (D170),
+  Docker's clients' socket, is not this and stays. Tests: the client's
+  `a_runs_signals_go_on_its_connection_from_its_request` now on a real slot's sender;
+  E2E stand-ins for a daemon that never answers (`an_interrupted_save_leaves_nothing_behind`,
+  `a_client_waiting_for_its_daemon_ends_on_sigterm`) hold the home's lock on every OS, as
+  Windows' did, where Unix's listened at `daemon.sock` (owed to ROOT: both E2E).
+  `daemon stop` asks through a slot and waits for
   the daemon to let go of its home (*A stop's wait*, below); the
   requests a daemon puts to itself for a context's steps go through slots of its own home
   (`cli::ask_here`), which start no daemon. The default context's endpoint is the Engine
@@ -8798,8 +8815,8 @@ descriptors.
   times); and on real VMs by
   `a_stop_while_another_stops_its_daemon_waits_for_its_home_let_go_of` (tests/daemon.rs).
 - **A request asked again** (2026-11-13, R03). A run's, an exec's and an attach's client
-  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART,
-  or a socket an older build shut unread, within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
+  (`serve`) and a command's (`container`, `ask`, `ask_here`) asked again after a RESTART
+  (or, until legacy-audit, a socket a pre-slots build shut unread), within `RESTARTS` (`slots::OFFERED` + 2 = 4): a
   count derived in its comment alone, for one takeover's RESTARTs (the step-aside
   request's, each slot the closing daemon had offered of the kind asked, an older build's
   socket), and in no D-entry. No count bounds it now. The client reads `daemon.pid`
@@ -8837,7 +8854,8 @@ descriptors.
   (`EXIT`, `END`, `RESTART`), and the client says so as the microVM's stop; a slot that ends
   with no last word at all is its daemon's end, and the client says "the daemon ended before
   the command did". A command's client (`END`) reads any early end as its daemon's already;
-  a socket's peer (a daemon of a build from before slots) is the run's VM. Held by
+  no other peer is read (a pre-slots daemon's socket, whose peer was the run's VM, is gone,
+  legacy-audit). Held by
   `a_side_that_ends_without_its_last_word_says_so` and
   `a_runs_client_tells_its_daemons_end_from_its_microvms`, each red with its guard removed,
   on Linux, macOS and Windows; live on WHP, a daemon ended mid-run said so and a VM ended
@@ -12077,6 +12095,19 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     `until_unserved` (the kernel closing a killed daemon's descriptors) had 10 s.
     `Oplocked::new` (Defender's handle on a fresh copy) had its caller's `TIMEOUT`. Each now
     tries until the host is done, paced by `shards_api::pause`.
+    - *2026-11-14: `spawn`'s retry is gone, its cause removed.* A test's program written by
+      a descriptor of the test process itself is held open for write by every child another
+      test thread forks before that child execs, and an exec of it meanwhile is ETXTBSY
+      (execve(2)): Hex's Linux gate (adacachy2, parallel tests) failed shards-api's
+      `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` with `Text file busy`, its
+      stand-in host written by `std::fs::write`. Every program a test runs is now written by a
+      process of its own, through one helper, `shards_testdir::program` (sh's `cat` and
+      `chmod`), or copied by `shards_testdir::program_copy` (cp): shards-api's stand-ins
+      (session.rs, client.rs, tests/sim.rs), the E2E copies of `shards` (`common::place`,
+      daemon.rs' rebuilt binary, containers.rs' `Gated`), init's and the daemon's test
+      scripts, and the registry's credential helpers, whose own copies of that writer
+      (`common::program`, `program_copy`, credentials.rs' `program`, auth.rs' `helper`'s) and
+      install(1) are gone. No exec meets ETXTBSY, so nothing waits one out.
   - *The call sites.* The terminals' exit waits and Windows' modes are a `Wait` on the
     shell's party (terminal.rs, terminal_windows.rs). vsock.rs' 60 s `TIMEOUT` and its 20 s
     read are `Following` reads, its greeting a `within`. confined.rs' record wait and its
@@ -14712,8 +14743,10 @@ the guest keeps their metadata alone.
 `image_manifest` is its selection, even when its index's preferred platform changes.
 Inspect reads that descriptor and its config through the store's existing digest/size
 checks and OCI document/config bounds; ownership-mode copy uses those same facts.
-Only an old record with no selected manifest uses the preference. A recorded selection
-that cannot be read never falls back to another platform: inspect has no image facts,
+A record with no selected manifest (made before shards kept it, 2026-11-03) has no
+image facts, as one whose recorded selection cannot be read: neither falls back to the
+reference's preference, another platform's facts where it changed (legacy-audit,
+2026-11-14: the preference read for such a record before it): inspect has no image facts,
 and copy refuses with the missing container/config identity. An available config with
 no User keeps OCI's root default; an explicit run user remains authoritative.
 The two-platform store regression changes the preference both ways, checks each selected
@@ -15401,7 +15434,9 @@ other's but what the move sends, and what the other takes by content:
   No metadata or bytes are replayed for an alias: the inode's contents and attributes
   stay shared. POSIX.1-2024 `linkat` specifies shared identity and flags 0's no-follow
   behavior; the share server's LINK handler already uses that seam. Readers accept
-  version 2 as before; older readers refuse version 3 before extraction. Version/tag
+  version 3 alone, as both ends of a move are one build's (D36): version 2's stream, read
+  before beside it, is refused like any other version before extraction (legacy-audit,
+  2026-11-14: `a_volumes_files_move_as_its_guest_saw_them` refuses versions 1, 2 and 4). Version/tag
   numbers are assigned grammar, path sizes retain the existing PATH_MAX bound, and
   link count greater than one is the host's alias fact, not a tuning choice. The red
   test `a_volumes_hardlinks_keep_shared_contents_after_move` failed at `73af9fb62`
@@ -19706,8 +19741,13 @@ it notes what its guest needs then (`plug::note_startup`, `startup`): the least 
 hold leaves the first growth's working room (`working_room`) beside what its kernel uses and
 the reserve (memory-11's slack, its uncharged term cold, so its use again; at most a 64th for
 what may still be plugged; the CPUs' lists' eighth), `t ≥ (2·used + overshoot + working)·64/55`;
-and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`; an older init's
-two words still read). The host learns from it what that guest needs to boot
+and says it with MemTotal as it booted in `NEEDED` (`NEED KILLED START TOTAL`, all four or
+none: an init whose start was not noted says why instead, and its build's needs go unrecorded).
+The host reads the four words alone (`builder::said_needed`): the init it carries is of its own
+build (D36), so the two words an init before memory-15 said, or any other form, are refused
+typed (`builder::Unsaid`) and leave the home's record as it was, never read as a need with no
+boot (legacy-audit, 2026-11-14: red/green `a_builders_needed_is_four_words_or_refused`, the
+two-word form parsed before it). The host learns from it what that guest needs to boot
 (`build::boot_need`): past MemTotal, what the kernel took at boot is its image and its page
 structures, a 64th of what it booted with, allocated from memblock and never in MemTotal; the
 first stays as it was, the second is counted for the memory booted with, so the least `b`
@@ -27612,6 +27652,21 @@ launches are one, `crate::launch` (launch.rs), each caller's descriptors and wor
 old layout by unit tests at the seam; its real-VM runs on every backend and R14's cold start
 before and after are owed to ROOT: docs/research/measurements/vm-launch-seam-v1/README.md.
 
+**A request that meets the host's end (2026-11-14, flaky3).** A host that exits before it
+takes its request (`CREATE`, or a warm host's `WARM`) was refused by whichever came first: the
+request's write meeting its end, `Os { "the run host's request", BrokenPipe }`, or the wait
+seeing it gone, `Host("it exited before its run started…")` with its words. On Linux with
+parallel tests (adacachy2, 64 test threads, 40 runs of shards-api's lib tests at 85421bddb) 11
+runs refused `a_run_host_that_ends_before_its_run_starts_leaves_no_layer` and 10 the GPU
+report's boot (`an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`) so. A write
+that meets the peer's end is that end (EPIPE, ECONNRESET; M527): `Begun::send` follows it into
+the wait, which types it as every other host's end, its words and exit with it. Every other
+error of the write is still `Os`. At a018a07be (this, with the GPU stand-in's frames said once
+its request comes) 0 of 40 such runs refused either; ETXTBSY, 5 of 40 at main 6f3cd4428, was 0
+of 40 from b12325ce2 on (D209's note). One failure of another cause stays, reported to ROOT:
+`a_stop_returns_once_its_host_and_every_process_it_started_are_gone`, "the stop returned while
+the VM its run host started still ran", 1 of 40.
+
 **What would falsify it.** A run host costing more per microVM than the daemon per run (then
 one host per orchestrator); an orchestrator needing to link the VMM; credentials a member
 must not read (then plan P10's opaque broker).
@@ -27875,7 +27930,10 @@ API's protocol: its output drained, its end, its connections.
     the record is in place before the VM process runs. A record that cannot be written ends the
     suspended child (its Job's last handle drops) and fails the launch, so no managed VM runs
     unnamed. Not a wire: a file of one fixed line, read by the API that names its path, so no
-    version; a `shards` from before writes none, answered `Unrecorded`.
+    version. No record is `Unrecorded` for one reason alone: its `shards` has not started the
+    VM process yet; a `shards` that writes none is not one this API launches (legacy-audit,
+    2026-11-14: the "older shards" reading of a missing record is gone; no branch takes it
+    as normal, and `Unrecorded` stays typed).
   - *Typed answers* (R04): `Refusal::Ended` once the guest has ended; `Refusal::Process` with
     `Exited` or `DifferentStart { observed }` where the named process has gone or its pid is
     another's (each answer is checked against the OS as it is given: `taken::Held::find` on
@@ -29665,9 +29723,13 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
     its rotations, by a segment at most, which is the bound's one segment.
   - *Each owner's loss.* Each segment the cap lets go is its owner's record, `log.capped` beside its
     log: cumulative segment and byte counts, durably replaced by the existing platform
-    atomic-write seam. A legacy segment/bytes history is streamed through fixed format-derived
-    buffers and replaced on the next loss; no log-open allocation follows lifetime history.
-    Windows readers select the newest version. `logs` says, on stderr, before what is kept,
+    atomic-write seam: one line, `sum SEGMENTS BYTES`, read to a byte past its longest (46
+    bytes: "sum ", two u64s' decimal digits, a space, a newline); anything else is refused
+    (InvalidData). The per-loss `SEGMENT BYTES` lines control-05 replaced are not read: they were
+    written on main from 5ca8129ec to 76ace2f18 (2026-11-13, ten hours) and are in no release
+    (`git tag --contains 5ca8129ec`: none), so no user's home holds one (legacy-audit,
+    2026-11-14: red/green `a_caps_loss_record_is_its_sum_line_or_refused`, the old lines summed
+    before it). Windows readers select the newest version. `logs` says, on stderr, before what is kept,
     how much of each log's older output went to the run's one log cap; a log lane says it as
     `Rotated { oldest }` (D238). A segment its own retention let go meanwhile is no loss of the cap's.
   - *Compressed as the run's.* A member's segments rotated as they fill are compressed on the

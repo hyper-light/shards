@@ -249,9 +249,8 @@ fn remove(dir: &Path, seq: u64) -> io::Result<bool> {
     Ok(removed)
 }
 
-/// A text record's longest line: "sum ", two decimal u64 values and their separator.
-/// Legacy records (segment, bytes) are shorter. The newline is not stored in the line.
-const CAPPED_LINE_MOST: usize = b"sum ".len() + 2 * (u64::MAX.ilog10() as usize + 1) + 1;
+/// The record's one line, "sum ", two decimal u64 values, their separator and its newline.
+const CAPPED_LINE_MOST: usize = b"sum ".len() + 2 * (u64::MAX.ilog10() as usize + 1) + 2;
 
 /// Updates this log's cumulative loss, serialized by its keeper. The filesystem's
 /// durable replacement keeps either the old whole totals or the new whole totals.
@@ -267,60 +266,45 @@ fn record(dir: &Path, segment: &Segment) -> io::Result<()> {
     };
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(CAPPED_LINE_MOST + 1)
+        .try_reserve_exact(CAPPED_LINE_MOST)
         .map_err(io::Error::other)?;
     writeln!(bytes, "sum {} {}", totals.segments, totals.bytes)?;
     platform::write_in(&dir, CAPPED, &bytes)
 }
 
-/// The cumulative loss, or the sum of a legacy history. Read in fixed, format-derived
-/// chunks so that opening an old log never allocates its entire history. The next loss
-/// replaces that history with one bounded summary. Names may be versioned on Windows.
+/// The cumulative loss: none where nothing was let go. The record is its one line,
+/// `sum SEGMENTS BYTES` and a newline, read to a byte past its longest; anything else is
+/// refused (InvalidData), never summed as lines of another form (D240: the per-loss
+/// `SEGMENT BYTES` lines control-05 replaced were on main for a day and in no release).
+/// Names may be versioned on Windows.
 pub(in crate::daemon) fn capped(dir: &File) -> io::Result<Capped> {
-    let mut file = match platform::open_newest_in(dir, CAPPED) {
+    let file = match platform::open_newest_in(dir, CAPPED) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Capped::default()),
         Err(e) => return Err(e),
     };
-    let mut sum = Capped::default();
-    let mut line = [0u8; CAPPED_LINE_MOST];
-    let mut used = 0usize;
-    let mut chunk = [0u8; CAPPED_LINE_MOST];
-    let mut add = |bytes: &[u8]| -> io::Result<()> {
-        let text = std::str::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidData)?;
-        let (prefix, text) = text.strip_prefix("sum ").map_or((false, text), |t| (true, t));
-        let (count, bytes) = text.split_once(' ').ok_or(io::ErrorKind::InvalidData)?;
-        let count = count.parse::<u64>().map_err(|_| io::ErrorKind::InvalidData)?;
-        let bytes = bytes.parse::<u64>().map_err(|_| io::ErrorKind::InvalidData)?;
-        // A legacy record's first number is its segment id; each line counts one loss.
-        sum.segments = sum
-            .segments
-            .checked_add(if prefix { count } else { 1 })
-            .ok_or(io::ErrorKind::InvalidData)?;
-        sum.bytes = sum.bytes.checked_add(bytes).ok_or(io::ErrorKind::InvalidData)?;
-        Ok(())
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(CAPPED_LINE_MOST + 1)
+        .map_err(io::Error::other)?;
+    let most = u64::try_from(CAPPED_LINE_MOST + 1).map_err(|_| io::ErrorKind::InvalidData)?;
+    file.take(most).read_to_end(&mut bytes)?;
+    capped_of(&bytes).ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+/// The totals a record's `bytes` say: `sum SEGMENTS BYTES\n`, both decimal digits alone.
+fn capped_of(bytes: &[u8]) -> Option<Capped> {
+    let text = std::str::from_utf8(bytes.strip_suffix(b"\n")?).ok()?;
+    let (segments, bytes) = text.strip_prefix("sum ")?.split_once(' ')?;
+    let number = |word: &str| {
+        (!word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| word.parse::<u64>().ok())
+            .flatten()
     };
-    loop {
-        let n = match file.read(&mut chunk) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
-        if n == 0 {
-            if used != 0 {
-                add(line.get(..used).ok_or(io::ErrorKind::InvalidData)?)?;
-            }
-            return Ok(sum);
-        }
-        for &byte in chunk.get(..n).ok_or(io::ErrorKind::InvalidData)? {
-            if byte == b'\n' {
-                add(line.get(..used).ok_or(io::ErrorKind::InvalidData)?)?;
-                used = 0;
-            } else {
-                *line.get_mut(used).ok_or(io::ErrorKind::InvalidData)? = byte;
-                used = used.checked_add(1).ok_or(io::ErrorKind::InvalidData)?;
-            }
-        }
-    }
+    Some(Capped {
+        segments: number(segments)?,
+        bytes: number(bytes)?,
+    })
 }
 
 /// Lets segment `seq` of the log in `dir` go as the cap does, recorded as its owner's loss: the
@@ -341,11 +325,14 @@ mod tests {
     use crate::log_writer::Writer;
     use crate::spec::{LOG_STDOUT, LogRetention};
 
+    /// The record is its one `sum` line: the per-loss lines control-05 replaced, and any
+    /// other form or a longer record, are refused, never summed (D240).
     #[test]
-    fn legacy_cap_history_is_read_bounded_and_replaced_by_totals() {
-        let dir = shards_testdir::TempDir::new("cap-legacy").unwrap();
-        std::fs::write(dir.join(CAPPED), b"0 10\n1 20\n2 30\n").unwrap();
+    fn a_caps_loss_record_is_its_sum_line_or_refused() {
+        let dir = shards_testdir::TempDir::new("cap-form").unwrap();
         let held = platform::open_dir(&dir).unwrap();
+        assert_eq!(capped(&held).unwrap(), Capped::default());
+        platform::write_in(&held, CAPPED, b"sum 3 60\n").unwrap();
         assert_eq!(
             capped(&held).unwrap(),
             Capped {
@@ -353,28 +340,29 @@ mod tests {
                 bytes: 60
             }
         );
-        record(
-            &dir,
-            &Segment {
-                seq: 3,
-                bytes: 40,
-                changed: SystemTime::UNIX_EPOCH,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            capped(&held).unwrap(),
-            Capped {
-                segments: 4,
-                bytes: 100
-            }
-        );
-        let mut got = String::new();
-        platform::open_newest_in(&held, CAPPED)
-            .unwrap()
-            .read_to_string(&mut got)
-            .unwrap();
-        assert_eq!(got, "sum 4 100\n");
+        let longest = format!("sum {} {}\n", u64::MAX, u64::MAX);
+        assert_eq!(longest.len(), CAPPED_LINE_MOST);
+        platform::write_in(&held, CAPPED, longest.as_bytes()).unwrap();
+        assert_eq!(capped(&held).unwrap().bytes, u64::MAX);
+        // One past a u64's most.
+        let past = "sum 18446744073709551616 1\n";
+        for record in [
+            "0 10\n1 20\n2 30\n",
+            "0 10\n",
+            "sum 3 60",
+            "sum 3 60\nsum 1 1\n",
+            "sum 3\n",
+            "sum +3 60\n",
+            "sum  3 60\n",
+            past,
+        ] {
+            platform::write_in(&held, CAPPED, record.as_bytes()).unwrap();
+            assert_eq!(
+                capped(&held).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{record:?}"
+            );
+        }
         platform::write_in(&held, CAPPED, &[b'x'; CAPPED_LINE_MOST + 1]).unwrap();
         assert_eq!(capped(&held).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
@@ -401,8 +389,7 @@ mod tests {
                 bytes: 128 * 7
             }
         );
-        // "sum ", two decimal u64 values, a space and a newline.
-        let most = "sum ".len() + 2 * (u64::MAX.ilog10() as usize + 1) + 2;
+        let most = CAPPED_LINE_MOST;
         let file = platform::open_newest_in(&held, CAPPED).unwrap();
         assert!(
             file.metadata().unwrap().len() <= most as u64,

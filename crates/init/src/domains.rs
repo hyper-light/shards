@@ -3563,12 +3563,12 @@ mod tests {
 
     #[test]
     fn a_members_relative_path_is_resolved_in_its_working_directory() {
-        use std::os::unix::fs::PermissionsExt as _;
         let dir = shards_testdir::TempDir::new("relative-program").unwrap();
         std::fs::create_dir(dir.path().join("bin")).unwrap();
+        // Written by a process of its own (`shards_testdir::program`): no exec of it fails
+        // ETXTBSY.
         for file in ["bin/tool", "tool"] {
-            std::fs::write(dir.path().join(file), b"#!/bin/sh\nexit 23\n").unwrap();
-            std::fs::set_permissions(dir.path().join(file), std::fs::Permissions::from_mode(0o755)).unwrap();
+            shards_testdir::program(&dir.path().join(file), "#!/bin/sh\nexit 23\n").unwrap();
         }
         let mut d = domain_at(dir.path().to_str().unwrap(), &["tool"]);
         d.workdir = CString::new(dir.path().to_str().unwrap()).unwrap();
