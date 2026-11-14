@@ -4299,6 +4299,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
     }
 
+    /// confine-06: where the host's watcher lost events (`IN_Q_OVERFLOW`), a file the guest
+    /// holds deep in the share, which a guest's watch of it alone may be all that waits on,
+    /// is told, not only the directories the share watches.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lost_events_wake_a_file_the_guest_holds() {
+        let (p, s) = dir();
+        std::fs::create_dir(p.join("d")).unwrap();
+        std::fs::write(p.join("d").join("f"), "1").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(answer(&s, &req(op::LOOKUP, d, 0, &name("f"))).0, 0);
+        let lost = crate::platform::Named {
+            watched: -1,
+            mask: libc::IN_Q_OVERFLOW,
+            name: Vec::new(),
+        };
+        let told = s.noticed(&lost);
+        assert!(told.iter().any(|p| p == b"d/f"), "{told:?}");
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
     /// `request`'s errno, or none if it is still waiting after ten seconds, when the FIFO
     /// at `fifo` is opened at both ends to let it go.
     fn answered_or_stuck(s: &Server, request: &[u8], fifo: &std::path::Path) -> Option<i32> {
