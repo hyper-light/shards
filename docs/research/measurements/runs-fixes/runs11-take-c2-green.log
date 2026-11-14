@@ -1,0 +1,47 @@
+# runs-11 TAKE_TIMEOUT slice (c2), green on 2bc6a0e4e (over merge 78ecbded5, main 95a057045), macOS arm64, adas-mac-studio-3.local, kiln r593
+# SHARDS_HELPERS=skip, SHARDS_INIT_BINARY/SHARDS_SERVER_BINARY stubs, CARGO_INCREMENTAL=0
+## cargo test -p shards --bin shards -- run_socket guest_times long_past daemon::cuts the_files_asked_for segment hand_over handoff taken daemon::health
+## (the last 40 lines kept, as the carrier's tail kept them)
+test daemon::publish::tests::a_picked_port_taken_at_ipv6_is_picked_again ... ok
+test daemon::reclaim::tests::an_answer_is_long_past_its_kinds_slowest_before_it ... ok
+test daemon::ship::tests::segments_wholly_sent_go ... ok
+test daemon::tests::a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken ... ok
+test daemon::health::tests::a_group_word_reports_its_refusal_before_the_kill_is_acknowledged ... ok
+test daemon::tests::a_command_waiting_for_an_arrival_sees_it_taken_out ... ok
+test daemon::managed::drain::tests::a_members_rotated_segment_is_compressed_when_the_runs_options_say_so ... ok
+test daemon::tests::a_handoff_is_retried_only_where_the_run_surely_did_not_start ... ok
+test daemon::tests::a_move_whose_published_port_is_taken_here_is_refused_typed ... ok
+test daemon::commands::tests::a_vm_that_runs_nothing_and_never_answers_its_guest_times_is_refused ... ok
+test daemon::health::tests::a_timed_wait_ends_its_exec_and_an_untimed_one_waits ... ok
+test daemon::tests::a_name_held_by_a_run_being_handed_over_is_seen_through_its_handoff ... ok
+test daemon::tests::a_handed_over_connection_survives_until_taken ... ok
+test daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments ... ok
+test daemon::tests::a_port_of_a_run_being_handed_over_is_seen_through_its_handoff ... ok
+test daemon::tests::a_command_waits_for_a_handoff_only_once_the_vm_has_taken_it ... ok
+test daemon::packed::tests::a_damaged_packed_segment_is_refused ... ok
+test daemon::tests::a_vm_that_answers_otherwise_may_have_taken_the_run ... ok
+test daemon::tests::a_vm_that_ends_before_taking_a_run_fails_the_hand_over ... ok
+test daemon::tests::a_shutdown_waits_for_a_removal_taken_out_and_not_yet_queued ... ok
+test daemon::tests::a_run_socket_whose_vm_reads_and_runs_nothing_fails_its_send ... ok
+test daemon::tests::rotated_segments_left_as_written_are_compressed_at_start ... ok
+test daemon::health::tests::an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star ... ok
+test daemon::tests::senders_on_a_run_socket_take_turns ... ok
+test daemon::top::tests::top_tables_are_taken_apart ... ok
+test share::tests::its_flags_are_taken_before_its_shares ... ok
+test daemon::tests::untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start ... ok
+test daemon::tests::a_runs_log_segments_are_made_in_turn ... ok
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... ok
+test daemon::health::tests::a_cold_wait_follows_its_microvm_while_it_lives ... ok
+test daemon::tests::the_files_asked_for_are_made_before_the_daemon_exits ... ok
+test daemon::logs::tests::a_reader_following_segments_shows_each_line_once ... ok
+test daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for ... ok
+test daemon::packed::tests::a_packed_segment_reads_back_as_written ... ok
+test daemon::commands::tests::a_vm_slow_to_answer_its_guest_times_while_it_runs_is_waited_for ... ok
+test daemon::tests::a_run_socket_waits_for_room_while_its_vm_runs ... ok
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... ok
+test daemon::logs::tests::logs_in_packed_segments_read_as_their_records_do ... ok
+test daemon::logs::tests::logs_in_segments_read_as_their_records_do ... ok
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 913 filtered out; finished in 31.13s
+## cargo clippy -p shards --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.93s
+EXIT 0
