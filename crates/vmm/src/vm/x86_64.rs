@@ -815,6 +815,7 @@ pub fn restore(
     said: usize,
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
+    report: Option<&mut super::GpuReportTo<'_>>,
 ) -> Result<Machine, String> {
     super::check_hosts(snap, hosts)?;
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
@@ -835,7 +836,7 @@ pub fn restore(
         console,
         said,
         hosts,
-        snap.config.gpu.map(|saw| super::MachineGpu { saw, report: None }),
+        snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {
             slots: snap.config.pci_slots,
             ..super::Pci::default()

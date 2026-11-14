@@ -1,0 +1,10 @@
+m1-unmap-exact#shards-vmm|hv::whp::tests::the_emulator_reaches
+m2-map-no-cut#shards-vmm|hv::whp::tests::the_emulator_reaches
+m3-no-write-check#shards-vmm|hv::whp::tests::the_emulator_writes
+m4-lent-inheritable#shards-ipc|windows::tests::a_confined_childs_standard
+m5-std-unguarded#shards-ipc|windows::tests::a_child_of_stds
+m6-watch-lossy#shards-ipc|slots::named::tests::a_lists_directory_is_watched
+m7-watch-swallow#shards-ipc|slots::named::tests::a_lists_directory_is_watched
+m8-by-case#shards-vmm|platform::windows_files::tests::a_names_versions
+m9-taken-ignored#shards-vmm|platform::windows_files::tests::a_taken_version
+m10-no-pool#shards-vmm|platform::windows_thread::tests::raised_threads_sharing

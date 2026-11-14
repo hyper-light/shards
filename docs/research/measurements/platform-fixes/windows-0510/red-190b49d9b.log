@@ -1,0 +1,35 @@
+
+
+== 190b49d9 platform-10 red: three raised threads on one CPU keep their credit and the CPU 2026-11-14T05:16:12.2362692Z
+== cargo test -p shards-vmm hv::whp::tests::the_emulator platform::windows_files::tests::a_names_versions platform::windows_thread::tests::raised_threads_sharing exit 101
+warning: static `INHERITING` is never used
+   --> crates\ipc\src\windows.rs:111:8
+warning: `shards-ipc` (lib) generated 1 warning
+test hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read ... FAILED
+test hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced ... FAILED
+test platform::windows_files::tests::a_names_versions_are_found_whatever_their_case ... FAILED
+test platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it ... FAILED
+thread 'hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read' (14876) panicked at crates\vmm\src\hv\whp\mod.rs:2050:9:
+assertion `left == right` failed
+thread 'hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced' (3996) panicked at crates\vmm\src\hv\whp\mod.rs:2019:9:
+assertion `left == right` failed: the unplugged block's first page
+thread 'platform::windows_files::tests::a_names_versions_are_found_whatever_their_case' (14380) panicked at crates\vmm\src\platform\windows_files.rs:974:9:
+assertion `left == right` failed
+thread 'platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it' (14604) panicked at crates\vmm\src\platform\windows_thread.rs:467:9:
+assertion `left == right` failed: raised throughout; the normal thread ran 46875000 ns
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 467 filtered out; finished in 8.12s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+== cargo test -p shards-ipc windows::tests::a_confined_childs_standard windows::tests::a_child_of_stds slots::named::tests::a_lists_directory_is_watched exit 101
+test slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused ... FAILED
+test windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them ... FAILED
+test windows::tests::a_child_of_stds_takes_no_handle_held_inheritable_for_another ... FAILED
+---- slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused stdout ----
+thread 'slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused' (11520) panicked at crates\ipc\src\slots\named.rs:939:9:
+thread 'windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them' (7404) panicked at crates\ipc\src\windows.rs:2911:9:
+thread 'windows::tests::a_child_of_stds_takes_no_handle_held_inheritable_for_another' (10640) panicked at crates\ipc\src\windows.rs:2972:9:
+    slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 79 filtered out; finished in 0.20s
+error: test failed, to rerun pass `-p shards-ipc --lib`
+== done 2026-11-14T05:17:00.2333890Z status 1
+
+[exited with code 0]

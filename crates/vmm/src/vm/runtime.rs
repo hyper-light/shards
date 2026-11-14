@@ -1351,6 +1351,23 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
 /// has checked ([`check_host`]): a restore that read it to learn its backing files reads
 /// and decodes it once, and resumes the very generation it checked (review 1.12).
 pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Handle, Running), String> {
+    restore_reported(cfg, pinned, None)
+}
+
+/// [`restore_from`], `report` given what the restored machine's renderer comes to as it rejoins
+/// the selection its snapshot keeps (D232's format 29, D233), as [`start_gpu_report`]'s boot
+/// gives it its own: before any guest vCPU runs. A snapshot of no selected GPU is refused, as
+/// such a boot is (`GpuProbeError::Empty`).
+pub fn restore_reported(
+    cfg: &RestoreConfig,
+    pinned: snapshot::Pinned,
+    report: Option<&mut super::GpuReportTo<'_>>,
+) -> Result<(Handle, Running), String> {
+    if report.is_some()
+        && (pinned.snapshot.config.gpu.is_none() || pinned.snapshot.config.gpu_devices.is_empty())
+    {
+        return Err(shards_abi::gpu::GpuProbeError::Empty.to_string());
+    }
     let snapshot::Pinned {
         snapshot: snap,
         memory: memory_file,
@@ -1428,6 +1445,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             window_heads: window_heads.as_ref(),
         },
         working_set.unwrap_or_default(),
+        report,
     )?;
     // The run's swap a snapshot of a run kept (D176), back where its guest had it before
     // any vCPU runs.
