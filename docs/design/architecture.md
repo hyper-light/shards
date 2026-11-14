@@ -28161,7 +28161,12 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Question 1: who calls the provider.* The orchestrator's broker alone (kiln's `Turn`, step 5), for every run of the
   sign-in: the injector never sends a refresh on. It reads a POST to the sign-in's token path whole (its body within the
   connection's window) and, where it carries the sign-in's refresh placeholder (`signin::ask`), asks its run host
-  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`); every flow of the run that asks the
+  (`NET_SIGN_IN`, kind 105) and parks the request (`Request::Refreshing`). For a held
+  HTTP/1.1 POST with `Expect: 100-continue`, the gateway emits Continue before waiting
+  for the body, once (Unrequested/Waiting/Sent, creds-08; RFC 9110 §10.1.1), for
+  Content-Length and chunked bodies alike. Its answered Expect field is cut if the
+  body is later forwarded as an exchange. No timer or chosen wait is added; evidence:
+  docs/research/measurements/creds-fixes-v1/README.md. Every flow of the run that asks the
   sign-in's refresh meanwhile joins that one ask (`SignIns::refresh`), and the broker's `Turn` makes it one across
   runs. Refused: the network process refreshing on its own, which would need the refresh token in it and would let two
   runs rotate one sign-in's tokens out from under each other (RFC 6749 §6, f47).
