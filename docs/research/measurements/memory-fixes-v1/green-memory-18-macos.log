@@ -1,0 +1,70 @@
+# kiln run r1751 (on: adas-mac-studio.local; uname Adas-Mac-Studio-3.local), cwd a carrier, `bash memory-18-run.sh ee3cf6fe9c7b`
+# then r1779 (on: adas-mac-studio-3.local; uname Adas-Mac-Studio-4.local), `ONLY=refused-release-detaches bash memory-18-run.sh ee3cf6fe9c7b`
+# with that mutant guarded `if false` (r1751 ran it as a Malformed/Refused swap, which the "empty" case killed instead).
+ee3cf6fe memory-18: a refused RELEASE keeps its share and still forgets its entry; a held node's refused LOOKUP keeps the guest's reference
+Darwin Adas-Mac-Studio-3.local 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:56 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_T6041 arm64
+rustc 1.98.1 (48a229cea 2026-09-01)
+=== green: devices::virtio::fs
+test result: ok. 88 passed; 0 failed; 1 ignored; 0 measured; 425 filtered out; finished in 2.72s
+green exit 0
+=== green: memory-18 tests by name
+test devices::virtio::fs::server::tests::a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference ... ok
+test devices::virtio::fs::server::tests::refusing_an_open_preserves_the_guests_earlier_node_handle_and_pin ... ok
+test devices::virtio::fs::server::tests::a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not ... ok
+test devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged ... ok
+test devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged ... ok
+test devices::virtio::fs::server::tests::refused_directory_replies_release_their_entries_and_new_handle_only ... ok
+test devices::virtio::fs::server::tests::replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 507 filtered out; finished in 0.01s
+=== clippy
+clippy exit 0
+=== mutant red-no-cleanup
+thread 'devices::virtio::fs::server::tests::a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference' (54370231) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3382:9:
+  left: (2, 10, 0, 0, 0)
+ right: (2, 2, 0, 0, 0)
+thread 'devices::virtio::fs::server::tests::replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held' (54370235) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3330:9:
+  left: (9, 9, 0, 0, 0)
+ right: (1, 1, 0, 0, 0)
+thread 'devices::virtio::fs::server::tests::refused_directory_replies_release_their_entries_and_new_handle_only' (54370233) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3453:9:
+  left: (4, 25, 9, 9, 0)
+ right: (1, 1, 1, 1, 0)
+thread 'devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged' (54370234) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3330:9:
+  left: (9, 9, 0, 0, 0)
+ right: (1, 1, 0, 0, 0)
+thread 'devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged' (54370232) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3330:9:
+  left: (9, 9, 8, 8, 0)
+ right: (1, 1, 0, 0, 0)
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 509 filtered out; finished in 0.01s
+MUTANT red-no-cleanup: KILLED (exit 101)
+=== mutant no-forget
+  a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference: left (2, 10, 0, 0, 0) right (2, 2, 0, 0, 0)
+  refused_lookups_leave_the_held_count_unchanged: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+  refused_creates_leave_the_held_count_unchanged: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+  refused_directory_replies_release_their_entries_and_new_handle_only: left (4, 25, 1, 1, 0) right (1, 1, 1, 1, 0)
+test result: FAILED. 0 passed; 4 failed
+MUTANT no-forget: KILLED (exit 101)
+=== mutant forget-two
+  a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference panicked at server.rs:3376:17 (the held node forgotten, its id reused)
+test result: FAILED. 0 passed; 1 failed
+MUTANT forget-two: KILLED (exit 101)
+=== mutant no-release
+  refused_directory_replies_release_their_entries_and_new_handle_only: left (1, 1, 9, 9, 0) right (1, 1, 1, 1, 0)
+  refused_creates_leave_the_held_count_unchanged: left (1, 1, 8, 8, 0) right (1, 1, 0, 0, 0)
+test result: FAILED. 0 passed; 2 failed
+MUTANT no-release: KILLED (exit 101)
+=== mutant scatter-short-ok
+  replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+MUTANT scatter-short-ok: KILLED (exit 101)
+=== mutant scatter-no-refuse
+  replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+MUTANT scatter-no-refuse: KILLED (exit 101)
+=== mutant keep-broken-conn
+  a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not panicked at server.rs:3505:21 (conn kept after a closed exchange)
+MUTANT keep-broken-conn: KILLED (exit 101)
+=== mutant refused-release-no-forget
+  worker panicked at server.rs:3485:29 (left 1 = LOOKUP, right 2 = FORGET expected after the refused RELEASE)
+MUTANT refused-release-no-forget: KILLED (exit 101)
+=== mutant refused-release-detaches (r1779, guard `if false`)
+Darwin Adas-Mac-Studio-4.local 25.2.0 arm64; rustc 1.98.1
+  a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not panicked at server.rs:3501:65 (the errno case's next LOOKUP: NotConnected)
+MUTANT refused-release-detaches: KILLED (exit 101)

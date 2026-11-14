@@ -1,0 +1,17 @@
+# kiln r1785: FILTERS="disk::tests helpers::tests" bash run.sh mutant
+# mutate.py: update() without disk.lock, write() through the shared .disk.new (the base's transaction)
+Host adas-mac-studio-3.local (Adas-Mac-Studio-4.local), Darwin 25.2.0 arm64, macOS 26.2 25C56, rustc 1.98.1. Source 22d03c1a (p/runs-tail-v1 merged with main 2e00a1043), CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true, carrier /tmp/runs-tail-carrier (run.sh, mutate.py). aws-lc-sys build warnings removed.
+=== cargo test -j 4 -p shards --bin shards disk::tests
+running 3 tests
+test disk::tests::settings_publication_leaves_another_writers_staging_file_alone ... FAILED
+test disk::tests::settings_read_back_and_come_to_their_amounts ... ok
+test disk::tests::concurrent_settings_updates_keep_each_others_fields ... FAILED
+---- disk::tests::settings_publication_leaves_another_writers_staging_file_alone stdout ----
+thread 'disk::tests::settings_publication_leaves_another_writers_staging_file_alone' panicked at crates/shards/src/disk.rs:389:42:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+---- disk::tests::concurrent_settings_updates_keep_each_others_fields stdout ----
+thread 'disk::tests::concurrent_settings_updates_keep_each_others_fields' panicked at crates/shards/src/disk.rs:375:9:
+assertion `left == right` failed
+  left: Some(1048576)
+ right: Some(4194304)
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 923 filtered out; finished in 0.01s

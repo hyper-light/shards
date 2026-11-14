@@ -319,11 +319,10 @@ pub fn confine() -> Result<(), String> {
     Ok(())
 }
 
-/// Narrows this process's Unix sockets to what `paths` lets it dial, on every thread: a
-/// seccomp layer over [`confine`]'s filter (`seccomp::layer`), which every kernel with
-/// seccomp's TSYNC has (Linux 3.17), installed as the process learns its paths, beside
-/// [`landlock`], whose ABI v9 alone governs which socket files a connect reaches
-/// (`RESOLVE_UNIX`).
+/// Narrows this process's Unix sockets on every thread: a seccomp layer over [`confine`]'s
+/// filter (`seccomp::layer`), which every kernel with seccomp's TSYNC has (Linux 3.17),
+/// installed as the process confines itself, beside [`landlock`], whose ABI v9 governs a
+/// connect to a socket file too (`RESOLVE_UNIX`), an extra layer.
 ///
 /// - A socket is a stream or a sequenced-packet one, of either's flags: one of the
 ///   datagram type could send to any socket file it names (sendto(2), sendmsg(2) with an
@@ -332,13 +331,15 @@ pub fn confine() -> Result<(), String> {
 ///   it (`unix_seqpacket_sendmsg`). A VM process makes no datagram socket: Rust's own and
 ///   the vsock muxer's sockets are streams, the GPU's renderer's sequenced packets
 ///   (virgl.rs).
-/// - A VM given no directory to dial in dials nothing: connect(2) fails with EACCES, as
-///   Landlock would refuse it (Documentation/userspace-api/landlock.rst,
-///   `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`), on every kernel. A daemon's VMs are given none
-///   (`--warm` takes no `--vsock`): their host ports are served in their process, and
-///   nothing of their user's, its daemon's Engine API among them, can be dialed.
+/// - A VM process dials nothing: connect(2) fails with EACCES, as Landlock would refuse it
+///   (Documentation/userspace-api/landlock.rst, `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`), on
+///   every kernel. Its user's sockets, its daemon's Engine API among them, cannot be
+///   dialed. A daemon's VMs dial none (`--warm` takes no `--vsock`): their host ports are
+///   served in their process. One given a vsock path has its spawner dial the host ports
+///   beside it, and bind the path, as on macOS and Windows (`grant_ask::listen_at`, `dial`;
+///   `kind::DIAL`).
 #[cfg(target_os = "linux")]
-pub fn sockets(paths: &Paths) -> Result<(), String> {
+pub fn sockets() -> Result<(), String> {
     use shards_vmm::platform::seccomp::{self, Rule};
     let types = [libc::SOCK_STREAM, libc::SOCK_SEQPACKET]
         .into_iter()
@@ -352,13 +353,11 @@ pub fn sockets(paths: &Paths) -> Result<(), String> {
             .map(|t| t as u32)
         });
     let types: Vec<u32> = types.collect();
-    let mut rules = vec![
+    let rules = [
         Rule::with(libc::SYS_socket, 1, &types),
         Rule::with(libc::SYS_socketpair, 1, &types),
+        Rule::fails(libc::SYS_connect, libc::EACCES as u16),
     ];
-    if paths.sockets_under.is_empty() {
-        rules.push(Rule::fails(libc::SYS_connect, libc::EACCES as u16));
-    }
     let layer = seccomp::layer(&rules)?;
     seccomp::install(&layer, true).map_err(|e| format!("installing the sockets' seccomp layer: {e}"))
 }
@@ -581,12 +580,12 @@ pub struct Paths {
     /// Device files it reads, writes and controls: a passed-through PCI function's VFIO
     /// container and group (D154).
     pub devices: Vec<std::path::PathBuf>,
-    /// Directories it binds and dials Unix sockets in: that of a vsock socket path it was
-    /// given (`--vsock`). The ports its own process serves need none.
+    /// Directories it removes Unix sockets in (Linux): that of a vsock socket path it was
+    /// given (`--vsock`), which its spawner binds for it. The ports its own process serves
+    /// need none.
     pub sockets_under: Vec<std::path::PathBuf>,
-    /// The vsock socket path it was given, which on macOS and Windows its spawner binds for
-    /// it, and beside which it dials for it (grant).
-    #[cfg(any(target_os = "macos", windows))]
+    /// The vsock socket path it was given, which its spawner binds for it, and beside
+    /// which it dials for it (grant).
     pub vsock: Option<std::path::PathBuf>,
 }
 
@@ -596,7 +595,7 @@ pub struct Paths {
 /// `paths` are allowed, with `/dev/kvm`, `/dev/null`, this process's `/proc` entry and the
 /// kernel's transparent huge page settings. TCP is refused, and where the ABI knows them
 /// (v6), signals to other processes and abstract Unix sockets outside this one, and (v9)
-/// connections to socket files but beneath `paths.sockets_under`.
+/// every connection to a socket file, which its spawner dials for it.
 ///
 /// A layer restricts the thread that makes it and the threads it starts after, not the
 /// ones already running (landlock_restrict_self(2)); a VM process has some by then (its
@@ -607,8 +606,8 @@ pub struct Paths {
 /// It fails closed (PM M66): a kernel without Landlock, or whose ABI is older than v5, the
 /// first that governs a device's ioctls (/dev/kvm's), starts no VM, and neither does a path
 /// it must allow that is not there. Each path gets only the rights its use takes: no
-/// directory may take a file from another (`REFER`), and only that of a vsock path given
-/// makes sockets. The version is asked of the kernel, never inferred from its release, as
+/// directory may take a file from another (`REFER`), and none makes a socket: its spawner
+/// binds its vsock path for it. The version is asked of the kernel, never inferred from its release, as
 /// Landlock's maintainer asks (firecracker-microvm/firecracker#5771).
 ///
 /// Rules hold inodes, not names: a directory keeps its rule when renamed, as a template's
@@ -650,7 +649,6 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     const REMOVE_FILE: u64 = 1 << 5;
     const MAKE_DIR: u64 = 1 << 7;
     const MAKE_REG: u64 = 1 << 8;
-    const MAKE_SOCK: u64 = 1 << 9;
     const REFER: u64 = 1 << 13;
     const TRUNCATE: u64 = 1 << 14;
     const IOCTL_DEV: u64 = 1 << 15;
@@ -700,9 +698,9 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     }
     // Every filesystem right v5 knows: v1's, EXECUTE through MAKE_SYM, then REFER (v2),
     // TRUNCATE (v3) and IOCTL_DEV (v5); v6 to v8 add none; and RESOLVE_UNIX where the
-    // kernel has it (v9). All of them are handled, so all are enforced: nothing asked for
-    // is left to a kernel that cannot. Where it has not, [`sockets`] refuses a VM given no
-    // directory of sockets every connect.
+    // kernel has it (v9), granted nowhere, as [`sockets`] refuses every connect on every
+    // kernel. All of them are handled, so all are enforced: nothing asked for is left to a
+    // kernel that cannot.
     let resolve_unix = if abi >= RESOLVE_UNIX_ABI { RESOLVE_UNIX } else { 0 };
     let fs = ((1u64 << 13) - 1) | REFER | TRUNCATE | IOCTL_DEV | resolve_unix;
     let attr = RulesetAttr {
@@ -765,8 +763,8 @@ fn ruleset(paths: &Paths) -> Result<(std::os::fd::OwnedFd, i64), String> {
     let read_dir = READ_FILE | READ_DIR;
     let write = READ_FILE | WRITE_FILE | TRUNCATE;
     let write_dir = read_dir | WRITE_FILE | TRUNCATE | REMOVE_DIR | REMOVE_FILE | MAKE_DIR | MAKE_REG;
-    // A socket bound, and removed once done; and dialled, where the ABI governs it.
-    let sockets_dir = MAKE_SOCK | REMOVE_FILE | resolve_unix;
+    // Its vsock socket, which its spawner binds for it, removed as its device goes.
+    let sockets_dir = REMOVE_FILE;
     // The host's own files, where it has them: a host without /dev/kvm runs no VM, which
     // the KVM backend says itself, and a kernel built without transparent huge pages has
     // no settings for them. Nothing absent can be reached, rule or not.
@@ -954,10 +952,14 @@ mod asked {
         }
     }
 
-    /// The signal that asks: the real-time signal after the vCPUs' kick (vmm hv/kvm,
-    /// SIGRTMIN), which nothing else in a VM process takes or blocks.
+    /// The signal that asks: SIGSYS, the one every thread of a filtered process takes, as
+    /// its filter's trap is reported by it (`seccomp::name_refusals`), and the one Mesa's
+    /// threads, which block every other for their lives, leave unblocked
+    /// (src/util/u_thread.c, `u_thread_create`, at mirror/mesa 8c427aae9): a GPU's VM
+    /// process has those threads by its seal. A SIGSYS this process sends one of its own
+    /// threads (SI_TKILL) runs [`restrict_here`] there (`seccomp::on_sent`).
     pub(super) fn signal() -> libc::c_int {
-        libc::SIGRTMIN() + 1
+        libc::SIGSYS
     }
 
     /// A thread, as `/proc/self/task/TID` shows it.
@@ -987,23 +989,17 @@ mod asked {
         Ended,
     }
 
-    /// The handler: in the asked thread alone, for a signal this process sent it, the
-    /// restriction and its answer; errno kept for the code it interrupted. Async-signal-safe:
-    /// atomics, prctl(2), landlock_restrict_self(2), write(2).
-    extern "C" fn restrict_here(_: libc::c_int, info: *mut libc::siginfo_t, _: *mut libc::c_void) {
-        // SAFETY: __errno_location(3) is this thread's errno, and getpid(2) and gettid(2)
-        // have no preconditions; the kernel passes an SA_SIGINFO handler its siginfo.
-        let (errno, ours, me) = unsafe {
-            let errno = *libc::__errno_location();
-            let ours = info
-                .as_ref()
-                .is_some_and(|i| i.si_code == libc::SI_TKILL && i.si_pid() == libc::getpid());
-            (errno, ours, libc::syscall(libc::SYS_gettid) as i32)
-        };
-        if ours
-            && ASKED
-                .compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
+    /// What a SIGSYS this process sent a thread of its own runs there
+    /// (`seccomp::on_sent`): in the asked thread alone, the restriction and its answer;
+    /// errno kept for the code it interrupted. Async-signal-safe: atomics, prctl(2),
+    /// landlock_restrict_self(2), write(2).
+    extern "C" fn restrict_here() {
+        // SAFETY: __errno_location(3) is this thread's errno, and gettid(2) has no
+        // preconditions.
+        let (errno, me) = unsafe { (*libc::__errno_location(), libc::syscall(libc::SYS_gettid) as i32) };
+        if ASKED
+            .compare_exchange(me, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
         {
             // SAFETY: prctl(2) with integer arguments: no_new_privs, which
             // landlock_restrict_self(2) needs of the thread, and which only takes privilege away.
@@ -1028,32 +1024,14 @@ mod asked {
         unsafe { *libc::__errno_location() = errno };
     }
 
-    /// Installs [`restrict_here`] for [`signal`], once: restarting what it interrupts where
-    /// the kernel restarts it (SA_RESTART); every wait a VM process makes that it does not
-    /// goes on past EINTR, as it does past the vCPUs' kicks.
+    /// Has a SIGSYS this process sends run [`restrict_here`], its refusals' report
+    /// installed for it where it is not yet: restarting what it interrupts where the kernel
+    /// restarts it (SA_RESTART); every wait a VM process makes that it does not goes on
+    /// past EINTR, as it does past the vCPUs' kicks.
     fn install() -> Result<(), Unasked> {
-        static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
-        INSTALLED
-            .get_or_init(|| {
-                // SAFETY: an all-zero sigaction is a valid value to fill; sigaction(2) from it.
-                unsafe {
-                    let mut action: libc::sigaction = std::mem::zeroed();
-                    let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
-                        restrict_here;
-                    action.sa_sigaction = handler as libc::sighandler_t;
-                    action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
-                    libc::sigemptyset(&mut action.sa_mask);
-                    if libc::sigaction(signal(), &action, std::ptr::null_mut()) != 0 {
-                        return Err(std::io::Error::last_os_error().to_string());
-                    }
-                }
-                Ok(())
-            })
-            .clone()
-            .map_err(|error| Unasked::System {
-                what: "the asking signal's handler",
-                error,
-            })
+        shards_vmm::platform::seccomp::name_refusals().map_err(system("SIGSYS's handler"))?;
+        shards_vmm::platform::seccomp::on_sent(restrict_here);
+        Ok(())
     }
 
     /// The process's threads, by id.
@@ -1343,6 +1321,10 @@ mod tests {
                 std::fs::write(dir.join("socks").join("f"), b"x").is_ok(),
             ),
             (
+                "remove in socks",
+                std::fs::remove_file(dir.join("socks").join("v")).is_ok(),
+            ),
+            (
                 "move out of out",
                 std::fs::rename(dir.join("out").join("f"), dir.join("socks").join("f")).is_ok(),
             ),
@@ -1458,7 +1440,8 @@ mod tests {
     }
 
     /// A VM process confined by Landlock reads and writes its paths and nothing else, makes
-    /// sockets only where it may, moves nothing from one directory to another, has no TCP,
+    /// no socket and removes its vsock socket alone, moves nothing from one directory to
+    /// another, has no TCP,
     /// and is refused a rule for a path not there (D30, PM M66). shards runs no VM on a
     /// kernel without ABI v5, and this test fails on one.
     /// In a child process (this test binary, told by `CONFINED_TERMINAL_CHILD`): a
@@ -1541,6 +1524,8 @@ mod tests {
         }
         std::fs::write(dir.join("granted"), b"g").unwrap();
         std::fs::write(dir.join("other"), b"o").unwrap();
+        // A vsock socket its spawner bound, left for it to remove.
+        drop(std::os::unix::net::UnixListener::bind(dir.join("socks").join("v")).unwrap());
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -1568,7 +1553,8 @@ mod tests {
             "write other: refused",
             "read etc: refused",
             "tcp: refused",
-            "socket in socks: ok",
+            "socket in socks: refused",
+            "remove in socks: ok",
             "socket in out: refused",
             "file in socks: refused",
             "move out of out: refused",
@@ -1604,12 +1590,21 @@ mod tests {
         }
     }
 
+    /// The signals a test's thread blocks for its life.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Blocks {
+        Nothing,
+        /// Every one but SIGSYS and SIGSEGV, as Mesa's threads (src/util/u_thread.c).
+        AsMesa,
+        Everything,
+    }
+
     /// A thread started before its process is confined, which on each word it is sent
     /// tries what it names and says whether it could. `deaf` blocks every signal first, as
     /// Mesa's threads do (u_thread_create).
     fn sibling(
         dir: std::path::PathBuf,
-        deaf: bool,
+        blocks: Blocks,
     ) -> (
         std::sync::mpsc::Sender<&'static str>,
         std::sync::mpsc::Receiver<bool>,
@@ -1617,12 +1612,16 @@ mod tests {
         let (ask, asked) = std::sync::mpsc::channel::<&'static str>();
         let (tell, told) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            if deaf {
+            if blocks != Blocks::Nothing {
                 // SAFETY: sigset operations on a local set; pthread_sigmask on this thread.
                 unsafe {
-                    let mut all: libc::sigset_t = std::mem::zeroed();
-                    libc::sigfillset(&mut all);
-                    libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigfillset(&mut set);
+                    if blocks == Blocks::AsMesa {
+                        libc::sigdelset(&mut set, libc::SIGSYS);
+                        libc::sigdelset(&mut set, libc::SIGSEGV);
+                    }
+                    libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
                 }
                 let _ = tell.send(true);
             }
@@ -1673,7 +1672,7 @@ mod tests {
                 _ => landlock(paths),
             }
         };
-        let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), false)).collect();
+        let mut siblings: Vec<_> = (0..3).map(|_| sibling(dir.clone(), Blocks::Nothing)).collect();
         // Under the filter of a host whose ABI asks each thread (v5), as a VM there is.
         if reach == "asked" {
             confine_as(5).unwrap();
@@ -1697,7 +1696,12 @@ mod tests {
             "siblings read other: {}\n",
             tries(&siblings, "read other")
         ));
-        siblings.push(sibling(dir.clone(), false));
+        siblings.push(sibling(dir.clone(), Blocks::Nothing));
+        // And one as Mesa's start, before the seal: every signal blocked but SIGSYS and
+        // SIGSEGV (u_thread_create), as a GPU's VM process has.
+        let (ask, told) = sibling(dir.clone(), Blocks::AsMesa);
+        told.recv().unwrap();
+        siblings.push((ask, told));
         out.push_str(&format!(
             "siblings write snap: {}\n",
             tries(&siblings, "write snap")
@@ -1725,7 +1729,7 @@ mod tests {
             read: vec![dir.join("granted")],
             ..Paths::default()
         };
-        let (ask, told) = sibling(dir.clone(), true);
+        let (ask, told) = sibling(dir.clone(), Blocks::Everything);
         // Its signals blocked.
         told.recv().unwrap();
         // SAFETY: prctl(2) with integer arguments.
@@ -1780,10 +1784,10 @@ mod tests {
             for line in [
                 "first: Ok(())",
                 "siblings read other: refused,refused,refused\n",
-                "siblings write snap: ok,ok,ok,ok\n",
+                "siblings write snap: ok,ok,ok,ok,ok\n",
                 "sealed: Ok(())",
-                "sealed siblings write snap: refused,refused,refused,refused\n",
-                "sealed siblings write out: ok,ok,ok,ok\n",
+                "sealed siblings write snap: refused,refused,refused,refused,refused\n",
+                "sealed siblings write out: ok,ok,ok,ok,ok\n",
             ] {
                 assert!(said.contains(line), "{reach}: {line}\n{said}\n{err}");
             }
@@ -1855,7 +1859,7 @@ mod tests {
         let _beside = std::os::unix::net::UnixListener::bind(dir.join("socks").join("v_5")).unwrap();
         let mut out = format!("filter: {:?}\n", confine());
         if layers.contains("seccomp") {
-            out.push_str(&format!("seccomp: {:?}\n", sockets(&paths)));
+            out.push_str(&format!("seccomp: {:?}\n", sockets()));
         }
         if layers.contains("landlock") {
             out.push_str(&format!("landlock: {:?}\n", landlock(&paths)));
@@ -1874,50 +1878,29 @@ mod tests {
         end(0)
     }
 
-    /// A VM given no directory of sockets dials none, its user's daemon's Engine API among
-    /// them: refused by its seccomp layer on every kernel, and by Landlock's v9 too; one
-    /// given a vsock path dials beside it alone where Landlock's ABI governs dials (v9); a
+    /// A confined VM dials no socket file of its user's, its daemon's Engine API among
+    /// them, whether or not it was given a vsock path, beside which its spawner dials for
+    /// it: refused by its seccomp layer on every kernel, and by Landlock's v9 rules too; a
     /// datagram socket, which could send to any, is never made (platform-02).
     #[test]
     fn a_confined_vm_dials_only_beside_its_vsock_path() {
         if let (Ok(dir), Ok(layers)) = (std::env::var("SOCKETS_CHILD"), std::env::var("SOCKETS_LAYERS")) {
             sockets_child(&dir, &layers);
         }
-        let abi = {
-            // SAFETY: landlock_create_ruleset(2) asking only the ABI's version.
-            unsafe {
-                libc::syscall(
-                    libc::SYS_landlock_create_ruleset,
-                    std::ptr::null::<u8>(),
-                    0usize,
-                    1u32,
-                )
-            }
-        };
         let refused = format!("refused {}", libc::EACCES);
-        let unix_rules = abi >= 9;
+        let refused = Some(refused.as_str());
+        // The seccomp layer alone, as on a kernel before v9, and everything, as a VM is
+        // confined: a datagram socket ends it.
         let mut cases = vec![
-            // The seccomp layer alone: no directory, no dial; a datagram socket ends it.
-            ("seccomp", Some(refused.as_str()), Some(refused.as_str()), true),
-            ("seccomp socks", Some("ok"), Some("ok"), true),
-            // Everything, as a VM is confined.
-            (
-                "seccomp landlock",
-                Some(refused.as_str()),
-                Some(refused.as_str()),
-                true,
-            ),
-            (
-                "seccomp landlock socks",
-                if unix_rules { Some(refused.as_str()) } else { None },
-                Some("ok"),
-                true,
-            ),
+            ("seccomp", refused, refused, true),
+            ("seccomp socks", refused, refused, true),
+            ("seccomp landlock", refused, refused, true),
+            ("seccomp landlock socks", refused, refused, true),
         ];
-        if unix_rules {
-            // Landlock's rules alone (v9).
-            cases.push(("landlock", Some(refused.as_str()), Some(refused.as_str()), false));
-            cases.push(("landlock socks", Some(refused.as_str()), Some("ok"), false));
+        if landlock_abi() >= 9 {
+            // Landlock's rules alone (v9), its extra layer.
+            cases.push(("landlock", refused, refused, false));
+            cases.push(("landlock socks", refused, refused, false));
         }
         let test = "confine::tests::a_confined_vm_dials_only_beside_its_vsock_path";
         for (layers, outside, beside, datagram_refused) in cases {

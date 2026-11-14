@@ -103,17 +103,25 @@ const USAGE: &str = "usage: shards configure disk [--build-cache-reserve N%|SIZE
     (default 1g)
   --reset: every setting back to its default";
 
+/// The settings' file in the home, and the lock its writers hold (D186).
+const NAME: &str = "disk";
+const LOCK: &str = "disk.lock";
+
 fn path(home: &Path) -> PathBuf {
-    home.join("disk")
+    home.join(NAME)
 }
 
 /// The settings `home` keeps: none where its file is not there.
 pub fn read(home: &Path) -> Result<Settings, String> {
     let file = path(home);
-    let text = match std::fs::read_to_string(&file) {
+    let fail = |e: std::io::Error| format!("{}: {e}", file.display());
+    // Its newest version: Windows' writes land versions beside it (platform `write_in`).
+    let opened =
+        shards_vmm::platform::open_dir(home).and_then(|dir| shards_vmm::platform::open_newest_in(&dir, NAME));
+    let text = match opened.and_then(std::io::read_to_string) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
-        Err(e) => return Err(format!("{}: {e}", file.display())),
+        Err(e) => return Err(fail(e)),
     };
     let mut settings = Settings::default();
     for (n, line) in text.lines().enumerate() {
@@ -132,17 +140,43 @@ pub fn read(home: &Path) -> Result<Settings, String> {
     Ok(settings)
 }
 
-/// Writes `settings` to `home`'s file whole, as a new file renamed over the last, so that
-/// a reader finds the one or the other.
+/// Writes `settings` to `home`'s file whole, from a staging file of this writer's own,
+/// synced and renamed over the last (platform `write_in`), so that a reader finds the one
+/// or the other and no other writer's staging is touched.
 fn write(home: &Path, settings: &Settings) -> Result<(), String> {
     let file = path(home);
-    let new = home.join(".disk.new");
     let mut text = String::from("# shards configure disk: what shards keeps on disk (D186)\n");
     for (name, value) in settings.set_ones() {
         text.push_str(&format!("{name} {value}\n"));
     }
-    std::fs::write(&new, text).map_err(|e| format!("{}: {e}", new.display()))?;
-    std::fs::rename(&new, &file).map_err(|e| format!("{}: {e}", file.display()))
+    let fail = |e: std::io::Error| format!("{}: {e}", file.display());
+    let dir = shards_vmm::platform::open_dir(home).map_err(fail)?;
+    shards_vmm::platform::write_in(&dir, NAME, text.as_bytes()).map_err(fail)
+}
+
+/// Applies `given`, settings in order (`None` a reset), to what `home` keeps, as one
+/// transaction: the file is reread, changed and written under the home's settings lock, so
+/// that of two commands neither writes over what the other kept from a stale read. The
+/// lock is a stable file of its own, as the settings' file is replaced; it is unlocked
+/// before it closes (PM M244).
+fn update(home: &Path, given: &[Option<(&str, &str)>]) -> Result<Settings, String> {
+    if given.is_empty() {
+        return read(home);
+    }
+    let lock = home.join(LOCK);
+    let _writing =
+        shards_image::store::Locked::exclusive(&lock).map_err(|e| format!("{}: {e}", lock.display()))?;
+    // A reset sets aside what was there, which then need not read.
+    let last_reset = given.iter().rposition(Option::is_none);
+    let mut settings = match last_reset {
+        Some(_) => Settings::default(),
+        None => read(home)?,
+    };
+    for (name, value) in given.iter().skip(last_reset.map_or(0, |at| at + 1)).flatten() {
+        settings.set(name, value)?;
+    }
+    write(home, &settings)?;
+    Ok(settings)
 }
 
 impl Settings {
@@ -253,18 +287,7 @@ pub fn command(args: impl Iterator<Item = std::ffi::OsString>) -> ExitCode {
             given.push(Some((name, value)));
         }
         let home = shards_ipc::home()?;
-        // A reset sets aside what was there, which then need not read.
-        let last_reset = given.iter().rposition(Option::is_none);
-        let mut settings = match last_reset {
-            Some(_) => Settings::default(),
-            None => read(&home)?,
-        };
-        for (name, value) in given.iter().skip(last_reset.map_or(0, |at| at + 1)).flatten() {
-            settings.set(name, value)?;
-        }
-        if !given.is_empty() {
-            write(&home, &settings)?;
-        }
+        let settings = update(&home, &given)?;
         // The build cache collected by its new bounds at the next build.
         if given
             .iter()
@@ -325,6 +348,46 @@ fn failed(why: &str) -> ExitCode {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Two commands' updates of different settings both stay: the later reads the file
+    /// only once the earlier, holding the settings lock, has written its own (runs-09).
+    #[test]
+    fn concurrent_settings_updates_keep_each_others_fields() {
+        let home = shards_testdir::TempDir::new("disk-race").unwrap();
+        let mut earlier = Settings::default();
+        earlier.set("log-history", "1m").unwrap();
+        write(&home, &earlier).unwrap();
+        // Another command's transaction, under way: it holds the lock while it writes.
+        let held = shards_image::store::Locked::exclusive(&home.join(LOCK)).unwrap();
+        let (send, done) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| send.send(update(&home, &[Some(("log-history", "4m"))])).unwrap());
+            // Unfixed, the update reads, changes and writes at once; the other command's
+            // write from its own read then drops it.
+            let early = done.recv_timeout(std::time::Duration::from_secs(1));
+            earlier.set("events-history", "2m").unwrap();
+            write(&home, &earlier).unwrap();
+            drop(held);
+            early.or_else(|_| done.recv()).unwrap().unwrap();
+        });
+        let kept = read(&home).unwrap();
+        assert_eq!(kept.log_history, Some(4 << 20));
+        assert_eq!(kept.events_history, Some(2 << 20));
+    }
+
+    /// A write stages its bytes in a file of its own: another writer's staging is neither
+    /// truncated nor published by it (runs-09).
+    #[test]
+    fn settings_publication_leaves_another_writers_staging_file_alone() {
+        let home = shards_testdir::TempDir::new("disk-stage").unwrap();
+        let other = home.join(".disk.new");
+        std::fs::write(&other, b"another writer's bytes").unwrap();
+        let mut settings = Settings::default();
+        settings.set("log-history", "4m").unwrap();
+        write(&home, &settings).unwrap();
+        assert_eq!(std::fs::read(&other).unwrap(), b"another writer's bytes");
+        assert_eq!(read(&home).unwrap().log_history, Some(4 << 20));
+    }
 
     /// A setting reads back as written, one not set is its default, and a log's history
     /// becomes equal segments of at most 20 MiB, two at least, that hold no more than it.
