@@ -2121,6 +2121,54 @@ mod tests {
         assert_eq!(*rooms.lock().unwrap(), [Some(128 * MIB as i64), None, Some(-5)]);
     }
 
+    #[test]
+    fn a_give_back_room_past_signed_decimal_ends_before_reading_payload() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(&guest, || Ok((0, 0)), |_| Ok(None));
+                ended.send(()).unwrap();
+            });
+            let len = u32::try_from(i64::MIN.to_string().len() + 1).unwrap();
+            (&host).write_all(&run::header(kind::ROOM, len)).unwrap();
+            let gone = end.recv_timeout(Duration::from_secs(1));
+            // Close a mutant's waiting payload read before asserting/joining.
+            host.shutdown(std::net::Shutdown::Both).unwrap();
+            gone.expect("an impossible ROOM length kept the answerer waiting for its payload");
+        });
+    }
+
+    #[test]
+    fn a_give_back_room_accepts_both_signed_decimal_extremes() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let rooms = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(
+                    &guest,
+                    || Ok((0, 0)),
+                    |room| {
+                        rooms.lock().unwrap().push(room);
+                        Ok(None)
+                    },
+                )
+            });
+            let _shut = Shut(&host);
+            for value in [i64::MIN, i64::MAX] {
+                let payload = value.to_string();
+                (&host)
+                    .write_all(&run::header(kind::ROOM, payload.len() as u32))
+                    .unwrap();
+                (&host).write_all(payload.as_bytes()).unwrap();
+                assert_eq!(heard(&host), (kind::HELD, String::new()));
+            }
+        });
+        assert_eq!(*rooms.lock().unwrap(), [Some(i64::MIN), Some(i64::MAX)]);
+    }
+
     /// A frame longer than any its host sends ends the connection, unread and unanswered,
     /// rather than have its answerer hold it.
     #[test]
