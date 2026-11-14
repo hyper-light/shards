@@ -9099,6 +9099,40 @@ daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
   client path's added cost (an flock pair, a FIFO's open and write) by
   `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
 
+- *`TAKEOVER` (20 s, picked)*, after which a daemon waiting for its home's lock stepped aside
+  as if another served, is gone: it waits while the lock's holder lives (`take_lock`). A lock
+  held is a holder that lives: flock(2) and LockFileEx are let go of by the OS as their
+  holder's last descriptor closes, at its end, so the lock is the holder's life with no ID to
+  misread and no gap. Its identity is the home's `daemon.pid` (`Named`, `PID START`), which a
+  daemon writes right after it takes the lock and before it makes its slots' lists; not the
+  lock's own file, as the runs-fixes design first had it: std's `File::try_lock` on Windows is
+  LockFileEx over the whole file (offset 0, length `u64::MAX`), and a region locked so "denies
+  all other processes both read and write access" (LockFileEx's documentation), so no waiter
+  could read a name there. A `daemon.pid` that names no living process (one a crashed daemon
+  left, or none) while the lock is held is a holder between its lock and its name: followed by
+  its lock alone, and judged anew once named.
+  - Judged by D215's judge once the host has shown a start: each daemon keeps, as it makes its
+    slots' lists, how long it took from its lock (`ends::End::Start`, the home's `ends`
+    record's `start MS`, the slowest kept, as `ends.rs` keeps its other ends). A waiter looks
+    at the named holder one slice (that slowest start) after it first sees it named, and each
+    slice after while it goes on (`ends::Followed::goes_on`: any CPU, memory its host frees,
+    or its host holding it); one that has gone on with nothing for a whole slice is refused,
+    typed (`HolderStalled`: its process and the slice), the waiter's starter and so its client
+    told. Cold, a home with no start kept: the lock alone, however long. A holder ending its
+    runs (`shards_ipc::exiting`) is not judged: its runs' stop timeouts bound it, as before.
+  - No home is taken, and no wait given up, on a clock. A waiter that gives up takes nothing:
+    its client then waits on the holder itself (`ask_slot`, while `daemon.pid` lives), as
+    before.
+  Red: `a_daemon_waits_for_its_homes_lock_while_its_holder_lives` by mutation restoring the
+  20 s (it stepped aside at 20 s while its holder lived; green, it took the home as the lock
+  was let go, after 21 s); `a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused`
+  by mutation never refusing (a sleep named as the holder was waited for on). Still picked,
+  owed: the 10 ms between the waiter's looks at the lock and the lists (D222's row: a blocking
+  `File::lock` on a helper thread and a watch of `requests/`). Owed to ROOT: a start's lock to
+  lists on HVF, KVM and WHP hosts, loaded and quiet, from the `start` lines the home's `ends`
+  keeps, and two daemons started at once on each (`cargo test -p shards --profile test-release
+  --test daemon`).
+
 Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
 unanswered), `a_requests_wait_is_learned_from_its_clients`,
 `a_client_no_descriptor_is_left_for_is_refused_with_the_spare`,
@@ -12436,6 +12470,32 @@ CPU in 17.694042ms".
   harness binary (r42, the test's first form): its 27 others passed, 3 ignored; clippy of shards (`--all-targets -D warnings`) clean.
   Owed (ROOT): `cargo test -p shards --profile test-release --test moved --
   --test-threads=1` on HVF and KVM.
+- *The old kind's record.* The closure's kind (moved.rs:629:9's `STREAM` record under
+  `target/judge-records`) is read by no wait now: no code reads a kept record of an old
+  kind, and each new site starts cold. The file is inert test-target data; it may be
+  deleted, and no migration is needed.
+- *Not reproduced: a build's refusal in nesting.rs* (HVF, adas-mac-studio.local, main
+  f8f303ae7, `--test-threads=1`, beside other work on that Mac):
+  `a_deadline_given_through_shards_api_is_met_or_said_passed` panicked at nesting.rs:147:14 (`Home::build`'s
+  `shards build image -q -t nesting:1 …`), "made no progress for 731.985502ms, past the
+  slowest answer of its kind seen on this host (389.415459ms), 790.740459ms into its
+  wait". Its account (party, last progress, hold) was not kept. Run again at f8f303ae7
+  with the same warm target, `cargo test -p shards --profile test-release --test nesting
+  -- --test-threads=1`, 20 times beside a cold `cargo build -p shards --profile
+  test-release --tests` of a separate clone (kiln r106, every run's output kept in
+  adas-mac-studio.local:~/g121-tmp/moved-judge-diag/runs): 20 of 20 green, no refusal; and
+  twice unfiltered, side by side: green. The judge is unchanged for it (R09). Two
+  candidates, unconfirmed:
+  - *A party gap in code.* `common::served()`'s registry is threads of the test process
+    (`registry_serving_at`), and a judged command's party is its client, its home's daemon
+    and their descendants by parent, never the test process: a build or pull from it
+    waits on work no party counts. Each request also clones the whole image (manifest and
+    every blob) under one `Mutex` (`image.lock().unwrap().clone()`), so a request waits
+    on others' clones. This gap is real whether or not it caused this refusal.
+  - *Disk I/O with no CPU.* A daemon blocked in an APFS write or fsync runs no CPU, and
+    D215's look does not find it `Held` (runnable on no CPU, or stalled on memory).
+  Owed (ROOT): that command looped on HVF until a refusal, its whole account kept (the
+  "--- its wait" block, stdout/stderr and its process dump).
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -20078,7 +20138,7 @@ were excluded by the review.
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
 | `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
-| `TAKEOVER` 20 s (daemon.rs `take_lock`) | picked | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
+| `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
 | 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |

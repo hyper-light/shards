@@ -1,0 +1,14 @@
+# runs-11 TAKEOVER red: adas-mac-studio-3.local (macOS arm64), kiln run; each mutant one commit
+# over b1a8f0800 (not landed).
+## Mutant 1 (4eeae67cc): TAKEOVER's 20 s put back (a deadline 20 s after the first look,
+## renewed while the holder is exiting, then Ok(None)).
+$ cargo test -p shards --bin shards -- disk::tests::settings_read_back daemon::tests::a_daemon_waits_for_its_homes_lock daemon::tests::a_starting_holder
+test daemon::tests::a_daemon_waits_for_its_homes_lock_while_its_holder_lives ... FAILED
+thread 'daemon::tests::a_daemon_waits_for_its_homes_lock_while_its_holder_lives' panicked at crates/shards/src/daemon.rs:11845:13:
+it stopped waiting for a holder that lives: Ok(Ok(None))
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 956 filtered out; finished in 20.04s
+## Mutant 2 (7ec48bdd2): the holder's stall never refused (goes_on's verdict ignored).
+test daemon::tests::a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused ... FAILED
+thread 'daemon::tests::a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused' panicked at crates/shards/src/daemon.rs:11875:35:
+a stalled holder was waited for on: Timeout
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 956 filtered out; finished in 21.16s
