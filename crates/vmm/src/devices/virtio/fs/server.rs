@@ -3250,19 +3250,22 @@ mod tests {
         (p, server)
     }
 
-    fn refused_reply_holds(opcode: u32) {
+    fn reply_holds(s: &Server) -> (usize, u64, usize, usize, usize) {
+        let state = s.state.lock().unwrap();
+        (
+            state.nodes.len(),
+            state.nodes.values().map(|n| n.lookups).sum::<u64>(),
+            state.handles.len(),
+            state.fds.open.len(),
+            state.pins.len(),
+        )
+    }
+
+    fn refused_reply_holds(opcode: u32, delivery: Option<(u64, u32)>) {
         let (p, s) = dir();
-        let held = || {
-            let state = s.state.lock().unwrap();
-            (
-                state.nodes.len(),
-                state.nodes.values().map(|n| n.lookups).sum::<u64>(),
-                state.handles.len(),
-                state.fds.open.len(),
-                state.pins.len(),
-            )
-        };
-        let before = held();
+        const BASE: u64 = 0x10000;
+        let mem = crate::memory::GuestMemory::anonymous(&[(BASE, 0x10000)]).unwrap();
+        let before = reply_holds(&s);
         #[cfg(unix)]
         let (served, device) = super::super::Stream::pair().unwrap();
         #[cfg(windows)]
@@ -3287,25 +3290,135 @@ mod tests {
                 };
                 let request = req(opcode, ROOT, 0, &body);
                 let mut reply = Vec::new();
-                assert!(slot.ask_into(&request, &mut reply).unwrap());
-                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
-                assert!(slot.refuse(&request, &mut reply));
-                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), -EIO);
+                if let Some((addr, len)) = delivery {
+                    use super::super::super::queue::{Chain, Descriptor};
+                    mem.access().unwrap().write(BASE, &request).unwrap();
+                    let chain = Chain {
+                        head: 0,
+                        descriptors: vec![
+                            Descriptor {
+                                addr: BASE,
+                                len: request.len() as u32,
+                                writable: false,
+                            },
+                            Descriptor {
+                                addr,
+                                len,
+                                writable: true,
+                            },
+                        ],
+                    };
+                    let written = super::super::serve_with(
+                        &chain,
+                        &mem,
+                        &slot,
+                        None,
+                        None,
+                        &mut super::super::Buffers::default(),
+                    );
+                    assert_eq!(written, if addr == BASE + 0x1000 { 16 } else { 0 });
+                } else {
+                    assert!(slot.ask_into(&request, &mut reply).unwrap());
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                    assert!(slot.refuse(&request, &mut reply));
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), -EIO);
+                }
             }
             drop(slot);
             worker.join().unwrap();
         });
-        assert_eq!(held(), before, "a refused reply left server resources held");
+        assert_eq!(
+            reply_holds(&s),
+            before,
+            "a refused reply left server resources held"
+        );
     }
 
     #[test]
     fn refused_lookups_leave_the_held_count_unchanged() {
-        refused_reply_holds(op::LOOKUP);
+        refused_reply_holds(op::LOOKUP, None);
     }
 
     #[test]
     fn refused_creates_leave_the_held_count_unchanged() {
-        refused_reply_holds(op::CREATE);
+        refused_reply_holds(op::CREATE, None);
+    }
+
+    #[test]
+    fn replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held() {
+        for opcode in [op::LOOKUP, op::CREATE] {
+            for buffer in [(0x11000, 16), (0x20000, 4096)] {
+                refused_reply_holds(opcode, Some(buffer));
+            }
+        }
+    }
+
+    #[test]
+    fn refusing_an_open_preserves_the_guests_earlier_node_handle_and_pin() {
+        let (_p, s) = dir();
+        let (node, fh) = create(&s, ROOT, "kept", 2, 0o644);
+        assert_eq!(write(&s, node, fh, 0, b"kept"), 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("kept"))).0, 0);
+        let before = reply_holds(&s);
+        assert_eq!(before.4, 1, "the original handle's unlinked file is pinned");
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            let request = req(op::OPEN, node, 0, &[0; 8]);
+            for _ in 0..8 {
+                let mut reply = Vec::new();
+                assert!(slot.ask_into(&request, &mut reply).unwrap());
+                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                assert!(slot.refuse(&request, &mut reply));
+                // Refusing an already failed reply must acquire or release nothing.
+                assert!(slot.refuse(&request, &mut reply));
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(reply_holds(&s), before);
+        assert_eq!(read(&s, node, fh, 0, 4), (0, b"kept".to_vec()));
+    }
+
+    #[test]
+    fn refused_directory_replies_release_their_entries_and_new_handle_only() {
+        let (p, s) = dir();
+        for n in ["a", "b", "c"] {
+            std::fs::write(p.join(n), n).unwrap();
+        }
+        let request = req(op::OPENDIR, ROOT, 0, &[0; 8]);
+        let (_, opened) = answer(&s, &request);
+        let fh = u64::from_le_bytes(opened[..8].try_into().unwrap());
+        let before = reply_holds(&s);
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            for _ in 0..8 {
+                for request in [
+                    request.clone(),
+                    req(op::READDIRPLUS, ROOT, 0, &readdir(fh, 0, 4096)),
+                ] {
+                    let mut reply = Vec::new();
+                    assert!(slot.ask_into(&request, &mut reply).unwrap());
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                    assert!(slot.refuse(&request, &mut reply));
+                }
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(reply_holds(&s), before);
+        assert_eq!(answer(&s, &req(op::READDIR, ROOT, 0, &readdir(fh, 0, 4096))).0, 0);
     }
 
     /// A directory's handle, as a share's root is opened: on Windows with backup semantics,

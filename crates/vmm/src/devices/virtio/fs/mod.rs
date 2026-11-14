@@ -244,10 +244,153 @@ impl Slot {
         let Some(refused) = proto::unfollowed(req) else {
             return false;
         };
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let released = conn
+            .as_mut()
+            .ok_or_else(|| Unreleased::Transport(io::ErrorKind::NotConnected.into()))
+            .and_then(|conn| release_reply(conn, req, reply));
+        if let Err(why) = released {
+            debug!("virtio-fs: its refused reply's resources: {why}");
+            // A partial cleanup exchange cannot be followed by another request.
+            *conn = None;
+        }
         reply.clear();
         reply.extend_from_slice(&refused);
         true
     }
+}
+
+#[derive(Debug)]
+enum Unreleased {
+    Transport(io::Error),
+    Refused { opcode: u32, errno: i32 },
+    Malformed,
+}
+
+impl From<io::Error> for Unreleased {
+    fn from(why: io::Error) -> Self {
+        Self::Transport(why)
+    }
+}
+
+impl std::fmt::Display for Unreleased {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(why) => write!(f, "its server connection: {why}"),
+            Self::Refused { opcode, errno } => write!(f, "FUSE {opcode} refused: errno {errno}"),
+            Self::Malformed => f.write_str("a malformed cleanup reply or request"),
+        }
+    }
+}
+
+/// Retires only what this successful reply acquired, which the guest will never know.
+/// RELEASE precedes FORGET, as Linux's fuse_create_open failure path does. These are
+/// ordinary FUSE requests, also understood by a share served outside this process.
+fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unreleased> {
+    let word = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at..at.checked_add(4)?)?
+            .try_into()
+            .ok()
+            .map(u32::from_le_bytes)
+    };
+    let long = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at..at.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+    };
+    if word(reply, 4).ok_or(Unreleased::Malformed)? != 0 {
+        return Ok(());
+    }
+    let header = req.get(..proto::IN_HEADER_BYTES).ok_or(Unreleased::Malformed)?;
+    let opcode = word(header, 4).ok_or(Unreleased::Malformed)?;
+    let node = long(header, 16).ok_or(Unreleased::Malformed)?;
+    let mut request = [0u8; proto::IN_HEADER_BYTES + proto::RELEASE_IN_BYTES];
+    request
+        .get_mut(..proto::IN_HEADER_BYTES)
+        .ok_or(Unreleased::Malformed)?
+        .copy_from_slice(header);
+    // The copied caller and unique stay; this request carries no header extensions.
+    request.get_mut(36..40).ok_or(Unreleased::Malformed)?.fill(0);
+    let mut send = |opcode: u32, node: u64, body: &[u8]| -> Result<(), Unreleased> {
+        let len = proto::IN_HEADER_BYTES
+            .checked_add(body.len())
+            .ok_or(Unreleased::Malformed)?;
+        let request = request.get_mut(..len).ok_or(Unreleased::Malformed)?;
+        let length = u32::try_from(len).map_err(|_| Unreleased::Malformed)?;
+        request
+            .get_mut(..4)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&length.to_le_bytes());
+        request
+            .get_mut(4..8)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&opcode.to_le_bytes());
+        request
+            .get_mut(16..24)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&node.to_le_bytes());
+        request
+            .get_mut(proto::IN_HEADER_BYTES..)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(body);
+        write_frame(conn, request)?;
+        let mut length = [0u8; 4];
+        conn.read_exact(&mut length)?;
+        let len = u32::from_le_bytes(length) as usize;
+        if opcode == proto::op::FORGET {
+            return if len == 0 {
+                Ok(())
+            } else {
+                Err(Unreleased::Malformed)
+            };
+        }
+        if len != proto::OUT_HEADER_BYTES {
+            return Err(Unreleased::Malformed);
+        }
+        let mut answer = [0u8; proto::OUT_HEADER_BYTES];
+        conn.read_exact(&mut answer)?;
+        let errno = word(&answer, 4).ok_or(Unreleased::Malformed)? as i32;
+        if errno != 0 {
+            return Err(Unreleased::Refused { opcode, errno });
+        }
+        Ok(())
+    };
+    use proto::op::{CREATE, OPEN, OPENDIR, RELEASE, RELEASEDIR};
+    let handle = match opcode {
+        CREATE => Some((
+            RELEASE,
+            long(reply, proto::OUT_HEADER_BYTES).ok_or(Unreleased::Malformed)?,
+            proto::OUT_HEADER_BYTES + proto::ENTRY_OUT_BYTES,
+        )),
+        OPEN => Some((RELEASE, node, proto::OUT_HEADER_BYTES)),
+        OPENDIR => Some((RELEASEDIR, node, proto::OUT_HEADER_BYTES)),
+        _ => None,
+    };
+    if let Some((release, node, at)) = handle {
+        let fh = long(reply, at).ok_or(Unreleased::Malformed)?;
+        let flags = word(req, proto::IN_HEADER_BYTES).ok_or(Unreleased::Malformed)?
+            & !(host::linux::O_CREAT | host::linux::O_EXCL | host::linux::O_TRUNC);
+        let mut body = [0u8; proto::RELEASE_IN_BYTES];
+        body.get_mut(..8)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&fh.to_le_bytes());
+        body.get_mut(8..12)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&flags.to_le_bytes());
+        send(release, node, &body)?;
+    }
+    // A complete request's node comes first in told(); only subsequent entry IDs
+    // acquire lookup references. Each returned entry acquires exactly one.
+    for node in told(req, reply).into_iter().skip(1).filter(|node| *node != 0) {
+        send(proto::op::FORGET, node, &1u64.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
@@ -1013,9 +1156,13 @@ fn serve_with(
     }
     // A reply its device could not write whole where the guest said (device memory whose
     // pages are gone, say): EIO in its place, never a success whose bytes are not there.
-    scatter(chain, mem, reply)
-        .or_else(|_| proto::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
-        .unwrap_or(0)
+    match scatter(chain, mem, reply) {
+        Ok(written) => written,
+        Err(()) => {
+            slot.refuse(req, reply);
+            scatter(chain, mem, reply).unwrap_or(0)
+        }
+    }
 }
 
 /// The node whose file `req` cuts short, if it may: a SETATTR of its size, or an OPEN that
@@ -1057,7 +1204,7 @@ fn scatter(chain: &Chain, mem: &GuestMemory, reply: &[u8]) -> Result<u32, ()> {
         written = written.saturating_add(n as u32);
         rest = tail;
     }
-    Ok(written)
+    if rest.is_empty() { Ok(written) } else { Err(()) }
 }
 
 /// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
@@ -1150,7 +1297,7 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
     // fuse_out_header: len, error, unique; an error tells nothing of an entry.
     const OUT_HEADER: usize = 16;
     // fuse_entry_out: nodeid, generation, entry_valid, attr_valid, their nsecs, fuse_attr.
-    const ENTRY_OUT: usize = 128;
+    const ENTRY_OUT: usize = proto::ENTRY_OUT_BYTES;
     // fuse_dirent: ino, off, namelen, type, then the name, padded to 8 bytes.
     const DIRENT: usize = 24;
     let opcode = word(req, 4).unwrap_or(0);
@@ -1192,7 +1339,7 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
 fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
     // fuse_open_out's open_flags: after fh, past the out header, and a CREATE's entry.
     const OPEN_FLAGS: usize = 16 + 8;
-    const ENTRY_OUT: usize = 128;
+    const ENTRY_OUT: usize = proto::ENTRY_OUT_BYTES;
     const KEEP_CACHE: u32 = 1 << 1;
     let long = |b: &[u8], at: usize| {
         b.get(at..at.checked_add(8)?)
