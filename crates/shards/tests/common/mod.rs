@@ -2382,6 +2382,11 @@ impl Patience {
     pub fn seen(&self) -> shards_api::Seen {
         self.wait.kind.record().seen()
     }
+
+    /// Its wait's account ([`Wait::account`]): what its last look counted as progress.
+    pub fn account(&self) -> String {
+        self.wait.account()
+    }
 }
 
 /// A claim of speed taken out of a test's pass or fail (D209, #77's ruling: a time that no
@@ -2808,6 +2813,9 @@ pub struct Looked {
     pub what: String,
     /// The CPU its processes ran since the look before.
     pub cpu: Duration,
+    /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
+    /// waiter's own clients where its waiter asked the daemon meanwhile ([`Wait::look`]).
+    pub daemon_ran: Option<String>,
 }
 
 impl Party {
@@ -2905,15 +2913,18 @@ impl Party {
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
     /// 2026-11-13); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
-    /// machine of this process's is never gone: its liveness is its caller's.
+    /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
+    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh.
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         let members = self.members();
+        let daemon = self.daemon();
         self.watched.retain(|pid, _| members.contains(pid));
         let mut looked = Looked {
             found: Found::Still,
             what: String::new(),
             cpu: Duration::ZERO,
+            daemon_ran: None,
         };
         if self.said.as_mut().is_some_and(Said::said) {
             looked.found = Found::Progressed;
@@ -2938,6 +2949,9 @@ impl Party {
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             match (found, self.cpu) {
+                (Ok(Found::Progressed), Cpu::Progress) if daemon == Some(pid) => {
+                    looked.daemon_ran = Some(format!("its daemon {pid} ran"));
+                }
                 (Ok(Found::Progressed), Cpu::Progress) if looked.found != Found::Progressed => {
                     looked.found = Found::Progressed;
                     looked.what = format!("process {pid} ran");
@@ -3008,18 +3022,45 @@ pub struct Wait {
     gone: bool,
     /// Its party's CPU since it began.
     work: Duration,
+    /// The clients this thread had begun against its party's home as its judge's window
+    /// began ([`asked_of`]), and whether its daemon ran in the window: its daemon's progress
+    /// only where none began since, as its own clients' work is no progress of its party's.
+    polls: u64,
+    daemon_ran: Option<String>,
     live: Live,
+}
+
+thread_local! {
+    /// The clients each thread began against each home ([`Wait::begin`]): a waiter's own
+    /// asks of its home's daemon, its polls among them.
+    static ASKED: std::cell::RefCell<std::collections::BTreeMap<PathBuf, u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// The clients this thread has begun against `home`, none where it has none.
+fn asked_of(home: Option<&Path>) -> u64 {
+    home.map_or(0, |home| {
+        ASKED.with(|asked| asked.borrow().get(home).copied().unwrap_or(0))
+    })
 }
 
 impl Wait {
     /// A wait beginning now on client `client`'s party, `asked` naming its command.
     pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        if let Some(home) = home {
+            ASKED.with(|asked| {
+                let mut asked = asked.borrow_mut();
+                let n = asked.entry(home.to_path_buf()).or_insert(0);
+                *n = n.saturating_add(1);
+            });
+        }
         Wait::on(kind, Party::client(client, home), asked)
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
     fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
+        let polls = asked_of(party.home.as_deref());
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
@@ -3033,6 +3074,8 @@ impl Wait {
             holding: None,
             gone: false,
             work: Duration::ZERO,
+            polls,
+            daemon_ran: None,
             live: Live::new(),
         }
     }
@@ -3059,6 +3102,9 @@ impl Wait {
         }
         let looked = self.party.look();
         self.work = self.work.saturating_add(looked.cpu);
+        if self.daemon_ran.is_none() {
+            self.daemon_ran = looked.daemon_ran;
+        }
         self.holding = None;
         self.gone = looked.found == Found::Gone;
         match looked.found {
@@ -3074,6 +3120,19 @@ impl Wait {
         }
         let mut judged = Ok(());
         if due.is_some_and(|due| now >= due) {
+            // Its daemon's run is its party's progress only in a window in which this thread
+            // began no client of its home (ROOT's ruling, 2026-11-13, D209). The window and not
+            // the client's span: the daemon's work for a client is not bound to the client's
+            // life, as its slot-maker thread makes slots again as they are taken and let go of
+            // (slots.rs `make_slots`).
+            let polls = asked_of(self.party.home.as_deref());
+            if let Some(ran) = self.daemon_ran.take()
+                && polls == self.polls
+            {
+                self.last = (now, ran.clone());
+                self.progressed.get_or_insert(ran);
+            }
+            self.polls = polls;
             judged = self.judge.found(if self.progressed.take().is_some() {
                 Found::Progressed
             } else if self.held.take().is_some() {

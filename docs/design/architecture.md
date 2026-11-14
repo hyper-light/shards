@@ -10670,6 +10670,36 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     client whose end ends the wait, the party's processes are its liveness. A refusal is
     followed by one look more, so a state that came as its party ended is still seen, and
     then says its account on stderr (call site, party, last progress, hold, record).
+  - *Its progress is its party's own, never its waiter's* (ROOT's ruling, 2026-11-13: "A
+    wait's progress must be the party's own, never work the waiter itself caused"). A waiter
+    that polls its state with a `shards` command (saved.rs' and moved.rs' `until`, build.rs'
+    `ps` polls, containers.rs' `inspect` and `logs` polls) makes its daemon work: each
+    `ps -a -q` cost a daemon that runs no microVM 0.50–0.71 ms of CPU (8 polls of 20–29 ms,
+    adas-mac-studio.local, macOS arm64, kiln r1368), each read by `Party::look` as
+    "process N ran", and 20 ms after each poll it read 0 ns. So a wait on a state that never
+    comes, polled while nothing else works, was never refused. `Wait::begin` (every client
+    `run_command` and `client_output` run) counts the clients each thread begins against each
+    home; `Party::look` says its daemon's own run apart (`Looked::daemon_ran`); and a `Wait`'s
+    judge counts that run as progress only in a window (W*) in which its thread began no
+    client of its home. The window, not the client's span: the daemon's work for a client
+    is not bound to the client's life (its slot-maker thread makes slots again as they are
+    taken and let go of, slots.rs `make_slots`). A poll's work that spills past a window's
+    end buys at most the window after, and only where the waiter polled nothing in it.
+    The daemon's words, its other processes' CPU (a VM's), host holds and the cold start
+    (liveness alone) count as before; no literal is added. A wait on a command
+    (`run_command`'s own) begins its window after its own client is counted, so the
+    daemon's work for it is its progress. Red at 2014d9655 (harness.rs
+    `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy`: a real daemon, no
+    microVM; the kind taught by one poll; then `ps -a -q` polled for a run that never comes,
+    each wait looking once before its first poll), adas-mac-studio.local, kiln r1370: not
+    refused 113.4 ms in, W* 39.4 ms, "its last progress process 28417 ran 15.76 ms ago".
+    Green at 51d949485 there (r1370): refused 78.6 ms in, W* 42.6 ms, its last progress its
+    start; harness.rs 9 passed, 2 ignored. The gaps: a VM's CPU that an `exec` poll makes
+    still counts, as the ruling excludes the daemon's; a thread's count is its own, so a poll
+    made from a helper thread is no poll of the waiter's; and a learned waiter whose first
+    look comes past its W* (its first poll longer than its kind's W*) is refused there, its
+    members found anew at that look and so not judged (seen at c3ecd045d, kiln r1364/r1369,
+    before the test looked once ahead of its first poll).
   - R03: no literal. The old `TIMEOUT`, `CLIENT`, 10 s and 5 s arguments, budget.rs'
     learned start and containers.rs' pace bound go from every call (68 sites); the
     tests' own claims beside them (`each_ends`' pace, daemon.rs' unpatient 5 s probe) stay.

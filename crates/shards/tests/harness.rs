@@ -1,4 +1,5 @@
-//! The test harness's own judgments (`common`), held to stand-ins: no `shards`, no microVM.
+//! The test harness's own judgments (`common`), held to stand-ins and to a daemon that runs no
+//! microVM: no microVM.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -443,4 +444,86 @@ fn a_retry_goes_on_while_what_this_test_started_works() {
         );
         patience.done();
     }
+}
+
+/// [`Patience::of`] at one call site: one kind for every wait made through it.
+fn polled(home: &std::path::Path) -> Patience {
+    Patience::of(home)
+}
+
+/// Stops its home's daemon as it drops, the test's end or its failure.
+struct Served<'a>(&'a [(&'a str, &'a std::ffi::OsStr)]);
+
+impl Drop for Served<'_> {
+    fn drop(&mut self) {
+        let _ = common::run_shards_env(&["stop", "daemon"], &[] as &[&str], self.0);
+    }
+}
+
+/// A wait's progress is its party's own, never what the waiter itself caused: a `Patience`
+/// whose test polls its state with a `shards` command (saved.rs' and moved.rs' `until`,
+/// build.rs' `ps` polls, containers.rs' `inspect` and `logs` polls) does not count the CPU its
+/// home's daemon spends serving those polls as the daemon's progress (ROOT's ruling,
+/// 2026-11-13, D209). Else a wait on a state that never comes, polled while nothing else
+/// works, is never refused, and its job runs to CI's limit. Do: start a daemon that runs no
+/// microVM (`shards ps`, its store none); teach a wait's kind its W* by one poll that finds
+/// its state; then poll `ps -a -q` for a run that never comes, through the same kind's
+/// wait, past its judge's first two looks (2 W* past its start). Expect: refused there.
+#[test]
+fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
+    let home = TempDir::new("polled");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", std::ffi::OsStr::new("none")),
+    ];
+    let ps = || {
+        let run = common::run_shards_env(&["ps"], &["-a", "-q"], &env);
+        assert_eq!(run.status, Some(0), "{run}");
+        run.stdout
+    };
+    // Started as daemon.rs' `start_daemon` starts one, its start no wait of this test's.
+    let started = common::command()
+        .arg("ps")
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let _served = Served(&env);
+    // Each wait looks once before its first poll: a look finds its daemon anew, and only the
+    // looks after judge it (D215), so each poll's work falls between looks that judge it.
+    let mut taught = polled(&home);
+    let _ = taught.holds();
+    ps();
+    taught.done();
+    let shards_api::Seen::Learned { slowest, .. } = polled(&home).seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let mut patience = polled(&home);
+    let began = Instant::now();
+    assert!(patience.holds(), "refused at its start");
+    let refused = loop {
+        assert_eq!(ps().trim(), "", "a run came in a home that runs none");
+        let at = began.elapsed();
+        if !patience.holds() {
+            break true;
+        }
+        // Its judge's looks are due each W* past its start: a look made at 2 W* or later is
+        // past its first two, and the next says a refusal there.
+        if at >= slowest.saturating_mul(2) {
+            break !patience.holds();
+        }
+    };
+    assert!(
+        refused,
+        "a wait polled for a state that never comes, its daemon busy with its polls alone, \
+         not refused {:?} in (W* {slowest:?}): {}\n--- its daemon's log\n{}",
+        began.elapsed(),
+        patience.account(),
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
 }
