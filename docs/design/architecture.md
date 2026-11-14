@@ -25916,7 +25916,10 @@ named a host (D59 part seven); a run's command had D192's.
   on a TCP port that one member reaches by name (a destination, or a remote MCP server), every
   other member granted the port is granted the same names and none a port grant of it; else
   the image is refused, naming both members and what each reaches. Remote MCP servers beside
-  another member's other grants on one port, which passed before, are refused alike.
+  another member's other grants on one port, which passed before, are refused alike. Every
+  member granted the port to any address (the image's port grant alone, or beside a name) is
+  alike there and passes: it reaches any address on the port, so every name on it too, and
+  D246's hold of a narrowed run counts those names as its reach (inithex-02, 2026-11-13).
 - *Orchestrators* keep or drop destinations (`Narrowing.destinations`, D231, channel version
   3), never add one, and may hold each member to its own of those kept (D246, version 12). The
   build labels them (`vnd.osi.agentfile.destinations`) for Docker and Kubernetes; the daemon
@@ -27043,7 +27046,15 @@ and no exec, attach or terminal (the plan's steps 5, 6 and 7).
   after its cleanup; D240's guest-abort allowance stands, the abort said. Before, those bytes and
   the channel's end were dropped (control-01's follow-up; red
   `bytes_held_past_the_room_reach_the_orchestrator_as_the_capture_is_cut`). The typed end
-  reaches the session (`Flow::ended`); `ImageGuest` gives its caller the pipe's EOF alone.
+  reaches the session (`Flow::ended`), and its caller reads it typed
+  (`ImageGuest::wait_channel(member, channel, timeout) -> Option<ChannelEnd>`: `Closed`,
+  `Aborted(errno)`, or `WithRun` where its host's answers ended without it, which ends its pipe
+  as the pump does), kept past the run's end, so that an owner tells its pipe's EOF of a whole
+  channel from a cut one (R04). It waits as `wait_member` does: on the session's one state and
+  its notice, no probe. Before, the pipe's EOF alone (red: none, the method was not there;
+  `image::session::tests::a_channels_end_is_read_as_its_host_told_it` holds it). Why a method
+  of its own rather than with the run's end: a channel ends when its writers do, before its run,
+  and its owner acts on it then, as on a member's end.
 - *Every member's log, within the run's one cap* (goal 58's step 7, slice 3; ROOT's ruling and the
   person's decision, 2026-11-13). The log is the run's: every member's output is kept, owned or not.
   - *Kept whoever reads it.* A drained member's records are kept as the daemon takes them (above);
@@ -28847,9 +28858,14 @@ grants each name who, to whom, which port and which way, so Hex refused every de
   version 11. A request of version 11 is refused by its version, as every older one is.
 - *What a member reaches* (`agentfile::named_reach`): of each member its Agentfile declares,
   its networks' destinations (D236) and its remote MCP servers' (§4.4), as its init lets it
-  out to them; the reading `held` makes (`tcp_reach`). The run host reads it with the
-  Agentfile it holds a run to (`Agentfile::named`). Of those a member reaches the ones kept,
-  destinations and remote MCP servers alike.
+  out to them; the reading `held` makes (`tcp_reach`); and every other name the image grants
+  (any member's destination or remote MCP server) on a TCP port its networks open it to any
+  address (amended 2026-11-13, inithex-02): its init lets it out on that port to any
+  address, and the network process admits a kept name's addresses for whichever member asks
+  them, as it holds no member apart, so the member reaches that name by its address once any
+  member has resolved it. The run host reads it with the Agentfile it holds a run to
+  (`Agentfile::named`). Of those a member reaches the ones kept, destinations and remote MCP
+  servers alike.
 - *Held* (`api_run::held_apart`, before anything starts): every member the image declares,
   named in the request or not, reaches of the names kept exactly its entry's names (sorted,
   each once; a member in no entry, nothing). Else the run is refused as a widening of what was
@@ -28883,6 +28899,14 @@ an agent joining no network, each member's the same read back as the run host re
 let nothing, let more, or let less than a kept remote MCP server, refused as a widening in
 those words; an undeclared member the image's refusal, a second entry the request's; no hold,
 nothing kept, and no Agentfile with no entry pass.
+Through a port grant (inithex-02, red at 9efde7252 and green after, on macOS arm64,
+adas-mac-studio-3): `a_port_grant_reaches_every_name_the_image_grants_on_it` (agentfile: a
+and b both granted 443 to any address, a reaching a provider on 443 by name, c another port
+alone: a and b reach the provider, c nothing; red, b reached nothing) and
+`a_member_granted_a_names_port_is_held_to_that_name` (the run host, the reach derived from
+that Agentfile as `agentfile::agentfile` derives it: 443's grant dropped, the provider kept and
+a alone let it, refused as a widening naming b; both let it, passes; red, accepted). Mutation:
+the port range's lower bound made strict (`lo < port`) fails the first.
 
 **Evidence owed** (ROOT, real VMs: KVM, HVF, WHP).
 `cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`:
@@ -28892,8 +28916,15 @@ provider and the host's service and nothing else, another member none of them: H
 image_grants_real, once Hex vendors this revision.
 
 **What would falsify it.** A member that reaches a kept name its entry does not let it (then
-`named_reach` misses a rule init's netplan follows); a run refused where every member's reach is
-exact (then the narrowing's names and the build's `host:port` are written apart).
+`named_reach` misses a rule init's netplan follows: a port grant to any address was one,
+inithex-02); a run refused where every member's reach is exact (then the narrowing's names and
+the build's `host:port` are written apart).
+
+**Evidence owed for inithex-02** (ROOT, real VMs): the
+`api_image what_the_image_does_not_grant_is_refused_before_boot` run above, and a live twin of
+the finding's fixture: a resolves and dials a controlled provider on 443; b, granted 443 to any
+address and let nothing, dials its known address directly. The request letting b nothing is
+refused before boot; with this guard removed it boots and b's dial connects.
 
 ### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
 
@@ -30579,6 +30610,64 @@ after `vcpu` 3.87 s (boot.rs, its process-holds-guest assertion): both whole 10 
   existing usage and stat tests.
 - *Owed* (ROOT): the real-VM test on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test boot a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`.
+
+**Amended (final use): a run's end carries what its microVM used in all.** The Hex lead's ask
+for kiln's charging: `stats` and `host_use` answer only while a run runs, so a command VM
+whose command exited before kiln deleted it went uncharged (Hex answered `NotRunning`).
+- *When it is read.* In the VM process, in `Running::wait_then`'s `free`: every vCPU thread
+  joined, so past its guest's last instruction, and before the machine's memory and devices
+  drop, which they do as `wait_then` returns. Its vCPUs' times first, then the process's own
+  `platform::process_usage`, as `use_answer` reads a use (D241's order): the process's CPU
+  holds its vCPUs', so `vmm_ns` is never less than none. A later read would see the memory
+  gone; an earlier one, a guest still running.
+- *Each vCPU by its index* (`GuestClocks::whole`, `Handle::whole_guest_times`). A vCPU that
+  leaves reads its clock a last time as before, and now also keeps it under its index
+  (`Clocks::left`, summed over the index's vCPUs, the last leave's `Unread` beside it), so
+  that once all have left the reading is each one's, `departed_ns` 0, its total a sample's.
+  `left` holds one entry an index the machine has had: as many as its vCPUs.
+- *Told* (`shards_ipc` kind `FINAL_USE` = 106, VM → owner): the use's answer as
+  `shards_abi::rate::used` writes it, D260's one form, sent on a handle of the link the VM
+  process keeps for it (`warm::Link::try_clone`), as the process ends. The link closes as the
+  process exits (its relay's handle holds it until then), so its owner reads it before the
+  close. The daemon passes over the kind (its `_` arm); api-run keeps it (`Told::used`).
+- *On the image channel* (VERSION 28): `ENDED` carries `wire::RunEnded { end: RunEnd,
+  final_use: FinalUse }`; `FinalUse::Read(Microvm)`, each part its reading or its words, or
+  `FinalUse::Unread(Unused)`: `NotStarted` (stopped or refused before its microVM started),
+  `Killed` (its VM killed for its orchestrator's asks, `STOP` or their failure, before it told
+  it), `Untold` (its VM, its link or its run host ended without it), `Broken(UseBroken)` (an
+  answer none of the protocol's). Never a zero.
+- *shards-api.* `ImageGuest::wait_for` answers `Option<RunEnded>`; `ImageRefusal::Ended`
+  carries `RunEnded`, so every ask of a run that has ended, `stats` among them, is refused
+  with its final use. `stop` keeps an end seen before it, its final use with it; one that saw
+  none is `Stopped` with `Unused::Killed`. A caller that charges a run whose command has
+  ended awaits its end (`wait_for`) before it stops it: the end comes as the VM's process
+  exits, its final use told, and a stop before that kills it first.
+- *Every end, every backend.* `Exited` and a VM's own `Failed` (`UNSERVED`, a command never
+  started) carry it whenever the machine came down in its process; a VM that crashed tells
+  none (`Untold`); `Stopped` is `Killed`. A run's own command killed by a signal ends
+  `Exited(128 + N)` (init's status byte; `RunEnd` has no `Signaled`, only a member's end
+  does). The read is the backend's own clocks already behind `GUEST_TIME` (KVM's thread stat
+  and CPU clock, #77's amendment; HVF's `hv_vcpu_get_exec_time`; WHP's run-time counter), read
+  on the vCPU's thread as it leaves: no path of a platform's own.
+- *Literals.* 106, the next free `shards_ipc` kind; 28, the next channel version; the
+  `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
+- *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
+  microVM has not started` beside its process's use.
+- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
+  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
+  final use needs a path of its own (owed, below).
+- *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
+  shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
+  `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
+  `a_runs_final_use_is_as_its_vm_told_it_or_typed_by_why_not` (api_run); shards-api
+  `a_runs_end_reads_back_with_its_final_use` (wire) and
+  `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
+  existing end and lease tests over `RunEnded`.
+- *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
+  shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
+  stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
+  time by index, none departed, its process's CPU holding them, and `stats` after it refused
+  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
 
 ## 4. Start path (≤ 5 ms budget)
 

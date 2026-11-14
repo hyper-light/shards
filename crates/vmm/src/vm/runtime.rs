@@ -866,6 +866,13 @@ impl Handle {
     pub fn guest_times(&self) -> GuestTimes {
         self.shared.guest.sample()
     }
+
+    /// What each of its vCPUs ran of its guest in all, by index, those gone among them at
+    /// what they read as they left (D260's final use): read once the machine is down
+    /// ([`Running::wait_then`]'s `free`), after its last guest instruction, it is the whole.
+    pub fn whole_guest_times(&self) -> GuestTimes {
+        self.shared.guest.whole()
+    }
 }
 
 /// Whether extent discovery left every withdrawn mapping available to the guest.
