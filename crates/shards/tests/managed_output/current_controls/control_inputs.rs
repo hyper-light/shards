@@ -23,7 +23,11 @@ impl ControlCase {
             Self::Overdeclared => {
                 bytes.truncate(header);
                 bytes[1..header].copy_from_slice(&u32::MAX.to_be_bytes());
-                assert!(frame::peek(&bytes).is_err());
+                // The wire says its length; the control lane refuses it by its own (remote-08).
+                assert_eq!(
+                    frame::peek(&bytes).unwrap(),
+                    Some((Tag::Stdin, u32::MAX as usize))
+                );
             }
             Self::AckLength => {
                 let short = std::mem::size_of::<u64>().checked_sub(1).unwrap();

@@ -3,8 +3,9 @@
 //! ([`Pressure`]), and at each word of it asks each builder it has to give back what
 //! it holds cold of its files and what it holds plugged past twice what it uses
 //! (build::GIVE_PORT, [`Giver`]): every builder asked at once, one ask out to each at a
-//! time, an answer not come within [`PATIENCE`] said to have had none and that builder
-//! asked again only once it has answered; then, where the build's cgroup is held to a budget
+//! time, an answer not come within the slowest its builders have given (learned here, as
+//! D188 learns its microVMs': none waited for and none judged before the first) said to
+//! have had none and that builder asked again only once it has answered; then, where the build's cgroup is held to a budget
 //! (Linux: a `memory.high` or `memory.max` on it or above it), each builder told its share of
 //! the room the budget leaves (`ROOM`), which it holds its build within, as the daemon tells
 //! its runs theirs (D188): its guest then keeps its own page cache within the budget, where
@@ -17,7 +18,7 @@
 //! for 126 s, and its read after crawled, throttled, 18 minutes); one that leaves them room,
 //! each told its share. What they gave back is said as a pressure begins and then as it has
 //! gone on as long again (`pressure::Saying`), as the daemon says its microVMs'. While a budget holds the build, its builders are told its room again
-//! each pressure window where it has changed: their guests hold the build within what they
+//! where it has changed, looked at on D215's pace (`shards_abi::pace`): their guests hold the build within what they
 //! were last told, past what it used then, and what their host gets back of them outside the
 //! build (memory they unplug, free pages reported late) the build's growth never shows, so
 //! that a build told 44 MiB of room as its builder's unplug of 128 MiB was still under way
@@ -28,7 +29,6 @@
 use std::io;
 use std::sync::OnceLock;
 use std::sync::mpsc;
-#[cfg(target_os = "linux")]
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -36,13 +36,10 @@ use crate::pressure::{Pressure, Saying};
 
 use super::builder::{Answer, Giver};
 
-/// How long builders' answers are waited for at a word of pressure: until the next word
-/// can come, a pressure window on (the window the host's pressure is measured over, which a
-/// pressure that goes on is heard again after: `platform::PRESSURE_WINDOW`). One not come by
-/// then is said to have had none, heard as it comes after ([`late`], looked for once a
-/// window), and its builder asked again only once it has answered: a pass never holds up the
-/// next word's.
-const PATIENCE: Duration = shards_vmm::platform::PRESSURE_WINDOW;
+/// What the build's last pass at its host's word took, from its asks to its answers: what
+/// its host's pressure is learned, and how often one that goes on is said again, from
+/// (`Pressure::acted`, D188). None before the first.
+static ACTED: Mutex<Option<Duration>> = Mutex::new(None);
 /// Where it names a FIFO (on Windows, a named pipe), a build's memory pressure is what is
 /// written to it, each line the host's word that it is short of memory, in place of its
 /// kernel's: so that a test tells it where no unprivileged process may raise the system's
@@ -91,7 +88,9 @@ fn room() -> Option<i64> {
 /// build written, or a builder come, told its budget's room as it started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Woke {
-    Pressure,
+    /// Its host's word, with the most its source says a pressure that goes on waits
+    /// between words ([`Pressure::repeat`]).
+    Pressure(Option<Duration>),
     /// Linux's alone, whose budgets are its cgroups' files.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Budget,
@@ -110,11 +109,16 @@ fn start(plain: bool) -> Option<(mpsc::Sender<Giver>, mpsc::Sender<Woke>)> {
     let come = word.clone();
     std::thread::Builder::new()
         .name("pressure".into())
-        .spawn(
-            move || {
-                while pressure.wait().is_ok() && heard.send(Woke::Pressure).is_ok() {}
-            },
-        )
+        .spawn(move || {
+            loop {
+                if let Some(took) = *ACTED.lock().unwrap_or_else(PoisonError::into_inner) {
+                    pressure.acted(took);
+                }
+                if pressure.wait().is_err() || heard.send(Woke::Pressure(pressure.repeat())).is_err() {
+                    return;
+                }
+            }
+        })
         .ok()?;
     #[cfg(target_os = "linux")]
     watch_budgets(word);
@@ -172,16 +176,25 @@ fn watch_budgets(word: mpsc::Sender<Woke>) {
 }
 
 /// Asks its builders to give back each time its host is short of memory, and as a budget
-/// over the build is written ([`budget_written`]), until neither can be heard; while an
-/// answer is out past its pass's patience, it looks for it once a pressure window
-/// ([`late`]); while a budget holds them, it looks at the room it leaves them once a window
-/// too ([`again`]).
+/// over the build is written ([`budget_written`]), until neither can be heard; each answer
+/// waited for by the slowest its builders have given so far ([`Unsaid::patience`]). While
+/// an answer is out past its pass's patience it looks for it ([`late`]), and while a budget
+/// holds them it looks at the room it leaves them ([`again`]), on D215's pace
+/// (`shards_abi::pace`): `sqrt(2 c w)` of its last such look's own cost and how long it has
+/// had one out or been held, its first look at once (R03; it was a pressure window).
 fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plain: bool) {
     let mut held: Vec<Giver> = Vec::new();
     let mut unsaid = Unsaid::default();
+    let mut waiting: Option<Instant> = None;
+    let mut look = Duration::ZERO;
     loop {
-        let why = if held.iter().any(Giver::awaiting) || unsaid.told.is_some() {
-            match woke.recv_timeout(shards_vmm::platform::PRESSURE_WINDOW) {
+        if held.iter().any(Giver::awaiting) || unsaid.told.is_some() {
+            waiting.get_or_insert_with(Instant::now);
+        } else {
+            waiting = None;
+        }
+        let why = if let Some(since) = waiting {
+            match woke.recv_timeout(shards_abi::pace::pause(look, since.elapsed(), Duration::MAX)) {
                 Ok(why) => Some(why),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -194,9 +207,16 @@ fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plai
         };
         held.extend(givers.try_iter());
         let now = Instant::now();
-        let until = now.checked_add(PATIENCE).unwrap_or(now);
+        let until = now
+            .checked_add(unsaid.patience.unwrap_or_default())
+            .unwrap_or(now);
         let said = match why {
-            Some(Woke::Pressure) => pass(&mut held, &mut unsaid, until, now, &room),
+            Some(Woke::Pressure(repeat)) => {
+                unsaid.repeat = repeat;
+                let said = pass(&mut held, &mut unsaid, until, now, &room);
+                *ACTED.lock().unwrap_or_else(PoisonError::into_inner) = Some(now.elapsed());
+                said
+            }
             Some(Woke::Budget) => budget_written(&mut held, &mut unsaid, until, now, &room),
             // Told its room as it started (`watch`), the room it then had.
             Some(Woke::Builder) => {
@@ -205,8 +225,12 @@ fn watch_words(woke: &mpsc::Receiver<Woke>, givers: &mpsc::Receiver<Giver>, plai
                 }
                 None
             }
-            None => late(&mut held, &mut unsaid, until, now, &room)
-                .or_else(|| again(&mut held, &mut unsaid, until, now, &room)),
+            None => {
+                let said = late(&mut held, &mut unsaid, until, now, &room)
+                    .or_else(|| again(&mut held, &mut unsaid, until, now, &room));
+                look = now.elapsed();
+                said
+            }
         };
         if let (Some(said), true) = (said, plain) {
             use std::io::Write as _;
@@ -249,7 +273,7 @@ fn pass(
 ) -> Option<String> {
     held.retain_mut(|g| g.ask().is_ok());
     unsaid.since.get_or_insert(now);
-    unsaid.saying.heard(now);
+    unsaid.saying.heard(now, unsaid.repeat);
     unsaid.passes += 1;
     held.retain_mut(|g| hear(g, until, unsaid));
     if let Some(r) = room() {
@@ -281,6 +305,7 @@ fn late(
             Ok(Some(answer)) => {
                 came = true;
                 gave |= matches!(answer, Answer::Gave(..));
+                unsaid.learn(g.took());
                 count(unsaid, answer);
                 true
             }
@@ -298,8 +323,8 @@ fn late(
     unsaid.say(now)
 }
 
-/// The room a budget leaves its builders, looked at again a pressure window after it was
-/// last told them, `now`: where it is short, a word of pressure ([`pass`]), as a budget
+/// The room a budget leaves its builders, looked at again on its pace ([`watch_words`]),
+/// `now`: where it is short, a word of pressure ([`pass`]), as a budget
 /// written short is; where it has changed, each builder told its share of it, heard by
 /// `until`. A guest holds its build within what it was last told past what the build used
 /// then, and its host's getting back what it holds outside the build (blocks it unplugs,
@@ -341,15 +366,20 @@ fn tell(held: &mut Vec<Giver>, r: Option<i64>, until: Instant, unsaid: &mut Unsa
 }
 
 /// The answer to `g`'s ask out, counted in `unsaid`, by `until`: whether its builder is
-/// kept, which one whose connection has ended is not.
+/// kept, which one whose connection has ended is not. One not come is counted unanswered
+/// once its builders have taught a patience; before (the cold start), it is judged by
+/// nothing, heard as it comes ([`late`]).
 fn hear(g: &mut Giver, until: Instant, unsaid: &mut Unsaid) -> bool {
     match g.answer(until) {
         Ok(Some(answer)) => {
+            unsaid.learn(g.took());
             count(unsaid, answer);
             true
         }
         Ok(None) => {
-            unsaid.unanswered += 1;
+            if unsaid.patience.is_some() {
+                unsaid.unanswered += 1;
+            }
             true
         }
         Err(_) => false,
@@ -401,9 +431,24 @@ struct Unsaid {
     /// The room a budget left its builders as they were last told it, all of them together:
     /// none where no budget held them. Kept past what is said.
     told: Option<i64>,
+    /// The most its host's source says a pressure that goes on waits between words, as of
+    /// its last word ([`Pressure::repeat`]). Kept past what is said.
+    repeat: Option<Duration>,
+    /// W*, the slowest answer its builders have given, from its ask ([`Giver::took`]): how
+    /// long a pass waits for answers. None before the first (the cold start: none waited
+    /// for, none judged). Kept past what is said.
+    patience: Option<Duration>,
 }
 
 impl Unsaid {
+    /// An answer that took `took` from its ask: the patience rises to it where slower. One
+    /// of no time teaches nothing.
+    fn learn(&mut self, took: Option<Duration>) {
+        if let Some(t) = took.filter(|t| !t.is_zero()) {
+            self.patience = Some(self.patience.map_or(t, |p| p.max(t)));
+        }
+    }
+
     /// What builders gave back since it was last said, where they gave back anything, or
     /// any went unanswered or said why not, as the pressure is due to be said ([`Saying`]);
     /// counted afresh after.
@@ -422,15 +467,16 @@ impl Unsaid {
             self.freed >> 20,
             self.unplugging >> 20,
         );
+        let waited = self.patience.unwrap_or_default();
         if self.passes == 0 {
-            said.push_str(&format!("answering past the {:?} their pass waited", PATIENCE));
+            said.push_str(&format!("answering past the {waited:?} their pass waited"));
         } else {
             said.push_str(&format!("in {} passes over {over:?}", self.passes));
         }
         if self.unanswered > 0 {
             said.push_str(&format!(
-                "; {} asks had no answer within {:?}",
-                self.unanswered, PATIENCE
+                "; {} asks had no answer within {waited:?}",
+                self.unanswered
             ));
         }
         if let Some(why) = &self.why {
@@ -447,6 +493,8 @@ impl Unsaid {
         *self = Unsaid {
             saying,
             told: self.told,
+            repeat: self.repeat,
+            patience: self.patience,
             ..Unsaid::default()
         };
         Some(said)
@@ -468,6 +516,19 @@ mod tests {
     /// The time a pass waits for answers by: 50 ms on.
     fn soon() -> Instant {
         Instant::now() + Duration::from_millis(50)
+    }
+
+    /// A patience its builders taught, and its host's source's repeat, as a build's watcher
+    /// has them once its first answers came.
+    const PATIENCE: Duration = Duration::from_secs(2);
+
+    /// What a build's watcher keeps once its builders have taught it a patience.
+    fn taught() -> Unsaid {
+        Unsaid {
+            patience: Some(PATIENCE),
+            repeat: Some(PATIENCE),
+            ..Unsaid::default()
+        }
     }
 
     /// A giver and the builder's end of its connection, whose reads fail rather than wait
@@ -517,7 +578,7 @@ mod tests {
         let (one, one_end) = builder();
         let (two, two_end) = builder();
         let mut held = vec![one, two];
-        let mut unsaid = Unsaid::default();
+        let mut unsaid = taught();
         let t0 = Instant::now();
         // The first word: one answers in time, the other not.
         gave(&one_end, &format!("{} {}", 30 * MIB, 128 * MIB));
@@ -719,7 +780,11 @@ mod tests {
         };
         let (one, end) = builder();
         let mut held = vec![one];
-        let mut unsaid = Unsaid::default();
+        // Its host's source says a lasting pressure's words come at most 2 s apart.
+        let mut unsaid = Unsaid {
+            repeat: Some(PATIENCE),
+            ..Unsaid::default()
+        };
         let t0 = Instant::now();
         // Its host's word, no budget yet: what little was given back, said.
         gave(&end, &format!("{} 0", MIB / 2));
@@ -764,7 +829,7 @@ mod tests {
         let (late, late_end) = builder();
         let (refusing, refusing_end) = builder();
         let mut held = vec![late, refusing];
-        let mut unsaid = Unsaid::default();
+        let mut unsaid = taught();
         gave(&refusing_end, "nothing given back: no cgroup");
         (&refusing_end)
             .write_all(&run::header(build::kind::HELD, 0))
@@ -813,7 +878,7 @@ mod tests {
     fn a_late_answer_is_heard_as_it_comes_and_said_at_once() {
         let (slow, slow_end) = builder();
         let mut held = vec![slow];
-        let mut unsaid = Unsaid::default();
+        let mut unsaid = taught();
         let short = || Some(-(64 * MIB as i64));
         let said = pass(&mut held, &mut unsaid, soon(), Instant::now(), &short).unwrap();
         assert!(said.contains("gave back 0 MiB"), "{said}");
@@ -848,7 +913,34 @@ mod tests {
         assert!(!held[0].awaiting());
     }
 
-    /// While a budget holds its builders, the room it leaves is looked at again each window:
+    /// Before any builder has answered (the cold start), a pass waits for nothing and judges
+    /// no ask: an answer not come is not said to have had none, and is heard as it comes,
+    /// its time from its ask the patience its builders teach; a quicker one after leaves it.
+    #[test]
+    fn a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience() {
+        let (slow, slow_end) = builder();
+        let mut held = vec![slow];
+        let mut unsaid = Unsaid::default();
+        let now = Instant::now();
+        assert_eq!(
+            pass(&mut held, &mut unsaid, now, now, &|| None),
+            None,
+            "nothing to say"
+        );
+        assert_eq!(unsaid.unanswered, 0, "no ask judged before any patience");
+        assert!(was_asked(&slow_end));
+        std::thread::sleep(Duration::from_millis(20));
+        gave(&slow_end, &format!("{} 0", 5 * MIB));
+        let said = late(&mut held, &mut unsaid, soon(), Instant::now(), &|| None).unwrap();
+        assert!(said.contains("gave back 5 MiB"), "{said}");
+        let taught = unsaid.patience.expect("its first answer teaches a patience");
+        assert!(taught >= Duration::from_millis(20), "{taught:?}");
+        gave(&slow_end, "0 0");
+        pass(&mut held, &mut unsaid, soon(), Instant::now(), &|| None);
+        assert_eq!(unsaid.patience, Some(taught), "a quicker answer leaves it");
+    }
+
+    /// While a budget holds its builders, the room it leaves is looked at again on its pace:
     /// told them where it has changed since they were last told it, a word of pressure where
     /// it is short, and nothing where it is unchanged or no budget held them (PM M442).
     #[test]

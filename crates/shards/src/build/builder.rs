@@ -145,6 +145,10 @@ pub struct Giver {
     pending_room: RoomUpdate,
     /// What has come of an answer not yet whole.
     held: Vec<u8>,
+    /// When the ask out went, and what the last answer took from its ask
+    /// ([`took`](Self::took)).
+    asked: Option<Instant>,
+    took: Option<Duration>,
 }
 
 /// The request whose one reply is due. ROOM carries its value so repeated words
@@ -181,7 +185,15 @@ impl Giver {
             out: None,
             pending_room: RoomUpdate::NoChange,
             held: Vec::new(),
+            asked: None,
+            took: None,
         }
+    }
+
+    /// What its last answer took, from its ask to its last byte read: none before any. Its
+    /// build's watcher learns how long it waits for answers from it (give.rs).
+    pub fn took(&self) -> Option<Duration> {
+        self.took
     }
 
     /// Whether an ask of its is out, its answer not yet come.
@@ -198,6 +210,7 @@ impl Giver {
         }
         self.write(build::kind::GIVE_BACK, b"")?;
         self.out = Some(GiveRequest::GiveBack);
+        self.asked = Some(Instant::now());
         Ok(true)
     }
 
@@ -217,6 +230,7 @@ impl Giver {
         let payload = room.map(|r| r.to_string()).unwrap_or_default();
         self.write(build::kind::ROOM, payload.as_bytes())?;
         self.out = Some(GiveRequest::Room(room));
+        self.asked = Some(Instant::now());
         Ok(true)
     }
 
@@ -265,6 +279,7 @@ impl Giver {
                         continue;
                     }
                     self.out = None;
+                    self.took = self.asked.take().map(|at| at.elapsed());
                     if let RoomUpdate::Tell(room) =
                         std::mem::replace(&mut self.pending_room, RoomUpdate::NoChange)
                     {
@@ -273,13 +288,14 @@ impl Giver {
                     return Ok(Some(parse_answer(which, &said)));
                 }
             }
-            // A read that waits for nothing where the time is spent: what has come alone.
+            // What comes by `until`, waited for until then; once it has passed, what has
+            // come alone, looked at at once (a poll of no time), never a wait of its own.
             let left = until.saturating_duration_since(Instant::now());
-            shards_ipc::timeout_set(
-                self.conn
-                    .set_read_timeout(Some(left.max(Duration::from_millis(1)))),
-            )
-            .map_err(|e| format!("hearing the builder: {e}"))?;
+            let ready = shards_vmm::platform::wait_readable(&[self.conn.raw_socket()], Some(left))
+                .map_err(|e| format!("hearing the builder: {e}"))?;
+            if !ready.first().copied().unwrap_or(false) {
+                return Ok(None);
+            }
             let mut chunk = [0u8; 256];
             match io::Read::read(&mut super::reading(&self.conn), &mut chunk) {
                 Ok(0) => return Err("the builder's give-back connection ended".into()),
@@ -1812,6 +1828,44 @@ mod tests {
             giver.answer(Instant::now() + Duration::from_secs(10)).is_err(),
             "its connection ended"
         );
+    }
+
+    /// Past its deadline a giver looks at what has come at once, never waiting a floor of
+    /// its own (memory-12): 200 looks with nothing come take less than the 200 ms a
+    /// millisecond's floor alone would hold them, and a whole answer come is still taken,
+    /// its time from its ask then known.
+    #[test]
+    fn a_giver_past_its_deadline_looks_at_once() {
+        use std::io::Write as _;
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut giver = Giver::new(ours);
+        assert!(giver.ask().unwrap());
+        assert_eq!(giver.took(), None, "no answer yet");
+        let began = Instant::now();
+        for _ in 0..200 {
+            assert_eq!(giver.answer(Instant::now()).unwrap(), None);
+        }
+        let looked = began.elapsed();
+        assert!(
+            looked < Duration::from_millis(100),
+            "200 looks past the deadline took {looked:?}"
+        );
+        assert_eq!(asked(&theirs), (build::kind::GIVE_BACK, 0));
+        let said = b"1 0";
+        (&theirs)
+            .write_all(&run::header(
+                build::kind::GAVE,
+                u32::try_from(said.len()).unwrap(),
+            ))
+            .unwrap();
+        (&theirs).write_all(said).unwrap();
+        let mut answer = None;
+        let until = Instant::now() + Duration::from_secs(10);
+        while answer.is_none() && Instant::now() < until {
+            answer = giver.answer(Instant::now()).unwrap();
+        }
+        assert_eq!(answer, Some(Answer::Gave(1, 0)));
+        assert!(giver.took().is_some_and(|t| t >= looked), "{:?}", giver.took());
     }
 
     /// A giver tells its builder its budget's room once no ask is out, and hears what its

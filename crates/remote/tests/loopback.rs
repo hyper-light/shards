@@ -877,7 +877,7 @@ impl Handler for Answers {
             }
         }
         // Every whole frame, the request's stdin's end among them, which comes with it.
-        while let Ok(Some((tag, _))) = frame::take(buffer) {
+        while let Ok(Some((tag, _))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             if tag == Tag::Exec {
                 assert_eq!(io.write(conn, stream, &self.answer).unwrap(), self.answer.len());
                 io.finish(conn, stream).unwrap();
@@ -973,7 +973,7 @@ impl Handler for Unread {
         while let StreamRead::Bytes(bytes) = io.read(conn, stream) {
             buffer.extend_from_slice(&bytes);
         }
-        while let Ok(Some((tag, _))) = frame::take(buffer) {
+        while let Ok(Some((tag, _))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             if tag == Tag::Exec {
                 io.stop(conn, stream);
                 let _ = self.asked.send((conn, stream));
@@ -1258,7 +1258,7 @@ impl Handler for Raw {
                 StreamRead::Blocked | StreamRead::Reset => break,
             }
         }
-        while let Ok(Some((tag, payload))) = frame::take(buffer) {
+        while let Ok(Some((tag, payload))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             progressed();
             let _ = self.heard.send(Heard::Frame(stream, tag, payload));
         }
@@ -1678,6 +1678,32 @@ fn a_client_that_finishes_its_stream_ends_its_commands_input() {
     );
 }
 
+/// A client's frame is held to what its lane takes of its kind (remote-08): a chunk of stdin
+/// past a client's read (`server::READ_MOST`) is refused from its header, before a byte of it
+/// is waited for, where the old 4 MiB bound of every frame waited for all of it. Its command
+/// had started, so the stream ends cut, as a command that may have run does (D176 part 6).
+#[test]
+fn a_clients_stdin_past_a_read_is_refused_from_its_header() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(laptop, d.remote);
+    let mut bytes = exec(&["cat"]);
+    bytes.push(Tag::Stdin as u8);
+    bytes.extend_from_slice(&u32::try_from(server::READ_MOST + 1).unwrap().to_be_bytes());
+    let stream = raw.open(bytes);
+    let refused = format!(
+        "a {}-byte Stdin frame, over the {} this lane takes",
+        server::READ_MOST + 1,
+        server::READ_MOST
+    );
+    assert_eq!(raw.next(), Heard::Frame(stream, Tag::Cut, refused.into_bytes()));
+}
+
 /// A client the machine has not enrolled is refused by its frame's header: neither a
 /// command's bytes nor more than a join's are waited for.
 #[test]
@@ -1691,7 +1717,7 @@ fn a_client_not_enrolled_is_refused_by_its_frames_header() {
         out.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
         out
     };
-    let command = raw.open(header(Tag::Exec, frame::MAX_FRAME));
+    let command = raw.open(header(Tag::Exec, u32::MAX as usize));
     assert_eq!(
         raw.next(),
         Heard::Frame(command, Tag::Refused, server::NOT_ENROLLED.as_bytes().to_vec())

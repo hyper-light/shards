@@ -21,7 +21,7 @@ use crate::{Error, tls};
 /// bytes on 4 KiB pages) and macOS's most (`BIG_PIPE_SIZE`, xnu-12377.101.15 bsd/sys/pipe.h
 /// l. 80), as synced.rs's frames and the exec host's pipes cite them. A source that holds more
 /// gives the rest to the next read.
-pub(crate) const READ_MOST: usize = 64 << 10;
+pub const READ_MOST: usize = 64 << 10;
 
 /// The chunks of a command's input queued for the thread that writes them: one, which the
 /// writer takes as it finishes the last, so that it waits on the driver only when nothing has
@@ -49,10 +49,28 @@ pub struct Running {
     pub made: Option<Box<dyn Read + Send>>,
 }
 
+/// What a command stream's client sends, each kind with what the daemon takes of it
+/// (remote-08, D180 *Frame bounds*): a request's words, an exec's (the machine's own ARG_MAX,
+/// past which its execve refuses them, E2BIG) or a step's (a move's plan, a build's), the most
+/// this host can hold; a join an invitation's ([`invite::JOIN_MAX`]); a chunk of stdin a
+/// client's read ([`READ_MOST`], as `client` reads it); its control stream's number, a
+/// terminal's size and a signal their fixed lengths.
+fn client_takes(tag: Tag) -> Option<frame::Most> {
+    Some(match tag {
+        Tag::Exec => frame::Most::Holdable,
+        Tag::Join => frame::Most::Bytes(invite::JOIN_MAX),
+        Tag::Controls => frame::Most::Bytes(size_of::<u64>()),
+        Tag::Stdin => frame::Most::Bytes(READ_MOST),
+        Tag::StdinEnd => frame::Most::Bytes(0),
+        Tag::Resize | Tag::Signal => frame::Most::Bytes(size_of::<u32>()),
+        _ => return None,
+    })
+}
+
 /// The most a command's [`Running::made`] says: a microVM's ID alone, as `--cidfile` writes
 /// it (shards' `CidFile::write`, as docker/cli's cidfile does): two hex digits for each of
 /// the 32 random bytes of moby's stringid.GenerateRandomID (shards' `containers::new_id`).
-const MADE_MOST: u64 = 2 * 32;
+pub(crate) const MADE_MOST: u64 = 2 * 32;
 
 /// The machine a daemon serves its clients on, shared by the workers its starts run on
 /// ([`Host::start`]).
@@ -419,7 +437,7 @@ impl<H: Host> Server<'_, '_, H> {
                 return Taken::Frame;
             }
         }
-        let (tag, payload) = match frame::take(&mut stream.inbound) {
+        let (tag, payload) = match frame::take(&mut stream.inbound, client_takes) {
             Ok(Some(frame)) => frame,
             Ok(None) => return Taken::Waiting,
             Err(e) => {

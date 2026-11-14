@@ -45,10 +45,15 @@ const HARDLINK: u8 = 6;
 /// The most a name in the stream may hold: a path of the guest's, Linux's `PATH_MAX`
 /// (include/uapi/linux/limits.h l. 13, Linux 6.18).
 const MAX_PATH: usize = 4096;
-/// The most a plan's JSON may hold: the plan the other machine was given as a word of its
-/// `ready` step's request (cli/moves.rs), a frame of a context's connection at most
-/// ([`shards_remote::frame::MAX_FRAME`]); the stream's is that one.
-const MAX_PLAN: usize = shards_remote::frame::MAX_FRAME;
+/// The most a plan's JSON may hold (remote-08, D180 *Frame bounds*): what this host can hold
+/// now (`shards_ipc::holdable_known`), as the `ready` step's request frame that carried it to
+/// the other machine is held to (shards_remote's `server`), and as a snapshot's state is read;
+/// a host that says nothing of its memory reads no plan.
+fn plan_most() -> io::Result<usize> {
+    shards_ipc::holdable_known()
+        .and_then(|most| usize::try_from(most).ok())
+        .ok_or_else(|| io::Error::other("its plan: this host says nothing of its memory"))
+}
 /// The most of a file's extended attributes, as a Linux guest's file system holds them:
 /// an attribute's name, its value, and the list of its names (`XATTR_NAME_MAX`,
 /// `XATTR_SIZE_MAX` and `XATTR_LIST_MAX`, include/uapi/linux/limits.h l. 15-17).
@@ -1149,7 +1154,7 @@ pub(crate) fn read_plan(r: &mut dyn Read) -> Result<Plan, String> {
         return Err("the move's stream has no plan".into());
     }
     let n = u64_of(r).map_err(io)?;
-    serde_json::from_slice(&bytes_of(r, n, MAX_PLAN, "its plan").map_err(io)?)
+    serde_json::from_slice(&bytes_of(r, n, plan_most().map_err(io)?, "its plan").map_err(io)?)
         .map_err(|e| format!("the move's plan: {e}"))
 }
 

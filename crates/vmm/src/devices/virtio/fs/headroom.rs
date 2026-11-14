@@ -16,10 +16,6 @@ use std::fs::File;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// A look at the budgets' room waits this many times its own time after the last: the
-/// share spends at most a hundredth of its time looking.
-const LOOKS_APART: u32 = 100;
-
 /// The budgets over a process's cgroups ([`fits`](Headroom::fits)).
 #[derive(Debug)]
 pub struct Headroom {
@@ -28,8 +24,8 @@ pub struct Headroom {
     groups: Vec<[File; 3]>,
     /// What the budgets left at the last look, less what has been read since and kept.
     left: u64,
-    /// When it last looked, and how long the look took.
-    looked: Option<(Instant, Duration)>,
+    /// Its last look: none before the first (the cold start, which looks at once).
+    looked: Option<Look>,
     /// What its reads need below the budgets past what it keeps ([`reads_room`]).
     margin: u64,
 }
@@ -80,20 +76,26 @@ impl Headroom {
     }
 
     /// Whether `n` more bytes of page cache fit below every budget over the process: as of
-    /// its last look, less what it has kept since, and looked at again as soon as a look's
-    /// hundredfold time has passed, so that one set or met later counts within a few looks'
-    /// time. Kept bytes come off what is left; bytes that do not fit, which its caller drops,
-    /// do not.
+    /// its last look, less what it has kept since, and looked at again once that look is
+    /// due ([`Look::due`]), so that one set or met later counts as soon as looking for it
+    /// is worth its cost. Kept bytes come off what is left; bytes that do not fit, which
+    /// its caller drops, do not.
     pub fn fits(&mut self, n: u64) -> bool {
         let now = Instant::now();
-        let due = self
-            .looked
-            .is_none_or(|(at, took)| now.saturating_duration_since(at) >= took.saturating_mul(LOOKS_APART));
-        if due {
-            self.left = self.room();
-            self.looked = Some((now, now.elapsed()));
+        let need = n.saturating_add(self.margin);
+        if self.looked.is_none_or(|l| l.due(now)) {
+            let room = self.room();
+            let took = now.elapsed();
+            self.looked = Some(Look::after(
+                self.looked,
+                now,
+                took,
+                self.left >= need,
+                room >= need,
+            ));
+            self.left = room;
         }
-        if self.left < n.saturating_add(self.margin) {
+        if self.left < need {
             return false;
         }
         self.left -= n;
@@ -108,6 +110,47 @@ impl Headroom {
             .map(|[high, max, current]| value(high).min(value(max)).saturating_sub(value(current)))
             .min()
             .unwrap_or(u64::MAX)
+    }
+}
+
+/// A look at the budgets' room, and when the next is due (D188, R03): D215's pace
+/// (`shards_abi::pace`), `sqrt(2 c w)` of the look's own cost `c` and the time `w` the
+/// share's verdicts have been right, a look's room on the same side of a read's need as
+/// what the share had left of the look before. What a look looks for is a verdict gone
+/// wrong (a budget set or lowered, room taken or freed by another process, the share's
+/// guest among them); a look that finds one restarts `w`, so that looks come close
+/// together while the room moves across what reads need and spread out while it stays
+/// clear of it. No coefficient: `c` is this host's own look, `w` this share's own record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Look {
+    /// When it was made, and what it cost.
+    at: Instant,
+    took: Duration,
+    /// Since when every look has found the verdict the share had as it looked: its first
+    /// look's time, or the last look's that found one wrong.
+    right_since: Instant,
+}
+
+impl Look {
+    /// The look made `at`, which `took`, after `before`; `had` the verdict the share had as
+    /// it looked (what it had left of `before` met the read's need) and `found` the look's.
+    fn after(before: Option<Look>, at: Instant, took: Duration, had: bool, found: bool) -> Look {
+        let right_since = match before {
+            Some(b) if had == found => b.right_since,
+            _ => at,
+        };
+        Look {
+            at,
+            took,
+            right_since,
+        }
+    }
+
+    /// Whether the next look is due at `now`: its pause, `sqrt(2 c w)` of this look's cost
+    /// and how long its verdicts had been right as it was made, has passed.
+    fn due(&self, now: Instant) -> bool {
+        let right = self.at.saturating_duration_since(self.right_since);
+        now.saturating_duration_since(self.at) >= shards_abi::pace::pause(self.took, right, Duration::MAX)
     }
 }
 
@@ -249,7 +292,7 @@ mod tests {
         );
     }
 
-    /// A budget set after the first look counts once a look's hundredfold time has passed.
+    /// A budget set after the first look counts at a later look.
     #[test]
     fn a_budget_set_later_counts_at_a_later_look() {
         let root = tree("max", 99 << 20);
@@ -261,5 +304,31 @@ mod tests {
             assert!(Instant::now() < until, "a budget set later never counted");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    /// A look is due D215's `sqrt(2 c w)` after the last, `c` that look's cost and `w` how
+    /// long the share's verdicts had been right as it was made: a look of 10 µs right for
+    /// 10 s is due 14.142 ms on, not before (a hundredfold of its cost would be 1 ms); a
+    /// look that finds a verdict wrong restarts `w`, its next due at once, and one that
+    /// finds it right keeps it.
+    #[test]
+    fn a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held() {
+        let t0 = Instant::now();
+        let us = Duration::from_micros;
+        let first = Look::after(None, t0, us(10), false, true);
+        assert_eq!(first.right_since, t0, "the first look begins the record");
+        let at = t0 + Duration::from_secs(10);
+        let right = Look::after(Some(first), at, us(10), true, true);
+        assert_eq!(right.right_since, t0, "a verdict found right keeps its record");
+        let pace = Duration::from_nanos(14_142_135);
+        assert!(
+            !right.due(at + Duration::from_millis(2)),
+            "due at a hundredfold of its cost"
+        );
+        assert!(!right.due(at + pace - Duration::from_nanos(1)));
+        assert!(right.due(at + pace));
+        let wrong = Look::after(Some(right), at, us(10), true, false);
+        assert_eq!(wrong.right_since, at, "a verdict found wrong restarts its record");
+        assert!(wrong.due(at), "its next look is due at once");
     }
 }

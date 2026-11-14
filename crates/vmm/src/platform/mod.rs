@@ -7,13 +7,13 @@ use std::io;
 
 mod checked;
 mod copy;
-mod host_memory;
+
 mod progress;
 pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
-pub use host_memory::{holdable, holdable_known, host_available, host_memory};
+pub use shards_ipc::{holdable, holdable_known, host_available, host_memory};
 pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
 
 #[cfg(unix)]
@@ -110,7 +110,7 @@ mod macos_thread;
 mod windows_thread;
 
 mod pressure;
-pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
+pub use pressure::{MemoryPressure, PressureWatches};
 
 pub mod granule;
 
