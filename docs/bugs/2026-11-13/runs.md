@@ -168,6 +168,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high in the filesystem schedule; unrun. **Fix direction:** serialize the full read/modify/write and use uniquely owned staging files. **Test:** two actual CLI processes with barriers at truncation/publication, continuous readers, and assertions for whole versions, independent updates and failed-writer noninterference.
 
+**Status (2026-11-14):** fixed in 2c148377c (red `concurrent_settings_updates_keep_each_others_fields` and `settings_publication_leaves_another_writers_staging_file_alone`, by mutation restoring the base's unlocked transaction and shared `.disk.new`, kiln r1785; green r1765 with shards all-target clippy, on merge 22d03c1a, macOS arm64). Salvaged from the Codex lane's uncommitted edit; reads take the newest version for Windows' write_in. Logs `docs/research/measurements/runs-fixes/runs09-{red,green}.log`; D186 amended. Two real CLI processes racing with a reader, per OS, owed to ROOT.
+
 ### runs-10 — P2 / medium — Reused helper bytes are accepted by length without checking their digest
 
 **At head:** `crates/shards/src/helpers.rs:186–190`; GPU `:97–99`. **Inherited at base; still present.**
@@ -179,6 +181,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 **Evidence:** D36 records embedded digests and whole-helper reuse; the user specifically requested digest verification before exec. The digests name the cache directory (`helpers.rs:158–163`) but do not validate its current content. Directory naming and atomic initial publication do not prove later bytes.
 
 **Confidence:** high in incorrect acceptance; actual loader behavior unrun. This is integrity/recovery, with no unsupported cross-user escalation claim. **Fix direction:** validate reusable bytes against their expected digests, repair/refuse mismatches, and define integrity through execution. **Test:** extract, flip one byte preserving length, request the helper in another process and require exact repair or typed integrity refusal; include GPU.
+
+**Status (2026-11-14):** fixed in 0122d69cc (red `a_helper_whose_bytes_changed_is_written_again_before_it_starts` and `a_changed_helper_that_cannot_be_written_again_is_refused`, by mutation restoring the length check, kiln r1785; green r1765 with launch tests and shards all-target clippy, on merge 22d03c1a, macOS arm64). Every helper start (VM, network, GPU; the daemon's kept path through `helpers::checked`) checks SHA-256 against build.rs's digest and rewrites or refuses. Logs `docs/research/measurements/runs-fixes/runs10-{red,green}.log`; D36 amended. Owed to ROOT: `env -u SHARDS_HELPERS -u SHARDS_HELPERS_DIR cargo test -p shards --bin shards helpers::tests`, a real run after flipping a cached helper's byte, Windows refusal with a running VM, and the per-start hashing cost (`docs/research/measurements/build-ab/ab.py`).
 
 ### runs-11 — P2 / medium — Runs still use explicitly arbitrary deadlines, retries and sizes
 

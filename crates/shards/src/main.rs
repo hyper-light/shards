@@ -23,16 +23,14 @@ mod context;
 mod daemon;
 mod disk;
 mod filters;
+mod final_use;
 mod from_image;
 mod frontend;
 mod google;
-#[cfg(any(target_os = "macos", windows))]
 mod grant;
-#[cfg(any(target_os = "macos", windows))]
 mod grant_answer;
 // The VM's half, which the daemon's tests answer.
-mod final_use;
-#[cfg(all(test, any(target_os = "macos", windows)))]
+#[cfg(test)]
 mod grant_ask;
 mod guest;
 mod helpers;
@@ -92,7 +90,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
         // the VM's broker (`shards run vm --kernel`, `shards restore vm`): not for people to run.
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         Some("grants") => grant_answer::broker(),
         // the recorder of how a directly booted VM's console report came out (D12): not
         // for people to run.

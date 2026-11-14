@@ -236,6 +236,8 @@ Found by the creds P0 lane (implementer, ROOT's lane for creds-01 to 04) while f
 
 **Fix direction:** Parse a granted host's WebSocket frames and mask their payloads across frame boundaries, extensions already refused; refuse, typed, an upgrade to a protocol this side does not parse.
 
+**Status (2026-11-13):** fixed in 742b5508b (red `inject::tests::leaks::a_websockets_echo_split_across_its_frames_is_masked`, `a_websocket_frame_its_reader_does_not_take_breaks_the_tunnel`, `a_filled_upgrade_to_a_protocol_this_side_does_not_read_is_refused`). Residual: a value split across two messages, or a message and a control frame (a part of a value, D242).
+
 ### creds-12 — P3 / medium — A decoded response's own chunk-size lines are not checked
 
 **Location:** `crates/net/src/inject.rs` (`chunk`).
