@@ -1,0 +1,12 @@
+diff --git a/crates/ipc/src/windows.rs b/crates/ipc/src/windows.rs
+index 9be5bf389..c99faacab 100644
+--- a/crates/ipc/src/windows.rs
++++ b/crates/ipc/src/windows.rs
+@@ -113,7 +113,6 @@ static INHERITING: RwLock<()> = RwLock::new(());
+ /// [`crate::spawn_std`] on Windows: `command` spawned while none of shards' own spawns holds a
+ /// handle inheritable ([`INHERITING`]).
+ pub fn spawn_std(command: &mut std::process::Command) -> io::Result<std::process::Child> {
+-    let _alone = INHERITING.write().unwrap_or_else(PoisonError::into_inner);
+     command.spawn()
+ }
+ 

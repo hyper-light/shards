@@ -6,6 +6,7 @@
 //! pointers to positional reads and writes, so no Rust reference ever aliases memory the guest
 //! may modify concurrently.
 
+use shards_ipc::device::Refusal;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,29 +103,35 @@ impl DiskSize {
     /// driver: what its host made it, `set_len`, before. Returns its capacity in bytes. An
     /// error, changing nothing, where the file shrank, which would take sectors from under
     /// a guest's file system, or is not whole sectors.
-    pub fn grow(&self) -> Result<u64, String> {
+    pub fn grow(&self) -> Result<u64, Refusal> {
         let Store::File {
             file,
             size,
             interrupt,
         } = &self.0.store
         else {
-            return Err("a join disk grows as it is given files".into());
+            return Err(Refusal::Unsupported(
+                "a join disk grows as it is given files".into(),
+            ));
         };
         let mut size = size.lock().unwrap_or_else(PoisonError::into_inner);
-        let bytes = file.metadata().map_err(|e| format!("its file: {e}"))?.len();
+        let bytes = file
+            .metadata()
+            .map_err(|e| Refusal::Host(format!("its file: {e}")))?
+            .len();
         if bytes % SECTOR != 0 {
-            return Err(format!(
-                "its file of {bytes} bytes: not whole sectors of {SECTOR}"
-            ));
+            return Err(Refusal::Unaligned {
+                bytes,
+                sector: SECTOR,
+            });
         }
         let now = size.sectors;
         let sectors = bytes / SECTOR;
         if sectors < now {
-            return Err(format!(
-                "its file shrank to {bytes} bytes from {}: a disk only grows under its guest",
-                now * SECTOR
-            ));
+            return Err(Refusal::Shrink {
+                has: now.saturating_mul(SECTOR),
+                asked: bytes,
+            });
         }
         if sectors > now {
             size.sectors = sectors;
@@ -1718,6 +1725,36 @@ mod tests {
             "configuration exposed a partially published growth: {early:?}"
         );
         assert_eq!(read_result.recv().unwrap(), (2, 1));
+    }
+
+    /// devices-10: a growth refused says why by its cause, what it names with it.
+    #[test]
+    fn a_growth_is_refused_by_cause() {
+        let dir = shards_testdir::TempDir::new("grow-refused").unwrap();
+        let file = File::create(dir.join("disk")).unwrap();
+        file.set_len(2 * SECTOR).unwrap();
+        let size = Block::open(&dir.join("disk"), false, "grow")
+            .unwrap()
+            .size()
+            .unwrap();
+        file.set_len(SECTOR).unwrap();
+        assert_eq!(
+            size.grow().unwrap_err(),
+            Refusal::Shrink {
+                has: 2 * SECTOR,
+                asked: SECTOR
+            }
+        );
+        file.set_len(3 * SECTOR + 1).unwrap();
+        assert_eq!(
+            size.grow().unwrap_err(),
+            Refusal::Unaligned {
+                bytes: 3 * SECTOR + 1,
+                sector: SECTOR
+            }
+        );
+        file.set_len(3 * SECTOR).unwrap();
+        assert_eq!(size.grow().unwrap(), 3 * SECTOR);
     }
 
     #[test]

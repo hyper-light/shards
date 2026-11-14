@@ -164,6 +164,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching tests:** a slow-but-progressing cold plug should not fail at an unexplained elapsed time; queue/slot choices should respond to the documented demand model; relay chunk bounds should have overflow/protocol-bound tests. No arbitrary replacement timeout or capacity is recommended.
 
+**Status (2026-11-14):** partly fixed in 53d99b35e (`GUEST_TIMEOUT` gone: a plug's guest steps wait on D215's learned judge, `exec_answered`, cold until the built-in's first answer; shards clippy and 9 daemon devices tests green on macOS arm64; no unit red, the deadline being a real guest's: owed to ROOT, `cargo test -p shards --test plug` with a guest slowed past 30 s). Owed to ROOT, each with its derivation and exact measurement in D214's devices-08 amendment: the 4 KiB answer cap (init's longest refusal line), the 4 PCI slots (boot cost per slot, 0..every free device number, `build-ab/ab.py`), the block/GPU/IOMMU rings (the queue audit's Little's law), `THROUGH_MAX` (advertise `VIRTIO_BLK_F_SIZE_MAX`, one round trip of `seg_max` × `size_max`).
+
 ### devices-09 — P2 / medium — GPU catalogs have an explicitly unjustified 65,536-device ceiling
 
 **Location:** `crates/abi/src/gpu.rs:22`; enforced at `crates/vmm/src/devices/virtio/gpu/virgl.rs:649`.
@@ -180,6 +182,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** enumerate counts at the genuinely derived transport/allocation boundary with overflow witnesses; do not merely mirror the existing u16 literal in an assertion.
 
+**Status (2026-11-14):** fixed in 4b470fbbe (red `a_selection_past_the_u16_index_space_is_taken`: 65,537 distinct GPUs refused `Count` at main dc5a0b24f; green `a_selection_fits_the_renderers_transport_and_no_more` at the derived boundary, 130,150,524 × 33 ≤ UINT32_MAX < 130,150,525 × 33, overflow refused, plus the abi, api, vmm GPU and vm-process tests and clippy on macOS arm64 and Linux x86_64; both pinned renderer sources take the changed patches, dry-run). D232's literals amended: the selection bound is the renderer transport's `UINT32_MAX / 33`, a host's catalog Vulkan's `uint32_t`; Hex's u16 index is Hex's own bound. Owed to ROOT: `scripts/gpu-libs` builds of the renderer from the changed patches on Linux and macOS, then `cargo test -p shards --test gpu` on the Linux Vulkan fixture and a Mac.
+
 ### devices-10 — P2 / medium — New hot-plug refusals lose their types across the control wire
 
 **Location:** `crates/shards/src/vm_run.rs:935`; `crates/shards/src/warm.rs:848`–`:850`.
@@ -195,6 +199,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 **Fix direction:** introduce scoped device refusal/result variants with affected device identity and cause/retry semantics; encode and decode them on DEVICE/DEVICED, formatting text only at presentation.
 
 **Catching test:** round-trip `NoSlots`, `StillDriven`, `ShrinkRefused` and host failure variants across the actual codec, then assert callers match variants while presentation wording can change independently.
+
+**Status (2026-11-14):** fixed in 170f6e360 (red `device_refusals_keep_identity_and_retry_across_the_wire`, Codex's 53265a0fe cherry-picked as 300b8f353: the old encoding returned retry Unknown for NoSlots, expected AfterRelease; green 2 ipc codec tests, 2 hotplug and 9 block VMM tests, 9 daemon devices tests and clippy of ipc, vmm, shards and shards-vm-process on macOS arm64, and Linux x86_64 clippy; see README). D214 amended. Owed to ROOT: `cargo test -p shards --test hotplug` on KVM, Hypervisor.framework and WHP (its assertions now match `Refusal::StillDriven`, `Shrink` and `NoDevice`), and `cargo test -p shards --test plug`.
 
 ### devices-11 — ROOT decision — Disk-file ownership across runs
 

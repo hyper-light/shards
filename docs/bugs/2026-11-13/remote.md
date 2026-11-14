@@ -118,6 +118,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Status (2026-11-13):** fixed in 68b43042c111dbd7696e16fa5b8020993de9d274 (red `daemon::remote::tests::remote_requests_never_log_argument_values`; 0 passed/1 failed before, 5 module tests passed after; shards all-target clippy passed, macOS arm64). [Evidence](../../research/measurements/remote-fixes-v1/README.md). Real context/guest validation remains owed to ROOT.
 
+**Status (2026-11-14):** follow-up in b996eeaa8 (ROOT's k16 HVF run at 994e7715d: `tests/context.rs` found only "policy step requested" and "shards command requested"). The log names a client's command by its path (`shards run`, `shards container ls`, cmdline's own table), a step by its kind where it is one of its protocol's, and each command's end with its status; never a value, argument, variable or path (green `daemon::remote::tests::a_log_names_a_command_by_its_path_and_a_step_by_its_kind`, `remote_requests_never_log_argument_values`; mutant logging the words killed). The context E2E is ROOT's: `cargo test -p shards --profile test-release --test context a_policy_through_a_context_is_the_clients_its_builder_the_machine a_context_runs_commands_on_its_machine_whole`.
+
 ### remote-06 — P3 / medium — Unauthenticated datagrams count as peer progress
 
 **Location:** `crates/remote/src/net.rs:1683`; consumers `:704`, `:774`.
@@ -135,6 +137,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** advance heard only from a transport indication of a newly accepted authenticated packet (including legitimate ACK-only packets), never header routing or raw UDP receipt.
 
 **Test:** warm real connection through a disposable raw-packet relay; stop true peer, inject bogus CID-matching packets, assert exactly one Stalled and no Answered; a later newcomer must reclaim the place. Authentic ACK-only progress must still preserve a live holder.
+
+**Status (2026-11-14):** fixed in 2cdbbf6a1 over Codex's 7d660dc7d and f38ffa2bc (red `net::tests::replayed_and_unauthenticated_datagrams_do_not_advance_liveness` at fa01a7d6b, and still red on Codex's fix: hyper-quic e0613f52 takes a server's first packet without putting its number in its dedup window, so a replayed first Initial's CRYPTO frames were counted again; green 128 `shards-remote` lib tests and 34 loopback tests, all-target clippy, macOS arm64). A peer is heard only when its connection's authenticated frames other than PADDING grow, CRYPTO counted by the new handshake data it carries. The three fixtures that took a replayed Initial for an answer now answer with PINGs their real client seals in new packets; their 7-PTO, 4 s/8 s and 2.5 s expectations stand (D180, "Heard, relayed and logged"). Mutants (heard on every routed event; CRYPTO counted by frame) killed. The raw-packet relay campaign of the finding's test is ROOT's.
 
 ### remote-07 — P3 / medium — Relay setup errors lose child cleanup/reaping ownership
 
@@ -154,6 +158,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test:** inject sender-clone/thread-start failure at every relay stage, assert hangup and wait exactly once; then bounded disposable real-child exhaustion fixture must observe process exit and reaping.
 
+**Status (2026-11-14):** fixed in b21011ac2 (red `tests/loopback.rs` `a_command_started_as_its_daemon_runs_out_of_descriptors_is_relayed_and_reaped` at 69a7e3d6e: the relay's first waker refused with EMFILE after the start, the stream cut, the command neither hung up nor reaped; green, and the mutant that has the relay after the start killed; macOS arm64). Every fallible step of a relay runs before `Host::start` (`Relay::ready`); after it, only infallible handoffs remain, so the one reaping wait always has its thread, and a start the driver cannot hear is now reaped too. The exhaustion test is Unix (RLIMIT_NOFILE); Windows runs the same code untested here.
+
 ### remote-08 — P3 / medium — Chosen invitation timeout and frame size still violate R03
 
 **Location:** `crates/remote/src/invite.rs:21`; `crates/remote/src/frame.rs:13`.
@@ -171,6 +177,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 **Fix direction:** make invitation expiry an explicit owner-authorized security policy (never lengthen authority via learning); derive frame admission from the actual wire/operation/resource contract and document cold-start/adversarial behavior. Establish any exceptional invariant with primary evidence rather than a borrowed value.
 
 **Test/evidence:** retain boundary tests for authorized expiry and admitted payload size, plus the policy/measurement record deriving each boundary. Merely asserting the current literal is not evidence of its derivation.
+
+**Status (2026-11-14):** owed to ROOT and the person: not implemented in this landing; the design, with what it needs, is in D180's "Values still chosen (remote-08)". The invitation's lifetime is an authority the owner grants, so no learned value may set or lengthen it: the person decides whether an invitation states its lifetime when made (`shards make invitation NAME` gaining one) or stays usable once until used. The frame bound becomes each tag's own contract.
 
 ### remote-09 — P0 / critical — A build step's path-valued flags name this machine's files
 

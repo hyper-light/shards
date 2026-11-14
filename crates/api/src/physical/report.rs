@@ -77,6 +77,24 @@ impl Clock {
     }
 }
 
+/// A report's frame, `bytes` as its VM process wrote them, read against the scope and the
+/// selection its client named (D232, D233): a managed launch's from its private pipe
+/// ([`Receiver::take`]), an image run's as its run host relayed them
+/// (`ImageGuest::take_gpu_report`). More bytes than the selection's report holds are `Count`,
+/// before any is parsed; text that is not UTF-8 `Syntax`; none at all `Unreported`; a refusal's
+/// record the refusal its renderer typed.
+pub(crate) fn read(
+    bytes: &[u8],
+    scope: [u8; 16],
+    selected: &[PhysicalGpu],
+) -> Result<GpuReport, GpuProbeError> {
+    if bytes.len() > super::report_bytes(selected.len())? {
+        return Err(GpuProbeError::Count);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| GpuProbeError::Syntax)?;
+    GpuReport::parse(text, scope, selected)
+}
+
 #[derive(Debug)]
 pub(crate) struct Receiver {
     request: Request,
@@ -153,11 +171,7 @@ impl Receiver {
         if self.clock.expired(deadline, Recheck::Frame) {
             return Err(pending());
         }
-        if bytes.len() > super::report_bytes(self.request.selected.len()).map_err(Refusal::GpuProbe)? {
-            return Err(Refusal::GpuProbe(GpuProbeError::Count));
-        }
-        let text = std::str::from_utf8(bytes).map_err(|_| Refusal::GpuProbe(GpuProbeError::Syntax))?;
-        let report = GpuReport::parse(text, self.request.scope, &self.request.selected);
+        let report = read(bytes, self.request.scope, &self.request.selected);
         if self.clock.expired(deadline, Recheck::Parse) {
             return Err(pending());
         }

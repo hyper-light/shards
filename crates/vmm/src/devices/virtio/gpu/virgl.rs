@@ -645,10 +645,8 @@ fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<SelectedGpu>, Held
         if result != 0 || count == 0 {
             return Err(format!("Vulkan has no complete device list ({result})").into());
         }
+        // Vulkan's own count, a `uint32_t` (selection::MAX_HOST_GPUS): reserved fallibly below.
         let count_usize = usize::try_from(count).map_err(|_| "Vulkan device count overflows")?;
-        if count_usize > selection::MAX_PHYSICAL_GPUS {
-            return Err("Vulkan exceeds the physical device-index space".into());
-        }
         let mut devices = Vec::new();
         devices
             .try_reserve_exact(count_usize)

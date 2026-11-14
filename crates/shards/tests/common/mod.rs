@@ -3032,30 +3032,89 @@ impl WaitKind {
         }
     }
 
+    /// A kind of its own whose record is kept at `file`: two of them stand for two
+    /// processes' kinds of one call site, for the tests of [`keep`](Self::keep).
+    #[track_caller]
+    pub fn apart(file: PathBuf) -> WaitKind {
+        WaitKind {
+            site: std::panic::Location::caller(),
+            words: String::new(),
+            line: String::new(),
+            record: shards_api::Record::new(),
+            file,
+        }
+    }
+
     /// Keeps its record on this host: what another process kept of it since taught in
-    /// first, then written whole and renamed into place. A keep that fails is the next
-    /// answer's to make: what this process learned stays in its memory meanwhile.
-    fn keep(&self) {
+    /// first, then written whole and renamed into place, the whole of it under the record's
+    /// lock (waits-11), so that no other keep reads between this one's read and its rename
+    /// and then renames a merge that lacks this one's answer over it. A keep that fails is
+    /// the next answer's to make: what this process learned stays in its memory meanwhile.
+    pub fn keep(&self) {
+        let _ = self.keep_between(true, || {});
+    }
+
+    /// [`keep`](Self::keep), `between` called once what was kept is read and merged, before
+    /// its merge is written; where `wait` is false, nothing kept and `false` returned while
+    /// another keep holds the record.
+    pub fn keep_between(&self, wait: bool, between: impl FnOnce()) -> std::io::Result<bool> {
+        let (Some(dir), Some(name)) = (self.file.parent(), self.file.file_name()) else {
+            return Ok(false);
+        };
+        std::fs::create_dir_all(dir)?;
+        let mut locked = std::ffi::OsString::from(".");
+        locked.push(name);
+        locked.push(".lock");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(locked))?;
+        if wait {
+            lock.lock()?;
+        } else {
+            match lock.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+                Err(std::fs::TryLockError::Error(e)) => return Err(e),
+            }
+        }
+        let kept = self.merged_into_place(dir, name, between);
+        // Let go of before its file closes: a lock is its open file's, and a program another
+        // thread starts meanwhile would hold it until its exec (M244).
+        let unlocked = lock.unlock();
+        kept.and(unlocked).map(|()| true)
+    }
+
+    /// What another process kept taught in, `between` called, and the merge written whole and
+    /// renamed into place: by a name of its own, this process's and this keep's, as two of
+    /// its threads may keep their own kinds at once.
+    fn merged_into_place(
+        &self,
+        dir: &Path,
+        name: &std::ffi::OsStr,
+        between: impl FnOnce(),
+    ) -> std::io::Result<()> {
+        static KEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         self.learn_kept();
         let shards_api::Seen::Learned { slowest, least } = self.record.seen() else {
-            return;
+            return Ok(());
         };
+        between();
         let ns = |d: Duration| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX);
-        let (Some(dir), Some(name)) = (self.file.parent(), self.file.file_name()) else {
-            return;
-        };
         let mut temporary = std::ffi::OsString::from(".");
         temporary.push(name);
-        temporary.push(format!(".{}", std::process::id()));
+        temporary.push(format!(
+            ".{}.{}",
+            std::process::id(),
+            KEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         let temporary = dir.join(temporary);
-        let _ = std::fs::create_dir_all(dir)
-            .and_then(|()| {
-                std::fs::write(
-                    &temporary,
-                    format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
-                )
-            })
-            .and_then(|()| std::fs::rename(&temporary, &self.file));
+        std::fs::write(
+            &temporary,
+            format!("{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+        )?;
+        std::fs::rename(&temporary, &self.file)
     }
 }
 
@@ -5361,9 +5420,22 @@ pub trait Timed {
     fn set_nonblocking(&self, on: bool) -> io::Result<()>;
 }
 
+/// A read timeout set, or none needed: macOS refuses SO_RCVTIMEO with EINVAL on a socket both
+/// of whose ways are shut, as its peer's close leaves a Unix stream's (XNU bsd/kern/uipc_socket.c,
+/// `sosetoptlock`: SS_CANTRCVMORE and SS_CANTSENDMORE both set; on macOS 26.2 a pair whose peer
+/// wrote and closed refused it, a half-closed one took it, and the bytes written were still read
+/// whole). A read of such a socket waits for nothing: it returns what is left, then its end.
+fn timed(set: io::Result<()>) -> io::Result<()> {
+    match set {
+        #[cfg(target_os = "macos")]
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        set => set,
+    }
+}
+
 impl Timed for shards_vmm::platform::UnixStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        shards_vmm::platform::UnixStream::set_read_timeout(self, timeout)
+        timed(shards_vmm::platform::UnixStream::set_read_timeout(self, timeout))
     }
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         shards_vmm::platform::UnixStream::set_nonblocking(self, on)
@@ -5372,7 +5444,7 @@ impl Timed for shards_vmm::platform::UnixStream {
 
 impl Timed for std::net::TcpStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        std::net::TcpStream::set_read_timeout(self, timeout)
+        timed(std::net::TcpStream::set_read_timeout(self, timeout))
     }
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         std::net::TcpStream::set_nonblocking(self, on)

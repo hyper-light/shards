@@ -1,0 +1,165 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+Previous HEAD position was c7237d62 confine: adapt the P0 cwd regression to deferred executable lookup and record ROOTs next finding
+HEAD is now at 70f1bdea confine-08: refuse guest lookup when native watch admission fails
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 23.25s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/deps/shards_vmm-e6b20389332fddb3)
+
+running 51 tests
+test devices::virtio::fs::server::tests::a_budget_is_reckoned_from_the_hosts_limits ... ok
+test devices::virtio::fs::server::tests::a_device_is_never_opened_to_be_looked_at ... ok
+test devices::virtio::fs::server::tests::a_mode_change_follows_no_symlink ... ok
+test devices::virtio::fs::server::tests::a_device_node_is_its_makers ... ok
+test devices::virtio::fs::server::tests::a_directory_is_renamed_whatever_is_open_beneath_it ... ok
+test devices::virtio::fs::server::tests::a_directory_let_go_is_found_by_its_path_or_is_stale ... ok
+test devices::virtio::fs::server::tests::a_join_shares_volume_of_one_name_shows_it_alone ... ok
+test devices::virtio::fs::server::tests::a_directory_is_held_while_the_guest_knows_it ... ok
+SKIP: /tmp/shards-tests/1063527/fs-33 is on tmpfs, whose clean pages are never dropped
+test devices::virtio::fs::server::tests::a_file_bound_alone_is_all_of_its_directory_that_shows ... ok
+test devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup ... ok
+test devices::virtio::fs::server::tests::a_name_found_by_another_case_is_trusted_for_no_time ... ok
+test devices::virtio::fs::server::tests::a_file_unlinked_unpinned_is_not_found_again_by_its_number ... ok
+test devices::virtio::fs::server::tests::a_guests_files_show_it_the_same_copied_as_they_move ... ok
+test devices::virtio::fs::server::tests::a_notice_changes_nothing_on_the_host ... ok
+test devices::virtio::fs::server::tests::a_file_made_read_only_is_filled_through_its_handle ... ok
+test devices::virtio::fs::server::tests::a_join_share_serves_each_volume_alone ... ok
+test devices::virtio::fs::server::tests::a_join_shares_volumes_each_have_their_owner ... ok
+test devices::virtio::fs::server::tests::a_read_past_its_budget_drops_the_hosts_copy ... ok
+test devices::virtio::fs::server::tests::a_file_unlinked_by_one_name_is_served_by_another ... ok
+test devices::virtio::fs::server::tests::a_symlink_reads_back_its_target ... ok
+test devices::virtio::fs::server::tests::an_attribute_of_no_value_is_kept ... ok
+test devices::virtio::fs::server::tests::an_appending_handle_writes_at_its_files_end_as_the_host_has_it ... ok
+test devices::virtio::fs::server::tests::a_file_renamed_over_while_open_goes_on_serving ... ok
+test devices::virtio::fs::server::tests::a_file_replaced_on_the_host_while_open_is_stale_once_let_go ... ok
+test devices::virtio::fs::server::tests::a_removal_that_fails_leaves_open_nodes_as_they_were ... ok
+test devices::virtio::fs::server::tests::times_set_are_the_files ... ok
+test devices::virtio::fs::server::tests::a_session_that_ends_leaves_nothing_held ... ok
+test devices::virtio::fs::server::tests::a_read_only_file_found_by_create_is_opened_again_as_needed ... ok
+test devices::virtio::fs::server::tests::a_file_whose_mode_is_taken_away_goes_on_serving_its_handles ... ok
+test devices::virtio::fs::server::tests::fallocate_grows_and_lseek_finds_data ... ok
+test devices::virtio::fs::server::tests::node_ids_are_not_guessed_from_one_another ... ok
+test devices::virtio::fs::server::tests::files_are_made_written_read_and_owned_as_a_guest_sees_them ... ok
+test devices::virtio::fs::server::tests::a_saved_share_is_served_again_by_a_restored_server ... ok
+test devices::virtio::fs::server::tests::ownership_records_read_and_write_back ... ok
+test devices::virtio::fs::server::tests::the_guest_sees_its_own_attributes_and_not_the_hosts_security_ones ... ok
+test devices::virtio::fs::server::tests::dax_smallest_is_what_its_measurement_found ... ok
+test devices::virtio::fs::server::tests::an_exchange_swaps_two_names ... ok
+test devices::virtio::fs::server::tests::statfs_answers_for_the_shares_volume ... ok
+test devices::virtio::fs::server::tests::the_hosts_changes_where_the_guest_looks_are_noticed ... ok
+test devices::virtio::fs::server::tests::special_files_are_never_opened ... ok
+test devices::virtio::fs::server::tests::what_the_host_cannot_hold_is_kept_beside_it ... ok
+test devices::virtio::fs::server::tests::the_hosts_files_are_the_owner_init_names ... ok
+test devices::virtio::fs::server::tests::an_unlinked_file_held_open_goes_on_serving ... ok
+test devices::virtio::fs::server::tests::dax_is_offered_for_files_a_window_maps ... ok
+test devices::virtio::fs::server::tests::a_directory_is_read_whole_a_page_at_a_time ... ok
+test devices::virtio::fs::server::tests::a_listing_goes_on_where_it_was_after_its_stream_is_let_go ... ok
+test devices::virtio::fs::server::tests::pins_past_the_budget_leave_their_handles_stale ... ok
+test devices::virtio::fs::server::tests::reads_are_answered_into_the_buffer_their_asker_keeps ... ok
+test devices::virtio::fs::server::tests::handles_past_the_budget_each_serve_their_file ... ok
+test devices::virtio::fs::server::tests::a_listing_comes_a_read_at_a_time ... ok
+test devices::virtio::fs::server::tests::a_guest_reads_ten_thousand_files_it_holds_open ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 1.09s
+
+     Running tests/device_reset_log.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/deps/device_reset_log-12f791ee85a5fe87)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/fs_dir_budget.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/deps/fs_dir_budget-7c1309b450cfa6fb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/fs_dir_handles.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/deps/fs_dir_handles-781fc993f6b46457)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+HEAD is now at 70f1bdea confine-08: refuse guest lookup when native watch admission fails
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/build/aws-lc-sys-4c527a91f14c25ab/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/ccCavyoJ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/fix-confine-v1/source/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/fix-confine-v1/source/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/ccruPICP.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/fix-confine-v1/source/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/g121-tmp/fix-confine-v1/source/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/vmm)
+    Checking shards-api v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/api)
+    Checking shards-net v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/net)
+    Checking shards v0.7.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/shards)
+error: unsafe block missing a safety comment
+    --> crates/vmm/src/devices/virtio/fs/server.rs:4132:13
+     |
+4132 |             unsafe { libc::geteuid() },
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: consider adding a safety comment on the preceding line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+     = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`
+
+error: could not compile `shards-vmm` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0597]: `attempt` does not live long enough
+   --> crates/shards/tests/plug.rs:127:29
+    |
+122 |     let results = std::thread::scope(|scope| {
+    |                                       ----- has type `&'1 std::thread::Scope<'1, '_>`
+123 |         let attempt = || {
+    |             ------- binding `attempt` declared here
+...
+127 |         let a = scope.spawn(&attempt);
+    |                 ------------^^^^^^^^-
+    |                 |           |
+    |                 |           borrowed value does not live long enough
+    |                 argument requires that `attempt` is borrowed for `'1`
+...
+130 |     });
+    |     - `attempt` dropped here while still borrowed
+    |
+note: requirement that the value outlives `'1` introduced here
+   --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/scoped.rs:203:34
+
+error[E0597]: `attempt` does not live long enough
+   --> crates/shards/tests/plug.rs:128:29
+    |
+122 |     let results = std::thread::scope(|scope| {
+    |                                       ----- has type `&'1 std::thread::Scope<'1, '_>`
+123 |         let attempt = || {
+    |             ------- binding `attempt` declared here
+...
+128 |         let b = scope.spawn(&attempt);
+    |                 ------------^^^^^^^^-
+    |                 |           |
+    |                 |           borrowed value does not live long enough
+    |                 argument requires that `attempt` is borrowed for `'1`
+129 |         [a.join().unwrap(), b.join().unwrap()]
+130 |     });
+    |     - `attempt` dropped here while still borrowed
+    |
+note: requirement that the value outlives `'1` introduced here
+   --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/scoped.rs:203:34
+
+For more information about this error, try `rustc --explain E0597`.
+error: could not compile `shards` (test "plug") due to 2 previous errors
+

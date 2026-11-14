@@ -117,6 +117,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        gpu_report: None,
     }
 }
 
@@ -494,7 +495,25 @@ fn a_project_is_plugged_into_the_running_harness() {
         ),
         "a member of files alone"
     );
-    ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX)).unwrap();
+    let barrier = std::sync::Barrier::new(2);
+    let attempt = || {
+        barrier.wait();
+        ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX))
+    };
+    let results = std::thread::scope(|scope| {
+        let a = scope.spawn(attempt);
+        let b = scope.spawn(attempt);
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "{results:?}");
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(ImageRefusal::Plug(PlugRefusal::Taken, _))))
+            .count(),
+        1,
+        "{results:?}"
+    );
     let seen_at = proj.join("seen");
     let mut patience = Patience::started();
     let seen = loop {
@@ -820,6 +839,77 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     assert_eq!(run(&stored), StartedFrom::Replaced);
     assert_eq!(run(&stored), StartedFrom::Restored);
     assert_eq!(run(&given), StartedFrom::Booted);
+}
+
+/// D233 (Hex goal 39): a GPU run's renderer report, its VM process's own, reaches its
+/// orchestrator as a managed launch's does. Given a host GPU by its identity in D232's grammar
+/// (`SHARDS_TEST_GPU`: `pci:DOMAIN:BUS:DEVICE.FUNCTION`, `metal:HEX` or `luid:HEX`; skipped
+/// without one), the image's first run boots and saves its template and its next restores it
+/// (where this host restores), each run's report of its own scope naming exactly that GPU, on
+/// Windows with its current boot's LUID, and taken once; a GPU no host has is refused as its
+/// renderer typed it.
+#[test]
+fn a_gpu_runs_renderer_report_reaches_its_orchestrator() {
+    use shards_api::{GpuProbeError, PhysicalGpu};
+    if cannot_run_vms() {
+        return;
+    }
+    let Ok(named) = std::env::var("SHARDS_TEST_GPU") else {
+        let _ = writeln!(std::io::stderr(), "SKIP: SHARDS_TEST_GPU names no host GPU");
+        return;
+    };
+    let gpu: PhysicalGpu = named.parse().unwrap();
+    let home = common::home_with("api-gpu-home");
+    build_example(&home, "api-gpu:1");
+    let mut s = spec(&home, "api-gpu:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.command = Some(["/bin/sh", "-c", "exit 0"].map(String::from).to_vec());
+    s.gpu_devices = vec![gpu];
+    let mut froms = Vec::new();
+    for scope in [[3u8; 16], [4u8; 16]] {
+        s.gpu_report = Some(scope);
+        let guest = booted(&ImageShards::new(), &s).unwrap();
+        let report = guest.take_gpu_report(Duration::MAX).unwrap();
+        assert_eq!(report.scope, scope);
+        let physical: Vec<PhysicalGpu> = report.probe.devices.iter().map(|d| d.physical).collect();
+        assert_eq!(physical, [gpu], "{report:?}");
+        #[cfg(windows)]
+        assert!(report.probe.devices[0].luid.is_some(), "{report:?}");
+        assert_eq!(
+            guest.take_gpu_report(Duration::MAX),
+            Err(ImageRefusal::GpuProbe(GpuProbeError::ReportTaken))
+        );
+        froms.push(guest.started_from());
+        assert_eq!(
+            ask(&*guest, |g| g.wait_for(Duration::MAX))
+                .unwrap()
+                .map(|e| e.end),
+            Some(RunEnd::Exited(0))
+        );
+    }
+    if shards_vmm::vm::restores_here() {
+        assert_eq!(froms, [StartedFrom::Saved, StartedFrom::Restored]);
+    }
+    // An identity of this host's kind that no GPU of it has.
+    #[cfg(target_os = "macos")]
+    let absent = PhysicalGpu::MetalRegistry(u64::MAX);
+    #[cfg(windows)]
+    let absent = PhysicalGpu::Luid(u64::MAX);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let absent = PhysicalGpu::Pci {
+        domain: 0xffff,
+        bus: 0xff,
+        device: 0x1f,
+        function: 7,
+    };
+    s.gpu_devices = vec![absent];
+    s.gpu_report = Some([5; 16]);
+    let refused = ImageShards::new().boot(&s, Duration::MAX).err();
+    assert!(
+        matches!(refused, Some(ImageRefusal::GpuProbe(GpuProbeError::Refused(_)))),
+        "{refused:?}"
+    );
 }
 
 /// D253's pools: an orchestrator's pools give an image's next run a warm run host, its

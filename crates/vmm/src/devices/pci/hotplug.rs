@@ -14,6 +14,7 @@
 //! functions has them (D214), a slot's endpoint is translated from the plug to the unplug
 //! of what is plugged there (`iommu::Translation::plugged`).
 
+use shards_ipc::device::Refusal;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use super::{Ecam, Msi, PciFunction};
@@ -219,7 +220,7 @@ impl Hotplug {
     /// Plugs the function `make` makes, given the first free slot, into it: its BARs
     /// reached first, then its configuration space, which the guest finds it by. Returns
     /// its `devfn`.
-    pub fn plug(&self, make: impl FnOnce(&Slot) -> Result<Arc<dyn Plugged>, String>) -> Result<u8, String> {
+    pub fn plug(&self, make: impl FnOnce(&Slot) -> Result<Arc<dyn Plugged>, String>) -> Result<u8, Refusal> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let taken: Vec<u8> = {
             let plugged = self.window.plugged.read().unwrap_or_else(PoisonError::into_inner);
@@ -229,18 +230,15 @@ impl Hotplug {
             .slots
             .iter()
             .find(|s| !taken.contains(&s.devfn))
-            .ok_or_else(|| {
-                format!(
-                    "every one of its {} hot-plug slots holds a function",
-                    self.slots.len()
-                )
+            .ok_or(Refusal::NoSlots {
+                slots: u64::try_from(self.slots.len()).unwrap_or(u64::MAX),
             })?;
-        slot.occupy()?;
+        slot.occupy().map_err(Refusal::Host)?;
         let function = match make(slot) {
             Ok(function) => function,
             Err(e) => {
                 slot.vacate();
-                return Err(e);
+                return Err(Refusal::Host(e));
             }
         };
         self.window
@@ -252,14 +250,14 @@ impl Hotplug {
             self.take(slot.devfn);
             function.unplugged();
             slot.vacate();
-            return Err(e);
+            return Err(Refusal::Host(e));
         }
         Ok(slot.devfn)
     }
 
     /// Takes the function at `devfn` off the bus, once its guest has let it go: an error,
     /// changing nothing, where none is plugged there or its driver still drives it.
-    pub fn unplug(&self, devfn: u8) -> Result<(), String> {
+    pub fn unplug(&self, devfn: u8) -> Result<(), Refusal> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         let function = {
             let plugged = self.window.plugged.read().unwrap_or_else(PoisonError::into_inner);
@@ -267,15 +265,10 @@ impl Hotplug {
                 .iter()
                 .find(|(f, _)| *f == devfn)
                 .map(|(_, f)| f.clone())
-                .ok_or_else(|| {
-                    format!(
-                        "no function is plugged at {}",
-                        crate::vm::guest_address((devfn >> 3, devfn & 7))
-                    )
-                })?
+                .ok_or(Refusal::NoDevice { devfn })?
         };
-        if let Some(why) = function.held() {
-            return Err(why);
+        if let Some(reason) = function.held() {
+            return Err(Refusal::StillDriven { devfn, reason });
         }
         self.ecam.unplug(devfn);
         self.take(devfn);
@@ -414,14 +407,20 @@ mod tests {
         assert_eq!(read(&*window, 0x4010), 0x1010_1010, "its BAR, where placed");
         assert_eq!(read(&*window, 0x8000), u32::MAX, "nothing's");
         assert!(window.unsaved().is_some());
-        assert_eq!(hotplug.unplug(devfn).unwrap_err(), "driven");
+        assert_eq!(
+            hotplug.unplug(devfn).unwrap_err(),
+            Refusal::StillDriven {
+                devfn,
+                reason: "driven".into()
+            }
+        );
         assert_eq!(hotplug.plugged(), [devfn]);
         fake.held.store(false, Ordering::Release);
         hotplug.unplug(devfn).unwrap();
         assert!(fake.gone.load(Ordering::Acquire));
         assert_eq!(read(&*ecam, 2 << 15), u32::MAX, "off the bus");
         assert_eq!(read(&*window, 0x4010), u32::MAX);
-        assert!(hotplug.unplug(devfn).is_err());
+        assert_eq!(hotplug.unplug(devfn).unwrap_err(), Refusal::NoDevice { devfn });
         assert!(window.unsaved().is_none());
         // Both slots taken, a third is refused.
         for _ in 0..2 {
@@ -438,7 +437,10 @@ mod tests {
             held: AtomicBool::new(false),
             gone: AtomicBool::new(false),
         });
-        assert!(hotplug.plug(move |_| Ok(f as Arc<dyn Plugged>)).is_err());
+        assert_eq!(
+            hotplug.plug(move |_| Ok(f as Arc<dyn Plugged>)).unwrap_err(),
+            Refusal::NoSlots { slots: 2 }
+        );
     }
 
     /// A slot behind the machine's IOMMU (D214): its endpoint translated from the plug of
@@ -460,7 +462,10 @@ mod tests {
         let hotplug = Hotplug::new(Arc::new(Ecam::new(Vec::new())), window, slots);
         let translates = || t.lock().unwrap().translates(2 << 3);
         assert!(!translates(), "vacant");
-        assert!(hotplug.plug(|_| Err("no function".to_string())).is_err());
+        assert_eq!(
+            hotplug.plug(|_| Err("no function".to_string())).unwrap_err(),
+            Refusal::Host("no function".into())
+        );
         assert!(!translates(), "vacant again");
         let f = Arc::new(Fake {
             at: 0,
