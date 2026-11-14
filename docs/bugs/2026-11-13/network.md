@@ -54,6 +54,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** in a disposable network-process child on both Linux architectures, observe seccomp state and attempt an excluded harmless syscall; require the same typed refusal/termination outcome. Test the actual carried helper, not just a library function.
 
+**Status (2026-11-13):** startup/filter cfg fixed in 33d5f8af715ea94021b65a7c8dc793f65a2339a6; shared native-filter checks and both touched crates' clippy passed on Linux amd64. Native arm64 red/execution remains owed to ROOT: `cargo test -p shards-net confine::tests::the_filter_ends_a_process_that_makes_what_none_makes -- --exact --nocapture`. The omitted call is unambiguous, so this source fix uses the fix brief's explicit exception rather than claiming an unavailable arm64 red. Evidence: `docs/research/measurements/network-fixes-v1/README.md`.
+
 ### network-03 — P1 / high: DNS-derived authority accumulates forever in host memory
 
 **Location:** `crates/net/src/lib.rs:2412`, `:2868`, `:613`; `crates/dns/src/lib.rs:291`. Learning machinery predates the base; D192/D236 add new production uses in the review range.

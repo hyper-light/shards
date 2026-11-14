@@ -178,10 +178,13 @@ enum Seen {
     Unheard(String),
 }
 
+/// The clients a [`Machine`] enrolls, by name and key, shared with the test that changes them.
+type Enrolled = std::sync::Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 /// A machine whose clients and invitations are kept in memory, running each command as a
 /// process of its own, and saying what it saw of each.
 struct Machine {
-    clients: Mutex<Vec<(String, Vec<u8>)>>,
+    clients: Enrolled,
     invitations: Mutex<Vec<Invitation>>,
     seen: Saw,
     /// What lets a `stalls` command's start go on.
@@ -552,6 +555,8 @@ struct Daemon {
     remote: Remote,
     stopper: Stopper,
     seen: Watch,
+    /// The clients its machine enrolls, by name and key, as a test changes them.
+    clients: Enrolled,
 }
 
 impl Daemon {
@@ -602,8 +607,9 @@ fn daemon_of(
     // whose send goes unanswered a whole window past its probe timeout is let go (D180).
     shards_testdir::helper().unwrap();
     let (seen, rx) = mpsc::channel();
+    let clients = std::sync::Arc::new(Mutex::new(clients));
     let machine = Machine {
-        clients: Mutex::new(clients),
+        clients: std::sync::Arc::clone(&clients),
         invitations: Mutex::new(invitations),
         seen: Saw(seen),
         stall: Mutex::new(stalls.start),
@@ -636,6 +642,7 @@ fn daemon_of(
             seen: Vec::new(),
             view,
         },
+        clients,
     }
 }
 
@@ -1397,6 +1404,88 @@ fn a_command_refused_after_it_started_is_cut() {
     assert_eq!(
         raw.next(),
         Heard::Frame(stream, Tag::Refused, b"a frame out of place (Joined)".to_vec())
+    );
+}
+
+/// A frame a raw client heard: its stream, its tag and its payload.
+type Framed = (StreamId, Tag, Vec<u8>);
+
+/// What a raw client hears until its connection ends: the frames, then the code it ended with.
+fn until_lost(raw: &RawClient) -> (Vec<Framed>, Option<u64>) {
+    let mut frames = Vec::new();
+    loop {
+        match raw.next() {
+            Heard::Frame(stream, tag, payload) => frames.push((stream, tag, payload)),
+            Heard::Lost(code) => return (frames, code),
+            Heard::Connected => {}
+        }
+    }
+}
+
+/// remote-03: a client its machine has removed, or whose name it enrolls under another key
+/// since (a client made again under the old one's name), runs nothing more on the connection
+/// it still holds: the command it asks for is refused and its connection closed, what it ran
+/// hung up. Its name's new key runs commands.
+#[test]
+fn a_removed_clients_held_connection_runs_nothing_more() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (old, new) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), old.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(old, d.remote);
+    raw.open(exec(&["cat"]));
+    d.seen.saw(&Seen::Started("cat".into()));
+    *d.clients.lock().unwrap() = vec![("laptop".into(), new.spki().to_vec())];
+    let asked = raw.open(exec(&["echo", "again"]));
+    let (frames, code) = until_lost(&raw);
+    assert_eq!(code, Some(u64::from(server::REVOKED)), "{frames:?}");
+    for (stream, tag, payload) in &frames {
+        assert_eq!((*stream, *tag), (asked, Tag::Refused), "{frames:?}");
+        assert_eq!(payload, server::REVOKED_WORDS.as_bytes());
+    }
+    d.seen.saw(&Seen::HungUp("cat".into()));
+    assert!(!d.seen.now().contains(&Seen::Started("echo again".into())));
+    let (status, out, _) = run(new, d.remote, &["echo", "new"], None).get();
+    assert_eq!((status, out), (Ok(0), b"new\n".to_vec()));
+}
+
+/// remote-03: told its machine's clients changed, the daemon closes at once each connection
+/// whose key its machine no longer enrolls under the name it was judged, hanging up what it
+/// runs, and its client says why; a client still enrolled keeps its connection.
+#[test]
+fn a_removed_clients_connection_closes_as_the_daemon_is_told() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, desk) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let mut d = daemon(
+        daemon_id,
+        vec![
+            ("laptop".into(), laptop.spki().to_vec()),
+            ("desk".into(), desk.spki().to_vec()),
+        ],
+        Vec::new(),
+    );
+    let (removed, kept) = (RawClient::new(laptop, d.remote), RawClient::new(desk, d.remote));
+    removed.open(exec(&["cat"]));
+    d.seen.saw(&Seen::Started("cat".into()));
+    d.clients.lock().unwrap().retain(|(name, _)| name != "laptop");
+    d.stopper.revalidate().unwrap();
+    let (frames, code) = until_lost(&removed);
+    assert_eq!(code, Some(u64::from(server::REVOKED)), "{frames:?}");
+    d.seen.saw(&Seen::HungUp("cat".into()));
+    let second = kept.open(exec(&["echo", "kept"]));
+    assert_eq!(kept.next(), Heard::Frame(second, Tag::Stdout, b"kept\n".to_vec()));
+    assert_eq!(
+        kept.next(),
+        Heard::Frame(second, Tag::Exit, 0i32.to_be_bytes().to_vec())
     );
 }
 

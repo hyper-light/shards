@@ -184,15 +184,13 @@ pub fn to_ports(ports: &[u16]) -> io::Result<()> {
 /// spawner hands it all it serves. clock_gettime, which the vDSO answers, where it falls
 /// back to the syscall: a host whose clocksource the vDSO cannot read.
 ///
-/// Linux on x86_64, where the KVM backend is, as for the VM process; elsewhere nothing is
-/// installed yet.
-#[cfg(target_arch = "x86_64")]
+/// Each supported Linux architecture uses libc's native syscall identities and the
+/// compiler's native AUDIT_ARCH check (shards-syscall-filter); no compat ABI is admitted.
 pub fn filter() -> io::Result<()> {
     install(&program()?)
 }
 
 /// The filter's program, compiled.
-#[cfg(target_arch = "x86_64")]
 fn program() -> io::Result<shards_syscall_filter::Filter> {
     use shards_syscall_filter::{self as seccomp, Rule};
 
@@ -208,7 +206,9 @@ fn program() -> io::Result<shards_syscall_filter::Filter> {
         libc::SYS_brk,
         libc::SYS_epoll_create1,
         libc::SYS_epoll_ctl,
-        // glibc's epoll_wait, and musl's, which calls epoll_pwait.
+        // arm64's native ABI has epoll_pwait alone (asm-generic/unistd.h); x86_64
+        // also has glibc's epoll_wait (arch/x86/entry/syscalls/syscall_64.tbl).
+        #[cfg(target_arch = "x86_64")]
         libc::SYS_epoll_wait,
         libc::SYS_epoll_pwait,
         libc::SYS_accept4,
@@ -251,7 +251,6 @@ fn program() -> io::Result<shards_syscall_filter::Filter> {
 }
 
 /// Installs `filter` over the whole process, its refusals named.
-#[cfg(target_arch = "x86_64")]
 fn install(filter: &shards_syscall_filter::Filter) -> io::Result<()> {
     shards_syscall_filter::name_refusals()?;
     shards_syscall_filter::install(filter, true)
@@ -371,7 +370,6 @@ mod tests {
     /// syscall named. In a process of one thread, as a network process is: forked, the
     /// program compiled before; a test binary's other threads make calls a network process
     /// does not (glibc's pthread_create restores its signal mask after its thread runs).
-    #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_filter_ends_a_process_that_makes_what_none_makes() {
         use std::io::Read as _;
