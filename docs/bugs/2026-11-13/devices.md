@@ -89,6 +89,8 @@ Priority mapping for the user's requested notification: **P0 critical; P1 high; 
 
 **Catching test:** deterministically accrue debt, observe the worker entering the limiter wait, issue status reset, and assert reset and subsequent VM teardown complete without waiting for the debt deadline. Include ordinary valid I/O and hostile invalid lengths.
 
+**Status (2026-11-14):** fixed in de1da2168000250e609f05c729fa13a39a39752e (red `reset_cancels_only_its_own_limiter_wait`; green 7 block tests, 4 limiter tests, VMM clippy, macOS arm64). Cancellation preserves shared debt and wakes only the resetting device. Full VM teardown remains owed to ROOT: `cargo test -p shards --test hotplug devices_are_plugged_into_a_running_microvm_and_its_disks_grow`.
+
 ### devices-05 — P1 / high — Capacity and generation are not published as one coherent configuration
 
 **Location:** `crates/vmm/src/devices/virtio/block.rs:119`–`:120`.

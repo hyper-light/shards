@@ -8901,6 +8901,9 @@ performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/REA
 
 ### M240. A microVM's I/O limits, from its guest's writes (D178)
 
+Correctness follow-up devices-04 (2026-11-14): focused reset red/green and limiter tests, macOS arm64; 7 block and 4 limiter tests green with VMM clippy. See `measurements/device-fixes/README.md`. This is cancellation evidence, not a new throughput or hardware-VM measurement.
+
+
 - **Question.** Does a microVM whose VMM paces its volume's writes at `--io-maxbandwidth`
   write at that rate, never above it, on a quiet host and on a loaded one; and what does
   the limiter cost a write it does not hold back?
@@ -24243,6 +24246,19 @@ kernel of that ABI (no host here has one): the asking pass ran on ABI 11. Owed t
 VM runs on KVM, a template's seal among them (daemon.rs pool tests), x86_64 and arm64
 through L1, and one on a kernel of ABI 5 to 7.
 
+Amended 2026-11-13 (ROOT: R03, the wait's doubling was a chosen multiplier, D222). The
+wait has no timeout now: an asked thread's answer (an eventfd) or its end (its thread
+pidfd, PIDFD_THREAD) wakes it, and a thread that blocks the asking signal, or a process
+that ignores it (SigBlk, SigIgn), fails the layer at once, typed (`Unasked::Deaf`). On
+adacachy2, `cargo test -p shards-vm-process confine::` 11 of 11, the asked pass run under
+the filter an ABI-5 host has (`confine_as(5)`), `-p shards-syscall-filter` 9 of 9 (rules
+on two arguments added up, against the instruction model), clippy clean for both.
+Mutants, each red: the SigBlk/SigIgn check dropped, the deaf test's pass waited until
+the 240 s bound killed it (exit 124); the pidfd dropped from the wait,
+`a_wait_for_an_answer_ends_with_the_answer_or_the_thread` timed out on a thread that
+ended unanswered (`left: Err(Timeout)`); the thread-pidfd rule dropped, the asked pass
+trapped under that filter (exit 159).
+
 ### M569. A confined VM process dialed its user's sockets, its daemon's Engine API among them (D30)
 
 Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
@@ -24281,7 +24297,7 @@ Unit-level functional evidence, no real VM: `confine` refuses any process outsid
 AppContainer, and the WHP real-VM tests are owed.
 [Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
 
-### M571. Pending credential leases own their time budget and live waiters (D242, creds-05/06)
+### M571. Credential lease budgets, live waiters, exact signing and Continue (D242, creds-05..08)
 
 2026-11-13, adas-mac-studio.local, Darwin arm64; implementer light checks only.
 Red 6eb3ad718: `cargo test -p shards-net creds_ -- --nocapture` reproduces duplicate
@@ -24306,3 +24322,12 @@ Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32
 all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
 verifier coverage remains independent. No performance result; linked credential
 record above has commands, evidence, and real-VM coverage owed.
+
+creds-08: headers alone with Expect: 100-continue reproduced a stalled held POST at
+021d13e20. The gateway now owns the one Continue and removes its answered Expect
+field before eventual upstream forwarding (49e4c2967, scoped by 888dcb884).
+Merged 62bfef2e5: 46 injector tests passed, 2 ignored, shards-net all-target clippy
+and policy check passed on macOS arm64. The tests cover chunked/length refresh
+and revoke bodies, partial arrival, retries and a forwarded code exchange. The
+100 response is RFC 9110 §10.1.1's protocol response, no chosen timer or allowance.
+Commands, red/green excerpts, exact source revisions and unrun work are linked above.
