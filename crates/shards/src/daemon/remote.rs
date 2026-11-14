@@ -170,12 +170,19 @@ impl Host for Machine {
             .collect::<Result<Vec<String>, Error>>()?;
         judge(&args)?;
         if args.first().map(String::as_str) == Some(super::COPY_STEP) {
-            super::log(format!("client {client}: copy step requested"));
+            let step = known(args.get(1), &["stat", "archive", "extract", "export", "import"]);
+            super::log(format!("client {client}: copy step {step}"));
             return self.copy_step(args);
         }
         // `shards move vm`'s steps, this machine the one moved to (D176 part 6).
         if args.first().map(String::as_str) == Some(shards_ipc::MOVE_STEP) {
-            super::log(format!("client {client}: move step requested"));
+            let step = known(
+                args.get(1),
+                &[
+                    "save", "plan", "live", "done", "ready", "key", "cpu", "export", "import",
+                ],
+            );
+            super::log(format!("client {client}: move step {step}"));
             return self.copy_step(args);
         }
         if args.first().map(String::as_str) == Some(crate::context::ENGINE_STEP) {
@@ -186,7 +193,8 @@ impl Host for Machine {
             return bind_step(client, args.get(1).map(String::as_str).unwrap_or_default());
         }
         if args.first().map(String::as_str) == Some(crate::synced::SYNC_STEP) {
-            super::log(format!("client {client}: context step requested"));
+            let step = known(args.get(1), &["manifest", "build", "agent"]);
+            super::log(format!("client {client}: context step {step}"));
             return self.sync_step(client, args, request.env, request.terminal);
         }
         // A step of a policy command the client evaluates, this machine its builder: run as
@@ -195,7 +203,11 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(crate::build::policy_command::POLICY_STEP) {
             use crate::build::policy_command::STEP_VAR;
             let step = args.get(1).cloned().unwrap_or_default();
-            super::log(format!("client {client}: policy step requested"));
+            let what = format!(
+                "policy step {}",
+                known(Some(&step), &["platform", "resolve", "fetch"])
+            );
+            super::log(format!("client {client}: {what}"));
             let mut env = self.command_env(client, request.env);
             env.push((STEP_VAR.to_string(), OsString::from(step)));
             let words: Vec<String> = ["buildx", "policy"]
@@ -203,17 +215,17 @@ impl Host for Machine {
                 .map(String::from)
                 .chain(args.into_iter().skip(2))
                 .collect();
-            return command(&self.exe, &words, &env, None, None, None);
+            return command(&self.exe, &words, &env, None, None, None).map(|r| ended(r, client, what));
         }
         if args.first().map(String::as_str) == Some(crate::agent::SIGN_STEP) {
-            super::log(format!("client {client}: signature step requested"));
+            super::log(format!("client {client}: signature step"));
             return self.sign_step(args);
         }
         // Words its shards never sends, which would have this machine's files read or
         // written for the client (D228).
         let said = crate::cli::command_words(&args);
         if let Some(why) = crate::client_grants::refuse_words(&said, crate::context::CIDFILE) {
-            super::log(format!("client {client}: refused command: {why}"));
+            super::log(format!("client {client}: refused {}: {why}", named(&said)));
             return Err(Refused::Files(why).into());
         }
         // A run's or create's `--cidfile` of the client's (`context::CIDFILE`), the client's
@@ -230,9 +242,10 @@ impl Host for Machine {
                 None => a,
             })
             .collect();
-        // Arguments may include environment/file expansions, credentials and guest argv.
-        // Operation metadata alone belongs in ordinary logs (remote-05, D180).
-        super::log(format!("client {client}: shards command requested"));
+        // What ran, by its command's name alone: its arguments, flags' values and variables may
+        // hold credentials, paths and a guest's argv (remote-05, D180).
+        let what = named(&said);
+        super::log(format!("client {client}: {what}"));
         let pipe = || std::io::pipe().map_err(|e| Error::new(format!("a pipe for the command: {e}")));
         let (made, made_w) = match tells {
             true => {
@@ -242,7 +255,7 @@ impl Host for Machine {
             false => (None, None),
         };
         let env = self.command_env(client, request.env);
-        command(&self.exe, &args, &env, request.terminal, made, made_w)
+        command(&self.exe, &args, &env, request.terminal, made, made_w).map(|r| ended(r, client, what))
     }
 
     fn invited(&self) -> usize {
@@ -257,6 +270,39 @@ impl Host for Machine {
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(usize::MAX)
     }
+}
+
+/// `word`, where it is one of `steps`, the words a step of a client's names its kind by: a log
+/// says no other (remote-05, D180).
+fn known<'a>(word: Option<&'a String>, steps: &[&'a str]) -> &'a str {
+    word.and_then(|w| steps.iter().find(|s| **s == w.as_str()))
+        .copied()
+        .unwrap_or("of no kind it knows")
+}
+
+/// The command a client's `said` (its words as dispatch reads them, `cli::command_words`)
+/// names, as the machine's log says it: its path alone (`shards run`, `shards container ls`),
+/// never a flag, a value or an argument of it (remote-05, D180).
+fn named(said: &[String]) -> String {
+    let words: Vec<&str> = said.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["run", ..] => "shards run".to_string(),
+        ["container", "run", ..] => "shards container run".to_string(),
+        _ => shards_cmdline::commands::find(&words)
+            .map_or_else(|| "a command".to_string(), |(_, path, _)| path.to_string()),
+    }
+}
+
+/// `running`, its end said in the machine's log, `what` it was for `client` and its status.
+fn ended(mut running: Running, client: &str, what: String) -> Running {
+    let wait = std::mem::replace(&mut running.wait, Box::new(|| 0));
+    let client = client.to_string();
+    running.wait = Box::new(move || {
+        let status = wait();
+        super::log(format!("client {client}: {what} ended, status {status}"));
+        status
+    });
+    running
 }
 
 /// A client's command `args` started on Unix, `env` its environment, as [`Machine::start`]
@@ -1915,8 +1961,32 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "child failed: {:?}", output.status);
         let log = String::from_utf8_lossy(&output.stderr);
-        assert!(log.contains("client alice: refused"), "missing diagnostic");
+        assert!(
+            log.contains("client alice: refused shards run"),
+            "missing diagnostic: {log}"
+        );
         assert!(!log.contains(SECRET), "private request value entered the log");
+    }
+
+    /// The machine's log names what a client ran by its command's path alone, and a step by its
+    /// kind where it is one of its protocol's: never a flag's value, an argument or a word of
+    /// the client's own (remote-05, D180).
+    #[test]
+    fn a_log_names_a_command_by_its_path_and_a_step_by_its_kind() {
+        let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            named(&words("run --rm -e K=sk-planted image exit 3")),
+            "shards run"
+        );
+        assert_eq!(named(&words("container ls -a")), "shards container ls");
+        assert_eq!(
+            named(&words("buildx policy eval --print x")),
+            "shards buildx policy eval"
+        );
+        assert_eq!(named(&words("sk-planted --flag")), "a command");
+        let step = |w: &str| known(Some(&w.to_string()), &["platform", "resolve", "fetch"]).to_string();
+        assert_eq!(step("resolve"), "resolve");
+        assert_eq!(step("sk-planted"), "of no kind it knows");
     }
 
     #[cfg(unix)]

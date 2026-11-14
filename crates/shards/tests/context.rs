@@ -29,6 +29,9 @@ fn connect(socket: &Path) -> std::os::unix::net::UnixStream {
     std::os::unix::net::UnixStream::connect(socket).unwrap()
 }
 
+/// A secret-looking value a test's command carries, which the machine's log never says.
+const PLANTED: &str = "SHARDS_PLANTED=sk-ant-planted-0d6f1c";
+
 /// What is read of `conn`, a connection to an engine `home`'s daemon serves: on Unix a read
 /// judged as the tests' waits are (`common::Following::of_home`), its kind its call site, its
 /// bytes its progress; on Windows, whose pipes take no timeout to read by, the pipe itself,
@@ -1105,8 +1108,12 @@ fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
     // Evaluated here: the machine was asked its steps alone, never to run the commands, and
     // none of the client's paths.
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
-    assert!(log.contains("client laptop: policy step platform"), "{log}");
-    assert!(log.contains("client laptop: policy step resolve"), "{log}");
+    assert!(log.contains("client laptop: policy step platform\n"), "{log}");
+    assert!(log.contains("client laptop: policy step resolve\n"), "{log}");
+    assert!(
+        log.contains("client laptop: policy step resolve ended, status 0"),
+        "{log}"
+    );
     assert!(!log.contains("client laptop: shards buildx policy"), "{log}");
     assert!(!log.contains(dir.to_str().unwrap()), "{log}");
 }
@@ -1545,7 +1552,7 @@ fn a_context_runs_commands_on_its_machine_whole() {
     assert!(ran.stdout.lines().any(|l| l == "uid 1000"), "{ran}");
     let exited = run_shards_env(
         &["--context", "gpu", "run"],
-        &["--rm", image.as_str(), "exit", "3"],
+        &["--rm", "-e", PLANTED, image.as_str(), "exit", "3"],
         &on_laptop,
     );
     assert_eq!(exited.status, Some(3), "{exited}");
@@ -1623,13 +1630,13 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let back = run_shards_env(&["use", "context"], &["default"], &on_laptop);
     assert_eq!(back.status, Some(0), "{back}");
 
-    // The machine's log says what its client ran.
+    // The machine's log says what its client ran, by its command's name and its status, and
+    // nothing of its flags' values or arguments (remote-05, D180).
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     assert!(log.contains("client laptop joined"), "{log}");
-    assert!(
-        log.contains(&format!("client laptop: shards run --rm {image} exit 3")),
-        "{log}"
-    );
+    assert!(log.contains("client laptop: shards run\n"), "{log}");
+    assert!(log.contains("client laptop: shards run ended, status 3"), "{log}");
+    assert!(!log.contains(PLANTED), "{log}");
     let stopped = run_shards_env(&["daemon"], &["stop"], &on_machine);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }

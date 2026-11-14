@@ -207,7 +207,7 @@ fn unpublish(release: &shards_vmm::platform::UnixStream, asked: impl FnOnce()) -
             return false;
         }
         asked();
-        release.set_read_timeout(None).is_ok()
+        shards_ipc::timeout_set(release.set_read_timeout(None)).is_ok()
             && matches!(shards_ipc::read_message(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
 }

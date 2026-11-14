@@ -17849,6 +17849,8 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Review devices-08 and devices-09 (2026-11-14, D214's and D232's amendments): a plug's guest steps on D215's learned judge in place of 30 s; a GPU selection bounded by its renderer transport (`UINT32_MAX / 33`) in Rust and the renderer patches, the host catalog by Vulkan's `uint32_t`. Unit and clippy green on macOS arm64 and Linux x86_64; patches dry-run applied to both pinned renderer sources. No renderer build, GPU or real VM run; the remaining device literals' measurements are owed (D214). See `measurements/device-fixes/README.md`.
+
 Review devices-10 (2026-11-14, D214's amendment): device refusals typed across DEVICE/DEVICED; codec red/green, VMM, daemon and clippy green on macOS arm64, Linux x86_64 clippy. No real VM run. See `measurements/device-fixes/README.md`.
 
 Review devices-11 (2026-11-14, D214's amendment): disk files claimed by identity, one writer, read-only shared; 9 daemon devices unit tests and shards clippy green on macOS arm64, the claim check's mutation red. No real VM plug was run. See `measurements/device-fixes/README.md`.
@@ -24707,3 +24709,56 @@ partition was made, and the WHP tests that need one skipped.
 Owed to ROOT, unrun: the real-WHP guest routes of 05 and 06 (D140); 09's sensitivity query's
 cost on a restore (D196); 10's host-wide owner across VM processes, an R02 decision, and its
 jupiter measurement (D191); the 8-target lint, CI and Windows E2E on main.
+
+### M579. macOS refuses SO_RCVTIMEO on a socket whose peer closed; hyper-quic recounts a replayed first Initial (D180, remote-06)
+
+*SO_RCVTIMEO after a close.* On macOS 26.2 (adas-mac-studio.local, arm64), `setsockopt(SO_RCVTIMEO)`
+on a Unix stream socket whose peer wrote six bytes and closed returned EINVAL, as XNU's
+`sosetoptlock` refuses options on a socket with SS_CANTRCVMORE and SS_CANTSENDMORE both set; on one
+whose peer only shut its write side it was taken; on one shut both ways by its own side, EINVAL. A
+read after the refusal returned the six bytes whole, then its end. Method: a standalone program over
+`UnixStream::pair` (each case in turn), built with rustc and run once. This was ROOT's k16
+`a_contexts_engine_is_its_machines` failure at 994e7715d (context.rs:711, `Os { code: 22 }`): the
+tests' `common::Following` set the timeout before each judged read, so an Engine API relay that
+answered and closed before the next read failed it. Such a read waits for nothing; `common::timed`
+takes the refusal for no timeout needed. `shards_api::client` sets read timeouts before its reads
+too; whether its paths meet a closed peer first is unchecked (owed, ROOT).
+
+*A replayed first Initial.* `net::tests::replayed_and_unauthenticated_datagrams_do_not_advance_liveness`
+(a real `Driver` taking a hand-driven client's first datagram, then the same datagram 1 ms later)
+heard the replay on Codex's frame-total rule: hyper-quic e0613f52's `handle_first_packet` calls
+`on_packet_authenticated` and `process_decrypted_packet` without `drops_authenticated`, so the first
+packet's number never enters its space's dedup window and the replay's CRYPTO frame is recorded
+again (read from the source; the counters themselves were not printed for a replay). Its first
+packet took the handshake's progress to 1141, which three PINGs after it left unchanged. With
+CRYPTO counted by new handshake data, the replay hears nothing (macOS arm64,
+adas-mac-studio-3.local).
+
+### M580. A helper's start reads its version, not its bytes, once its version is checked (runs-10, D36)
+
+Each start of a helper shards carries had read its whole file through SHA-256 (runs-10's
+first fix, 0122d69cc); `helpers::program` now reads the file's version
+(`platform::file_identity`) and its bytes only for a version this process has not
+checked. Method: unit test `a_helper_checks_cost` (helpers.rs, `--ignored`), a file of
+one helper's size (2,976,656 bytes, shards-vm, and 4,326,400, shards-net, as this
+Mac's helpers cache held them on 2026-11-13), 200 checks each way, in-process,
+`--profile test-release`: "version known" is the whole check of a start that finds its
+version (open, version, cache), "bytes read" a SHA-256 of the file through std's buffer.
+Host adas-mac-studio-3.local (hostname Adas-Mac-Studio-4.local, 14 cores, arm64), macOS 26.2 25C56,
+rustc 1.98.1, revision e81b6da82, load average 2.93 (the host's CI job beside it),
+kiln r1863:
+
+| file | check | n | p50 | p90 | p99 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| shards-vm, 2,976,656 B | version known | 200 | 27.1 µs | 27.7 µs | 37.2 µs | 80.6 µs |
+| shards-vm, 2,976,656 B | bytes read | 200 | 1.260 ms | 1.861 ms | 3.143 ms | 3.470 ms |
+| shards-net, 4,326,400 B | version known | 200 | 27.1 µs | 27.5 µs | 34.4 µs | 157.9 µs |
+| shards-net, 4,326,400 B | bytes read | 200 | 1.699 ms | 2.050 ms | 4.545 ms | 4.821 ms |
+
+So a networked start that read both helpers' bytes spent 1.26 + 1.70 = 2.96 ms on them at
+their p50s (3.14 and 4.55 ms at their p99s), and one whose versions are known 54 µs: the bytes are read once a process
+for each version. The page cache held the file throughout (the bytes-read figure is the
+hash's, not the disk's). Owed (ROOT): the same on Linux x86_64 and Windows; a cold
+`shards run --kernel` and `docs/research/measurements/build-ab/ab.py` A/B of this build
+against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP.
+[runs-fixes record](measurements/runs-fixes/README.md#runs-10).

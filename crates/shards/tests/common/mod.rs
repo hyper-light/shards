@@ -5420,9 +5420,22 @@ pub trait Timed {
     fn set_nonblocking(&self, on: bool) -> io::Result<()>;
 }
 
+/// A read timeout set, or none needed: macOS refuses SO_RCVTIMEO with EINVAL on a socket both
+/// of whose ways are shut, as its peer's close leaves a Unix stream's (XNU bsd/kern/uipc_socket.c,
+/// `sosetoptlock`: SS_CANTRCVMORE and SS_CANTSENDMORE both set; on macOS 26.2 a pair whose peer
+/// wrote and closed refused it, a half-closed one took it, and the bytes written were still read
+/// whole). A read of such a socket waits for nothing: it returns what is left, then its end.
+fn timed(set: io::Result<()>) -> io::Result<()> {
+    match set {
+        #[cfg(target_os = "macos")]
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        set => set,
+    }
+}
+
 impl Timed for shards_vmm::platform::UnixStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        shards_vmm::platform::UnixStream::set_read_timeout(self, timeout)
+        timed(shards_vmm::platform::UnixStream::set_read_timeout(self, timeout))
     }
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         shards_vmm::platform::UnixStream::set_nonblocking(self, on)
@@ -5431,7 +5444,7 @@ impl Timed for shards_vmm::platform::UnixStream {
 
 impl Timed for std::net::TcpStream {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        std::net::TcpStream::set_read_timeout(self, timeout)
+        timed(std::net::TcpStream::set_read_timeout(self, timeout))
     }
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         std::net::TcpStream::set_nonblocking(self, on)

@@ -1643,6 +1643,21 @@ removes it; `--rm` removes it once it ends.
     never started the run, which goes to another VM; one that answers otherwise, or not
     in time, may have, and is ended and followed like any run, never retried: no run
     starts twice.
+  - **Which VMs a run tries** (runs-11, R03). A run once tried three warm VMs and failed
+    after them whatever stood ready (`HANDOFF_TRIES`, a number picked). Now a VM that
+    surely did not take it gives way to the next only where it had been waiting in its
+    pool before the run asked (`Ready::pooled`, the instant it joined its pool's waiting
+    VMs, before the run's): those are as many as the pools held then, each tried once,
+    however many ended unseen, so the tries are bounded by VMs that exist, not by a count.
+    One started after the run asked (for it, or a refill since) that surely did not take
+    it ends the start, said as `the VM started for the run did not take it: WHY`: a VM
+    made for the run failing so is no sign the next one would not, and starting VMs on
+    against a failure every VM may share has no end of its own. Cold start: an empty
+    pool's first VM is started for the run and is tried once. Unit test
+    `untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start` (four
+    pooled VMs ended unseen, the fifth serves; one started for the run, ended unseen, ends
+    the start after one ask); with the count of three put back, it fails (the run is
+    refused with a healthy fifth VM ready).
   - A record changed after it went is an error, not nothing to do.
   - **Evidence:** deterministic unit tests that play the warm VMs over socket pairs and
     hold each step (acquisition, TAKEN, STARTED, DONE) while `rm`, `rm -f`, `wait`,
@@ -2970,28 +2985,52 @@ executables, signatures, GPU and crash-debris checks remain owed in the
 **Helper integrity before each start (runs-10).** A helper's directory is named by the
 helpers' digests, but `complete` and the GPU writer took a helper of the right length
 as this build's whatever its bytes: one byte changed (by hand, by a program of the
-user's, on the disk) was started as it was, in every later process. Now each time a
-process is about to start a helper (`helpers::vm`, `net`, `vm_gpu`, and `checked` for
-the path the daemon keeps, from `launch::program`), its bytes are read whole and their
-SHA-256 compared with the digest build.rs embedded beside them; where they differ, or
-the file is gone, the carried bytes are written again whole (staging of the writer's
-own, synced, closed, renamed over it: the bytes build.rs signed on macOS), and a helper
-that cannot be written again (Windows refuses to replace one a running VM process
-holds) is refused, saying its path, its digest and why. A helper `SHARDS_VM_BINARY`
-names, or a carrier's beside its `shards` (D237, signed by the carrier, its bytes not
-those this build carries), is its giver's to answer for and is started as it is.
-`complete` stays the check that a directory was placed whole. No literal: the digest is
-SHA-256 of the carried bytes, the read through std's buffer at std's size. **Cost owed
-(ROOT):** each VM start now reads shards-vm (2.98 MB in this Mac's cache) and each
-networked one shards-net (4.33 MB) through SHA-256; its latency is unmeasured:
-`docs/research/measurements/build-ab/ab.py` between this build and its parent on one
-template, and a cold `shards run --kernel` launch, on HVF, KVM and WHP. A start between
-the check and the exec can still find bytes changed in that window; only an exec of the
-checked descriptor (fexecve, which macOS lacks) would close it. Unit tests (helpers.rs):
-`a_helper_whose_bytes_changed_is_written_again_before_it_starts` (one byte flipped, its
-length kept: written again) and `a_changed_helper_that_cannot_be_written_again_is_refused`;
-with the digest check put back to the length check, the first fails (the flipped bytes
-are returned). [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
+user's, on the disk) was started as it was, in every later process. Now every start of
+a helper this build carries goes through `helpers::program` (launch.rs for the VM
+process, its GPU build included; netproc.rs for the network process; `run --kernel` and
+`restore`'s exec): the file is opened, its version read (`platform::file_identity`: on
+Unix fstat's device, inode, length, write and change times; on Windows FileIdInfo's
+volume and 128-bit file ID, FileStandardInfo's length, FileBasicInfo's write and change
+times), and its bytes read whole through SHA-256 and compared with the digest build.rs
+embedded beside them only where this process has not yet checked that version. A write
+to the file changes its write and change times, and a file renamed over its name is
+another inode or ID, so changed bytes are read again at the next start. Where they
+differ, or the file is gone, the carried bytes are written again whole (staging of the
+writer's own, synced, closed, renamed over it: the bytes build.rs signed on macOS) and
+checked again; a helper that cannot be written again, or written is still not this
+build's, is refused, saying its path, its digest and why.
+
+- **The version cache** (`helpers::CHECKED`): key, the helper's path; value, the version
+  its bytes were last found to be this build's at; one entry a helper, so at most the
+  three this build carries, for the process's life; authority, the file's bytes, read
+  again whenever its version differs. Its benefit, measured: a start's check where the
+  version is known against one that reads the bytes (unit test `a_helper_checks_cost`,
+  [PM M580](../research/platform-measurements.md)). What it cannot see: bytes changed
+  below the file system (a disk's own fault) with no write through it; and on Windows a
+  writer that sets a file's write and change times back by SetFileInformationByHandle,
+  which only this user's own programs can, whose cache it is.
+- **Started as the file checked.** The checked file stays open until its process has
+  started (`helpers::Program`). On Linux the start goes through it, `/proc/PID/fd/N` of
+  the checking process, which the starting process (this one, or its spawner, PM M158,
+  of the same user) opens as the very file checked whatever has been renamed over its
+  name since (proc(5)); its name where /proc is not there. On Windows it is opened
+  sharing only reads (CreateFileW's dwShareMode), so while it is held no other handle
+  writes, renames or deletes it, and CreateProcess, which opens it to read and execute,
+  still may. macOS has no fexecve(2) and its posix_spawn takes a path: there the window
+  between the check and the exec stays, the start by name.
+- A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
+  the carrier, its bytes not those this build carries), is its giver's to answer for and
+  is started as it is.
+- No literal: the digest is SHA-256 of the carried bytes; the read goes through std's
+  buffer at std's size.
+- **Tests** (helpers.rs): `a_helper_whose_bytes_changed_is_written_again_before_it_starts`,
+  `a_changed_helper_that_cannot_be_written_again_is_refused`,
+  `a_helper_is_read_again_only_once_its_file_changed` (a known version reads no bytes;
+  a write since, its length kept, is read again and mended),
+  `a_checked_helper_starts_as_the_file_checked` (Linux: the file checked starts though
+  another was renamed over its name; Windows: no rename over a held helper, which still
+  starts; macOS: its name). Mutations: the version left out of the cache's key, and the
+  bytes unread, each fail. [runs-fixes record](../research/measurements/runs-fixes/README.md#runs-10).
 
 shards is one file to install and run, `shards`: every command, the daemon included,
 one CLI.
@@ -4118,6 +4157,26 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 - **Sizes by the structure.** KVM's x86-64 structures are each exactly their ioctl's size;
   its XSAVE area at least `struct kvm_xsave`'s and at most what its own CPUID says (leaf
   0DH's ECX, which KVM's KVM_CAP_XSAVE2 says the same of); WHP's APIC state its register page.
+  An XSAVE area of another size than the restoring host's (another host's, D176 part 6) is
+  laid into one of this host's KVM_CAP_XSAVE2 size (amended 2026-11-14, review finding
+  migrate-07): KVM_SET_XSAVE reads that many bytes, and "the offsets of the state save areas
+  in struct kvm_xsave follow the contents of CPUID leaf 0xD on the host" (api.rst §4.43), so
+  `arch::x86_64::xsave::lay_into` keeps the legacy region and header as saved and puts each
+  component the guest enabled (XCR0, from its saved XCRs) or holds (XSTATE_BV) where both
+  hosts' leaf 0xD lay it out alike: the saved vCPU's CPUID, as its own host's KVM offered it,
+  and this host's; the rest is zeros, the initial state XRSTOR gives a component its
+  XSTATE_BV leaves clear (Intel SDM Vol. 1 §13.8.1). A component laid out otherwise or
+  nowhere, a compacted area, one shorter than its header or past either area is refused
+  typed (`XsaveRefused`, `hv::kvm::Error::Xsave`), after the CPU coverage check and before
+  anything of the vCPU is set. Before, an area shorter than this host's was refused: a
+  non-AMX host's 4096 bytes on an AMX host's 11008, under a baseline without AMX. No literal
+  is chosen: the offsets and sizes are the two hosts' CPUID, the header's the SDM's (512 and
+  64 bytes, §13.4.1-13.4.2). Held by `a_smaller_hosts_xsave_area_is_laid_into_a_larger_ones`,
+  `an_xsave_area_laid_out_otherwise_is_refused` and `xcr0_is_read_from_a_vcpus_xcrs`. Owed to
+  ROOT: a move between a non-AMX and an AMX host of one vendor under their common baseline
+  (`SHARDS_MOVE_INVITE=<destination-invitation-file> cargo test -p shards --test moved
+  a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections`), its guest's
+  vector registers checked after.
 - **The hypervisor judges what only it sizes.** A GIC's state on arm64 is its backend's own
   serialization: KVM's and WHP's restores bound theirs (the writes above; WinHvPlatformDefs.h's
   layouts), and Hypervisor.framework refuses a state not its own. WHP's XSAVE area is as long
@@ -4146,7 +4205,7 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 | `MAX_PATH` (snapshot/mod.rs) | 4096 | `platform::PATH_MOST` | include/uapi/linux/limits.h l. 13; macOS sys/syslimits.h; Win32 "Maximum Path Length Limitation"; RFC 3629 §3 |
 | `MAX_NAME` (snapshot/mod.rs) | 64 | `"g-"` + 32 + 1 + 8 + 1 + 16 hex digits = 60 | `fresh_name`'s format |
 | `MAX_RECORD` (vm/live.rs) | 1 MiB | `DATA_BLOCK` = 2 MiB | D151 |
-| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`); a save past it refused | the restore's process maps that RAM for the guest; D176's decoders for each part |
+| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`), none past a u64's bytes; and `platform::holdable_known()`, what the reading host can hold now; each refused typed (`StateRefused`, migrate-04); a save past the RAM refused | the restore's process maps that RAM for the guest; D176's decoders for each part; the host's kernel (proc_meminfo(5) MemAvailable; macOS kern.memorystatus_level of sysconf(_SC_PHYS_PAGES); MEMORYSTATUSEX ullAvailPhys) |
 | `MAX_DISKS` (snapshot/mod.rs) | 64 (2 × 64 identities, 64 shares) | `VIRTIO_SLOTS` = the guest architecture's `layout::VIRTIO_MMIO_MAX` (18 on x86-64, 32 on arm64), disks, pmem files and shares together | `vm::virtio_devices` (each a virtio-mmio transport, refused past it); x86-64's free IOAPIC pins 5-22; arm64's SPIs from `SPI_VIRTIO_MMIO` |
 | arch name (snapshot/mod.rs) | 32 bytes | the input's: it is only compared with this build's | `decode_head` |
 | `MAX_TABLES` (fs/proto.rs), `MAX_CONTROL` (fs/mod.rs) | `MAX_STATE`, 64 MiB | `CONTROL - 1` = 2^31 - 1: what one control frame's length word says below its mark | fs/mod.rs `CONTROL`, `read_any_into` |
@@ -4162,6 +4221,32 @@ them. The bytes of the files a guest holds open on a share that no path reaches 
 one part nothing of the machine bounds: a save of a state past its RAM is refused, as one
 past 64 MiB was, and the share's tables travel to and from their server in one control
 frame, as long as its length word says.
+
+**And by the host that reads it (amended 2026-11-14, review finding migrate-04).** The
+head's RAM is the file's own claim: a head forged to u64::MAX MiB saturated `most_state`,
+and a sparse state as long as its sender liked (a move lays a FILE's length with
+`set_len`, daemon/moves.rs) had all of it allocated and zero-filled before its decoder
+refused it. A state is now refused, typed (`snapshot::StateRefused`), from its head and its
+length alone, before its whole is allocated: a RAM of more bytes than a u64 counts
+(`PastAnyMachine`), a length past its machine's RAM (`PastItsMachine`), and a length past
+what the reading host can hold now (`PastHost`): `platform::holdable_known`, what its kernel
+says it has available (Linux's MemAvailable, proc_meminfo(5); macOS's
+kern.memorystatus_level of its memory; Windows' ullAvailPhys), else all its memory
+(sysconf(_SC_PHYS_PAGES), GlobalMemoryStatusEx), the shards daemon's existing `holdable`
+moved to vmm's platform for both processes. That is the bound the file does not say. It is
+read where it runs, at each read, so it has no cold start; a host that says neither is
+refused (`HostMemoryUnknown`), never read past. The confined Linux VM process reads the
+host's memory by sysinfo(2), which glibc's and musl's sysconf ask and its seccomp filter
+now allows (`confine.rs`); /proc/meminfo is past its Landlock rules. Every way in reads by
+it: a move's `relocate` of what it placed, a restore's `read`, `backing_named`, `layout`.
+Held by `a_forged_states_head_has_no_more_allocated_than_the_host_holds` (with each bound
+removed, red) and `a_state_past_its_machines_memory_is_refused`. Owed to ROOT: reads at once
+are each bounded alone (two within the host's available memory may be past it together:
+an admission held across a home's concurrent restores is the design); the probe's cost on
+the restore path (R14: a read of /proc/meminfo in Linux's daemon, a Landlock-refused open
+and a sysinfo(2) in the confined VM process, two sysctls on macOS, one call on Windows); a
+template restored on Linux KVM (its VM process confined), Hypervisor.framework and WHP; and
+the bounded-RSS run of a forged sparse state through a move's import (`tests/moved.rs`).
 
 Held by unit tests (`a_state_is_bounded_by_its_machine`,
 `a_state_past_its_machines_memory_is_refused`, `a_state_past_what_a_machine_has_is_refused`,
@@ -4446,9 +4531,16 @@ read holds one whole message. The rest keep their values until their learned des
 land, each with its cold start, typed failure and the measurement ROOT owes, in
 [the row-by-row record](../research/measurements/network-fixes-v1/README.md#network-12-the-network-controls-derivations-row-by-row):
 the TCP queues and retransmission (RFC 6298, RFC 1122 R2), window updates (RFC 9293),
-the per-turn budget (deficit round robin), UDP lifetimes (RFC 4787 REQ-5, which the
-30 s unreplied lifetime breaks past port 1023), the backlog, the poller's batch, the
-ring's size, the resolvers' wait and the daemon's bind tries.
+the per-turn budget (deficit round robin), the backlog, the poller's batch, the
+ring's size, the resolvers' wait and the daemon's bind tries. UDP lifetimes (2026-11-14):
+a UDP flow of the network process lives RFC 4787 §4.3 REQ-5's two minutes past its last
+datagram, either way, answered or not (`shards_abi::bounds::UDP_MAPPING_IDLE`), where it
+lived conntrack's 30 s until answered and streaming, which broke REQ-5 for every port past
+1023 (red `a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past`). Each datagram going
+out refreshes it (REQ-6, which MUST) and each coming in (REQ-6a, which MAY: its host socket
+is connected to its one granted peer). REQ-5a's shorter timers for well-known ports and
+REQ-5c's RECOMMENDED five minutes are not taken, with why and the measurement ROOT owes in
+the row-by-row record.
 
 `shards network` makes networks of microVMs as `docker network` makes them of
 containers, with Docker's inputs and words: create, ls, inspect, rm, prune, connect and
@@ -7096,6 +7188,57 @@ timeout, floor or chosen range is introduced. A network timestamp of i64::MAX
 seconds/u32::MAX nanoseconds previously panicked in `SystemTime` addition on the
 daemon's context-step thread. [Red/green and owed release-listener proof](../research/measurements/remote-fixes-v1/README.md).
 
+#### Heard, relayed and logged (remote-05 follow-up, remote-06, remote-07, 2026-11-14)
+
+*Heard is authenticated (remote-06).* `Liveness::heard` advances only when what a connection
+has taken from its peer grew across an event (`net::received`): every frame hyper-quic e0613f52
+records after AEAD and its duplicate check (`drops_authenticated`, then `frame_rx.record`), PADDING
+excepted, and CRYPTO counted by the new handshake data it carries (`handshake_progress`), never by
+its number. hyper-quic takes a server connection's first packet without putting its number in the
+Initial space's dedup window (`handle_first_packet` skips `drops_authenticated`), so a replay of a
+client's first Initial is taken again and its CRYPTO frames recounted, though RFC 9000 §12.3 has a
+receiver discard a packet whose number it has processed; counting CRYPTO by new data alone makes the
+replay no progress and no liveness. A datagram routed by its connection ID alone, a forged tag and a
+replay hear nothing; ACK-only packets are heard. Saturated counters and PADDING-only packets
+under-count, which can only let a holder go sooner, never invent liveness. The accept path's own
+heard is unchanged. The upstream fix (the first packet's number into its dedup window) is owed to
+hyper-raft, ROOT routing it; the pin stays. The contended-handshake tests' holders answer with PINGs
+their real client `Connection` seals in new packets (RFC 9000 §13.3, RFC 9002 §6.2.4) each initial
+RTT, reading only what each test advances, and acknowledging nothing until a test advances them, so
+that their server stays cold (no RTT sample, RFC 9002 §5.1); the 7-PTO, 4 s/8 s and 2.5 s
+expectations stand. The test fixture's window (`HAND_WINDOW`) and cadence (`ANSWER_EVERY`) are the
+tests' own, derived in their comments; no production value changed.
+
+*A relay is had before its command starts (remote-07).* Every fallible step of relaying a
+command (a driver waker's descriptor for each thread, each thread) runs on the start worker before
+`Host::start` (`server::Relay::ready`); one that fails starts nothing, refused. The threads wait for
+their parts on channels of one place each; once the command has started the driver hands them over
+(`Relay::relay`), which cannot fail, so the one wait that reaps the command always has its thread
+however its stream ends, and a start the driver cannot hear (its channel full or gone) is hung up
+and reaped, where it was only hung up. A relay costs one more thread than before for a command that
+tells nothing it made (its `made` thread ends at once, its part never sent): its cost is unmeasured
+and owed to ROOT's profiling (R14).
+
+*What the log says (remote-05 follow-up).* A client's command is logged by its path alone
+(`daemon::remote::named`, from cmdline's own table: `client laptop: shards run`), a step by its
+kind where it is one of its protocol's (`policy step resolve`, `context step build`, the copy and
+move steps' verbs; any other word `of no kind it knows`), a refusal with its command's path, and
+each command's end with its status (`client laptop: shards run ended, status 3`). No flag's value,
+argument, variable, path or relay token is logged.
+
+*Values still chosen (remote-08), owed.* `invite::LIFETIME_SECS` (3600 s) and `frame::MAX_FRAME`
+(4 MiB) are not derived. The lifetime is an authority the owner grants: no learning may set or
+lengthen it, so it is the owner's to state (when an invitation is made) or the person's to rule
+that an invitation lasts until its one use; the refusal of a lapsed one stays typed. The frame bound
+is to become each tag's own contract: an Exec request this host's own `sysconf(_SC_ARG_MAX)` read at
+the listener's start (POSIX; on Linux a quarter of RLIMIT_STACK, at least 128 KiB, execve(2)), as a
+request this host cannot exec is refused anyway; on Windows CreateProcess's 32,767-character command
+line and the environment block; stdin, stdout and stderr chunks `server::READ_MOST` (the pipe
+buffers cited there); a join `JOIN_MAX`; a microVM's ID `MADE_MOST`; resizes, signals and controls
+their fixed sizes; `MemberExec` its `ASK_MOST`; and managed records (`managed::RECORD_MOST`) and
+move plans (`daemon::moves::MAX_PLAN`), which now borrow `MAX_FRAME`, bounds of their own contracts.
+A frame past its tag's bound is refused typed before it is buffered. None of it is built yet.
+
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
 The adversarial review of D180 (docs/bugs/2026-11-13/remote.md) found three ways a client
@@ -7471,10 +7614,11 @@ no part of the microVM's own network design (D59, D61), it is replaced.
   peers reach, with what would declare it (`EXPOSE`, `expose:`, `--expose`), so the gap
   is seen at once rather than as a connection that hangs.
 - **Its own values.** A joiner's link takes the hardware address its kernel gives it,
-  as an agent's does. The proxy keeps a UDP client's mapping as long as the microVM's own
-  connection tracking keeps a UDP flow (`nf_conntrack_udp_timeout`, and
-  `nf_conntrack_udp_timeout_stream` once answered, read from the running guest), so that
-  a published UDP port lasts as the microVM's translated flows do.
+  as an agent's does. The proxy keeps a UDP client's mapping a UDP mapping's two
+  minutes past its last datagram, either way (RFC 4787 REQ-5 and REQ-6,
+  `shards_abi::bounds::UDP_MAPPING_IDLE`), as the network process keeps one (D46). It
+  kept the guest's conntrack timeouts (30 s until answered, then 120 s), which break
+  REQ-5 past port 1023 (network-12, 2026-11-14).
 - **`--network host` is the command's own namespace**, as the client asks: the engine's
   host's network, the command's reach and no more. `none` is a namespace of its own with
   its loopback alone; `container:X` the namespace of X, one of its own joiners.
@@ -7521,9 +7665,10 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   `/etc/resolv.conf` the switch's resolver. Init says the membership to the host before
   the joiner starts (`MEMBER`: its network, address and prefix, gateway and the kernel's
   hardware address), which the daemon keeps for inspect while it runs; its end lets the
-  membership go. The proxy relays what is published, its UDP mappings kept as the guest's
-  connection tracking keeps a UDP flow (read in a run of the pinned kernel, arm64,
-  2026-10-17: 30 s, and 120 s once answered), and says a
+  membership go. The proxy relays what is published, its UDP mappings kept RFC 4787 REQ-5's
+  two minutes past their last datagram (above; before 2026-11-14 the guest's conntrack
+  timeouts, read in a run of the pinned kernel, arm64, 2026-10-17: 30 s, and 120 s once
+  answered), and says a
   port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
   member reaches nothing of the command's.
 - **Found and closed: TCP DNS sessions held their accept's names (network-09,
@@ -8946,6 +9091,17 @@ holds the stable lock while another writer learns a helper end, publishes its ow
 teardown snapshot and releases the lock: both maxima must survive. Existing cold
 liveness behavior and the record's millisecond format are unchanged; no new wait,
 cache, runtime number or platform adapter. See the [runs fix evidence](../research/measurements/runs-fixes/README.md).
+
+**The record read as written** (runs-12). `heard` publishes through `platform::write_in`,
+which on Windows replaces no file (PM M345): each write lands a version, `ends.~N`, and
+removes the plain name. The record was read as the plain name (`fs::read_to_string`), so
+on Windows every reader after the first write found none, and each host's slices were
+lost to the next process. Every reader now opens the newest version (`ends::newest`,
+`platform::open_newest_in`), on Unix the name itself. Unit test
+`each_published_record_is_read_back_by_the_next_process` (three publications, each read
+back by a new process's `Ends`), red on Windows with the plain read put back; Unix has
+no versions, so only Windows can show it red. The E2E reader
+(`a_kills_end_is_kept_as_this_hosts_in_its_home`) reads the newest version too.
 
 **Found.** The audit of what was taken from Docker (docs/audit/2026-10-16_docker-framing.md):
 a microVM whose command outlived its SIGKILL had its VM killed 10 s later and its end given
@@ -10594,6 +10750,39 @@ An allocation failure of the answer ends the VM's link, which its asker reads as
 `ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
 an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
 Red/green: docs/research/measurements/device-fixes/README.md.
+
+**Amended 2026-11-14 (devices-08, R03): what of a plug was a picked figure.**
+- Its guest's steps (find, mount, unmount, grow, a function's release) had 30 s
+  (`GUEST_TIMEOUT`), the one clock left after init's waits went to the kernel's word
+  (above). They are waited for as the daemon's other built-ins are (`exec_answered`, D215's
+  judge): while the microVM's process runs, before the built-in's first answer its liveness
+  alone, then past the slowest seen ended where a whole one shows it ran no CPU, its host not
+  the reason. Cold: the first plug of a daemon waits until its guest answers or its microVM
+  ends. Its failure is the judge's typed cut (stalled, or its process unreadable). No figure
+  of its own. Owed to ROOT: `cargo test -p shards --test plug` with a guest made slow, its
+  plug done past 30 s.
+- Owed, each with its derivation, not swapped for another figure:
+  - the 4 KiB of a step's answer kept (`1 << 12`, shared with the daemon's other built-ins'
+    reads): init's DEVICE answers a device name or a refusal naming a path (Linux `PATH_MAX`,
+    4096, include/uapi/linux/limits.h), so its longest answer is init's longest refusal
+    line, which init's own words bound; to be derived from them in init and the daemon
+    together.
+  - the run's 4 PCI slots (`pci_slots`): a bus has 32 device numbers (PCI Express Base 6.0
+    §7.2.2); a slot is reserved as the microVM boots, into its template, so it cannot grow on
+    demand. The derivation is every free device number less what a slot costs a boot (MSI
+    routes, the window, an IOMMU endpoint): ROOT owes the boot latency and memory of a bus
+    of 0, 1, 2, 4, 8, 16 and every free slot (`docs/research/measurements/build-ab/ab.py`,
+    PM M430's method, each restoring one template, n, p50/p90/p99/max) before the default
+    moves.
+  - virtio-blk's, the GPU control ring's and virtio-iommu's queue sizes (256, 256, 64): the
+    queue audit's Little's-law derivation above, owed its service and refill times.
+  - `THROUGH_MAX` (1 MiB, a range's relay): the most one virtio-blk request carries is what
+    the device advertises, `seg_max` × `size_max` (virtio 1.3 §5.2.4); it advertises
+    `seg_max` alone today (254), so a request's length is the guest kernel's choice. With
+    `VIRTIO_BLK_F_SIZE_MAX` advertised, one request is one round trip of at most their
+    product; that changes the device's features, held in snapshots, and is owed with
+    ROOT's run of `cargo test -p shards --test build` over a range (PM M442's case).
+
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -19677,6 +19866,11 @@ host's. A microVM has a kernel and a network namespace of its own; shards makes 
 network the host's at the layers a program can tell, TCP and UDP, as Docker Desktop's
 host networking does for its VM's containers (PM M177).
 
+**Relayed UDP flows (network-12, 2026-11-14).** The host network's relay (hostbind.rs)
+kept a relayed UDP flow as Linux conntrack keeps one, 30 s until answered and streaming,
+then 120 s; it now keeps each RFC 4787 REQ-5's two minutes past its last datagram, either
+way (REQ-6), as the network process does (D46, `shards_abi::bounds::UDP_MAPPING_IDLE`).
+
 - **Asked, and said each time.** `--network host` alone gives it; every start of such a
   run says on stderr what it gives (`shards_abi::run::NETWORK_HOST`): its servers' ports
   are the host's, reachable from every network the host is on, and it reaches the host's
@@ -20098,6 +20292,16 @@ receiver for an incoming port" above:
   --test build a_udp_flow_goes_to_its_ports_next_holder -- --exact --nocapture`
   extended to hand the port back to the first holder and to the second again with one
   client socket, each datagram answered by the holder of the moment.
+- **What the chooser reads, at the sizes it comes in (network-12, 2026-11-14).** Its
+  sock_diag dumps were read into 16 KiB and its socket-end notices into 8 KiB, chosen,
+  and a namespace not yet read, or whose `ip_unprivileged_port_start` could not be read,
+  was taken to start at 1024. Each dump datagram is now read whole at its own length,
+  peeked first (recv(2)'s MSG_PEEK | MSG_TRUNC, netlink's since Linux 2.6.22); each
+  notice, never read, is taken with no buffer (MSG_TRUNC); and the unprivileged start is
+  the namespace's own, a namespace whose value cannot be read or is no port refusing its
+  member to the chooser with the error said, a bind before the namespace is read being
+  the member's own kernel's (`every_listener_of_a_long_dump_is_found`,
+  `the_unprivileged_start_is_the_namespaces_own_or_an_error`).
 - **A choice costs a commit, not a grace period (PM M513).** M498 found a contested
   bind(2) and listen(2) each at 16 ms (p50) where an uncontested filtered one took 19 and
   14 µs: the chooser programmed each choice on a netfilter socket of its own and closed
@@ -26503,22 +26707,28 @@ reboots, driver updates or hot plug; a device's own identity does.
   that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
   nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
-**Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
-from Hex's scheduler's u16 device index, to which they hold a context's selection
-(`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
-host's Vulkan devices and device groups (`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`,
-physical-*.patch). Shards takes no selection its renderer refuses, so its own checks hold the
-same figure (`check_selection`, `probe_bytes`, the join's and `host_visible`'s host counts,
-format 29's reader, `--gpu-device`). Below it a count is bounded by what carries it: a
-receipt's by the device lines its own bytes hold, each at least its UUID's 32 hex digits and
-its end, before anything is reserved for them (`probe.rs`); a snapshot's by its remaining
-bytes (`codec::Reader::seq`); and, once the VM process enumerates the host's GPUs, by those,
-each named once (`selection::resolve`). The figure is still owed its derivation (R03): the
-protocol's own bounds are Vulkan's `uint32_t` counts, for which every patch already
-allocates overflow-checked, and the transport's `uint32_t byte_count` over its 33-byte
-stride (`UINT32_MAX / 33`, 130,150,524, which `virgl_device_selection_payload_size` already
-checks). Moving to them changes the C patches, which only a renderer build and a real GPU can
-check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
+**Literals.** `MAX_PHYSICAL_GPUS`, 130,150,524 (devices-09, 2026-11-14; was 65,536, Hex's
+scheduler's u16 device index copied, with no derivation): a selection's bound is what carries
+it to the renderer, its payload's length a `uint32_t` (`virgl_device_selection_payload_size`,
+physical-transport-*.patch) of `SELECTION_STRIDE` bytes a GPU, its Vulkan deviceUUID's 16
+bytes (`VK_UUID_SIZE`) as 32 hex digits and a NUL: `UINT32_MAX / 33`. The patches hold a
+context's selection to the same (`VIRGL_DEVICE_UUID_MAX_COUNT`,
+`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, each now `UINT32_MAX` over its stride), so Shards takes
+no selection its renderer refuses (`selection_fits`, used by `check_selection`, the nesting
+grant's `gpus=` and `--gpu-device`). A host's Vulkan devices and device groups are counted by
+Vulkan's own `uint32_t` (`MAX_HOST_GPUS`; the patches' host-count checks keep only their
+zero and `SIZE_MAX` checks before each `calloc`, their copied bound gone), and a selection
+names each at most once. Hex's scheduler indexes its own devices by u16: that bound is
+Hex's to hold its selections to (hex-api `MAX_DEVICES`, hex-runtime `cdi_for`), not this
+transport's. Below the bound a count is bounded by what carries it: a receipt's by the
+device lines its own bytes hold, each at least its UUID's 32 hex digits and its end, before
+anything is reserved for them (`probe.rs`); a snapshot's by its remaining bytes
+(`codec::Reader::seq`); a command line's by its arguments; and, once the VM process
+enumerates the host's GPUs, by those, each named once (`selection::resolve`); each reserved
+fallibly. The patches were dry-run applied to both pinned sources (virglrenderer 1.3.0 and
+0.10.4e-krunkit, `patchcheck.sh`); building the renderer from them and a real GPU's
+selection are owed to ROOT: `scripts/gpu-libs` on Linux and macOS, then `cargo test -p shards
+--test gpu` on its Linux Vulkan fixture and a Mac.
 `GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
 (`probe.rs`, derived from it); a refusal's record and frame are bounded by the receipt and the

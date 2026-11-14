@@ -122,11 +122,12 @@ enum Event {
     },
     /// The command's stdin took what it was given, or takes no more: the stream is read on.
     InputTaken { conn: ConnKey, stream: StreamId },
-    /// The command's start, on its worker ([`start_apart`]), ended: started, or why not.
+    /// The command's start, on its worker ([`start_apart`]), ended: started, its relay had
+    /// before it, or why not.
     Started {
         conn: ConnKey,
         stream: StreamId,
-        started: Result<Running, Error>,
+        started: Result<Box<Begun>, Error>,
     },
     /// What the machine says of a peer whose handshake ended, on its worker ([`judge_apart`]):
     /// the name of the client it enrolled under the peer's key, if one is, and how many
@@ -686,13 +687,8 @@ impl<H: Host> Server<'_, '_, H> {
     /// A command's start ended ([`Event::Started`]): its stdio relayed, and what its client
     /// sent meanwhile read on, its control streams' too; refused, said so; its stream gone
     /// meanwhile (its client left, or its connection) or ended, hung up, its relay reaping it.
-    fn started(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, started: Result<Running, Error>) {
-        let began = started.is_ok();
-        let relayed = match (started, &self.sender) {
-            (Ok(running), Some(sender)) => relay(running, conn, id, sender),
-            (Ok(_), None) => Err(Error::new("the daemon's listener is not running")),
-            (Err(e), _) => Err(e),
-        };
+    fn started(&mut self, io: &mut Io<'_>, conn: ConnKey, id: StreamId, started: Result<Box<Begun>, Error>) {
+        let relayed = started.map(|begun| begun.relay.relay(begun.running));
         let Some(stream) = self.stream(conn, id).filter(|s| !s.last) else {
             if let Ok(relayed) = &relayed {
                 (relayed.hangup)();
@@ -700,7 +696,7 @@ impl<H: Host> Server<'_, '_, H> {
             return;
         };
         stream.starting = false;
-        stream.started = began;
+        stream.started = relayed.is_ok();
         match relayed {
             Ok(relayed) => {
                 stream.stdin = Some(relayed.stdin);
@@ -726,99 +722,130 @@ impl<H: Host> Server<'_, '_, H> {
     }
 }
 
-struct Relayed {
-    stdin: mpsc::SyncSender<Vec<u8>>,
-    credits: Vec<mpsc::SyncSender<()>>,
-    /// The command tells what it made ([`Running::made`]).
-    tells: bool,
-    hangup: Box<dyn Fn() + Send>,
-    resize: Option<Box<dyn Fn(u16, u16) + Send>>,
-    signal: Box<dyn Fn(u32) + Send>,
+/// A command's relay, had before its command starts ([`Relay::ready`]): a thread that will
+/// write to its stdin what the client sends, one for each of its stdout and stderr that will
+/// send the driver what it writes as credit allows, one for what it tells it made, and the
+/// one that will wait for it to end, each waiting for its part. Every step of a relay that can
+/// fail (a waker's descriptor, a thread) is taken here, before the command exists: one that
+/// failed once its command had started dropped its wait and its hangup, and the command,
+/// started and unowned, was neither hung up nor reaped (remote-07). Once it has started, its
+/// parts are handed over ([`Relay::relay`]), which cannot fail.
+struct Relay {
+    stdin: mpsc::SyncSender<Box<dyn Write + Send>>,
+    chunks: mpsc::SyncSender<Vec<u8>>,
+    outputs: [(mpsc::SyncSender<Source>, mpsc::SyncSender<()>); 2],
+    made: mpsc::SyncSender<Source>,
+    wait: mpsc::SyncSender<Wait>,
 }
 
-/// Relays `running`'s stdio: a thread that writes to its stdin what the client sends, one
-/// for each of its stdout and stderr that sends the driver what it writes as credit allows,
-/// and one that waits for it to end.
-fn relay(
+/// What a command's output, or what it tells it made, is read from ([`Running`]).
+type Source = Box<dyn Read + Send>;
+
+/// A command's wait ([`Running::wait`]).
+type Wait = Box<dyn FnOnce() -> i32 + Send>;
+
+/// A command started, and the relay had for it before it was ([`Event::Started`]).
+struct Begun {
     running: Running,
-    conn: ConnKey,
-    stream: StreamId,
-    sender: &Sender<Event>,
-) -> Result<Relayed, Error> {
-    let Running {
-        mut stdin,
-        stdout,
-        stderr,
-        wait,
-        hangup,
-        resize,
-        signal,
-        made,
-    } = running;
-    let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
-        std::thread::Builder::new()
-            .name(name.into())
-            .spawn(f)
-            .map(drop)
-            .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
-    };
-    let (stdin_tx, stdin_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUED_CHUNKS);
-    let to = sender.try_clone()?;
-    spawn(
-        "remote-stdin",
-        Box::new(move || {
-            // The sender dropped: the command reads the end of its input, this one's drop.
-            while let Ok(bytes) = stdin_rx.recv() {
-                if stdin.write_all(&bytes).and_then(|()| stdin.flush()).is_err() {
-                    // The command reads no more of it: what the client sends goes nowhere,
-                    // and the driver, which may wait for room, reads the stream on.
-                    drop(stdin_rx);
-                    let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
-                    return;
-                }
-                let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
-            }
-        }),
-    )?;
-    let mut credits = Vec::new();
-    for (tag, mut from) in [(Tag::Stdout, stdout), (Tag::Stderr, stderr)] {
-        let (credit_tx, credit_rx) = mpsc::sync_channel::<()>(1);
-        let _ = credit_tx.try_send(());
-        credits.push(credit_tx);
+    relay: Relay,
+}
+
+/// A channel of one place for one thread's part: its one send never waits.
+fn part<T>() -> (mpsc::SyncSender<T>, mpsc::Receiver<T>) {
+    mpsc::sync_channel(1)
+}
+
+impl Relay {
+    /// The threads that will relay a command `stream` of `conn` starts, telling the driver
+    /// through `sender`. One that fails lets go of those had already: each, its part's sender
+    /// dropped, ends without one.
+    fn ready(conn: ConnKey, stream: StreamId, sender: &Sender<Event>) -> Result<Relay, Error> {
+        let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
+            std::thread::Builder::new()
+                .name(name.into())
+                .spawn(f)
+                .map(drop)
+                .map_err(|e| Error::new(format!("a thread for a client's command: {e}")))
+        };
+        let (wait, waits) = part::<Wait>();
         let to = sender.try_clone()?;
         spawn(
-            "remote-out",
+            "remote-wait",
             Box::new(move || {
-                let mut buffer = vec![0u8; READ_MOST];
-                while credit_rx.recv().is_ok() {
-                    match from.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            let bytes = buffer.get(..n).unwrap_or_default().to_vec();
-                            if to
-                                .send(Command::Handler(Event::Output {
-                                    conn,
-                                    stream,
-                                    tag,
-                                    bytes,
-                                }))
-                                .is_err()
-                            {
-                                return;
+                if let Ok(wait) = waits.recv() {
+                    let status = wait();
+                    let _ = to.send(Command::Handler(Event::Exited { conn, stream, status }));
+                }
+            }),
+        )?;
+        let (stdin, stdins) = part::<Box<dyn Write + Send>>();
+        let (chunks, chunks_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUED_CHUNKS);
+        let to = sender.try_clone()?;
+        spawn(
+            "remote-stdin",
+            Box::new(move || {
+                let Ok(mut stdin) = stdins.recv() else {
+                    return;
+                };
+                // The sender dropped: the command reads the end of its input, this one's drop.
+                while let Ok(bytes) = chunks_rx.recv() {
+                    if stdin.write_all(&bytes).and_then(|()| stdin.flush()).is_err() {
+                        // The command reads no more of it: what the client sends goes nowhere,
+                        // and the driver, which may wait for room, reads the stream on.
+                        drop(chunks_rx);
+                        let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
+                        return;
+                    }
+                    let _ = to.send(Command::Handler(Event::InputTaken { conn, stream }));
+                }
+            }),
+        )?;
+        let output = |tag: Tag| -> Result<_, Error> {
+            let (from, froms) = part::<Source>();
+            let (credit, credits) = mpsc::sync_channel::<()>(1);
+            let _ = credit.try_send(());
+            let to = sender.try_clone()?;
+            spawn(
+                "remote-out",
+                Box::new(move || {
+                    let Ok(mut from) = froms.recv() else {
+                        return;
+                    };
+                    let mut buffer = vec![0u8; READ_MOST];
+                    while credits.recv().is_ok() {
+                        match from.read(&mut buffer) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                let bytes = buffer.get(..n).unwrap_or_default().to_vec();
+                                if to
+                                    .send(Command::Handler(Event::Output {
+                                        conn,
+                                        stream,
+                                        tag,
+                                        bytes,
+                                    }))
+                                    .is_err()
+                                {
+                                    return;
+                                }
                             }
                         }
                     }
-                }
-                let _ = to.send(Command::Handler(Event::OutputEnd { conn, stream, tag }));
-            }),
-        )?;
-    }
-    let tells = made.is_some();
-    if let Some(made) = made {
+                    let _ = to.send(Command::Handler(Event::OutputEnd { conn, stream, tag }));
+                }),
+            )?;
+            Ok((from, credit))
+        };
+        let outputs = [output(Tag::Stdout)?, output(Tag::Stderr)?];
+        // Had whether or not the command tells what it made, which only its start says.
+        let (made, mades) = part::<Source>();
         let to = sender.try_clone()?;
         spawn(
             "remote-made",
             Box::new(move || {
+                let Ok(made) = mades.recv() else {
+                    return;
+                };
                 let mut bytes = Vec::new();
                 let _ = made.take(MADE_MOST).read_to_end(&mut bytes);
                 if !bytes.is_empty() {
@@ -836,23 +863,65 @@ fn relay(
                 }));
             }),
         )?;
+        Ok(Relay {
+            stdin,
+            chunks,
+            outputs,
+            made,
+            wait,
+        })
     }
-    let to = sender.try_clone()?;
-    spawn(
-        "remote-wait",
-        Box::new(move || {
-            let status = wait();
-            let _ = to.send(Command::Handler(Event::Exited { conn, stream, status }));
-        }),
-    )?;
-    Ok(Relayed {
-        stdin: stdin_tx,
-        credits,
-        tells,
-        hangup,
-        resize,
-        signal,
-    })
+
+    /// Hands `running`'s parts to their threads: its wait to the one thread that reaps it,
+    /// whatever becomes of its stream. Each part's channel has the one place its thread waits
+    /// to empty, so no send waits; one fails only once its thread has ended, which it does
+    /// only after taking its part.
+    fn relay(self, running: Running) -> Relayed {
+        let Running {
+            stdin,
+            stdout,
+            stderr,
+            wait,
+            hangup,
+            resize,
+            signal,
+            made,
+        } = running;
+        let Relay {
+            stdin: stdin_to,
+            chunks,
+            outputs: [(stdout_to, stdout_credit), (stderr_to, stderr_credit)],
+            made: made_to,
+            wait: wait_to,
+        } = self;
+        let _ = wait_to.send(wait);
+        let _ = stdin_to.send(stdin);
+        let _ = stdout_to.send(stdout);
+        let _ = stderr_to.send(stderr);
+        let tells = made.is_some();
+        // None: its sender's drop ends its thread.
+        if let Some(made) = made {
+            let _ = made_to.send(made);
+        }
+        Relayed {
+            stdin: chunks,
+            credits: vec![stdout_credit, stderr_credit],
+            tells,
+            hangup,
+            resize,
+            signal,
+        }
+    }
+}
+
+struct Relayed {
+    stdin: mpsc::SyncSender<Vec<u8>>,
+    credits: Vec<mpsc::SyncSender<()>>,
+    /// The command tells what it made ([`Running::made`]).
+    tells: bool,
+    hangup: Box<dyn Fn() + Send>,
+    resize: Option<Box<dyn Fn(u16, u16) + Send>>,
+    signal: Box<dyn Fn(u32) + Send>,
 }
 
 impl<H: Host> Handler for Server<'_, '_, H> {
@@ -1145,10 +1214,12 @@ fn join_apart<'s, 'e, H: Host>(
 
 /// Starts `request` for `client` on a worker of `starts` of its own, which tells the driver
 /// through `sender` once `host` has ([`Event::Started`]): a start takes as long as its host's
-/// spawn does, and the driver, which acknowledges every client's packets, waits on none. A
-/// command started once the driver has ended is hung up, as none relays it. The key `spki`
-/// its connection proved is judged again first (remote-03): one the machine no longer
-/// enrolls as `client` starts nothing, and its connection is closed ([`Event::Revoked`]).
+/// spawn does, and the driver, which acknowledges every client's packets, waits on none. The
+/// key `spki` its connection proved is judged again first (remote-03): one the machine no
+/// longer enrolls as `client` starts nothing, and its connection is closed
+/// ([`Event::Revoked`]). Its relay is had next ([`Relay::ready`]): one that cannot be starts
+/// nothing, refused. A command started once the driver has ended (or whose start it has no
+/// room to hear) is hung up and reaped, as its relay's wait has it.
 fn start_apart<'s, 'e, H: Host>(
     starts: &'s std::thread::Scope<'s, 'e>,
     host: &'e H,
@@ -1170,21 +1241,26 @@ fn start_apart<'s, 'e, H: Host>(
                 let _ = sender.send(Command::Handler(Event::Revoked { conn, client }));
                 return;
             }
-            let started = host.start(&client, request);
+            let started = Relay::ready(conn, stream, &sender).and_then(|relay| {
+                Ok(Box::new(Begun {
+                    running: host.start(&client, request)?,
+                    relay,
+                }))
+            });
             if let Err(
                 mpsc::TrySendError::Disconnected(Command::Handler(Event::Started {
-                    started: Ok(running),
-                    ..
+                    started: Ok(begun), ..
                 }))
                 | mpsc::TrySendError::Full(Command::Handler(Event::Started {
-                    started: Ok(running), ..
+                    started: Ok(begun), ..
                 })),
             ) = sender.try_send(Command::Handler(Event::Started {
                 conn,
                 stream,
                 started,
             })) {
-                (running.hangup)();
+                let Begun { running, relay } = *begun;
+                (relay.relay(running).hangup)();
             }
         })
         .map(|_| ())
