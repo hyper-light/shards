@@ -1603,8 +1603,11 @@ fn signed_as(cli: Option<Cli>, run: &Run<'_>) -> Result<(String, signin::Placeho
 }
 
 /// A token host's response body, read whole: none where it names no token, so that it goes on as
-/// it came; else its tokens, asked of the run host to keep, `asker` waiting.
+/// it came; else its tokens, asked of the run host to keep, `asker` waiting. Refused where a token
+/// lies in `places` too, the parts of its head and trailers that go to the guest as they came
+/// (creds-01): only its body's own places are given placeholders.
 fn capture_tokens(
+    places: &[&[u8]],
     body: &[u8],
     cli: Option<Cli>,
     asker: signin::Asker,
@@ -1613,6 +1616,7 @@ fn capture_tokens(
     let Some(tokens) = signin::read(body).map_err(Refusal::SignIn)? else {
         return Ok(None);
     };
+    signin::unechoed(&tokens, places.iter().copied()).map_err(Refusal::SignIn)?;
     let sign_ins = &mut run.credentials.sign_ins;
     let index = cli
         .and_then(|cli| sign_ins.of(cli))
@@ -2339,7 +2343,7 @@ impl Ended {
         else {
             return;
         };
-        let read = capture_tokens(&body, self.sign_in, run.waiter.into(), run);
+        let read = capture_tokens(&[&head], &body, self.sign_in, run.waiter.into(), run);
         let went = read.and_then(|tokens| match tokens {
             None => self.pass_whole(&head, &body),
             Some(tokens) => {
@@ -3624,7 +3628,14 @@ impl H2 {
         let Some(TokenResponse::Reading { fields, body }) = s.token.take() else {
             return;
         };
-        match capture_tokens(&body, self.sign_in, asker, run) {
+        let read = {
+            let mut places: Vec<&[u8]> = fields.iter().flat_map(|f| [&f.name[..], &f.value[..]]).collect();
+            if let Some(Last::Trailers(trailers)) = &s.down_last {
+                places.extend(trailers.iter().flat_map(|f| [&f.name[..], &f.value[..]]));
+            }
+            capture_tokens(&places, &body, self.sign_in, asker, run)
+        };
+        match read {
             Ok(None) => self.give(gid, fields, &body),
             Ok(Some(tokens)) => s.token = Some(TokenResponse::Capturing { fields, body, tokens }),
             Err(refusal) => self.answer(gid, refusal),

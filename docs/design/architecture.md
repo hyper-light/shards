@@ -2198,15 +2198,67 @@ audit's "Security and test coverage").
   - `tkill(2)`, obsolete beside `tgkill(2)` [man: tkill(2)] and musl's `pthread_kill`, is
     refused: a vCPU's kick is `tgkill` to its own thread, and `tgkill` is allowed only
     within the process. `prctl` names threads and sets no_new_privs, nothing else.
+  - `prlimit64(2)` is allowed for pid 0 and the process's own pid alone (the C libraries'
+    getrlimit makes pid 0, as pthread_create sizes a stack): another process's limits,
+    its spawner's among them, are its user's to change, a hard limit irreversibly [man:
+    getrlimit(2); kernel/sys.c, `check_prlimit_permission`], and Landlock has no hook on
+    them (review platform-04, [PM M567]).
+  - A layer over the filter as the process confines itself (`confine.rs`, `sockets`;
+    `seccomp::layer`, which allows the syscalls it does not name, for the filter under it
+    to decide), on every thread (TSYNC, Linux 3.17), every kernel's: a socket is a stream
+    or a sequenced-packet one, as every socket a VM process makes is, since a datagram
+    socket can send to any socket file it names [net/unix/af_unix.c,
+    `unix_dgram_sendmsg`]; and a VM given no vsock path, as every VM a daemon runs is
+    (`--warm` takes none), fails every connect(2) with EACCES, as Landlock refuses one: its
+    user's sockets, its daemon's Engine API among them, cannot be dialed (review
+    platform-02, [PM M569]). The filter allows seccomp(2)'s `SET_MODE_FILTER` for the
+    layer: unprivileged, under no_new_privs, a filter only takes syscalls away.
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
-    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too.
+    refused, and on ABI v6 signals and abstract Unix sockets outside the process are too,
+    and on v9 connections to socket files (`RESOLVE_UNIX`) but beneath the directory of a
+    vsock path it was given, where the vsock muxer dials a guest's host ports
+    (`<path>_<port>`) [PM M569].
+  - Before v9 a VM given a vsock path (`shards build`'s builder, `run vm --kernel
+    --vsock`) can still dial any socket file its user can: no primitive of older kernels
+    scopes a connect by its path within the process. The closed way for those is its
+    spawner dialing for it, as on macOS and Windows (`platform::set_dialer`); owed.
     Allowed: its kernel, initrd, init, pmem and disks, a restore's snapshot and the files it
     records, the snapshot directory it saves, sockets made
     only beside a vsock path it was given (`--vsock`), `/dev/null`, its own `/proc` entry, and `/dev/kvm` and the
     huge page settings where the host has them. No directory may take a file from another
     (`REFER`). Rules hold inodes: a template keeps its rule when the daemon renames it.
+  - Every layer reaches every thread (review platform-01, [PM M568]). A layer restricts
+    the thread that makes it and the threads it starts after
+    [man: landlock_restrict_self(2)], and a VM process has threads by its first layer (its
+    exec port's, its rates', its stdin's) and every vCPU and device thread by its seal:
+    a thread compromised among them reaches through a sibling what the layer took away.
+    Where the ABI has `LANDLOCK_RESTRICT_SELF_TSYNC` (v8), one call gives every thread the
+    caller's new domain atomically. On every ABI from v5, the primitive every kernel it
+    runs on has, each thread is asked in turn: a real-time signal (`SIGRTMIN + 1`, past
+    the vCPUs' kick), whose handler makes the restriction in the thread it interrupts and
+    answers through a futex, as glibc's setxid broadcast makes setuid(2) every thread's,
+    until a listing of `/proc/self/task` names no thread not settled. A thread is settled
+    by its answer, or by being gone or exiting (`PF_EXITING`: it runs no more user code,
+    and drops a signal sent to it alone). A thread started after its creator answered is
+    restricted already; one started before is named by the next listing. The handler
+    restarts what it interrupts where the kernel restarts it (`SA_RESTART`), and the VM
+    process's waits go on past EINTR, as past the vCPUs' kicks; a vCPU's KVM_RUN ends as a
+    kick's does, and runs again.
+    - No constant: an answer wakes its wait, which looks at the thread as it ends, first
+      after as long as the caller's own restriction took (the cold start), then as long
+      as the last answer took, twice as long each time one is still awaited (saturating),
+      at least the monotonic clock's resolution. A short wait only looks sooner.
+    - A thread asleep with the signal blocked (`S`, its `SigBlk`) at two looks in turn,
+      the second after a wait as long as all before it, waits with it blocked: Mesa's
+      threads block every signal for their lives (u_thread_create). It cannot be asked,
+      and the layer fails, closed: a seal's failure hands its run to another VM
+      (daemon.rs, `hand_over`). glibc's pthread_create blocks every signal for a moment,
+      which one look may meet.
+    - Unverified limits: a thread id reused within one pass would need the kernel's ids
+      to wrap as it runs; a thread that blocks the signal and runs without sleeping is
+      waited for.
   - Its own `/proc` entry stays looked up for its life, a descriptor of it held from the
     first layer on (PM M305): procfs makes a new inode for `/proc/PID` each time its dentry
     is made afresh (fs/proc/base.c, `proc_pid_lookup`), a live process's unused dentry goes
@@ -2221,8 +2273,8 @@ audit's "Security and test coverage").
     maintainer asks that the version be read from the kernel, never from its release
     (firecracker-microvm/firecracker#5771).
   - Still to do, per R3: a user and mount namespace with `pivot_root` into an empty
-    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) and pathname Unix socket (ABI v9)
-    rules where the kernel has them; and the jail's cost on the start path (R4 Q1).
+    tmpfs, `CLONE_INTO_CGROUP`, rlimits; UDP (ABI v10) rules where the kernel has them;
+    and the jail's cost on the start path (R4 Q1).
 - **macOS: App Sandbox, replacing the Seatbelt profile** (docs/research/
   macos-confinement.md, [PM M67]). The profile was applied with `sandbox_init`, which the
   SDK marks deprecated and no longer supported [sandbox.h:7,45]; shards uses no deprecated
@@ -27905,6 +27957,21 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
+  placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
+  HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
+  `Set-Cookie`, the reason phrase) put the real token in the guest beside the placeholders. Now, once the body names
+  its tokens, every place of the response that goes to the guest as it came is read for each token, access, refresh
+  and ID, as it came and with its percent-encoding and quoted-pairs decoded (`signin::unechoed`): an HTTP/1.1 head
+  whole, each HTTP/2 field's name and value, its trailers'. One found is refused 502 (`signin::Refusal::Echoed`)
+  before the tokens are asked outside, as `read` refuses a token echoed in another of the body's strings: the guest
+  gets none of the response and nothing is captured. A chunked HTTP/1.1 response's trailer section is no part of what
+  goes (`Piece::Trailers`, dropped). Masking the head with the placeholders instead was refused: it would hand the
+  guest a response the body's own rule refuses. Tests (macOS arm64): `inject::tests::leaks`' token response
+  repeating its tokens in a field, a cookie and the reason phrase over HTTP/1.1, and in a field and in the trailers
+  over HTTP/2, red before (a real token reached the guest), green after, and each escaped form found; the check
+  removed, and HTTP/2's trailers left out of it, each fail them. Still unread: an informational (1xx) response,
+  which goes before the body names its tokens.
 
 **Built: step 8's second slice, its first part: the injector takes a sign-in's tokens outside and answers its
 refresh and revocation there** (crates/net: `signin.rs`, `inject.rs`, `lib.rs`, `lease.rs`; shards-dns' sign-in grant;

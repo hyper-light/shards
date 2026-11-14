@@ -364,3 +364,133 @@ fn a_chunked_token_responses_trailers_are_no_part_of_its_body() {
 }
 
 const EXCHANGE: &str = r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#;
+
+/// The token host's answer to the code's exchange, its tokens repeated in its head: a field, a
+/// cookie and the reason phrase.
+fn echoing_token_answer(request: &[u8]) -> Vec<u8> {
+    let answer = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    assert!(holds(request, br#""grant_type":"authorization_code""#));
+    format!(
+        "HTTP/1.1 200 {ISSUED_ACCESS}\r\nContent-Type: application/json\r\nX-Echo: {ISSUED_ACCESS}\r\nSet-Cookie: rt={ISSUED_REFRESH}; Secure\r\nContent-Length: {}\r\n\r\n{answer}",
+        answer.len()
+    )
+    .into_bytes()
+}
+
+
+/// Do: Claude Code's code exchanged at its HTTP/1.1 token host, whose response repeats the
+/// issued tokens in its head. Expect: the response refused 502 before its tokens are asked
+/// outside; no real token in anything the guest read; nothing captured.
+#[test]
+fn a_token_responses_head_never_carries_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    let mut credentials = sign_in_credentials(&root, false);
+    let ca = credentials.ca.der().to_vec();
+    let mut broker = Broker::default();
+    let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), quiet(&root, &[TOKEN_HOST]));
+    cli.guest
+        .writer()
+        .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
+        .unwrap();
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| !b.h1().had.is_empty());
+    let answer = echoing_token_answer(&cli.h1().had[0].request);
+    cli.answer(&answer);
+    cli.until(&mut credentials, &mut |c| broker.serve(c), |b| b.closed || whole(&b.got));
+    for real in [ISSUED_ACCESS, ISSUED_REFRESH] {
+        assert!(
+            !holds(&cli.got, real.as_bytes()),
+            "a real token reached the guest: {}",
+            lossy(&cli.got)
+        );
+    }
+    assert!(cli.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&cli.got));
+    assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+}
+
+/// The token host's HTTP/2 answer, its access token repeated in a field.
+fn h2_echoing_token_answer(fields: &[hpack::Field], body: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+    let (mut head, answer) = h2_token_answer(fields, body);
+    head.push(field("x-echo", ISSUED_ACCESS.as_bytes()));
+    (head, answer)
+}
+
+/// A guest of the HTTP/2 token host answering as `answers` says, HTTP/2 chosen.
+fn h2_token_guest(
+    root: &CertifiedIssuer<'static, KeyPair>,
+    credentials: &mut Credentials,
+    answers: H2Answer,
+) -> (Bench, Peer) {
+    let guest = guest_offering(credentials.ca.der().to_vec().into(), TOKEN_HOST, None, &[b"h2"]);
+    let host = H2Host::serving(root, &[TOKEN_HOST], answers);
+    let mut bench = Bench::on(guest, Wire::H2(Box::new(host)));
+    bench.until(credentials, &mut unanswered, |b| !b.guest.is_handshaking());
+    (bench, Peer::new(End::Client, GUEST_HOLDS))
+}
+
+/// Do: over HTTP/2, the code's exchange at the token host, its response repeating the access
+/// token in a field; then on another connection, its refresh token in the response's trailers.
+/// Expect: each stream answered 502 by the injector; no real token in anything the guest read
+/// or decoded; nothing captured.
+#[test]
+fn an_h2_token_responses_fields_and_trailers_never_carry_its_tokens_to_the_guest() {
+    let root = root("shards test root");
+    for trailers in [false, true] {
+        let mut credentials = sign_in_credentials(&root, false);
+        let mut broker = Broker::default();
+        let answers: H2Answer = if trailers {
+            h2_token_answer
+        } else {
+            h2_echoing_token_answer
+        };
+        let (mut bench, mut peer) = h2_token_guest(&root, &mut credentials, answers);
+        bench.host_mut().auto = !trailers;
+        let mut seen = Vec::new();
+        peer.send_headers(1, &h2_post("/v1/oauth/token", EXCHANGE), false);
+        peer.send_data(1, EXCHANGE.as_bytes(), true);
+        if trailers {
+            h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |_, b| {
+                b.host().streams.values().any(|s| s.ended)
+            });
+            let host = bench.host_mut();
+            let s = host.streams.get_mut(&1).unwrap();
+            s.answered = true;
+            let (head, data) = h2_token_answer(&s.fields, &s.body);
+            let head: Vec<hpack::Field> = head.into_iter().filter(|f| f.name != b"content-length").collect();
+            host.peer.send_headers(1, &head, false);
+            host.peer.send_data(1, &data, false);
+            host.peer
+                .send_headers(1, &[field("x-refresh", ISSUED_REFRESH.as_bytes())], true);
+        }
+        h2_until(&mut bench, &mut peer, &mut seen, &mut credentials, &mut |c| broker.serve(c), |p, _| {
+            p.response(1).ended || !p.ends().is_empty()
+        });
+        assert_eq!(
+            h2_leaked(&peer, &seen, &[ISSUED_ACCESS, ISSUED_REFRESH]),
+            None,
+            "a real token reached the guest (trailers: {trailers})"
+        );
+        assert_eq!(value_of(&peer.response(1).fields, ":status"), Some(&b"502"[..]));
+        assert!(broker.access.is_empty(), "a refused response's tokens were captured");
+    }
+}
+
+/// A token's echo is found in a head as it came, percent-encoded and as a quoted string's pairs.
+#[test]
+fn a_tokens_echo_in_a_head_is_found_escaped_or_not() {
+    let body = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    let tokens = signin::read(body.as_bytes()).unwrap().unwrap();
+    let pct: String = ISSUED_ACCESS.bytes().map(|b| format!("%{b:02X}")).collect();
+    let quoted: String = ISSUED_REFRESH.chars().flat_map(|c| ['\\', c]).collect();
+    for head in [
+        format!("X-Echo: {ISSUED_ACCESS}"),
+        format!("Location: /cb?t={pct}"),
+        format!("X-Echo: \"{quoted}\""),
+    ] {
+        assert_eq!(
+            signin::unechoed(&tokens, [head.as_bytes()]),
+            Err(signin::Refusal::Echoed),
+            "{head}"
+        );
+    }
+    assert_eq!(signin::unechoed(&tokens, [&b"X-Echo: kiln%2"[..]]), Ok(()));
+}
