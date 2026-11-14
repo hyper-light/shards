@@ -155,29 +155,8 @@ fn read_baseline(at: &Path) -> shards_vmm::arch::cpu::Id {
         .unwrap_or_default()
 }
 
-/// The register of each feature macOS names (`hw.optional.arm.FEAT_*`, [`host_cpu`]) that
-/// its field is in (Arm ARM DDI 0487, the ID_AA64* registers' fields): a baseline that
-/// names the register masks the feature where it is lower, and a feature whose register
-/// the baseline does not name (ISAR2's, which Hypervisor.framework neither says nor lets a
-/// VMM set, PM M460) is the guest's whatever the baseline says, and checked by name.
 #[cfg(target_arch = "aarch64")]
-fn feature_register(feature: &str) -> Option<u16> {
-    Some(match feature {
-        "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
-        "FEAT_SSBS" | "FEAT_BTI" => 0xc021,
-        "FEAT_CRC32" | "FEAT_FlagM" | "FEAT_FlagM2" | "FEAT_FHM" | "FEAT_DotProd" | "FEAT_SHA3"
-        | "FEAT_RDM" | "FEAT_LSE" | "FEAT_SHA256" | "FEAT_SHA512" | "FEAT_SHA1" | "FEAT_AES"
-        | "FEAT_PMULL" => 0xc030,
-        "FEAT_SPECRES" | "FEAT_SPECRES2" | "FEAT_SB" | "FEAT_FRINTTS" | "FEAT_PACIMP" | "FEAT_LRCPC"
-        | "FEAT_LRCPC2" | "FEAT_FCMA" | "FEAT_JSCVT" | "FEAT_PAuth" | "FEAT_PAuth2" | "FEAT_FPAC"
-        | "FEAT_FPACCOMBINE" | "FEAT_DPB" | "FEAT_DPB2" | "FEAT_BF16" | "FEAT_EBF16" | "FEAT_I8MM" => 0xc031,
-        "FEAT_WFxT" | "FEAT_RPRES" | "FEAT_CSSC" | "FEAT_HBC" => 0xc032,
-        "FEAT_ECV" => 0xc038,
-        "FEAT_AFP" => 0xc039,
-        "FEAT_LSE2" => 0xc03a,
-        _ => return None,
-    })
-}
+use shards_vmm::arch::aarch64::cpu::feature_register;
 
 /// The features of `ran_on` a guest told `baseline` may still have used: those whose
 /// register the baseline does not name, and every one where it is none.
