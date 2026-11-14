@@ -19318,6 +19318,15 @@ Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), th
 clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
 [Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
 
+### Migration review hardlink and pre-copy regressions, 2026-11-13 (migrate-05/03, D176)
+
+Unit evidence only: on adacachy2 Linux x86_64, writing imported alias `a` left `b`
+unchanged at `73af9fb62` (one failing test against the landed Beneath extractor).
+After `fd33ec11a`, merge `7720df839` passed 15 migration module tests, 4 guest-file
+helper tests and 5 integrated pre-copy tests from the memory reviewer's migrate03
+fix. This proves the scoped file/ownership paths, not live VM migration, host-pair
+portability or a performance ratio. [Commands, logs and owed VM checks](measurements/migrate/fix-review-2026-11-13.md).
+
 ### M499. What a Hypervisor.framework guest is shown of its host's CPU, and a listener that outlives its runner (D176 part 6)
 
 - **Question.** A move between Macs is checked by the features macOS names
@@ -24139,6 +24148,16 @@ This is correctness evidence, not a VM/performance measurement. Full commands,
 ownership change and ROOT's remaining gates: `measurements/memory-fixes-v1/README.md`.
 
 
+### Remote-04. A network build timestamp panics before set_modified (2026-11-13)
+
+Functional evidence on macOS arm64, Rust 1.98.1: the real synced receiver at
+`c3ad61ab1` panicked on i64::MAX seconds/u32::MAX nanoseconds (`SystemTime` overflow,
+1 failure). Typed fraction/host-range validation before file creation at
+`063a5d339` passed all 9 synced tests and shards all-target clippy. The writer now
+accepts a checked SystemTime. No chosen maximum or platform stub was added.
+[Commands, source revisions, policy, logs and owed Windows/release-listener checks](measurements/remote-fixes-v1/README.md#remote-04-build-file-timestamp-validation).
+No performance or live-VM result is claimed.
+
 ### Remote-05. Private request arguments in the daemon log (2026-11-13)
 
 This is correctness evidence, not a performance measurement. An enrolled fixture's
@@ -24170,6 +24189,7 @@ clippy pass (r8). These are functional unit results, not a real DNS-provider or
 real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
 no chosen runtime value, wait or cache is added.
 [Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
+
 
 ### Review memory-03/05: live-copy mapping ownership and terminal map-back loss
 
@@ -24379,6 +24399,14 @@ block twice after 65 distinct kinds: Some(65) instead of Some(64). d794c1dd5
 removes the 64-kind comparison cutoff; the input's block count bounds the search.
 The sparse-file/index regression checks actual retained identity and length.
 [Commands, results and unmeasured quadratic comparison cost](measurements/memory-fixes-v1/README.md).
+
+### Review memory-17: the give-back request's exact encoded bound (D133)
+
+adacachy2, Linux 7.3.3-1-cachyos x86_64, native GNU target, rustc 1.98.1:
+red c61cc6b1d (resumed r20) accepted both signed i64 extremes but waited for a
+payload whose ROOM header was longer than either producer can encode.
+5826a9bcf derives the limit from i64::MIN's minus sign and decimal digits.
+[Commands, red/green and unrun host/guest combinations](measurements/memory-fixes-v1/README.md).
 
 ### M572. A registry's trouble past the longest its path passed runs out, told once, and the pull follows liveness; buffered reads, named waits and late routes (D222, waits-05, -06, -07)
 
