@@ -1,0 +1,19 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch              p/fix-devices-v1 -> FETCH_HEAD
+Previous HEAD position was e06c9bc9 fix(vmm): unroute VFIO interrupts before unplug closes eventfds
+HEAD is now at 9a4be912 test(vmm): record route descriptor validity without panicking in adapter
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.93s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-e6b20389332fddb3)
+
+running 2 tests
+test devices::pci::vfio::tests::the_guest_reads_overlaid_bits_and_a_list_without_acs ... ok
+test devices::pci::vfio::tests::unplug_releases_interrupt_routes_before_closing_eventfds ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 0.00s
+
+[1195468          0us WARN] fixture: INTx off: Inappropriate ioctl for device (os error 25)
+[1195468         67us WARN] fixture: MSI off: Inappropriate ioctl for device (os error 25)
+[1195468         72us WARN] fixture: MSI-X off: Inappropriate ioctl for device (os error 25)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.72s

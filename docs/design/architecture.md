@@ -9924,6 +9924,9 @@ template pays it once; what its restores pay is to be measured with mappings.
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
 
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
+
 Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
 
 
@@ -12850,6 +12853,15 @@ the user told).
   `a_microvm_has_the_cpus_its_daemon_may_run_on`).
 
 ### D190. A run's writable layer on its host's disk: ext4 with DAX over pmem (slices 1 to 8 built)
+
+**Review memory-16 (2026-11-13):** saving a head compares a nonzero block with
+every distinct block already retained. The bound is the input's block count;
+there is no selected limit on how many kinds can share. Cold saves start with
+no retained kinds, and existing file errors propagate. This preserves the
+documented “each kept block once” contract after the sixty-fourth kind too.
+Worst-case comparisons are quadratic in input blocks; their cost is unmeasured
+and owed to ROOT. Red/green and scope:
+`docs/research/measurements/memory-fixes-v1/README.md`.
 
 A run's writable layer, the upper directory of its root's overlay, was a tmpfs in its
 microVM's memory (D16, D156): what it wrote was memory, held to its memory limit, and gone
