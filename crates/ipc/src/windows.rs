@@ -2935,10 +2935,8 @@ mod tests {
         let (read, write) = pipe().unwrap();
         // The read end pipe() makes inheritable; the write end the child would hold.
         // SAFETY: our own handle, made not inheritable again.
-        assert_ne!(
-            unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) },
-            0
-        );
+        let set = unsafe { SetHandleInformation(read.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) };
+        assert_ne!(set, 0);
         let (started, start) = std::sync::mpsc::channel();
         let child = std::thread::scope(|s| {
             let held = INHERITING.read().unwrap_or_else(PoisonError::into_inner);

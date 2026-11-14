@@ -2039,10 +2039,8 @@ mod tests {
         // An access across the block's edge is in no one range: the devices take it.
         let mut two = [0u8; 2];
         // SAFETY: memory this test holds.
-        assert_eq!(
-            unsafe { ram.access(16 * PAGE - 1, &mut two, false) },
-            Reached::Elsewhere
-        );
+        let across = unsafe { ram.access(16 * PAGE - 1, &mut two, false) };
+        assert_eq!(across, Reached::Elsewhere);
         ram.map(over);
         assert_eq!(
             read(&ram, 40 * PAGE),
@@ -2064,10 +2062,8 @@ mod tests {
         ram.map(range);
         let mut byte = [0xaa];
         // SAFETY: memory this test holds.
-        assert_eq!(
-            unsafe { ram.access(0x10_0000 + 2 * PAGE, &mut byte, true) },
-            Reached::Elsewhere
-        );
+        let written = unsafe { ram.access(0x10_0000 + 2 * PAGE, &mut byte, true) };
+        assert_eq!(written, Reached::Elsewhere);
         assert_eq!(
             bytes[(2 * PAGE) as usize],
             2,
