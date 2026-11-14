@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use shards_abi::run::{self, HostBind, HostBound, HostListen, kind};
 
@@ -69,12 +69,6 @@ const ANY_PORT_TRIES: usize = 8;
 /// theirs: Linux's own budget for a device per poll (net.core.dev_weight, 64;
 /// Documentation/admin-guide/sysctl/net.rst), as the network process's.
 const BUDGET: usize = 64;
-/// How long a relayed UDP flow lives, as Linux conntrack keeps one, and the network
-/// process (nf_conntrack_proto_udp.c, udp_packet; v6.12): 30 s past its last datagram, or
-/// 120 s once it has had a reply and is still going 2 s after its first.
-const UDP_UNREPLIED: Duration = Duration::from_secs(30);
-const UDP_STREAM: Duration = Duration::from_secs(120);
-const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
 /// The largest UDP datagram (RFC 768: its length a 16-bit field).
 const DATAGRAM: usize = 65_536;
 /// What each init's message to this process starts with: a listener, with it; or the
@@ -789,17 +783,17 @@ struct Flow {
     sock: OwnedFd,
     relay: u64,
     peer: SocketAddr,
-    first: Instant,
-    replied: bool,
     until: Instant,
 }
 
 impl Flow {
-    /// A datagram at `now`; a `reply` if it came from the guest's socket.
-    fn datagram(&mut self, now: Instant, reply: bool) {
-        self.replied |= reply;
-        let stream = self.replied && now > self.first + UDP_STREAM_AFTER;
-        self.until = now + if stream { UDP_STREAM } else { UDP_UNREPLIED };
+    /// A datagram at `now`, either way: the flow lives as the network process's do, a UDP
+    /// mapping's two minutes past its last datagram (`shards_abi::bounds::UDP_MAPPING_IDLE`,
+    /// RFC 4787 REQ-5, REQ-6); `now` itself where the clock has no instant that far on.
+    fn datagram(&mut self, now: Instant) {
+        self.until = now
+            .checked_add(shards_abi::bounds::UDP_MAPPING_IDLE)
+            .unwrap_or(now);
     }
 }
 
@@ -1656,9 +1650,7 @@ impl Supervise {
                             sock,
                             relay: cookie,
                             peer,
-                            first: now,
-                            replied: false,
-                            until: now + UDP_UNREPLIED,
+                            until: now,
                         };
                         let i = put(&mut self.flows, flow);
                         self.by_peer.insert((cookie, peer), i);
@@ -1666,7 +1658,7 @@ impl Supervise {
                     }
                 };
                 if let Some(f) = self.flows.get_mut(i).and_then(Option::as_mut) {
-                    f.datagram(now, false);
+                    f.datagram(now);
                     let data = self.datagram.get(..n).unwrap_or_default();
                     // SAFETY: send(2) of a buffer of ours, of its length.
                     unsafe {
@@ -1758,7 +1750,7 @@ impl Supervise {
             let Ok(n) = usize::try_from(n) else { return };
             send_to(out, self.datagram.get(..n).unwrap_or_default(), peer);
             if let Some(f) = self.flows.get_mut(i).and_then(Option::as_mut) {
-                f.datagram(Instant::now(), true);
+                f.datagram(Instant::now());
             }
         }
     }
@@ -2258,6 +2250,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
 
     /// A client of the host's whose receive window is `window` bytes, set before it
     /// connects, as a slow reader's stays small; the kernel's own where none.

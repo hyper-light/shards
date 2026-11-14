@@ -141,8 +141,6 @@ const DEFAULT_IDLE: Duration = Duration::from_secs(900);
 /// How long a pool keeps warm VMs after its last claim unless `SHARDS_POOL_KEEP` says: D26's
 /// keep-alive, an orchestrator's pools' too (`shards_api::demand::KEEP`).
 const DEFAULT_KEEP: Duration = shards_api::demand::KEEP;
-/// Warm VMs a run may try: one can end while it waits, or before it has taken the run.
-const HANDOFF_TRIES: usize = 3;
 /// A stopped microVM's writable layer, in its directory (D37): kept whole, and being
 /// written as its microVM stops.
 pub(super) const LAYER: &str = "layer.tar";
@@ -731,6 +729,10 @@ struct Ready {
     /// Its writable layer's file (D190), which it holds open and mapped: the run it takes
     /// keeps it, or lets it go.
     layer: Option<layers::LayerFile>,
+    /// When it joined its pool's waiting VMs; none for one started for a run, or a
+    /// joiner's. A run that one of them surely did not take tries the next only where it
+    /// was waiting before the run asked ([`Daemon::start_run`]).
+    pooled: Option<Instant>,
 }
 
 impl Ready {
@@ -4451,9 +4453,13 @@ impl<D: Disk> Daemon<D> {
     /// Hands the run of microVM `id`, just created, to a warm VM from `acquire` (audit
     /// A06). Until a VM is committed to, the run is pending, and `rm` may cancel it; from
     /// then on commands wait to see whether the VM took it. A VM that surely did not gives
-    /// way to another; one that may have is followed as it is, so no run starts twice.
-    /// Returns the run, registered, for [`follow`](Self::follow), or what its client is
-    /// told.
+    /// way to another where it was waiting in its pool before the run asked: those are as
+    /// many as its pools held then, each tried once, however many ended unseen (runs-11:
+    /// no count of tries). One started after the run asked (for it, or a refill since)
+    /// that surely did not take it ends the start, said with why, rather than starting VMs
+    /// against a failure that may be every VM's. One that may have taken it is followed as
+    /// it is, so no run starts twice. Returns the run, registered, for
+    /// [`follow`](Self::follow), or what its client is told.
     #[allow(clippy::too_many_arguments)]
     fn start_run<'s, 'e>(
         &'s self,
@@ -4477,7 +4483,10 @@ impl<D: Disk> Daemon<D> {
                 self.not_started(id, why)
             }
         };
-        for _ in 0..HANDOFF_TRIES {
+        let asked = Instant::now();
+        // Whether another VM may stand in for `ready`, which surely did not take the run.
+        let gives_way = |ready: &Ready| ready.pooled.is_some_and(|since| since < asked);
+        loop {
             let mut ready = acquire().map_err(|e| failed(&e))?;
             // Every way on leaves `Handing` while `ready` holds the socket it names.
             if let Err(said) = self.commit(id, ready.socket.as_raw_fd()) {
@@ -4501,7 +4510,12 @@ impl<D: Disk> Daemon<D> {
                 log(format!("warm VM {}'s {e}", ready.vm.id()));
                 ready.end();
                 self.uncommit(id);
-                continue;
+                if gives_way(&ready) {
+                    continue;
+                }
+                return Err(failed(&format!(
+                    "the VM started for the run did not take it: its {e}"
+                )));
             }
             if ready.net.is_some() && keep.mac.is_some() {
                 ready.mac = keep.mac;
@@ -4522,6 +4536,11 @@ impl<D: Disk> Daemon<D> {
                     log(format!("warm VM {} did not take a run: {e}", ready.vm.id()));
                     ready.end();
                     self.uncommit(id);
+                    if !gives_way(&ready) {
+                        return Err(failed(&format!(
+                            "the VM started for the run did not take it: {e}"
+                        )));
+                    }
                 }
                 // What it sent before it ended tells what it did, as for any run.
                 Err(Untaken::Unknown(e)) => {
@@ -4534,7 +4553,6 @@ impl<D: Disk> Daemon<D> {
                 }
             }
         }
-        Err(failed("no warm VM took the run"))
     }
 
     /// A new microVM's ID, and its log: the spare's, made ahead, or made now.
@@ -7690,6 +7708,7 @@ impl<D: Disk> Daemon<D> {
             records: None,
             joined: Some(provider),
             layer: None,
+            pooled: None,
         })
     }
 
@@ -8759,6 +8778,7 @@ impl<D: Disk> Daemon<D> {
                             records,
                             joined: None,
                             layer,
+                            pooled: Some(Instant::now()),
                         });
                         let live: Vec<u32> = state
                             .pools
@@ -8795,6 +8815,7 @@ impl<D: Disk> Daemon<D> {
                         records: None,
                         joined: None,
                         layer,
+                        pooled: None,
                     }));
                 }
                 Err(e) => {
@@ -10538,6 +10559,8 @@ mod tests {
         home: shards_testdir::TempDir,
         /// The processes of the warm VMs played, ended with the test.
         vms: Mutex<Vec<Arc<shards_ipc::Child>>>,
+        /// When it began: the warm VMs it plays have waited in their pools since.
+        began: Instant,
     }
 
     impl Test {
@@ -10585,6 +10608,7 @@ mod tests {
                 daemon,
                 home,
                 vms: Mutex::default(),
+                began: Instant::now(),
             }
         }
 
@@ -10621,6 +10645,7 @@ mod tests {
                 records: None,
                 joined: None,
                 layer: None,
+                pooled: Some(self.began),
             };
             (ready, theirs)
         }
@@ -13738,6 +13763,49 @@ mod tests {
         });
     }
 
+    /// Every VM that waited in its pool before the run asked is tried in turn, however many
+    /// ended unseen, where three tries were once all a run had (runs-11); one started after
+    /// it asked that surely did not take it ends the run's start, and no other is asked for.
+    #[test]
+    fn untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start() {
+        let t = Test::new("handoff-all");
+        t.run(|t| {
+            let end_unseen = |starting: &Starting<'_>, ready: Ready, vm: UnixStream| {
+                let child = ready.vm.clone();
+                starting.warm.send(ready).unwrap();
+                assert_eq!(heard(&vm).0, kind::RUN);
+                drop(vm);
+                assert_eq!(child.wait().unwrap(), 128 + shards_ipc::signal::SIGKILL);
+            };
+            let id = t.create("many");
+            let starting = t.start(&id);
+            let ended = 4;
+            for _ in 0..ended {
+                let (ready, vm) = t.warm_vm(None);
+                end_unseen(&starting, ready, vm);
+            }
+            let (ready, vm) = t.warm_vm(None);
+            starting.warm.send(ready).unwrap();
+            serve(&vm, 0);
+            joined(starting.run).unwrap();
+            assert_eq!(count_asks(&starting.asks, &starting.asked), ended + 1);
+            let record = t.record(&id).unwrap();
+            assert_eq!((record.state, record.exit_code), (Life::Exited, Some(0)));
+
+            let id = t.create("fresh");
+            let starting = t.start(&id);
+            let (mut ready, vm) = t.warm_vm(None);
+            ready.pooled = None;
+            end_unseen(&starting, ready, vm);
+            let said = joined(starting.run).unwrap_err();
+            assert!(
+                said.contains("the VM started for the run did not take it"),
+                "{said}"
+            );
+            assert_eq!(count_asks(&starting.asks, &starting.asked), 1);
+        });
+    }
+
     /// A command waits for a run being handed over only once its VM has said TAKEN, after
     /// which the VM may have started it and its client seen that: the answer waits for it
     /// to be registered. One whose VM has not answered is waited for by nothing.
@@ -14338,6 +14406,7 @@ mod tests {
             records: None,
             joined: None,
             layer: None,
+            pooled: None,
         };
         let (daemon, threads, id) = (&t.t.daemon, t.threads, id.to_string());
         let run = threads.spawn(move || {
@@ -14745,7 +14814,7 @@ mod tests {
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() >= slice, "freed within its slice");
             assert!(reaped(net_pid), "the network process was not reaped");
-            let kept = std::fs::read_to_string(t.home.join(ends::RECORD)).unwrap_or_default();
+            let kept = ends::newest(&t.home.join(ends::RECORD)).unwrap_or_default();
             assert!(
                 kept.lines()
                     .filter(|l| l.starts_with("helper "))

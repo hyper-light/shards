@@ -672,13 +672,13 @@ row's design and the exact measurement ROOT owes follow the table.
 | tcp.rs RTO 200 ms, 8 retries, IDLE = RTO | owed | below |
 | tcp.rs window update at a doubling | owed | below |
 | lib.rs BUDGET 64 | owed | below |
-| lib.rs UDP 30 s / 120 s / 2 s | owed | below |
+| lib.rs UDP 30 s / 120 s / 2 s | fixed 930f7404f (red 7bd8ce6cb, `a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past`: a mapping to port 5000 gone at 119 s; [log](n12-lane-a.log)), with init hostbind.rs's and members.rs's copies | RFC 4787 §4.3 REQ-5, two minutes at least, `shards_abi::bounds::UDP_MAPPING_IDLE`, answered or not; REQ-6 (outbound refresh, MUST) and REQ-6a (inbound, MAY: each socket is connected to its one granted peer); REQ-5a and REQ-5c not taken, below |
 | lib.rs BACKLOG 1024; Windows UDP_WAITING 16 | owed | below |
 | poll.rs 256 events a wait | owed | below |
 | netring 1 MiB ring | owed | below |
 | init dnsrelay / agentdns WAIT 5 s | owed | below |
 | shards daemon/publish.rs 10 bind tries | owed | below |
-| init chooser.rs 8192 / 16 KiB scratch, 1024 privileged-port fallback | owed to the chooser's lane | network-06/07's lane rewrote chooser.rs on main meanwhile (04f590670); part B left it alone |
+| init chooser.rs 8192 / 16 KiB scratch, 1024 privileged-port fallback | fixed 2de7d5533 (tests `every_listener_of_a_long_dump_is_found`, `the_unprivileged_start_is_the_namespaces_own_or_an_error`; mutations m2, m3 in [log](n12-lane-a.log)) | each dump datagram read at its own length (recv(2) MSG_PEEK \| MSG_TRUNC, netlink's since Linux 2.6.22); socket-end notices taken with no buffer (MSG_TRUNC); the namespace's own `ip_unprivileged_port_start` or a typed error that keeps its member from the chooser; a bind before the namespace is read is its own kernel's |
 
 Designs and the measurements ROOT owes, each a learned or cited value with its cold
 start and its failure typed:
@@ -714,13 +714,22 @@ start and its failure typed:
   paper's O(1) condition, carried over turns; datagram paths stop early when the ring
   has no room (backpressure, not a count). ROOT owes: per-flow latency p50/p99 with one
   flooded published port beside a quiet one, before and after.
-- **UDP lifetimes.** RFC 4787 REQ-5: a UDP mapping MUST NOT expire in under 2 min (5 min
-  RECOMMENDED); REQ-5a allows shorter timers only for a well-known destination port's
-  own application. The 30 s unreplied lifetime (Linux conntrack's) breaks REQ-5 for
-  ports past 1023. Design: 120 s at least for every mapping, a DNS transaction (port
-  53) ending at its answer; admission of new flows by the process's real descriptor
-  limit (RLIMIT_NOFILE less open), a refusal typed as the table's. ROOT owes: descriptor
-  and RSS under a churn of 10,000 one-datagram flows, before and after.
+- **UDP lifetimes (fixed 930f7404f, lane A).** RFC 4787 REQ-5: a UDP mapping MUST NOT
+  expire in under 2 min; REQ-5a allows shorter timers only for a well-known destination
+  port's own registered application; REQ-5c RECOMMENDS 5 min or more by default. The
+  network process, the host network's relay (hostbind.rs, D124) and the joiners'
+  published-port proxy (members.rs, D181) now keep every mapping REQ-5's 2 min past its
+  last datagram, either way, answered or not (`UDP_MAPPING_IDLE`). REQ-5a is not taken:
+  a stub resolver asks one name's A and AAAA on one socket (glibc res_send without
+  `single-request`), so no answer ends a port 53 mapping. REQ-5c is not taken: each
+  mapping holds a host socket, and REQ-5's floor is the requirement. REQ-6 (outbound
+  refresh MUST be true) holds: each datagram from the guest refreshes; REQ-6a (inbound
+  MAY) is taken, each host socket being connected to its one granted peer, so no
+  stranger can keep one open. ROOT owes: descriptors and RSS under a churn of 10,000
+  one-datagram flows at 2 min against 5 min (REQ-5c), to decide whether the RECOMMENDED
+  default's cost is worth it; and whether init should also set its own namespace's
+  `nf_conntrack_udp_timeout` (30 s in the pinned kernel) to the same 2 min for the
+  guest's own NAT (agents' masquerade, D122's DNAT), measured on a guest.
 - **BACKLOG, UDP_WAITING.** Bound the frames waiting for the ring in bytes by one ring
   (`RING`), which is what one drain of the guest moves; Windows' datagrams waiting for
   the dialer by the dialer socket's send buffer (SO_SNDBUF). ROOT owes: drop counts of
