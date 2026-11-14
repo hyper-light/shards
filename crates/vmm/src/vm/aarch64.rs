@@ -682,6 +682,11 @@ fn assemble(
             iommu: iommu_at == Some(i),
         });
     }
+    bus.insert(
+        layout::PVPANIC,
+        0x1000,
+        Arc::new(crate::devices::pvpanic::PvPanic::new(console.clone())),
+    )?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
     control.on_disks(disk_sizes);

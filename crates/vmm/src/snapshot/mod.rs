@@ -108,7 +108,9 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 31: its console is virtio-console, the first of its virtio devices (hvc0), and it has
 ///     no 16550 UART: a guest saved in 30 has its 8250 driver bound to a COM1 (x86-64) or
 ///     UART (arm64) this machine no longer has, and is refused ([`ResumeRefused::OlderMachine`]).
-const VERSION: u32 = 31;
+/// 32: and a pvpanic device among its MMIO devices (devices/pvpanic.rs), its state whether
+///     its guest's kernel said it panicked.
+const VERSION: u32 = 32;
 /// The first format whose state says who saved it ([`decode_saver`]).
 const VERSION_WITH_SAVER: u32 = 30;
 /// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
@@ -1260,7 +1262,8 @@ pub enum ResumeRefused {
     Unrecorded { format: u32 },
     /// Saved by shards `saved_by` in format `format`, from 30 on and before this build's:
     /// its guest's drivers are bound to a machine this build no longer makes (31: its
-    /// console a 16550 UART, now virtio-console), so its guest cannot run on.
+    /// console a 16550 UART, now virtio-console; 32: no pvpanic device), so its guest
+    /// cannot run on.
     OlderMachine { format: u32, saved_by: String },
     /// Saved in format `format`, past this build's: by a newer shards.
     Newer { format: u32 },
