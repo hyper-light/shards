@@ -16289,7 +16289,14 @@ resume asks `snapshot::resumable(dir)` before anything restores the snapshot or 
 runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
 saved and live moves' first step on the machine moved from), and `shards restore DIR`
 before its VM process starts (not for `--warm` or `--resume`, the daemon's). It reads the
-state's head and saver alone and writes nothing. Refused typed (`ResumeRefused`):
+state's head and saver alone and writes nothing. A move to a machine of another build is
+refused there before anything moves: a move's plan, saved or live, carries the shards that
+made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
+runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
+machine moved to refuses one of another contract, or a plan that names none, an earlier
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
+and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
 `OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
 none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
 continue in this shards (contract …): start it again from its image; its volumes are
@@ -16309,8 +16316,10 @@ keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker
 failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
 `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
 resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
-refused; a cut saver unreadable) and `resumable_refuses_another_init_and_leaves_the_snapshot`
-(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable);
+refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
+(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
+`a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
+contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
 
