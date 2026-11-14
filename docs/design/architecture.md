@@ -2339,6 +2339,20 @@ audit's "Security and test coverage").
     `--vsock PATH`, a socket its spawner binds there, and each host port its guest
     connects to dialled for it, each shared with it as Winsock documents
     (WSADuplicateSocketW) [PM M203].
+  - Its grants sealed with its last ask, before its guest starts, whatever it was granted
+    (`grant_ask::obtain_sealed`, platform-03, PM M570). Its spawner's answers bypass the
+    AppContainer: a handle it duplicates in "refers to the same object as the original
+    handle" and, with DUPLICATE_SAME_ACCESS, "has the same access as the source handle"
+    (Microsoft's DuplicateHandle), where the AppContainer alone "cannot access resources
+    beyond what is granted to the AppContainer" (Microsoft's AppContainer isolation). So a
+    grant after the guest starts is a guest that took the VM's process over reaching any
+    file its user may: a VM that staged its snapshots and had no vsock path kept its link
+    open without `SEALED`, and its spawner answered a GRANT to write a file outside its
+    grants. Every VM now says `SEALED` after its last grants; its spawner refuses every
+    GRANT after and still answers its dials, its files' ranges and its snapshots' stages
+    and commits, which it handles before it looks at whether the VM started. Held by
+    `a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts` (red before,
+    mutation-checked).
   - In a Job that ends it as its spawner ends, even killed (the spawner holds the Job's
     only handle; 0.7-1.1 ms later [PM M201]), and lets it start no process, as the
     child-process policy it is made with does.
@@ -11872,7 +11886,11 @@ its saved file); the order of the restore is OpenVMM's, Microsoft's own VMM over
   saved.rs still ran windows-2025 out. Every VM now keeps the link and says `SEALED` once
   granted what it starts with: its spawner refuses every grant after, as after a vsock
   path's listen, and answers its ranges for its life (a save's copy then 1.5 MB, 107 MiB of
-  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`.
+  the disk). Held by `a_sealed_vm_is_granted_nothing_more_and_its_ranges_are_read`. Until
+  platform-03 (PM M570) a VM that staged its snapshots and had no vsock path said no
+  `SEALED`, and was granted whatever it asked after its guest started; its last ask now
+  seals (`grant_ask::obtain_sealed`), its stages and commits still answered
+  (`a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`).
 - **One partition a process.** WHP maps no memory into a second partition of a process while
   another lives (STATUS_VID_PARTITION_ALREADY_EXISTS, until the first is deleted, M345). A VM
   process holds one; the partition that reads the host's vCPU limit is deleted before it.
@@ -17337,8 +17355,9 @@ was built on [PM M200-M203]:
   no interrupt), and gives the console's Ctrl+C and Ctrl+Break to its guest as SIGINT;
   the spawner takes both and waits on, where ignoring Ctrl+C alone (a null handler) left a
   process group's Ctrl+Break to end it (run.rs `signals_reach_the_command`, CI's
-  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once its vsock path
-  is, and without one the link closes.
+  windows-2022 and windows-2025, 2026-10-28). Nothing more is granted once it has its
+  last grants: its link stays, sealed, for its dials, ranges and snapshots (D196, and D30's
+  Windows twin since platform-03).
 - **A Job and Windows' mitigations**, given as the process is made, suspended, its handles
   duplicated into it and their values told it through a pipe, its one inherited handle:
   none is made inheritable where another child could take it [PM M201]. Dynamic code it
@@ -25018,6 +25037,104 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       No number is chosen: lateness is any nanosecond past a meant time, read on the clock
       the looks run by; a host that holds the judge a whole W* at every look holds its waits
       to liveness alone, as a host hold counts as held.
+    - *Stillness is judged over what the looks saw* (#77, ROOT's KVM run at c120c8a95). Two
+      looks that found no change show none from the first's end to the second's beginning,
+      and no more: each reads its counters somewhere within its own span (`Span`: its
+      beginning, its end, and its counters' resolution). A party's window without progress
+      so runs from the end of the look from which it has been still, never from a time no
+      look read, to the beginning of the look that judges it; and it is refused only where
+      that window, less the judge's lateness within it, is a whole W* or its counters'
+      resolution, whichever is longer (`Judge::found_over`): a counter that changes once a
+      tick (/proc's utime, USER_HZ, proc(5)) shows nothing of a stillness shorter than one,
+      so a window shorter than its resolution is no evidence. Resolutions are the OS's own,
+      none chosen: Linux's, clock_getres(2) of the process's CPU clock (1 ns for the
+      scheduler's clock clock_getcpuclockid(3) names, kernel/time/posix-cpu-timers.c
+      `posix_cpu_clock_getres`); macOS's, one Mach absolute-time unit rounded up to whole
+      nanoseconds (mach_timebase_info(3); 42 ns on Apple silicon); Windows', none, as
+      QueryProcessCycleTime counts every cycle. Cold start: a look with nothing before it to
+      compare with, a party's first or one that first found a process of it, is based
+      (`Found::Based`): it shows neither progress nor stillness, judges nothing whether it
+      is due or not, and the evidence begins at its end. `Judge::begin` takes its caller's
+      first look as made at its beginning (`Follow`, which reads its VM process there, says
+      so with a based look as that read ends; the daemon's watchers read theirs as they
+      begin); the tests' waits, whose first look at their party comes later, say theirs.
+      Main's judge took every finding as evidence since the look before, and a wait's start
+      as a look, so that the time before a party's first look counted as seen still. Two of
+      ROOT's KVM refusals ("its last progress its start") were so: managed_lifecycle.rs:209's
+      stream wait, W* 3.527 µs, refused 18.416 ms in by the look right after its first, which
+      had taken those 18 ms to list and find its VM processes anew (its reads are not paced
+      while a look is due), its looks having seen microseconds; common/mod.rs:2601's
+      `shards top` wait, W* 13.996 ms, refused 31.067 ms in, its first look begun as the
+      wait began and not judged (not yet due), its judged look 2 ms of sleep after the look
+      before ended, so about 29 ms of the window before any look's end. Whether either party
+      would have shown a whole W* of real stillness after its first look is ROOT's rerun's
+      to show. Red/green: judge.rs's
+      `a_first_look_longer_than_w_star_is_based_not_still`,
+      `a_window_is_judged_from_its_baselines_end`,
+      `a_counter_coarser_than_w_star_widens_the_window_to_its_resolution` and
+      `a_based_look_starts_the_evidence_anew_before_its_due`, the runs' own times on an
+      injected look clock. The 3.527 µs W* was mis-keyed: managed_lifecycle.rs'
+      `challenge_healthy` is `#[track_caller]`, so its `published` state wait (`Patience`)
+      and its stream wait (`Following`) shared one call site's kind, and the state, there
+      before its wait began, taught the stream's kind 3.527 µs. A test's wait on a state,
+      a guest's words or a stream is now kept apart by what it awaits
+      (`WaitKind::awaiting`). The third refusal, hotplug.rs:127's (W* 1.054 ms, refused
+      2.109 ms in), had evidence for its whole window: its party is a machine of the test's
+      own process, read by its console's words alone (no CPU of its own is read), and its
+      words' baseline was read as the wait began. The guest said nothing for longer than
+      that call site's slowest answer, whose asks (`grow vda`, a plug, an unplug) share one
+      kind: what its guest did is not observable to its wait at all.
+    - *Only an answer waited for teaches* (#77; docs/bugs/2026-11-13/waits.md waits-03). A
+      test's wait moves through explicit stages (common/mod.rs `Stage`): `Begun`, its
+      answer not yet found missing; `Awaited`, found missing at least once, by a look
+      (whose callers look only after a check found their answer not come) or said so
+      (`Wait::absent`); `Answered`. Its answer teaches its kind only from `Awaited`: one
+      there as its wait began waited on no party, as D185's answers already in a slot and
+      D209's READY already said teach nothing. Waits that could find their answer there
+      check first: `Following` reads its stream once without blocking until a read finds
+      nothing there; engine.rs' `Patient` reads what its daemon has sent before it waits;
+      `Vm::wait_lines` reads the lines already come before it waits; api_image.rs reads an
+      ended member's channel through `judged_there`, judged should it stall but teaching
+      nothing. Evidence: ROOT's KVM run at 18b2e0d60 (adacachy2), api_image.rs:2288's
+      `an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside`,
+      refused 181 ms into a read of its member's stdout ("no progress for 27.488912ms, past
+      ... (20.972496ms)") while its network process waited on auth.openai.com's round trip:
+      its kind's record, W* 20.97 ms with R* 0 ns of CPU over those 20.97 ms, an answer over
+      which no process of its party ran at all, is an ended member's output read from its
+      pipe, not a wait on the party. Its party did hold the network process: the run host is
+      this test's child (session.rs `start_host`, posix_spawn with a session of its own, no
+      second fork) and starts its VM and network processes as its own children
+      (launch.rs, `spawn_in_group` with no group, api-run having no spawner). The judge was
+      right to find that party still; its W* was no answer.
+    - *A wait answered goes on as a drain* (waits-10). A command's client's end is its
+      answer; what its streams still carry (a process it left holding them) is read in
+      `Stage::Answered`, judged by a judge begun at that answer over the record the answer
+      left, never cold (the answer just taught it, or it was learned), and a look that finds
+      its party gone finds it still, as no process of it that could write runs. Main kept
+      the client's own judge, which a cold kind never judges, so that a silent holder's
+      liveness held its test for ever. The drain teaches nothing.
+    - *A party is what was found of it until it ends* (waits-09, waits-10). A process once
+      found is followed until it has gone or ended, wherever it is listed since: a daemon's
+      microVMs as they end after it (a daemon stop's party), a client's children reparented
+      as it exits. Its daemon is the process its `daemon.pid` names by its ID and its start
+      (`shards_ipc::Named`, D185), checked again once its watch is read, never another
+      process given its ID. A process found ended (exited and not reaped,
+      `shards_api::Watch::ended`: on Unix its look's end under way, which a zombie's every
+      look says; on Windows every process of its tree exited, which their handles read
+      still) is no live member, its end progress once, at the look that first finds it
+      under way: a test's wait on a state reaps nothing, so an end under way for ever was
+      progress for ever.
+    - *A refusal as its test unwinds says itself* (#77 slice 2): `run_command` refused while
+      its thread is panicking (a cleanup's `Drop`) writes its account to stderr and returns
+      a run of no status; a panic while panicking aborts the test binary, all its tests
+      with it, as one of context.rs' did.
+    - Red/green (harness.rs, stand-ins, no microVM): `a_first_look_past_w_star_judges_nothing`
+      (waits-02), `an_answer_already_there_teaches_nothing` (waits-03),
+      `a_daemon_named_by_another_start_is_no_party` and `an_unreaped_daemon_is_gone`
+      (waits-09), `streams_held_past_a_commands_end_are_judged_from_its_end` (waits-10),
+      `a_cleanup_refused_as_its_test_fails_fails_it_alone` (slice 2); each guard's removal
+      fails its test (the carrier's mutations). No literal is chosen: W* and the windows are
+      the records' and the counters'; the tests' own sleeps and bounds are a test's.
     - macOS's scheduler counts each thread's time runnable, running or waiting for a CPU
       (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h, Mach
       absolute-time units; public, and like the rest no task port). Grown over a time the
