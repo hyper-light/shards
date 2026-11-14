@@ -24012,3 +24012,20 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
+
+Linux x86_64, adacachy2 (7.3.3-1-cachyos, Landlock ABI 11), 2026-11-13, policy df2acf47,
+role implementer. Review platform-04 (docs/bugs/2026-11-13/platform.md) said the VM
+process's filter allowed prlimit64(2) whatever its pid. Reproduced by
+`confine::tests::a_confined_vm_sets_only_its_own_limits` (shards-vm-process): a confined
+child, under `confine()`'s filter, sets the `RLIMIT_NOFILE` of a disposable process of
+its user's (the test binary waiting on its stdin, never a daemon) to 0 and 0. With the
+rule as it was (`Rule::any(SYS_prlimit64)`, the mutant restoring it), the call returned
+0 and the target's `/proc/PID/limits` went from `Max open files 1048576 1048576` to `0
+0`: red. With the rule allowing pid 0 and the process's own alone, the child reads and
+sets its own limits (both 0), the other's call traps (exit 159, `seccomp refused
+syscall 302`), and the target's limits are unchanged: green. `cargo test -p
+shards-vm-process confine::` 8 of 8 and `cargo clippy -p shards-vm-process
+--all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
+VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.

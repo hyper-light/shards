@@ -83,7 +83,6 @@ pub fn confine() -> Result<(), String> {
         libc::SYS_geteuid,
         libc::SYS_getgid,
         libc::SYS_getegid,
-        libc::SYS_prlimit64,
         libc::SYS_rt_sigaction,
         libc::SYS_rt_sigprocmask,
         libc::SYS_rt_sigreturn,
@@ -236,6 +235,12 @@ pub fn confine() -> Result<(), String> {
     // SAFETY: getpid(2) has no preconditions.
     let pid = unsafe { libc::getpid() };
     rules.push(Rule::with(libc::SYS_tgkill, 0, &[pid as u32]));
+    // This process's own limits alone, as its C library reads them (pid 0: glibc's and
+    // musl's getrlimit, as pthread_create sizes a stack): another process's, its spawner's
+    // among them, are its user's to change, irreversibly for a hard limit
+    // (getrlimit(2), "prlimit"; kernel/sys.c, `check_prlimit_permission`), and Landlock
+    // has no hook on them.
+    rules.push(Rule::with(libc::SYS_prlimit64, 0, &[0, pid as u32]));
     // A thread's own scheduling slice, read and set (pid 0, the calling thread alone): a
     // vCPU's, a device worker's and the hold's governor's, which run as they wake on a
     // busy host (platform `prioritize_vcpu_thread`, PM M440). Unprivileged, the kernel
@@ -732,6 +737,7 @@ pub fn landlock(paths: &Paths) -> Result<(), String> {
 }
 
 #[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -1054,5 +1060,124 @@ mod tests {
         ] {
             assert!(said.contains(line), "{line}\n{}", why());
         }
+    }
+
+    /// Runs this test binary's `test` in a child process with `env` set, and gives its
+    /// exit code, stdout and stderr.
+    fn child_of(test: &str, env: &[(&str, &str)]) -> (Option<i32>, String, String) {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture", "--test-threads=1"])
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// Ends a child as a confined VM ends, by exit_group(2), which every filter allows.
+    fn end(status: i32) -> ! {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        // SAFETY: exit_group(2).
+        unsafe { libc::syscall(libc::SYS_exit_group, status) };
+        loop {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Its own `RLIMIT_NOFILE`, as /proc/PID/limits says it: soft and hard.
+    fn open_files_limit(pid: u32) -> String {
+        std::fs::read_to_string(format!("/proc/{pid}/limits"))
+            .unwrap()
+            .lines()
+            .find(|l| l.starts_with("Max open files"))
+            .unwrap()
+            .to_string()
+    }
+
+    /// In a child process (`PRLIMIT_CHILD` names a disposable process of its user's):
+    /// confined, it reads and sets its own limits, then tries to take its target's.
+    fn prlimit_child(target: &str) -> ! {
+        use std::io::Write as _;
+        let target: i32 = target.parse().unwrap();
+        let confined = confine();
+        let mut own = libc::rlimit64 {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: prlimit64(2) reading this process's limit into a local.
+        let read = unsafe {
+            libc::syscall(
+                libc::SYS_prlimit64,
+                0,
+                libc::RLIMIT_NOFILE,
+                std::ptr::null::<libc::rlimit64>(),
+                &mut own,
+            )
+        };
+        // SAFETY: prlimit64(2) setting this process's limit to what it is.
+        let set = unsafe {
+            libc::syscall(
+                libc::SYS_prlimit64,
+                libc::getpid(),
+                libc::RLIMIT_NOFILE,
+                &own,
+                std::ptr::null_mut::<libc::rlimit64>(),
+            )
+        };
+        let _ =
+            std::io::stdout().write_all(format!("confined: {confined:?}\nown: {read} {set}\n").as_bytes());
+        let _ = std::io::stdout().flush();
+        let zero = libc::rlimit64 {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: prlimit64(2) of another process, from a local: what the filter must refuse.
+        let other = unsafe {
+            libc::syscall(
+                libc::SYS_prlimit64,
+                target,
+                libc::RLIMIT_NOFILE,
+                &zero,
+                std::ptr::null_mut::<libc::rlimit64>(),
+            )
+        };
+        let _ = std::io::stdout().write_all(format!("other: {other}\n").as_bytes());
+        end(0)
+    }
+
+    /// A confined VM reads and sets its own limits, as its C library does, and cannot
+    /// change another process's: its filter refuses prlimit64(2) of any pid but 0 and its
+    /// own, and its target keeps its limits (platform-04).
+    #[test]
+    fn a_confined_vm_sets_only_its_own_limits() {
+        if std::env::var_os("PRLIMIT_TARGET").is_some() {
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new());
+            std::process::exit(0);
+        }
+        if let Ok(target) = std::env::var("PRLIMIT_CHILD") {
+            prlimit_child(&target);
+        }
+        let test = "confine::tests::a_confined_vm_sets_only_its_own_limits";
+        let mut target = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("PRLIMIT_TARGET", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let before = open_files_limit(target.id());
+        let (code, said, err) = child_of(test, &[("PRLIMIT_CHILD", &target.id().to_string())]);
+        let after = open_files_limit(target.id());
+        drop(target.stdin.take());
+        let _ = target.wait();
+        let why = format!("{said}\n{err}");
+        assert!(said.contains("confined: Ok(())\nown: 0 0\n"), "{why}");
+        assert_eq!(before, after, "its target's limits changed\n{why}");
+        assert_eq!(code, Some(shards_vmm::platform::seccomp::REFUSED), "{why}");
+        assert!(err.contains(&format!("syscall {}", libc::SYS_prlimit64)), "{why}");
     }
 }

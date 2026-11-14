@@ -2198,6 +2198,11 @@ audit's "Security and test coverage").
   - `tkill(2)`, obsolete beside `tgkill(2)` [man: tkill(2)] and musl's `pthread_kill`, is
     refused: a vCPU's kick is `tgkill` to its own thread, and `tgkill` is allowed only
     within the process. `prctl` names threads and sets no_new_privs, nothing else.
+  - `prlimit64(2)` is allowed for pid 0 and the process's own pid alone (the C libraries'
+    getrlimit makes pid 0, as pthread_create sizes a stack): another process's limits,
+    its spawner's among them, are its user's to change, a hard limit irreversibly [man:
+    getrlimit(2); kernel/sys.c, `check_prlimit_permission`], and Landlock has no hook on
+    them (review platform-04, [PM M567]).
 - **Linux: Landlock, failing closed** (`confine.rs`, `landlock`), applied just before the
   VM starts (rootless-security.md R3; [Documentation/userspace-api/landlock.rst]).
   - Every filesystem right Landlock's ABI v5 knows is handled, TCP bind and connect are
