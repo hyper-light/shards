@@ -3529,6 +3529,23 @@ mod tests {
         assert!(e.contains("\"tool\" is on no directory of PATH"), "{e}");
     }
 
+    #[test]
+    fn a_members_relative_path_is_resolved_in_its_working_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = shards_testdir::TempDir::new("relative-program").unwrap();
+        std::fs::create_dir(dir.path().join("bin")).unwrap();
+        for file in ["bin/tool", "tool"] {
+            std::fs::write(dir.path().join(file), b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(dir.path().join(file), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut d = domain_at(dir.path().to_str().unwrap(), &["tool"]);
+        d.workdir = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let relative = executable(&d, &[CString::new("PATH=bin").unwrap()]).unwrap();
+        assert_eq!(relative.as_bytes(), b"bin/tool");
+        let empty = executable(&d, &[CString::new("PATH=:/usr/bin").unwrap()]).unwrap();
+        assert_eq!(empty.as_bytes(), b"./tool");
+    }
+
     /// A member's command line (D256): its program as found, the rest of its config's
     /// `run.command` (its entrypoint's words, then its options), then its run's arguments in
     /// their order, an empty one among them; none staged, its config's alone, as before.
