@@ -1114,6 +1114,102 @@ fn cold_following(
     )
 }
 
+/// A guest's stream (`common::Following`: `vsock_connect`'s handshake, `echo`, vsock.rs'
+/// greeting) follows its party's CPU as progress until its first byte, while its peer starts
+/// it, and its bytes alone after (D209), as a streaming guest's wait does its first line
+/// (`Heard::streaming`). Red at a932bc894 on KVM (adacachy2, Linux x86_64): its CPU read as
+/// liveness from its start, a handshake learned at 9 ms was refused 10.7 ms into the next,
+/// whose guest's vsock device and kernel were at work on its answer
+/// (snapshot.rs' storm: "telling the guest it may finish: refused after \"\""), and vsock.rs'
+/// greeting the same at 12.7 ms. Do: a home whose daemon is a stand-in that spins; through
+/// one call site, teach its kind an answer 20 ms in; then follow a peer that sends a byte at
+/// once and nothing more while the party spins; then one that sends its first byte a second
+/// in. Expect: the first byte's stream refused while its party spins; the late one read whole,
+/// held to its byte.
+#[test]
+fn a_streams_wait_follows_its_partys_work_until_its_first_byte() {
+    use std::io::Read as _;
+    let home = TempDir::new("starts");
+    let mut daemon = stand_in_doing("busy 600000")
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::fs::write(home.join("daemon.pid"), format!("{}\n", daemon.id())).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let taught = Duration::from_millis(20);
+    let late = Duration::from_secs(1);
+    // Each round: when its peer sends its byte, and whether it closes then or holds its end
+    // until the round's read has ended.
+    for (round, (delay, closes)) in [(taught, true), (Duration::ZERO, false), (late, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let (end, ended) = std::sync::mpsc::channel::<()>();
+        let listener = &listener;
+        let (read, took, kind) = std::thread::scope(|scope| {
+            let peer = scope.spawn(move || {
+                let (mut to, _) = listener.accept().unwrap();
+                std::thread::sleep(delay);
+                to.write_all(b"x").unwrap();
+                if !closes {
+                    let _ = ended.recv();
+                }
+            });
+            let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let began = Instant::now();
+            let (mut following, kind) = home_stream(&stream, &home);
+            let mut got = Vec::new();
+            let read = following.read_to_end(&mut got).map(|_| got);
+            drop(end);
+            peer.join().unwrap();
+            (read, began.elapsed(), kind)
+        });
+        if closes {
+            assert!(
+                matches!(&read, Ok(got) if got == b"x"),
+                "round {round}: a stream whose first byte came {delay:?} in, its party busy, ended {took:?} in with {read:?}"
+            );
+        } else {
+            assert!(
+                read.is_err(),
+                "round {round}: a stream silent past its first byte while its party spun was never refused"
+            );
+        }
+        if round == 0 {
+            let seen = kind.record().seen();
+            assert!(
+                matches!(seen, shards_api::Seen::Learned { slowest, .. } if slowest < late),
+                "its kind learned no answer below {late:?}: {seen:?}"
+            );
+        }
+    }
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+}
+
+/// [`common::Following::of_home`] at its caller's site, that kind made cold as
+/// [`cold_following`]'s is, with the kind.
+#[track_caller]
+fn home_stream<'a>(
+    stream: &'a std::net::TcpStream,
+    home: &std::path::Path,
+) -> (
+    common::Following<'a, std::net::TcpStream>,
+    &'static common::WaitKind,
+) {
+    let site = std::panic::Location::caller();
+    let file = common::WaitKind::kept_at(site, common::STREAM, "");
+    static REMOVED: std::sync::Once = std::sync::Once::new();
+    REMOVED.call_once(|| {
+        let _ = std::fs::remove_file(&file);
+    });
+    (
+        common::Following::of_home(stream, home),
+        common::WaitKind::awaiting(site, common::STREAM),
+    )
+}
+
 /// A home's `daemon.pid` names its daemon by its ID and its start (D185): a wait whose home
 /// names a process that has its ID and not its start follows no daemon (#77 waits-09: the
 /// tests' party read the ID alone, and followed whatever process had it since). Red at
