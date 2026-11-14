@@ -28067,6 +28067,21 @@ docs/research/s33-veil-creds/STEP3.md).
   and in the body, and its HTTP/2 stream whose value rotates while its response waits, red before
   (the value reached the guest), green after; the mask given no value (`filled_in` not filling it)
   fails both.
+- *Every response from a granted host is masked against every value leased toward it (creds-09,
+  amended 2026-11-13).* A response's mask held the values filled into its own request alone, so a
+  request with no placeholder on a granted host's connection got a response with no mask, and a
+  host returning a value leased to the run before (an endpoint that lists keys) gave it to the
+  guest. Now, as a request goes, its mask takes its own values (creds-03) and every value the run
+  holds leased at that instant of a credential granted toward its host (`held_toward`), each the
+  mask's wiped copy until that response ends; and such a request asks `identity` and offers no
+  WebSocket extension as a filled one does (creds-04), its coded response decoded or refused
+  alike. Its bound is the run's leases toward one host, which the run's grants name. A value whose
+  lease lapsed before the request went is held nowhere in this process, so nothing of it is
+  masked: the lease's end is the run's word that the value is no longer the VM's. Tests:
+  `inject::tests::leaks`' H1 request and H2 stream with no placeholder after a filled one, their
+  responses carrying the value in a field and the body, red before (the value reached the
+  guest), green after; the held values left out of the mask, and the `identity` ask left out,
+  each fail them.
 - *A chunk's size line goes as its size alone (creds-02, amended 2026-11-13).* The mask passes a
   chunked body's framing over, so that an echo split across chunks is found; but the framing's
   bytes still reached the guest, and a chunk's extensions (`chunk-ext`, RFC 9112 §7.1.1: tokens or
