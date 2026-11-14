@@ -1,0 +1,15 @@
+# runs-11 TAKEOVER green: adas-mac-studio-3.local (macOS arm64), kiln run, merge 04e381252
+# (b1a8f0800 + d1bb72058 over origin/main f341a4933); CARGO_INCREMENTAL=0, debug test profile.
+$ cargo test -p shards --bin shards -- daemon::tests::a_daemon_waits_for_its_homes_lock daemon::tests::a_starting_holder daemon::ends::
+running 8 tests
+test daemon::ends::tests::each_published_record_is_read_back_by_the_next_process ... ok
+test daemon::ends::tests::a_homes_processes_keep_one_record_of_its_ends ... ok
+test daemon::ends::tests::a_hosts_ends_are_learned_and_kept_in_its_home ... ok
+test daemon::ends::tests::an_end_is_followed_while_its_vm_process_runs ... ok
+test daemon::ends::tests::an_end_goes_on_at_any_rate_and_not_asleep_or_stopped ... ok
+test daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima ... ok
+test daemon::tests::a_starting_holder_that_goes_on_with_nothing_for_the_hosts_slowest_start_is_refused ... ok
+test daemon::tests::a_daemon_waits_for_its_homes_lock_while_its_holder_lives ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 954 filtered out; finished in 21.20s
+$ cargo clippy -p shards -p shards-vmm --all-targets -- -D warnings
+exit 0 (no warnings of the workspace's crates)
