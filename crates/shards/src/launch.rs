@@ -130,7 +130,7 @@ impl Kind {
     }
 
     /// The name of the thread that answers what it asks to reach.
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     fn answerer(&self) -> &'static str {
         match self {
             Kind::Run { .. } => "vm grants",
@@ -216,8 +216,8 @@ fn after_command<'w>(args: &[&'w OsStr], words: &'w [OsString]) -> Vec<&'w OsStr
 /// before their launches were one. After its stdio (the null device, and this process's
 /// error as its output and error), a run's VM has its link at 3 ([`LINK`]), macOS's grants at
 /// 4, its network's ring at [`crate::netproc::VM_FDS`] and its release at
-/// [`crate::netproc::VM_RELEASE_FD`]; a builder's has macOS's grants at 3, its join disk's
-/// socket at 4, the ring at `VM_FDS` and its console report's pipe at 9.
+/// [`crate::netproc::VM_RELEASE_FD`]; a builder's has its grants at 3 (macOS and Linux),
+/// its join disk's socket at 4, the ring at `VM_FDS` and its console report's pipe at 9.
 #[cfg(unix)]
 fn handed<'f>(
     kind: &'f Kind,
@@ -313,7 +313,7 @@ fn launch_with(
             grants: answered,
     } = plan;
     let who = kind.who();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let answerer = kind.answerer();
     let (binary, env, _) = program(args, vm)?;
     #[cfg(target_os = "macos")]
@@ -321,7 +321,18 @@ fn launch_with(
         std::os::unix::net::UnixStream::pair().map_err(|e| format!("{who}'s grants: {e}"))?;
     #[cfg(target_os = "macos")]
     let granted = Some(granted);
-    #[cfg(not(target_os = "macos"))]
+    // On Linux a builder alone has a vsock path, which its spawner binds for it and beside
+    // which it dials for it (D30); a run's VM dials nothing.
+    #[cfg(target_os = "linux")]
+    let (grants, granted) = match kind {
+        Kind::Builder { .. } => {
+            let (grants, granted) =
+                std::os::unix::net::UnixStream::pair().map_err(|e| format!("{who}'s grants: {e}"))?;
+            (Some(grants), Some(granted))
+        }
+        Kind::Run { .. } => (None, None),
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let granted: Option<shards_ipc::Stream> = None;
     let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
     let err = std::io::stderr();
@@ -377,6 +388,16 @@ fn launch_with(
             None
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(grants) = grants {
+        let answering = std::thread::Builder::new().name(answerer.into()).spawn(move || {
+            let _ = crate::grant_answer::serve(&grants, None);
+        });
+        if let Err(e) = answering {
+            Launched { vm, net }.end(record);
+            return Err(format!("answering {who}: {e}"));
+        }
+    }
     Ok(Launched {
         vm,
         net,

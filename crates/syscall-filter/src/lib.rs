@@ -563,7 +563,9 @@ pub fn name_refusals() -> io::Result<()> {
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     let handler: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) = refused;
     action.sa_sigaction = handler as libc::sighandler_t;
-    action.sa_flags = libc::SA_SIGINFO;
+    // What a sent SIGSYS interrupts restarts where the kernel restarts it ([`on_sent`]); a
+    // refusal's handler never returns.
+    action.sa_flags = libc::SA_SIGINFO | libc::SA_RESTART;
     // SAFETY: sigaction(2) installing a handler for SIGSYS from a valid struct.
     if unsafe { libc::sigaction(libc::SIGSYS, &action, std::ptr::null_mut()) } != 0 {
         return Err(io::Error::last_os_error());
@@ -572,7 +574,30 @@ pub fn name_refusals() -> io::Result<()> {
 }
 
 /// The SIGSYS handler: async-signal-safe, formatting into a stack buffer.
+/// What a SIGSYS this process sent one of its threads runs in that thread ([`on_sent`]).
+static SENT: std::sync::OnceLock<extern "C" fn()> = std::sync::OnceLock::new();
+
+/// Has `hook` run in a thread of this process that another of its threads sent SIGSYS
+/// (tgkill(2): `si_code` SI_TKILL, its own pid), where a refusal ([`name_refusals`]), whose
+/// `si_code` is SYS_SECCOMP, is reported: SIGSYS is the one signal every thread of a filtered
+/// process takes, as a trap ends the process where it is blocked, and Mesa's threads, which
+/// block every other, leave it (src/util/u_thread.c, `u_thread_create`). shards-vm asks
+/// each thread to take a Landlock layer by it (confine.rs, `asked`). Once; a SIGSYS sent
+/// before is ignored. `hook` must be async-signal-safe.
+pub fn on_sent(hook: extern "C" fn()) {
+    let _ = SENT.set(hook);
+}
+
 extern "C" fn refused(_: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
+    // SAFETY: the kernel passes a valid siginfo_t; getpid(2) has no preconditions.
+    let sent = unsafe { info.as_ref() }
+        .is_some_and(|i| i.si_code == libc::SI_TKILL && unsafe { i.si_pid() == libc::getpid() });
+    if sent {
+        if let Some(hook) = SENT.get() {
+            hook();
+        }
+        return;
+    }
     // `si_syscall`, after `si_call_addr` in the union after three ints and padding
     // (include/uapi/asm-generic/siginfo.h, _sigsys), at 24 on 64-bit Linux.
     // SAFETY: the kernel passes a valid siginfo_t for SIGSYS, whose _sigsys it filled.
