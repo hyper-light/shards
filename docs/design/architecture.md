@@ -18513,6 +18513,40 @@ was built on [PM M200-M203]:
 - **No profile left behind.** Each lives with a record its spawner holds open
   (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
   no process holds.
+  - **A managed VM's, at once (2026-11-14, Hex's ask).** A managed VM whose native owner
+    ends it by killing its job (D215's `ManagedProcess`) leaves its `shards`' profiles, their
+    registry entries, their `%LOCALAPPDATA%\Packages` folders and their records, until
+    some VM's spawner next sweeps. So the owner calls
+    `shards_api::release_app_containers(&paths, &identity, end)` once it has ended the
+    scope: `paths` its `RuntimePaths`, whose cache is the VM's `SHARDS_CACHE`, so the
+    records are `<cache>\containers`; `identity` the VM's recorded `Identity`, whose pid
+    names its profiles (`shards.<role>.<pid>.<n>`); `end` its `ManagedEnd`. It deletes each
+    profile recorded there under that pid, then its record (`shards_ipc::release`, the
+    sweep's own open-and-delete for one maker), and answers how many: none where a sweep
+    took them first or none was made. Profiles of another cache, or of no record, are never
+    touched.
+  - Refusals, nothing deleted (R04): `Refusal::Release(ReleaseRefusal::ScopeLive)` for an
+    end short of `TerminalScope::Released`, as a process of the VM's may still run in a
+    profile; `ReleaseRefusal::Held` where a record is held open, which only a live process
+    does (the VM's `shards`, a process given its pid since, or a spawner sweeping that
+    moment). Every record is opened, shared with none, before any profile goes, so a held
+    one stops the call whole. An I/O failure is `Refusal::ManagedIo`. A profile whose
+    deletion fails keeps its record for a later sweep. A profile already gone is not a failure
+    (DeleteAppContainerProfile's HRESULT_FROM_WIN32 of ERROR_FILE_NOT_FOUND,
+    ERROR_PATH_NOT_FOUND or ERROR_NOT_FOUND).
+  - The call is compiled on every host, so the owner's code is one. Elsewhere a VM has no
+    AppContainer: after the same check of `end`, it deletes none and answers 0.
+  - No literal is added: the profile name's parts are AppContainer::new's own format.
+  - Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1):
+    - `shards_api` `native::tests::a_killed_managed_vms_app_containers_are_released`: a child
+      makes and records its profile as a VM's `shards` does, and is killed. The call is
+      refused while the child lives (Held) and for an end of `Process` (ScopeLive). Then,
+      Released, the profile's Packages folder and its record are gone, and a second call
+      answers 0.
+    - `shards_ipc` `windows::tests::release_deletes_one_ended_makers_profiles_and_records`:
+      only the named maker's profiles go, each name then makes a new profile where it said
+      ERROR_ALREADY_EXISTS; a record whose profile had gone is released; a held record is
+      refused whole.
 - **The partition that reads WHP's vCPU limit is made as a VM's** (D140 fixed): offered the
   synthetic features without its APICs emulated, WHP refused it (HV_STATUS_INVALID_PARAMETER),
   and with it every VM (CI run 38222358454).
@@ -26732,6 +26766,34 @@ Results:
 Not run: these on Linux and Windows (Linux's CPU clock reader, Windows' process tree, the
 Windows report test; CI's matrix); boot.rs's real-VM tests on HVF, KVM x86_64, KVM arm64 (L1)
 and WHP (ROOT's); scripts/lint.
+
+**A stream shared without an inheritable duplicate (2026-11-14, Hex's audit D-5).** On
+Windows `Stream::try_clone` returned an inheritable socket. Its duplicate is
+WSADuplicateSocketW's protocol info made a socket by WSASocketW (`shards_afunix`), which
+keeps no WSA_FLAG_NO_HANDLE_INHERIT for it, so a child another thread starts with std's
+`Command` (which inherits every inheritable handle) took the connection. Reproduced before
+the fix (PM M582): a stream's clone, a stream shared with its own process and a listener's
+clone were inheritable, the originals not. Two changes:
+- **No duplicate is needed.** `&dyn Stream` reads and writes (`Read` and `Write` for
+  `&(dyn Stream + '_)`), as std's `&TcpStream` does, through the trait's
+  `read_shared`/`write_shared`, the same polled waits as `read`/`write`. One thread reads
+  while another writes, sharing one handle. `Stream::into_socket(self: Box<Self>) ->
+  shards_api::OwnedSocket` (`OwnedFd` on Unix, `OwnedSocket` on Windows) hands the socket
+  over, left non-blocking, its timeouts gone with the value.
+- **No duplicate is inheritable.** `shards_afunix`'s socket made from protocol info clears
+  HANDLE_FLAG_INHERIT (SetHandleInformation) as it is made: a socket is a handle, whose
+  inheritance WSASocketW's documentation reads with GetHandleInformation, and std cleared
+  its sockets' this way before Windows had the flag. This covers `try_clone`, `from_shared`
+  and a listener's `try_clone`; a failure is the clone's error. So `try_clone` stays, with
+  its documentation saying so.
+
+Tested on the Windows 11 container on adacachy (10.0.26200, x86_64, rustc 1.99.1):
+- `shards_afunix` `tests::no_socket_and_no_duplicate_of_one_is_inheritable`: red before the
+  fix, green after (PM M582).
+- `shards_api` `stream::tests::two_threads_share_a_stream_through_a_reference`: one thread
+  reads and another writes through `&dyn Stream`, and on Windows the socket and a clone's
+  are not inheritable (GetHandleInformation).
+- `stream::tests::a_streams_socket_is_handed_over`: the socket taken carries both ways.
 
 **What would falsify it.** A conforming client that needs to link the VMM. A VM process that
 ran no CPU for a whole W* of its kind and would still have answered: a working guest

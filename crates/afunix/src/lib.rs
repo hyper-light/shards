@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use windows_sys::Win32::Foundation::{HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, LINGER, POLLRDNORM, POLLWRNORM, SD_BOTH,
     SD_RECEIVE, SD_SEND, SO_ERROR, SO_LINGER, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET,
@@ -146,7 +147,18 @@ impl Socket {
         if s == INVALID_SOCKET {
             return Err(last());
         }
-        Ok(Socket(s))
+        let socket = Socket(s);
+        // WSASocketW keeps no WSA_FLAG_NO_HANDLE_INHERIT for a socket made from a duplicate's
+        // protocol info: each came back inheritable (Windows 11 26200, Rust 1.99.1, PM M582),
+        // where a child another thread starts with std's Command would take it. Cleared as
+        // std cleared its sockets' before Windows had the flag (SetHandleInformation; a
+        // socket is a handle, whose inheritance WSASocketW's documentation reads with
+        // GetHandleInformation).
+        // SAFETY: the socket just made, which this value owns; HANDLE_FLAG_INHERIT alone.
+        if unsafe { SetHandleInformation(socket.0 as HANDLE, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(socket)
     }
 }
 
@@ -838,6 +850,44 @@ mod tests {
         // libtest's own warning for a test still running.
         let got = read.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert_eq!(got, Err(io::ErrorKind::WouldBlock));
+    }
+
+    /// Whether `socket`'s handle is inheritable (GetHandleInformation's HANDLE_FLAG_INHERIT,
+    /// which WSASocketW's documentation names as the way to read WSA_FLAG_NO_HANDLE_INHERIT).
+    fn inheritable(socket: SOCKET) -> bool {
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+        let mut flags = 0u32;
+        // SAFETY: a socket the caller holds open, and a u32 for the call to fill.
+        let ok = unsafe { GetHandleInformation(socket as HANDLE, &raw mut flags) };
+        assert_ne!(ok, 0);
+        flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// No socket here is inheritable, a duplicate's no more than the one it was made from: a
+    /// stream's clone, one shared with this process, and a listener's clone, each made by
+    /// WSASocketW of WSADuplicateSocketW's protocol info, so that a child another thread
+    /// starts with std's Command, which inherits every inheritable handle, takes none (Hex's
+    /// audit D-5: WSA_FLAG_NO_HANDLE_INHERIT is not kept for a duplicated socket).
+    #[test]
+    fn no_socket_and_no_duplicate_of_one_is_inheritable() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let clone = a.try_clone().unwrap();
+        let shared = UnixStream::from_shared(&a.share_with(std::process::id()).unwrap()).unwrap();
+        let dir = shards_testdir::TempDir::new("afunix-inherit").unwrap();
+        let listener = UnixListener::bind(dir.path().join("l")).unwrap();
+        let listener_clone = listener.try_clone().unwrap();
+        let found: Vec<_> = [
+            ("a stream", a.socket.0),
+            ("its clone", clone.socket.0),
+            ("one shared with this process", shared.socket.0),
+            ("a listener", listener.0.0),
+            ("its clone", listener_clone.0.0),
+        ]
+        .into_iter()
+        .map(|(what, s)| (what, inheritable(s)))
+        .collect();
+        println!("inheritable: {found:?}");
+        assert!(found.iter().all(|(_, on)| !on), "{found:?}");
     }
 
     /// A pair carries bytes each way, scatter-gather included; a half-close reads as

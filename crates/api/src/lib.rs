@@ -54,7 +54,9 @@ pub use client::{
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
-pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
+pub use native::{
+    ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
+};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
 
@@ -601,6 +603,28 @@ pub enum Refusal {
     /// A managed guest's VM process answered its use (D260) with none of the protocol's
     /// words, by what broke it (`shards_abi::rate::read_used`).
     HostUse(shards_abi::rate::UseBroken),
+    /// [`release_app_containers`] deleted nothing, and why.
+    Release(ReleaseRefusal),
+}
+
+/// Why [`release_app_containers`] deleted no AppContainer profile of a managed VM's (D141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseRefusal {
+    /// The end given was short of [`TerminalScope::Released`]: a process of the VM's may still
+    /// run in one of its profiles.
+    ScopeLive,
+    /// A record of the VM's `shards` is held, as only a live process holds one: the VM's own
+    /// `shards`, a process given its pid since, or a spawner sweeping the records that moment.
+    Held,
+}
+
+impl std::fmt::Display for ReleaseRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ScopeLive => "the VM's scope is not released: its processes may still run in its profiles",
+            Self::Held => "a record of its profiles is held by a live process",
+        })
+    }
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -661,6 +685,7 @@ impl std::fmt::Display for Refusal {
             ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
             Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
+            Refusal::Release(why) => write!(f, "the VM's AppContainers: {why}"),
         }
     }
 }
@@ -683,9 +708,27 @@ impl std::error::Error for Refusal {
 /// a socket's own receive timeout, which leaves a Winsock connection indeterminate (PM M207);
 /// and a read on macOS waits in poll(2), which sees a peer's half-close that a waiting
 /// read can sleep through (PM M236).
+///
+/// Two threads share one stream without a second handle: `&dyn Stream` reads and writes, as
+/// std's `&TcpStream` does ([`read_shared`](Stream::read_shared)). One that owns it can take its
+/// socket ([`into_socket`](Stream::into_socket)).
 pub trait Stream: Read + Write + Send + Sync {
-    /// Another handle to the same connection.
+    /// Another handle to the same connection. Not inheritable by a child process, as no
+    /// socket of a stream is: on Windows a duplicate socket would be, WSASocketW keeping no
+    /// WSA_FLAG_NO_HANDLE_INHERIT for it, so its inheritance is cleared as it is made (PM
+    /// M582). A second thread needs none: it reads and writes through `&dyn Stream`.
     fn try_clone(&self) -> io::Result<Box<dyn Stream>>;
+    /// A read through a shared reference, waiting as [`Read::read`] does: what `&dyn Stream`'s
+    /// `Read` does, so one thread reads while another writes, with no second handle.
+    fn read_shared(&self, buf: &mut [u8]) -> io::Result<usize>;
+    /// A write through a shared reference, waiting as [`Write::write`] does: what
+    /// `&dyn Stream`'s `Write` does.
+    fn write_shared(&self, buf: &[u8]) -> io::Result<usize>;
+    /// The connection's socket, owned by its caller from here: a Unix stream socket's
+    /// descriptor, close-on-exec; on Windows shards' AF_UNIX socket, not inheritable. It is
+    /// left non-blocking, as every stream's is (its timeouts were this value's own polls, and
+    /// go with it), still shared by any clone.
+    fn into_socket(self: Box<Self>) -> OwnedSocket;
     /// The OS handle under it, for a caller that waits in its own event loop (epoll, kqueue,
     /// IOCP) rather than in a read: readable when a read won't wait, writable when a write
     /// won't, both once the connection has ended. Borrowed: it stays the stream's, open for as
@@ -722,6 +765,28 @@ pub trait Stream: Read + Write + Send + Sync {
 pub type Handle<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
 pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
+
+/// The OS handle under a [`Stream`], owned ([`Stream::into_socket`]).
+#[cfg(unix)]
+pub type OwnedSocket = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type OwnedSocket = std::os::windows::io::OwnedSocket;
+
+impl Read for &(dyn Stream + '_) {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_shared(buf)
+    }
+}
+
+impl Write for &(dyn Stream + '_) {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_shared(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// What boots guests.
 pub trait Guests: Send + Sync {
