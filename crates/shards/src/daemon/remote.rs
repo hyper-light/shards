@@ -132,20 +132,32 @@ impl Host for Machine {
 
     fn join(&self, name: &str, proof: &[u8], exported: &[u8; 32], spki: &[u8]) -> Result<(), Error> {
         let refused = || Error::new(server::NOT_INVITED);
-        let (invitation, created) = crate::context::invitation(&self.home, name).ok_or_else(refused)?;
-        if crate::context::lapsed(created) || !invite::verify(&invitation.secret, exported, proof) {
+        // Its client hears the same refusal whatever made it (`NOT_INVITED`); the log says
+        // which, typed (`context::Uninvited`), the name only where it is one an invitation may
+        // have.
+        if let Err(why) = crate::context::joinable(&self.home, name, |invitation| {
+            invite::verify(&invitation.secret, exported, proof)
+        }) {
+            let shown = if invite::valid_name(name) {
+                name
+            } else {
+                "of no invitation's form"
+            };
+            super::log(format!("a join by invitation {shown} refused: {why}"));
             return Err(refused());
         }
         // A client this machine enrolled already, whose context was made again: the
         // invitation is redeemed, that no other key takes it, and the client joins as it was
         // enrolled, under the name it has, its key's one.
         if let Some(enrolled) = self.enrolled(spki) {
-            crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+            crate::context::end_invitation(&self.home, name, crate::context::Ended::Used)
+                .map_err(|_| refused())?;
             super::log(format!("client {enrolled} joined again, by invitation {name}"));
             return Ok(());
         }
         // Redeemed first: of two joins at once, one enrolls.
-        crate::context::redeem(&self.home, name).map_err(|_| refused())?;
+        crate::context::end_invitation(&self.home, name, crate::context::Ended::Used)
+            .map_err(|_| refused())?;
         crate::context::enroll(&self.home, name, spki).map_err(|_| refused())?;
         let key = identity::hex(&identity::fingerprint(spki));
         super::log(format!(
@@ -178,7 +190,9 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(shards_ipc::MOVE_STEP) {
             let step = known(
                 args.get(1),
-                &["save", "plan", "live", "done", "ready", "key", "cpu", "export", "import"],
+                &[
+                    "save", "plan", "live", "done", "ready", "key", "cpu", "export", "import",
+                ],
             );
             super::log(format!("client {client}: move step {step}"));
             return self.copy_step(args);
@@ -201,7 +215,10 @@ impl Host for Machine {
         if args.first().map(String::as_str) == Some(crate::build::policy_command::POLICY_STEP) {
             use crate::build::policy_command::STEP_VAR;
             let step = args.get(1).cloned().unwrap_or_default();
-            let what = format!("policy step {}", known(Some(&step), &["platform", "resolve", "fetch"]));
+            let what = format!(
+                "policy step {}",
+                known(Some(&step), &["platform", "resolve", "fetch"])
+            );
             super::log(format!("client {client}: {what}"));
             let mut env = self.command_env(client, request.env);
             env.push((STEP_VAR.to_string(), OsString::from(step)));
@@ -1956,7 +1973,10 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "child failed: {:?}", output.status);
         let log = String::from_utf8_lossy(&output.stderr);
-        assert!(log.contains("client alice: refused shards run"), "missing diagnostic: {log}");
+        assert!(
+            log.contains("client alice: refused shards run"),
+            "missing diagnostic: {log}"
+        );
         assert!(!log.contains(SECRET), "private request value entered the log");
     }
 
@@ -1966,9 +1986,15 @@ mod tests {
     #[test]
     fn a_log_names_a_command_by_its_path_and_a_step_by_its_kind() {
         let words = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
-        assert_eq!(named(&words("run --rm -e K=sk-planted image exit 3")), "shards run");
+        assert_eq!(
+            named(&words("run --rm -e K=sk-planted image exit 3")),
+            "shards run"
+        );
         assert_eq!(named(&words("container ls -a")), "shards container ls");
-        assert_eq!(named(&words("buildx policy eval --print x")), "shards buildx policy eval");
+        assert_eq!(
+            named(&words("buildx policy eval --print x")),
+            "shards buildx policy eval"
+        );
         assert_eq!(named(&words("sk-planted --flag")), "a command");
         let step = |w: &str| known(Some(&w.to_string()), &["platform", "resolve", "fetch"]).to_string();
         assert_eq!(step("resolve"), "resolve");

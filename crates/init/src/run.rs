@@ -2537,11 +2537,6 @@ pub(crate) mod step {
     pub const NNP: u8 = 10;
     /// Making a joiner's working directory (D119), as [`super::workdir`] makes a run's.
     pub const MKDIR: u8 = 11;
-    /// Entering a member's namespaces, for a command run in it ([`crate::enter`]).
-    pub const JOIN: u8 = 12;
-    /// A step of a member's confinement, its number (`domains::Confining`) where a
-    /// candidate's would be ([`crate::enter`]).
-    pub const CONFINE: u8 = 13;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -3688,6 +3683,26 @@ struct Exec {
     /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
     /// the workload's end ends the rest, as the joiner is.
     into_joiner: bool,
+    /// A command run in a member, through the member's starter (D243, confine-10).
+    member: Option<MemberExec>,
+}
+
+/// Where a command run in a member has come, started by its member's starter
+/// ([`crate::starter`]). Init waits on none of it but in its poll loop: a process of the
+/// member's may stop the starter, or the command before it execs, as it may any of its own.
+enum MemberExec {
+    /// Asked of its starter, whose answer is to come on its channel.
+    Asked(crate::enter::Asked),
+    /// Born, its error channel open until it execs.
+    Born(crate::enter::Asked, crate::starter::Born),
+    /// Running until its pidfd says it ended; `failed`, ended before it ran, its end said.
+    Running {
+        born: crate::starter::Born,
+        member: u32,
+        failed: bool,
+    },
+    /// Its end read, and its starter asked to reap it.
+    Done,
 }
 
 /// How far an exec's connection to the host has come. The host says nothing on it before
@@ -4553,6 +4568,7 @@ impl Exec {
             proxy: None,
             save: Save::Unasked,
             into_joiner: false,
+            member: None,
         };
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
@@ -4565,18 +4581,15 @@ impl Exec {
         // A command run in one of the run's members (plan step 6, D243).
         let in_member = run::members::exec_member(&spec.setup);
         let started = if let Ok(Some(member)) = in_member {
-            crate::enter::start(&spec, member, domains)
-                .map(|e| Started {
-                    pid: e.pid,
-                    tty: e.tty,
-                    stdin: e.stdin,
-                    stdout: e.stdout,
-                    stderr: e.stderr,
-                    binds: None,
-                    published: None,
-                    member: None,
-                })
-                .map_err(|f| entered_failure(f, &spec))
+            // Asked of its member's starter: its start is said as its starter answers and
+            // it execs, in the poll loop (`MemberExec`).
+            match crate::enter::start(&spec, member, domains, id) {
+                Ok(asked) => {
+                    exec.member = Some(MemberExec::Asked(asked));
+                    return Ok(exec);
+                }
+                Err(f) => Err(entered_failure(f, &spec.argv, &spec.cwd, &spec.user)),
+            }
         } else if let Err(e) = in_member {
             Err(setup_failed(format!("a malformed command: {e}")))
         } else if let Some(range) = crate::join::range(&spec.setup) {
@@ -4689,19 +4702,142 @@ impl Exec {
                 }
                 exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
             }
-            Err(f) => {
-                // A member's refusal by type, its words after (D243); else the class alone.
-                let said = match f.refusal {
-                    Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
-                    None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
-                    None => [&[run::exec_failed::RUNTIME][..], f.message.as_bytes()].concat(),
-                };
-                let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
-                exec.to_conn.extend(&[&run::header(kind::SYSTEM_ERR, len), &said]);
-                exec.status = Some(f.status);
-            }
+            Err(f) => exec.not_started(f),
         }
         Ok(exec)
+    }
+
+    /// It could not start, `f` why: said to its host, its status `f`'s.
+    fn not_started(&mut self, f: Failure) {
+        // A member's refusal by type, its words after (D243); else the class alone.
+        let said = match f.refusal {
+            Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
+            None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
+            None => [&[run::exec_failed::RUNTIME][..], f.message.as_bytes()].concat(),
+        };
+        let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+        self.to_conn.extend(&[&run::header(kind::SYSTEM_ERR, len), &said]);
+        self.status = Some(f.status);
+    }
+
+    /// Whether it is asked of member `member`'s starter as exec `id`, its answer to come.
+    fn asked_of(&self, member: u32, id: u32) -> bool {
+        self.id == id && matches!(&self.member, Some(MemberExec::Asked(a)) if a.member == member)
+    }
+
+    /// Its member's starter answered: born, or its fork's errno.
+    fn member_answered(&mut self, answer: Result<crate::starter::Born, i32>) {
+        let Some(MemberExec::Asked(asked)) = self.member.take() else {
+            return;
+        };
+        match answer {
+            Ok(born) => {
+                self.pid = born.pid;
+                self.member = Some(MemberExec::Born(asked, born));
+            }
+            Err(errno) => {
+                self.member = Some(MemberExec::Done);
+                let f = asked.not_born(errno);
+                self.not_started(entered_failure(
+                    f,
+                    std::slice::from_ref(&asked.argv0),
+                    &asked.cwd,
+                    &[],
+                ));
+            }
+        }
+    }
+
+    /// Its member's starter has gone before it answered.
+    fn member_unanswered(&mut self) {
+        if let Some(MemberExec::Asked(asked)) = self.member.take() {
+            self.member = Some(MemberExec::Done);
+            let f = asked.gone();
+            self.not_started(entered_failure(
+                f,
+                std::slice::from_ref(&asked.argv0),
+                &asked.cwd,
+                &[],
+            ));
+        }
+    }
+
+    /// Its error channel is readable: closed as it execs, or why it did not.
+    fn member_launched(&mut self) {
+        let Some(MemberExec::Born(asked, born)) = self.member.take() else {
+            return;
+        };
+        let member = asked.member;
+        let mut report = [0u8; 16];
+        let n = read(asked.err.as_raw_fd(), &mut report).unwrap_or(0);
+        let said = asked.launched(report.get(..n).unwrap_or_default());
+        let (argv0, cwd) = (asked.argv0.clone(), asked.cwd.clone());
+        let started = said.and_then(|()| {
+            asked.stdio().map_err(|e| {
+                crate::enter::Failed::Refused(
+                    run::members::Refusal::Joining(e.raw_os_error().unwrap_or(libc::EIO)),
+                    format!("its stdio: {e}"),
+                )
+            })
+        });
+        match started {
+            Ok((stdin, stdout, stderr)) => {
+                for fd in [&stdin, &stdout, &stderr].into_iter().flatten() {
+                    set_nonblocking(fd.as_raw_fd(), true);
+                }
+                (self.stdin, self.stdout, self.stderr) = (stdin, stdout, stderr);
+                self.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
+                self.member = Some(MemberExec::Running {
+                    born,
+                    member,
+                    failed: false,
+                });
+            }
+            Err(f) => {
+                // One that ran on (its stdio's failure) ends here; one that reported has.
+                // SAFETY: pidfd_send_signal(2) of a process this pidfd selects alone.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        born.pidfd.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    )
+                };
+                self.not_started(entered_failure(f, &[argv0], &cwd, &[]));
+                self.member = Some(MemberExec::Running {
+                    born,
+                    member,
+                    failed: true,
+                });
+            }
+        }
+    }
+
+    /// Its pidfd is readable: it has ended, a zombie its starter keeps until init has read
+    /// its end. Its starter, of `domains`, is asked to reap it.
+    fn member_ended(&mut self, domains: &[crate::domains::Started]) {
+        let Some(MemberExec::Running { born, member, failed }) = self.member.take() else {
+            return;
+        };
+        self.member = Some(MemberExec::Done);
+        // Gone where its starter went, reaped by its namespace's init: killed with its
+        // starter (`PR_SET_PDEATHSIG`), as its member's end kills it.
+        let end = crate::starter::ended(born.pid).map_or(
+            run::members::End::Signaled(libc::SIGKILL.unsigned_abs()),
+            crate::managed::ended,
+        );
+        if let Some(s) = domains
+            .iter()
+            .find(|d| d.member == member)
+            .and_then(|d| d.starter.as_ref())
+        {
+            s.reap(born.ns_pid);
+        }
+        if !failed {
+            exec_ended(self, end);
+        }
     }
 
     /// Whether everything of it is said: its status known, its output drained, its EXIT
@@ -4977,6 +5113,8 @@ enum Owner {
     Notify,
     /// Its ready-by's timer.
     ReadyBy,
+    /// A member's starter's channel, by its domain's index (D243, confine-10).
+    Starter(usize),
 }
 
 /// Tells the host where a granted run's readiness moved (D234), and marks it ready on the
@@ -4995,6 +5133,10 @@ enum Part {
     Stdin,
     Stdout,
     Stderr,
+    /// A member's command's error channel, until it execs (`MemberExec::Born`).
+    Launch,
+    /// A member's command's pidfd, readable as it ends (`MemberExec::Running`).
+    Pidfd,
 }
 
 /// Reads what a pipe or pty holds into `to` as `which` frames; drops `slot` at its end.
@@ -5374,6 +5516,11 @@ impl Workload {
             );
             for (i, d) in self.domains.iter().enumerate() {
                 poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
+                poll(
+                    d.starter.as_ref().map(crate::starter::Starter::fd),
+                    libc::POLLIN,
+                    Owner::Starter(i),
+                );
                 if let Some(input) = d.input.as_ref() {
                     let (fd, events) = input.conn();
                     poll(fd, events, Owner::MemberInput(i, Part::Conn));
@@ -5475,6 +5622,23 @@ impl Workload {
                     out_events,
                     Owner::Exec(i, Part::Stderr),
                 );
+                match &e.member {
+                    Some(MemberExec::Born(asked, _)) => {
+                        poll(
+                            Some(asked.err.as_raw_fd()),
+                            libc::POLLIN,
+                            Owner::Exec(i, Part::Launch),
+                        );
+                    }
+                    Some(MemberExec::Running { born, .. }) => {
+                        poll(
+                            Some(born.pidfd.as_raw_fd()),
+                            libc::POLLIN,
+                            Owner::Exec(i, Part::Pidfd),
+                        );
+                    }
+                    _ => {}
+                }
             }
             // SAFETY: valid pollfds, as many as given.
             if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
@@ -5568,32 +5732,7 @@ impl Workload {
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
                                 }
                             } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
-                                e.status = Some(end.status());
-                                // What it published goes with it (D181).
-                                if let Some(proxy) = e.proxy.take() {
-                                    // SAFETY: kill(2) of init's own child, reaped as it ends.
-                                    unsafe { libc::kill(proxy, libc::SIGKILL) };
-                                }
-                                // Its stdin goes with it.
-                                e.stdin = None;
-                                e.to_stdin.clear();
-                                // A joiner's cgroup, empty now: the kernel ends a PID
-                                // namespace's other processes before its first's end is
-                                // reaped (D119).
-                                // In another's PID namespace, what it started is killed
-                                // as it ends, as runc kills it (D119).
-                                if e.joined {
-                                    joined().retain(|(j, _)| *j != e.id);
-                                    crate::join::kill_rest(e.id);
-                                    let dir = crate::join::cgroup(e.id);
-                                    if crate::plug::oom_kills(&dir) > 0 {
-                                        e.oom = Some(oom_facts(&dir));
-                                    }
-                                    e.pids = pids_refused_in(&dir);
-                                    crate::join::remove_cgroup(e.id);
-                                    // Its membership of the microVM's switch (D181).
-                                    crate::members::leave(e.id);
-                                }
+                                exec_ended(e, end);
                             } else if packing == Some(pid) {
                                 // The workload's layer sent, whole or not; the connection's
                                 // file, which the child made blocking, nonblocking again.
@@ -5941,6 +6080,41 @@ impl Workload {
                             Part::Stdin => feed(&mut e.stdin, &mut e.to_stdin),
                             Part::Stdout => drain_into(&mut e.stdout, kind::STDOUT, &mut buf, &mut e.to_conn),
                             Part::Stderr => drain_into(&mut e.stderr, kind::STDERR, &mut buf, &mut e.to_conn),
+                            Part::Launch => e.member_launched(),
+                            Part::Pidfd => e.member_ended(&self.domains),
+                        }
+                    }
+                    Owner::Starter(i) => {
+                        let Some(d) = self.domains.get_mut(i) else {
+                            continue;
+                        };
+                        let member = d.member;
+                        while let Some(starter) = d.starter.as_ref() {
+                            match starter.answer() {
+                                Ok(None) => break,
+                                Ok(Some(crate::starter::Answer::Born(born))) => {
+                                    let id = born.id;
+                                    if let Some(e) = execs.iter_mut().find(|e| e.asked_of(member, id)) {
+                                        e.member_answered(Ok(born));
+                                    }
+                                }
+                                Ok(Some(crate::starter::Answer::NotBorn { id, errno })) => {
+                                    if let Some(e) = execs.iter_mut().find(|e| e.asked_of(member, id)) {
+                                        e.member_answered(Err(errno));
+                                    }
+                                }
+                                // Gone: what was asked of it is refused; what it started ends
+                                // with it, told by each one's pidfd.
+                                Err(_) => {
+                                    d.starter = None;
+                                    for e in execs.iter_mut() {
+                                        if matches!(&e.member, Some(MemberExec::Asked(a)) if a.member == member)
+                                        {
+                                            e.member_unanswered();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -6266,6 +6440,34 @@ fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, run::members::End
             return;
         }
         exited(pid, crate::managed::ended(st));
+    }
+}
+
+/// Exec `e`'s process ended, `end` how: its status, and what goes with it.
+fn exec_ended(e: &mut Exec, end: run::members::End) {
+    e.status = Some(end.status());
+    // What it published goes with it (D181).
+    if let Some(proxy) = e.proxy.take() {
+        // SAFETY: kill(2) of init's own child, reaped as it ends.
+        unsafe { libc::kill(proxy, libc::SIGKILL) };
+    }
+    // Its stdin goes with it.
+    e.stdin = None;
+    e.to_stdin.clear();
+    // A joiner's cgroup, empty now: the kernel ends a PID namespace's other processes before
+    // its first's end is reaped (D119). In another's PID namespace, what it started is
+    // killed as it ends, as runc kills it (D119).
+    if e.joined {
+        joined().retain(|(j, _)| *j != e.id);
+        crate::join::kill_rest(e.id);
+        let dir = crate::join::cgroup(e.id);
+        if crate::plug::oom_kills(&dir) > 0 {
+            e.oom = Some(oom_facts(&dir));
+        }
+        e.pids = pids_refused_in(&dir);
+        crate::join::remove_cgroup(e.id);
+        // Its membership of the microVM's switch (D181).
+        crate::members::leave(e.id);
     }
 }
 
@@ -6631,7 +6833,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
 /// are said: a refusal by type, its status `docker exec`'s for one the daemon refuses (1)
 /// or one its runtime could not start (126, moby daemon/errors.go); a step of its child's
 /// in an exec's words, as [`exec_failure`] says them.
-fn entered_failure(f: crate::enter::Failed, spec: &Spec) -> Failure {
+fn entered_failure(f: crate::enter::Failed, argv: &[Vec<u8>], cwd: &[u8], user: &[u8]) -> Failure {
     match f {
         crate::enter::Failed::Refused(r, message) => Failure {
             status: if r.not_started() { 126 } else { 1 },
@@ -6640,8 +6842,8 @@ fn entered_failure(f: crate::enter::Failed, spec: &Spec) -> Failure {
             refusal: Some(r),
         },
         crate::enter::Failed::Step { which, errno, tried } => {
-            let argv0 = spec.argv.first().map_or(&[][..], Vec::as_slice);
-            exec_failure(which, errno, argv0, &tried, &spec.cwd, &spec.user)
+            let argv0 = argv.first().map_or(&[][..], Vec::as_slice);
+            exec_failure(which, errno, argv0, &tried, cwd, user)
         }
     }
 }
@@ -6683,8 +6885,8 @@ pub(crate) fn candidates(argv0: &[u8], env: &[Vec<u8>]) -> (bool, Vec<Vec<u8>>) 
 /// # Safety
 /// `argv` and `envp` are NULL-terminated arrays of NUL-terminated strings that outlive the
 /// call. It makes system calls alone, so a child of a multithreaded fork may call it.
-pub(crate) unsafe fn exec_found(
-    candidates: &[CString],
+pub(crate) unsafe fn exec_found<'a>(
+    candidates: impl IntoIterator<Item = &'a std::ffi::CStr>,
     explicit: bool,
     argv: *const *const libc::c_char,
     envp: *const *const libc::c_char,
@@ -6692,7 +6894,7 @@ pub(crate) unsafe fn exec_found(
     // SAFETY: stat(2), faccessat(2) and execve(2) of NUL-terminated paths the caller holds,
     // with the arrays the caller vouches for.
     unsafe {
-        for (i, path) in candidates.iter().enumerate() {
+        for (i, path) in candidates.into_iter().enumerate() {
             let mut st: libc::stat = std::mem::zeroed();
             if libc::stat(path.as_ptr(), &mut st) != 0 {
                 if explicit {
@@ -6970,6 +7172,7 @@ mod exec_link_tests {
             proxy: None,
             save: Save::Unasked,
             into_joiner: false,
+            member: None,
         }
     }
 

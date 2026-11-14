@@ -50,8 +50,8 @@ mod proc_allocation;
 
 pub use client::{
     ConfiguredShards, ManagedEnded, ManagedGuest, ManagedUse, ManagedUsed, Shards, attach_managed,
-    boot_managed, connect_borrowed, connect_prepared, final_use_file, pause, prepare_boot,
-    prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
+    boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
+    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
@@ -564,7 +564,8 @@ pub enum Refusal {
         expected_started: u64,
         failure: ProcessFailure,
     },
-    /// A finite borrowed connection failed without acquiring the guest's lifetime.
+    /// A borrowed connection ([`connect_borrowed`], [`connect_borrowed_before`]) failed
+    /// without acquiring the guest's lifetime.
     Borrowed { port: u32, failure: BorrowFailure },
     /// A post-boot connection resource could not be allocated.
     Allocation { what: &'static str },
