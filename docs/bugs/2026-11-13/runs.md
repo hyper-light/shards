@@ -124,6 +124,8 @@ let (config, manifest) = self.image_facts(c.image_id.as_deref());
 
 **Confidence:** high, source-proven; runtime emulation/copy unrun. **Fix direction:** use the container's recorded manifest, with an explicit old-record fallback; preserve effective creation config if needed after image removal/retagging. **Test:** start both variants, compare guest uid/env with container Config and ImageManifestDescriptor, and check extracted file ownership for each; repeat after changing the preferred platform.
 
+**Status (2026-11-13):** fixed in 4ec005478df8a5cd957de25d3791cec46f264906 (red `container_facts_keep_the_runs_selected_manifest`, kiln r27; green regression, 2 inspect tests, 11 command tests and shards all-target clippy r29). Exact logs: `docs/research/measurements/runs-fixes/runs06-{red,green}.log`. Both inspect and ownership-mode copy consume the recorded manifest; missing selected config is refused for copy. Guest/copy ownership proof remains owed to ROOT as the fix record specifies.
+
 ### runs-07 — P2 / medium — Concurrent processes lose learned end maxima and can corrupt the record
 
 **At head:** `crates/shards/src/daemon/ends.rs:133–149`.
