@@ -24061,3 +24061,13 @@ Linux x86_64 pure CPU tests: `aes` failed register mapping at ae37abb52 (r7), th
 3 Arm CPU tests and10 x86 CPUID tests passed at f004611b5; shards/shards-vmm all-target
 clippy passed (r8). These are code-path checks, not an Arm VM or performance result.
 [Commands and residual conservative refusals](measurements/migrate/fix-review-2026-11-13.md).
+
+### M565. Absolute-FQDN remote MCP grants compared to real DNS wire questions (D236)
+
+Linux x86_64, adacachy2, 2026-11-13: at 8e8e1c439 both Agentfile endpoint and
+init netplan tests fail `mcp.example.` versus `mcp.example` (kiln r7). At 79019fa55,
+3 focused Agentfile MCP tests, 8 init netplan tests, and both crates' all-target
+clippy pass (r8). These are functional unit results, not a real DNS-provider or
+real-VM result. RFC1034 §3.1 supplies the terminal-root-dot normalization rule;
+no chosen runtime value, wait or cache is added.
+[Commands, red output, green excerpts and owed variant](measurements/inithex-fixes/README.md).
