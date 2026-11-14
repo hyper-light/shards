@@ -3040,7 +3040,8 @@ mod tests {
                 let line = io::BufReader::new(said)
                     .lines()
                     .map_while(Result::ok)
-                    .find(|l| l.starts_with("sockets-held "));
+                    // After libtest's own `test … ... ` on the same line.
+                    .find_map(|l| Some(l.get(l.find("sockets-held ")?..)?.to_string()));
                 assert_eq!(child.wait().unwrap(), 0);
                 let line = line.expect("the child said what it holds");
                 if !line.starts_with("sockets-held 0 ") {
