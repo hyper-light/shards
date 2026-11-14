@@ -24991,3 +24991,31 @@ against 2e00a1043 (whose starts read no bytes) on one template, HVF, KVM and WHP
     300, at b27eeffe5, before M583's fix of the stop).
 - **Decision.** No production change: both causes were the test helper's. D233 records
   the look's rule.
+
+### M586. A stopped run host judged by its FIFO's writers: a copy another test's fork holds (D231; shards-api's `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`)
+
+- **Question.** The test failed 2 of 100 runs of shards-api's library at 64 test threads
+  (adacachy2) at session.rs:4508, read as the boot's `assert_eq!` on `Ended(Stopped)`. What
+  did the boot return, and why?
+- **Method.** adacachy2: Linux 7.3.3-1-cachyos, x86_64, 32 CPUs; rustc 1.98.1; at
+  f385b8dac, 2026-11-14. The library's tests, `nice -n 10 $bin --test-threads=64` from
+  `crates/api`, in loops of 40 and 150; the test alone, 2,000 times, 32 at once (xargs -P
+  32). At a failure, every process's `/proc/<pid>/fd` scanned for the FIFO `h`. With the fix,
+  a probe kept the old check beside the new one: where the host was gone by its ID and start
+  but `h` still had a writer, it timed how long until it had none.
+- **Results.**
+  - The boot returned `Ended(Stopped)` every time: line 4508 at f385b8dac is
+    `assert!(host_gone, "the run host outlived its boot's stop")`, the message of all 10
+    failures (3 of 40 runs, 7 of 150). `host_gone` was `writers_gone(&host_end)`: every write
+    end of `h` closed, every process's.
+  - Alone: 0 of 2,000. Beside the library's other tests only: a write end of `h` in a process
+    other than the host, gone by the scan, which found only the test's own read end
+    (`02104000`) each time. The test's own write end (`host_held`, held while its boot runs)
+    and the host's are close-on-exec, so a copy lives only in a child another test's spawn
+    forked as it was held, until that child's exec. Which spawn was not attributed.
+  - Fixed (the host tells `$$` beside its VM's pid; each judged gone by `shards_ipc::Named`,
+    its ID and start): 0 of 150 runs. In 3 of them the old check would have failed with the
+    host already gone by its ID and start: `h` kept a writer 1.49 ms (median) to 25.9 ms
+    after.
+- **Decision.** No production change: D231's stop ended the boot, its host and its VM. The
+  test judges the host by its ID and start, as it does the VM, M583's rule.

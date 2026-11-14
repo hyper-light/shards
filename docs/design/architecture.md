@@ -28092,7 +28092,9 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
     (JOBOBJECT_ASSOCIATE_COMPLETION_PORT), so neither closes it.
   - *Tested* (unit, stand-in run hosts, `image::session`'s tests): one that starts a VM of its
     own that never looks at its host and never says its run started, stopped mid-boot,
-    returns `Ended(Stopped)`, its host and that VM gone (no bound since 2026-11-14, above); one never
+    returns `Ended(Stopped)`, its host and that VM gone (no bound since 2026-11-14, above),
+    each judged by its ID and start, never by its FIFO's writers, a copy of which another
+    test's fork holds past both until its exec (PM M586); one never
     answering is refused as before (`Boot`, not started within its patience); one stopped
     first ends `Stopped`. Red on 83db267f2 (each boot waited out its bound, the VM outlived
     it), green with the stop. The Windows stand-in
