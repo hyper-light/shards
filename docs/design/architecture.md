@@ -9924,6 +9924,9 @@ template pays it once; what its restores pay is to be measured with mappings.
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
 
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
+
 Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
 
 
@@ -28128,7 +28131,10 @@ docs/research/s33-veil-creds/STEP3.md).
   the image store and the registry's client already link), its decoded bytes masked as any body's,
   and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
   Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
-  chunk (`chunk`), its end the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  chunk (`chunk`), each chunk's size line this side's own and held to `Mask::holds` as creds-02's
+  are, one holding a value breaking the message (creds-12, amended 2026-11-13: red before, a
+  value of hex digits written as a size line, green after; the check removed fails it), its end
+  the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
   its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
   length), its DATA's credit given back to the host's window once its decoding has reached the
   guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
@@ -28154,7 +28160,13 @@ docs/research/s33-veil-creds/STEP3.md).
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
   budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
   split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.

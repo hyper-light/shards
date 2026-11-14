@@ -17817,6 +17817,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-06 (2026-11-14): 1 VFIO unplug route-ownership red; 2 module tests and VMM clippy green on adacachy2 Linux x86_64. Real VFIO hardware was not used. See `measurements/device-fixes/README.md` for the fixture and limitations.
+
+
 Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
 
 
