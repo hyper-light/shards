@@ -3000,6 +3000,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_started_shards_holds_no_socket_another_thread_was_making() {
+        use std::io::BufRead as _;
         use std::sync::atomic::AtomicBool;
         let stop = AtomicBool::new(false);
         let me = std::env::current_exe().unwrap();
@@ -3012,7 +3013,16 @@ mod tests {
         ]
         .map(OsString::from);
         let env = [("SHARDS_API_SOCKETS_HELD", OsString::from("1"))];
+        // Sets `stop` as the scope's body ends, by a panic too, so the makers end and the
+        // scope joins them: a failed check fails the test rather than hanging it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
         let held: Vec<String> = std::thread::scope(|scope| {
+            let _stop = Stop(&stop);
             for _ in 0..4 {
                 scope.spawn(|| {
                     while !stop.load(Ordering::Relaxed) {
@@ -3022,18 +3032,21 @@ mod tests {
             }
             let mut held = Vec::new();
             for _ in 0..64 {
-                let (mut said, output) = io::pipe().unwrap();
+                let (said, output) = io::pipe().unwrap();
                 let child = spawn_shards(&me, &args, Some(&env), &output).unwrap();
                 drop(output);
-                let mut out = String::new();
-                said.read_to_string(&mut out).unwrap();
-                assert_eq!(child.wait().unwrap(), 0, "{out}");
-                let line = out.lines().find(|l| l.starts_with("sockets-held ")).unwrap();
+                // Read to its report, not to the pipe's end: a std child another test of this
+                // binary starts meanwhile can hold the write end (the race this test is about).
+                let line = io::BufReader::new(said)
+                    .lines()
+                    .map_while(Result::ok)
+                    .find(|l| l.starts_with("sockets-held "));
+                assert_eq!(child.wait().unwrap(), 0);
+                let line = line.expect("the child said what it holds");
                 if !line.starts_with("sockets-held 0 ") {
-                    held.push(line.to_string());
+                    held.push(line);
                 }
             }
-            stop.store(true, Ordering::Relaxed);
             held
         });
         assert!(
