@@ -98,3 +98,8 @@ Linux x86_64 host: 3 Agentfile MCP + 7 MCP bridge + 8 netplan tests passed;
 all-target clippy of shards-agentfile and shards-init passed. Full r9 output is
 names-merged.log. The merged-tree mechanical policy check passed locally; no
 build or test ran on the shared Mac. No mutation campaign or outside-area review.
+
+Main advanced with another lane's documentation while the first push was in
+flight; the non-fast-forward rejection was respected. Merged main through
+8e19ecd6d as 91a214b72, then repeated all 18 focused tests and both-crate clippy
+on adacachy2 (r10), all passed; landing.log retains that complete output.
