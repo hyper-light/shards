@@ -768,7 +768,8 @@ Registries are reached with a small blocking HTTP/1.1 client on rustls and httpa
     request (RFC 9110 §15.5.9). The second rule is Go's too, and it keeps responses from
     desynchronizing.
 - **Connections as containerd's transport keeps them** (`core/remotes/docker/registry.go`):
-  - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
+  - 30 s to connect, racing addresses (RFC 8305), each next one started as its path's
+    connects would send their second SYN (D222, review waits-12);
   - 10 s for the TLS handshake, 30 s for the response head;
   - at most 10 idle connections, each kept for 30 s.
   - A GET or HEAD that fails on a reused connection before its response is resent on a
@@ -19073,8 +19074,50 @@ record red/green, independent notification mutations, cleanup, resource samples 
 all R01–R16 gaps. In particular, cancellation does not terminate libc resolution;
 aggregate abandoned-worker admission, large shared-Condvar fanout, six remaining
 platform/runtime checks and measured leading implementation comparisons remain
-open. The existing 300 ms RACE is an upstream default still requiring separate
-R03 derivation; preserving its protocol purpose does not justify its value.
+open. The 300 ms RACE (Go's `Dialer.FallbackDelay`) is gone (review waits-12, PM M577):
+a dial starts its next address after its path's Connection Attempt Delay
+(`Paths::attempt_delay`). RFC 8305 §5: it "should correspond to the time when the previous
+attempt is sending its second TCP SYN, based on the TCP's retransmission timer [RFC6298]",
+and "should only try to approximate the time of the first SYN retransmission". The path's
+connects are paced by RFC 6298's estimator already (`Pace`, `Wait::Connect`), so it is
+SRTT + 4·RTTVAR of them, with no backoff and without §2.4's 1 s rounding (TCP's own guard
+against retransmitting early, which §5's minimum stands for here), within §5's Minimum and
+Maximum Connection Attempt Delay (100 ms, "required to avoid congestion collapse in the
+presence of high packet-loss rates", and 2 s, §8). Its cold start, a path that has shown
+no connect, and a client that learns no waits: §8's 250 ms "in the absence of RTT data".
+A connect's sample includes its name's lookup (`Wait::Connect`), which can only lengthen
+it, so a learned delay errs toward a later start, never an earlier one. Red
+`patience::tests::a_dial_starts_its_next_address_as_its_paths_connects_retransmit`
+(300 ms whatever the path showed). Owed to ROOT: a dial on a host whose IPv6 route
+black-holes, the race's learned start, beside a cold one's.
+
+#### The chosen waits left (review waits-12, 2026-11-14): each one's design
+
+Review waits-12 listed the figures below. The race is derived above. Each of the others
+needs a notification, a learned record or a resource-derived bound, as shown. None is
+implemented yet: each needs a daemon, VM, guest or registry run to show it, which is
+ROOT's. STOP_GRACE (an input's meaning), RFC 6298's estimator and QUIC's RFC 9002 cold RTT
+were excluded by the review.
+
+| Literal (file) | Now | Design | Owed: proof |
+|---|---|---|---|
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKEOVER` 20 s (daemon.rs `take_lock`) | picked | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
+| 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
+| `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
+| 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
+| `UNWATCHED` 250 ms (daemon.rs) | picked (D185's admission) | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
+| 1 ms poll (cli/client.rs `ask_slot`) | picked | The client started the daemon, so it holds its child: wait on that child's exit and a `FileWatch` of `requests/` for the first list. The daemon's own `daemon.pid` covers one started by another client. | red: a counted-look test, a started daemon that offers slots late |
+| 250 ms (ipc slots/fifo.rs, macOS list with no process watch) | picked (D185) | select(2) sees a FIFO writer's end on macOS (M253's finding), so wait on the list's read end for it: no clock. | macOS unit test, the list's writer ended with no pid |
+| `SWEEP` 60 s (daemon/slots.rs) | picked | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
+| 60 s log window (daemon/slots.rs `said_at_most`) | picked, policy | Say each episode, at reaching the most and as clients in hand go below it, with how many waited and how long. A log line per episode is bounded by the log's own rotation (D163). | a unit test of the transitions |
+| 5 s (vm_run.rs, joiners' end reports, `warm::await_joiners`) | picked | Wait while each joiner's process lives, judged by D215 on a record of joiner end reports: cold, its liveness. | red: a joiner that reports at 6 s keeps its holder |
+| 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
+| `ANY_PORT_TRIES` 8 (init hostbind.rs) | picked | Hold each host port that collides in the guest until the bind succeeds, so each try gets a port it has not had. The tries then end with success or the host's own refusal, its ephemeral range spent (pigeonhole: the guest holds finitely many ports). No count. | Linux guest test: the first nine host choices taken in the guest; ROOT's real-VM run |
+| `THROTTLED` [50..800] ms, its 800 ms floor, `WINDOW_MOST` 60 s (registry.rs) | picked (PM M112, one ECR run) | A declared wait (Retry-After, RFC 9110 §10.2.3, or a window) is followed whole: it is the server's statement, ended only by the user's cancel. With none declared, retry after the path's own answer pace (its RFC 6298 estimator of answers), doubling each 429 (§5.5), within the path's learned trouble budget (D222's run-out rules for the rest). | red: a 61 s window that clears at 2 s; ROOT: Docker Hub's real 429s, their windows recorded |
+| `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
+| `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
+
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
