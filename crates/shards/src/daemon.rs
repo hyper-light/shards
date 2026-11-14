@@ -13725,7 +13725,7 @@ mod tests {
             starting.warm.send(ready).unwrap();
             serve(&vm, 0);
             joined(starting.run).unwrap();
-            assert_eq!(starting.asked(), ended + 1);
+            assert_eq!(count_asks(&starting.asks, &starting.asked), ended + 1);
             let record = t.record(&id).unwrap();
             assert_eq!((record.state, record.exit_code), (Life::Exited, Some(0)));
 
@@ -13739,7 +13739,7 @@ mod tests {
                 said.contains("the VM started for the run did not take it"),
                 "{said}"
             );
-            assert_eq!(starting.asked(), 1);
+            assert_eq!(count_asks(&starting.asks, &starting.asked), 1);
         });
     }
 
