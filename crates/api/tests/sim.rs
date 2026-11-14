@@ -164,27 +164,16 @@ mod client {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
-    /// its own and installed by install(1), so no descriptor of this process ever writes
-    /// the file it executes: one that a test running beside it forked while it was open
-    /// would make its exec fail ETXTBSY (execve(2)). Then started once and ended at once
+    /// A stand-in for `shards` that runs `body` whatever it is asked, written by a process of
+    /// its own (`shards_testdir::program`), so that no exec of it fails ETXTBSY. Then started
+    /// once and ended at once
     /// (`--warm` first, which no launch gives shards), as macOS assesses a new executable
     /// as it is first started, from 0.1 s to past 8.8 s here (PM M534), and the tests time a
     /// stand-in's own work, not that.
     fn stand_in(dir: &shards_testdir::TempDir, body: &str) -> PathBuf {
-        let (source, path) = (dir.path().join("shards.sh"), dir.path().join("shards"));
-        std::fs::write(
-            &source,
-            format!("#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n{body}\n"),
-        )
-        .unwrap();
-        let installed = std::process::Command::new("install")
-            .args(["-m", "755"])
-            .arg(&source)
-            .arg(&path)
-            .status()
+        let path = dir.path().join("shards");
+        shards_testdir::program(&path, &format!("#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\n{body}\n"))
             .unwrap();
-        assert!(installed.success());
         let warmed = std::process::Command::new(&path)
             .arg("--warm")
             .stdin(std::process::Stdio::null())

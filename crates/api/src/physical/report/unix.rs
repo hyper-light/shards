@@ -1,10 +1,10 @@
 //! A private nonblocking pipe; poll spends the original deadline, if any, and waits on the
-//! VM process's end beside it: a second private pipe, whose one writer ([`Ending`]) the guest's
-//! watcher closes as it sees the end, which poll(2) reports as POLLHUP on its read end.
+//! VM process's end beside it: the descriptor that holds that process (`super::Vm`), a pidfd
+//! (Linux) or a kqueue with its exit registered (macOS), each readable once it has exited.
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _};
-use std::os::fd::AsRawFd as _;
+use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Instant;
 
 use super::{Read, buffer, io_error, pending};
@@ -13,25 +13,12 @@ use crate::{GpuProbeError, Refusal};
 #[derive(Debug)]
 pub(super) struct Reader {
     pipe: Option<io::PipeReader>,
-    /// Read end of the end pipe: hung up once its [`Ending`] is told (dropped).
-    end: io::PipeReader,
     bytes: Vec<u8>,
     used: usize,
 }
 
-/// The VM process's end, told to a take that waits: its pipe's one writer, closed as told.
-#[derive(Debug)]
-pub(crate) struct Ending(io::PipeWriter);
-
-impl Ending {
-    pub fn tell(self) -> Result<(), Refusal> {
-        drop(self.0);
-        Ok(())
-    }
-}
-
 impl Reader {
-    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter, Ending), Refusal> {
+    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter), Refusal> {
         let bytes = buffer(byte_count)?;
         let (reader, writer) = io::pipe().map_err(|e| io_error("GPU report pipe", e))?;
         let fd = reader.as_raw_fd();
@@ -46,24 +33,25 @@ impl Reader {
         if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
             return Err(io_error("GPU report nonblocking", io::Error::last_os_error()));
         }
-        // std's pipe(2) is close-on-exec, so no process the launcher starts holds its writer.
-        let (end, ending) = io::pipe().map_err(|e| io_error("GPU report end pipe", e))?;
         Ok((
             Self {
                 pipe: Some(reader),
-                end,
                 bytes,
                 used: 0,
             },
             writer,
-            Ending(ending),
         ))
     }
 
     /// The frame, read to its writer's close, by `deadline` where there is one. Its VM
-    /// process's end, once told, is answered once the pipe holds nothing more to read and no
-    /// close: a frame its writer closed before the end is still the frame.
-    pub fn frame(&mut self, deadline: Option<Instant>) -> Result<Read<'_>, Refusal> {
+    /// process's end, readable on `exit` (none: it had ended before it was held), is answered
+    /// once the pipe holds nothing more to read and no close: a frame its writer closed before
+    /// the end is still the frame.
+    pub fn frame(
+        &mut self,
+        deadline: Option<Instant>,
+        exit: Option<BorrowedFd<'_>>,
+    ) -> Result<Read<'_>, Refusal> {
         // Its watcher lets the pipe go only after the VM process's end.
         let Some(reader) = self.pipe.as_mut() else {
             return Ok(Read::Ended);
@@ -97,9 +85,11 @@ impl Reader {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(io_error("GPU report read", error)),
             }
-            if ended {
-                return Ok(Read::Ended);
-            }
+            // Ended as it was seen, or before it was held: the pipe read once more.
+            let exit = match (ended, exit) {
+                (false, Some(exit)) => exit,
+                _ => return Ok(Read::Ended),
+            };
             // poll uses milliseconds; round UP once, then recheck the absolute
             // deadline. The i32 ceiling is its ABI, not a retry/tuning interval;
             // -1 is poll(2)'s own "no timeout", for a wait with no deadline.
@@ -117,13 +107,14 @@ impl Reader {
                     i32::try_from(millis).unwrap_or(i32::MAX)
                 }
             };
-            let mut events = [reader.as_raw_fd(), self.end.as_raw_fd()].map(|fd| libc::pollfd {
+            let mut events = [reader.as_raw_fd(), exit.as_raw_fd()].map(|fd| libc::pollfd {
                 fd,
                 events: libc::POLLIN,
                 revents: 0,
             });
-            // SAFETY: two initialized stack pollfds of live private descriptors, their
-            // count the array's; poll retains no memory after returning.
+            // SAFETY: two initialized stack pollfds, of the live private pipe and the
+            // descriptor that holds the VM process, their count the array's; poll retains no
+            // memory after returning.
             let ready = unsafe { libc::poll(events.as_mut_ptr(), 2, timeout) };
             if ready < 0 {
                 let error = io::Error::last_os_error();
@@ -136,8 +127,8 @@ impl Reader {
             if (report.revents | end.revents) & libc::POLLNVAL != 0 {
                 return Err(Refusal::Launch(crate::LaunchError::Observer));
             }
-            // Its writer gone (POLLHUP) or anything else reported on it: the end was told.
-            // The report pipe is read once more before the end is answered.
+            // Readable, or anything else reported on it: the process has exited. The report
+            // pipe is read once more before the end is answered.
             ended = end.revents != 0;
         }
     }

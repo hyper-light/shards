@@ -1143,7 +1143,8 @@ pub(crate) fn read_plan(r: &mut dyn Read) -> Result<Plan, String> {
         return Err("the move's stream is not one".into());
     }
     let version = u32_of(r).map_err(io)?;
-    if !matches!(version, 2 | VERSION) {
+    // Both ends of a move are this build's (D36): a stream of any other version is refused.
+    if version != VERSION {
         return Err(format!(
             "the move's stream is of version {version}; this shards reads {VERSION}"
         ));
@@ -3281,10 +3282,12 @@ mod tests {
         assert_eq!(guest::read_link(&there.join("l")).unwrap(), b"f");
         let ab = there.join(guest::host_name(b"a:b").unwrap());
         assert_eq!(std::fs::read(ab).unwrap(), b"a:b");
-        // A stream of another version is refused.
-        let mut old = bytes.clone();
-        old[8..12].copy_from_slice(&1u32.to_le_bytes());
-        assert!(read_plan(&mut old.as_slice()).is_err());
+        // A stream of another version is refused: version 2's, which held no hardlinks, too.
+        for version in [1u32, 2, VERSION + 1] {
+            let mut old = bytes.clone();
+            old[8..12].copy_from_slice(&version.to_le_bytes());
+            assert!(read_plan(&mut old.as_slice()).is_err(), "version {version}");
+        }
         // Put back to the host's own access, for the test's directories to go.
         guest::set(&there, &meta(guest::S_IFDIR | 0o755, None)).unwrap();
         guest::set(&root, &meta(guest::S_IFDIR | 0o755, None)).unwrap();

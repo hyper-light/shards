@@ -827,6 +827,38 @@ mod tests {
         }
     }
 
+    /// A helper started through its descriptor (`Program::path`, `/proc/PID/fd/N`: launch.rs'
+    /// VM process, the GPU's among them, being the same program; netproc.rs' network process;
+    /// `run --kernel`'s and `restore`'s exec) is shown by its own name, not `N`: each names
+    /// itself as it starts (`shards_ipc::name_after_executable`), whatever it is asked. Red
+    /// at a932bc894: the VM process's comm read `5` on adacachy2, and the tests found no VM
+    /// process of theirs by name. Do: start this build's VM and network processes, checked,
+    /// with no arguments, which each refuses; read each one's name before it is reaped
+    /// (waitid(2) WNOWAIT, a zombie keeps its name). Expect: `shards-vm`, `shards-net`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_helper_started_through_its_descriptor_is_shown_by_its_name() {
+        for (name, path) in [("shards-vm", vm().unwrap()), ("shards-net", net().unwrap())] {
+            let program = program(&path).unwrap();
+            assert!(program.path().starts_with("/proc"), "{name} started by its name");
+            let child = std::process::Command::new(program.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            // SAFETY: siginfo_t is plain data, for which all zeroes is a value.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waitid(2) of our own child into a local, leaving it unreaped.
+            let rc = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WEXITED | libc::WNOWAIT) };
+            assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+            let shown = fs::read_to_string(format!("/proc/{pid}/comm")).unwrap();
+            let mut child = child;
+            child.wait().unwrap();
+            assert_eq!(shown.trim_end(), name);
+        }
+    }
+
     /// What a start's check of a helper costs, a version known and its bytes read, as
     /// `SHARDS_HELPER_COST_BYTES` bytes (a helper's size: shards-vm's, as its cache holds it)
     /// say: n, p50, p90, p99 and max of each. A measurement, run alone:

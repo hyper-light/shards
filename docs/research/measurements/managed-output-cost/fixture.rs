@@ -380,7 +380,7 @@ fn start(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> (Ready, Vec<
         let kind = if ordinal < agents { "agent" } else { "harness" };
         let directory = fixture.context.join(&token);
         std::fs::create_dir(&directory).unwrap();
-        common::program_copy(common::test_guest(), &directory.join("member"));
+        shards_testdir::program_copy(common::test_guest(), &directory.join("member")).unwrap();
         std::fs::write(
             directory.join(format!("{kind}.json")),
             serde_json::to_vec(&json!({"entrypoint":"member","options":["managed-capture",token]})).unwrap(),
