@@ -54,7 +54,9 @@ pub use client::{
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
 pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
-pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
+pub use native::{
+    ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
+};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
 
@@ -601,6 +603,28 @@ pub enum Refusal {
     /// A managed guest's VM process answered its use (D260) with none of the protocol's
     /// words, by what broke it (`shards_abi::rate::read_used`).
     HostUse(shards_abi::rate::UseBroken),
+    /// [`release_app_containers`] deleted nothing, and why.
+    Release(ReleaseRefusal),
+}
+
+/// Why [`release_app_containers`] deleted no AppContainer profile of a managed VM's (D141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseRefusal {
+    /// The end given was short of [`TerminalScope::Released`]: a process of the VM's may still
+    /// run in one of its profiles.
+    ScopeLive,
+    /// A record of the VM's `shards` is held, as only a live process holds one: the VM's own
+    /// `shards`, a process given its pid since, or a spawner sweeping the records that moment.
+    Held,
+}
+
+impl std::fmt::Display for ReleaseRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ScopeLive => "the VM's scope is not released: its processes may still run in its profiles",
+            Self::Held => "a record of its profiles is held by a live process",
+        })
+    }
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -661,6 +685,7 @@ impl std::fmt::Display for Refusal {
             ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
             Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
+            Refusal::Release(why) => write!(f, "the VM's AppContainers: {why}"),
         }
     }
 }
