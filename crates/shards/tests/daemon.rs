@@ -33,6 +33,7 @@ use common::{
 
 /// A home with the image pulled, the guest recorded, and, where this host takes snapshots,
 /// the image's template saved by a first run, whose daemon now serves it.
+#[track_caller]
 fn home(name: &str, image: &str) -> TempDir {
     let home = recorded(name);
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -43,6 +44,7 @@ fn home(name: &str, image: &str) -> TempDir {
 
 /// A home whose runs boot the test kernel and init, recorded as its guest, so that they
 /// save and restore templates.
+#[track_caller]
 fn recorded(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let env = [("SHARDS_HOME", home.as_os_str())];
@@ -2391,7 +2393,7 @@ fn a_daemon_out_of_descriptors_waits_for_room() {
 fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
     use std::net::TcpListener;
     let silent = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = silent.local_addr().unwrap().port();
+    let port = crate::common::minted_port(silent.local_addr().unwrap().port());
     let accepted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     {
         let accepted = accepted.clone();
@@ -2704,6 +2706,7 @@ impl Held {
     /// command line, as [`commands_with`] lists it among the processes that name
     /// `templates`: its own `--layer` file and MAC tell it from a VM given its process ID
     /// once it has gone.
+    #[track_caller]
     fn vm(&mut self, env: &[(&str, &OsStr)], templates: &str) -> (u32, String) {
         let stdin = self.stdin.as_mut().unwrap();
         stdin.write_all(b"held\n").unwrap();
@@ -2720,6 +2723,7 @@ impl Held {
     }
 
     /// Ends its command, its client's stdin closed, and waits for its client's status.
+    #[track_caller]
     fn end(mut self, home: &Path) -> Option<i32> {
         drop(self.stdin.take());
         wait(&mut self.client, home)

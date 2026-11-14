@@ -645,11 +645,7 @@ fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
         let SocketAddr::V4(at) = address else {
             panic!("an IPv4 observer socket: {address}");
         };
-        let found: Vec<_> = udp_sockets()
-            .into_iter()
-            .filter(|(local, _)| *local == at)
-            .map(|(_, id)| id)
-            .collect();
+        let found = bound(at);
         let [id] = found[..] else {
             panic!("one UDP socket at the observer's {at}: {found:?}");
         };
@@ -659,6 +655,60 @@ fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
     let fds = sockets();
     let held = |id: u64| Held { fd: fds[&id][0], id };
     vec![held(endpoint), held(waker)]
+}
+
+/// This process's UDP sockets bound at `at`, each by its inode, once: getsockname(2) of a
+/// descriptor of each ([`sockets`]). Not from /proc/net/udp, which is no snapshot: its reader
+/// takes the table as little as each read(2) asks, resuming by position, so a socket inserted
+/// or removed meanwhile has another listed twice or not at all (CI's aarch64 musl run
+/// 43513425954: `[114149, 114149]`). /proc/self/fd is listed by descriptor number, which a
+/// descriptor held throughout keeps.
+#[cfg(target_os = "linux")]
+pub(super) fn bound(at: std::net::SocketAddrV4) -> Vec<u64> {
+    let local = |fd: i32| -> Option<std::net::SocketAddrV4> {
+        let mut kind: libc::c_int = 0;
+        let mut size = libc::socklen_t::try_from(size_of::<libc::c_int>()).ok()?;
+        // SAFETY: getsockopt(2) writes at most `size` bytes into `kind`, which holds them.
+        let got = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &raw mut size,
+            )
+        };
+        if got != 0 || kind != libc::SOCK_DGRAM {
+            return None;
+        }
+        // SAFETY: sockaddr_in is plain data, all zeroes a valid value.
+        let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).ok()?;
+        // SAFETY: getsockname(2) writes at most `size` bytes into `address`, which holds them.
+        let got = unsafe { libc::getsockname(fd, (&raw mut address).cast(), &raw mut size) };
+        if got != 0 || libc::c_int::from(address.sin_family) != libc::AF_INET {
+            return None;
+        }
+        Some(std::net::SocketAddrV4::new(
+            u32::from_be(address.sin_addr.s_addr).into(),
+            u16::from_be(address.sin_port),
+        ))
+    };
+    sockets()
+        .into_iter()
+        .filter(|(_, fds)| fds.iter().any(|&fd| local(fd) == Some(at)))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// The UDP sockets bound at `at`, each by its generation, once ([`udp_sockets`]).
+#[cfg(target_os = "macos")]
+pub(super) fn bound(at: std::net::SocketAddrV4) -> Vec<u64> {
+    udp_sockets()
+        .into_iter()
+        .filter(|(local, _)| *local == at)
+        .map(|(_, id)| id)
+        .collect()
 }
 
 /// Which of `held` are not yet returned: still behind a descriptor of this process, or

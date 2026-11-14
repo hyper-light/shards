@@ -376,18 +376,21 @@ jobs:
   # tests beside the tests instead, the x86_64 tests took 30 to 45 minutes, slower runners
   # 1.7 times as long as the fastest, and one ran out of time (M187). Two weeks on, slow
   # runners' jobs took 37 to 45 minutes and one ran out of the step's 45, so the step has
-  # 60 and the job 70: a third above the slowest (M235).
+  # 60 and the job 70: a third above the slowest (M235). The test job then outgrew its 60,
+  # its build in Alpine taking up to 46 minutes, so it builds the tests and runs them in
+  # steps of their own, each a third above its slowest, and its job those two and a third
+  # above its other steps' slowest (M560); the release job's slowest, 43.8, keeps its 60.
   musl:
     name: ${{ matrix.target }}${{ matrix.part == 'release' && ' release' || '' }}
-    timeout-minutes: 70
+    timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test }
-          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: release }
-          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: release }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: test, build_minutes: 62, job_minutes: 128 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: test, build_minutes: 62, job_minutes: 128 }
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, part: release, build_minutes: 60, job_minutes: 70 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, part: release, build_minutes: 60, job_minutes: 70 }
     runs-on: ${{ matrix.runner }}
     env:
       TARGET: ${{ matrix.target }}
@@ -402,32 +405,16 @@ jobs:
       - name: Hang watcher's gdb (x86_64)
         if: matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl'
         run: scripts/retry 5 30 sh -c 'sudo apt-get update && sudo apt-get install -y gdb'
-      - name: On the native architecture, in Alpine
-        timeout-minutes: 60
-        shell: bash
-        run: |
-          # VM tests need the host's /dev/kvm inside the container, which runs them as the
-          # runner's user (scripts/musl-ci): the node there takes this one's mode.
-          kvm=""
-          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; kvm="--device /dev/kvm"; fi
-          # x86_64 runners offer /dev/kvm: every VM test must run there.
-          require=0
-          if [ "$TARGET" = x86_64-unknown-linux-musl ]; then require=1; fi
-          if [ "$MUSL_CI" = test ] && [ "$TARGET" = x86_64-unknown-linux-musl ]; then
-            scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
-            watcher=$!
-          fi
-          # The release build carries the GPU's VM process, linked against Alpine's musl
-          # (D201): its renderer built in the container (scripts/musl-ci).
-          gpu=""
-          if [ "$MUSL_CI" = release ]; then gpu="-e SHARDS_GPU_LIBS=/work/target/gpu-libs"; fi
-          status=0
-          docker run --rm $kvm -v "$PWD:/work" -w /work -e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS=$require $gpu \
-            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-            "$MUSL_IMAGE" scripts/musl-ci || status=$?
-          if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
-          exit "$status"
+      # The test job's build, and the release job's whole part (scripts/ci/alpine).
+      - name: ${{ matrix.part == 'test' && 'Build the tests, in Alpine' || 'On the native architecture, in Alpine' }}
+        timeout-minutes: ${{ matrix.build_minutes }}
+        env:
+          MUSL_CI: ${{ matrix.part == 'test' && 'test-build' || matrix.part }}
+        run: scripts/ci/alpine
+      - name: Tests, in Alpine
+        if: matrix.part == 'test'
+        timeout-minutes: 58
+        run: scripts/ci/alpine
       - name: What hung tests' processes were doing
         if: ${{ !cancelled() && matrix.part == 'test' && matrix.target == 'x86_64-unknown-linux-musl' }}
         shell: bash

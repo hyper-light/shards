@@ -180,6 +180,7 @@ impl Terminal {
     /// whether it left the terminal's settings as it found them. XNU sets PENDIN itself
     /// when a terminal goes back to canonical mode, to retype pending input (bsd/kern/
     /// tty.c, ttioctl): a state, not a setting.
+    #[track_caller]
     pub fn exit(&mut self) -> (String, i32, bool) {
         let shown = self.wait_for("exit ");
         let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();

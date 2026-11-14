@@ -27,6 +27,7 @@ use shards_image::erofs::{self, DataRef, Dir, Kind, Meta, Node, NodeId, Source, 
 /// `restarts`): a thousand restarts each way, of layers holding 0 to 64 MiB evenly, on two
 /// exact lines meeting at `from`, packing's the steeper, so that the few a test's own
 /// restarts add move neither. The home's daemon is stopped, as the next reads them.
+#[track_caller]
 pub fn restarts_cross_at(home: &Path, from: u64) {
     let mib = f64::from(1u32 << 20);
     let (n, top) = (1000.0f64, 64.0 * mib);
@@ -130,6 +131,7 @@ pub fn program_copy(from: &Path, to: &Path) {
 }
 
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
+#[track_caller]
 pub fn home_with(name: &str) -> TempDir {
     let home = TempDir::new(name);
     let args = [
@@ -1010,7 +1012,7 @@ pub struct Listed {
 }
 
 /// Every process of the system's ([`processes`]), each with its command line, read
-/// through the process's own handle ([`command_line`]), not WMI: CIM's Win32_Process
+/// through the process's own handle ([`keyed_line`]), not WMI: CIM's Win32_Process
 /// answers a standard user logged on over SSH, a network logon, "Access denied"
 /// (0x80041003; root\cimv2 grants remote enable to administrators alone), and tests run
 /// so (step 10's arm64 Windows host) found no warm or restored VM while the daemon's log
@@ -1497,7 +1499,7 @@ pub fn fixed_port() -> u16 {
         .find(|&port| port_free(port))
         .expect("a free port below the ephemeral ranges");
     handed.push(port);
-    port
+    minted_port(port)
 }
 
 /// Whether TCP port `port` can be bound at every IPv4 address now, asked of a process of
@@ -1974,7 +1976,11 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], ar
 /// judge's look.
 #[track_caller]
 pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Output {
-    let kind = WaitKind::at(std::panic::Location::caller());
+    let kind = WaitKind::of(
+        std::panic::Location::caller(),
+        &command_words(cmd),
+        &keyed_line(cmd),
+    );
     let asked = format!("{cmd:?}");
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -2029,6 +2035,7 @@ pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Ou
 /// A refused client ended: on Unix sent SIGQUIT, on which a Go program writes where each of
 /// its goroutines waits and exits, its exit waited on as judged (its kind this call site's);
 /// then killed.
+#[track_caller]
 fn quit(child: &mut std::process::Child, home: Option<&Path>) {
     #[cfg(unix)]
     {
@@ -2305,6 +2312,14 @@ impl Patience {
         Patience::with(Some(home), std::panic::Location::caller())
     }
 
+    /// Patience with client `client`, what descends from it, and the daemon of `home`: a
+    /// wait on what a command brings about, which starts its home's daemon, or waits out one
+    /// of another build stepping aside, before any daemon is there to follow.
+    #[track_caller]
+    pub fn client(client: u32, home: &Path) -> Patience {
+        Patience::on(Party::client(client, Some(home)), std::panic::Location::caller())
+    }
+
     /// Patience with this test's own microVMs, where no home's daemon serves them.
     #[track_caller]
     pub fn own() -> Patience {
@@ -2373,6 +2388,11 @@ impl Patience {
     /// What its kind has learned on this host.
     pub fn seen(&self) -> shards_api::Seen {
         self.wait.kind.record().seen()
+    }
+
+    /// Its wait's account ([`Wait::account`]): what its last look counted as progress.
+    pub fn account(&self) -> String {
+        self.wait.account()
     }
 }
 
@@ -2626,7 +2646,11 @@ fn run_ending(
     end: Option<Duration>,
     leftovers: Leftovers,
 ) -> Result<Run, Ended> {
-    let kind = WaitKind::at(std::panic::Location::caller());
+    let kind = WaitKind::of(
+        std::panic::Location::caller(),
+        &command_words(&cmd),
+        &keyed_line(&cmd),
+    );
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home: Option<PathBuf> = cmd
@@ -2729,8 +2753,156 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
     }
 }
 
+/// The words that name `cmd`'s command, which key its wait's kind beside its call site
+/// ([`WaitKind::of`]), so that one call site's quick refusal never bounds its slow build or
+/// push (#77: build.rs' `policy_eval_answers` and `builds_push_what_they_build` ran many
+/// commands from one closure, a W* of 13.4 ms and 3.49 ms learned from quick ones judging
+/// the rest). They are its program's file stem, then its subcommand's words, each a plain
+/// word (ASCII lowercase letters and `-`, no flag) up to the first that is not:
+/// - its first argument;
+/// - its second, only where its first names no command of the CLI's that takes arguments
+///   itself (shards-cmdline's catalog: `run`, `push`, `build`, whose next word is an image,
+///   a name or a path), or shards' grammar reads the two as ACTION THING (`run vm`, `stop
+///   daemon`, `grammar::form`): `image ls`, `compose up`, `buildx build`, `system df`.
+///
+/// So `shards run --rm alpine` is `shards run`, `docker push localhost:5000/x` is `docker
+/// push`, `shards stop daemon` is `shards stop daemon`, and `docker compose up -d` is `docker
+/// compose up`. None of a run's own names, paths or tags is ever a word: each run of a call
+/// site keys the same kinds, whose records it keeps.
+pub fn command_words(cmd: &Command) -> String {
+    let program = Path::new(cmd.get_program())
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let plain = |word: &&std::ffi::OsStr| {
+        word.to_str().is_some_and(|w| {
+            !w.is_empty() && !w.starts_with('-') && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+        })
+    };
+    let mut args = cmd.get_args();
+    let mut words = vec![program];
+    let Some(first) = args.next().filter(plain).and_then(std::ffi::OsStr::to_str) else {
+        return words.join(" ");
+    };
+    words.push(first.to_string());
+    let takes_arguments = shards_cmdline::catalog::TOP
+        .iter()
+        .flat_map(|group| group.entries)
+        .any(|entry| entry.name == first && entry.command.is_some());
+    if let Some(second) = args.next().filter(plain).and_then(std::ffi::OsStr::to_str)
+        && (!takes_arguments
+            || shards_cmdline::grammar::form(&[first.to_string(), second.to_string()]).is_some())
+    {
+        words.push(second.to_string());
+    }
+    words.join(" ")
+}
+
+/// A value this run minted of its own, which a command's line carries (a directory, a port,
+/// a name made of this process's ID), and the placeholder its kind's key says it as
+/// ([`keyed_line`]): each registered by the helper that mints it ([`minted`]), so that
+/// every run of a call site keys its commands as the run before did (ROOT's ruling (a),
+/// 2026-11-13, #77).
+struct Minted {
+    value: String,
+    placeholder: String,
+    /// A number (a port, a process ID), found only where no digit is beside it.
+    number: bool,
+}
+
+/// What this run has minted, longest first, so that a directory goes before the root it is
+/// under and a value inside another is said as the outer one's placeholder.
+static MINTED: std::sync::Mutex<Vec<Minted>> = std::sync::Mutex::new(Vec::new());
+
+fn minted_values() -> std::sync::MutexGuard<'static, Vec<Minted>> {
+    MINTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Registers `value`, minted by this run, as `placeholder` in its commands' keys.
+pub fn minted(value: &str, placeholder: &str) {
+    if value.is_empty() {
+        return;
+    }
+    let mut minted = minted_values();
+    if minted.iter().any(|m| m.value == value) {
+        return;
+    }
+    minted.push(Minted {
+        value: value.to_string(),
+        placeholder: placeholder.to_string(),
+        number: value.bytes().all(|b| b.is_ascii_digit()),
+    });
+    minted.sort_by_key(|m| std::cmp::Reverse(m.value.len()));
+}
+
+/// No longer minted: a directory gone with its [`TempDir`].
+fn unminted(value: &str) {
+    minted_values().retain(|m| m.value != value);
+}
+
+/// `port`, a port this run was handed (a listener bound at port 0, [`fixed_port`]),
+/// registered as `{port}` in its commands' keys ([`minted`]).
+pub fn minted_port(port: u16) -> u16 {
+    minted(&port.to_string(), "{port}");
+    port
+}
+
+/// `cmd`'s whole command line as its wait's kind is keyed by it beside its call site
+/// ([`WaitKind::of`]): its program's file stem and every argument, each value this run
+/// minted said as its placeholder ([`minted`]): a [`TempDir`] as `{dir NAME}`, the
+/// directory they are all under as `{testdir}`, a port a helper was handed as `{port}`, and
+/// this process's ID, which names the slices, builders and pipes tests make, as `{pid}`.
+/// So one call site's quick refused command is kept apart from its real one (build.rs'
+/// `build --push CTX` and `build --push -t localhost:PORT/team/built:1 CTX`), and each run
+/// keys its commands as the run before did, adding no record of its own.
+pub fn keyed_line(cmd: &Command) -> String {
+    minted(&std::process::id().to_string(), "{pid}");
+    let program = Path::new(cmd.get_program())
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let line: Vec<String> = std::iter::once(program)
+        .chain(cmd.get_args().map(|arg| generic(&arg.to_string_lossy())))
+        .collect();
+    format!("{line:?}")
+}
+
+/// `text`, each value this run minted said as its placeholder.
+fn generic(text: &str) -> String {
+    let mut said = text.to_string();
+    for minted in minted_values().iter() {
+        said = if minted.number {
+            number_said(&said, &minted.value, &minted.placeholder)
+        } else {
+            said.replace(&minted.value, &minted.placeholder)
+        };
+    }
+    said
+}
+
+/// `text`, each occurrence of the number `value` with no digit beside it said as
+/// `placeholder`.
+fn number_said(text: &str, value: &str, placeholder: &str) -> String {
+    let mut said = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(value) {
+        let (before, from) = rest.split_at(at);
+        let after = from.get(value.len()..).unwrap_or_default();
+        let digit_before = before
+            .chars()
+            .next_back()
+            .or_else(|| said.chars().next_back())
+            .is_some_and(|c| c.is_ascii_digit());
+        let alone = !digit_before && !after.starts_with(|c: char| c.is_ascii_digit());
+        said.push_str(before);
+        said.push_str(if alone { placeholder } else { value });
+        rest = after;
+    }
+    said.push_str(rest);
+    said
+}
+
 /// A kind of the tests' own waits: the call site that waits ([`run_command`]'s caller,
-/// `#[track_caller]` through its wrappers), with what its answers have taught D215's record:
+/// `#[track_caller]` through its wrappers) and, for a wait on a command, its command's words
+/// ([`command_words`]), with what its answers have taught D215's record:
 /// W*, the slowest, from a wait's start to its client's own end, and R*, the least rate its
 /// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
 /// its first answer there; then kept under `target/judge-records`, by the host and the call
@@ -2741,22 +2913,51 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
 /// bound is the slowest answer seen. No ×2."
 pub struct WaitKind {
     site: &'static std::panic::Location<'static>,
+    words: String,
+    line: String,
     record: shards_api::Record,
     file: PathBuf,
 }
 
 impl WaitKind {
-    /// The kind of `site`, its record taught what this host kept of it the first time a wait
-    /// of it begins in this process.
+    /// The kind of `site`, a wait on no command: its record taught what this host kept of it
+    /// the first time a wait of it begins in this process.
     pub fn at(site: &'static std::panic::Location<'static>) -> &'static WaitKind {
-        type Site = (&'static str, u32, u32);
-        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Site, &'static WaitKind>> =
+        WaitKind::of(site, "", "")
+    }
+
+    /// The kind of `site` waiting on the command whose words are `words` ([`command_words`])
+    /// and whose whole line is `line` ([`keyed_line`]), kept apart from its call site's
+    /// other commands'. Its record is kept beside the call site's own
+    /// (`FILE-LINE-COLUMN-WORDS-HASH`, HASH the first 16 hex digits of the line's SHA-256, a
+    /// name of bounded length whatever the line): one a host kept before commands were told
+    /// apart, keyed by its call site alone, is read by waits on no command still, and a
+    /// command's kind is cold on a host until its own first answer there.
+    pub fn of(site: &'static std::panic::Location<'static>, words: &str, line: &str) -> &'static WaitKind {
+        type Kind = (&'static str, u32, u32, String, String);
+        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Kind, &'static WaitKind>> =
             std::sync::Mutex::new(std::collections::BTreeMap::new());
         let mut kinds = KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         kinds
-            .entry((site.file(), site.line(), site.column()))
+            .entry((
+                site.file(),
+                site.line(),
+                site.column(),
+                words.to_string(),
+                line.to_string(),
+            ))
             .or_insert_with(|| {
-                let name: String = format!("{}-{}-{}", site.file(), site.line(), site.column())
+                let mut name = format!("{}-{}-{}", site.file(), site.line(), site.column());
+                if !words.is_empty() {
+                    name.push('-');
+                    name.push_str(words);
+                }
+                if !line.is_empty() {
+                    let hash = sha2::Sha256::digest(line.as_bytes());
+                    name.push('-');
+                    name.extend(hash.iter().take(8).map(|b| format!("{b:02x}")));
+                }
+                let name: String = name
                     .chars()
                     .map(|c| {
                         if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -2768,6 +2969,8 @@ impl WaitKind {
                     .collect();
                 let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
                     site,
+                    words: words.to_string(),
+                    line: line.to_string(),
                     record: shards_api::Record::new(),
                     file: workspace()
                         .join("target/judge-records")
@@ -2891,6 +3094,9 @@ pub struct Looked {
     pub what: String,
     /// The CPU its processes ran since the look before.
     pub cpu: Duration,
+    /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
+    /// waiter's own clients where its waiter asked the daemon meanwhile ([`Wait::look`]).
+    pub daemon_ran: Option<String>,
 }
 
 impl Party {
@@ -2988,15 +3194,18 @@ impl Party {
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
     /// 2026-11-13); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
-    /// machine of this process's is never gone: its liveness is its caller's.
+    /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
+    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh.
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         let members = self.members();
+        let daemon = self.daemon();
         self.watched.retain(|pid, _| members.contains(pid));
         let mut looked = Looked {
             found: Found::Still,
             what: String::new(),
             cpu: Duration::ZERO,
+            daemon_ran: None,
         };
         if self.said.as_mut().is_some_and(Said::said) {
             looked.found = Found::Progressed;
@@ -3021,6 +3230,9 @@ impl Party {
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             match (found, self.cpu) {
+                (Ok(Found::Progressed), Cpu::Progress) if daemon == Some(pid) => {
+                    looked.daemon_ran = Some(format!("its daemon {pid} ran"));
+                }
                 (Ok(Found::Progressed), Cpu::Progress) if looked.found != Found::Progressed => {
                     looked.found = Found::Progressed;
                     looked.what = format!("process {pid} ran");
@@ -3091,18 +3303,45 @@ pub struct Wait {
     gone: bool,
     /// Its party's CPU since it began.
     work: Duration,
+    /// The clients this thread had begun against its party's home as its judge's window
+    /// began ([`asked_of`]), and whether its daemon ran in the window: its daemon's progress
+    /// only where none began since, as its own clients' work is no progress of its party's.
+    polls: u64,
+    daemon_ran: Option<String>,
     live: Live,
+}
+
+thread_local! {
+    /// The clients each thread began against each home ([`Wait::begin`]): a waiter's own
+    /// asks of its home's daemon, its polls among them.
+    static ASKED: std::cell::RefCell<std::collections::BTreeMap<PathBuf, u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// The clients this thread has begun against `home`, none where it has none.
+fn asked_of(home: Option<&Path>) -> u64 {
+    home.map_or(0, |home| {
+        ASKED.with(|asked| asked.borrow().get(home).copied().unwrap_or(0))
+    })
 }
 
 impl Wait {
     /// A wait beginning now on client `client`'s party, `asked` naming its command.
     pub fn begin(kind: &'static WaitKind, client: u32, home: Option<&Path>, asked: &str) -> Wait {
+        if let Some(home) = home {
+            ASKED.with(|asked| {
+                let mut asked = asked.borrow_mut();
+                let n = asked.entry(home.to_path_buf()).or_insert(0);
+                *n = n.saturating_add(1);
+            });
+        }
         Wait::on(kind, Party::client(client, home), asked)
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
     fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
+        let polls = asked_of(party.home.as_deref());
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
@@ -3116,6 +3355,8 @@ impl Wait {
             holding: None,
             gone: false,
             work: Duration::ZERO,
+            polls,
+            daemon_ran: None,
             live: Live::new(),
         }
     }
@@ -3142,6 +3383,9 @@ impl Wait {
         }
         let looked = self.party.look();
         self.work = self.work.saturating_add(looked.cpu);
+        if self.daemon_ran.is_none() {
+            self.daemon_ran = looked.daemon_ran;
+        }
         self.holding = None;
         self.gone = looked.found == Found::Gone;
         match looked.found {
@@ -3157,6 +3401,19 @@ impl Wait {
         }
         let mut judged = Ok(());
         if due.is_some_and(|due| now >= due) {
+            // Its daemon's run is its party's progress only in a window in which this thread
+            // began no client of its home (ROOT's ruling, 2026-11-13, D209). The window and not
+            // the client's span: the daemon's work for a client is not bound to the client's
+            // life, as its slot-maker thread makes slots again as they are taken and let go of
+            // (slots.rs `make_slots`).
+            let polls = asked_of(self.party.home.as_deref());
+            if let Some(ran) = self.daemon_ran.take()
+                && polls == self.polls
+            {
+                self.last = (now, ran.clone());
+                self.progressed.get_or_insert(ran);
+            }
+            self.polls = polls;
             judged = self.judge.found(if self.progressed.take().is_some() {
                 Found::Progressed
             } else if self.held.take().is_some() {
@@ -3183,9 +3440,13 @@ impl Wait {
                 format!("W* {slowest:?}, R* {:?} of CPU in {:?}", least.cpu, least.over)
             }
         };
+        let kind = if self.kind.line.is_empty() {
+            self.kind.site.to_string()
+        } else {
+            format!("{} {}", self.kind.site, self.kind.line)
+        };
         format!(
-            "{}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
-            self.kind.site,
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -3521,8 +3782,31 @@ impl Under {
 pub struct TempDir(shards_testdir::TempDir);
 
 impl TempDir {
+    /// A directory named for `name`, registered as `{dir NAME}` in its commands' keys, and
+    /// the directory every one of this run's is under as `{testdir}` ([`minted`]), each as
+    /// its path and as that path made canonical (macOS' `/private/var`).
     pub fn new(name: &str) -> TempDir {
-        TempDir(shards_testdir::TempDir::new(name).unwrap())
+        let dir = TempDir(shards_testdir::TempDir::new(name).unwrap());
+        let placeholder = format!("{{dir {name}}}");
+        for path in dir.minted() {
+            minted(&path, &placeholder);
+        }
+        if let Some(root) = dir.0.parent() {
+            minted(&root.to_string_lossy(), "{testdir}");
+            if let Ok(root) = root.canonicalize() {
+                minted(&root.to_string_lossy(), "{testdir}");
+            }
+        }
+        dir
+    }
+
+    /// Its path, and that path made canonical.
+    fn minted(&self) -> Vec<String> {
+        let path: &Path = &self.0;
+        std::iter::once(path.to_path_buf())
+            .chain(path.canonicalize())
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect()
     }
 }
 
@@ -3540,6 +3824,9 @@ impl Drop for TempDir {
         // directory goes after, as the field drops.
         if std::thread::panicking() {
             show_why(&self.0);
+        }
+        for path in self.minted() {
+            unminted(&path);
         }
     }
 }
@@ -3798,7 +4085,7 @@ fn registry_serving_at(
     stalls: Option<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
 ) -> (u16, Arc<AtomicUsize>, Served) {
     let listener = TcpListener::bind((ip, 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let served = Arc::new(AtomicUsize::new(0));
     let count = served.clone();
     let serving = image.clone();
@@ -3897,7 +4184,7 @@ fn registry_serving_at(
 /// `/moved`, as GitHub serves release assets; any other path is a 404. Counts requests.
 pub fn serve_file(body: Vec<u8>) -> (String, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let served = Arc::new(AtomicUsize::new(0));
     let count = served.clone();
     let body = Arc::new(body);
@@ -4188,6 +4475,7 @@ pub fn served_counting() -> (String, Arc<AtomicUsize>) {
 /// 13: api_image.rs's builds, refused from its eighth round of 30 on); ghcr.io limits its own.
 /// What it serves is what a pull of the image for this host's platform fetches, pulled once
 /// per checkout ([`hub_seed`]); one registry serves each image to every test of the binary.
+#[track_caller]
 pub fn hub(reference: &str) -> String {
     static SERVED: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     let mut served = SERVED
@@ -4247,6 +4535,7 @@ pub fn hub_bases(agentfile: &str) -> String {
 /// that a build pulls each into from its registry the first time it is asked for, in
 /// process, as a build pulls its base (no daemon): once per checkout, as the pinned kernel
 /// is downloaded once into target/artifacts ([`fetch`]), one test process at a time.
+#[track_caller]
 fn hub_seed(reference: &str) -> (Vec<u8>, Vec<Vec<u8>>) {
     let pinned = shards_image::reference::Reference::parse(reference).unwrap();
     assert!(
@@ -5052,7 +5341,7 @@ pub struct Buckets {
 /// is refused, as S3's `AccessDenied`.
 pub fn fake_s3() -> (u16, Arc<std::sync::Mutex<Buckets>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let buckets = Arc::new(std::sync::Mutex::new(Buckets::default()));
     let held = buckets.clone();
     std::thread::spawn(move || {
@@ -5235,7 +5524,7 @@ pub struct Blobs {
 /// refused, as Blob Storage's `NoAuthenticationInformation`.
 pub fn fake_azblob() -> (u16, Arc<std::sync::Mutex<Blobs>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let held = Arc::new(std::sync::Mutex::new(Blobs::default()));
     let shared = held.clone();
     std::thread::spawn(move || {
@@ -5387,7 +5676,7 @@ pub struct Actions {
 /// The service's calls without `Authorization: Bearer TOKEN` are refused.
 pub fn fake_gha(token: String) -> (u16, Arc<std::sync::Mutex<Actions>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let held = Arc::new(std::sync::Mutex::new(Actions::default()));
     let shared = held.clone();
     std::thread::spawn(move || {
@@ -5655,7 +5944,7 @@ pub fn writable_registry() -> (u16, Arc<std::sync::Mutex<Repos>>) {
 /// as its `Authorization` field, with a Basic challenge.
 pub fn writable_registry_requiring(authorization: Option<String>) -> (u16, Arc<std::sync::Mutex<Repos>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = minted_port(listener.local_addr().unwrap().port());
     let repos = Arc::new(std::sync::Mutex::new(Repos::default()));
     let held = repos.clone();
     std::thread::spawn(move || {

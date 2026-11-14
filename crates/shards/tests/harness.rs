@@ -1,4 +1,5 @@
-//! The test harness's own judgments (`common`), held to stand-ins: no `shards`, no microVM.
+//! The test harness's own judgments (`common`), held to stand-ins and to a daemon that runs no
+//! microVM: no microVM.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -54,7 +55,9 @@ fn a_daemons_whole_lines_are_its_words() {
 /// doing what `SHARDS_STAND_IN` says: `exit`, at once; `busy MS`, its CPU busy for MS
 /// milliseconds, then its end; `answer PORT MS`, connected to loopback's PORT, busy for MS
 /// milliseconds, then its answer written there and its end; `idle`, nothing at all until
-/// its stdin closes; `falls MS`, a give-back ([`falls`]).
+/// its stdin closes; `pulse N MS`, N rounds of a moment's CPU then MS milliseconds of none,
+/// saying nothing, as a party that works between waits on a peer outside it; `falls MS`, a
+/// give-back ([`falls`]).
 #[test]
 #[ignore = "a process of its own for the harness's stand-ins, which run it"]
 fn stand_in() {
@@ -77,6 +80,15 @@ fn stand_in() {
         let mut to = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         busy(ms);
         to.write_all(ANSWER).unwrap();
+    } else if let Some((rounds, ms)) = asked
+        .strip_prefix("pulse ")
+        .and_then(|a| a.split_once(' '))
+        .and_then(|(n, ms)| Some((n.parse::<u32>().ok()?, ms.parse().ok()?)))
+    {
+        for _ in 0..rounds {
+            busy(1);
+            std::thread::sleep(Duration::from_millis(ms));
+        }
     } else if asked == "idle" {
         let _ = std::io::stdin().read(&mut [0u8; 1]);
     } else if let Some(ms) = asked.strip_prefix("falls ").and_then(|ms| ms.parse().ok()) {
@@ -164,12 +176,75 @@ impl Drop for Region {
     }
 }
 
-/// [`stand_in`], doing `what`.
+/// [`stand_in`], doing `what`: `what`'s first word its first argument, a filter that names
+/// no test, so that it is its command's word ([`common::command_words`]) as a subcommand is.
 fn stand_in_doing(what: &str) -> std::process::Command {
+    stand_in_with(what, &[])
+}
+
+/// [`stand_in_doing`], `more` after its options' end (`--`): filters that name no test, so
+/// that its command line carries what a test's command carries (a path, a port).
+fn stand_in_with(what: &str, more: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
-    cmd.args(["stand_in", "--exact", "--ignored", "--test-threads=1"])
+    let word = what.split_whitespace().next().unwrap_or("exit");
+    cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1", "--"])
+        .args(more)
         .env("SHARDS_STAND_IN", what);
     cmd
+}
+
+/// A command's words, which key its wait's kind beside its call site, are its program and
+/// its subcommand, never an image, a name, a path or a flag (#77). Do: take the words of
+/// commands as tests run them. Expect: each its subcommand's words alone.
+#[test]
+fn a_commands_words_are_its_subcommands() {
+    let words = |program: &str, args: &[&str]| {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        common::command_words(&cmd)
+    };
+    let shards = if cfg!(windows) {
+        "C:\\t\\shards.exe"
+    } else {
+        "/t/shards"
+    };
+    for (args, said) in [
+        ("run --rm alpine echo", "shards run"),
+        ("run alpine echo hi", "shards run"),
+        ("push localhost:5000/x", "shards push"),
+        ("build -t x .", "shards build"),
+        ("stop daemon", "shards stop daemon"),
+        ("stop web", "shards stop"),
+        ("run vm --kernel k", "shards run vm"),
+        ("image ls", "shards image ls"),
+        ("compose up -d", "shards compose up"),
+        ("buildx build .", "shards buildx build"),
+        ("--version", "shards"),
+        ("rm -f t-1234", "shards rm"),
+        ("inspect t-1234", "shards inspect"),
+    ] {
+        let args: Vec<&str> = args.split_whitespace().collect();
+        assert_eq!(words(shards, &args), said, "{args:?}");
+    }
+    assert_eq!(words("git", &["clone", "https://x/y"]), "git clone");
+    assert_eq!(words("sh", &["-c", "true"]), "sh");
+}
+
+/// One call site's waits on different commands are judged apart: a quick command's answer
+/// never bounds a slow one's (#77, the CI triage at d24ef4cfd: build.rs' `policy_eval_answers`
+/// and `builds_push_what_they_build` ran many commands from one closure, and a W* of
+/// 13.4 ms and 3.49 ms, learned from quick refused commands, judged a real build and a push,
+/// whose parties wait on peers outside them between their work). Do: from one call site run
+/// a stand-in that exits at once, which teaches its kind W*; then one that works a moment
+/// three times, each followed by 200 ms of nothing, a wait on a peer. Expect: the second
+/// waited on to its end, status 0, its quiet past the first's W* no stall of its own kind's.
+#[test]
+fn one_call_sites_commands_are_judged_apart() {
+    for what in ["exit", "pulse 3 200"] {
+        let asked = ["stand-in".to_string(), what.to_string()];
+        let run = common::run_command(stand_in_doing(what), &asked);
+        assert_eq!(run.status, Some(0), "{run}");
+    }
 }
 
 /// A command is waited on while it works: its caller gives its wait no bound, as a wait
@@ -447,7 +522,7 @@ const ANSWER: &[u8] = b"answered";
 fn a_judged_read_goes_on_while_its_party_works() {
     let busy = Duration::from_secs(1);
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     for round in 0..2 {
         let mut party = stand_in_doing(&format!("answer {port} {}", busy.as_millis()))
             .stdout(std::process::Stdio::null())
@@ -571,4 +646,184 @@ fn a_give_back_is_followed_while_its_memory_falls() {
             "round {round}: {peak} bytes held mapped, {ended} at its give-back's end"
         );
     }
+}
+
+/// [`Patience::of`] at one call site: one kind for every wait made through it.
+fn polled(home: &std::path::Path) -> Patience {
+    Patience::of(home)
+}
+
+/// Stops its home's daemon as it drops, the test's end or its failure.
+struct Served<'a>(&'a [(&'a str, &'a std::ffi::OsStr)]);
+
+impl Drop for Served<'_> {
+    fn drop(&mut self) {
+        let _ = common::run_shards_env(&["stop", "daemon"], &[] as &[&str], self.0);
+    }
+}
+
+/// A wait's progress is its party's own, never what the waiter itself caused: a `Patience`
+/// whose test polls its state with a `shards` command (saved.rs' and moved.rs' `until`,
+/// build.rs' `ps` polls, containers.rs' `inspect` and `logs` polls) does not count the CPU its
+/// home's daemon spends serving those polls as the daemon's progress (ROOT's ruling,
+/// 2026-11-13, D209). Else a wait on a state that never comes, polled while nothing else
+/// works, is never refused, and its job runs to CI's limit. Do: start a daemon that runs no
+/// microVM (`shards ps`, its store none); teach a wait's kind its W* by one poll that finds
+/// its state; then poll `ps -a -q` for a run that never comes, through the same kind's
+/// wait, past its judge's first two looks (2 W* past its start). Expect: refused there.
+#[test]
+fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
+    let home = TempDir::new("polled");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_LOCAL_STORE", std::ffi::OsStr::new("none")),
+    ];
+    let ps = || {
+        let run = common::run_shards_env(&["ps"], &["-a", "-q"], &env);
+        assert_eq!(run.status, Some(0), "{run}");
+        run.stdout
+    };
+    // Started as daemon.rs' `start_daemon` starts one, its start no wait of this test's.
+    let started = common::command()
+        .arg("ps")
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        started.status.success(),
+        "{}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    let _served = Served(&env);
+    // Each wait looks once before its first poll: a look finds its daemon anew, and only the
+    // looks after judge it (D215), so each poll's work falls between looks that judge it.
+    let mut taught = polled(&home);
+    let _ = taught.holds();
+    ps();
+    taught.done();
+    let shards_api::Seen::Learned { slowest, .. } = polled(&home).seen() else {
+        panic!("its kind learned nothing of an answer");
+    };
+    let mut patience = polled(&home);
+    let began = Instant::now();
+    assert!(patience.holds(), "refused at its start");
+    let refused = loop {
+        assert_eq!(ps().trim(), "", "a run came in a home that runs none");
+        let at = began.elapsed();
+        if !patience.holds() {
+            break true;
+        }
+        // Its judge's looks are due each W* past its start: a look made at 2 W* or later is
+        // past its first two, and the next says a refusal there.
+        if at >= slowest.saturating_mul(2) {
+            break !patience.holds();
+        }
+    };
+    assert!(
+        refused,
+        "a wait polled for a state that never comes, its daemon busy with its polls alone, \
+         not refused {:?} in (W* {slowest:?}): {}\n--- its daemon's log\n{}",
+        began.elapsed(),
+        patience.account(),
+        std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
+    );
+}
+
+/// A command's wait is keyed by its call site and its whole command line, what a run mints
+/// of its own made generic (ROOT's ruling (a), 2026-11-13, #77): one call site's quick
+/// refused command is kept apart from its real one, as build.rs' `builds_push_what_they_build`
+/// runs `build --push CTX`, refused for want of a tag, and then `build --push -t
+/// localhost:PORT/team/built:1 CTX`, which `shards build` and `buildx policy` words alone
+/// never told apart; and a run's own directories and ports key no new record each run.
+/// Do: from one call site, run a stand-in carrying the refused command's line and then the
+/// real one's, each with a context directory and a registry port of its own; then both
+/// again, with new ones. Expect: two records of the call site's on this host, the second
+/// round's keyed as the first's.
+#[test]
+fn a_call_sites_commands_are_keyed_by_their_whole_line() {
+    #[track_caller]
+    fn run_at(cmd: std::process::Command) -> &'static std::panic::Location<'static> {
+        let run = common::run_command(cmd, &["stand-in".to_string()]);
+        assert_eq!(run.status, Some(0), "{run}");
+        std::panic::Location::caller()
+    }
+    let mut site = None;
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        for line in [
+            vec!["build", "--push", ctx],
+            vec!["build", "--push", "-t", &name, ctx],
+        ] {
+            site = Some(run_at(stand_in_with("exit", &line)));
+        }
+    }
+    let site = site.unwrap();
+    let prefix: String = format!("{}-{}-{}-", site.file(), site.line(), site.column())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let records: Vec<String> = std::fs::read_dir(common::workspace().join("target/judge-records"))
+        .unwrap()
+        .flatten()
+        .flat_map(|host| std::fs::read_dir(host.path()).into_iter().flatten().flatten())
+        .filter_map(|record| record.file_name().into_string().ok())
+        .filter(|name| name.starts_with(&prefix))
+        .collect();
+    assert_eq!(records.len(), 2, "{records:#?}");
+}
+
+/// The two call sites the CI triage at d24ef4cfd found judged by a quick refused command's
+/// W* (#77) now key that command apart from their real one, and key each alike run after
+/// run. Do: make build.rs' `builds_push_what_they_build` lines (its context a `TempDir`, its
+/// registry `writable_registry`'s) twice over, and `policy_eval_answers`' refused and
+/// resolved lines. Expect: the refused and the real line apart; the second round's lines
+/// the first's.
+#[test]
+fn the_triaged_call_sites_key_their_refused_command_apart() {
+    let shards = |args: &[&str]| {
+        let mut cmd = std::process::Command::new("/t/shards");
+        cmd.args(args);
+        common::keyed_line(&cmd)
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..2 {
+        let ctx = TempDir::new("build-push-ctx");
+        let (port, _) = common::writable_registry();
+        let ctx = ctx.to_str().unwrap();
+        let name = format!("localhost:{port}/team/built:1");
+        let refused = shards(&["build", "--push", ctx]);
+        let built = shards(&["build", "--push", "-t", &name, ctx]);
+        assert_ne!(refused, built);
+        rounds.push((refused, built));
+    }
+    assert_eq!(rounds[0], rounds[1], "a run's own directory or port in its key");
+    let eval = |source: &str, platform: &str| {
+        shards(&[
+            "buildx",
+            "policy",
+            "eval",
+            "--print",
+            "--platform",
+            platform,
+            source,
+        ])
+    };
+    assert_ne!(
+        eval("docker-image://alpine:3.20", "bogus/x/y/z"),
+        eval("docker-image://alpine:3.20", "linux/arm64")
+    );
+    assert_ne!(
+        shards(&["buildx", "policy", "eval", "--print", "./nope"]),
+        shards(&["buildx", "policy", "eval", "docker-image://alpine:3.20"])
+    );
 }

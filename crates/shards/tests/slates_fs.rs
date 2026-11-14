@@ -222,6 +222,7 @@ fn slates_ok(bin: &OsStr, instance: &str, args: &[&str], input: &[u8], key: &str
 }
 
 /// Writes `bytes` as the volume's file `file`, through an attachment of its own.
+#[track_caller]
 fn write(bin: &OsStr, instance: &str, id: &str, file: &str, bytes: &[u8]) {
     let writer = slates_ok(bin, instance, &["attach", id, "--write"], b"", "attachment");
     slates_ok(bin, instance, &["write", id, &writer, file], bytes, "");
@@ -230,6 +231,7 @@ fn write(bin: &OsStr, instance: &str, id: &str, file: &str, bytes: &[u8]) {
 
 /// slates' anchor under an instance of the test's own, and a volume `name` made there
 /// holding `files`: the anchor (its daemon leaves with it), the instance and the volume's ID.
+#[track_caller]
 fn volume(bin: &OsStr, name: &str, files: &[(&str, &[u8])]) -> (Anchor, String, String) {
     let instance = format!("{name}-{}", std::process::id());
     let anchor = Anchor(
@@ -500,6 +502,7 @@ struct Mounted<'a> {
 
 #[cfg(unix)]
 impl<'a> Mounted<'a> {
+    #[track_caller]
     fn new(bin: &'a OsStr, instance: &str, id: &str, point: &std::path::Path) -> Mounted<'a> {
         let at = point.to_str().unwrap();
         slates_ok(bin, instance, &["mount", id, at], b"", "");

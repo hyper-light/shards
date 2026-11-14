@@ -152,6 +152,7 @@ impl Home {
     }
 
     /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`).
+    #[track_caller]
     fn command(&self, args: &[&str]) -> common::Run {
         common::run_shards_env(
             &[],

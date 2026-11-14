@@ -245,6 +245,7 @@ struct Daemon<'a> {
 }
 
 impl Daemon<'_> {
+    #[track_caller]
     fn stop(&mut self) -> common::Run {
         self.stopped = true;
         let stop = common::run_shards_env(&[], &["stop", "daemon"], self.env);

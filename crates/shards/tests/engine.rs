@@ -31,6 +31,7 @@ use serde_json::{Value, json};
 use shards_ipc::Stream as UnixStream;
 
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [

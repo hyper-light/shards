@@ -1,0 +1,33 @@
+#!/bin/bash
+# CI's musl jobs (.github/workflows/ci.yml, `musl`): one part of scripts/musl-ci, MUSL_CI's, in
+# the pinned Alpine image ($MUSL_IMAGE) on the runner's own architecture. The test job runs it
+# twice, as two steps with limits of their own (PM M560): the tests' build (MUSL_CI=test-build),
+# then the tests (MUSL_CI=test). The second container finds the first's build in the checkout's
+# target/, and its user's home (cargo's registry, zig's cache) in $RUNNER_TEMP/alpine-home,
+# mounted as that home in both, so the tests' cargo finds every unit fresh.
+set -u
+# VM tests need the host's /dev/kvm inside the container, which runs them as the runner's
+# user (scripts/musl-ci): the node there takes this one's mode.
+kvm=()
+if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; kvm=(--device /dev/kvm); fi
+# x86_64 runners offer /dev/kvm: every VM test must run there.
+require=0
+if [ "$TARGET" = x86_64-unknown-linux-musl ]; then require=1; fi
+if [ "$MUSL_CI" = test ] && [ "$TARGET" = x86_64-unknown-linux-musl ]; then
+	scripts/ci/hang-watch.sh "$RUNNER_TEMP/hangs" &
+	watcher=$!
+fi
+# The release build carries the GPU's VM process, linked against Alpine's musl
+# (D201): its renderer built in the container (scripts/musl-ci).
+gpu=()
+if [ "$MUSL_CI" = release ]; then gpu=(-e SHARDS_GPU_LIBS=/work/target/gpu-libs); fi
+home="$RUNNER_TEMP/alpine-home"
+mkdir -p "$home"
+status=0
+docker run --rm ${kvm[@]+"${kvm[@]}"} -v "$PWD:/work" -v "$home:/home/shards" -w /work \
+	-e TARGET -e MUSL_CI -e SHARDS_REQUIRE_VMS="$require" ${gpu[@]+"${gpu[@]}"} \
+	-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+	-e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+	"$MUSL_IMAGE" scripts/musl-ci || status=$?
+if [ -n "${watcher:-}" ]; then kill "$watcher" 2>/dev/null || true; fi
+exit "$status"

@@ -41,6 +41,7 @@ fn host_env(home: &TempDir) -> Vec<(OsString, OsString)> {
 /// Builds `agentfile` (its `{image}` the test image) in a context holding a harness
 /// archive whose `codex` is the test guest started with `options`, and an agent of files
 /// alone; tagged `tag` in `home`.
+#[track_caller]
 fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
     let (image, _) = served();
     let env = [
@@ -665,6 +666,7 @@ fn a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs() {
 /// Agentfile and harness.json as the repository holds them, FROM its pinned alpine, which
 /// the tests' own registry serves (`common::hub_bases`), and the test guest as its `codex`,
 /// as OpenAI's binaries are no part of the repository (its .gitignore).
+#[track_caller]
 fn build_example(home: &TempDir, tag: &str) {
     let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/examples/harness-codex");
     let ctx = TempDir::new("api-example-ctx");
@@ -1662,7 +1664,7 @@ fn tls_host(names: &[&str]) -> TlsHost {
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let config = std::sync::Arc::new(config);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = crate::common::minted_port(listener.local_addr().unwrap().port());
     let (tx, asked) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for sock in listener.incoming().flatten() {
@@ -2062,12 +2064,14 @@ fn granted() -> Vec<CredentialGrant> {
 }
 
 /// The harness's answers, one line for each of its requests, read to its end.
+#[track_caller]
 fn answers(guest: &dyn ImageGuest) -> Vec<String> {
     let out = String::from_utf8(read_all(guest, Channel::Stdout)).unwrap();
     out.lines().map(str::to_string).collect()
 }
 
 /// The run stopped, and every lease its lessor gave released by its end (D242).
+#[track_caller]
 fn stop_releasing(guest: &dyn ImageGuest, lessor: &TestLessor) {
     guest.stop().unwrap();
     assert_eq!(

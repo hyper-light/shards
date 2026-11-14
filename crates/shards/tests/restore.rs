@@ -40,6 +40,7 @@ impl Scratch {
     }
 
     /// Boots the snapshot guest on two vCPUs, which asks for its snapshot and stops.
+    #[track_caller]
     fn boot_and_snapshot(&self) -> Run {
         let disk = format!("{}:ro", self.0.join("ro.img").display());
         let cmdline =

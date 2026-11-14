@@ -22,6 +22,7 @@ use std::path::Path;
 use common::terminal::{Terminal, cooked};
 use common::{Run, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [

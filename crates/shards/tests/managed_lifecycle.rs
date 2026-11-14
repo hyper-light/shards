@@ -310,6 +310,7 @@ enum Admission {
     Refused,
 }
 
+#[track_caller]
 fn supplied_agent(processes: Option<u64>, admission: Admission) {
     use std::io::Write as _;
     if cannot_run_vms() {
@@ -404,6 +405,7 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
 
 /// The healthy harness's echo of a challenge through the port its run publishes, its answer
 /// read as a stream `home`'s daemon carries to its guest ([`Following::of_home`]).
+#[track_caller]
 fn challenge_healthy(
     env: &[(&str, &std::ffi::OsStr)],
     home: &std::path::Path,

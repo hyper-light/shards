@@ -144,6 +144,7 @@ fn example(name: &str, file: &str) -> String {
 /// however long it runs, until the test removes it; reads the harness's stdout, then its
 /// stderr, from the run's owner endpoint; then the kernel's record of the microVM's processes.
 /// None where this host runs no VMs.
+#[track_caller]
 fn bring_up(case: &Case<'_>) -> Option<Seen> {
     if cannot_run_vms() {
         return None;

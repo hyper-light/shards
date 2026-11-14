@@ -120,6 +120,7 @@ impl Fixture {
 
     /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
     /// `_within`, its callers' share of their case's time, bounds it no more.
+    #[track_caller]
     fn command(&self, args: &[&str], _within: Duration) -> common::Run {
         common::run_shards_env(
             &[],
@@ -318,6 +319,7 @@ impl Fixture {
         );
     }
 
+    #[track_caller]
     fn consume(&mut self, member: u32, label: &str, channel: Channel) {
         let observer = self.observe(member, channel, None, false, Bound::Judged);
         let expected = payload(label, channel);
@@ -766,6 +768,53 @@ fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
     observer.join(Until::Ordered).unwrap();
 }
 
+/// A socket of this process's is found once by its address while other sockets come and go
+/// (`managed_capture::bound`, which finds an observer's): CI's aarch64 musl run 43513425954
+/// found one twice, `[114149, 114149]`. /proc/net/udp is no snapshot: its reader takes the
+/// table as little as each read(2) asks, resuming by position, so a socket inserted or removed
+/// meanwhile has another listed twice or not at all. Do: hold a socket; on as many threads as
+/// this host runs at once, keep twice a page of /proc/net/udp's lines (each 128 bytes,
+/// udp4_format_sock's width) of other sockets, closing and binding them anew; meanwhile find
+/// the held one by its address, as many times as a churner keeps sockets. Expect: found once
+/// each time. (Before, adacachy2 at 54286a668 found 329 of 2,048 twice.)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_socket_is_found_once_while_others_come_and_go() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let SocketAddr::V4(at) = held.local_addr().unwrap() else {
+        panic!("an IPv4 socket");
+    };
+    // SAFETY: sysconf(3) reads a value and changes nothing.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+    let batch = 2 * page / 128;
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                let mut kept = std::collections::VecDeque::new();
+                while !stop.load(Ordering::Relaxed) {
+                    if kept.len() >= batch {
+                        kept.pop_front();
+                    }
+                    kept.push_back(std::net::UdpSocket::bind("127.0.0.1:0").unwrap());
+                }
+            });
+        }
+        let found: Vec<Vec<u64>> = (0..batch).map(|_| managed_capture::bound(at)).collect();
+        stop.store(true, Ordering::Relaxed);
+        let torn: Vec<_> = found.iter().filter(|ids| ids.len() != 1).collect();
+        assert!(
+            torn.is_empty(),
+            "{} of {} finds not once: {:?}",
+            torn.len(),
+            found.len(),
+            torn.first()
+        );
+    });
+    drop(held);
+}
 /// The binary's tests share this process: another test's descriptors come and go while an
 /// observer lives. Its own sockets, told apart by their kernel identity (managed_capture's
 /// Held), are what its shutdown checks. Unix's alone: Windows names a socket by nothing a

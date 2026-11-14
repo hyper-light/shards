@@ -106,6 +106,7 @@ impl Capture {
             .unwrap();
     }
 
+    #[track_caller]
     fn complete(&mut self, observer: &Observer, inputs: &Inputs, until: Instant) -> String {
         let until = until.min(Instant::now().checked_add(inputs.call).unwrap());
         loop {

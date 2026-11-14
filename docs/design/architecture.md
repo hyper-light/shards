@@ -10600,6 +10600,64 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
     Each answer is taught in, merged with what another process kept, and written whole and
     renamed into place; a keep that fails is the next answer's to make.
+  - *Its key is its whole command line, what a run mints of its own made generic* (#77,
+    ROOT's ruling (a) of 2026-11-13). Words alone left build.rs' two call sites one kind
+    each: `build --push CTX`, refused, and `build --push -t localhost:PORT/team/built:1 CTX`
+    both `shards build`; every `buildx policy eval` `shards buildx policy`. So a command's
+    kind is `WaitKind::of(site, words, keyed_line(cmd))`, kept as
+    `<call site>-<words>-<the line's SHA-256, its first 16 hex digits>`. The line is its
+    program's file stem and every argument, each value the run minted said as the
+    placeholder its minting helper registered (`common::minted`), longest first: a
+    `TempDir` (its path and its canonical path) as `{dir NAME}`, the directory every one of
+    the run's is under as `{testdir}`, each port a helper was handed (`fixed_port`, the
+    registries, fake S3, Azure Blob and GitHub Actions, `serve_file`, and the tests' own
+    listeners through `minted_port`) as `{port}`, and the process's ID, which the slices,
+    builders and pipes the tests name are made of, as `{pid}`; a number is replaced only
+    where no digit is beside it. A helper that mints a new kind of value registers its own
+    placeholder; a value no helper registers stays as it is, its kind cold each run. Held by
+    harness.rs' `a_call_sites_commands_are_keyed_by_their_whole_line` (red at 802f21ba4: one
+    record for the refused and the real line; two after, and still two after two rounds
+    with new directories and ports) and `the_triaged_call_sites_key_their_refused_command_apart`.
+  - *Its words name its command in its key and its account* (#77, the CI
+    triage at d24ef4cfd: build.rs' `policy_eval_answers` closure and
+    `builds_push_what_they_build` ran many commands from one call site, and a W* of 13.4 ms
+    and 3.49 ms, learned from quick refused commands, judged a real build and a push).
+    `run_command`'s and `client_output`'s kind is `WaitKind::of(site, command_words(cmd))`,
+    kept as `<call site>-<words>`. The words are the program's file stem, then its
+    subcommand's: each a plain word (ASCII lowercase letters and `-`, no flag) up to the
+    first that is not; its first argument; its second only where shards-cmdline's catalog
+    names no command of the first that takes arguments itself (`run`, `push`, `build`, whose
+    next word is an image, a name or a path), or shards' grammar reads the two as ACTION
+    THING (`grammar::form`: `run vm`, `stop daemon`). So `shards run --rm alpine` is `shards
+    run`, `docker push localhost:5000/x` is `docker push`, `docker compose up -d` is `docker
+    compose up`, and no run's own name, path, tag or digest is ever a word: each run of a
+    call site keys the same kinds. A wait on no command (`Patience`, `judged`, a guest's)
+    keeps its call site's key alone (`WaitKind::at`), its kept record read as before; a
+    command's key with no record is a cold start. The helpers that wrapped a wait without
+    `#[track_caller]` (64 of them across the tests: containers.rs' `shards_in`, `home_with`,
+    `hub`, the terminals' `exit`, the managed tests' `command`s, `quit`) carry it now; a wait
+    made inside a closure, a `Drop` or a `Read` impl keeps that body's site, its commands
+    told apart by their words. Held by harness.rs'
+    `one_call_sites_commands_are_judged_apart` (a stand-in that exits, then one that works a
+    moment three times between 200 ms of nothing, from one call site: red at f9bdaeda5,
+    refused in its first quiet window) and `a_commands_words_are_its_subcommands`.
+  - *A party's I/O is not read: its CPU already shows every byte it moves* (#77, measured).
+    Asked whether a party blocked on a peer outside it (Docker Hub, a test's registry
+    thread) moves data a look misses, `docs/research/measurements/judge-io/io_vs_cpu.py`
+    sampled a child each ~1 ms for 3 s, reading a TCP socket fed 64 KiB each 50 ms, or
+    writing 1 MiB to a file each 50 ms (with and without fsync): its I/O counters never grew
+    over a sample its CPU did not (macOS 26 arm64, proc_pid_rusage RUSAGE_INFO_V4: 0 of
+    454, 462 and 449 samples; Linux 7.3 x86_64, `/proc/<pid>/io`: 0 of 1842 and 2674, and 1
+    of 2670, a sample in which the probe's `schedstat` run time, which lags for a running
+    task, missed what `clock_gettime`'s CPU clock that `Watch` reads counts). The counters
+    grow in system calls the process's own threads make, which its CPU clock counts at
+    nanosecond grain. Network bytes are not in them at all on macOS (`ri_diskio_*` count
+    disk I/O alone: 0 bytes grown over the socket run), nor on Linux for the `recv`/`send`
+    family that Rust's std sockets call (`rchar`/`wchar` count read/write-family VFS calls:
+    0 grown over the socket run). Windows' `GetProcessIoCounters` is not measured. A party
+    that waits on its peer moves no bytes while it waits, so its I/O cannot tell it from a
+    stalled one either; what keeps a slow pull or push judged is its own kind's W*, learned
+    from whole pulls and pushes (the key above), not a quick command's.
   - *Cold* (no answer of its kind on this host), it follows its client's liveness alone:
     it waits while the client lives. *Learned*, it is looked at each W* past its start
     (`shards_api::Judge`, shared) and fails only at a look that finds its party made no
@@ -10670,6 +10728,36 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     client whose end ends the wait, the party's processes are its liveness. A refusal is
     followed by one look more, so a state that came as its party ended is still seen, and
     then says its account on stderr (call site, party, last progress, hold, record).
+  - *Its progress is its party's own, never its waiter's* (ROOT's ruling, 2026-11-13: "A
+    wait's progress must be the party's own, never work the waiter itself caused"). A waiter
+    that polls its state with a `shards` command (saved.rs' and moved.rs' `until`, build.rs'
+    `ps` polls, containers.rs' `inspect` and `logs` polls) makes its daemon work: each
+    `ps -a -q` cost a daemon that runs no microVM 0.50–0.71 ms of CPU (8 polls of 20–29 ms,
+    adas-mac-studio.local, macOS arm64, kiln r1368), each read by `Party::look` as
+    "process N ran", and 20 ms after each poll it read 0 ns. So a wait on a state that never
+    comes, polled while nothing else works, was never refused. `Wait::begin` (every client
+    `run_command` and `client_output` run) counts the clients each thread begins against each
+    home; `Party::look` says its daemon's own run apart (`Looked::daemon_ran`); and a `Wait`'s
+    judge counts that run as progress only in a window (W*) in which its thread began no
+    client of its home. The window, not the client's span: the daemon's work for a client
+    is not bound to the client's life (its slot-maker thread makes slots again as they are
+    taken and let go of, slots.rs `make_slots`). A poll's work that spills past a window's
+    end buys at most the window after, and only where the waiter polled nothing in it.
+    The daemon's words, its other processes' CPU (a VM's), host holds and the cold start
+    (liveness alone) count as before; no literal is added. A wait on a command
+    (`run_command`'s own) begins its window after its own client is counted, so the
+    daemon's work for it is its progress. Red at 2014d9655 (harness.rs
+    `a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy`: a real daemon, no
+    microVM; the kind taught by one poll; then `ps -a -q` polled for a run that never comes,
+    each wait looking once before its first poll), adas-mac-studio.local, kiln r1370: not
+    refused 113.4 ms in, W* 39.4 ms, "its last progress process 28417 ran 15.76 ms ago".
+    Green at 51d949485 there (r1370): refused 78.6 ms in, W* 42.6 ms, its last progress its
+    start; harness.rs 9 passed, 2 ignored. The gaps: a VM's CPU that an `exec` poll makes
+    still counts, as the ruling excludes the daemon's; a thread's count is its own, so a poll
+    made from a helper thread is no poll of the waiter's; and a learned waiter whose first
+    look comes past its W* (its first poll longer than its kind's W*) is refused there, its
+    members found anew at that look and so not judged (seen at c3ecd045d, kiln r1364/r1369,
+    before the test looked once ahead of its first poll).
   - R03: no literal. The old `TIMEOUT`, `CLIENT`, 10 s and 5 s arguments, budget.rs'
     learned start and containers.rs' pace bound go from every call (68 sites); the
     tests' own claims beside them (`each_ends`' pace, daemon.rs' unpatient 5 s probe) stay.
