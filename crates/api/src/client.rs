@@ -3035,15 +3035,23 @@ mod tests {
                 let (said, output) = io::pipe().unwrap();
                 let child = spawn_shards(&me, &args, Some(&env), &output).unwrap();
                 drop(output);
-                // Read to its report, not to the pipe's end: a std child another test of this
-                // binary starts meanwhile can hold the write end (the race this test is about).
-                let line = io::BufReader::new(said)
-                    .lines()
-                    .map_while(Result::ok)
-                    // After libtest's own `test … ... ` on the same line.
-                    .find_map(|l| Some(l.get(l.find("sockets-held ")?..)?.to_string()));
-                assert_eq!(child.wait().unwrap(), 0);
-                let line = line.expect("the child said what it holds");
+                // Read to libtest's last line, not to the pipe's end: a std child another test
+                // of this binary starts meanwhile can hold the write end (the race tested).
+                let mut out = Vec::new();
+                for l in io::BufReader::new(said).lines().map_while(Result::ok) {
+                    let last = l.starts_with("test result:");
+                    out.push(l);
+                    if last {
+                        break;
+                    }
+                }
+                assert_eq!(child.wait().unwrap(), 0, "{out:#?}");
+                // After libtest's own `test … ... ` on the same line.
+                let line = out
+                    .iter()
+                    .find_map(|l| l.get(l.find("sockets-held ")?..))
+                    .unwrap_or_else(|| panic!("no report: {out:#?}"))
+                    .to_string();
                 if !line.starts_with("sockets-held 0 ") {
                     held.push(line);
                 }
