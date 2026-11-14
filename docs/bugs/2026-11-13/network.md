@@ -36,6 +36,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test sketch:** `let mut c = opened(); let before=c.rcv_nxt; c.on_segment(empty_fin(before.wrapping_sub(4096)), out, None); assert!(!c.guest_fin); assert!(!c.host_shut); assert_eq!(c.rcv_nxt,before);` Also exercise the two blind FIN sequence values and prove the host socket receives no EOF.
 
+**Status (2026-11-13):** fixed in 50716d9465c42d9cbabbdd8e725134ba6f80bffe (red `tcp::tests::stale_fins_do_not_end_the_host_stream`); 20 focused TCP tests and crate clippy passed on macOS arm64. Merged-source check and ROOT's real-VM coverage tracked in `docs/research/measurements/network-fixes-v1/README.md`.
+
 ### network-02 — P1 / high: the network process silently omits syscall confinement on supported arm64 Linux
 
 **Location:** `crates/net-process/src/main.rs:245`; `crates/net/src/confine.rs:209`. Present before the base; current supported arm64 Linux execution still takes it.
