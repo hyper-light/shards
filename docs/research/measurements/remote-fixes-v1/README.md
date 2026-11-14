@@ -26,7 +26,7 @@ cargo test -p shards --bin shards daemon::remote::tests -- --nocapture
 cargo clippy -p shards --all-targets -- -D warnings
 ```
 
-Observed: 5 passed, 0 failed (including the red regression); clippy exit 0. Runner Darwin 25.2.0 arm64. Logs retained on the runner under `/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-remote-carrier-a63d6bf735/{red,green}.log`. Final merged-tree rerun and landing pending. No mutation campaign or live guest scenario was run.
+Observed: 5 passed, 0 failed (including the red regression); clippy exit 0. Runner Darwin 25.2.0 arm64. Logs retained on the runner under `/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-remote-carrier-a63d6bf735/{red,green}.log`. Merged tree `70161aaa5528162c687a0579923c1fad542ea268` (fresh main `53d5cea99`) passed the same 5 tests and clippy again in Kiln r14; log `merged05.log` beside the earlier logs. ROOT explicitly authorized the secret-exposure landing ahead of the P0 function-order rule through the correlated local peer reply. Landing follows this evidence update. No mutation campaign or live guest scenario was run.
 
 ## Rule/evidence accounting for remote-05
 
