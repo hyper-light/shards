@@ -47,3 +47,42 @@ Owed ROOT: `cargo test -p shards --test volumes a_binds_host_files_are_its_runs_
 on supported real-VM hosts, plus a real bind xattr-failure permission/cleanup
 campaign; seven-target CI and `scripts/check-development-policy`. Existing live
 case does not replace the fault campaign. No performance/portability pass inferred.
+
+## runs-02
+
+Base aaeee3b1935cde71f93a1de90a6bd86ab80c121e plus the daemon patch.
+`cargo test -j 4 -p shards --bin shards renamed_home_cleanup_keeps_replacement_files`
+red in resumed kiln r5: the old daemon overwrote the replacement home's stopping
+marker, returning its own Named process bytes instead of `replacement`. This is a
+unit subprocess (no daemon loop and no VM). The same test is green in r7 and r12;
+r12 additionally observes removal of the old home's remainder after unlinking its
+lock. `cargo test -j 4 -p shards --bin shards
+daemon::tests::a_closed_daemon_holds_its_stopping_lock_until_its_home_is_let_go_of`
+also passes (one test); `cargo clippy -j 4 -p shards --all-targets -- -D warnings`
+passes (r12, 22.85s). Same macOS arm64 runner/target as runs-01. Unit builds name
+/usr/bin/true as SHARDS_INIT_BINARY and SHARDS_SERVER_BINARY; these tests use no
+guest binary, and no runtime/VM claim follows from the clippy gate.
+
+Existing CWD ownership is authoritative. Unlike a check against the original
+pathname before each operation, relative paths preserve identity across a rename
+between a check and a write. Windows' CWD prevents renames; its path is unchanged.
+The helper has existing String presentation errors; no new refusal protocol,
+number, cache, resource limit or wait. The parent test never changes its CWD; the
+child owns its CWD, paths and cleanup. R01-R16 dispositions are the scoped ones
+above; no wider live correctness or platform claim.
+
+Owed ROOT: extend/run the rename-and-recreate scenario with two actual daemons
+(and live VM traffic), checking both homes' offers/PID/stopping files and workload
+progress. Existing removal case: `cargo test -p shards --test daemon
+a_daemon_whose_home_is_removed_exits_without_making_it_again`; relative-home case:
+`cargo test -p shards --test daemon a_home_named_relatively_is_one_home`.
+
+## Landing coordination
+
+Main has advanced during repeated runs-01 merge/test/push attempts; every rejected
+non-fast-forward push was left rejected. No force push. Main was merged through
+5d805549d, with the selected regression rerun on aaeee3b1. The pending landing
+window was requested from ROOT through kiln (429 backpressure) and the authorized
+local Claude peer socket (transport sent, read acknowledgement not observed).
+Independent runs-02 confirmation/preparation continued while that window was
+pending. An unlanded fixing SHA is not described here as a main result.

@@ -71,6 +71,9 @@ checks, not real-VM validation or performance measurements. The runs-01 fault
 case returned success instead of EIO before correction; the corrected case and
 49 share-server tests pass, and shards-vmm all-target clippy passes on that host.
 Other host/guest checks remain owed to ROOT as the record names them.
+The same record retains runs-02's actual overwritten-marker unit red and green
+rename/cleanup + stopping-lock checks and shards all-target clippy on that Mac;
+its real-daemon/VM counterpart remains unrun.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 

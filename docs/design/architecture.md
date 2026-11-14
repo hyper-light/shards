@@ -1200,6 +1200,17 @@ for the exit status.
     names them relative to it, as it named the socket, whose name had to fit a socket
     address whatever the home's path. The per-user directories macOS offers for sockets
     cost each new process 0.4–1.3 ms to look up [PM M26].
+  - **A renamed home remains its daemon's directory** (runs-02, 2026-11-13).
+    On Unix every stored home-relative pathname starts at `.` after the daemon's one
+    chdir, including its lock, registry, requests, stopping markers and final cleanup.
+    Renaming A to B and recreating A therefore never makes the old daemon write into A.
+    An unlinked lock still ends the daemon; final removal uses the current directory's
+    actual name, not `.` as a directory-entry removal. Windows keeps its absolute path:
+    its current directory cannot be renamed or removed while held (D185).
+    The subprocess unit reproduces the overwritten replacement marker before the fix
+    and verifies retained offers/PID and removal of the old remainder after it. See
+    [runs-fixes](../research/measurements/runs-fixes/README.md); live daemon/VM checks
+    remain ROOT's. This adds no timeout, polling, cache or platform manager.
   - It admits only clients of its own user: its slots are FIFOs of mode 0600 in a
     directory of 0700, and a connection's peer is checked besides (`getpeereid`,
     `SO_PEERCRED`): a home in a shared directory must not let another user run commands as
