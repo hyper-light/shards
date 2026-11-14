@@ -122,6 +122,16 @@ struct Patient {
 
 impl Read for Patient {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // What its daemon has sent already is read without waiting: no answer waited for,
+        // which would teach its kind a W* of one read (#77: engine.rs' `head`, refused "its
+        // daemon made no progress" by a kind such reads taught).
+        self.conn.set_nonblocking(true)?;
+        let read = self.conn.read(buf);
+        self.conn.set_nonblocking(false)?;
+        match read {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            read => return read,
+        }
         let mut patience = common::Patience::of(&self.home);
         loop {
             let left = patience.next_look();

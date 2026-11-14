@@ -17783,6 +17783,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+- **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
+
+
 - **Correctness follow-up, 2026-11-13 (devices-02, D154).** A full-span IOMMU mapping overflow was reproduced by a focused unit test (red 1 failed; green 11 IOMMU tests passed, VMM clippy clean) on adas-mac-studio-3.local, macOS arm64. See `measurements/device-fixes/README.md` for revisions and Kiln runs. These unit results do not revalidate M430's timings or hardware MSI behavior.
 
 
@@ -24240,3 +24243,15 @@ skips every filter for a syscall each allows whatever its arguments
 them, runs both. Owed to ROOT: VM runs on KVM (a daemon's
 warm VMs, `shards build`'s builder with its vsock ports, the GPU's VM process), x86_64
 and arm64 through L1.
+
+### M570. A Windows VM that stages its snapshots and has no vsock path was granted files after its guest started (platform-03, D30, D141, D196)
+
+Windows 10.0.26200 x86_64 (the Windows 11 guest on adacachy), 2026-11-14: at e889915c4 a VM
+that asked, as `confine` did, for a file to read and a snapshot directory, and no `SEALED`,
+staged and committed a generation, then was granted a sentinel file outside its grants to
+write, and wrote it (`overwritten` where `untouched`). At 1e8c83104 its last ask seals
+(`grant_ask::obtain_sealed`): `grant_answer::windows_tests` 7 of 7, the late GRANT refused and
+the stage and commit still answered; both mutants (no `SEALED`; no broker refusal) fail it.
+Unit-level functional evidence, no real VM: `confine` refuses any process outside an
+AppContainer, and the WHP real-VM tests are owed.
+[Commands, logs, mutants and owed runs](measurements/windows-p0/README.md).
