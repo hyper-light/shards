@@ -6139,6 +6139,45 @@ pub(crate) mod tests {
         assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 
+    /// Do: a guest of a sign-in captured before refreshes it over HTTP/2 on stream 1 with no
+    /// Content-Length, which HTTP/2 leaves optional (RFC 9113 §8.1.1; the test guest's
+    /// `tls-ask` sends none), its body in two DATA frames. Expect: the body read to its
+    /// END_STREAM and the refresh answered outside on its stream, never reaching the host.
+    #[test]
+    fn an_h2_refresh_without_a_content_length_is_answered_outside() {
+        let root = root("shards test root");
+        let mut credentials = sign_in_credentials(&root, true);
+        let mut broker = Broker::holding(ISSUED_ACCESS, ISSUED_REFRESH);
+        let (mut bench, mut peer) = h2_token_bench(&root, &mut credentials, &[b"h2", b"http/1.1"]);
+        let mut seen = Vec::new();
+        let refresh = refresh_body();
+        let mut fields = h2_post("/v1/oauth/token", &refresh);
+        fields.retain(|f| f.name != b"content-length");
+        let (first, rest) = refresh.as_bytes().split_at(refresh.len() / 2);
+        peer.send_headers(1, &fields, false);
+        peer.send_data(1, first, false);
+        peer.send_data(1, rest, true);
+        h2_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut |c| broker.serve(c),
+            |p, _| p.response(1).ended,
+        );
+        assert!(!bench.host().had("/v1/oauth/token"), "the refresh reached the host");
+        assert_eq!(broker.provider_calls, 1);
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert_eq!(
+            String::from_utf8_lossy(&data),
+            token_response(SIGNED_ACCESS, SIGNED_REFRESH)
+        );
+        let did: Vec<Did> = bench.audit.iter().map(|a| a.what).collect();
+        assert_eq!(did, [Did::Refreshed]);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
     /// Do: on one HTTP/2 connection to the token host, stream 1 a refresh the broker refuses (its
     /// provider refused the refresh token) and stream 3 a GET, at once. Expect: stream 1 answered
     /// by the injector on that stream alone with the HTTP/1.1 path's status and text, RFC 6749
