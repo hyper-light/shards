@@ -1354,13 +1354,7 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
 /// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
-fn filled_in(
-    mask: &mut Mask,
-    sent: &[(&str, &[u8])],
-    host: &str,
-    grants: &[crate::Grant],
-    audit: &mut Vec<Audit>,
-) {
+fn filled_in(mask: &mut Mask, sent: &[(&str, &[u8])], host: &str, grants: &[crate::Grant], audit: &mut Vec<Audit>) {
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1451,12 +1445,7 @@ impl Mask {
     }
 
     /// `bytes` of a response, data an echo may lie in or its framing, on their way to `out`.
-    fn push(
-        &mut self,
-        bytes: &[u8],
-        data: bool,
-        out: &mut dyn FnMut(&[u8]) -> io::Result<()>,
-    ) -> io::Result<()> {
+    fn push(&mut self, bytes: &[u8], data: bool, out: &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
         if self.filled.is_empty() && self.queue.is_empty() {
             return out(bytes);
         }
@@ -1951,10 +1940,9 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b)
-                        | Piece::Size { line: b, .. }
-                        | Piece::Trailers(b)
-                        | Piece::Frame(b) => host.writer().write_all(b),
+                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
+                            host.writer().write_all(b)
+                        }
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -2328,9 +2316,7 @@ impl Ended {
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
                         // A trailer section is fields, which an echo may lie in, as a head's.
-                        Piece::Data(b) | Piece::Trailers(b) => {
-                            mask.push(b, true, &mut |b| guest.writer().write_all(b))
-                        }
+                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -4476,16 +4462,12 @@ pub(crate) mod tests {
                     }
                 };
                 let mut piece = Vec::new();
-                let (n, ended) =
-                    walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                        let (Piece::Data(b)
-                        | Piece::Size { line: b, .. }
-                        | Piece::Trailers(b)
-                        | Piece::Frame(b)) = p;
-                        piece.extend_from_slice(b);
-                        Ok(())
-                    })
-                    .unwrap();
+                let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
+                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
+                    piece.extend_from_slice(b);
+                    Ok(())
+                })
+                .unwrap();
                 self.inbox.drain(..n);
                 if self.answers == H1Answers::Echo {
                     self.tls.writer().write_all(&piece).unwrap();
