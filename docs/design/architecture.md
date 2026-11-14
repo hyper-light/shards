@@ -28347,6 +28347,23 @@ pin, read on Linux and never run), as data and pure functions the injector drive
   CLI's refresh (JSON and form) and revocation found, and a refresh of another or a near placeholder passed; the
   minting endpoint read widely; no token or placeholder in `Debug`; a 100 000-deep array read. clippy `-D warnings`
   clean. Each of 14 guards removed in turn fails its test (`scripts/step8-reds.py`).
+- *A token host's informational responses wait for its final one (creds-10, amended 2026-11-13).* A 1xx
+  response went to the guest at once, before the final response's body named its tokens, so a 103
+  (or any 1xx) that repeated a token issued in that final response passed unread. RFC 9110 §15.2 has a
+  proxy forward each 1xx unless it asked for it, and lets a user agent ignore an unexpected one; it sets
+  no deadline, only that they precede the final response. So on a sign-in's token host a 1xx but 100 is
+  held (HTTP/1.1's head in `Ended::interims`, HTTP/2's fields on its stream, together at most `TO_GUEST`
+  octets, past which the message breaks or the stream is refused 502), read with the final response's
+  head and trailers for its tokens (`signin::unechoed`'s places), and sent before it as it came; one
+  that holds a token refuses the response 502, nothing captured. A final response that is not read
+  whole names no token and goes after them at once. A 100 Continue goes at once as its status alone
+  (§15.2.1 gives it no fields; a client may be waiting on it before it sends its body), so that it
+  carries nothing and waits for nothing. Not chosen: holding a 100 too, which stalls a client that
+  waits for it until its own timer. Tests: `inject::tests::leaks`' HTTP/1.1 103 repeating the access
+  token (refused), a benign 103 (sent before the token response) and a 100 with a field repeating it
+  (sent bare), and an HTTP/2 103 repeating the refresh token (refused), red before (a real token
+  reached the guest), green after; HTTP/1.1's and HTTP/2's holds removed, and each's reading of the
+  held responses removed, each fail them.
 - *A token in a token response's head or trailers is refused (creds-01, amended 2026-11-13).* A capture wrote the
   placeholders into the body's token places alone and passed the head (HTTP/1.1's, through `signin::frame`) and an
   HTTP/2 stream's fields and trailers (through `give`) as they came, so a host repeating a token there (a field, a
