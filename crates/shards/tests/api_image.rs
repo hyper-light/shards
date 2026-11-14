@@ -479,11 +479,11 @@ fn a_project_is_plugged_into_the_running_harness() {
         "a member of files alone"
     );
     let barrier = std::sync::Barrier::new(2);
+    let attempt = || {
+        barrier.wait();
+        ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX))
+    };
     let results = std::thread::scope(|scope| {
-        let attempt = || {
-            barrier.wait();
-            ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX))
-        };
         let a = scope.spawn(&attempt);
         let b = scope.spawn(&attempt);
         [a.join().unwrap(), b.join().unwrap()]

@@ -4128,11 +4128,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         // This test runs as the runner's ordinary user: root bypasses MAY_READ.
         // SAFETY: geteuid reads this process's effective uid.
-        assert_ne!(
-            unsafe { libc::geteuid() },
-            0,
-            "run the watch admission test as an unprivileged user"
-        );
+        let uid = unsafe { libc::geteuid() };
+        assert_ne!(uid, 0, "run the watch admission test as an unprivileged user");
         let (p, s) = dir();
         let child = p.join("no-read");
         std::fs::create_dir(&child).unwrap();

@@ -119,11 +119,11 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     // Concurrent same-destination requests have one owner and leave no hidden mount.
     let contested = format!("{}:/contended", dir.display());
     let barrier = std::sync::Barrier::new(2);
+    let attempt = || {
+        barrier.wait();
+        run_shards_env(&["plug"], &["volume", "plugged", &contested], &env)
+    };
     let results = std::thread::scope(|scope| {
-        let attempt = || {
-            barrier.wait();
-            run_shards_env(&["plug"], &["volume", "plugged", &contested], &env)
-        };
         let a = scope.spawn(&attempt);
         let b = scope.spawn(&attempt);
         [a.join().unwrap(), b.join().unwrap()]
