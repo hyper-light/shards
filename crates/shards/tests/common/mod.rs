@@ -2308,6 +2308,73 @@ enum Patient {
     Spent,
 }
 
+/// Waits, judged as a state's wait is ([`Patience`]: its party `home`'s daemon, no clock),
+/// until `home`'s daemon has done the work its clients' request slots left it (D185): a slot
+/// a client took is replaced and its names removed as its session ends, work the daemon does
+/// after its client has gone (slots.rs' `make_slots`: 125 to 317 µs of its CPU on a loaded
+/// Mac, PM M255), which a test's wait that begins at once counts as its party's progress
+/// (ROOT's batch 22, HVF: harness.rs' `a_wait_is_refused_though_its_own_polls_outlast_w_star`,
+/// its daemon started by a `shards ps`, "its last progress its daemon ran"; the daemon
+/// measured running 65 to 73 µs of CPU 5.3 to 5.9 ms after that `ps` returned in 2 of 6
+/// starts with every CPU of the host busy, in none of 3 without). Settled, on Unix: each
+/// list offers [`OFFERED`](shards_ipc::slots::OFFERED) slots again, that many records unread
+/// in its FIFO (FIONREAD, as the daemon's own `Requests::waiting` counts them, none read), and
+/// the directory names no slot past them, a taken one's names removed. On Windows a slot is
+/// a pipe's instance, which no listing shows (slots/named.rs): unread there.
+#[track_caller]
+pub fn settled(home: &Path) {
+    let mut patience = Patience::of(home);
+    while !slots_settled(home) {
+        assert!(
+            patience.holds(),
+            "{}'s request slots never settled",
+            home.display()
+        );
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
+}
+
+/// Whether `home`'s request slots are as its daemon offers them with no client's work left
+/// ([`settled`]).
+#[cfg(unix)]
+fn slots_settled(home: &Path) -> bool {
+    use shards_ipc::slots::{DIR, FREE, FREE_STREAMS, OFFERED, RECORD};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::io::AsRawFd as _;
+    let dir = home.join(DIR);
+    let offering = |list: &str| {
+        // A reader of its own, which reads nothing: the records stay the clients'.
+        let Ok(fifo) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(dir.join(list))
+        else {
+            return false;
+        };
+        let mut bytes: libc::c_int = 0;
+        // SAFETY: FIONREAD of a FIFO this holds open, into an int on this stack.
+        let read = unsafe { libc::ioctl(fifo.as_raw_fd(), libc::FIONREAD, &raw mut bytes) };
+        read == 0 && usize::try_from(bytes).is_ok_and(|bytes| bytes / RECORD == OFFERED)
+    };
+    if !(offering(FREE) && offering(FREE_STREAMS)) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return false;
+    };
+    let slots: std::collections::BTreeSet<u64> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.split_once('.')?.0.parse().ok())
+        .collect();
+    slots.len() == 2 * OFFERED
+}
+
+#[cfg(not(unix))]
+fn slots_settled(_: &Path) -> bool {
+    true
+}
+
 impl Patience {
     /// Patience with the daemon of `home` and its microVMs, and this test's own.
     #[track_caller]

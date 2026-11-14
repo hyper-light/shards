@@ -68,8 +68,8 @@ pub const DIR: &str = "requests";
 
 /// What offers the slots, without streams and with: on Unix the FIFOs a client takes a
 /// slot's record from, on Windows the files naming the pipes a client takes an instance of.
-const FREE: &str = "free";
-const FREE_STREAMS: &str = "free-streams";
+pub const FREE: &str = "free";
+pub const FREE_STREAMS: &str = "free-streams";
 
 /// The slots a daemon keeps offered of each kind: one for the next client, and one for a
 /// client that comes as the first's replacement is made (PM M255).
