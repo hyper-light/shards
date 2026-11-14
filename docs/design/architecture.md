@@ -20884,6 +20884,40 @@ answering at 10.5 s, its process busy) by mutation restoring the 10 s read timeo
 never refusing. Owed to ROOT: a joiner's start with volumes on a loaded host
 (`cargo test -p shards --profile test-release --test daemon`, its join tests) on HVF and KVM.
 
+Slice (b), 2026-11-14: Windows' twins (D197). The Windows run handoff (`hand_over`, `taken`)
+waited `TAKE_TIMEOUT` as a pipe write timeout and a read timeout (`Waiting`), and a joiner's
+link and volumes (`give_join_volumes`, `start_join_share`'s door) so too. They are now the
+same code as Unix's: `hand_over`, `taken` and `give_join_volume` are cfg-free, `health::Judged`
+and `Stalled` are too, judged by `Answers::take`, `door` and `link`, and the Windows
+`JoinDoor` keeps the share's process ID beside its handle; their timeouts are deleted. Its
+party is followed as D215 follows a Windows VM process (`Followed::of_pid`: the process and
+its descendants, GetProcessTimes for the record, QueryProcessCycleTime for whether any ran),
+which `a_process_followed_by_its_pid_is_judged_by_its_cpu`, now on every host, shows refusing
+cmd's loopback pings and keeping a process that spins (Windows 11 26200, x86_64).
+shards_ipc's pipe.rs gains `send_judged` and `recv_judged` (`Judge` moves to lib.rs, shared).
+A judged send is the message's one overlapped WriteFile, waited for (`call_judged`) until the
+judge's due; past it the write stays pending, its OVERLAPPED under way, and the judge is
+asked again, never CancelIoEx then, which would lose how much a write had moved (a named
+pipe's write pends whole until its reader has taken room for it, npfs `NpAddDataQueueEntry`).
+Only the judge's refusal cancels it (CancelIoEx, then GetOverlappedResult): a write that
+finished first stands, else the message is cut short and the handles it gave are closed in
+the peer's process, as a failed send's were. A judged receive reads by the judge's due, a
+read cut there having moved nothing (`Called::Late`), and reads again. No figure is added:
+each wait is the judge's (D215's W*, learned; cold, readiness and the process's end alone).
+Red: shards_ipc's pipe `a_judged_send_stays_under_way_as_its_peer_reads` (a pair's window holds
+one whole message, so one left unread makes the judged write pend) by mutation passing no
+judge to the judged write (its first due cancels it, `WouldBlock`, as the write timeout
+did); `a_judged_receive_waits_while_its_judge_says_go_on`,
+`a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff` and
+`a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it` by mutation ending a judged read
+at its first due, as the read timeout did (a pipe pair takes a whole run at once, so the
+daemon's waits there are its reads). On Windows `a_vm_that_reads_nothing_…` leaves one message
+unread first, for the same reason. What remains of `TAKE_TIMEOUT` on Windows is the run
+socket's and the guest times' (slice (c2)'s Windows twins, which now have `send_judged` and
+`health::Judged` to use). Owed to ROOT: a run's handoff and a joiner's volumes on WHP under
+load (`cargo test -p shards --profile test-release --test daemon` on jupiter), n, p50, p90,
+p99 and max.
+
 Slice (c2), 2026-11-14: a run's socket, its guest times and its long answers, on Unix. Every
 send the daemon makes to a run's VM (`RunSocket::send`: signals, execs, attaches, segments,
 saves, moves, devices, cuts, pauses, plugs) waited for room at most `TAKE_TIMEOUT`, a socket
@@ -20914,6 +20948,15 @@ refusing; `an_answer_is_long_past_its_kinds_slowest_before_it` by mutation resto
 (`cargo test -p shards --profile test-release --test daemon` through
 `docs/research/measurements/macos-sched/launchd-run.sh` on HVF, and on KVM), n, p50, p90, p99
 and max, and the judged send's per-send cost against 95a057045 (`build-ab/ab.py`).
+
+`TAKE_TIMEOUT` deleted, 2026-11-14, once slice (b) landed (2b53dfc8c: `send_judged` and
+`health::Judged` on Windows too): `RunSocket` and `guest_timed` are one body for every OS, and
+no wait of the daemon's on a VM is bounded by a picked time. The test that waited it out
+(`metrics_whose_microvm_runs_nothing_are_ended`) waits its kind's slowest, the daemon's own W*,
+before its own judge takes over, as the give-back's test does. Owed to ROOT: the Windows run of
+`daemon::tests::a_run_socket` and `daemon::commands::tests::a_vm_slow_to_answer` (Unix-gated:
+their sleeps and pipes' one-message window, pipe.rs `MESSAGE_FRAME`) and the WHP latency of each
+send and `GUEST_TIME`.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
