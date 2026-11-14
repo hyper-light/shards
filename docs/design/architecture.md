@@ -3547,6 +3547,29 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
     directory the node was: one renamed or replaced on the host since, or reached through
     a symlink even to itself, is stale (ESTALE), which has Linux's VFS look it up again
     (`retry_estale`).
+  - *Walked through where it may only be searched* (memory-19, 2026-11-14). A kernel's walk
+    asks only search permission of each directory on the way (path_resolution(7)), so a bind
+    mount reaches `a/b/c/file` through `b` of mode 0111. The share process, the host files'
+    owner, cannot read such a `b` (open(2) O_RDONLY: EACCES), which refused its LOOKUP and
+    everything beneath it. A directory its host refuses the server to read is held to be
+    searched alone (server.rs `Held::Search`, `search_beneath`): Linux's O_PATH, which asks
+    no permission of the directory itself, and macOS's O_SEARCH, its search permission
+    (open(2) of each); names are looked up through it, and the host's own permissions still
+    decide each (a 0000 directory's names are refused EACCES by the host's walk). Nothing
+    more of it is had: its listing reopens it to read (`DirStream::open`, EACCES); its
+    record, which xattr(7) gives only to who may read the file, is unread, and the guest is
+    told the owner of the host's unrecorded files, as the guest's own modes always leave the
+    server its directories (`host_perm`), so only its host makes one so; its attributes are
+    neither read nor set (EACCES), nor its mode, times or owner changed (SETATTR, EACCES: on
+    macOS a chmod through the O_SEARCH descriptor was made, the guard's mutant). A hold is a
+    search alone only while its host refuses the reading: `dir_fd` reopens it to read each
+    time it serves, and keeps that once it can. On Linux it is walked through unwatched, as
+    inotify(7) refuses a watch to who may not read it (D235). Windows: NTFS modes refuse the
+    server nothing (`MODES_REFUSE_OPENS`), so `search_beneath` refuses, as before. macOS's
+    0000 directory stays refused at its LOOKUP (O_SEARCH asks search permission); Linux's is
+    looked up, as its stat is. Held by `an_exec_only_directory_is_walked_through_and_never_listed`
+    (red before on macOS arm64; mutants of the fallback, the attribute and SETATTR refusals,
+    the unrecorded owner and Linux's unwatched walk each red).
   - *A cache, never a limit the guest meets.* Directories' and the guest's open files'
     descriptors sit in an LRU, let go between requests and never during one, and opened
     again along their paths as they are next used: a handle keeps its node, its open flags
@@ -27256,6 +27279,10 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     Confine-08: a native watch admission error refuses the directory's LOOKUP with
     its native errno before any guest reference is published or counted. A later
     lookup retries admission; no failed directory is silently retained as watched.
+    Memory-19: EACCES alone admits it unwatched, a directory the share process may not
+    read (inotify(7): the caller needs read permission), which it may only walk through
+    (D38, *Walked through where it may only be searched*); no unprivileged program on its
+    host is told of its changes, and its guest sees them as its entries expire (1 s).
   - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
     bound when first used), file events, the changes the process itself makes for the guest
     left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
