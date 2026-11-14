@@ -642,7 +642,7 @@ mod tests {
         let life = NonZeroU64::new(60_000_000_000).unwrap();
         assert!(l.answered(&encode_answer(id("other"), Ok((life, b"v"))).unwrap(), now));
         let resumed = l.resumed();
-        assert_eq!(resumed.len(), 4);
+        assert_eq!(resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [7, 8, 9]);
         for waiter in [7, 8] {
             assert_eq!(refused(&resumed, waiter), [(CLAUDE.to_string(), why.clone())]);
         }
