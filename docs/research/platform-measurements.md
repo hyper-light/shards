@@ -7681,9 +7681,12 @@ new performance or platform-parity data. [Commands, output, rules and owed real-
 
 **network-02 confinement follow-up (2026-11-13).** At 33d5f8af7, adacachy2
 (Linux amd64) ran three focused network confinement tests and clippy for
-shards-net/shards-net-process, all passing. Native arm64 execution is owed;
-removing the arm64 startup omission is not an arm64 measured result. No VM or
-performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
+shards-net/shards-net-process, all passing. Subsequent native ARM GNU evidence
+on adas-mac-studio-3.local's Docker Desktop (Linux aarch64, Rust 1.98.1):
+46e739f13's startup test failed with Seccomp=0; at 53e89b2b8 it passes with one
+additional installed filter, and the forbidden-syscall termination test passes.
+Both crates pass clippy. Musl and carried-helper VM execution remain unverified.
+No VM or performance campaign ran. [Exact scope/output](measurements/network-fixes-v1/README.md#network-02-native-seccomp-on-both-linux-architectures).
 
 ### M211. The limits a build's `RUN` step starts with
 
