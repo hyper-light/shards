@@ -1442,6 +1442,36 @@ mod tests {
         assert_eq!(sent.take(), []);
     }
 
+    /// Old FINs must neither move the receive sequence nor end the host's byte stream
+    /// (RFC 9293 §3.10.7.4). Exercise the actual socket beside the state transition.
+    #[test]
+    fn stale_fins_do_not_end_the_host_stream() {
+        for flags in [FIN, FIN | ACK] {
+            for seq in [0, 5000, 0x8000_0000] {
+                let mut sent = Sent::default();
+                let (mut c, mut client) = opened(&mut sent);
+                client.set_nonblocking(true).unwrap();
+                c.on_segment(&segment(seq, 1001, flags), &mut sent, None);
+                assert!(!c.guest_fin, "FIN {seq} flags {flags} was accepted");
+                assert_eq!(c.rcv_nxt, 5001);
+                let mut byte = [0];
+                assert_eq!(
+                    client.read(&mut byte).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock,
+                    "FIN {seq} flags {flags} ended the host stream"
+                );
+                c.on_segment(
+                    &wire::Tcp { payload: b"x", ..segment(5001, 1001, ACK) },
+                    &mut sent,
+                    None,
+                );
+                client.set_nonblocking(false).unwrap();
+                client.read_exact(&mut byte).unwrap();
+                assert_eq!(byte, *b"x");
+            }
+        }
+    }
+
     /// The guest's bytes go straight to the host's socket while nothing waits before them,
     /// and both halves of a queue that wraps go in one write, in order.
     #[test]
