@@ -8263,7 +8263,10 @@ impl Going {
 fn created(gated: &Gated, home: &Path, run: &mut Going) -> String {
     let id = std::cell::RefCell::new(String::new());
     let last = std::cell::RefCell::new(String::new());
-    let mut patience = Patience::of(home);
+    // The run's client among its party: before its daemon is up, it is all of it (CI run
+    // 43513425954 refused a_container_outlives_a_daemon_that_dies' wait as gone 3.2 ms in,
+    // the home's daemon of another build stepping aside and none yet in its place).
+    let mut patience = Patience::client(run.child.id(), home);
     loop {
         let listed = gated.shards(home, &["ps", "-a", "-q", "--no-trunc"]);
         *id.borrow_mut() = listed.stdout.clone();

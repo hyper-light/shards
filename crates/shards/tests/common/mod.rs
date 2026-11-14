@@ -2305,6 +2305,14 @@ impl Patience {
         Patience::with(Some(home), std::panic::Location::caller())
     }
 
+    /// Patience with client `client`, what descends from it, and the daemon of `home`: a
+    /// wait on what a command brings about, which starts its home's daemon, or waits out one
+    /// of another build stepping aside, before any daemon is there to follow.
+    #[track_caller]
+    pub fn client(client: u32, home: &Path) -> Patience {
+        Patience::on(Party::client(client, Some(home)), std::panic::Location::caller())
+    }
+
     /// Patience with this test's own microVMs, where no home's daemon serves them.
     #[track_caller]
     pub fn own() -> Patience {
