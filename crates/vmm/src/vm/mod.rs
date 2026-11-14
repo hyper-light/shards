@@ -1212,12 +1212,16 @@ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Where the console's output goes.
+/// Where the console's output goes: stdout through a writer of its own, whose blocking
+/// holds no exit or pause; a console nobody reads into a sink, at once.
 #[cfg(hv)]
-fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
+fn console_out(console: Console) -> Result<crate::devices::virtio::console::Output, String> {
+    use crate::devices::virtio::console::Output;
     Ok(match console {
-        Console::Stdout => Box::new(crate::platform::stdout_file().map_err(|e| format!("console: {e}"))?),
-        Console::Discard => Box::new(std::io::sink()),
+        Console::Stdout => Output::Writer(Box::new(
+            crate::platform::stdout_file().map_err(|e| format!("console: {e}"))?,
+        )),
+        Console::Discard => Output::Inline(Box::new(std::io::sink())),
     })
 }
 

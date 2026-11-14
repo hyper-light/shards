@@ -36,13 +36,29 @@ const QUEUES: [u16; 2] = [RECEIVE_SIZE, TRANSMIT_SIZE];
 const RECEIVEQ: usize = 0;
 const TRANSMITQ: usize = 1;
 
-/// Where its output goes, and what it keeps of it to quote (D12).
-struct Out {
-    to: Box<dyn Write + Send>,
-    kept: Kept,
-    /// A buffer's bytes, read out of guest memory before they are written out: no access
-    /// to guest memory is held while the host's output blocks.
-    scratch: Vec<u8>,
+/// A queue as it is served, with what serving it needs.
+type Served = (Queue, Arc<GuestMemory>, Arc<DeviceInterrupt>);
+
+/// Where its output goes.
+pub enum Output {
+    /// A sink that never blocks (a console nobody reads, `vm::Console::Discard`): written in
+    /// the notifying vCPU's exit.
+    Inline(Box<dyn Write + Send>),
+    /// A terminal or a pipe, whose reader may stop reading: written by a thread of its own,
+    /// so that a write that blocks holds nothing the guest's other exits, or a pause or a
+    /// snapshot of the device, need. The host holds at most the one buffer it is writing;
+    /// the guest's next waits in its ring of one (`TRANSMIT_SIZE`), the guest spinning on
+    /// it, as it spun on a UART that a blocked stdout held.
+    Writer(Box<dyn Write + Send>),
+}
+
+impl std::fmt::Debug for Output {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Output::Inline(_) => "Output::Inline",
+            Output::Writer(_) => "Output::Writer",
+        })
+    }
 }
 
 /// The receive side, which host input drives.
@@ -50,12 +66,13 @@ struct Out {
 struct Receive {
     /// The receive queue while the device runs, with what serving it needs; none before
     /// activation, while paused, after a reset, or once its ring was found malformed.
-    queue: Option<(Queue, Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
+    queue: Option<Served>,
 }
 
 /// The console's host side, shared by the device and its VM's handle.
 pub struct Port {
-    out: Mutex<Out>,
+    /// What it keeps of its output to quote (D12).
+    kept: Mutex<Kept>,
     receive: Mutex<Receive>,
     /// Signalled as the guest posts receive buffers, or the receive queue comes or goes.
     posted: Condvar,
@@ -72,12 +89,12 @@ impl std::fmt::Debug for Port {
 impl Port {
     /// The whole lines of the last bytes its guest wrote to the console, as many as it keeps.
     pub fn said(&self) -> Said {
-        lock(&self.out).kept.said()
+        lock(&self.kept).said()
     }
 
     /// How many of its last bytes it keeps to quote.
     pub fn keep(&self) -> usize {
-        lock(&self.out).kept.keep()
+        lock(&self.kept).keep()
     }
 
     /// Whether its guest's kernel said it panicked, through its machine's pvpanic device.
@@ -116,31 +133,6 @@ impl Port {
             }
         }
     }
-
-    fn transmit(&self, chain: &Chain, memory: &GuestMemory) {
-        let mut out = lock(&self.out);
-        let Out { to, kept, scratch } = &mut *out;
-        for d in chain.readable() {
-            let len = d.len as usize;
-            scratch.clear();
-            if scratch.try_reserve(len).is_err() {
-                debug!("virtio-console: no memory for a buffer of {len} bytes");
-                return;
-            }
-            scratch.resize(len, 0);
-            let read = memory
-                .access()
-                .map_err(|e| e.to_string())
-                .and_then(|a| a.read(d.addr, scratch).map_err(|e| e.to_string()));
-            if let Err(e) = read {
-                debug!("virtio-console: a buffer at {:#x}: {e}", d.addr);
-                return;
-            }
-            // Console output is best effort: a closed stdout must not stop the guest.
-            let _ = to.write_all(scratch).and_then(|()| to.flush());
-            kept.push(scratch);
-        }
-    }
 }
 
 /// Puts as much of `bytes` as the next buffer the guest posted holds into it; how much.
@@ -177,17 +169,152 @@ fn deliver(r: &mut Receive, bytes: &[u8]) -> Result<usize, QueueError> {
     }
 }
 
+/// A buffer's bytes, read out of guest memory: none where it cannot be read or held.
+fn read_chain(chain: &Chain, memory: &GuestMemory) -> Option<Vec<u8>> {
+    let len = chain
+        .readable()
+        .map(|d| d.len as usize)
+        .fold(0usize, usize::saturating_add);
+    let mut bytes = Vec::new();
+    if bytes.try_reserve(len).is_err() {
+        debug!("virtio-console: no memory for a buffer of {len} bytes");
+        return None;
+    }
+    let access = memory.access().ok()?;
+    for d in chain.readable() {
+        let at = bytes.len();
+        bytes.resize(at.saturating_add(d.len as usize), 0);
+        if let Err(e) = access.read(d.addr, bytes.get_mut(at..).unwrap_or_default()) {
+            debug!("virtio-console: a buffer at {:#x}: {e}", d.addr);
+            return None;
+        }
+    }
+    Some(bytes)
+}
+
+/// The writer's one buffer (`Output::Writer`).
+#[derive(Default)]
+struct Slot {
+    /// Taken from the guest and not yet written.
+    bytes: Option<Vec<u8>>,
+    /// The writer is writing what it took.
+    writing: bool,
+    /// The device is gone: the writer ends once it has written what it holds.
+    ended: bool,
+}
+
+enum Sink {
+    Inline(Mutex<Box<dyn Write + Send>>),
+    Writer { slot: Mutex<Slot>, filled: Condvar },
+}
+
+/// The transmit side, shared by the device's exits and its writer.
+struct Tx {
+    port: Arc<Port>,
+    /// The transmit queue while it is served, with what serving it needs: none before
+    /// activation, while paused, after a reset, or once its ring was found malformed.
+    queue: Mutex<Option<Served>>,
+    sink: Sink,
+}
+
+impl Tx {
+    /// Takes what the guest has sent: every buffer, written at once, where the output never
+    /// blocks; else one buffer, for the writer, where its slot is free. Linux's console spins
+    /// with interrupts off until the device has used each buffer (virtio_console.c
+    /// `__send_to_port`, l. 611-636): served in the notifying exit, it is used before the
+    /// guest runs on, where a device thread added its wake-up to every buffer, and a boot log
+    /// replayed 16 bytes at a time (hvc_console.c `N_OUTBUF`) did not reach the host before
+    /// a panic 49 ms in (D261). A malformed ring needs reset (virtio 1.3 §2.1.2).
+    fn serve(&self) {
+        let mut held = lock(&self.queue);
+        let Some((queue, memory, interrupt)) = held.as_mut() else {
+            return;
+        };
+        let never = AtomicBool::new(false);
+        let result = match &self.sink {
+            Sink::Inline(to) => {
+                let mut answer = |chain: &Chain| {
+                    if let Some(bytes) = read_chain(chain, memory) {
+                        // Console output is best effort: a closed stdout must not stop the guest.
+                        let mut to = lock(to);
+                        let _ = to.write_all(&bytes).and_then(|()| to.flush());
+                        lock(&self.port.kept).push(&bytes);
+                    }
+                    0
+                };
+                loop {
+                    match serve_round(queue, memory, interrupt, &never, &mut answer) {
+                        Ok(Round::More) => {}
+                        other => break other.map(|_| ()),
+                    }
+                }
+            }
+            Sink::Writer { slot, filled } => {
+                let busy = {
+                    let s = lock(slot);
+                    s.bytes.is_some() || s.writing
+                };
+                if busy {
+                    // The writer serves the next buffer as it is done with this one.
+                    return;
+                }
+                let mut taken = None;
+                let mut answer = |chain: &Chain| {
+                    taken = read_chain(chain, memory);
+                    0
+                };
+                // A ring of one: a round takes at most the one buffer the slot holds.
+                let round = serve_round(queue, memory, interrupt, &never, &mut answer).map(|_| ());
+                if let Some(bytes) = taken {
+                    lock(&self.port.kept).push(&bytes);
+                    lock(slot).bytes = Some(bytes);
+                    filled.notify_all();
+                }
+                round
+            }
+        };
+        if let Err(e) = result {
+            if interrupt.fail() {
+                warn!("virtio-console: {e}; device needs reset");
+            } else {
+                debug!("virtio-console: {e}; device needs reset");
+            }
+            *held = None;
+        }
+    }
+
+    /// The writer: each buffer taken, written with no lock held but its slot's, then the
+    /// guest's next taken.
+    fn write_out(&self, mut to: Box<dyn Write + Send>) {
+        let Sink::Writer { slot, filled } = &self.sink else {
+            return;
+        };
+        loop {
+            let bytes = {
+                let mut s = lock(slot);
+                loop {
+                    if let Some(bytes) = s.bytes.take() {
+                        s.writing = true;
+                        break bytes;
+                    }
+                    if s.ended {
+                        return;
+                    }
+                    s = wait(filled, s);
+                }
+            };
+            let _ = to.write_all(&bytes).and_then(|()| to.flush());
+            lock(slot).writing = false;
+            self.serve();
+        }
+    }
+}
+
 pub struct Console {
     port: Arc<Port>,
+    tx: Arc<Tx>,
     /// What serving its queues needs besides them, from activation until reset.
     context: Option<(Arc<GuestMemory>, Arc<DeviceInterrupt>)>,
-    /// The transmit queue while it is served: on the notifying vCPU's thread, in its exit.
-    /// Linux's console spins with interrupts off until the device has used each buffer
-    /// (virtio_console.c `__send_to_port`, l. 611-636), so the guest waits for the device
-    /// either way; a device thread only added its wake-up to every buffer, and a boot log
-    /// replayed 16 bytes at a time (hvc_console.c `N_OUTBUF`) did not reach the host before
-    /// a panic 49 ms in stopped the CPU sending it, holding the port's lock (D261).
-    transmit: Mutex<Option<Queue>>,
     /// The transmit queue while paused.
     transmit_paused: Option<Queue>,
     /// The receive queue while paused.
@@ -202,59 +329,46 @@ impl std::fmt::Debug for Console {
 
 impl Console {
     /// A console writing to `out`, that keeps its last `keep` bytes ([`Port::said`]); its
-    /// port, for its VM's handle.
-    pub fn new(out: Box<dyn Write + Send>, keep: usize) -> (Console, Arc<Port>) {
+    /// port, for its VM's handle. A writer thread the system refuses is an error.
+    pub fn new(out: Output, keep: usize) -> Result<(Console, Arc<Port>), String> {
         let port = Arc::new(Port {
-            out: Mutex::new(Out {
-                to: out,
-                kept: Kept::new(keep),
-                scratch: Vec::new(),
-            }),
+            kept: Mutex::new(Kept::new(keep)),
             receive: Mutex::new(Receive::default()),
             posted: Condvar::new(),
             panicked: AtomicBool::new(false),
         });
+        let (sink, writer) = match out {
+            Output::Inline(to) => (Sink::Inline(Mutex::new(to)), None),
+            Output::Writer(to) => (
+                Sink::Writer {
+                    slot: Mutex::new(Slot::default()),
+                    filled: Condvar::new(),
+                },
+                Some(to),
+            ),
+        };
+        let tx = Arc::new(Tx {
+            port: port.clone(),
+            queue: Mutex::new(None),
+            sink,
+        });
+        if let Some(to) = writer {
+            let writing = tx.clone();
+            // Not joined as the device drops: a write blocked on its stdout would hold the
+            // machine's teardown. It ends once what it holds is written.
+            std::thread::Builder::new()
+                .name("console-out".into())
+                .spawn(move || writing.write_out(to))
+                .map_err(|e| format!("the console's writer: {e}"))?;
+        }
         let console = Console {
             port: port.clone(),
+            tx,
             context: None,
-            transmit: Mutex::new(None),
             transmit_paused: None,
             receive: None,
         };
-        (console, port)
-    }
-
-    /// Writes out every buffer the guest has sent, until the queue is empty and its
-    /// notifications re-armed. A malformed ring needs reset (virtio 1.3 §2.1.2): the queue
-    /// is dropped until the driver sets the device up anew.
-    fn serve_transmit(&self) {
-        let Some((memory, interrupt)) = &self.context else {
-            return;
-        };
-        let mut transmit = lock(&self.transmit);
-        let Some(queue) = transmit.as_mut() else {
-            return;
-        };
-        let never = AtomicBool::new(false);
-        let mut answer = |chain: &Chain| {
-            self.port.transmit(chain, memory);
-            0
-        };
-        loop {
-            match serve_round(queue, memory, interrupt, &never, &mut answer) {
-                Ok(Round::Idle) => return,
-                Ok(Round::More) => {}
-                Err(e) => {
-                    if interrupt.fail() {
-                        warn!("virtio-console: {e}; device needs reset");
-                    } else {
-                        debug!("virtio-console: {e}; device needs reset");
-                    }
-                    *transmit = None;
-                    return;
-                }
-            }
-        }
+        Ok((console, port))
     }
 
     /// Hands the receive queue to host input, and wakes input waiting for it.
@@ -270,6 +384,15 @@ impl Console {
     fn take_input(&mut self) -> Option<Queue> {
         let mut r = lock(&self.port.receive);
         r.queue.take().map(|(queue, _, _)| queue)
+    }
+
+    /// Hands the transmit queue to the device's exits and its writer, and takes what the
+    /// guest sent before.
+    fn serve_output(&mut self, queue: Queue) {
+        if let Some((memory, interrupt)) = self.context.clone() {
+            *lock(&self.tx.queue) = Some((queue, memory, interrupt));
+            self.tx.serve();
+        }
     }
 }
 
@@ -314,28 +437,26 @@ impl VirtioDevice for Console {
         let receive = queues.remove(RECEIVEQ);
         self.context = Some((memory, interrupt));
         self.serve_input(receive);
-        *lock(&self.transmit) = Some(transmit);
-        // What the guest sent before activation, or while a snapshot paused it.
-        self.serve_transmit();
+        self.serve_output(transmit);
         Ok(())
     }
 
-    /// Host input waits for receive buffers; output is written out here, in the notifying
-    /// vCPU's exit, as the guest spins until it is ([`Console::transmit`]).
+    /// Host input waits for receive buffers; output is taken here, in the notifying vCPU's
+    /// exit, as the guest spins until it is (`Tx::serve`).
     fn notify(&self, queue: u16) {
         match usize::from(queue) {
             RECEIVEQ => {
                 let _held = lock(&self.port.receive);
                 self.port.posted.notify_all();
             }
-            TRANSMITQ => self.serve_transmit(),
+            TRANSMITQ => self.tx.serve(),
             _ => {}
         }
     }
 
     fn reset(&mut self) {
         self.take_input();
-        *lock(&self.transmit) = None;
+        *lock(&self.tx.queue) = None;
         self.transmit_paused = None;
         self.receive = None;
         self.context = None;
@@ -344,7 +465,7 @@ impl VirtioDevice for Console {
     /// Output stops after the buffer it is writing out, input after the one it is filling;
     /// each queue's progress, receive then transmit.
     fn pause(&mut self) -> Vec<QueueState> {
-        if let Some(queue) = lock(&self.transmit).take() {
+        if let Some((queue, _, _)) = lock(&self.tx.queue).take() {
             self.transmit_paused = Some(queue);
         }
         if let Some(queue) = self.take_input() {
@@ -361,8 +482,7 @@ impl VirtioDevice for Console {
             self.serve_input(queue);
         }
         if let Some(queue) = self.transmit_paused.take() {
-            *lock(&self.transmit) = Some(queue);
-            self.serve_transmit();
+            self.serve_output(queue);
         }
         Ok(())
     }
@@ -371,6 +491,11 @@ impl VirtioDevice for Console {
 impl Drop for Console {
     fn drop(&mut self) {
         self.take_input();
+        *lock(&self.tx.queue) = None;
+        if let Sink::Writer { slot, filled } = &self.tx.sink {
+            lock(slot).ended = true;
+            filled.notify_all();
+        }
     }
 }
 
@@ -446,9 +571,14 @@ mod tests {
     }
 
     fn active(keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>, Sink) {
-        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
         let sink = Sink::default();
-        let (mut console, port) = Console::new(Box::new(sink.clone()), keep);
+        let (console, port, mem) = active_to(Output::Inline(Box::new(sink.clone())), keep);
+        (console, port, mem, sink)
+    }
+
+    fn active_to(out: Output, keep: usize) -> (Console, Arc<Port>, Arc<GuestMemory>) {
+        let mem = Arc::new(GuestMemory::anonymous(&[(BASE, 1 << 20)]).unwrap());
+        let (mut console, port) = Console::new(out, keep).unwrap();
         let queues = (0..2)
             .map(|q| {
                 let cfg = QueueConfig {
@@ -470,7 +600,7 @@ mod tests {
                 restored: false,
             })
             .unwrap();
-        (console, port, mem, sink)
+        (console, port, mem)
     }
 
     /// A buffer the guest sends is written out whole, within its notification's exit, and
@@ -531,11 +661,78 @@ mod tests {
         assert_eq!(used_of(&mem, 0), (1, 1));
     }
 
+    /// A stdout that holds each write until it is let go: a terminal paused, a pipe nobody
+    /// reads.
+    struct Held {
+        open: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        got: Arc<Mutex<Vec<u8>>>,
+    }
+    impl Write for Held {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            let (open, opened) = &*self.open;
+            let mut o = open.lock().unwrap();
+            while !*o {
+                o = opened.wait(o).unwrap();
+            }
+            self.got.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A stdout that blocks holds no exit and no pause: the guest's buffer is used as its
+    /// exit takes it, the next waits in its ring while the first is written, a pause lands
+    /// while the write is blocked, and once the stdout drains both are written in order.
+    #[test]
+    fn a_blocked_stdout_holds_no_exit_and_no_pause() {
+        let open = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let held = Held {
+            open: open.clone(),
+            got: got.clone(),
+        };
+        let (mut console, _port, mem) = active_to(Output::Writer(Box::new(held)), 0);
+        let within = |what: &str, f: &mut (dyn FnMut() + Send)| {
+            std::thread::scope(|s| {
+                let (done, finished) = std::sync::mpsc::channel();
+                s.spawn(move || {
+                    f();
+                    let _ = done.send(());
+                });
+                assert!(
+                    finished.recv_timeout(Duration::from_secs(5)).is_ok(),
+                    "{what} blocked"
+                );
+            });
+        };
+        publish(&mem, 1, b"first\n", 6, false);
+        within("the first kick", &mut || console.notify(1));
+        assert_eq!(used_of(&mem, 1).0, 1, "taken within its exit");
+        until("the writer blocked", || {
+            got.lock().unwrap().is_empty() && used_of(&mem, 1).0 == 1
+        });
+        publish(&mem, 1, b"second\n", 7, false);
+        within("the second kick", &mut || console.notify(1));
+        assert_eq!(used_of(&mem, 1).0, 1, "the second waits in its ring");
+        let mut states = Vec::new();
+        within("a pause", &mut || states = console.pause());
+        assert_eq!(states.len(), 2);
+        console.resume().unwrap();
+        *open.0.lock().unwrap() = true;
+        open.1.notify_all();
+        until("both written", || {
+            got.lock().unwrap().as_slice() == b"first\nsecond\n"
+        });
+        assert_eq!(used_of(&mem, 1).0, 2);
+    }
+
     /// No feature past VERSION_1, its two queues of one buffer each, and a configuration of
     /// zeros that ignores writes.
     #[test]
     fn the_device_is_one_port_of_two_queues() {
-        let (mut c, _) = Console::new(Box::new(std::io::sink()), 0);
+        let (mut c, _) = Console::new(Output::Inline(Box::new(std::io::sink())), 0).unwrap();
         assert_eq!((c.device_id(), c.features()), (3, feature::VERSION_1));
         assert_eq!(c.queue_max_sizes(), [1, 1]);
         c.write_config(0, &[9; 12]);
