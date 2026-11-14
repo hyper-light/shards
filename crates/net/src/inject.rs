@@ -756,7 +756,18 @@ struct Parked {
     owed: Owed,
     /// Where it is a sign-in's token host's POST to its token or revocation path: its body is
     /// read whole before it goes, as a refresh or a revocation is answered outside.
-    whole: Option<Whole>,
+    whole: Option<Holding>,
+}
+
+/// A sign-in's POST held until its body has come whole (D242, step 8): what it is asked by, and
+/// its body as read so far, decoded by its own framing (RFC 9112 §6.3, §7.1); nothing of
+/// `pending` is taken until it is answered, so that one that goes on goes as it came.
+struct Holding {
+    whole: Whole,
+    framing: Framing,
+    /// How much of `pending` its framing has read.
+    read: usize,
+    body: Vec<u8>,
 }
 
 /// What a sign-in's request read whole is asked by (D242, step 8): its CLI, method, target and
@@ -1420,7 +1431,7 @@ impl Mask {
 /// What a sign-in's request read whole comes to (R04).
 enum Outside {
     /// Its body has not come whole.
-    Waiting(Whole),
+    Waiting(Holding),
     /// Answered here or asked outside: it goes no further.
     Answered,
     /// Neither: it goes on as any request.
@@ -1865,17 +1876,42 @@ impl Ended {
     /// A sign-in's request read whole (D242, step 8), once its body has come within the
     /// connection's window: a refresh of the sign-in's placeholder asked outside, its answer
     /// resuming the flow; a revocation of one answered here, its stored tokens untouched; anything
-    /// else passed on, its response read. An answered request's body goes no further.
-    fn outside(&mut self, parked: &Parked, whole: Whole, run: &mut Run<'_>) -> Result<Outside, Refusal> {
-        let Framing::Length(n) = parked.body else {
-            return Ok(Outside::Pass);
-        };
-        let n = usize::try_from(n).unwrap_or(usize::MAX);
-        if self.pending.len() < n {
-            return Ok(Outside::Waiting(whole));
+    /// else passed on, its response read. An answered request's body goes no further. A chunked
+    /// body is decoded (RFC 9112 §7.1), its extensions and trailer section no part of what is
+    /// asked; one broken is refused. One whose end has not come when what the flow holds leaves
+    /// the guest no window to send it (`tcp::full`) cannot be read whole: it goes on as any
+    /// request, as one whose Content-Length is past `TO_HOST` does.
+    fn outside(&mut self, parked: &Parked, mut held: Holding, run: &mut Run<'_>) -> Result<Outside, Refusal> {
+        let chunked = matches!(held.framing, Framing::Chunked(_));
+        let Holding {
+            framing, read, body, ..
+        } = &mut held;
+        let rest = self.pending.get(*read..).unwrap_or_default();
+        let mut trailers = body.len();
+        let (taken, ended) = walk(framing, rest, crate::tcp::TO_HOST, &mut |piece| {
+            if let Piece::Data(data) = piece {
+                trailers = body.len();
+                body.extend_from_slice(data);
+            }
+            Ok(())
+        })
+        .map_err(|Broken(why)| Refusal::Malformed(why))?;
+        *read += taken;
+        if !ended {
+            // What `held` counts, the request being out of `self.request` while it goes.
+            let holds = self.pending.len().saturating_add(parked.head.len());
+            return Ok(if crate::tcp::full(holds) {
+                Outside::Pass
+            } else {
+                Outside::Waiting(held)
+            });
         }
-        let body = self.pending.get(..n).unwrap_or_default();
-        let Some((index, asked)) = ask_whole(&whole, &parked.host, body, run) else {
+        if chunked {
+            // `walk` gives a chunked body's trailer section last, as data (an echo may lie in
+            // it): it is fields, not content (§7.1.2).
+            body.truncate(trailers);
+        }
+        let Some((index, asked)) = ask_whole(&held.whole, &parked.host, &held.body, run) else {
             return Ok(Outside::Pass);
         };
         match asked {
@@ -1896,7 +1932,7 @@ impl Ended {
                 self.request = Request::Head;
             }
         }
-        self.pending.drain(..n);
+        self.pending.drain(..held.read.min(self.pending.len()));
         Ok(Outside::Answered)
     }
 
@@ -1981,12 +2017,21 @@ impl Ended {
                 let path = signin::path(&target);
                 let ours = method.eq_ignore_ascii_case("POST")
                     && (path == profile.token.path || path == profile.revoke.path);
-                let fits = matches!(body, Framing::Length(n) if usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST));
-                (ours && fits).then(|| Whole {
-                    cli,
-                    method: method.clone(),
-                    target: target.clone(),
-                    content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                let fits = match body {
+                    Framing::Length(n) => usize::try_from(n).is_ok_and(|n| n <= crate::tcp::TO_HOST),
+                    Framing::Chunked(_) => true,
+                    Framing::Close => false,
+                };
+                (ours && fits).then(|| Holding {
+                    whole: Whole {
+                        cli,
+                        method: method.clone(),
+                        target: target.clone(),
+                        content_type: values(&head, &fields, "content-type").next().map(<[u8]>::to_vec),
+                    },
+                    framing: body.clone(),
+                    read: 0,
+                    body: Vec::new(),
                 })
             }
             None => {
