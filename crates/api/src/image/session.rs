@@ -4003,10 +4003,6 @@ mod tests {
         assert_eq!(*lock(&broker.revoked), [SIGN_IN]);
     }
 
-    /// How long a stand-in's boot may take before it is refused, so that a stop that is not
-    /// heard fails its test rather than holding it: the test's bound alone.
-    const BOOT_BOUND: Duration = Duration::from_secs(10);
-
     /// An image spec for run host `binary`, its environment `env`, with nothing to run.
     fn stand_in_spec(binary: &Path, env: Vec<(OsString, OsString)>) -> ImageSpec {
         ImageSpec {
@@ -4093,7 +4089,7 @@ mod tests {
             Session::start(
                 &gpu_spec(host),
                 &super::super::request(&gpu_spec(host)).unwrap(),
-                BOOT_BOUND,
+                Duration::MAX,
                 &super::super::BootStop::new(),
             )
         };
@@ -4109,9 +4105,9 @@ mod tests {
             false,
         );
         let session = boot(&host).unwrap();
-        assert_eq!(session.take_gpu_report(BOOT_BOUND), Ok(report));
+        assert_eq!(session.take_gpu_report(Duration::MAX), Ok(report));
         assert_eq!(
-            session.take_gpu_report(BOOT_BOUND),
+            session.take_gpu_report(Duration::MAX),
             Err(ImageRefusal::GpuProbe(E::ReportTaken))
         );
         drop(session);
@@ -4160,6 +4156,39 @@ mod tests {
         assert_eq!(made, 0, "{}", io::Error::last_os_error());
     }
 
+    /// A FIFO made at `path`: its read end, opened at once, and a write end of its own, for
+    /// the party a test follows to hold while it runs. No open of it waits on another
+    /// process (a writer's open finds this reader there), and a read of it ends, with what
+    /// was written or with nothing, once that party has let its write end go and every
+    /// process that opened it to write has closed it: never on a writer that will not come.
+    #[cfg(unix)]
+    fn watched(path: &Path) -> (io::PipeReader, std::fs::File) {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        fifo(path);
+        let read = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .unwrap();
+        let held = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        // SAFETY: fcntl(2) of a descriptor `read` owns: its reads wait again.
+        assert_eq!(unsafe { libc::fcntl(read.as_raw_fd(), libc::F_SETFL, 0) }, 0);
+        (io::PipeReader::from(std::os::fd::OwnedFd::from(read)), held)
+    }
+
+    /// The line `read`'s writer says, to its newline: empty where its every writer closed it
+    /// first.
+    #[cfg(unix)]
+    fn line(read: &io::PipeReader) -> String {
+        use std::io::BufRead as _;
+        let mut said = String::new();
+        io::BufReader::new(shards_ipc::Polled(read))
+            .read_line(&mut said)
+            .unwrap();
+        said
+    }
+
     /// SIGKILLs `pid` as it drops, unless let go of: a stand-in VM a failed stop left running,
     /// never one already seen gone (whose pid may be another's by then).
     #[cfg(unix)]
@@ -4178,13 +4207,15 @@ mod tests {
     /// The stand-in run host of a boot that never starts: it makes a writable layer's file in
     /// its home's `layers`, named as the real host names one (layers.rs `fresh`), holds
     /// `$HOST_SEEN` open as long as it runs, starts a stand-in VM that never looks at its host
-    /// (as a VM mid-boot does not) and holds `$VM_SEEN` open as long as it runs, tells the
-    /// VM's pid, and never answers.
+    /// (as a VM mid-boot does not) and holds `$VM_SEEN` open as long as it runs, opened by the
+    /// host before it starts the VM, tells the VM's pid once the VM holds it, and never
+    /// answers.
     #[cfg(unix)]
     const NEVER_STARTS: &str = "#!/bin/sh\n\
         : >\"$SHARDS_HOME/layers/$$-0\"\n\
-        exec 3>\"$HOST_SEEN\"\n\
-        tail -f /dev/null >\"$VM_SEEN\" 3>&- &\n\
+        exec 3>\"$HOST_SEEN\" 4>\"$VM_SEEN\"\n\
+        tail -f /dev/null >&4 3>&- 4>&- &\n\
+        exec 4>&-\n\
         echo \"$!\" >&3\n\
         wait\n";
 
@@ -4221,12 +4252,12 @@ mod tests {
         let (sent, answered) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                let outcome = ShardsHosts.take(begun, &spec, &request, BOOT_BOUND, &stop);
+                let outcome = ShardsHosts.take(begun, &spec, &request, Duration::MAX, &stop);
                 sent.send(outcome.map(drop)).unwrap();
             });
             // Once this mutex is held, CREATE is writing. The host reads nothing, so
-            // the protocol-sized staged file keeps it held until its process ends.
-            let until = Instant::now() + BOOT_BOUND;
+            // the protocol-sized staged file keeps it held until its process ends. A take
+            // that ends first ends this wait, its outcome the test's failure.
             loop {
                 if matches!(
                     shared.to_host.try_lock(),
@@ -4234,17 +4265,15 @@ mod tests {
                 ) {
                     break;
                 }
-                assert!(Instant::now() < until, "CREATE never began");
+                if let Ok(outcome) = answered.try_recv() {
+                    kill(&process);
+                    panic!("the take ended before CREATE began: {outcome:?}");
+                }
                 std::thread::yield_now();
             }
             stop.stop();
-            let outcome = answered.recv_timeout(BOOT_BOUND);
-            // Clean up a broken cancellation before asserting: the red must leave no
-            // blocked writer or host behind, and never resume the host's reader.
-            if outcome.is_err() {
-                kill(&process);
-                let _ = answered.recv_timeout(BOOT_BOUND);
-            }
+            // The take follows its host, which only the stop ends.
+            let outcome = answered.recv();
             assert!(
                 matches!(
                     outcome,
@@ -4260,7 +4289,7 @@ mod tests {
         });
         assert!(
             shared
-                .wait(BOOT_BOUND, |s| (s.gone() && s.said_all).then_some(()))
+                .wait(Duration::MAX, |s| (s.gone() && s.said_all).then_some(()))
                 .is_some()
         );
     }
@@ -4278,8 +4307,18 @@ mod tests {
         let request = super::super::request(&spec).unwrap();
         let warm = Begun::begin(Some(&host), &[]).unwrap();
         assert_eq!(warm.warmed().unwrap(), wire::StartedFrom::Booted);
-        assert!(warm.shared.wait(BOOT_BOUND, |s| s.gone().then_some(())).is_some());
-        let taken = ShardsHosts.take(warm, &spec, &request, BOOT_BOUND, &super::super::BootStop::new());
+        assert!(
+            warm.shared
+                .wait(Duration::MAX, |s| s.gone().then_some(()))
+                .is_some()
+        );
+        let taken = ShardsHosts.take(
+            warm,
+            &spec,
+            &request,
+            Duration::MAX,
+            &super::super::BootStop::new(),
+        );
         assert!(
             matches!(taken, Err(Taken::Untaken)),
             "dead spare was not safely retryable"
@@ -4308,17 +4347,18 @@ mod tests {
 
     /// Do boot through a run host that makes a writable layer's file, starts a VM of its own
     /// and never says the run started, and stop the boot once both run. Expect: the boot
-    /// returns `Ended(Stopped)`, well within its bound, the run host gone and the VM it
-    /// started gone with it, no orphan left, and no file of the host's left in its home's
-    /// `layers`, another host's kept.
+    /// returns `Ended(Stopped)`, the run host gone and the VM it started gone with it, no
+    /// orphan left, and no file of the host's left in its home's `layers`, another host's
+    /// kept. The boot waits on its host alone: only the stop ends it. A boot that ends
+    /// before its host tells the VM's pid ends the test's wait with it, refused with the
+    /// boot's outcome.
     #[cfg(unix)]
     #[test]
     fn a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started() {
-        use std::io::BufRead as _;
         let dir = shards_testdir::TempDir::new("bstop").unwrap();
         let (host_seen, vm_seen) = (dir.path().join("h"), dir.path().join("v"));
-        fifo(&host_seen);
-        fifo(&vm_seen);
+        let (host_end, host_held) = watched(&host_seen);
+        let (vm_end, _) = watched(&vm_seen);
         let (home, others) = layered_home(dir.path());
         let host = stand_in(dir.path(), NEVER_STARTS);
         let spec = stand_in_spec(
@@ -4333,19 +4373,23 @@ mod tests {
         let stop = super::super::BootStop::new();
         let mut leftover = Leftover(None);
         std::thread::scope(|s| {
-            let booting = s.spawn(|| Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop));
-            // Each open waits for its writer: the host, then its VM, both running once open.
-            let host_end = std::fs::File::open(&host_seen).unwrap();
-            let vm_end = std::fs::File::open(&vm_seen).unwrap();
-            let mut said = String::new();
-            io::BufReader::new(&host_end).read_line(&mut said).unwrap();
-            leftover.0 = Some(said.trim().parse().unwrap());
+            let booting = s.spawn(|| {
+                let booted = Session::start(&spec, &request, Duration::MAX, &stop).map(drop);
+                // The boot's end ends the test's wait on its host's word.
+                drop(host_held);
+                booted
+            });
+            // Told once the host holds `h` and its VM `v`: both running.
+            let said = line(&host_end);
+            let Ok(vm) = said.trim().parse() else {
+                panic!("its host told no VM ({said:?}), the boot {:?}", booting.join());
+            };
+            leftover.0 = Some(vm);
             let stopped_at = Instant::now();
             stop.stop();
             let booted = booting.join().unwrap();
             let took = stopped_at.elapsed();
-            let ends = |f: std::fs::File| io::PipeReader::from(std::os::fd::OwnedFd::from(f));
-            let (host_gone, vm_gone) = (writers_gone(&ends(host_end)), writers_gone(&ends(vm_end)));
+            let (host_gone, vm_gone) = (writers_gone(&host_end), writers_gone(&vm_end));
             if vm_gone {
                 leftover.0 = None;
             }
@@ -4357,7 +4401,6 @@ mod tests {
                 ))),
                 "after {took:?}"
             );
-            assert!(took < BOOT_BOUND, "the stop took {took:?}");
             assert!(host_gone, "the run host outlived its boot's stop");
             assert!(vm_gone, "the VM its run host started outlived the boot's stop");
         });
@@ -4380,7 +4423,7 @@ mod tests {
         );
         let spec = stand_in_spec(&host, vec![("SHARDS_HOME".into(), home.clone().into())]);
         let request = super::super::request(&spec).unwrap();
-        let booted = Session::start(&spec, &request, BOOT_BOUND, &super::super::BootStop::new()).map(drop);
+        let booted = Session::start(&spec, &request, Duration::MAX, &super::super::BootStop::new()).map(drop);
         assert!(
             matches!(&booted, Err(ImageRefusal::Host(why)) if why.contains("exited before its run started")),
             "{booted:?}"
@@ -4391,8 +4434,8 @@ mod tests {
 
     /// Do boot through a run host that never answers, with a stop never stopped and no
     /// patience. Expect: the boot refused as one with no stop is, not started within it. Do
-    /// the same with a stop already stopped and patience to spare. Expect: `Ended(Stopped)`
-    /// well within it.
+    /// the same with a stop already stopped and patience without end. Expect:
+    /// `Ended(Stopped)`, which only the stop ends it as.
     #[cfg(unix)]
     #[test]
     fn a_boot_not_stopped_answers_as_before_and_one_stopped_first_ends_stopped() {
@@ -4409,7 +4452,7 @@ mod tests {
         assert!(!stop.is_stopped());
         stop.stop();
         let asked = Instant::now();
-        let stopped = Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop);
+        let stopped = Session::start(&spec, &request, Duration::MAX, &stop).map(drop);
         let took = asked.elapsed();
         assert_eq!(
             stopped,
@@ -4419,7 +4462,6 @@ mod tests {
             ))),
             "after {took:?}"
         );
-        assert!(took < BOOT_BOUND, "the stop took {took:?}");
     }
 
     /// Do run through a stand-in host that starts the run, starts a VM of its own holding its
@@ -4432,13 +4474,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_stop_returns_once_its_host_and_every_process_it_started_are_gone() {
-        use std::io::BufRead as _;
         let dir = shards_testdir::TempDir::new("rstop").unwrap();
         let (host_seen, vm_seen, vm_gate) =
             (dir.path().join("h"), dir.path().join("v"), dir.path().join("g"));
-        for path in [&host_seen, &vm_seen, &vm_gate] {
-            fifo(path);
-        }
+        let (host_end, _) = watched(&host_seen);
+        let (vm_end, _) = watched(&vm_seen);
+        // The VM's gate, held shut by this test's write end until it lets the VM go.
+        let (_gate_end, gate) = watched(&vm_gate);
         let spec = stand_in_spec(
             &dir.path().join("host"),
             vec![
@@ -4473,10 +4515,11 @@ mod tests {
             dir.path(),
             &format!(
                 "#!/bin/sh\n\
-                 printf '{}'\n\
-                 exec 3>\"$HOST_SEEN\"\n\
-                 (read _ <\"$VM_GATE\") >\"$VM_SEEN\" 3>&- &\n\
+                 exec 3>\"$HOST_SEEN\" 4>\"$VM_SEEN\"\n\
+                 (read _ <\"$VM_GATE\") >&4 3>&- 4>&- &\n\
+                 exec 4>&-\n\
                  echo \"$!\" >&3\n\
+                 printf '{}'\n\
                  head -c {asked} >/dev/null\n\
                  printf '{}'\n\
                  exec cat >/dev/null\n",
@@ -4484,23 +4527,17 @@ mod tests {
                 octal(wire::to_client::ENDED, &ended),
             ),
         );
-        let session = Session::start(&spec, &request, BOOT_BOUND, &super::super::BootStop::new()).unwrap();
-        // Each open waits for its other end: the host, its VM, then the VM's gate, each held.
-        let host_end = std::fs::File::open(&host_seen).unwrap();
-        let mut said = String::new();
-        io::BufReader::new(&host_end).read_line(&mut said).unwrap();
-        let mut leftover = Leftover(Some(said.trim().parse().unwrap()));
-        let vm_end = std::fs::File::open(&vm_seen).unwrap();
-        let gate = std::fs::OpenOptions::new().write(true).open(&vm_gate).unwrap();
-        let ends = |f: std::fs::File| io::PipeReader::from(std::os::fd::OwnedFd::from(f));
-        let (host_end, vm_end) = (ends(host_end), ends(vm_end));
+        // Its start comes after its host has told its VM's pid, the VM holding `v` and its
+        // gate's read end: all three running and held once it has started.
+        let session = Session::start(&spec, &request, Duration::MAX, &super::super::BootStop::new()).unwrap();
+        let mut leftover = Leftover(Some(line(&host_end).trim().parse().unwrap()));
         let shared = session.shared.clone();
         std::thread::scope(|s| {
             let stopping = s.spawn(|| {
                 let stopped = session.stop();
                 (stopped, writers_gone(&vm_end))
             });
-            let host_gone = shared.wait(BOOT_BOUND, |s| s.gone().then_some(())).is_some();
+            let host_gone = shared.wait(Duration::MAX, |s| s.gone().then_some(())).is_some();
             let vm_held = !lock(&shared.state).said_all;
             drop(gate);
             let (stopped, vm_gone) = stopping.join().unwrap();
@@ -4690,7 +4727,7 @@ mod tests {
     /// The Windows twin of `a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started`:
     /// do boot through a run host that starts a VM in its job and never says the run
     /// started, and stop the boot once both run. Expect: the boot returns `Ended(Stopped)`,
-    /// well within its bound, the run host's handle signalled and the VM's with it (its
+    /// which only the stop ends it as, the run host's handle signalled and the VM's with it (its
     /// job's last handle closed as the host was ended), no orphan left, and no file of the
     /// host's left in its home's `layers`, another host's kept.
     #[cfg(windows)]
@@ -4712,7 +4749,7 @@ mod tests {
         let stop = super::super::BootStop::new();
         std::thread::scope(|s| {
             let booting = s.spawn(|| {
-                let booted = Session::start(&spec, &request, BOOT_BOUND, &stop).map(drop);
+                let booted = Session::start(&spec, &request, Duration::MAX, &stop).map(drop);
                 // A boot that ended before its host told anything ends the test's wait:
                 // opened and closed, the pipe says nothing. Refused where its host told.
                 let _ = std::fs::OpenOptions::new().write(true).open(&tells);
@@ -4738,7 +4775,6 @@ mod tests {
                 ))),
                 "after {took:?}"
             );
-            assert!(took < BOOT_BOUND, "the stop took {took:?}");
             assert!(host_gone, "the run host outlived its boot's stop");
             assert!(vm_gone, "the VM in its run host's job outlived the boot's stop");
         });
