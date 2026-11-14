@@ -10645,6 +10645,39 @@ An allocation failure of the answer ends the VM's link, which its asker reads as
 `ConnectionEnded`. Not typed by this: init's DEVICE built-in's answers, which come back as
 an exec's status and its words (a run's host already tells `DEVICE_BUSY` from the rest).
 Red/green: docs/research/measurements/device-fixes/README.md.
+
+**Amended 2026-11-14 (devices-08, R03): what of a plug was a picked figure.**
+- Its guest's steps (find, mount, unmount, grow, a function's release) had 30 s
+  (`GUEST_TIMEOUT`), the one clock left after init's waits went to the kernel's word
+  (above). They are waited for as the daemon's other built-ins are (`exec_answered`, D215's
+  judge): while the microVM's process runs, before the built-in's first answer its liveness
+  alone, then past the slowest seen ended where a whole one shows it ran no CPU, its host not
+  the reason. Cold: the first plug of a daemon waits until its guest answers or its microVM
+  ends. Its failure is the judge's typed cut (stalled, or its process unreadable). No figure
+  of its own. Owed to ROOT: `cargo test -p shards --test plug` with a guest made slow, its
+  plug done past 30 s.
+- Owed, each with its derivation, not swapped for another figure:
+  - the 4 KiB of a step's answer kept (`1 << 12`, shared with the daemon's other built-ins'
+    reads): init's DEVICE answers a device name or a refusal naming a path (Linux `PATH_MAX`,
+    4096, include/uapi/linux/limits.h), so its longest answer is init's longest refusal
+    line, which init's own words bound; to be derived from them in init and the daemon
+    together.
+  - the run's 4 PCI slots (`pci_slots`): a bus has 32 device numbers (PCI Express Base 6.0
+    §7.2.2); a slot is reserved as the microVM boots, into its template, so it cannot grow on
+    demand. The derivation is every free device number less what a slot costs a boot (MSI
+    routes, the window, an IOMMU endpoint): ROOT owes the boot latency and memory of a bus
+    of 0, 1, 2, 4, 8, 16 and every free slot (`docs/research/measurements/build-ab/ab.py`,
+    PM M430's method, each restoring one template, n, p50/p90/p99/max) before the default
+    moves.
+  - virtio-blk's, the GPU control ring's and virtio-iommu's queue sizes (256, 256, 64): the
+    queue audit's Little's-law derivation above, owed its service and refill times.
+  - `THROUGH_MAX` (1 MiB, a range's relay): the most one virtio-blk request carries is what
+    the device advertises, `seg_max` × `size_max` (virtio 1.3 §5.2.4); it advertises
+    `seg_max` alone today (254), so a request's length is the guest kernel's choice. With
+    `VIRTIO_BLK_F_SIZE_MAX` advertised, one request is one round trip of at most their
+    product; that changes the device's features, held in snapshots, and is owed with
+    ROOT's run of `cargo test -p shards --test build` over a range (PM M442's case).
+
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -25218,6 +25251,10 @@ what its run stages. Two names keep init's rules:
   gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
   member's own program is still found before the system's (part one). Its program is found on
   the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+  Confine-04: init prepares candidate strings with ordinary exec's PATH composer,
+  but the member's child searches only after its mounts, confinement and cwd are
+  established. Empty components mean cwd; relative components remain relative to
+  that cwd. No executable availability/access decision is made in init's view.
 - **`HOME`**: never the image's. One value for every member is private to none, which a
   member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
   a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
@@ -26311,6 +26348,14 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   in neither are refused, as it would never read them. Before, the files went to the
   scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
   (reproduced, docs/research/measurements/s7-home-workdir).
+- *Nested HOME mounts* (confine-03, 2026-11-13): staging receives the complete
+  member mount plan, including read-only covers and declared/image-resolved names.
+  Each final HOME-relative target selects its deepest visible mount. All destinations
+  are checked before writing; a read-only cover or a target equal to a mountpoint is a
+  typed refusal, rendered at the existing setup-error boundary. Byte components are
+  preserved, and the backing-directory walk still follows no symlinks. No writable
+  ancestor can receive files hidden behind a nested mount. Red/green evidence and
+  remaining real-guest validation: [fix-confine-v1](../research/measurements/fix-confine-v1/README.md).
 - *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
   step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
   version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
@@ -26542,22 +26587,28 @@ reboots, driver updates or hot plug; a device's own identity does.
   that gives a microVM no GPU (`run::GIVES_GPU`) refuses GPUs named, `Unsupported`. Under the
   nesting grant the command reads them in `/run/shards/gpus` (D234's `gpus=`).
 
-**Literals.** `MAX_PHYSICAL_GPUS`, 65,536: the renderer's patches' bound, `1 + UINT16_MAX`,
-from Hex's scheduler's u16 device index, to which they hold a context's selection
-(`VIRGL_DEVICE_UUID_MAX_COUNT`, physical-transport-*.patch) and, for a selected context, the
-host's Vulkan devices and device groups (`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`,
-physical-*.patch). Shards takes no selection its renderer refuses, so its own checks hold the
-same figure (`check_selection`, `probe_bytes`, the join's and `host_visible`'s host counts,
-format 29's reader, `--gpu-device`). Below it a count is bounded by what carries it: a
-receipt's by the device lines its own bytes hold, each at least its UUID's 32 hex digits and
-its end, before anything is reserved for them (`probe.rs`); a snapshot's by its remaining
-bytes (`codec::Reader::seq`); and, once the VM process enumerates the host's GPUs, by those,
-each named once (`selection::resolve`). The figure is still owed its derivation (R03): the
-protocol's own bounds are Vulkan's `uint32_t` counts, for which every patch already
-allocates overflow-checked, and the transport's `uint32_t byte_count` over its 33-byte
-stride (`UINT32_MAX / 33`, 130,150,524, which `virgl_device_selection_payload_size` already
-checks). Moving to them changes the C patches, which only a renderer build and a real GPU can
-check: owed to ROOT, with `MAX_PHYSICAL_GPUS` following in the same change.
+**Literals.** `MAX_PHYSICAL_GPUS`, 130,150,524 (devices-09, 2026-11-14; was 65,536, Hex's
+scheduler's u16 device index copied, with no derivation): a selection's bound is what carries
+it to the renderer, its payload's length a `uint32_t` (`virgl_device_selection_payload_size`,
+physical-transport-*.patch) of `SELECTION_STRIDE` bytes a GPU, its Vulkan deviceUUID's 16
+bytes (`VK_UUID_SIZE`) as 32 hex digits and a NUL: `UINT32_MAX / 33`. The patches hold a
+context's selection to the same (`VIRGL_DEVICE_UUID_MAX_COUNT`,
+`VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, each now `UINT32_MAX` over its stride), so Shards takes
+no selection its renderer refuses (`selection_fits`, used by `check_selection`, the nesting
+grant's `gpus=` and `--gpu-device`). A host's Vulkan devices and device groups are counted by
+Vulkan's own `uint32_t` (`MAX_HOST_GPUS`; the patches' host-count checks keep only their
+zero and `SIZE_MAX` checks before each `calloc`, their copied bound gone), and a selection
+names each at most once. Hex's scheduler indexes its own devices by u16: that bound is
+Hex's to hold its selections to (hex-api `MAX_DEVICES`, hex-runtime `cdi_for`), not this
+transport's. Below the bound a count is bounded by what carries it: a receipt's by the
+device lines its own bytes hold, each at least its UUID's 32 hex digits and its end, before
+anything is reserved for them (`probe.rs`); a snapshot's by its remaining bytes
+(`codec::Reader::seq`); a command line's by its arguments; and, once the VM process
+enumerates the host's GPUs, by those, each named once (`selection::resolve`); each reserved
+fallibly. The patches were dry-run applied to both pinned sources (virglrenderer 1.3.0 and
+0.10.4e-krunkit, `patchcheck.sh`); building the renderer from them and a real GPU's
+selection are owed to ROOT: `scripts/gpu-libs` on Linux and macOS, then `cargo test -p shards
+--test gpu` on its Linux Vulkan fixture and a Mac.
 `GPU_NAME_BYTES`, 256: Vulkan's `VK_MAX_PHYSICAL_DEVICE_NAME_SIZE`. The probe's byte bounds
 are its encoding's longest lines for the count, the count as wide as `MAX_PHYSICAL_GPUS`
 (`probe.rs`, derived from it); a refusal's record and frame are bounded by the receipt and the
@@ -26780,6 +26831,13 @@ image lacks could never become a writable mount point in a running member.
   (open_tree, mount_setattr clearing `MOUNT_ATTR_RDONLY`), the root found as the domain's
   own walk finds it and no symlink followed beneath it (openat2 `RESOLVE_NO_SYMLINKS`,
   `RESOLVE_NO_XDEV`), so that nothing is made outside it.
+- *Ownership through completion* (confine-05): daemon plug/unplug/grow operations
+  hold the existing run request turn through device, guest and registry completion.
+  API-run holds a per-run plug/unplug turn, separate from its readable mounted map;
+  device replies take neither turn. A second same-path plug sees the completed
+  owner's `Taken` state; an unplug cannot remove ownership from a pending plug.
+  Real guest concurrent regressions are authored in plug.rs and api_image.rs; ROOT
+  owns their execution and resource-return observations.
 - *The daemon's:* `shards plug volume --for NAME MICROVM SOURCE:PATH[:ro]`, NAME an agent or
   harness as an Agentfile's `FOR` names one, which runs a command; `unplug volume` by its
   path, as D214's.
@@ -26877,6 +26935,9 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     up and let go of as it forgets it (server.rs `watch_dir`, `unwatch_dir`), all of the
     process's one instance (`platform::watch_named`; PM M257): what the guest never looked
     at is watched nothing of, and a watch is one of its user's (`max_user_watches`).
+    Confine-08: a native watch admission error refuses the directory's LOOKUP with
+    its native errno before any guest reference is published or counted. A later
+    lookup retries admission; no failed directory is silently retained as watched.
   - *macOS:* one FSEvents stream of its shares' roots (shards-apple `fsevents`, CoreServices
     bound when first used), file events, the changes the process itself makes for the guest
     left out (`IgnoreSelf`), told at once (latency 0, `NoDefer`).
@@ -26884,9 +26945,32 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
     most it takes over a network (its documentation's).
   - Where the whole tree is watched (macOS, Windows), a change is told only where the guest
     holds its directory (`Server::holds_dir`). Each path waits once however often it
-    changes, at most 16384 (Linux's default `max_queued_events`, past which a guest's own
-    watcher would hear only that it lost events); past them, its nearest waiting directory
-    or its share's root stands for it, once a share.
+    changes.
+  - *Lost changes* (confine-06, confine-09, 2026-11-14; was: at most 16384 waiting, Linux's
+    default `max_queued_events`, past which a path's nearest waiting directory or its share's
+    root stood for it). A host's watcher can say only that changes beneath a place were not
+    each said: inotify's `IN_Q_OVERFLOW` (inotify(7)), ReadDirectoryChangesW's empty answer
+    (its buffer overflowed, MSDN), FSEvents' `MustScanSubDirs` (which it sets on events the
+    kernel or the stream dropped, FSEvents.h). Each is typed (`notices::Change::Beneath`)
+    and told, as its changes are taken, by every node the guest holds at that place or
+    beneath it (`Server::held_beneath`). Touching a directory wakes no watch of a file in it
+    (an inotify watch is of its inode, not recursive), so the root alone, which was all that
+    was told, left a guest's watch of a nested file asleep. Every watch the guest has holds
+    its inode (inotify_user.c `inotify_new_watch`), and a FUSE inode is its server's node
+    until the guest forgets it, so telling every node held wakes every watch there.
+  - *What waits is bounded by what the guest holds* (R03): a share's changes, each told by
+    its path, are no more than the nodes its guest holds as each is told (`Server::held`,
+    its node table's size, the root's always among them, so never below one). Past them,
+    telling each path costs more than telling every node held, which wakes every watch the
+    guest has, so the share's changes are told as lost beneath its root; a share's places
+    lost are as bounded, past them its root standing for them. No number of the host's
+    enters: a guest that holds a whole tree (a recursive watcher looks up each directory and
+    file) waits for as many paths as it holds; one that holds its root alone, for one, and a
+    loss then touches the root, all it can watch. Cold start: the share's root alone, one.
+    Uncertainty: a name the guest holds no node of is told past the bound only by its
+    directory's own change, as inotify's own overflow tells it nothing more; a watch of the
+    directory is still woken. Failure: a share with no server (none for its place) is told
+    nothing of what it lost, as none of its nodes is held.
   - *Told on a pipe straight to the guest:* records `TAG\0PATH\0` (`shards_abi::run::
     notice`), TAG the share's virtio-fs tag (`shards share --notices TAGS`), from the share
     process to the stdin of the guest's `NOTICE` built-in, which the daemon and `shards
@@ -26917,7 +27001,8 @@ virtio 1.3 §5.11's `VIRTIO_FS_F_NOTIFICATION` unused), and what a FUSE server n
 - *Verified* (light tests, the change's own): unit, server.rs
   `a_notice_changes_nothing_on_the_host`, `a_name_found_by_another_case_is_trusted_for_no_time`,
   `a_directory_is_held_while_the_guest_knows_it`, `the_hosts_changes_where_the_guest_looks_are_noticed`
-  (Linux); notices.rs `changes_are_told_once_and_within_bounds`,
+  (Linux), `lost_events_wake_a_file_the_guest_holds` (Linux); notices.rs `changes_are_told_once`,
+  `lost_changes_are_told_by_every_node_the_guest_holds_beneath`,
   `the_hosts_changes_are_told_where_the_guest_looks` (each host's watcher, a change made by
   another process); shards-abi's records; init's `notices_are_told_whole_across_reads`;
   shards-apple's `a_change_beneath_is_told_by_its_path`; share.rs's flags. Real VMs, tests/plug.rs
@@ -29844,6 +29929,10 @@ ruleset, the run's seccomp filter.
   abstract Unix sockets of, its own processes alone, and the member's processes its not.
   Sharing the member's own domain would need a process of the member's to start each
   command, inside its seccomp filter and its pids.max, and is not built.
+- *Refused environment values* (confine-07): validation returns only the typed
+  cause (empty name, NUL, reserved name), never the rejected entry. Both Debug and
+  Display are value-free, and the existing member refusal wire renders only that
+  safe cause and member identity. A malformed credential is not copied into errors.
 - *Its program, environment and directory.* Its environment is the member's as it started,
   the exec's variables over it as moby lays an exec's over its container's
   (daemon/container/env.go, ReplaceOrAppendEnvValues: a name alone unsets one); none may name
