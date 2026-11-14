@@ -2415,9 +2415,15 @@ fn a_stop_cancels_the_downloads_of_runs_being_prepared() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    eventually(&home, "the pull never reached the registry", || {
-        !accepted.lock().unwrap().is_empty()
-    });
+    // The run's client among the wait's party: before its daemon has written its pid file it
+    // is all of it (CI job 132390978195 refused this wait as gone 710 µs in, the daemon's
+    // first line logged and its pid file not yet written).
+    let mut patience = Patience::client(run.id(), &home);
+    while accepted.lock().unwrap().is_empty() {
+        assert!(patience.holds(), "the pull never reached the registry");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    patience.done();
     let t0 = Instant::now();
     let env = [("SHARDS_HOME", home.as_os_str())];
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
