@@ -18,6 +18,8 @@ use flate2::{Decompress, FlushDecompress, Status};
 use ruzstd::decoding::{BlockDecodingStrategy, FrameDecoder};
 use zeroize::Zeroizing;
 
+use crate::signin::append;
+
 /// RFC 9659 §3: a zstd content coding's Window_Size is at most 8 MiB.
 const ZSTD_WINDOW: u64 = 8 << 20;
 /// RFC 8878 §3.1.1.2.3: no block's content is past 128 KiB.
@@ -92,7 +94,7 @@ impl Write for Budget {
             return Err(io::Error::other("past its budget"));
         };
         self.left = left;
-        self.out.extend_from_slice(b);
+        append(&mut self.out, b);
         Ok(b.len())
     }
 
@@ -113,7 +115,7 @@ enum How {
     /// (RFC 1951), which some servers send in its place; told apart by its first two octets.
     Deflate {
         inflate: Option<Box<Decompress>>,
-        first: Vec<u8>,
+        first: Zeroizing<Vec<u8>>,
         ended: bool,
     },
     Zstd(Box<Zstd>),
@@ -139,7 +141,7 @@ impl Decoder {
             }))),
             Coding::Deflate => How::Deflate {
                 inflate: None,
-                first: Vec::new(),
+                first: Zeroizing::new(Vec::new()),
                 ended: false,
             },
             Coding::Zstd => How::Zstd(Box::default()),
@@ -148,23 +150,32 @@ impl Decoder {
     }
 
     /// `coded`'s bytes decoded, appended to `out`: at most `most` octets of them.
-    pub(crate) fn feed(&mut self, coded: &[u8], out: &mut Vec<u8>, most: usize) -> Result<(), Undecodable> {
+    pub(crate) fn feed(
+        &mut self,
+        coded: &[u8],
+        out: &mut Zeroizing<Vec<u8>>,
+        most: usize,
+    ) -> Result<(), Undecodable> {
         match &mut self.how {
             How::Gzip(gz) => {
                 gz.get_mut().left = most;
                 let wrote = gz.write_all(coded).and_then(|()| gz.flush());
                 take(gz.get_mut(), out, wrote)
             }
-            How::Deflate { inflate, first, ended } => match inflate {
+            How::Deflate {
+                inflate,
+                first,
+                ended,
+            } => match inflate {
                 Some(inflate) => inflated(inflate, ended, coded, out, most),
                 None => {
                     // Its first two octets, held until both have come, tell its framing.
-                    first.extend_from_slice(coded);
+                    append(first, coded);
                     if first.len() < 2 {
                         return Ok(());
                     }
                     let mut made = Box::new(Decompress::new(zlib(first)));
-                    let start = Zeroizing::new(std::mem::take(first));
+                    let start = std::mem::take(first);
                     let went = inflated(&mut made, ended, &start, out, most);
                     *inflate = Some(made);
                     went
@@ -176,7 +187,7 @@ impl Decoder {
 
     /// The body's end: what its decoder still holds, appended to `out`, at most `most`; refused
     /// where its coding's stream has not ended.
-    pub(crate) fn finish(&mut self, out: &mut Vec<u8>, most: usize) -> Result<(), Undecodable> {
+    pub(crate) fn finish(&mut self, out: &mut Zeroizing<Vec<u8>>, most: usize) -> Result<(), Undecodable> {
         match &mut self.how {
             How::Gzip(gz) => {
                 gz.get_mut().left = most;
@@ -193,8 +204,8 @@ impl Decoder {
 }
 
 /// What a gzip decoder wrote, moved to `out`; its write's failure told as its cause.
-fn take(budget: &mut Budget, out: &mut Vec<u8>, wrote: io::Result<()>) -> Result<(), Undecodable> {
-    out.extend_from_slice(&budget.out);
+fn take(budget: &mut Budget, out: &mut Zeroizing<Vec<u8>>, wrote: io::Result<()>) -> Result<(), Undecodable> {
+    append(out, &budget.out);
     budget.out.clear();
     match wrote {
         Ok(()) => Ok(()),
@@ -218,7 +229,7 @@ fn inflated(
     inflate: &mut Decompress,
     ended: &mut bool,
     mut coded: &[u8],
-    out: &mut Vec<u8>,
+    out: &mut Zeroizing<Vec<u8>>,
     most: usize,
 ) -> Result<(), Undecodable> {
     let mut buf = Zeroizing::new(vec![0u8; 32 << 10]);
@@ -234,7 +245,7 @@ fn inflated(
         let read = usize::try_from(inflate.total_in().saturating_sub(before_in)).unwrap_or(usize::MAX);
         let wrote = usize::try_from(inflate.total_out().saturating_sub(before_out)).unwrap_or(usize::MAX);
         left = left.checked_sub(wrote).ok_or(Undecodable::PastBudget)?;
-        out.extend_from_slice(buf.get(..wrote).ok_or(Undecodable::Corrupt)?);
+        append(out, buf.get(..wrote).ok_or(Undecodable::Corrupt)?);
         coded = coded.get(read..).unwrap_or_default();
         match status {
             Status::StreamEnd => *ended = true,
@@ -257,8 +268,8 @@ struct Zstd {
 }
 
 impl Zstd {
-    fn feed(&mut self, coded: &[u8], out: &mut Vec<u8>, most: usize) -> Result<(), Undecodable> {
-        self.pending.extend_from_slice(coded);
+    fn feed(&mut self, coded: &[u8], out: &mut Zeroizing<Vec<u8>>, most: usize) -> Result<(), Undecodable> {
+        append(&mut self.pending, coded);
         let mut left = most;
         loop {
             let took = match self.frame {
@@ -272,7 +283,7 @@ impl Zstd {
             self.pending.drain(..took);
             if let Some(decoded) = self.decoder.collect() {
                 left = left.checked_sub(decoded.len()).ok_or(Undecodable::PastBudget)?;
-                out.extend_from_slice(&decoded);
+                append(out, &decoded);
                 drop(Zeroizing::new(decoded));
             }
             if self.frame.is_some() && self.decoder.is_finished() {
@@ -379,16 +390,18 @@ mod tests {
 
     fn decoded(coding: Coding, coded: &[u8], piece: usize) -> Result<Vec<u8>, Undecodable> {
         let mut d = Decoder::new(coding);
-        let mut out = Vec::new();
+        let mut out = Zeroizing::new(Vec::new());
         for p in coded.chunks(piece) {
             d.feed(p, &mut out, usize::MAX)?;
         }
         d.finish(&mut out, usize::MAX)?;
-        Ok(out)
+        Ok(out.to_vec())
     }
 
     fn text() -> Vec<u8> {
-        (0..200_000u32).flat_map(|i| format!("{{\"n\":{}}}", i % 977).into_bytes()).collect()
+        (0..200_000u32)
+            .flat_map(|i| format!("{{\"n\":{}}}", i % 977).into_bytes())
+            .collect()
     }
 
     /// Each coding, fed whole and a byte at a time, decodes to what was coded; a truncated one is
@@ -413,7 +426,10 @@ mod tests {
             (Coding::Zstd, &zs),
         ] {
             for piece in [coded.len(), 1, 4093] {
-                assert!(decoded(coding, coded, piece).unwrap() == text, "{coding:?} in pieces of {piece}");
+                assert!(
+                    decoded(coding, coded, piece).unwrap() == text,
+                    "{coding:?} in pieces of {piece}"
+                );
             }
             assert_eq!(
                 decoded(coding, &coded[..coded.len() - 3], 4093),
@@ -422,7 +438,7 @@ mod tests {
             );
             let mut d = Decoder::new(coding);
             assert_eq!(
-                d.feed(coded, &mut Vec::new(), text.len() / 2),
+                d.feed(coded, &mut Zeroizing::new(Vec::new()), text.len() / 2),
                 Err(Undecodable::PastBudget),
                 "{coding:?}"
             );
@@ -441,5 +457,92 @@ mod tests {
         // exponent 14 (2^24 = 16 MiB, RFC 8878 §3.1.1.1.2), and an empty last raw block.
         let frame = [0x28, 0xb5, 0x2f, 0xfd, 0x00, 14 << 3, 0x01, 0x00, 0x00];
         assert_eq!(decoded(Coding::Zstd, &frame, 9), Err(Undecodable::Unsupported));
+    }
+}
+
+/// The test binary's allocator: the system's, which, while a test arms it on its own thread,
+/// counts each block that thread lets go of holding `NEEDLE` (creds-13), so that a buffer let go
+/// of unwiped is seen, and no other test's thread is.
+#[cfg(test)]
+mod watch {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    pub(super) const NEEDLE: &[u8] = b"kiln-needle-not-a-real-value-7f3a9c2e5b1d";
+
+    thread_local! {
+        // Const-initialized, so that reading them in `dealloc` allocates nothing.
+        pub(super) static ARMED: Cell<bool> = const { Cell::new(false) };
+        pub(super) static HITS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    struct Watch;
+
+    // SAFETY: each call is System's, with the caller's own arguments; `dealloc` reads the block
+    // it is given, which is live and `layout.size()` octets long until System lets it go.
+    unsafe impl GlobalAlloc for Watch {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's contract is GlobalAlloc::alloc's, which System's shares.
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if ARMED.try_with(Cell::get).unwrap_or(false) && !ptr.is_null() {
+                // SAFETY: `ptr` is a live block of `layout.size()` octets (dealloc's contract).
+                let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
+                if block.windows(NEEDLE.len()).any(|w| w == NEEDLE) {
+                    let _ = HITS.try_with(|h| h.set(h.get() + 1));
+                }
+            }
+            // SAFETY: as above, System's own block.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    #[global_allocator]
+    static WATCH: Watch = Watch;
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod wiped {
+    use std::io::Write;
+
+    use super::watch::{ARMED, HITS, NEEDLE};
+    use super::{Coding, Decoder};
+    use zeroize::Zeroizing;
+
+    /// Do: decode a gzip and a deflate body that repeats a needle, in pieces, its output growing
+    /// past many of its buffers' sizes, the allocator armed while it decodes. Expect: no block let
+    /// go of while it grows holds the needle: each buffer of decoded bytes is wiped as it is
+    /// replaced (the decoders' own windows are theirs, and live until the decoder drops).
+    #[test]
+    fn a_decoded_bodys_buffers_are_wiped_as_they_grow() {
+        let body: Vec<u8> = (0..20_000u32)
+            .flat_map(|i| [NEEDLE, format!("-{i}-").as_bytes()].concat())
+            .collect();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&body).unwrap();
+        let gz = gz.finish().unwrap();
+        let mut zl = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zl.write_all(&body).unwrap();
+        let zl = zl.finish().unwrap();
+        for (coding, coded) in [(Coding::Gzip, gz), (Coding::Deflate, zl)] {
+            let mut d = Decoder::new(coding);
+            let mut out = Zeroizing::new(Vec::new());
+            HITS.set(0);
+            ARMED.set(true);
+            for piece in coded.chunks(997) {
+                d.feed(piece, &mut out, usize::MAX).unwrap();
+            }
+            d.finish(&mut out, usize::MAX).unwrap();
+            ARMED.set(false);
+            assert!(*out == body, "{coding:?}");
+            assert_eq!(
+                HITS.get(),
+                0,
+                "{coding:?}: a buffer of decoded bytes was let go of unwiped"
+            );
+        }
     }
 }
