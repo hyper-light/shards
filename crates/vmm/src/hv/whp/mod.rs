@@ -460,17 +460,63 @@ fn cpuid_list(results: &[cpuid::Masked]) -> Vec<WHV_X64_CPUID_RESULT2> {
 
 /// A partition: deleted, its vCPUs with it, once nothing holds it. With what it maps of this
 /// process's memory, where the instruction emulator's accesses to guest RAM go
-/// ([`Vcpu::emulate`]), and what it maps writable, whose guest's writes a live move watches
-/// ([`Tracked`]).
+/// ([`Vcpu::emulate`], [`Ram`]), and what it maps writable, whose guest's writes a live move
+/// watches ([`Tracked`]).
 #[derive(Debug)]
-struct Partition(WHV_PARTITION_HANDLE, Mutex<Vec<Mapped>>, Mutex<Tracked>);
+struct Partition(WHV_PARTITION_HANDLE, Mutex<Ram>, Mutex<Tracked>);
 
-/// `len` bytes of guest-physical memory from `gpa`, at `host` in this process.
-#[derive(Debug, Clone, Copy)]
-struct Mapped {
-    gpa: u64,
-    host: usize,
-    len: u64,
+/// What the partition maps of this process's memory, where Windows' instruction emulator's
+/// accesses to guest memory go ([`Vcpu::emulate`]).
+#[derive(Debug, Default)]
+struct Ram(Vec<Range>);
+
+/// What an access of the emulator's to guest memory came to ([`Ram::access`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reached {
+    /// Made in guest RAM, at its place in this process.
+    Ram,
+    /// Not guest RAM the access may make: the VMM's devices take it, as they take an
+    /// access to no memory.
+    Elsewhere,
+}
+
+impl Ram {
+    /// Records `range`, mapped.
+    fn map(&mut self, range: Range) {
+        self.0.push(range);
+    }
+
+    /// Takes `len` bytes at `gpa` out, unmapped.
+    fn unmap(&mut self, gpa: u64, len: u64) {
+        self.0.retain(|m| m.gpa != gpa || m.len != len);
+    }
+
+    /// Reads `data.len()` bytes at `gpa` into `data`, or writes them there where `write`, if
+    /// one range holds them all.
+    ///
+    /// # Safety
+    /// Each range's memory in this process is mapped as long as it is recorded here.
+    unsafe fn access(&self, gpa: u64, data: &mut [u8], write: bool) -> Reached {
+        let len = data.len() as u64;
+        let Some(at) = self.0.iter().find_map(|m| {
+            let offset = gpa.checked_sub(m.gpa)?;
+            (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
+        }) else {
+            return Reached::Elsewhere;
+        };
+        for (i, b) in data.iter_mut().enumerate() {
+            // SAFETY: inside a range of this process's memory, mapped (the caller's
+            // contract); byte by byte, as the guest's other vCPUs may touch it meanwhile.
+            unsafe {
+                if write {
+                    at.add(i).write_volatile(*b);
+                } else {
+                    *b = at.add(i).read_volatile();
+                }
+            }
+        }
+        Reached::Ram
+    }
 }
 
 /// The page of WHP's dirty bitmaps, a bit each (WinHvPlatform.h's
@@ -491,47 +537,52 @@ const DIRTY_PAGE_TRACKING: u64 = 1 << 3;
 /// read of a bitmap: none is read of a range unmapped since.
 #[derive(Debug, Default)]
 struct Tracked {
-    ranges: Vec<Writable>,
+    ranges: Vec<Range>,
     written: Option<std::collections::BTreeSet<u64>>,
 }
 
 /// `len` bytes at `gpa`, at `host` in this process, mapped with `flags`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Writable {
+struct Range {
     gpa: u64,
     host: usize,
     len: u64,
     flags: WHV_MAP_GPA_RANGE_FLAGS,
 }
 
-impl Tracked {
-    /// Takes `len` bytes at `gpa` out of the ranges, unmapped or mapped anew: what is left
-    /// of each range they cut kept, at its own place in this process.
-    fn cut(&mut self, gpa: u64, len: u64) {
-        let end = gpa.saturating_add(len);
-        let mut kept = Vec::with_capacity(self.ranges.len());
-        for r in self.ranges.drain(..) {
-            let r_end = r.gpa.saturating_add(r.len);
-            if r_end <= gpa || r.gpa >= end {
-                kept.push(r);
-                continue;
-            }
-            if r.gpa < gpa {
-                kept.push(Writable {
-                    len: gpa - r.gpa,
-                    ..r
-                });
-            }
-            if r_end > end {
-                kept.push(Writable {
-                    gpa: end,
-                    host: r.host.saturating_add((end - r.gpa) as usize),
-                    len: r_end - end,
-                    flags: r.flags,
-                });
-            }
+/// Takes `len` bytes at `gpa` out of `ranges`, unmapped or mapped anew: what is left of each
+/// range they cut kept, at its own place in this process.
+fn cut(ranges: &mut Vec<Range>, gpa: u64, len: u64) {
+    let end = gpa.saturating_add(len);
+    let mut kept = Vec::with_capacity(ranges.len());
+    for r in ranges.drain(..) {
+        let r_end = r.gpa.saturating_add(r.len);
+        if r_end <= gpa || r.gpa >= end {
+            kept.push(r);
+            continue;
         }
-        self.ranges = kept;
+        if r.gpa < gpa {
+            kept.push(Range {
+                len: gpa - r.gpa,
+                ..r
+            });
+        }
+        if r_end > end {
+            kept.push(Range {
+                gpa: end,
+                host: r.host.saturating_add((end - r.gpa) as usize),
+                len: r_end - end,
+                flags: r.flags,
+            });
+        }
+    }
+    *ranges = kept;
+}
+
+impl Tracked {
+    /// Takes `len` bytes at `gpa` out of the ranges, unmapped or mapped anew ([`cut`]).
+    fn cut(&mut self, gpa: u64, len: u64) {
+        cut(&mut self.ranges, gpa, len);
     }
 
     /// The parts of the ranges within `len` bytes at `gpa`.
@@ -557,7 +608,7 @@ impl Drop for Partition {
 
 impl Partition {
     fn new(handle: WHV_PARTITION_HANDLE) -> Partition {
-        Partition(handle, Mutex::new(Vec::new()), Mutex::new(Tracked::default()))
+        Partition(handle, Mutex::new(Ram::default()), Mutex::new(Tracked::default()))
     }
 
     fn set<T>(&self, code: WHV_PARTITION_PROPERTY_CODE, value: &T, op: &'static str) -> Result<()> {
@@ -592,21 +643,18 @@ impl Partition {
                 flags | tracking,
             )
         })?;
-        tracked.cut(gpa, len as u64);
-        if writable {
-            tracked.ranges.push(Writable {
-                gpa,
-                host: host as usize,
-                len: len as u64,
-                flags,
-            });
-        }
-        drop(tracked);
-        lock(&self.1).push(Mapped {
+        let range = Range {
             gpa,
             host: host as usize,
             len: len as u64,
-        });
+            flags,
+        };
+        tracked.cut(gpa, len as u64);
+        if writable {
+            tracked.ranges.push(range);
+        }
+        drop(tracked);
+        lock(&self.1).map(range);
         Ok(())
     }
 
@@ -640,7 +688,7 @@ impl Partition {
         check("WHvUnmapGpaRange", unsafe { WHvUnmapGpaRange(self.0, gpa, len) })?;
         tracked.cut(gpa, len);
         drop(tracked);
-        lock(&self.1).retain(|m| m.gpa != gpa || m.len != len);
+        lock(&self.1).unmap(gpa, len);
         Ok(())
     }
 
@@ -750,13 +798,12 @@ impl Partition {
         }
     }
 
-    /// Where `len` bytes of guest RAM at `gpa` lie in this process, if one mapping holds
-    /// them all.
-    fn host(&self, gpa: u64, len: u64) -> Option<*mut u8> {
-        lock(&self.1).iter().find_map(|m| {
-            let offset = gpa.checked_sub(m.gpa)?;
-            (offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
-        })
+    /// The emulator's access of `data` at `gpa` ([`Ram::access`]).
+    fn access(&self, gpa: u64, data: &mut [u8], write: bool) -> Reached {
+        let ram = lock(&self.1);
+        // SAFETY: what `map` records stays mapped until it is unmapped or the partition is
+        // deleted (its caller's contract), and `unmap` takes it out under this lock.
+        unsafe { ram.access(gpa, data, write) }
     }
 
     /// Registers `names` of vCPU `vp`, which is out of the guest.
@@ -1382,18 +1429,7 @@ mod emulate {
         };
         let gpa = access.GpaAddress;
         let write = access.Direction != 0;
-        if let Some(at) = cx.vcpu.partition.host(gpa, size as u64) {
-            for (i, b) in data.iter_mut().enumerate() {
-                // SAFETY: inside a mapping of guest RAM, which stays mapped while the VM
-                // lives; byte by byte, as the guest's other vCPUs may touch it meanwhile.
-                unsafe {
-                    if write {
-                        at.add(i).write_volatile(*b);
-                    } else {
-                        *b = at.add(i).read_volatile();
-                    }
-                }
-            }
+        if cx.vcpu.partition.access(gpa, data, write) == Reached::Ram {
             return 0;
         }
         if !write {
@@ -1912,7 +1948,7 @@ mod tests {
     /// span are those it overlaps.
     #[test]
     fn a_watched_range_is_cut_where_part_of_it_is_unmapped() {
-        let range = |gpa: u64, len: u64, host: usize| Writable {
+        let range = |gpa: u64, len: u64, host: usize| Range {
             gpa,
             host,
             len,
@@ -1942,6 +1978,85 @@ mod tests {
         tracked.cut(0x20_0000, 0x1000);
         assert_eq!(tracked.ranges, [range(0x6000, 0xf_a000, 0x1000_6000)]);
         assert!(tracked.within(0, 0x6000).is_empty());
+    }
+
+    const PAGE: u64 = 4096;
+
+    /// `pages` pages of memory, each page's bytes its index's low byte, and a range of it at
+    /// `gpa`, mapped with `flags`.
+    fn memory(pages: u64, gpa: u64, flags: WHV_MAP_GPA_RANGE_FLAGS) -> (Vec<u8>, Range) {
+        let mut bytes: Vec<u8> = (0..pages * PAGE).map(|i| (i / PAGE) as u8).collect();
+        let range = Range {
+            gpa,
+            host: bytes.as_mut_ptr() as usize,
+            len: pages * PAGE,
+            flags,
+        };
+        (bytes, range)
+    }
+
+    /// The byte the emulator reads at `gpa`, or `None` where it reaches no RAM.
+    fn read(ram: &Ram, gpa: u64) -> Option<u8> {
+        let mut byte = [0u8];
+        // SAFETY: the tests' ranges are of memory they hold while they ask.
+        (unsafe { ram.access(gpa, &mut byte, false) } == Reached::Ram).then_some(byte[0])
+    }
+
+    /// Do: map 64 pages as guest RAM and unmap pages 16 to 31 of them, as a virtio-mem block
+    /// is unplugged from a larger range (memory.rs `unplug`), then map 8 pages of other
+    /// memory over pages 40 to 47. Expect no access of the emulator's to reach the unplugged
+    /// block, which the host may have decommitted, its neighbours still reached, and the
+    /// pages mapped anew reached at their new memory, never at what they replaced
+    /// (platform-05).
+    #[test]
+    fn the_emulator_reaches_no_memory_unmapped_or_replaced() {
+        let (_block, range) = memory(64, 0, RWX);
+        let (_other, over) = memory(8, 40 * PAGE, RWX);
+        let mut ram = Ram::default();
+        ram.map(range);
+        ram.unmap(16 * PAGE, 16 * PAGE);
+        assert_eq!(read(&ram, 15 * PAGE), Some(15), "the block's neighbour below");
+        assert_eq!(read(&ram, 16 * PAGE), None, "the unplugged block's first page");
+        assert_eq!(read(&ram, 31 * PAGE + PAGE - 1), None, "its last byte");
+        assert_eq!(read(&ram, 32 * PAGE), Some(32), "its neighbour above");
+        // An access across the block's edge is in no one range: the devices take it.
+        let mut two = [0u8; 2];
+        // SAFETY: memory this test holds.
+        assert_eq!(
+            unsafe { ram.access(16 * PAGE - 1, &mut two, false) },
+            Reached::Elsewhere
+        );
+        ram.map(over);
+        assert_eq!(
+            read(&ram, 40 * PAGE),
+            Some(0),
+            "the memory mapped over it, page 0"
+        );
+        assert_eq!(read(&ram, 47 * PAGE), Some(7));
+        assert_eq!(read(&ram, 48 * PAGE), Some(48), "past it, the first range still");
+    }
+
+    /// Do: map 4 pages read-only as guest memory, as read-only virtio-pmem is
+    /// (`map_device_memory`, writable false), and have the emulator write a byte there, then
+    /// read it. Expect the write to reach no memory, the devices taking it as they take the
+    /// guest's own write there, the bytes unchanged, and the read made (platform-06).
+    #[test]
+    fn the_emulator_writes_no_memory_the_guest_may_only_read() {
+        let (bytes, range) = memory(4, 0x10_0000, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute);
+        let mut ram = Ram::default();
+        ram.map(range);
+        let mut byte = [0xaa];
+        // SAFETY: memory this test holds.
+        assert_eq!(
+            unsafe { ram.access(0x10_0000 + 2 * PAGE, &mut byte, true) },
+            Reached::Elsewhere
+        );
+        assert_eq!(
+            bytes[(2 * PAGE) as usize],
+            2,
+            "the guest's read-only bytes written"
+        );
+        assert_eq!(read(&ram, 0x10_0000 + 3 * PAGE), Some(3));
     }
 
     /// Do, on a real partition: map 64 pages of RAM, watch its guest's writes (the range
