@@ -1120,7 +1120,9 @@ fn instead(args: &[OsString]) -> ExitCode {
         Ok(bin) => bin,
         Err(e) => return failed(&e),
     };
-    match std::process::Command::new(&bin).args(args).status() {
+    match shards_ipc::spawn_std(std::process::Command::new(&bin).args(args))
+        .and_then(|mut child| child.wait())
+    {
         Ok(status) => ExitCode::from(status.code().and_then(|c| u8::try_from(c).ok()).unwrap_or(1)),
         Err(e) => failed(&format!("{}: {e}", bin.display())),
     }

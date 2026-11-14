@@ -24671,3 +24671,39 @@ shards-registry --all-targets -- -D warnings`, macOS arm64 (adas-mac-studio-3.lo
 values, each from RFC 6298 §2.2 on the path's first connect: 10 ms gives 30 ms, held at
 the 100 ms minimum; 150 ms gives 450 ms; 1.5 s gives 4.5 s, held at the 2 s maximum; a
 handshake teaches the race nothing. This is unit evidence, not a dial over a real network.
+
+### M578. Windows' emulator registry, spawn inheritance, slot waits, versioned names and raised CPU sets (platform-05..10, D140, D191, D195, D196)
+
+Taken over from the Codex lane while jupiter was offline; run in the Windows 11 x86_64
+container on adacachy (Windows 10.0.26200.8037, 8 CPUs, NTFS, Rust 1.98.1,
+x86_64-pc-windows-msvc), `cargo test -p <crate> --lib -- <filter>` through
+[run.ps1](measurements/platform-fixes/windows-0510/run.ps1). WHP is not in the container: no
+partition was made, and the WHP tests that need one skipped.
+
+- **Red** at 190b49d9b ([log](measurements/platform-fixes/windows-0510/red-190b49d9b.log)),
+  each new test failing at its finding's assertion, 7 of 7: an unplugged sub-block still
+  reached by the emulator (05); the emulator writing read-only memory (06); a confined
+  spawn's lent stdout left inheritable, and a std child holding a pipe end made inheritable
+  for another (07); a surrogate-named directory unwatched (08); `newest_in(STATE)` missing
+  `state.~1` (09); three raised spinners pinned to one CPU raised for 3 s (10).
+- **Green**: shards-ipc `windows::tests` and `slots::` 44 passed, 1 ignored (a measurement),
+  at 9f95ae7db ([log](measurements/platform-fixes/windows-0510/green-9f95ae7db.log)); shards-vmm
+  `hv::whp::`, `platform::windows_files::`, `platform::windows_thread::` 29 passed, 1 ignored,
+  at f0cd08598 ([log](measurements/platform-fixes/windows-0510/green-vmm-f0cd08598.log)).
+- **Mutations** at f0cd08598, each guard removed alone and its test run
+  ([patches](measurements/platform-fixes/windows-0510/mutations/),
+  [log](measurements/platform-fixes/windows-0510/mutations-f0cd08598.log)): 10 of 10 fail at
+  their assertions: an exact-match unmap and a map without a cut (05), no write check (06),
+  the lent handle made inheritable and an unguarded `spawn_std` (07), a lossy watch name and
+  swallowed watch failures (08), names matched by case and collisions ignored (09), the pool
+  ignored (10).
+- shards-registry `credentials` 12 passed on Windows at 74a405cd, its helpers started through
+  `spawn_std` ([log](measurements/platform-fixes/windows-0510/registry-74a405cd.log)).
+- **Clippy** at 6b40699fa, `-p shards-vmm -p shards-ipc -p shards-registry -p shards-api -p shards
+  --all-targets -- -D warnings`, clean: `cargo xwin clippy` for x86_64-pc-windows-msvc and
+  aarch64-pc-windows-msvc, and `cargo clippy` for aarch64-apple-darwin, on
+  adas-mac-studio.local ([clippy.sh](measurements/platform-fixes/windows-0510/clippy.sh)).
+
+Owed to ROOT, unrun: the real-WHP guest routes of 05 and 06 (D140); 09's sensitivity query's
+cost on a restore (D196); 10's host-wide owner across VM processes, an R02 decision, and its
+jupiter measurement (D191); the 8-target lint, CI and Windows E2E on main.

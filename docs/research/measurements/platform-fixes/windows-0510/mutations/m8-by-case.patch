@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/platform/windows_files.rs b/crates/vmm/src/platform/windows_files.rs
+index acaa9fc67..4e832e5bc 100644
+--- a/crates/vmm/src/platform/windows_files.rs
++++ b/crates/vmm/src/platform/windows_files.rs
+@@ -473,7 +473,7 @@ fn naming(dir: &File) -> io::Result<Naming> {
+         return Ok(if info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR != 0 {
+             Naming::ByCase
+         } else {
+-            Naming::IgnoringCase
++            Naming::ByCase
+         });
+     }
+     let e = io::Error::last_os_error();

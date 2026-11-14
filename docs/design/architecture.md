@@ -12256,6 +12256,19 @@ and bind tests on its CI runners. 4 (built): shards' own shares' DAX windows on 
 
 ### D196. Snapshots of WHP microVMs: a partition saved and restored (built)
 
+**2026-11-14, platform-09 fixed** (6057451cf, 2f88e39b6; red 9c1632a7f; PM M578). A name's
+versions (`write_in`, `newest_in`, `remove_in`) are the entries its directory takes for
+`name.~N`: ignoring case (CompareStringOrdinal, Windows' ordinal file-name comparison),
+unless the directory is case-sensitive (FILE_CASE_SENSITIVE_INFO,
+FILE_CS_FLAG_CASE_SENSITIVE_DIR); a file system or Windows that keeps no per-directory
+sensitivity (FAT; before Windows 10 1803) refuses the question and tells no names apart by
+case. And `land` moves its next version past each one a rename found taken
+(`next_version`), so a write ends at the first free name even where the file system takes
+for the name an entry the comparison does not (a volume's own $UpCase table, older than the
+system's). No literal. Owed to ROOT (R14): the cost of the directory's sensitivity query
+each read adds to a restore's `newest_in`, on jupiter, `benches/restore.rs` before and after,
+n=100 interleaved.
+
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 2a): a microVM on Windows took no snapshot (D140), so `run --kernel --snapshot-dir`, `shards
 restore` and everything built on them, templates (D25) and warm pools (D26), were Unix's alone.
@@ -12465,6 +12478,25 @@ M421); `platform::windows` `a_file_kept_cached_is_a_view_of_all_of_it_until_it_d
 waiter lifecycle and chosen pipe quotas require jupiter red/green checks and an online
 capacity/admission design. [Commands and held design](../research/measurements/platform-fixes/held.md)
 retain those obligations; no Windows check or quota replacement is claimed completed.
+
+**2026-11-14, platform-07 and 08 fixed; 11 open** (PM M578, Windows 11 x86_64 unit tests).
+- **07** (7905b3c03; red 5260eea78). A confined spawn gives its child copies of the standard
+  handles it is lent, inheritable for its handle list alone, as `spawn_env` did; the caller's
+  handles are left as lent. A child of std's Command inherits every inheritable handle of
+  this process (CreateProcessW bInheritHandles TRUE, Rust library/std/src/sys/process/windows.rs;
+  std's CREATE_PROCESS_LOCK is private and `CommandExt::inherit_handles` unstable, issue
+  146407), so each shards spawn holds `INHERITING` to read from its first inheritable handle
+  until it has closed them, and `shards_ipc::spawn_std`, through which every production std
+  spawn on Windows now goes (the registry's and AWS's credential helpers, the SBOM scan, the
+  API client's boot, the Windows VM-binary handoff), holds it to write while std makes its
+  child. A new production std spawn must go through `spawn_std`; nothing enforces it but
+  review (a workspace `disallowed-methods` would also hold every test's spawns). No literal.
+- **08** (6ff8f51f4; red 10bf97ed7). A waiting client watches its list's directory by its
+  own name (its OsStr encoded as UTF-16, not through `to_string_lossy`), says no list only
+  where the directory is absent (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND) and refuses any
+  other failed watch; its watch is made before its WaitNamedPipe thread, so a call starts one
+  thread at most and leaves one only where the daemon named its lists anew. No literal.
+- **11** stays open (held.md).
 
 **Why.** Every feature on every host (the user, 2026-10-27; docs/audit/2026-10-27_platform-parity.md
 row 1): on Windows `shards` had no daemon, so no `run IMAGE` and none of the commands of its
@@ -13053,6 +13085,31 @@ online derivation. [Held findings and cold-start/admission design owed](../resea
 record the unavailable Windows checks, normal-priority cold state, measured clock/cost
 inputs and still-unresolved cross-process budget owner. No scheduler change or new
 performance claim is made by that design record.
+
+**2026-11-14, platform-10 fixed within a process; across processes owed; 11 open** (9f95ae7db,
+f0cd08598; red 190b49d9b; PM M578). The Windows governor also keeps a pool for each set of
+CPUs its raised threads may run on (GetThreadGroupAffinity: a processor group and a mask,
+read at every look): credited half of each of those CPUs' time, charged what its threads ran
+raised, kept to half a period of each and none; a thread is raised only while its own credit
+and its set's pool both have some. Values: the half is the existing fair-share derivation (a
+raised thread beside one busy host thread), now of each CPU; the count of CPUs is the
+thread's own affinity, learned at each look, never assumed; the cap is half a `PERIOD` of
+each CPU, as a thread's own is (PERIOD itself is platform-11's, open). Cold start: a set's
+pool starts full, as a thread's credit does, so a burst of raised threads takes half a period
+of each CPU at most before the first look. Failure: a thread whose affinity cannot be read as
+it is raised is refused (`raise_current` errs, the thread stays at its priority); one unread
+at a later look keeps the set last read. Tested by unit
+(`platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it`,
+three raised spinners pinned to one CPU beside a normal one, and `a_pool_is_half_of_its_cpus_time`).
+Pools are per process: another VM process's raised threads draw on pools of their own. Owed
+to ROOT, an R02 decision before any code: the host-wide owner (each VM process is in an
+AppContainer of its own, `shards.vm.<pid>.<n>`, so no named object is shared; candidates are
+a section the spawner creates once per user session and hands every VM process with its
+grants, or the daemon's hold governing every VM's raised threads), then on jupiter: two and
+four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask of one,
+`start /affinity 1`, whose microVMs get its mask's CPUs, D191) with a busy guest each, beside a normal-priority host spinner on that CPU, and 2x the host's CPUs of busy
+vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
+changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
 
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
@@ -17999,6 +18056,23 @@ The `vsock` tests run through the spawner's grants on Windows: both directions, 
 at once, refusals.
 
 ### D140. microVMs on Windows hosts: the WHP backend
+
+**2026-11-14, platform-05/06 fixed** (3fb6b0c07; red d18cc5040, PM M578). Windows'
+instruction emulator (`Vcpu::emulate`, for the string instructions shards' decoder refuses)
+reaches guest memory through `hv::whp::Ram`: disjoint ranges, a map cutting what it replaces
+before it is recorded (WHvMapGpaRange "replaces any previous mappings"), an unmap cutting its
+part out of a larger range (a virtio-mem block unplugged, whose memory the host then
+decommits), a DAX range mapped unrecorded cutting what it replaces; each access made under
+the registry's lock, which an unmap takes before it returns, so none is under way as the
+memory goes. A write reaches memory only where its range is mapped writable; the emulator's
+write to read-only memory (read-only virtio-pmem, a PAGE_READONLY view) goes to the devices,
+as the guest's own write there exits to them, and as KVM gives a write to a KVM_MEM_READONLY
+slot to its VMM (Documentation/virt/kvm/api.rst). No literal is added. Tested by unit
+(`hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced`,
+`the_emulator_writes_no_memory_the_guest_may_only_read`, Windows 11 x86_64). Owed to ROOT:
+the real-WHP routes, which no test yet drives: a guest's REP MOVSB across a virtio-mem block
+unplugged from a larger range, and its REP STOSB into read-only pmem, each on jupiter's WHP
+(x86_64), the bytes unchanged and the VM process alive.
 
 AGENTFILE_ARCH.md §11 row 975 (`RUN` on Windows hosts) starts here: shards' VMM drives the
 Windows Hypervisor Platform on x86_64 Windows, as it drives KVM and Hypervisor.framework
