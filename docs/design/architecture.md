@@ -1212,6 +1212,15 @@ for the exit status.
     and verifies retained offers/PID and removal of the old remainder after it. See
     [runs-fixes](../research/measurements/runs-fixes/README.md); live daemon/VM checks
     remain ROOT's. This adds no timeout, polling, cache or platform manager.
+  - *Handed whole across a launch* (ROOT, 2026-11-14). A VM process does not start in the
+    daemon's directory: macOS App Sandbox starts it in its container's `Data` directory, so
+    a `./…` path handed it named another file there, and every HVF run of an image with
+    agents ended 125 (`<chain>.over-<hex>.erofs: No such file or directory`; bisected to
+    this entry's d3b11258a, member_exec at 8fdd66512). `launch.rs` `absolute` makes each word
+    before a VM's `--` that is `.` or `./…` absolute from the launching process's working
+    directory as it launches, which names the home where it is then, renamed or not; the
+    guest's words past `--` stay as given. Red: HVF member_exec at 8fdd66512; unit
+    `launch::tests::a_vms_paths_from_here_are_handed_it_whole_and_its_guests_words_as_given`.
   - It admits only clients of its own user: its slots are FIFOs of mode 0600 in a
     directory of 0700, and a connection's peer is checked besides (`getpeereid`,
     `SO_PEERCRED`): a home in a shared directory must not let another user run commands as
