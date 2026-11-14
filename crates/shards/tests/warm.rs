@@ -371,6 +371,28 @@ impl Warm {
     /// [`Warm::run`], with the spec's `setup` entries (shards_abi::run::Spec).
     #[track_caller]
     fn run_with(&self, argv: &[&str], interactive: bool, setup: Vec<Vec<u8>>) -> Client {
+        let head = shards_ipc::RunHead {
+            flags: if interactive {
+                shards_ipc::RUN_INTERACTIVE
+            } else {
+                0
+            },
+            ..Default::default()
+        };
+        self.run_given(argv, head, setup, &[])
+    }
+
+    /// [`Warm::run_with`], its request's head `head` (its log's retention given here) and
+    /// `extra` the files its flags bring after its client's stdio.
+    #[track_caller]
+    fn run_given(
+        &self,
+        argv: &[&str],
+        head: shards_ipc::RunHead,
+        setup: Vec<Vec<u8>>,
+        extra: &[shards_ipc::fd::BorrowedFd<'_>],
+    ) -> Client {
+        let interactive = head.flags & shards_ipc::RUN_INTERACTIVE != 0;
         let spec = Spec {
             argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
             env: vec![b"PATH=/bin".to_vec()],
@@ -395,30 +417,21 @@ impl Warm {
         // The log's retention, which a run without a log has no use for; its first
         // segment, and memory to plug: none (D148).
         shards_ipc::RunHead {
-            flags: if interactive {
-                shards_ipc::RUN_INTERACTIVE
-            } else {
-                0
-            },
             log_size: 20 << 20,
             log_files: 5,
-            ..Default::default()
+            ..head
         }
         .encode_into(&mut payload);
         payload.extend(spec.encode());
         let handed = shards_ipc::handed(&theirs).unwrap();
-        shards_ipc::send(
-            &self.daemon,
-            kind::RUN,
-            &payload,
-            &[
-                handed.as_fd(),
-                stdin_r.as_fd(),
-                stdout_w.as_fd(),
-                stderr_w.as_fd(),
-            ],
-        )
-        .unwrap();
+        let mut fds = vec![
+            handed.as_fd(),
+            stdin_r.as_fd(),
+            stdout_w.as_fd(),
+            stderr_w.as_fd(),
+        ];
+        fds.extend_from_slice(extra);
+        shards_ipc::send(&self.daemon, kind::RUN, &payload, &fds).unwrap();
         // Ours stay open until the warm VM has taken them, as the daemon's do.
         let taken = told(&self.daemon, self.child.id(), "its TAKEN")
             .unwrap()
@@ -438,8 +451,23 @@ impl Warm {
     /// `status`, with what kept it from starting if it did not (`not_run`), then ends,
     /// leaving the daemon's socket.
     #[track_caller]
-    fn ends(mut self, status: u8, not_run: Option<&str>) {
+    fn ends(self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
+        let said = self.ended(started);
+        let mut expected = Vec::new();
+        if started {
+            expected.push((kind::STARTED, Vec::new()));
+        }
+        let mut done = vec![status];
+        done.extend_from_slice(not_run.unwrap_or_default().as_bytes());
+        expected.push((kind::DONE, done));
+        assert_eq!(said, expected);
+    }
+
+    /// The warm VM ends, having served its run: what it told the daemon of it, past its
+    /// records, its working set and its one final use, each checked, in order.
+    #[track_caller]
+    fn ended(mut self, started: bool) -> Vec<(u8, Vec<u8>)> {
         // While a VM process of this test's goes on ([`Patience`]).
         let mut patience = Patience::own();
         let exited = loop {
@@ -504,14 +532,7 @@ impl Warm {
             !started || records.lines().any(|l| l.split('\t').nth(3) == Some("exec")),
             "no exec of its command in {records:?}"
         );
-        let mut expected = Vec::new();
-        if started {
-            expected.push((kind::STARTED, Vec::new()));
-        }
-        let mut done = vec![status];
-        done.extend_from_slice(not_run.unwrap_or_default().as_bytes());
-        expected.push((kind::DONE, done));
-        assert_eq!(said, expected);
+        said
     }
 }
 
@@ -845,6 +866,44 @@ fn a_warm_vm_that_takes_no_run_tells_no_final_use() {
         said.map(|m| m.kind)
     );
     let _ = warm.child.wait();
+}
+
+/// A run a warm VM took, whose setup then failed, is told its end as any other (D260): its
+/// owner reads why (`UNSERVED`) and one `DONE`, of the status its client exits with for it,
+/// its client that status and why, and the VM ends, telling its final use. Here its group's
+/// CPU budget (D183) is an empty file, which no budget is. As first built the VM told
+/// nothing of a run it took and then could not set up: its owner read TAKEN, its final use
+/// and its link's end, its client its connection's end.
+#[test]
+fn a_run_a_warm_vm_took_and_could_not_set_up_is_told_its_end() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let dir = TempDir::new("warm-unset");
+    let template = template(&dir);
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    let group = File::create(dir.join("group")).unwrap();
+    let head = shards_ipc::RunHead {
+        group: true,
+        ..Default::default()
+    };
+    let mut client = warm.run_given(
+        &["/bin/testguest", "exit", "0"],
+        head,
+        Vec::new(),
+        &[group.as_fd()],
+    );
+    assert_eq!(client.exit(), 125);
+    let mut err = String::new();
+    client.stderr.read_to_string(&mut err).unwrap();
+    let why = "its group's CPU budget: a group's CPU budget of 0 bytes, short of its";
+    assert!(err.starts_with(&format!("shards: {why}")), "{err:?}");
+    let said = warm.ended(false);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0].0, kind::UNSERVED, "{said:?}");
+    assert!(String::from_utf8_lossy(&said[0].1).starts_with(why), "{said:?}");
+    assert_eq!(said[1], (kind::DONE, vec![125]));
 }
 
 /// A warm VM lets go of its client's stdio before it sends the exit status, so a pipeline

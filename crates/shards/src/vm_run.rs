@@ -2107,10 +2107,11 @@ fn serve_workload(
         static TIMING: workload::Timing = workload::Timing::new();
         let to_guest = &TO_GUEST;
         let warm = matches!(command, Command::Warm(..));
-        // A warm VM's owner hears what its machine used in all once it is down (D260's final
-        // use), on a handle of the link of its own, which the VM keeps as it takes its run
-        // (`warm::receive`): the run's goes with its workload. A VM that took none tells none.
-        static FINAL_LINK: std::sync::OnceLock<crate::warm::Link> = std::sync::OnceLock::new();
+        // The run a warm VM took (`warm::receive`, as it says TAKEN): its end goes to its owner
+        // once (`warm::Taken::end`), and what its machine used in all once it is down (D260's
+        // final use) on a handle of the link of its own, from this thread, beside the
+        // workload's end, in no order between them. A VM that took none tells neither.
+        static TAKEN: std::sync::OnceLock<crate::warm::Taken> = std::sync::OnceLock::new();
         if let Command::Given { interactive, .. } = &command {
             // SAFETY: isatty(3) on this process's stdin.
             let reads_terminal = *interactive && std::io::IsTerminal::is_terminal(&std::io::stdin());
@@ -2193,8 +2194,6 @@ fn serve_workload(
                         )
                     }
                     Command::Warm(link, resumed) => {
-                        let client: std::sync::OnceLock<Option<shards_ipc::Stream>> =
-                            std::sync::OnceLock::new();
                         let engines = std::cell::Cell::new(engines);
                         let mcps = std::cell::Cell::new(mcps);
                         let started = || {
@@ -2205,32 +2204,24 @@ fn serve_workload(
                         };
                         // The daemon and the client hear how the command ended as soon as it
                         // has, before its layer is saved (D37): once, here or after.
-                        let finished = std::sync::atomic::AtomicBool::new(false);
                         let finish = |served: &Result<workload::Ended, String>| {
-                            if finished.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                                return;
-                            }
-                            let Some(connection) = client.get() else {
+                            let Some(taken) = TAKEN.get() else {
                                 return;
                             };
-                            let timing = timing
-                                .asked
-                                .load(std::sync::atomic::Ordering::Relaxed)
-                                .then(|| timing_json(&stopper, Some(timing)));
-                            // What the run touched goes to the daemon with its end, for the
-                            // template it was restored from, which no VM writes (D30). A
-                            // failure costs later runs their prefetch, and nothing else.
-                            let working_set = stopper.take_working_set().unwrap_or_else(|e| {
-                                shards_vmm::debug!("{e}");
-                                None
+                            taken.end(&link, served, || {
+                                let timing = timing
+                                    .asked
+                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                    .then(|| timing_json(&stopper, Some(timing)));
+                                // What the run touched goes to the daemon with its end, for the
+                                // template it was restored from, which no VM writes (D30). A
+                                // failure costs later runs their prefetch, and nothing else.
+                                let working_set = stopper.take_working_set().unwrap_or_else(|e| {
+                                    shards_vmm::debug!("{e}");
+                                    None
+                                });
+                                (timing, working_set)
                             });
-                            crate::warm::finish(
-                                &link,
-                                connection.as_ref(),
-                                served,
-                                timing.as_deref(),
-                                working_set.as_ref(),
-                            );
                         };
                         let saved = |used| crate::warm::layer_saved(&link, used);
                         // A layer that stays in its file (D190) is the daemon's to read
@@ -2246,13 +2237,14 @@ fn serve_workload(
                         let members = |ended: &[u8]| crate::warm::member_ended(&link, ended);
                         let readiness = |ready: &[u8]| crate::warm::workload_ready(&link, ready);
                         let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
-                        let ask = || {
+                        let set_up = || {
                             // A template this VM saved is in place before the daemon hears the
                             // VM is ready, and settles it: its commit runs as the guest does.
                             // Its directory is given up before the run comes.
                             // Its directory is given up before the daemon hears it is ready,
-                            // and out of its reach before it takes the run. What fails is
-                            // said here, in its daemon's log, before its link closes.
+                            // and out of its reach before it takes the run. What fails before
+                            // it takes the run is said here, in its daemon's log, before its
+                            // link closes; what fails after, its end says (`warm::Taken::end`).
                             stopper.wait_for_snapshot();
                             seal().inspect_err(|e| report(e))?;
                             let request = crate::warm::receive(
@@ -2260,9 +2252,13 @@ fn serve_workload(
                                 to_guest,
                                 &|| moved().inspect_err(|e| report(e)),
                                 resumed,
-                                &FINAL_LINK,
+                                &TAKEN,
                             )
-                            .inspect_err(|e| report(e))?;
+                            .inspect_err(|e| {
+                                if TAKEN.get().is_none() {
+                                    report(e);
+                                }
+                            })?;
                             layer_stays.store(
                                 request.layer_out.is_some() && crate::vm_run::layered(),
                                 std::sync::atomic::Ordering::Relaxed,
@@ -2279,7 +2275,7 @@ fn serve_workload(
                                         .ok_or_else(|| "a resumed run's tokens, malformed".to_string())
                                 })
                                 .transpose()
-                                .inspect_err(|e| report(e))?;
+                                ?;
                             let (tokens, engine, mcp) = match &brought {
                                 Some((run, kept)) => (
                                     Some(run.to_vec()),
@@ -2295,7 +2291,7 @@ fn serve_workload(
                             drop(brought);
                             let engine_served = match (engines.take(), engine) {
                                 (Some(engines), Some(token)) => {
-                                    crate::warm::serve_engine(&link, token, engines).inspect_err(|e| report(e))?;
+                                    crate::warm::serve_engine(&link, token, engines)?;
                                     true
                                 }
                                 _ => false,
@@ -2304,7 +2300,7 @@ fn serve_workload(
                             // before its guest hears of the run; where not, its port is let
                             // go, and refuses. A resumed run's token is its save's (D176).
                             if let (Some(mcps), Some(token)) = (mcps.take(), mcp) {
-                                crate::warm::serve_mcp(&link, token, mcps).inspect_err(|e| report(e))?;
+                                crate::warm::serve_mcp(&link, token, mcps)?;
                             }
                             // The run's own most memory to plug, before its guest hears of
                             // it (D148), none included: the template's is the host's. A VM
@@ -2317,14 +2313,14 @@ fn serve_workload(
                             // guest does.
                             stopper
                                 .hold_rate(u64::from(request.cpus).saturating_mul(vm::MILLI_PER_CPU))
-                                .inspect_err(|e| report(e))?;
+                                ?;
                             // Its group's CPU budget too (D183), which every microVM of
                             // the group charges, before its guest hears of the run.
                             if let Some(file) = request.group {
                                 shards_vmm::vm::group::GroupCpu::map(file)
                                     .map_err(|e| format!("its group's CPU budget: {e}"))
                                     .and_then(|group| stopper.hold_group(group))
-                                    .inspect_err(|e| report(e))?;
+                                    ?;
                             }
                             // Its I/O limits, before its guest hears of the run (D178).
                             IO.set(request.io.0, request.io.1);
@@ -2342,7 +2338,7 @@ fn serve_workload(
                                     stopper
                                         .stage_layer(file)
                                         .map_err(|e| format!("its writable layer: {e}"))
-                                        .inspect_err(|e| report(e))?;
+                                        ?;
                                     (None, true)
                                 }
                                 layer_in => (layer_in, false),
@@ -2356,12 +2352,12 @@ fn serve_workload(
                                 Some(file) if resumed => stopper
                                     .restore_swap(file)
                                     .map_err(|e| format!("its swap: {e}"))
-                                    .inspect_err(|e| report(e))?,
+                                    ?,
                                 Some(file) => {
                                     if let Some(len) = stopper
                                         .attach_swap(file)
                                         .map_err(|e| format!("its swap: {e}"))
-                                        .inspect_err(|e| report(e))?
+                                        ?
                                     {
                                         spec.setup.push(format!("swap={len}").into_bytes());
                                     }
@@ -2374,7 +2370,7 @@ fn serve_workload(
                             // such a guest.
                             let conns = match &tokens {
                                 Some(tokens) => {
-                                    let conns = workload::await_resumed(tokens).inspect_err(|e| report(e))?;
+                                    let conns = workload::await_resumed(tokens)?;
                                     let abi = stopper.guest_abi();
                                     if abi != Some(shards_abi::IDENTITY) {
                                         let spoken = abi.map_or_else(|| "none".to_string(), |abi| format!("{abi:016x}"));
@@ -2394,7 +2390,6 @@ fn serve_workload(
                             timing
                                 .asked
                                 .store(request.timing, std::sync::atomic::Ordering::Relaxed);
-                            let _ = client.set(request.client);
                             Ok(workload::Asked {
                                 spec,
                                 capture: request.capture,
@@ -2415,6 +2410,16 @@ fn serve_workload(
                                 resumed: conns,
                             })
                         };
+                        // A run taken whose setup failed leaves its guest waiting for a
+                        // command that never comes: its machine stops, as one with no run
+                        // taken does below, and its end is told after `serve` returns.
+                        let ask = || {
+                            set_up().inspect_err(|_| {
+                                if TAKEN.get().is_some() {
+                                    stopper.stop();
+                                }
+                            })
+                        };
                         let ports = (!resumed).then_some((&listener, signals));
                         let served = workload::serve(
                             ports,
@@ -2423,14 +2428,14 @@ fn serve_workload(
                             timing,
                             &guest_abi,
                         );
-                        // Some once the request came: its client, if it has one. A run that
-                        // failed before its end was told is told now.
-                        let outcome = match client.get() {
+                        // A run taken that failed before its end was told, its setup after
+                        // TAKEN among them, is told now: exactly one end on its link.
+                        let outcome = match TAKEN.get() {
                             Some(_) => {
                                 finish(&served);
                                 (served, true)
                             }
-                            // The daemon went without a request: nobody will ever send one.
+                            // No run taken: its daemon reads the VM's end where TAKEN would be.
                             None => {
                                 stopper.stop();
                                 (served, false)
@@ -2463,7 +2468,7 @@ fn serve_workload(
         // process lets go of its memory: what it used in all, read then, is its whole.
         let reason = running.wait_then(|| {
             crate::warm::tell_kept();
-            if let Some(link) = FINAL_LINK.get() {
+            if let Some(link) = TAKEN.get().and_then(crate::warm::Taken::final_link) {
                 crate::warm::final_use(link, &final_use_of(whole_guest_times));
             }
         });
