@@ -36,7 +36,7 @@ fn main() -> ExitCode {
     // Started through its descriptor, its name is that descriptor's number until it takes
     // its own; a VM runs without it, said once.
     #[cfg(target_os = "linux")]
-    if let Err(e) = shards_vmm::platform::name_after_executable() {
+    if let Err(e) = shards_ipc::name_after_executable() {
         let _ = writeln!(std::io::stderr(), "shards-vm: naming this process: {e}");
     }
     // Before it reads anything: its arguments name files it has yet to open.

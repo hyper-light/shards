@@ -2522,37 +2522,45 @@ pub fn measured(what: &str, times: &[Duration]) {
     );
 }
 
-/// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
-/// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
-pub fn vm_processes_under(client: u32) -> Vec<u32> {
-    vm_processes_among(&processes(), client)
+/// The VM processes this test's process started itself, by the IDs their starts gave
+/// ([`OwnVm`]): a [`Party::own`]'s, with what descends from them. Each is known by its
+/// identity, never its name: a Linux helper started through its descriptor was named by it
+/// (`5`), and a party found by the name `shards-vm` had none (D209).
+static OWN_VMS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// A VM process this test's process started (`run --kernel` or `restore`, which becomes it on
+/// Unix and starts it on Windows; a warm VM; a stand-in for one), one of this test's own
+/// ([`Party::own`]) until this drops, which its owner does once it has ended it.
+pub struct OwnVm(u32);
+
+impl OwnVm {
+    /// Process `pid`, just started by this test's process.
+    pub fn started(pid: u32) -> OwnVm {
+        OWN_VMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pid);
+        OwnVm(pid)
+    }
 }
 
-/// [`vm_processes_under`] `client`, among the processes `listed`.
-fn vm_processes_among(listed: &[(u32, u32, String)], client: u32) -> Vec<u32> {
-    let is_vm = |name: &str| {
-        let name = name
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(name)
-            .to_ascii_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        name == "shards-vm" || name == "shards-vm-gpu"
-    };
-    let mut under = vec![client];
-    let mut i = 0;
-    while let Some(&parent) = under.get(i) {
-        for (pid, ppid, _) in listed {
-            if *ppid == parent && !under.contains(pid) {
-                under.push(*pid);
-            }
-        }
-        i += 1;
+impl Drop for OwnVm {
+    fn drop(&mut self) {
+        OWN_VMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
     }
-    listed
+}
+
+/// This test's own VM processes now ([`OwnVm`]).
+fn own_vms() -> Vec<u32> {
+    OWN_VMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter(|(pid, _, name)| under.contains(pid) && is_vm(name))
-        .map(|(pid, ..)| *pid)
+        .copied()
         .collect()
 }
 
@@ -3182,8 +3190,8 @@ enum Members {
     /// A client and what descends from it: a command [`run_command`] runs, or a `run
     /// --kernel` or `restore` (the VM process on Unix, its starter on Windows).
     Client(u32),
-    /// This test's own VM processes (`shards-vm`, `shards-vm-gpu` under the test's process:
-    /// `run --kernel`'s, `restore`'s, warm.rs' warm VM) and what descends from them: a
+    /// This test's own VM processes, by the IDs their starts gave ([`OwnVm`]: `run
+    /// --kernel`'s and `restore`'s [`Vm`], warm.rs' warm VM) and what descends from them: a
     /// [`Patience`]'s, and a guest's stream's ([`Following`]).
     Own,
     /// None: a machine this test's process runs (`vm::start`), whose vCPUs and devices are
@@ -3288,7 +3296,7 @@ impl Party {
         };
         let own = match self.members {
             Members::Client(client) => vec![client],
-            Members::Own => vm_processes_among(&listed, std::process::id()),
+            Members::Own => own_vms(),
             Members::Machine => Vec::new(),
             Members::Started => listed
                 .iter()
@@ -5135,6 +5143,8 @@ pub fn hub_held(
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
 pub struct Vm {
     child: std::process::Child,
+    /// One of this test's own VM processes until it drops, after its child is ended.
+    _own: OwnVm,
     lines: std::sync::mpsc::Receiver<String>,
     pub seen: Vec<String>,
     /// Every line it has printed, read or not: what a test that stalls says.
@@ -5334,6 +5344,7 @@ impl Vm {
             });
         }
         Vm {
+            _own: OwnVm::started(child.id()),
             child,
             lines,
             seen: Vec::new(),

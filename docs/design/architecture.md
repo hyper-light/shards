@@ -3030,14 +3030,17 @@ build's, is refused, saying its path, its digest and why.
   - *Its name (2026-11-14).* An exec takes a process's name (`comm`, what ps(1), top(1)
     and pgrep(1) show) from its path's last part (fs/exec.c), so on Linux a helper started
     through `/proc/PID/fd/N` was named `N`: at a932bc894 on adacachy2 the VM process's
-    `/proc/PID/comm` read `5`, its `/proc/PID/exe` `…/helpers/<digest>/shards-vm`. The VM
-    process now names itself after its file as it starts, before it confines itself
-    (`platform::name_after_executable`: `/proc/self/exe`'s last part, prctl(2)
-    PR_SET_NAME, which keeps its first 15 bytes, so `shards-vm` and `shards-vm-gpu` whole).
-    A failure is said on stderr and the VM runs on: its name is no part of its work.
-    Unit test (Linux): `name_tests::a_process_named_after_its_executable_shows_its_files_name`.
-    Owed: the network process is still named `N` on Linux; it links no `shards_vmm`, and
-    where its naming lives is its own decision.
+    `/proc/PID/comm` read `5`, its `/proc/PID/exe` `…/helpers/<digest>/shards-vm`, and
+    ps(1) and top(1) showed it so. Each helper now names itself after its file as it starts,
+    the VM process before it confines itself (`shards_ipc::name_after_executable`, in the
+    one crate both helpers link: `/proc/self/exe`'s last part, prctl(2) PR_SET_NAME, which
+    keeps its first 15 bytes, so `shards-vm`, `shards-vm-gpu` and `shards-net` whole). A
+    failure is said on stderr and the helper runs on: its name is no part of its work. Unit
+    tests (Linux): shards-ipc's
+    `name_tests::a_process_named_after_its_executable_shows_its_files_name`, and helpers.rs'
+    `a_helper_started_through_its_descriptor_is_shown_by_its_name`, which starts this
+    build's VM and network processes through `Program::path`, as launch.rs, netproc.rs and
+    `run --kernel`'s and `restore`'s exec do, and reads each one's name before it is reaped.
 - A helper `SHARDS_VM_BINARY` names, or a carrier's beside its `shards` (D237, signed by
   the carrier, its bytes not those this build carries), is its giver's to answer for and
   is started as it is.
@@ -11774,11 +11777,16 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     handshake (W* 9.0 ms and 10.1 ms: "a guest's stream made no progress"), and vsock.rs'
     greeting 13.6 ms in (W* 12.7 ms), the guest then reading the host's close as `the host
     said ""`; HVF passed them. Two causes. (1) A stream's party, this test's own VM processes
-    (`Members::Own`), is found by its processes' names, `shards-vm`, and since 8cdbf4a05 a
+    (`Members::Own`), was found by its processes' names, `shards-vm`, and since 8cdbf4a05 a
     Linux VM process was named by the descriptor it was started through (`5`, runs-10's
     *Its name* above): its party had no process, its look said `Gone`, and its wait,
-    which judges a gone party still, refused it a W* past its last byte. The VM process now
-    has its own name. (2) Even found, its CPU was read as liveness from its start, so a wait
+    which judges a gone party still, refused it a W* past its last byte, silently. A test's
+    own VM processes are now known by identity, never by name: each start of one registers
+    the ID it gave (`common::OwnVm`: `Vm`'s `run --kernel` and `restore`, warm.rs' warm VM,
+    budget.rs' stand-in), held until its owner has ended it, and the party is those IDs and
+    what descends from them by parent ID; the name lookup (`vm_processes_under`) is gone.
+    harness.rs `a_tests_own_vm_processes_are_known_by_their_ids` holds it (a stand-in named
+    as the test binary is). (2) Even found, its CPU was read as liveness from its start, so a wait
     before any byte (`vsock_connect`'s handshake, `echo`'s, vsock.rs' greeting) had no
     progress to show for the vsock device's and the guest kernel's work on its answer, and
     the first answer of its kind refused a slower one: `Following` reads its party's CPU

@@ -24,28 +24,6 @@ pub fn disk_space(path: &std::path::Path) -> io::Result<(u64, u64)> {
     Ok((avail.saturating_mul(frsize), blocks.saturating_mul(frsize)))
 }
 
-/// Names this process after the file it runs, as ps(1), top(1) and pgrep(1) show it (its
-/// `comm`, prctl(2) PR_SET_NAME): a helper `shards` starts through its own descriptor,
-/// `/proc/PID/fd/N` (`helpers::Program::path`), is named `N` by its exec, which takes the
-/// name from the path's last part (fs/exec.c `__set_task_comm` of `bprm->filename`'s
-/// basename). Its file's own name is `/proc/self/exe`'s; Linux keeps the first 15 bytes of
-/// it (TASK_COMM_LEN, 16 with its NUL).
-#[cfg(target_os = "linux")]
-pub fn name_after_executable() -> io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let exe = std::env::current_exe()?;
-    let name = exe
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "an executable with no name"))?;
-    let name = std::ffi::CString::new(name.as_bytes())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "an executable's name with NUL"))?;
-    // SAFETY: prctl(2) PR_SET_NAME reads a NUL-terminated string, which it copies.
-    if unsafe { libc::prctl(libc::PR_SET_NAME, name.as_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 /// Waits until any of `sockets` has something to read, its end, or an error (poll(2)), or
 /// `timeout` passes: which did. For the few sockets one thread waits on at a time.
 pub fn wait_readable(
@@ -3770,28 +3748,5 @@ mod fault_around_tests {
         assert_eq!(unsafe { libc::munmap(host.cast(), len) }, 0);
         eprintln!("fault-around on again mapped {on} pages for one read");
         assert!(on >= 1);
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-#[allow(clippy::unwrap_used)]
-mod name_tests {
-    /// A thread that names itself after its executable is shown by that name, as much of it
-    /// as Linux keeps (15 bytes): a helper started through `/proc/PID/fd/N` is shown as `N`
-    /// until it does (the VM process at 8cdbf4a05, whose `comm` read `5`, so the tests' VM
-    /// processes, found by name, were none). Do: name a thread of this test process, whose
-    /// own name the harness set to the test's. Expect: its comm is this executable's name.
-    #[test]
-    fn a_process_named_after_its_executable_shows_its_files_name() {
-        let exe = std::env::current_exe().unwrap();
-        let name = exe.file_name().unwrap().to_str().unwrap();
-        let want = name.get(..name.len().min(15)).unwrap().to_string();
-        let shown = std::thread::spawn(|| {
-            super::name_after_executable().unwrap();
-            std::fs::read_to_string("/proc/thread-self/comm").unwrap()
-        })
-        .join()
-        .unwrap();
-        assert_eq!(shown.trim_end(), want);
     }
 }

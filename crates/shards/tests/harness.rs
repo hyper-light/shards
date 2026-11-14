@@ -1114,6 +1114,56 @@ fn cold_following(
     )
 }
 
+/// A test's own VM processes (`Party::own`: `Patience::own`, `Patience::of`, a guest's
+/// stream) are those its starts named (`common::OwnVm`), by their IDs, whatever their names:
+/// red at a932bc894 on adacachy2, where they were found by the name `shards-vm` and a Linux
+/// VM process started through its descriptor was named `5`, so a stream's party had none and
+/// its wait was refused while its VM process worked. Do: a stand-in, named as this test binary
+/// is, one of this test's own VM processes, busy for 100 ms and then for a second; wait for
+/// each one's end from one call site, its kind cold before the first. Expect: each wait holds
+/// until it ends, the second's past the W* the first taught.
+#[test]
+fn a_tests_own_vm_processes_are_known_by_their_ids() {
+    for (round, busy) in [Duration::from_millis(100), Duration::from_secs(1)]
+        .into_iter()
+        .enumerate()
+    {
+        let began = Instant::now();
+        let mut vm = stand_in_doing(&format!("busy {}", busy.as_millis()))
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let own = common::OwnVm::started(vm.id());
+        let mut patience = own_patience();
+        while vm.try_wait().unwrap().is_none() {
+            if !patience.holds() {
+                let _ = vm.kill();
+                let _ = vm.wait();
+                panic!(
+                    "a VM process busy for {busy:?} cut {:?} into its wait, round {round}: {}",
+                    began.elapsed(),
+                    patience.account()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        patience.done();
+        drop(own);
+        assert!(began.elapsed() >= busy, "it ended {:?} in", began.elapsed());
+    }
+}
+
+/// [`Patience::own`] at its caller's site, that kind made cold as [`cold_following`]'s is.
+#[track_caller]
+fn own_patience() -> Patience {
+    let file = common::WaitKind::kept_at(std::panic::Location::caller(), common::STATE, "");
+    static REMOVED: std::sync::Once = std::sync::Once::new();
+    REMOVED.call_once(|| {
+        let _ = std::fs::remove_file(&file);
+    });
+    Patience::own()
+}
+
 /// A guest's stream (`common::Following`: `vsock_connect`'s handshake, `echo`, vsock.rs'
 /// greeting) follows its party's CPU as progress until its first byte, while its peer starts
 /// it, and its bytes alone after (D209), as a streaming guest's wait does its first line
