@@ -1042,14 +1042,15 @@ fn a_templates_saver_leaves_nothing_the_daemon_writes_through() {
     std::fs::write(&canary, b"the user's\n").unwrap();
     let wrapper = victim.join("shards-vm");
     // Exec'd by the daemon's spawner.
-    common::program(
+    shards_testdir::program(
         &wrapper,
         &format!(
             "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = --snapshot-dir ]; then mkdir -p \"$a\" && ln -s '{canary}' \"$a/origin.json\"; fi\n  prev=$a\ndone\nexec '{vm}' \"$@\"\n",
             canary = canary.display(),
             vm = common::shards_vm().display()
         ),
-    );
+    )
+    .unwrap();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_VM_BINARY", wrapper.as_os_str()),

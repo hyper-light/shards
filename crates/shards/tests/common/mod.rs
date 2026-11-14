@@ -83,53 +83,6 @@ pub fn recv_from(socket: &std::net::UdpSocket, buf: &mut [u8]) -> io::Result<(us
     }
 }
 
-/// `command` spawned, though its program was written a moment ago: a child another
-/// thread forked meanwhile holds the file open to write until it execs, and exec says
-/// ETXTBSY until then (Linux; the fork window of every multithreaded process). That window
-/// is its host's to end, as the other thread's child execs: asked again until it has, each
-/// try paced as D215 paces a wait's looks (`shards_api::pause`).
-pub fn spawn(command: &mut std::process::Command) -> io::Result<std::process::Child> {
-    let began = Instant::now();
-    loop {
-        let tried = Instant::now();
-        match command.spawn() {
-            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(shards_api::pause(tried.elapsed(), began.elapsed(), Duration::MAX));
-            }
-            got => return got,
-        }
-    }
-}
-
-/// The program `text` at `path`, written by a process of its own: a file this one held open
-/// to write, a child another test's thread forked meanwhile would hold until it execs, and
-/// an exec of it, by this process or any other, would fail with ETXTBSY until then (Linux).
-#[cfg(unix)]
-pub fn program(path: &Path, text: &str) {
-    let mut writer = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(r#"cat > "$0" && chmod 755 "$0""#)
-        .arg(path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
-    assert!(writer.wait().unwrap().success(), "{} not written", path.display());
-}
-
-/// The program at `from`, copied to `to` as [`program`] writes one: by a process of its own
-/// on Unix, so that no child another test's thread forks holds it open to write.
-pub fn program_copy(from: &Path, to: &Path) {
-    #[cfg(unix)]
-    assert!(
-        Command::new("cp").arg(from).arg(to).status().unwrap().success(),
-        "{} not copied",
-        from.display()
-    );
-    #[cfg(windows)]
-    std::fs::copy(from, to).unwrap();
-}
-
 /// A home whose guest is the test kernel and init, recorded before its daemon starts.
 #[track_caller]
 pub fn home_with(name: &str) -> TempDir {
@@ -1641,7 +1594,9 @@ fn binaries() -> &'static Path {
 }
 
 /// Copies `built` into `root`, as `name`: `shards`, which carries the rest, the VM process
-/// signed inside it as a release signs it (build.rs).
+/// signed inside it as a release signs it (build.rs). Each copy written by a process of its
+/// own (`shards_testdir::program_copy`), as every program a test runs is: none of this one's
+/// descriptors ever writes it, so no exec of it fails ETXTBSY.
 fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     let dir = root.join(name);
     let temp = root.join(format!("{name}.{}.tmp", std::process::id()));
@@ -1649,7 +1604,7 @@ fn place(root: &Path, name: &str, built: &[(&str, &Path)]) {
     std::fs::create_dir_all(&temp).unwrap();
     for &(bin, path) in built {
         let copy = temp.join(format!("{bin}{}", std::env::consts::EXE_SUFFIX));
-        std::fs::copy(path, &copy).unwrap();
+        shards_testdir::program_copy(path, &copy).unwrap();
     }
     // Another process may have placed the same build meanwhile: either copy serves.
     if std::fs::rename(&temp, &dir).is_err() {
@@ -2522,70 +2477,123 @@ pub fn measured(what: &str, times: &[Duration]) {
     );
 }
 
-/// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
-/// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
-pub fn vm_processes_under(client: u32) -> Vec<u32> {
-    vm_processes_among(&processes(), client)
+/// The VM processes this test's process started itself, by the IDs their starts gave
+/// ([`OwnVm`]): a [`Party::own`]'s, with what descends from them. Each is known by its
+/// identity, never its name: a Linux helper started through its descriptor was named by it
+/// (`5`), and a party found by the name `shards-vm` had none (D209).
+static OWN_VMS: std::sync::Mutex<std::collections::BTreeSet<u32>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// A VM process this test's process started (`run --kernel` or `restore`, which becomes it on
+/// Unix and starts it on Windows; a warm VM; a stand-in for one), one of this test's own
+/// ([`Party::own`]) until this drops, which its owner does once it has ended it.
+pub struct OwnVm(u32);
+
+impl OwnVm {
+    /// Process `pid`, just started by this test's process.
+    pub fn started(pid: u32) -> OwnVm {
+        OWN_VMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pid);
+        OwnVm(pid)
+    }
 }
 
-/// [`vm_processes_under`] `client`, among the processes `listed`.
-fn vm_processes_among(listed: &[(u32, u32, String)], client: u32) -> Vec<u32> {
-    let is_vm = |name: &str| {
-        let name = name
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(name)
-            .to_ascii_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        name == "shards-vm" || name == "shards-vm-gpu"
-    };
-    let mut under = vec![client];
-    let mut i = 0;
-    while let Some(&parent) = under.get(i) {
-        for (pid, ppid, _) in listed {
-            if *ppid == parent && !under.contains(pid) {
-                under.push(*pid);
-            }
-        }
-        i += 1;
+impl Drop for OwnVm {
+    fn drop(&mut self) {
+        OWN_VMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
     }
-    listed
+}
+
+/// This test's own VM processes now ([`OwnVm`]).
+fn own_vms() -> Vec<u32> {
+    OWN_VMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .filter(|(pid, _, name)| under.contains(pid) && is_vm(name))
-        .map(|(pid, ..)| *pid)
+        .copied()
         .collect()
 }
 
-/// Every process, its parent and its command's name, from `ps`: the `ps` that lists them
-/// not among them, which is this process's child as it lists ([`Party::started`]).
-#[cfg(unix)]
+/// Every process, its parent and its name, the kernel's own (its executable's file name as
+/// its exec cut it: Linux's `comm`, 15 bytes; macOS's `p_comm`, 16), read in this process
+/// with no process started: on Linux from `/proc/PID/stat` (proc(5)), on macOS from
+/// libproc (proc_listallpids(3), PROC_PIDT_SHORTBSDINFO). Every look at a wait's party
+/// lists them ([`Party::look`]), and a `ps` spawned for it took 16 to 25 ms on adacachy2
+/// (1,200 processes), more than a W* of 8 ms: the looks crowded out the reads they were
+/// between (D209). A process gone as it is read is left out.
+#[cfg(target_os = "linux")]
 pub fn processes() -> Vec<(u32, u32, String)> {
-    let Ok(lister) = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,comm="])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+    let Ok(listed) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
-    let own = lister.id();
-    lister
-        .wait_with_output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut w = line.split_whitespace();
-                    Some((
-                        w.next()?.parse().ok()?,
-                        w.next()?.parse().ok()?,
-                        w.collect::<Vec<_>>().join(" "),
-                    ))
-                })
-                .filter(|(pid, ..)| *pid != own)
-                .collect()
+    listed
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let pid: u32 = entry.file_name().to_str()?.parse().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            // `PID (COMM) STATE PPID ...`: COMM may hold spaces and parentheses, so it ends at
+            // the last `)`.
+            let (head, rest) = stat.rsplit_once(')')?;
+            let name = head.split_once('(')?.1.to_string();
+            let ppid = rest.split_whitespace().nth(1)?.parse().ok()?;
+            Some((pid, ppid, name))
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// [`processes`] on macOS: every process ID (proc_listallpids(3), asked again while its
+/// reply fills what it was given, which processes started meanwhile may have cut short),
+/// each one's parent and name from its short BSD info.
+#[cfg(target_os = "macos")]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    let pids = loop {
+        // SAFETY: no buffer: the call says how many processes there are.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let Some(count) = usize::try_from(count).ok().filter(|count| *count > 0) else {
+            return Vec::new();
+        };
+        let mut pids: Vec<libc::pid_t> = vec![0; count + 1];
+        let Ok(room) = libc::c_int::try_from(size_of_val(pids.as_slice())) else {
+            return Vec::new();
+        };
+        // SAFETY: a buffer of `room` bytes for the call to fill.
+        let filled = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), room) };
+        let filled = usize::try_from(filled).unwrap_or(0);
+        if filled < pids.len() {
+            pids.truncate(filled);
+            break pids;
+        }
+    };
+    let size = libc::c_int::try_from(size_of::<libc::proc_bsdshortinfo>()).unwrap_or(0);
+    pids.into_iter()
+        .filter_map(|pid| {
+            // SAFETY: proc_bsdshortinfo is plain C data, for which all zeroes is a value.
+            let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+            // SAFETY: a buffer of `size` bytes for the call to fill.
+            let filled = unsafe {
+                libc::proc_pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO, 0, (&raw mut info).cast(), size)
+            };
+            if filled != size {
+                return None;
+            }
+            let comm: Vec<u8> = info
+                .pbsi_comm
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            Some((
+                info.pbsi_pid,
+                info.pbsi_ppid,
+                String::from_utf8_lossy(&comm).into_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
@@ -3174,6 +3182,8 @@ pub struct Party {
     looked: bool,
     /// A machine of this process's: what this process's threads beside its waiter ran.
     beside: Option<Beside>,
+    /// What this process's serving threads had run at the look before ([`Server`]).
+    served: Option<u64>,
 }
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
@@ -3182,8 +3192,8 @@ enum Members {
     /// A client and what descends from it: a command [`run_command`] runs, or a `run
     /// --kernel` or `restore` (the VM process on Unix, its starter on Windows).
     Client(u32),
-    /// This test's own VM processes (`shards-vm`, `shards-vm-gpu` under the test's process:
-    /// `run --kernel`'s, `restore`'s, warm.rs' warm VM) and what descends from them: a
+    /// This test's own VM processes, by the IDs their starts gave ([`OwnVm`]: `run
+    /// --kernel`'s and `restore`'s [`Vm`], warm.rs' warm VM) and what descends from them: a
     /// [`Patience`]'s, and a guest's stream's ([`Following`]).
     Own,
     /// None: a machine this test's process runs (`vm::start`), whose vCPUs and devices are
@@ -3260,6 +3270,7 @@ impl Party {
             cpu: Cpu::Progress,
             looked: false,
             beside: None,
+            served: None,
         }
     }
 
@@ -3288,7 +3299,7 @@ impl Party {
         };
         let own = match self.members {
             Members::Client(client) => vec![client],
-            Members::Own => vm_processes_among(&listed, std::process::id()),
+            Members::Own => own_vms(),
             Members::Machine => Vec::new(),
             Members::Started => listed
                 .iter()
@@ -3316,8 +3327,10 @@ impl Party {
     }
 
     /// What it did since the look before: progressed where its daemon said something or a
-    /// process of it ran (D215's look: any CPU at all, or an end under way), its CPU read as
-    /// [`Cpu::Progress`]; else held where its host held one from running (runnable on no CPU,
+    /// process of it ran (D215's look: any CPU at all, or an end under way), or a serving
+    /// thread of this process did ([`Server`]: a test registry's, which its daemon may wait
+    /// on), its CPU read as [`Cpu::Progress`]; else held where its host held one of those
+    /// from running (runnable on no CPU,
     /// stalled on its memory, and so running nothing), or stopped or suspended one, which
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
@@ -3363,6 +3376,18 @@ impl Party {
                     }
                 }
             }
+        }
+        // This process's serving threads: what any party may be waiting on (D209 Part 8).
+        let (served, serving) = servers_ran();
+        let mut server_held = false;
+        if let Some(before) = self.served.replace(served)
+            && self.cpu == Cpu::Progress
+        {
+            if served > before && looked.found != Found::Progressed {
+                looked.found = Found::Progressed;
+                looked.what = "this process's serving threads ran".into();
+            }
+            server_held = served == before && serving;
         }
         // Whether a process of it was found live: one found anew, or one still to be read.
         let mut live = false;
@@ -3424,6 +3449,10 @@ impl Party {
         }
         for pid in gone {
             self.watched.remove(&pid);
+        }
+        if server_held && looked.found == Found::Still {
+            looked.found = Found::Held;
+            looked.what = "its host held a serving thread of this process from running".into();
         }
         if live
             && looked.found == Found::Still
@@ -3702,6 +3731,201 @@ fn cpu_clock(
     ))
 }
 
+/// The threads of this process that serve other processes' requests: a test registry's
+/// connections ([`registry_serving_at`]). A command a test judges waits on them (a pull's
+/// or a build's daemon on the blob it asked for), yet they are threads of the test's own
+/// process, which no party's members by parent include (D209 Part 8): each wait's party
+/// counts what they run as its progress, and one held from running as its host's hold
+/// ([`Party::look`]). Each thread is followed from its [`Server::begin`] to its end; what
+/// it ran is kept as it ends, so that the total never falls.
+struct Servers {
+    live: std::collections::BTreeMap<u64, ServerThread>,
+    /// What the threads that ended ran, in their OS's units ([`ServerThread::ran`]).
+    ended: u64,
+    next: u64,
+}
+
+static SERVERS: std::sync::Mutex<Servers> = std::sync::Mutex::new(Servers {
+    live: std::collections::BTreeMap::new(),
+    ended: 0,
+    next: 0,
+});
+
+fn servers() -> std::sync::MutexGuard<'static, Servers> {
+    SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A serving thread of this process, followed as [`Servers`] says while it lives: made by the
+/// thread itself, its end as it drops.
+pub struct Server(u64);
+
+impl Server {
+    /// The calling thread, followed from now until this drops on it.
+    pub fn begin() -> Server {
+        let mut servers = servers();
+        let id = servers.next;
+        servers.next = id.wrapping_add(1);
+        servers.live.insert(id, ServerThread::this());
+        Server(id)
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let mut servers = servers();
+        if let Some(mut thread) = servers.live.remove(&self.0) {
+            let ran = thread.ran();
+            servers.ended = servers.ended.saturating_add(ran);
+        }
+    }
+}
+
+/// What this process's serving threads have run in all, in their OS's units, and whether one
+/// is runnable as it is read (Linux: its state `R`; macOS: `TH_STATE_RUNNING`, running or
+/// waiting for a CPU): one that ran nothing since a look before is held by its host.
+fn servers_ran() -> (u64, bool) {
+    let mut servers = servers();
+    let mut ran = servers.ended;
+    let mut runnable = false;
+    for thread in servers.live.values_mut() {
+        ran = ran.saturating_add(thread.ran());
+        runnable |= thread.runnable();
+    }
+    (ran, runnable)
+}
+
+/// A serving thread as its OS lets another thread of its process read it, and what it was
+/// last read to have run: a read that fails counts that, so the total never falls.
+struct ServerThread {
+    #[cfg(target_os = "linux")]
+    tid: libc::pid_t,
+    /// Its Mach port (pthread_mach_thread_np(3)): held by its thread, valid while it lives,
+    /// which it does while it is followed.
+    #[cfg(target_os = "macos")]
+    port: libc::mach_port_t,
+    #[cfg(windows)]
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    last: u64,
+}
+
+// SAFETY: a thread's handle is a kernel object's, usable from any thread of its process.
+#[cfg(windows)]
+unsafe impl Send for ServerThread {}
+
+impl ServerThread {
+    #[cfg(target_os = "linux")]
+    fn this() -> ServerThread {
+        // SAFETY: gettid(2) takes nothing and always succeeds.
+        let tid = unsafe { libc::gettid() };
+        ServerThread { tid, last: 0 }
+    }
+
+    /// Its own CPU clock, `make_thread_cpuclock`'s (see [`other_threads_cpu`]), in
+    /// nanoseconds.
+    #[cfg(target_os = "linux")]
+    fn read(&self) -> Option<u64> {
+        let clock = (!self.tid).checked_shl(3)? | 6;
+        u64::try_from(cpu_clock(clock, libc::clock_gettime)?.as_nanos()).ok()
+    }
+
+    /// Its state (`/proc/self/task/<tid>/stat` field 3, after its command's closing
+    /// parenthesis, proc(5)) is `R`.
+    #[cfg(target_os = "linux")]
+    fn runnable(&self) -> bool {
+        std::fs::read_to_string(format!("/proc/self/task/{}/stat", self.tid))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .map(|(_, rest)| rest.trim_start().starts_with('R'))
+            })
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn this() -> ServerThread {
+        // SAFETY: this thread's own pthread, whose port it returns without a new reference.
+        let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+        ServerThread { port, last: 0 }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn info(&self) -> Option<libc::thread_basic_info> {
+        // SAFETY: plain data, for thread_info to fill.
+        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let flavor = libc::thread_flavor_t::try_from(libc::THREAD_BASIC_INFO).ok()?;
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        // SAFETY: THREAD_BASIC_INFO of a live thread's port into a thread_basic_info of its
+        // count's size (mach/thread_info.h).
+        let code = unsafe { libc::thread_info(self.port, flavor, (&raw mut info).cast(), &raw mut count) };
+        (code == libc::KERN_SUCCESS).then_some(info)
+    }
+
+    /// Its user and system time (`thread_basic_info`), in nanoseconds.
+    #[cfg(target_os = "macos")]
+    fn read(&self) -> Option<u64> {
+        let info = self.info()?;
+        let us = |t: libc::time_value_t| {
+            u64::try_from(t.seconds)
+                .ok()?
+                .checked_mul(1_000_000)?
+                .checked_add(u64::try_from(t.microseconds).ok()?)
+        };
+        us(info.user_time)?
+            .checked_add(us(info.system_time)?)?
+            .checked_mul(1000)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn runnable(&self) -> bool {
+        self.info()
+            .is_some_and(|info| info.run_state == libc::TH_STATE_RUNNING)
+    }
+
+    #[cfg(windows)]
+    fn this() -> ServerThread {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThreadId, OpenThread, THREAD_QUERY_LIMITED_INFORMATION,
+        };
+        // SAFETY: a handle of this thread's own, closed as it drops.
+        let handle = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, GetCurrentThreadId()) };
+        ServerThread { handle, last: 0 }
+    }
+
+    /// Its cycles (QueryThreadCycleTime), exact, their time undocumented (as [`Beside`]'s).
+    #[cfg(windows)]
+    fn read(&self) -> Option<u64> {
+        let mut cycles = 0u64;
+        // SAFETY: a thread handle of ours, or null, which the call refuses; a count to write.
+        let read = unsafe {
+            windows_sys::Win32::System::WindowsProgramming::QueryThreadCycleTime(self.handle, &mut cycles)
+        };
+        (read != 0).then_some(cycles)
+    }
+
+    /// Unread on Windows, which keeps a thread's state only in its whole-system listing.
+    #[cfg(windows)]
+    fn runnable(&self) -> bool {
+        false
+    }
+
+    fn ran(&mut self) -> u64 {
+        if let Some(now) = self.read() {
+            self.last = self.last.max(now);
+        }
+        self.last
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ServerThread {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: the handle `this` opened, closed once.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+        }
+    }
+}
+
 /// A wait of the tests' own on a party ([`Party`]), judged by its kind's record ([`WaitKind`])
 /// as D215's judge judges a wait (`shards_api::Judge`): cold, its party's liveness alone,
 /// which its caller holds (its client's end); learned, looked at each W* past its start and
@@ -3737,6 +3961,9 @@ pub struct Wait {
     daemon_ran: Option<String>,
     live: Live,
     stage: Stage,
+    /// Whether it waits on a command of its thread's own ([`Wait::begin`]): its span is its
+    /// thread's own work ([`OWN`]) as it ends.
+    command: bool,
 }
 
 /// Where a [`Wait`] is, by what its caller has found of its answer.
@@ -3764,6 +3991,29 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
+thread_local! {
+    /// The spans this thread waited on its own commands ([`Wait::begin`]'s waits, each kept as
+    /// it ends), and how many of its waits live: a look of another of its waits that its
+    /// commands made late was late for its own work, no hold of its host's (D209 Part 8).
+    /// Let go of as its last live wait ends.
+    static OWN: std::cell::RefCell<(usize, Vec<(Instant, Instant)>)> =
+        const { std::cell::RefCell::new((0, Vec::new())) };
+}
+
+/// The time from `from` to `to` this thread spent waiting on its own commands ([`OWN`]).
+fn own_work(from: Instant, to: Instant) -> Duration {
+    OWN.with(|own| {
+        own.borrow()
+            .1
+            .iter()
+            .rev()
+            .take_while(|(_, ended)| *ended > from)
+            .fold(Duration::ZERO, |sum, (began, ended)| {
+                sum.saturating_add((*ended).min(to).saturating_duration_since((*began).max(from)))
+            })
+    })
+}
+
 /// The clients this thread has begun against `home`, none where it has none.
 fn asked_of(home: Option<&Path>) -> u64 {
     home.map_or(0, |home| {
@@ -3781,13 +4031,19 @@ impl Wait {
                 *n = n.saturating_add(1);
             });
         }
-        Wait::on(kind, Party::client(client, home), asked)
+        let mut wait = Wait::on(kind, Party::client(client, home), asked);
+        wait.command = true;
+        wait
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
     fn on(kind: &'static WaitKind, party: Party, asked: &str) -> Wait {
         let began = Instant::now();
         let polls = asked_of(party.home.as_deref());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_add(1);
+        });
         Wait {
             kind,
             judge: shards_api::Judge::begin(&kind.record),
@@ -3805,6 +4061,7 @@ impl Wait {
             daemon_ran: None,
             live: Live::new(),
             stage: Stage::Begun,
+            command: false,
         }
     }
 
@@ -3858,6 +4115,10 @@ impl Wait {
         if now < self.next && due.is_none_or(|due| now < due) {
             return Ok(());
         }
+        let own = self
+            .judge
+            .late_from()
+            .map_or(Duration::ZERO, |from| own_work(from, now));
         let mut looked = self.party.look();
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
@@ -3866,6 +4127,7 @@ impl Wait {
             began: now,
             ended: Instant::now(),
             resolution: looked.resolution,
+            own,
         };
         self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
@@ -3978,6 +4240,21 @@ impl Wait {
             stall.waited(),
             self.account()
         )
+    }
+}
+
+impl Drop for Wait {
+    fn drop(&mut self) {
+        let span = (self.began, Instant::now());
+        OWN.with(|own| {
+            let mut own = own.borrow_mut();
+            own.0 = own.0.saturating_sub(1);
+            if own.0 == 0 {
+                own.1.clear();
+            } else if self.command {
+                own.1.push(span);
+            }
+        });
     }
 }
 
@@ -4511,13 +4788,56 @@ pub fn tar_symlink(path: &str, target: &str) -> Vec<u8> {
     h.to_vec()
 }
 
-/// An image a registry serves: its manifest, and its blobs.
-pub type Served = Arc<std::sync::Mutex<(Vec<u8>, Vec<Vec<u8>>)>>;
+/// The image a registry serves, which a test may replace: each request takes the image as
+/// it is then, shared, never copied, its lock held only to take it (D209 Part 8: a clone of
+/// the whole image under one lock for each request had each request wait on the others').
+#[derive(Clone)]
+pub struct Served(Arc<std::sync::Mutex<Arc<Image>>>);
+
+/// A served image: its manifest and its blobs, each with its digest.
+struct Image {
+    manifest: Vec<u8>,
+    digest: String,
+    blobs: Vec<(String, Vec<u8>)>,
+}
+
+impl Served {
+    /// Serving `manifest` and `blobs`.
+    pub fn new((manifest, blobs): (Vec<u8>, Vec<Vec<u8>>)) -> Served {
+        Served(Arc::new(std::sync::Mutex::new(Image::of(manifest, blobs))))
+    }
+
+    /// Serving `manifest` and `blobs` from the next request on.
+    pub fn set(&self, (manifest, blobs): (Vec<u8>, Vec<Vec<u8>>)) {
+        *self.0.lock().unwrap() = Image::of(manifest, blobs);
+    }
+
+    fn now(&self) -> Arc<Image> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl Image {
+    fn of(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> Arc<Image> {
+        Arc::new(Image {
+            digest: sha256_digest(&manifest),
+            manifest,
+            blobs: blobs.into_iter().map(|b| (sha256_digest(&b), b)).collect(),
+        })
+    }
+
+    fn blob(&self, digest: &str) -> Option<&[u8]> {
+        self.blobs
+            .iter()
+            .find(|(d, _)| d == digest)
+            .map(|(_, b)| b.as_slice())
+    }
+}
 
 /// A registry that serves `test/image:v1` (manifest, config, layer) over plain HTTP, and
 /// counts the requests it answers.
 pub fn registry(manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
-    let (port, served, _) = registry_of(Arc::new(std::sync::Mutex::new((manifest, blobs))));
+    let (port, served, _) = registry_of(Served::new((manifest, blobs)));
     (port, served)
 }
 
@@ -4534,8 +4854,7 @@ pub fn registry_stalling_blobs(
     blobs: Vec<Vec<u8>>,
 ) -> (u16, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let stalls = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
-    let (port, _, _) = registry_serving(image, Some(stalls.clone()));
+    let (port, _, _) = registry_serving(Served::new((manifest, blobs)), Some(stalls.clone()));
     (port, stalls.0, stalls.1)
 }
 
@@ -4554,8 +4873,7 @@ fn registry_serving(
 /// [`registry`], listening at `ip`: a registry off loopback where `ip` is this host's on
 /// its route out ([`routable_v4`]).
 pub fn registry_at(ip: std::net::IpAddr, manifest: Vec<u8>, blobs: Vec<Vec<u8>>) -> (u16, Arc<AtomicUsize>) {
-    let image = Arc::new(std::sync::Mutex::new((manifest, blobs)));
-    let (port, served, _) = registry_serving_at(ip, image, None);
+    let (port, served, _) = registry_serving_at(ip, Served::new((manifest, blobs)), None);
     (port, served)
 }
 
@@ -4585,6 +4903,7 @@ fn registry_serving_at(
             let Ok(stream) = stream else { return };
             let (image, count, stalls) = (serving.clone(), count.clone(), stalls.clone());
             std::thread::spawn(move || {
+                let _serving = Server::begin();
                 // Asked for TLS, it answers as Go's net/http, and so a registry, answers a
                 // request it cannot read (server.go, publicErr).
                 let mut first = [0u8; 1];
@@ -4592,6 +4911,9 @@ fn registry_serving_at(
                     let _ = (&stream).write_all(GO_BAD_REQUEST);
                     return;
                 }
+                // A head and its body go as two writes: unsent, its head would wait for an
+                // ACK the client delays (Nagle's algorithm, RFC 896; RFC 1122 4.2.3.2).
+                let _ = stream.set_nodelay(true);
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut out = stream;
                 loop {
@@ -4604,7 +4926,7 @@ fn registry_serving_at(
                         header.clear();
                     }
                     count.fetch_add(1, Ordering::SeqCst);
-                    let (manifest, blobs) = image.lock().unwrap().clone();
+                    let image = image.now();
                     let mut parts = line.split(' ');
                     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
                     if let Some((begun, ended)) = &stalls
@@ -4631,37 +4953,38 @@ fn registry_serving_at(
                             "application/vnd.oci.image.manifest.v1+json"
                         }
                     };
-                    let body = if path == "/v2/test/image/manifests/v1"
-                        || path == format!("/v2/test/image/manifests/{}", sha256_digest(&manifest))
-                    {
-                        Some((manifest.clone(), kind(&manifest)))
-                    } else if let Some(d) = path.strip_prefix("/v2/test/image/manifests/") {
-                        // The manifests an index names, kept among the blobs.
-                        blobs
-                            .iter()
-                            .find(|b| sha256_digest(b) == d)
-                            .map(|b| (b.clone(), kind(b)))
+                    let body = if let Some(d) = path.strip_prefix("/v2/test/image/manifests/") {
+                        if d == "v1" || d == image.digest {
+                            Some((
+                                image.digest.as_str(),
+                                image.manifest.as_slice(),
+                                kind(&image.manifest),
+                            ))
+                        } else {
+                            // The manifests an index names, kept among the blobs.
+                            image.blob(d).map(|b| (d, b, kind(b)))
+                        }
                     } else {
                         path.strip_prefix("/v2/test/image/blobs/")
-                            .and_then(|d| blobs.iter().find(|b| sha256_digest(b) == d))
-                            .map(|b| (b.clone(), "application/octet-stream"))
+                            .and_then(|d| Some((d, image.blob(d)?, "application/octet-stream")))
                     };
-                    let response = match body {
-                        Some((bytes, kind)) => {
-                            let mut r = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nDocker-Content-Digest: {}\r\nContent-Length: {}\r\n\r\n",
-                                sha256_digest(&bytes),
+                    let sent = match body {
+                        Some((digest, bytes, kind)) => {
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nDocker-Content-Digest: {digest}\r\nContent-Length: {}\r\n\r\n",
                                 bytes.len()
-                            )
-                            .into_bytes();
-                            if method != "HEAD" {
-                                r.extend(bytes);
-                            }
-                            r
+                            );
+                            out.write_all(head.as_bytes()).and_then(|()| {
+                                if method == "HEAD" {
+                                    Ok(())
+                                } else {
+                                    out.write_all(bytes)
+                                }
+                            })
                         }
-                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+                        None => out.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"),
                     };
-                    if out.write_all(&response).is_err() {
+                    if sent.is_err() {
                         return;
                     }
                 }
@@ -5135,6 +5458,8 @@ pub fn hub_held(
 /// A running `shards` whose output lines arrive on a channel, killed when dropped.
 pub struct Vm {
     child: std::process::Child,
+    /// One of this test's own VM processes until it drops, after its child is ended.
+    _own: OwnVm,
     lines: std::sync::mpsc::Receiver<String>,
     pub seen: Vec<String>,
     /// Every line it has printed, read or not: what a test that stalls says.
@@ -5334,6 +5659,7 @@ impl Vm {
             });
         }
         Vm {
+            _own: OwnVm::started(child.id()),
             child,
             lines,
             seen: Vec::new(),
@@ -5688,7 +6014,13 @@ fn vsock_handshake(
     while line.last() != Some(&b'\n') {
         match r.read(&mut byte) {
             Ok(1) => line.push(byte[0]),
-            _ => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
+            Ok(_) => return Err(format!("refused after {:?}", String::from_utf8_lossy(&line))),
+            Err(e) => {
+                return Err(format!(
+                    "no answer after {:?}: {e}",
+                    String::from_utf8_lossy(&line)
+                ));
+            }
         }
     }
     let text = String::from_utf8_lossy(&line);
@@ -5706,8 +6038,11 @@ fn vsock_handshake(
 /// [`run_command`]'s is ([`Wait`]), its kind its call site, its end (the stream's close) its
 /// answer, and its bytes its progress, whatever its microVM's CPU does (a guest on more vCPUs
 /// than its host's CPUs runs them all for ever): its party is this test's own VM processes,
-/// their CPU their liveness alone ([`Cpu::Liveness`]), a stop or suspension of theirs its
-/// host's hold. Cold, it reads with no timeout, its peer's liveness its own (the VM process
+/// their CPU their progress only until its first byte, while its peer starts it (a
+/// handshake's answer, a guest's greeting: the vsock device and the guest's kernel at work,
+/// with no byte to show for it), and their liveness alone after ([`Cpu::Liveness`]), as a
+/// streaming guest's is past its first line ([`Heard::streaming`]); a stop or suspension of
+/// theirs its host's hold. Cold, it reads with no timeout, its peer's liveness its own (the VM process
 /// that holds the stream's other end closes it as it ends); learned, each read waits until
 /// its judge's look, which refuses a stream that carried nothing over a whole W* past the
 /// look before. What it reads is added to `carried`, where a wait on its guest follows it
@@ -5780,12 +6115,31 @@ where
         home: Option<&Path>,
         site: &'static std::panic::Location<'static>,
     ) -> Following<'a, S> {
-        let mut party = Party::own(home);
-        party.read_cpu(Cpu::Liveness);
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::awaiting(site, STREAM), party, STREAM),
+            wait: Wait::on(WaitKind::awaiting(site, STREAM), Party::own(home), STREAM),
+        }
+    }
+
+    /// A read of what is there now, waiting for nothing: WouldBlock where nothing is.
+    fn read_now(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut stream = self.stream;
+        stream.set_nonblocking(true)?;
+        let read = stream.read(buf);
+        stream.set_nonblocking(false)?;
+        read
+    }
+
+    /// It read `n` bytes: `carried` counts them, and from its first its party's CPU is its
+    /// liveness alone.
+    fn took(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        self.wait.party.read_cpu(Cpu::Liveness);
+        if let Some(c) = self.carried {
+            c.fetch_add(n as u64, Ordering::Relaxed);
         }
     }
 
@@ -5803,16 +6157,10 @@ where
         // Until a read finds nothing there yet, what it reads was there as its wait began:
         // read without waiting, its end then no answer it waited for (#77 waits-03).
         if !self.wait.awaited() {
-            let mut stream = self.stream;
-            stream.set_nonblocking(true)?;
-            let read = stream.read(buf);
-            stream.set_nonblocking(false)?;
-            match read {
+            match self.read_now(buf) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.wait.absent(),
                 Ok(n) => {
-                    if let Some(c) = self.carried {
-                        c.fetch_add(n as u64, Ordering::Relaxed);
-                    }
+                    self.took(n);
                     return Ok(n);
                 }
                 Err(e) => return Err(e),
@@ -5820,33 +6168,34 @@ where
         }
         loop {
             let left = self.wait.next_look();
-            // A judged wait's look due now looks before it reads again.
+            // Every look comes after a read, without waiting where the look is due now: an
+            // answer there is read, never judged missing. A look that costs more than the
+            // judge's W* leaves none to wait (`pause` at most what is left), and a loop of
+            // looks with no read between them refused answers that had come (KVM at
+            // cf13e49e6: each look's `ps` 16 to 25 ms against a W* of 8 ms; a guest's close
+            // there 128 ms unread, its VM process idle waiting on the host's next word).
             let read = if left.is_zero() {
-                None
+                self.read_now(buf)
             } else {
                 let mut stream = self.stream;
-                Some(
-                    stream
-                        .set_read_timeout(self.wait.judged().then_some(left))
-                        .and_then(|()| stream.read(buf)),
-                )
+                stream
+                    .set_read_timeout(self.wait.judged().then_some(left))
+                    .and_then(|()| stream.read(buf))
             };
             match read {
-                Some(Ok(0)) => {
+                Ok(0) => {
                     self.wait.answered();
                     return Ok(0);
                 }
-                Some(Ok(n)) => {
-                    if let Some(c) = self.carried {
-                        c.fetch_add(n as u64, Ordering::Relaxed);
-                    }
+                Ok(n) => {
+                    self.took(n);
                     self.wait.look(true).map_err(|stall| {
                         io::Error::new(io::ErrorKind::TimedOut, self.wait.refused(&stall))
                     })?;
                     return Ok(n);
                 }
                 // A timeout says WouldBlock through SO_RCVTIMEO, TimedOut on Windows.
-                Some(Err(e))
+                Err(e)
                     if !matches!(
                         e.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
@@ -5854,7 +6203,7 @@ where
                 {
                     return Err(e);
                 }
-                None | Some(Err(_)) => {}
+                Err(_) => {}
             }
             self.wait
                 .look(false)

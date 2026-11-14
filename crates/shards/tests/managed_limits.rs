@@ -370,7 +370,7 @@ fn campaign(end_at: EndAt) {
         ),
     ] {
         std::fs::create_dir(context.join(name)).unwrap();
-        common::program_copy(common::test_guest(), &context.join(name).join("probe"));
+        shards_testdir::program_copy(common::test_guest(), &context.join(name).join("probe")).unwrap();
         std::fs::write(
             context.join(name).join(format!("{kind}.json")),
             serde_json::json!({"entrypoint":"probe", "options":options}).to_string(),

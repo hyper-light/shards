@@ -310,7 +310,10 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         ["restore", target, ..] if names_a_microvm(target) => {
             request::restore("shards restore vm", args.get(1..).unwrap_or_default())
         }
-        ["restore", ..] => vm(&args),
+        ["restore", ..] => match migrated(&args) {
+            Ok(()) => vm(&args),
+            Err(e) => failed(&e),
+        },
         // This shards' own version: nothing asked of a daemon (version.rs).
         ["version", ..] => version::run(args.get(1..).unwrap_or_default()),
         // `buildx policy ...`: buildx's policy commands, run here as a build is (D108).
@@ -2242,6 +2245,36 @@ fn served_pipe(flag: &str, value: usize) -> Result<std::os::windows::io::Borrowe
     // SAFETY: a handle this process inherited for this share and never closes: it stays
     // open while the spawn duplicates it into the VM, and until this process ends.
     Ok(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) })
+}
+
+/// `shards restore DIR`'s snapshot, a user's, in this build's format before its VM process
+/// reads it: one of an older format rewritten in it once, and said (D176). None for a
+/// restore its daemon starts (`--warm`, `--resume`): a template's, keyed by the format
+/// (D25), or a saved run's, which the daemon has seen to.
+fn migrated(args: &[OsString]) -> Result<(), String> {
+    use shards_vmm::snapshot::{self, Migrated};
+    let by_daemon = args
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--warm" || a == "--resume");
+    let Some(dir) = args.get(1).map(std::path::Path::new) else {
+        return Ok(());
+    };
+    if by_daemon || !snapshot::exists(dir) {
+        return Ok(());
+    }
+    match snapshot::migrate(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        Migrated::Current => {}
+        Migrated::Rewritten { from } => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "shards: {}: its snapshot of format {from} rewritten in format {}, once",
+                dir.display(),
+                snapshot::FORMAT
+            );
+        }
+    }
+    Ok(())
 }
 
 fn failed(message: &str) -> ExitCode {

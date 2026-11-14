@@ -8138,7 +8138,7 @@ impl Gated {
         for (from, to) in [(shards(), "shards")] {
             // A link where there can be one: macOS assesses a copy as a new binary.
             if std::fs::hard_link(from, dir.join(to)).is_err() {
-                std::fs::copy(from, dir.join(to)).unwrap();
+                shards_testdir::program_copy(from, &dir.join(to)).unwrap();
             }
         }
         let vm = dir.join("shards-vm");
@@ -8150,7 +8150,7 @@ impl Gated {
             vm = shards_vm().display()
         );
         // Exec'd by the daemon's spawner.
-        common::program(&vm, &script);
+        shards_testdir::program(&vm, &script).unwrap();
         Gated { dir }
     }
 
@@ -8200,18 +8200,16 @@ impl Gated {
     /// `shards ARGS` from this directory in `home`, whose runs boot the test kernel and
     /// init, left going.
     fn start(&self, home: &Path, args: &[&str]) -> Going {
-        // Its copy of shards was written a moment ago.
-        let mut child = common::spawn(
-            common::as_tests_run(&mut self.command())
-                .args(args)
-                .env("SHARDS_HOME", home)
-                .env("SHARDS_KERNEL", kernel())
-                .env("SHARDS_INIT", self.init())
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .unwrap();
+        let mut child = common::as_tests_run(&mut self.command())
+            .args(args)
+            .env("SHARDS_HOME", home)
+            .env("SHARDS_KERNEL", kernel())
+            .env("SHARDS_INIT", self.init())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         let collect = |mut from: Box<dyn std::io::Read + Send>| {
             std::thread::spawn(move || {
                 let mut text = String::new();
@@ -8489,8 +8487,8 @@ fn segment_log(dir: &Path, seq: u64) -> Vec<u8> {
 
 /// How much of a run's output its log keeps is its user's to set (`shards configure disk
 /// --log-history`, D186): a run made after the setting, the daemon running or not, keeps at
-/// most that much of its newest output, and at least that less a segment (half of it, below
-/// 40 MiB); with none set, 1 GiB, as `configure disk` says. A settings file that does not
+/// most that much of its newest output, and at least that less two segments (its segments
+/// as its file system's unit makes them, disk.rs `log_retention`); with none set, 1 GiB, as `configure disk` says. A settings file that does not
 /// read refuses a run, saying where, and `--reset` takes every setting back to its default,
 /// read or not; every flag is checked before any is kept.
 #[test]
@@ -8562,14 +8560,30 @@ fn a_logs_history_is_what_its_user_set() {
             kept.len()
         );
     };
+    // A history's segments on the home's file system (runs-11 `LOG_SEGMENT`, disk.rs
+    // `log_retention`): √(history · unit) in whole units, within a unit and the history's
+    // half, as many as the history holds whole.
+    let unit = shards_vmm::platform::allocation_unit(&home).unwrap();
+    let segments = |history: u64| {
+        let half = history / 2;
+        let size = if unit > half {
+            half
+        } else {
+            let balanced = u64::try_from((u128::from(history) * u128::from(unit)).isqrt()).unwrap();
+            (balanced.min(half) / unit * unit).max(unit)
+        };
+        (size, history / size)
+    };
     let set = shards(&["configure", "disk", "--log-history", "64k"]);
     assert_eq!(set.status, Some(0), "{set}");
     assert!(set.stdout.contains("log-history         65536\n"), "{set}");
-    logged("before", 32 << 10, 2);
+    let (size, files) = segments(64 << 10);
+    logged("before", size, files);
     // Set again as the daemon runs: its next run keeps that.
     let set = shards(&["configure", "disk", "--log-history=128k"]);
     assert_eq!(set.status, Some(0), "{set}");
-    logged("after", 64 << 10, 2);
+    let (size, files) = segments(128 << 10);
+    logged("after", size, files);
     // A flag that does not read keeps nothing, a reset after it included.
     let refused = shards(&["configure", "disk", "--log-history", "0", "--reset"]);
     assert_ne!(refused.status, Some(0), "{refused}");
@@ -11210,11 +11224,8 @@ fn ustar(bytes: &[u8]) -> Vec<(String, u32, Vec<u8>)> {
 fn an_interrupted_save_leaves_nothing_behind() {
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
     let home = TempDir::new("save-int");
-    // A daemon that never answers: on Unix one of an older build listening at daemon.sock;
-    // on Windows the home's lock held, which the daemon its client starts waits for.
-    #[cfg(unix)]
-    let _daemon = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
-    #[cfg(windows)]
+    // A daemon that never answers: the home's lock held, which the daemon its client starts
+    // waits for (flock(2) on Unix, LockFileEx on Windows, as the daemon takes it).
     let lock = {
         let lock = std::fs::File::create(home.join("daemon.lock")).unwrap();
         lock.try_lock().unwrap();
@@ -11270,22 +11281,23 @@ fn an_interrupted_save_leaves_nothing_behind() {
         }
         assert_eq!(left(), Vec::<std::ffi::OsString>::new(), "after signal {sig}");
     }
-    // The daemon its client started, which waits for the lock, ended: named by its log's
+    // The daemons its clients started, which wait for the lock, ended: named by their log's
     // lines (`shards daemon PID: ...`).
-    #[cfg(windows)]
-    {
-        let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
-        if let Some(pid) = log.lines().find_map(|l| {
+    let log = std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default();
+    let pids: std::collections::BTreeSet<i32> = log
+        .lines()
+        .filter_map(|l| {
             l.strip_prefix("shards daemon ")?
                 .split_once(':')?
                 .0
                 .parse::<i32>()
                 .ok()
-        }) {
-            common::kill_now(pid);
-        }
-        drop(lock);
+        })
+        .collect();
+    for pid in pids {
+        common::kill_now(pid);
     }
+    drop(lock);
     // A client that can reach no daemon fails, and leaves nothing either: its home is a
     // file, where no daemon can be.
     let nowhere = out.join("not-a-home");

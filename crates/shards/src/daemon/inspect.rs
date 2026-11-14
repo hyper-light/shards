@@ -726,7 +726,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 request.network = "host".into();
             }
         }
-        let (config, manifest) = self.image_facts(c.image_id.as_deref(), c.image_manifest.as_deref());
+        let (config, manifest) = self.image_facts(&c.image_id, c.image_manifest.as_deref());
         // The run's inbox is locked after `runs` is let go: a run's end holds its inbox
         // while it takes `runs` (take_messages, run_ended).
         let tracked = match super::lock(&self.runs).get(&c.id) {
@@ -919,19 +919,16 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             super::lock(&self.containers).get(&c.id).and_then(|c| c.size_rw)
         }
         .unwrap_or(0);
-        let image = c
-            .image_id
-            .as_deref()
-            .and_then(|id| {
-                let store = self.store().ok().flatten()?;
-                let found = store
-                    .images()
-                    .ok()?
-                    .into_iter()
-                    .find(|i| i.id.to_string() == id)?;
-                Some(found.unpacked)
-            })
-            .unwrap_or(0);
+        let image = (|| {
+            let store = self.store().ok().flatten()?;
+            let found = store
+                .images()
+                .ok()?
+                .into_iter()
+                .find(|i| i.id.to_string() == c.image_id)?;
+            Some(found.unpacked)
+        })()
+        .unwrap_or(0);
         let rw = i64::try_from(rw).unwrap_or(i64::MAX);
         (rw, rw.saturating_add(i64::try_from(image).unwrap_or(i64::MAX)))
     }
@@ -939,10 +936,9 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// The config and descriptor of this container's recorded image manifest.
     pub(super) fn image_facts(
         &self,
-        id: Option<&str>,
+        id: &str,
         chosen: Option<&str>,
     ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
-        let Some(id) = id else { return (None, None) };
         let Ok(Some(store)) = self.store() else {
             return (None, None);
         };
@@ -964,9 +960,12 @@ fn image_facts_in(
     else {
         return (None, None);
     };
-    // Old records have no selected manifest. Only those use the reference's preference.
-    let preferred = image.manifest.to_string();
-    let ours = chosen.unwrap_or(&preferred);
+    // A record with no selected manifest (one made before 2026-11-03 kept it) names no
+    // platform's facts: never the reference's preference now, which may be another platform
+    // than the one its microVM ran (D179).
+    let Some(ours) = chosen else {
+        return (None, None);
+    };
     let descriptor = if image.target.digest == ours {
         Some(image.target)
     } else {
@@ -1364,11 +1363,8 @@ mod tests {
                 assert_eq!(config["Env"][0], format!("PLATFORM={arch}"));
                 assert_eq!(descriptor.unwrap()["digest"], selected.digest);
             }
-            let (old, _) = image_facts_in(&store, &id.to_string(), None);
-            assert_eq!(
-                old.unwrap()["User"],
-                if preferred == &arm { "1100" } else { "2200" }
-            );
+            // A record with no selection has no facts, whatever the preference.
+            assert_eq!(image_facts_in(&store, &id.to_string(), None), (None, None));
         }
         let missing = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(b"missing"));
         assert_eq!(

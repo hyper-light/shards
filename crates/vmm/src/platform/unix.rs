@@ -1615,6 +1615,12 @@ pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
 /// that are multiples of it: its block (statvfs(3)'s f_frsize), of which a part at either
 /// end of a range is zeroed instead (fallocate(2)).
 pub fn deallocation_unit(path: &std::path::Path) -> io::Result<u64> {
+    allocation_unit(path)
+}
+
+/// The unit the file system holding `path` allocates a file's bytes in: its fundamental
+/// block (statvfs(3)'s f_frsize, "file system fragment size"), one at least.
+pub fn allocation_unit(path: &std::path::Path) -> io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;

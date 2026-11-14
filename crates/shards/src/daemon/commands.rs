@@ -34,7 +34,7 @@ use crate::spec::{LOG_STDERR, LOG_STDOUT};
 
 /// Ownership-mode copy must not guess a different platform's user or root when its
 /// recorded image config is unavailable.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum CopyUserRefusal {
     ContainerGone,
     ConfigMissing { image: String, manifest: Option<String> },
@@ -934,10 +934,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .get(id)
             .cloned()
             .ok_or(CopyUserRefusal::ContainerGone)?;
-        let Some(image) = c.image_id else {
-            return Ok(String::new());
-        };
-        let (config, _) = self.image_facts(Some(&image), c.image_manifest.as_deref());
+        let image = c.image_id;
+        let (config, _) = self.image_facts(&image, c.image_manifest.as_deref());
         let config = config.ok_or(CopyUserRefusal::ConfigMissing {
             image,
             manifest: c.image_manifest,
@@ -2773,7 +2771,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     "id": c.id,
                     "name": c.name,
                     "image": c.image,
-                    "image_id": c.image_id.clone().unwrap_or_default(),
+                    "image_id": c.image_id,
                     "command": command_line(&c.command),
                     "created": i64::try_from(c.created / 1_000_000_000).unwrap_or(0),
                     "ports": ports,
@@ -3193,6 +3191,18 @@ impl Show<'_, '_> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+
+    /// `cp -a` copies as the microVM's user, its run's or else its image's: a microVM whose
+    /// record is gone is refused, never copied as root. One whose record names no image ID
+    /// is never read (`containers::Unread::NoImage`, D179).
+    #[test]
+    fn a_copy_as_the_user_of_a_record_gone_is_refused() {
+        let t = super::super::tests::Test::new("cp-user");
+        assert_eq!(
+            t.daemon.container_user(&"d".repeat(64)),
+            Err(super::CopyUserRefusal::ContainerGone)
+        );
+    }
 
     #[test]
     fn top_refuses_pid_headers_on_other_fields() {

@@ -45,6 +45,9 @@ const LOCK: &str = ".lock";
 const STATE: &str = "state";
 const MEMORY: &str = "memory";
 const WORKING_SET: &str = "working-set";
+/// Where [`migrate`] writes a state in this build's format before it renames it over the
+/// old one.
+const MIGRATED: &str = ".state.migrated";
 /// A run's swap, as its guest had it, where a snapshot of a run keeps one (D176).
 const SWAP: &str = "swap";
 /// A writable layer's head, the page structures its guest's kernel wrote there (D190).
@@ -102,14 +105,17 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 ///     template's machine has them empty, its restored runs' to plug into.
 /// 29: and its immutable native GPU selection, rejoined before a restored guest runs.
 const VERSION: u32 = 29;
+/// The first format whose state says its GPU's native selection.
 const VERSION_WITH_GPU_SELECTION: u32 = 29;
-/// Layout accepted by the previous pinned reader. Adding native selectors does
-/// not change the mapping of an existing format28 DAX window.
+/// The first format whose DAX windows are laid out as this one's: each with its head
+/// before it (25) and its host's record of its pages (26), which 28 kept; adding native
+/// selectors (29) did not move them (D189).
 const VERSION_WITH_CURRENT_WINDOWS: u32 = 28;
-/// The oldest format this build reads too where the machine has no DAX windows: for such
-/// a machine each since says what this one says, but for 27's runs of data, which a state
-/// before it holds none of (its restore maps its RAM from the file whole), so that a
-/// microVM saved by shards 0.6.0 (24) restores (D176).
+/// The oldest format [`migrate`] rewrites, shards 0.6.0's: for a machine with no DAX
+/// windows each since says what this one says, but for 27's runs of data, which a state
+/// before it holds none of (its restore maps its RAM from the file whole), 28's PCI slots,
+/// none before, and 29's GPU selection, none before (D176). Only the migration reads a
+/// format before [`VERSION`]: a restore refuses one.
 const VERSION_WITHOUT_WINDOWS: u32 = 24;
 /// The first format whose state says which runs of its RAM hold data.
 const VERSION_WITH_DATA: u32 = 27;
@@ -549,16 +555,6 @@ fn path_from(bytes: &[u8]) -> codec::Result<PathBuf> {
 }
 
 fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec<u8>, String> {
-    encode_as(s, generation, identities, VERSION)
-}
-
-/// [`encode`] in format `version`, this one's or one before it that this build reads.
-fn encode_as(
-    s: &Snapshot,
-    generation: &str,
-    identities: &[Identity],
-    version: u32,
-) -> Result<Vec<u8>, String> {
     crate::vm::gpu_selection::check_selection(&s.config.gpu_devices).map_err(|error| error.to_string())?;
     if s.config.gpu.is_none() && !s.config.gpu_devices.is_empty() {
         return Err("native GPU selection requires the snapshot's GPU device".into());
@@ -582,7 +578,7 @@ fn encode_as(
         .collect::<Result<Vec<_>, String>>()?;
     let mut w = Writer::default();
     MAGIC.iter().for_each(|&b| w.u8(b));
-    w.u32(version);
+    w.u32(VERSION);
     w.bytes(std::env::consts::ARCH.as_bytes());
     w.bytes(generation.as_bytes());
     w.u32(s.config.vcpus);
@@ -603,35 +599,31 @@ fn encode_as(
     w.bool(s.config.reporting);
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
-    if version >= VERSION_WITH_GPU_SELECTION {
-        w.seq(&s.config.gpu_devices, |w, device| {
-            use crate::vm::gpu_selection::PhysicalGpu;
-            match device {
-                PhysicalGpu::Pci {
-                    domain,
-                    bus,
-                    device,
-                    function,
-                } => {
-                    w.u8(0);
-                    w.u32(*domain);
-                    w.u8(*bus);
-                    w.u8(*device);
-                    w.u8(*function);
-                }
-                PhysicalGpu::MetalRegistry(id) => {
-                    w.u8(1);
-                    w.u64(*id);
-                }
-                PhysicalGpu::Luid(id) => {
-                    w.u8(2);
-                    w.u64(*id);
-                }
+    w.seq(&s.config.gpu_devices, |w, device| {
+        use crate::vm::gpu_selection::PhysicalGpu;
+        match device {
+            PhysicalGpu::Pci {
+                domain,
+                bus,
+                device,
+                function,
+            } => {
+                w.u8(0);
+                w.u32(*domain);
+                w.u8(*bus);
+                w.u8(*device);
+                w.u8(*function);
             }
-        });
-    } else if !s.config.gpu_devices.is_empty() {
-        return Err("an older snapshot format cannot retain exact GPU selection".into());
-    }
+            PhysicalGpu::MetalRegistry(id) => {
+                w.u8(1);
+                w.u64(*id);
+            }
+            PhysicalGpu::Luid(id) => {
+                w.u8(2);
+                w.u64(*id);
+            }
+        }
+    });
     w.u64(s.config.swap_mib);
     w.u64(s.config.share_window_mib);
     w.u64(s.config.layer_mib);
@@ -639,16 +631,12 @@ fn encode_as(
         w.u64(*gpa);
         w.u64(*len);
     });
-    if version >= VERSION_WITH_SLOTS {
-        w.u8(s.config.pci_slots);
-    }
-    if version >= VERSION_WITH_DATA {
-        w.bool(s.data.is_some());
-        w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
-            w.u64(*at);
-            w.u64(*len);
-        });
-    }
+    w.u8(s.config.pci_slots);
+    w.bool(s.data.is_some());
+    w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
+        w.u64(*at);
+        w.u64(*len);
+    });
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -671,7 +659,9 @@ pub fn decodes(bytes: &[u8]) -> bool {
 }
 
 /// A state's head, as far as its RAM's size: its format, its generation's name, its vCPUs
-/// and its RAM in MiB.
+/// and its RAM in MiB. Laid out so in every format a shards since 0.6.0 wrote: what bounds
+/// a state's read ([`state_most`]) and tells [`migrate`] its format. Its format is its
+/// caller's to accept: a restore's [`decode`] this build's alone.
 fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     let mut magic = [0u8; 8];
     for b in &mut magic {
@@ -681,11 +671,6 @@ fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
         return Err(DecodeError("not a shards snapshot".into()));
     }
     let version = r.u32()?;
-    if !(VERSION_WITHOUT_WINDOWS..=VERSION).contains(&version) {
-        return Err(DecodeError(format!(
-            "snapshot format {version}; this shards reads {VERSION}"
-        )));
-    }
     // Any name the input holds, as it is only compared.
     let arch = r.bytes(usize::MAX)?;
     if arch != std::env::consts::ARCH.as_bytes() {
@@ -733,9 +718,34 @@ fn read_state_within(dir: &Path, name: &str, holdable: Option<u64>) -> io::Resul
     })
 }
 
+/// A state of this build's format, as a restore reads it: one of any other is refused, an
+/// older one never read here but rewritten once by [`migrate`].
 fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let mut r = Reader::new(bytes);
     let (version, generation, vcpus, memory_mib) = decode_head(&mut r)?;
+    if version != VERSION {
+        return Err(DecodeError(format!(
+            "snapshot format {version}; this shards reads {VERSION}{}",
+            if (VERSION_WITHOUT_WINDOWS..VERSION).contains(&version) {
+                ", and rewrites a snapshot of it in its own as it first restores it (D176)"
+            } else {
+                ""
+            }
+        )));
+    }
+    decode_body(r, version, generation, vcpus, memory_mib)
+}
+
+/// A state's body, after its head, laid out as format `version` laid it out: this build's
+/// for a restore ([`decode`]), or one from [`VERSION_WITHOUT_WINDOWS`] on for [`migrate`]
+/// alone, which reads it once to write it in this build's.
+fn decode_body(
+    mut r: Reader<'_>,
+    version: u32,
+    generation: String,
+    vcpus: u32,
+    memory_mib: u64,
+) -> codec::Result<Decoded> {
     let path = platform::PATH_MOST;
     let disks = r.seq(VIRTIO_SLOTS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
     let pmem = r.seq(VIRTIO_SLOTS.saturating_sub(disks.len()), 4, |r| {
@@ -797,12 +807,6 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     };
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
-    // Whose windows were laid out otherwise (D189).
-    if version < VERSION_WITH_CURRENT_WINDOWS && share_window_mib > 0 && (shares > 0 || join_share) {
-        return Err(DecodeError(format!(
-            "snapshot format {version} of a machine with DAX windows; this shards reads {VERSION}"
-        )));
-    }
     let layer_mib = r.u64()?;
     let past = |what: &str| DecodeError(format!("{what} past what a guest addresses"));
     let plugged_most = most_plugged_runs(hotplug_mib).ok_or_else(|| past("memory to plug"))?;
@@ -1237,6 +1241,134 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     platform::sync_dir(&generation).map_err(|e| at(&e))
 }
 
+/// What [`migrate`] did with a snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Migrated {
+    /// Its state was of this build's format already: nothing.
+    Current,
+    /// Its state, of format `from`, was rewritten in this build's, once.
+    Rewritten { from: u32 },
+}
+
+/// Why [`migrate`] did not leave a snapshot in this build's format (R04).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrateRefused {
+    /// It has no state to read, or its state could not be read: why.
+    Unreadable(String),
+    /// A format this build has no reader of: before shards 0.6.0's, 24 (0.3.0 to 0.5.0
+    /// wrote 10, whose machines and devices were laid out otherwise, and no build since
+    /// 0.6.0 has read it), or past this build's.
+    Format { format: u32 },
+    /// Of format 24 to 27, of a machine with DAX windows, laid out before each window had
+    /// its head beside it (D189): its guest's page structures for them were in its memory
+    /// then, where this build's machine has none, so no rewrite gives them back.
+    WindowsLaidOutOtherwise { format: u32 },
+    /// Its state is not one of its format: why.
+    Malformed { format: u32, why: String },
+    /// Its state in this build's format could not be made or put in its place: why. The
+    /// old one stays as it was.
+    Unwritten(String),
+}
+
+impl std::fmt::Display for MigrateRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrateRefused::Unreadable(why) => f.write_str(why),
+            MigrateRefused::Format { format } => write!(
+                f,
+                "snapshot format {format}: this shards reads {VERSION}, and rewrites formats \
+                 {VERSION_WITHOUT_WINDOWS} (shards 0.6.0) to {} (0.7.0) in it; no reader of \
+                 {format} is kept",
+                VERSION - 1
+            ),
+            MigrateRefused::WindowsLaidOutOtherwise { format } => write!(
+                f,
+                "snapshot format {format} of a machine with DAX windows, laid out before \
+                 each had its head beside it: its guest's page structures for them were in \
+                 its memory, where this shards' machine has none, so it cannot be rewritten"
+            ),
+            MigrateRefused::Malformed { format, why } => {
+                write!(f, "a state of format {format} that is not one: {why}")
+            }
+            MigrateRefused::Unwritten(why) => write!(f, "its state could not be rewritten: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for MigrateRefused {}
+
+/// Rewrites the snapshot in `dir`, a user's (a saved run, D176, or a directory `shards
+/// restore` was given), in this build's format where its state is of an older one this
+/// build migrates, [`VERSION_WITHOUT_WINDOWS`] (shards 0.6.0) on: once, as it is first
+/// restored or moved, the only read of an older format there is. Its state is read whole,
+/// written in this format with the same generation, files and identities beside it,
+/// synced, renamed over the old one and the directory synced, with the snapshot's writers'
+/// lock held, so that a reader finds the old state or the new, and two first restores
+/// rewrite it once. A template is not a user's: one is keyed by the format (D25), so this
+/// build never looks one of an older format up, and is never given to this.
+pub fn migrate(dir: &Path) -> Result<Migrated, MigrateRefused> {
+    let unreadable =
+        |e: &dyn std::fmt::Display| MigrateRefused::Unreadable(format!("{}: {e}", dir.display()));
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(LOCK))
+        .map_err(|e| unreadable(&e))?;
+    lock_exclusive(&lock).map_err(|e| unreadable(&e))?;
+    let generation = generation(dir).map_err(MigrateRefused::Unreadable)?;
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| unreadable(&"a generation with no name"))?
+        .to_string();
+    let state = generation.join(STATE);
+    let at = |e: &dyn std::fmt::Display| format!("{}: {e}", state.display());
+    let bytes = read_state(dir, &name)
+        .map_err(|e| MigrateRefused::Unreadable(at(&e)))?
+        .ok_or_else(|| MigrateRefused::Unreadable(at(&"gone")))?;
+    let mut r = Reader::new(&bytes);
+    let (format, generation_named, vcpus, memory_mib) =
+        decode_head(&mut r).map_err(|e| MigrateRefused::Unreadable(at(&e)))?;
+    if format == VERSION {
+        return Ok(Migrated::Current);
+    }
+    if !(VERSION_WITHOUT_WINDOWS..VERSION).contains(&format) {
+        return Err(MigrateRefused::Format { format });
+    }
+    let malformed = |why: String| MigrateRefused::Malformed { format, why };
+    let decoded = decode_body(r, format, generation_named, vcpus, memory_mib).map_err(|e| malformed(e.0))?;
+    if decoded.generation != name {
+        return Err(malformed(format!(
+            "the state of generation {}",
+            decoded.generation
+        )));
+    }
+    let config = &decoded.snapshot.config;
+    if format < VERSION_WITH_CURRENT_WINDOWS
+        && config.share_window_mib > 0
+        && (config.shares > 0 || config.join_share)
+    {
+        return Err(MigrateRefused::WindowsLaidOutOtherwise { format });
+    }
+    let unwritten = |e: &dyn std::fmt::Display| MigrateRefused::Unwritten(at(e));
+    let new = encode(&decoded.snapshot, &name, &decoded.identities)
+        .and_then(|state| bounded(state, memory_mib))
+        .map_err(|e| unwritten(&e))?;
+    let staged = generation.join(MIGRATED);
+    match fs::remove_file(&staged) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(unwritten(&e)),
+        _ => {}
+    }
+    let file = create_unsynced(&staged, |mut f| f.write_all(&new)).map_err(|e| unwritten(&e))?;
+    platform::sync_durable(&file).map_err(|e| unwritten(&e))?;
+    drop(file);
+    fs::rename(&staged, &state).map_err(|e| unwritten(&e))?;
+    platform::sync_dir(&generation).map_err(|e| unwritten(&e))?;
+    Ok(Migrated::Rewritten { from: format })
+}
+
 /// [`fill`] for the last of a live move (D176 part 7): none of its memory, whose pages
 /// written since the move's last round go in the move's stream as its last round, which
 /// the other machine lays over what the rounds sent and puts in this file's place; the
@@ -1294,20 +1426,19 @@ fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
             Identity::of(path).map_err(|e| format!("{}: {e}", path.display()))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let state = encode(snap, name, &identities)?;
-    // No more than a restore reads (D176): a share's tables, with the bytes of the files its
-    // guest holds that no path reaches, are what grows it.
-    let most = most_state(snap.config.memory_mib).ok_or_else(|| {
-        StateRefused::PastAnyMachine {
-            memory_mib: snap.config.memory_mib,
-        }
-        .to_string()
-    })?;
+    bounded(encode(snap, name, &identities)?, snap.config.memory_mib)
+}
+
+/// `state`, of a machine of `memory_mib`, where it is no more than a restore reads (D176):
+/// a share's tables, with the bytes of the files its guest holds that no path reaches, are
+/// what grows it.
+fn bounded(state: Vec<u8>, memory_mib: u64) -> Result<Vec<u8>, String> {
+    let most =
+        most_state(memory_mib).ok_or_else(|| StateRefused::PastAnyMachine { memory_mib }.to_string())?;
     if state.len() as u64 > most {
         return Err(format!(
-            "the machine's state is {} bytes, more than a snapshot of its {} MiB of memory keeps ({most})",
+            "the machine's state is {} bytes, more than a snapshot of its {memory_mib} MiB of memory keeps ({most})",
             state.len(),
-            snap.config.memory_mib
         ));
     }
     Ok(state)
@@ -1863,10 +1994,9 @@ mod tests {
         assert_eq!(decoded.snapshot.config.hotplug_mib, 2048);
     }
 
-    /// Physical selectors are immutable snapshot state; old formats cannot
-    /// silently serialize a selected guest as the legacy all-device renderer.
+    /// Physical selectors are immutable snapshot state.
     #[test]
-    fn physical_gpu_selection_survives_snapshot_and_refuses_old_encoding() {
+    fn physical_gpu_selection_survives_snapshot() {
         use crate::vm::gpu_selection::PhysicalGpu;
         let ids = vec![Identity::default(); 3];
         let mut snap = sample(&nowhere(), 1);
@@ -1885,19 +2015,9 @@ mod tests {
             decode(&bytes).unwrap().snapshot.config.gpu_devices,
             snap.config.gpu_devices
         );
-        assert!(encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).is_err());
         for cut in 0..bytes.len() {
             assert!(decode(&bytes[..cut]).is_err());
         }
-        snap.config.gpu_devices.clear();
-        snap.config.share_window_mib = 1;
-        let old = encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).unwrap();
-        let restored = decode(&old).unwrap();
-        assert!(restored.snapshot.config.gpu_devices.is_empty());
-        assert_eq!(
-            restored.snapshot.config.share_window_mib,
-            snap.config.share_window_mib
-        );
     }
 
     #[test]
@@ -1930,39 +2050,81 @@ mod tests {
         assert!(decode(&short).unwrap_err().0.contains("2 identities for 3"));
     }
 
-    /// A state of the formats before this one, back to shards 0.6.0's, reads as it was
-    /// written where its machine has no DAX windows; one with windows, laid out otherwise
-    /// then, is refused, as is any older format (D189, D176).
-    #[test]
-    fn a_state_of_the_formats_before_reads_where_its_machine_has_no_dax_windows() {
-        let ids = vec![Identity::default(); 3];
-        let as_of = |snap: &Snapshot, version: u32| encode_as(snap, "g-1", &ids, version).unwrap();
-        for version in VERSION_WITHOUT_WINDOWS..VERSION {
-            let snap = sample(&nowhere(), 1);
-            assert_eq!(
-                decode(&as_of(&snap, version)).unwrap().snapshot,
-                snap,
-                "{version}"
-            );
+    /// `s`'s state as format `version`, from [`VERSION_WITHOUT_WINDOWS`] to the one before
+    /// this, laid out as the builds that wrote it laid it out: [`encode`]'s, without what
+    /// came after it (29's GPU selection, 28's PCI slots, 27's runs of data). What a user's
+    /// snapshot of shards 0.6.0 or 0.7.0 holds, for [`migrate`]'s tests.
+    fn encode_older(s: &Snapshot, generation: &str, identities: &[Identity], version: u32) -> Vec<u8> {
+        assert!((VERSION_WITHOUT_WINDOWS..VERSION).contains(&version));
+        assert!(s.config.gpu_devices.is_empty() && s.config.pci_slots == 0 && s.data.is_none());
+        let mut w = Writer::default();
+        MAGIC.iter().for_each(|&b| w.u8(b));
+        w.u32(version);
+        w.bytes(std::env::consts::ARCH.as_bytes());
+        w.bytes(generation.as_bytes());
+        w.u32(s.config.vcpus);
+        w.u64(s.config.memory_mib);
+        w.seq(&s.config.disks, |w, (path, read_only)| {
+            w.bytes(path_bytes(path).unwrap());
+            w.bool(*read_only);
+        });
+        w.seq(&s.config.pmem, |w, path| w.bytes(path_bytes(path).unwrap()));
+        w.seq(identities, |w, identity| identity.encode(w));
+        w.bool(s.config.vsock);
+        w.bool(s.config.net.is_some());
+        w.bytes(&s.config.net.unwrap_or_default());
+        w.u32(s.config.shares);
+        w.bool(s.config.join);
+        w.bool(s.config.join_share);
+        w.u64(s.config.hotplug_mib);
+        w.bool(s.config.reporting);
+        w.bool(s.config.gpu.is_some());
+        w.u64(s.config.gpu.unwrap_or(0));
+        w.u64(s.config.swap_mib);
+        w.u64(s.config.share_window_mib);
+        w.u64(s.config.layer_mib);
+        w.seq(&s.plugged, |w, (gpa, len)| {
+            w.u64(*gpa);
+            w.u64(*len);
+        });
+        if version >= VERSION_WITH_SLOTS {
+            w.u8(0);
         }
-        let as_before = |snap: &Snapshot| as_of(snap, VERSION_WITHOUT_WINDOWS);
-        let mut snap = sample(&nowhere(), 1);
-        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
-        // A length for windows, but no share to give one: none.
-        snap.config.shares = 0;
-        snap.config.join_share = false;
-        snap.config.share_window_mib = 64;
-        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
-        snap.config.join_share = true;
-        let e = decode(&as_before(&snap)).unwrap_err();
-        assert!(e.0.contains("with DAX windows"), "{e:?}");
-        assert_eq!(
-            decode(&encode(&snap, "g-1", &ids).unwrap()).unwrap().snapshot,
-            snap
-        );
-        let mut older = as_before(&sample(&nowhere(), 1));
+        if version >= VERSION_WITH_DATA {
+            w.bool(false);
+            w.u32(0);
+        }
+        w.bytes(&s.arch);
+        w.bytes(&s.devices);
+        w.into_bytes()
+    }
+
+    /// A restore reads this build's format alone: a state of any before it, shards 0.6.0's
+    /// on, is refused, saying it is rewritten as it is first restored ([`migrate`]), and one
+    /// of a format no migration reads is refused without. The older ones' bodies read as
+    /// they were written by the migration's reader alone. Red before legacy4, whose
+    /// restore read formats 24 to 28 each time.
+    #[test]
+    fn a_restore_refuses_a_state_of_an_older_format() {
+        let ids = vec![Identity::default(); 3];
+        let snap = sample(&nowhere(), 1);
+        for version in VERSION_WITHOUT_WINDOWS..VERSION {
+            let old = encode_older(&snap, "g-1", &ids, version);
+            let e = decode(&old).unwrap_err();
+            assert!(e.0.contains(&format!("snapshot format {version};")), "{e}");
+            assert!(e.0.contains("rewrites a snapshot of it"), "{e}");
+            let mut r = Reader::new(&old);
+            let (format, generation, vcpus, memory_mib) = decode_head(&mut r).unwrap();
+            let body = decode_body(r, format, generation, vcpus, memory_mib).unwrap();
+            assert_eq!(body.snapshot, snap, "{version}");
+        }
+        let mut older = encode_older(&snap, "g-1", &ids, VERSION_WITHOUT_WINDOWS);
         older[8..12].copy_from_slice(&(VERSION_WITHOUT_WINDOWS - 1).to_le_bytes());
-        assert!(decode(&older).unwrap_err().0.contains("this shards reads"));
+        let e = decode(&older).unwrap_err();
+        assert!(
+            e.0.contains("this shards reads") && !e.0.contains("rewrites"),
+            "{e}"
+        );
     }
 
     /// Backing files are named by absolute path (audit A18).
@@ -2319,6 +2481,106 @@ mod tests {
                     .len(),
                 1 << 20
             );
+        }
+
+        /// A user's snapshot of a format before this one, shards 0.6.0's (24) to 0.7.0's
+        /// (28), is refused by a restore until it is migrated: then its state is rewritten
+        /// once, in place, in this build's format, with its generation, files and their
+        /// identities as they were, and restores as it was saved; a second migration finds
+        /// it current and writes nothing. Red before legacy4, which read the older format at
+        /// every restore and had no migration.
+        #[test]
+        fn an_older_formats_snapshot_is_migrated_once_then_restores() {
+            for version in VERSION_WITHOUT_WINDOWS..VERSION {
+                let s = Scratch::new("migrate");
+                let dir = s.0.join("snap");
+                let snap = sample(&s.0, 1);
+                write(&dir, &snap, &ram(1)).unwrap();
+                let name = current(&dir).unwrap();
+                let state = dir.join(&name).join(STATE);
+                let ids = decode(&fs::read(&state).unwrap()).unwrap().identities;
+                fs::write(&state, encode_older(&snap, &name, &ids, version)).unwrap();
+                let e = read(&dir).unwrap_err();
+                assert!(e.contains("rewrites a snapshot of it"), "{version}: {e}");
+                assert_eq!(migrate(&dir), Ok(Migrated::Rewritten { from: version }));
+                assert!(!dir.join(&name).join(MIGRATED).exists());
+                let rewritten = fs::read(&state).unwrap();
+                assert_eq!(decode(&rewritten).unwrap().identities, ids);
+                let pinned = read(&dir).unwrap();
+                assert_eq!(pinned.snapshot, snap, "{version}");
+                assert_eq!(markers(&pinned), (1, 1));
+                assert_eq!(migrate(&dir), Ok(Migrated::Current));
+                assert_eq!(fs::read(&state).unwrap(), rewritten, "written twice");
+            }
+        }
+
+        /// What no migration rewrites faithfully is refused typed and left as it was: a
+        /// format before 0.6.0's (0.3.0 to 0.5.0 wrote 10) or past this build's, a machine
+        /// with DAX windows laid out before each had its head (24 to 27; 0.7.0's 28 is
+        /// rewritten), a body that is not its format's, and a directory with no snapshot.
+        #[test]
+        fn a_snapshot_no_migration_rewrites_is_refused_typed_and_left() {
+            let s = Scratch::new("unmigrated");
+            let dir = s.0.join("snap");
+            let name = "g-1";
+            fs::create_dir_all(dir.join(name)).unwrap();
+            fs::write(dir.join(CURRENT), format!("{name}\n")).unwrap();
+            let state = dir.join(name).join(STATE);
+            let ids = vec![Identity::default(); 3];
+            let mut windowed = sample(&s.0, 1);
+            windowed.config.share_window_mib = 64;
+            let as_of = |version: u32| encode_older(&windowed, name, &ids, version);
+            let with_format = |format: u32| {
+                let mut bytes = as_of(VERSION_WITHOUT_WINDOWS);
+                bytes[8..12].copy_from_slice(&format.to_le_bytes());
+                bytes
+            };
+            let mut cut = as_of(VERSION_WITHOUT_WINDOWS);
+            cut.truncate(cut.len() - 1);
+            for (bytes, refused) in [
+                (with_format(10), MigrateRefused::Format { format: 10 }),
+                (
+                    with_format(VERSION_WITHOUT_WINDOWS - 1),
+                    MigrateRefused::Format {
+                        format: VERSION_WITHOUT_WINDOWS - 1,
+                    },
+                ),
+                (
+                    with_format(VERSION + 1),
+                    MigrateRefused::Format { format: VERSION + 1 },
+                ),
+                (
+                    as_of(VERSION_WITH_CURRENT_WINDOWS - 1),
+                    MigrateRefused::WindowsLaidOutOtherwise {
+                        format: VERSION_WITH_CURRENT_WINDOWS - 1,
+                    },
+                ),
+            ] {
+                fs::write(&state, &bytes).unwrap();
+                assert_eq!(migrate(&dir), Err(refused));
+                assert_eq!(fs::read(&state).unwrap(), bytes, "not left as it was");
+            }
+            fs::write(&state, &cut).unwrap();
+            assert!(matches!(
+                migrate(&dir),
+                Err(MigrateRefused::Malformed {
+                    format: VERSION_WITHOUT_WINDOWS,
+                    ..
+                })
+            ));
+            assert_eq!(fs::read(&state).unwrap(), cut);
+            fs::write(&state, as_of(VERSION_WITH_CURRENT_WINDOWS)).unwrap();
+            assert_eq!(
+                migrate(&dir),
+                Ok(Migrated::Rewritten {
+                    from: VERSION_WITH_CURRENT_WINDOWS
+                })
+            );
+            assert_eq!(decode(&fs::read(&state).unwrap()).unwrap().snapshot, windowed);
+            assert!(matches!(
+                migrate(&s.0.join("none")),
+                Err(MigrateRefused::Unreadable(_))
+            ));
         }
 
         /// A generation prepared for a VM that writes only what it is handed (D30, D176):

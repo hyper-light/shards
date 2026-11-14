@@ -243,6 +243,9 @@ fn names(dir: &Path, n: u64) -> [PathBuf; 6] {
 /// with its holder's end, as its open file goes.
 const TAKING: &str = "taking";
 
+/// Where the daemon makes its [`TAKING`] before it renames it into place.
+const TAKING_MADE: &str = ".taking.new";
+
 /// The longest a taker's name is, `PID START\n` ([`crate::this_process`]): a `u32`'s
 /// digits, a space, a `u64`'s, a newline. Written in one write, far under `PIPE_BUF`, it is
 /// read whole or not at all (POSIX write(2)).
@@ -259,69 +262,16 @@ const fn digits(mut n: u64) -> usize {
 }
 
 /// The end of the process a slot's taker named itself as (`N.taker`, [`crate::Named`]): a
-/// descriptor readable once it has ended, to wait on beside the slot's own. A kqueue of its
-/// `EVFILT_PROC` `NOTE_EXIT` on macOS (kqueue(2); a kqueue's descriptor is selectable), its
-/// pidfd on Linux (pidfd_open(2), readable once it has exited, Linux 5.3). `None` where it
-/// has ended already, or its ID names a process that started after it (its start, read once
+/// descriptor readable once it has ended ([`exit_watch`](crate::unix::exit_watch)), to wait
+/// on beside the slot's own. `None` where it has ended already, or its ID names a process that started after it (its start, read once
 /// its end is watched).
 fn taker_end(named: &crate::Named) -> io::Result<Option<std::os::fd::OwnedFd>> {
-    use std::os::fd::FromRawFd as _;
     let pid = libc::pid_t::try_from(named.pid)
         .ok()
         .filter(|&pid| pid > 0)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker named no process"))?;
-    #[cfg(target_os = "macos")]
-    let end = {
-        // SAFETY: kqueue(2) takes no arguments. A kqueue is not inherited by a child.
-        let raw = unsafe { libc::kqueue() };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: a fresh descriptor nothing else owns.
-        let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
-        let change = libc::kevent {
-            ident: pid.unsigned_abs() as libc::uintptr_t,
-            filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD,
-            fflags: libc::NOTE_EXIT,
-            data: 0,
-            udata: std::ptr::null_mut(),
-        };
-        // SAFETY: kevent(2) reading one change, writing no event.
-        if unsafe {
-            libc::kevent(
-                queue.as_raw_fd(),
-                &change,
-                1,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null(),
-            )
-        } < 0
-        {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(None);
-            }
-            return Err(e);
-        }
-        queue
-    };
-    #[cfg(not(target_os = "macos"))]
-    let end = {
-        // SAFETY: pidfd_open(2) of a process, without flags: its descriptor is close-on-exec.
-        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        if raw < 0 {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(None);
-            }
-            return Err(e);
-        }
-        let raw =
-            std::os::fd::RawFd::try_from(raw).map_err(|_| io::Error::other("a descriptor out of range"))?;
-        // SAFETY: a descriptor just made, owned by nothing else.
-        unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) }
+    let Some(end) = crate::unix::exit_watch(pid)? else {
+        return Ok(None);
     };
     Ok(named.lives().then_some(end))
 }
@@ -334,27 +284,26 @@ fn read_taker(fifo: &File) -> io::Result<crate::Named> {
     name.get(..got)
         .filter(|_| got <= TAKER_MOST)
         .and_then(|name| std::str::from_utf8(name).ok())
-        .and_then(crate::Named::parse)
-        .filter(|named| named.start.is_some())
+        .and_then(|name| crate::Named::parse(name).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker's name that names no process"))
 }
 
 /// A client's shared hold of its daemon's [`TAKING`], let go of as it drops, before its file
-/// closes (M244): none where the daemon made none, a build's before takers named
-/// themselves.
-struct Taking(Option<File>);
+/// closes (M244).
+struct Taking(File);
 
 impl Taking {
-    fn shared(dir: &Path) -> io::Result<Taking> {
+    /// Its hold of `dir`'s [`TAKING`]; none where there is none to hold.
+    fn shared(dir: &Path) -> io::Result<Option<Taking>> {
         let file = match File::open(dir.join(TAKING)) {
             Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Taking(None)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
         loop {
             // SAFETY: flock(2) of a descriptor `file` holds open.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0 {
-                return Ok(Taking(Some(file)));
+                return Ok(Some(Taking(file)));
             }
             let e = io::Error::last_os_error();
             if e.kind() != io::ErrorKind::Interrupted {
@@ -366,11 +315,22 @@ impl Taking {
 
 impl Drop for Taking {
     fn drop(&mut self) {
-        if let Some(file) = &self.0 {
-            // SAFETY: flock(2) of a descriptor this holds open.
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-        }
+        // SAFETY: flock(2) of a descriptor this holds open.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
+}
+
+/// Whether `list` still names the list `opened`: the same file, not one made since in its
+/// place ([`Requests::renew`]) nor none.
+fn still_names(list: &Path, opened: &File) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    let named = match std::fs::metadata(list) {
+        Ok(named) => named,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let held = opened.metadata()?;
+    Ok(named.dev() == held.dev() && named.ino() == held.ino())
 }
 
 /// The daemon's exclusive hold of its [`TAKING`] ([`Requests::quiet`]): no client is taking
@@ -414,19 +374,23 @@ pub struct Requests {
     next: u64,
 }
 
-/// Makes `dir`'s [`TAKING`], as its lists are made, an old one's holders left with it.
+/// Makes `dir`'s [`TAKING`] anew, before its lists are made, so that a client finds one
+/// beside every list it opens: made under a name of its own and renamed over an old one,
+/// whose holders are left with it, so that its name is never without a file.
 fn taking(dir: &Path) -> io::Result<File> {
-    let at = dir.join(TAKING);
-    match std::fs::remove_file(&at) {
+    let made = dir.join(TAKING_MADE);
+    match std::fs::remove_file(&made) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(at)
+        .open(&made)?;
+    std::fs::rename(&made, dir.join(TAKING))?;
+    Ok(file)
 }
 
 /// Makes `dir`'s two lists, `free` and `free-streams`: each one's writer, and a reader of
@@ -480,8 +444,8 @@ impl Requests {
             }
             Err(e) => return Err(e),
         }
-        let (free, back) = lists(&dir)?;
         let taking = taking(&dir)?;
+        let (free, back) = lists(&dir)?;
         Ok(Requests {
             dir,
             free,
@@ -506,8 +470,8 @@ impl Requests {
                 _ => {}
             }
         }
-        (self.free, self.back) = lists(&self.dir)?;
         self.taking = taking(&self.dir)?;
+        (self.free, self.back) = lists(&self.dir)?;
         Ok(())
     }
 
@@ -924,7 +888,16 @@ pub fn take(home: &Path, streams: u8) -> io::Result<Taken> {
         // Held from before its record is read until it has named itself in its slot, or
         // found it gone: a client that ends in between leaves its daemon able to tell
         // ([`Requests::quiet`]).
-        let _taking = Taking::shared(&dir)?;
+        let Some(_taking) = Taking::shared(&dir)? else {
+            // A list with no take lock beside it, which a daemon makes before its lists:
+            // a daemon of a build from before takers named themselves, never asked (D36,
+            // D185); or the list was made again since it was opened, or went: the one
+            // there now.
+            if still_names(&list, &waits.free)? {
+                return Ok(Taken::NoTakeLock);
+            }
+            continue 'list;
+        };
         loop {
             // None there and no writer is no daemon.
             let Some(got) = waits.record(home, &list, &mut record)? else {
@@ -1137,15 +1110,10 @@ impl Waits {
 }
 
 /// Names this process in the slot it took, at `taker`, as its daemon follows it until its
-/// first byte ([`Slot::wait`]): in one write, whole. A daemon of a build before takers made
-/// none; one that removed the slot since leaves its next open to say so.
+/// first byte ([`Slot::wait`]): in one write, whole. A slot its daemon removed since it was
+/// offered has none (ENOENT) or no reader of it (ENXIO), which [`take`] passes over.
 fn name_taker(taker: &Path) -> io::Result<()> {
-    let fifo = match open_now(taker, true) {
-        Ok(fifo) => fifo,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    (&fifo).write_all(crate::this_process()?.as_bytes())
+    (&open_now(taker, true)?).write_all(crate::this_process()?.as_bytes())
 }
 
 /// Opens slot `n` of `dir`: its taker named, `answer` and the `streams` named, then `say`.
@@ -1784,6 +1752,29 @@ mod tests {
         assert!(matches!(slot.wait(|| {}), Ok(Waited::Gone)));
     }
 
+    /// A daemon makes its take lock before its lists, and makes it again in place as it
+    /// makes them again, so that every list a client opens has one beside it; a list with
+    /// none is a daemon of a build from before takers named themselves, refused typed and
+    /// never asked: its slot stays offered. Red before legacy4, which took the slot with
+    /// no hold (`Taking(None)`).
+    #[test]
+    fn a_list_with_no_take_lock_beside_it_is_refused() {
+        use std::os::unix::fs::MetadataExt as _;
+        let home = home("slot-no-take-lock");
+        let mut requests = Requests::open(&home).unwrap();
+        let dir = home.join(DIR);
+        assert!(dir.join(TAKING).is_file() && !dir.join(TAKING_MADE).exists());
+        let made = std::fs::metadata(dir.join(TAKING)).unwrap();
+        requests.renew().unwrap();
+        let again = std::fs::metadata(dir.join(TAKING)).unwrap();
+        assert_ne!(again.ino(), made.ino(), "its take lock not made again");
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        std::fs::remove_file(dir.join(TAKING)).unwrap();
+        assert!(matches!(take(&home, 0), Ok(Taken::NoTakeLock)));
+        assert_eq!(requests.waiting(false).unwrap(), 1, "a slot taken unheld");
+    }
+
     /// The take lock: a client holds it shared from before its record's read until it has
     /// named itself, so that a daemon holds it exclusive only while no client is taking a
     /// slot ([`Requests::quiet`]), and every slot then taken unnamed is a dead taker's.
@@ -1796,7 +1787,7 @@ mod tests {
             let quiet = requests.quiet().unwrap();
             assert!(quiet.is_some(), "no client takes, yet not quiet");
         }
-        let taking = Taking::shared(&dir).unwrap();
+        let taking = Taking::shared(&dir).unwrap().unwrap();
         assert!(requests.quiet().unwrap().is_none(), "quiet while a client takes");
         drop(taking);
         assert!(requests.quiet().unwrap().is_some(), "a taker's hold outlived it");
