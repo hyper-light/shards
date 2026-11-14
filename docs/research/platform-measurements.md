@@ -81,6 +81,9 @@ Runs-03's blocked CREATE red timed out; after stop registration moved ahead of
 CREATE, the same regression and 33 session tests pass, with API all-target clippy.
 The main landing of runs-01/02/04 is 3956d259b; merged gate revisions and remaining
 live checks are recorded there.
+Runs-05's preparation lease is released after readiness; 43 api_run unit tests
+and shards all-target clippy pass. Its live-VM collection/progress reproduction
+is explicitly owed; unit results are not that proof.
 
 ### M2. Object lifecycle (`lifecycle`, n=200, µs)
 

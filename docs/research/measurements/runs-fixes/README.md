@@ -165,3 +165,35 @@ merged gates above, b6e302bf4 and 3956d259b passed
 13.53s/16.38s). Each merge signature was made by gits; fixing/status signatures
 were checked with one gpgsig. ROOT's kiln inbox rejected the distinct landing
 receipt with 429 backpressure; no accepted model delivery is inferred.
+
+## runs-05
+
+Source c1b53393c935599a252d8cc070ed1c4a6f8a30a8 plus the api_run patch.
+The path is unambiguous: Shaped/Plan own Prepared::lease, warm waits for CREATE
+while owning it, and serve retains it through workload end; Store::collect
+exclusively locks the same .lease. The daemon drops its preparation lease once
+its VM has the rootfs. The API now drops it after launch/readiness/template
+settlement, before WARMED/CREATE wait and at serve_launched entry.
+
+No live red was run: the report's exact forbidden effect requires a ready real
+VM and is owed to ROOT under the fix brief. This is a source-proven lifetime
+correction, not a claimed GC/VM reproduction. `cargo test -j 4 -p shards --bin
+shards api_run::tests` passes 43 (kiln r24, 0.04s); `cargo clippy -j 4 -p shards
+--all-targets -- -D warnings` passes (16.99s), on the same Mac arm64 runner and
+owned target, with unit-only /usr/bin/true guest fixtures. The existing template
+settlement and shape tests pass; they do not observe the lease of a live VM.
+
+No new cache, poll, state variant, constant, panic or refusal. Existing lease
+Drop releases its file lock before close (M244). R01-R16 dispositions above
+apply with R09's live GC counterexample and R11's guest ownership explicitly
+unverified. ROOT: extend `cargo test -p shards --test api_image
+an_images_next_run_restores_the_template_its_first_saved` and the warm-pool
+case: retain a ready run and separately a WARMED spare, request collection of
+unrelated garbage, require collection completes while both stay alive and
+workload progress continues, and check template restore still succeeds. Exact
+new regression filter to add/run: `a_live_api_run_and_a_warm_host_do_not_hold_up_collection`.
+
+Runs-03 landed via c1b53393c. Its last merge added only crates/net and docs,
+outside shards-api and its transitive inputs (no dependency on shards-net):
+focused gate was 3956d259b plus its patch; the disjoint c1b53393c was pushed
+without a repeated gate, per ROOT's amended rule.

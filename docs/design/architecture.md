@@ -29695,6 +29695,13 @@ through it (Hex step 39), so every one of Hex's starts paid a boot.
   Its orchestrator hears which (`ImageGuest::started_from`, `wire::StartedFrom`, image channel
   version 19). The run's per-run secrets, its agent-control key above all (D252), are made
   after its VM is ready, so no template carries them.
+- *The preparation lease ends at readiness* (runs-05). Once launch has completed
+  readiness and template settlement, the VM owns its open rootfs and snapshot files
+  (D26). A warm host lets go of `Prepared::lease` before WARMED and before awaiting
+  CREATE; every served run does so before handoff/STARTED. The lease protects
+  preparation, not an idle spare's or workload's life, so unrelated collection can
+  acquire the store afterward. Its live collection/progress proof is owed to ROOT;
+  unit shaping tests do not prove a running VM's file ownership.
 - *One demand rule.* D26's rule for how many warm VMs a pool keeps (the largest burst within an
   RFC 6298 refill window, within the keep-alive) is `shards_api::demand`, moved from the daemon,
   never copied. The daemon's pools keep theirs by it, and an orchestrator's will too.
