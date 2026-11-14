@@ -3206,6 +3206,45 @@ mod tests {
         }
     }
 
+    /// network-10: a host-network guest that binds and closes one port again and again
+    /// holds one listener at a time, and the stack keeps no slot for each closed one: its
+    /// listeners' storage follows what is published now, not how often it was.
+    // NET_PUBLISHED comes from the daemon's hostnet control on a Unix socket here.
+    #[cfg(unix)]
+    #[test]
+    fn host_network_bind_close_cycles_keep_no_listener_history() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (sock, _daemon) = std::os::unix::net::UnixStream::pair().unwrap();
+        for id in 0u32..64 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut payload = id.to_be_bytes().to_vec();
+            payload.extend(8080u16.to_be_bytes());
+            payload.push(wire::PROTO_TCP);
+            handed(
+                &mut stack,
+                &sock,
+                shards_ipc::kind::NET_PUBLISHED,
+                &payload,
+                vec![Handed::from(listener)],
+            )
+            .unwrap();
+            assert_eq!(stack.hosted.len(), 1, "cycle {id}: not hosted");
+            stack.unpublish(id);
+            assert!(stack.hosted.is_empty(), "cycle {id}: still hosted");
+        }
+        assert!(
+            stack.published.len() <= 1,
+            "{} listener slots kept for at most one live listener",
+            stack.published.len()
+        );
+    }
+
     /// network-11: an answer the resolver gave of another name, or of another class, grants
     /// a destination named for one name nothing at its address; the name's own record
     /// does (D192, D236).
