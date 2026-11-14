@@ -24020,3 +24020,12 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### M564. MCP bridge termination with the harness stdin writer retained (D254)
+
+Linux x86_64, adacachy2, 2026-11-13: real-pipe unit regressions at e74696f22
+failed peer-end and stdout-error completion while stdin remained open; the old
+copy test passed (1 pass, 2 failures). At f7d83f73a all 7 MCP tests and shards-init
+all-target clippy passed. Normal socket half-close still delivers later stdin.
+This is functional evidence, not a performance measurement or real-VM result.
+[Commands, output excerpts, policy and owed coverage](measurements/inithex-fixes/README.md).
