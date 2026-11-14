@@ -124,6 +124,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** Clear ECX24 in baseline, apply `within`, then `for_vcpu(..., true)` and assert the bit stays clear. Follow with the two-host move and timer-progress test. D245's common-CPU contract is the expected behavior.
 
+**Status (2026-11-13):** fixed in a09a09f0c5f96d5868c601f38202f71a25d8cbc8 (red `a_cpu_baseline_keeps_deadline_timer_shaping_within_its_features`, Linux x86_64, Kiln r2; green 10 CPUID tests and clippy, r3). Mixed-host VM validation remains ROOT's. [Fix evidence](../../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### migrate-07 — P1 / high — A stronger destination's XSAVE buffer size rejects a compatible guest
 
 **Location:** `crates/vmm/src/hv/kvm/x86_64.rs:705-710`.

@@ -24020,3 +24020,10 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   clippy -D warnings for shards-vm-process on macOS, x86_64-unknown-linux-gnu,
   aarch64-unknown-linux-musl (zig) and x86_64-pc-windows-msvc (xwin). R11, R15: no VM run here;
   the api_image and managed_output KVM loop is ROOT's. R16: the fetched logs (116 MB) removed.
+
+### Migration review regression, 2026-11-13 (migrate-06, D245)
+
+Unit evidence only, not a performance measurement: on adacachy2 Linux x86_64, a baseline
+excluding TSC-deadline still exposed ECX24 before the fix (Kiln r2, one failing test).
+After a09a09f0c, 10 CPUID module tests and shards-vmm clippy passed (r3). The mixed-host
+VM move remains unrun. [Exact commands, revisions and limits](measurements/migrate/fix-review-2026-11-13.md).

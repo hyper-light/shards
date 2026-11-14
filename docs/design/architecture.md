@@ -28409,6 +28409,11 @@ different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 
 (CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
 CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
 
+**Review migrate-06 (2026-11-13).** KVM's TSC-deadline capability is admitted by the
+baseline's CPUID1.ECX24 before vCPU shaping; shaping may not restore a masked feature.
+Without a baseline the host capability remains native. [Focused red/green evidence and
+remaining two-host checks](../research/measurements/migrate/fix-review-2026-11-13.md).
+
 ### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
