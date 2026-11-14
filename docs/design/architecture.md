@@ -20081,15 +20081,36 @@ The research, every finding graded with its sources:
   `security.nesting` and shards' own builds under `--allow` (f32).
 - *What it gives the workload, and each exec into it.* An exec takes the workload's
   process spec, as runc's does and D42's filter is:
-  - **A writable, delegated cgroup subtree.** Its cgroup namespace stays rooted at
-    `run/workload`, and that hierarchy is mounted writable in its mount namespace
-    (`cgroups-rw`, f7). Its command starts in the leaf `run/workload/init`, so its
-    namespace root holds no process and it may enable cpu, cpuset, io, memory and pids for
-    children beside the leaf at once (f8, f9). Each exec joins the leaf, never the root,
-    so no exec races the workload's controllers (moby's hack/dind loops on that race,
-    f35).
+  - **A writable, delegated cgroup subtree.** Its cgroup namespace is rooted at
+    `run/workload/delegated`, beneath the workload's cgroup, and that hierarchy is mounted
+    writable in its mount namespace (`cgroups-rw`, f7). Its command starts in the leaf
+    `run/workload/delegated/init`, so its namespace root holds no process and it may enable
+    cpu, cpuset, io, memory and pids for children beside the leaf at once (f8, f9). Each
+    exec joins the leaf, never the root nor the workload's cgroup above it, so no exec races
+    the workload's controllers (moby's hack/dind loops on that race, f35).
     nsdelegate keeps the root's own limits init's, and every process inside the subtree
-    (f6).
+    (f6). The workload's limits and its device program stay on `run/workload`, above the
+    namespace's root (amended 2026-11-13, inithex-01): a command with CAP_SYS_ADMIN and the
+    default profile's bpf(2) detaches a cgroup device program attached at a cgroup it can
+    open (BPF_PROG_QUERY, BPF_PROG_GET_FD_BY_ID, BPF_PROG_DETACH: kernel/bpf/syscall.c at
+    79eb6679e, `bpf_prog_query`, `bpf_prog_get_fd_by_id`, `bpf_prog_detach`; kernel/bpf/
+    cgroup.c `cgroup_bpf_prog_detach`, which refuses no namespace root), and the root of its
+    own namespace was that cgroup. No process of the command's can name one above its root:
+    its mounts show the namespace's root (cgroup_namespaces(7)), it sees no process outside
+    its PID namespace (`--pid host` refused), and the `--init` reaper, the one process of
+    init's in that namespace, takes a cgroup namespace of its own rooted at the leaf. So the
+    standby, as it applies `nesting` (`setup::delegate`), enters `delegated`, enables the
+    workload's controllers for it (nsdelegate lets a namespace's root write its
+    `cgroup.subtree_control`), unshares a cgroup namespace rooted there, mounts the hierarchy
+    afresh over its old mount, and enters the leaf. Seen from inside, the root's own
+    memory.max and pids.max read `max`: the limits are its parent's, which hold it all the
+    same (cgroup-v2.rst, "Top-down Constraint"). *Alternatives*: a BPF link
+    (BPF_LINK_CREATE) is detached as a program is, by any holder of CAP_SYS_ADMIN that takes
+    it by ID (BPF_LINK_GET_FD_BY_ID, BPF_LINK_DETACH); a seccomp rule on bpf(2)'s command
+    cannot see BPF_PROG_ATTACH's BPF_F_REPLACE, which is in memory, and a nested runtime
+    needs BPF_PROG_ATTACH, BPF_PROG_QUERY and BPF_PROG_DETACH for its boxes' own programs
+    (runc's devicefilter); the program on `run` would bound joiners and domains, whose
+    device rules are their own. None taken.
   - **CAP_SYS_ADMIN and CAP_NET_ADMIN**, beside Docker's default set (f10). These cover its
     boxes' namespaces, mounts and pivot_root, their loopback, and their device programs.
     Like every run's capabilities (D42), they are the command's while it runs as root. A
@@ -20123,8 +20144,10 @@ The research, every finding graded with its sources:
     process bound and no others, the identities Hex's node keys its GPUs by (packed PCI
     address, Metal registry ID), never text a caller could word as it likes (f22, f39). A box
     sees them only where its runtime puts them. Render nodes come only through D44's rules
-    (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI, so
-    it still bounds any device programs the workload puts on its boxes (f20, f21).
+    (`--gpus`, `--device`). The workload's device filter is attached BPF_F_ALLOW_MULTI on
+    the workload's cgroup, above the command's namespace root, so it still bounds any device
+    programs the workload puts on its boxes (f20, f21), and the workload cannot take it off
+    (inithex-01, above).
   - **A readiness word**: `NOTIFY_SOCKET=/run/shards/notify`, sd_notify's datagram socket
     (f26). `READY=1` from one of the workload's own processes moves its readiness (below),
     writes WORKLOAD_READY on the control page, and tells the host.
@@ -20367,7 +20390,25 @@ the host test's bound (HVF at fafe35efc). With both, nesting.rs passed whole on 
 (ROOT, adacachy2, e72239dd3) and on HVF (ROOT, macOS 26 arm64, 2b89e8504): 11 of 11, one
 ignored. Hex's node, as a granted command, meets the same rule.
 
+**inithex-01's fix** (2026-11-13): red and green on a real kernel, Linux x86_64 (adacachy2,
+a delegated scope of the user's own, `systemd-run --user --scope -p Delegate=yes`, a user
+namespace standing in for init's privileges):
+`on_a_real_kernel_the_granted_command_sits_in_its_leaf_and_its_root_is_inits` now asks whether
+the standby's own mount or a fresh cgroup2 mount it makes shows the cgroup the device program
+is on (its inode): `ceiling=hidden` with `setup::delegate`; with its namespace left rooted at
+the workload's cgroup, as before the fix (the mutant), `ceiling=named`. Mutation of the exec's
+guard (an exec let into the namespace's root): `a_granted_runs_execs_join_its_leaf_never_its_root`
+fails. The bpf(2) steps themselves need init's privileges, which no unit test has: the
+real-VM twin below is owed. The reaper's own cgroup namespace has no unit test reaching it.
+
 **Evidence owed** (ROOT):
+- inithex-01's real-VM twin: `cargo test -p shards --profile test-release --test nesting
+  a_granted_workload_cannot_detach_its_device_program` (testguest `nesting ceiling`: the
+  queried programs' descriptors taken and detached from the namespace's root, none detached,
+  the microVM's own disk refused before and after), with the rest of nesting.rs (its runc
+  boxes' controllers and device programs under the new root); red at 9efde7252 (detached all,
+  the disk opened after), and with `setup::delegate` mutated back; and the GPU case's hostile
+  twin, card0 opened after the detach attempts;
 - the real-VM E2E (`crates/shards/tests/nesting.rs`, plan step 5): its green at 231bbdf6d
   or later on KVM x86_64 (CI's next main run that reaches it, or ROOT's own), and its runs
   on nested arm64 KVM, HVF with its GPU, and WHP, through `shards run vm` and through
@@ -20386,6 +20427,7 @@ The evidence record is
 - Hex's node needing a capability or syscall beyond these to make its boxes. That one
   would then be added, by name, with its reason.
 - A box reaching past the workload's subtree, its devices or its filter.
+- A granted workload that names the workload's cgroup, or detaches a program bounding it.
 - A domain's or another run's process reachable from a granted workload.
 
 ### D114. The build cache: cache mounts kept across builds, steps keyed by what they read, and its collection
