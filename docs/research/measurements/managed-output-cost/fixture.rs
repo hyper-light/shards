@@ -21,8 +21,10 @@ impl NativeFaultSample {
         reason: native_faults::Unknown,
         failure: Option<ObservationFailure>,
     ) -> Self {
-        let identity =
-            expected.and_then(|n| n.start.map(|start| native_faults::Identity { pid: n.pid, start }));
+        let identity = expected.map(|n| native_faults::Identity {
+            pid: n.pid,
+            start: n.start,
+        });
         Self {
             sample: native_faults::Sample::unknown(native_faults::Source::this_host(), identity, reason),
             failure,
@@ -32,13 +34,7 @@ impl NativeFaultSample {
 
     fn probe(identity: &PinnedProcess) -> Self {
         let expected = Some(identity.expected);
-        let Some(start) = identity.expected.start else {
-            return Self::unavailable(
-                expected,
-                native_faults::Unknown::MissingIdentity,
-                Some(ObservationFailure::MissingExpectedStart),
-            );
-        };
+        let start = identity.expected.start;
         if let Err(error) = identity.check() {
             return Self::unavailable(expected, native_faults::Unknown::IdentityUnverified, Some(error));
         }
@@ -146,7 +142,7 @@ impl NativeFaultPhase {
         let parent = shards_ipc::started(std::process::id())
             .map(|start| shards_ipc::Named {
                 pid: std::process::id(),
-                start: Some(start),
+                start,
             })
             .map_err(ObservationFailure::io);
         let released = || {
@@ -476,7 +472,6 @@ enum ObservationFailure {
         status: Option<i32>,
     },
     MalformedVmPid,
-    MissingExpectedStart,
     MalformedPinnedStat,
     DifferentIdentity {
         expected: (u32, u64),
@@ -505,7 +500,6 @@ impl ObservationFailure {
             Self::MalformedIdentityRecord => json!({"state":"MalformedIdentityRecord"}),
             Self::InspectFailed { status } => json!({"state":"InspectFailed","status":status}),
             Self::MalformedVmPid => json!({"state":"MalformedVmPid"}),
-            Self::MissingExpectedStart => json!({"state":"MissingExpectedStart"}),
             Self::MalformedPinnedStat => json!({"state":"MalformedPinnedStat"}),
             Self::DifferentIdentity { expected, observed } => {
                 json!({"state":"DifferentIdentity","expected":expected,"observed":observed})
@@ -547,7 +541,7 @@ fn retain(inputs: &Inputs, stem: &str, bytes: std::io::Result<Vec<u8>>) -> Value
 fn named(path: &Path) -> Result<shards_ipc::Named, ObservationFailure> {
     let bytes = read_bytes(path).map_err(ObservationFailure::io)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| ObservationFailure::MalformedIdentityRecord)?;
-    shards_ipc::Named::parse(text).ok_or(ObservationFailure::MalformedIdentityRecord)
+    shards_ipc::Named::parse(text).map_err(|_| ObservationFailure::MalformedIdentityRecord)
 }
 
 fn vm(fixture: &Fixture, inputs: &Inputs, until: Instant) -> Result<shards_ipc::Named, ObservationFailure> {
@@ -569,10 +563,7 @@ fn vm(fixture: &Fixture, inputs: &Inputs, until: Instant) -> Result<shards_ipc::
         .filter(|p| *p != 0)
         .ok_or(ObservationFailure::MalformedVmPid)?;
     let start = shards_ipc::started(pid).map_err(ObservationFailure::io)?;
-    Ok(shards_ipc::Named {
-        pid,
-        start: Some(start),
-    })
+    Ok(shards_ipc::Named { pid, start })
 }
 
 fn snapshot(inputs: &Inputs, role: &str, identity: &Result<shards_ipc::Named, ObservationFailure>) -> Value {
@@ -590,8 +581,8 @@ fn snapshot(inputs: &Inputs, role: &str, identity: &Result<shards_ipc::Named, Ob
     let root = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     let before = read_bytes(&root.join("stat"));
     let before_identity = before.as_ref().ok().and_then(|b| parse::process(b));
-    let expected = identity.start.map(|start| (identity.pid, start));
-    if expected.is_none() || before_identity != expected {
+    let expected = Some((identity.pid, identity.start));
+    if before_identity != expected {
         return json!({"state":"IdentityUnverifiedBeforeRead","pid":identity.pid,"expected_start":identity.start,"observed_identity":before_identity,"read_error":before.err().map(failure)});
     }
     let mut fields = serde_json::Map::new();
@@ -723,9 +714,6 @@ struct PinnedProcess {
 
 impl PinnedProcess {
     fn open(expected: shards_ipc::Named) -> Result<Self, ObservationFailure> {
-        if expected.start.is_none() {
-            return Err(ObservationFailure::MissingExpectedStart);
-        }
         let directory =
             std::fs::File::open(format!("/proc/{}", expected.pid)).map_err(ObservationFailure::io)?;
         Ok(Self { expected, directory })
@@ -736,12 +724,7 @@ impl PinnedProcess {
         let bytes = std::fs::read(format!("/proc/self/fd/{}/stat", self.directory.as_raw_fd()))
             .map_err(ObservationFailure::io)?;
         let observed = parse::process(&bytes).ok_or(ObservationFailure::MalformedPinnedStat)?;
-        let expected = (
-            self.expected.pid,
-            self.expected
-                .start
-                .ok_or(ObservationFailure::MissingExpectedStart)?,
-        );
+        let expected = (self.expected.pid, self.expected.start);
         if observed != expected {
             return Err(ObservationFailure::DifferentIdentity { expected, observed });
         }
@@ -1038,7 +1021,7 @@ fn run(
     let observer = shards_ipc::started(std::process::id())
         .map(|start| shards_ipc::Named {
             pid: std::process::id(),
-            start: Some(start),
+            start,
         })
         .map_err(ObservationFailure::io);
     faults.after_start_and_watch_acquisition = Some(NativeFaultPhase::sample(exits.as_ref(), &observer));
