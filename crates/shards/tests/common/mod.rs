@@ -1974,7 +1974,7 @@ pub fn run_shards_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, command: &[&str], ar
 /// judge's look.
 #[track_caller]
 pub fn client_output(cmd: &mut Command, home: Option<&Path>) -> std::process::Output {
-    let kind = WaitKind::at(std::panic::Location::caller());
+    let kind = WaitKind::of(std::panic::Location::caller(), &command_words(cmd));
     let asked = format!("{cmd:?}");
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -2548,7 +2548,7 @@ fn run_ending(
     end: Option<Duration>,
     leftovers: Leftovers,
 ) -> Result<Run, Ended> {
-    let kind = WaitKind::at(std::panic::Location::caller());
+    let kind = WaitKind::of(std::panic::Location::caller(), &command_words(&cmd));
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home: Option<PathBuf> = cmd
@@ -2651,8 +2651,53 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
     }
 }
 
+/// The words that name `cmd`'s command, which key its wait's kind beside its call site
+/// ([`WaitKind::of`]), so that one call site's quick refusal never bounds its slow build or
+/// push (#77: build.rs' `policy_eval_answers` and `builds_push_what_they_build` ran many
+/// commands from one closure, a W* of 13.4 ms and 3.49 ms learned from quick ones judging
+/// the rest). They are its program's file stem, then its subcommand's words, each a plain
+/// word (ASCII lowercase letters and `-`, no flag) up to the first that is not:
+/// - its first argument;
+/// - its second, only where its first names no command of the CLI's that takes arguments
+///   itself (shards-cmdline's catalog: `run`, `push`, `build`, whose next word is an image,
+///   a name or a path), or shards' grammar reads the two as ACTION THING (`run vm`, `stop
+///   daemon`, `grammar::form`): `image ls`, `compose up`, `buildx build`, `system df`.
+///
+/// So `shards run --rm alpine` is `shards run`, `docker push localhost:5000/x` is `docker
+/// push`, `shards stop daemon` is `shards stop daemon`, and `docker compose up -d` is `docker
+/// compose up`. None of a run's own names, paths or tags is ever a word: each run of a call
+/// site keys the same kinds, whose records it keeps.
+pub fn command_words(cmd: &Command) -> String {
+    let program = Path::new(cmd.get_program())
+        .file_stem()
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+    let plain = |word: &&std::ffi::OsStr| {
+        word.to_str().is_some_and(|w| {
+            !w.is_empty() && !w.starts_with('-') && w.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+        })
+    };
+    let mut args = cmd.get_args();
+    let mut words = vec![program];
+    let Some(first) = args.next().filter(plain).and_then(std::ffi::OsStr::to_str) else {
+        return words.join(" ");
+    };
+    words.push(first.to_string());
+    let takes_arguments = shards_cmdline::catalog::TOP
+        .iter()
+        .flat_map(|group| group.entries)
+        .any(|entry| entry.name == first && entry.command.is_some());
+    if let Some(second) = args.next().filter(plain).and_then(std::ffi::OsStr::to_str)
+        && (!takes_arguments
+            || shards_cmdline::grammar::form(&[first.to_string(), second.to_string()]).is_some())
+    {
+        words.push(second.to_string());
+    }
+    words.join(" ")
+}
+
 /// A kind of the tests' own waits: the call site that waits ([`run_command`]'s caller,
-/// `#[track_caller]` through its wrappers), with what its answers have taught D215's record:
+/// `#[track_caller]` through its wrappers) and, for a wait on a command, its command's words
+/// ([`command_words`]), with what its answers have taught D215's record:
 /// W*, the slowest, from a wait's start to its client's own end, and R*, the least rate its
 /// party ran at meanwhile, a refusal's diagnosis and never its bound. None on a host until
 /// its first answer there; then kept under `target/judge-records`, by the host and the call
@@ -2663,22 +2708,37 @@ fn finished(status: std::process::ExitStatus, stdout: String, stderr: String, st
 /// bound is the slowest answer seen. No ×2."
 pub struct WaitKind {
     site: &'static std::panic::Location<'static>,
+    words: String,
     record: shards_api::Record,
     file: PathBuf,
 }
 
 impl WaitKind {
-    /// The kind of `site`, its record taught what this host kept of it the first time a wait
-    /// of it begins in this process.
+    /// The kind of `site`, a wait on no command: its record taught what this host kept of it
+    /// the first time a wait of it begins in this process.
     pub fn at(site: &'static std::panic::Location<'static>) -> &'static WaitKind {
-        type Site = (&'static str, u32, u32);
-        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Site, &'static WaitKind>> =
+        WaitKind::of(site, "")
+    }
+
+    /// The kind of `site` waiting on the command `words` name ([`command_words`]), kept apart
+    /// from its call site's other commands'. Its record is kept beside the call site's own
+    /// (`FILE-LINE-COLUMN-WORDS`): one a host kept before commands were told apart, keyed by
+    /// its call site alone, is read by waits on no command still, and a command's kind is
+    /// cold on a host until its own first answer there.
+    pub fn of(site: &'static std::panic::Location<'static>, words: &str) -> &'static WaitKind {
+        type Kind = (&'static str, u32, u32, String);
+        static KINDS: std::sync::Mutex<std::collections::BTreeMap<Kind, &'static WaitKind>> =
             std::sync::Mutex::new(std::collections::BTreeMap::new());
         let mut kinds = KINDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         kinds
-            .entry((site.file(), site.line(), site.column()))
+            .entry((site.file(), site.line(), site.column(), words.to_string()))
             .or_insert_with(|| {
-                let name: String = format!("{}-{}-{}", site.file(), site.line(), site.column())
+                let mut name = format!("{}-{}-{}", site.file(), site.line(), site.column());
+                if !words.is_empty() {
+                    name.push('-');
+                    name.push_str(words);
+                }
+                let name: String = name
                     .chars()
                     .map(|c| {
                         if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -2690,6 +2750,7 @@ impl WaitKind {
                     .collect();
                 let kind: &'static WaitKind = Box::leak(Box::new(WaitKind {
                     site,
+                    words: words.to_string(),
                     record: shards_api::Record::new(),
                     file: workspace()
                         .join("target/judge-records")
@@ -3159,9 +3220,13 @@ impl Wait {
                 format!("W* {slowest:?}, R* {:?} of CPU in {:?}", least.cpu, least.over)
             }
         };
+        let kind = if self.kind.words.is_empty() {
+            self.kind.site.to_string()
+        } else {
+            format!("{} `{}`", self.kind.site, self.kind.words)
+        };
         format!(
-            "{}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
-            self.kind.site,
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),

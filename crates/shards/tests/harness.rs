@@ -94,13 +94,49 @@ fn stand_in() {
 }
 
 /// [`stand_in`], doing `what`: `what`'s first word its first argument, a filter that names
-/// no test, so that it is its command's word as a subcommand is.
+/// no test, so that it is its command's word ([`common::command_words`]) as a subcommand is.
 fn stand_in_doing(what: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
     let word = what.split_whitespace().next().unwrap_or("exit");
     cmd.args([word, "stand_in", "--exact", "--ignored", "--test-threads=1"])
         .env("SHARDS_STAND_IN", what);
     cmd
+}
+
+/// A command's words, which key its wait's kind beside its call site, are its program and
+/// its subcommand, never an image, a name, a path or a flag (#77). Do: take the words of
+/// commands as tests run them. Expect: each its subcommand's words alone.
+#[test]
+fn a_commands_words_are_its_subcommands() {
+    let words = |program: &str, args: &[&str]| {
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        common::command_words(&cmd)
+    };
+    let shards = if cfg!(windows) {
+        "C:\\t\\shards.exe"
+    } else {
+        "/t/shards"
+    };
+    for (args, said) in [
+        (&["run", "--rm", "alpine", "echo"][..], "shards run"),
+        (&["run", "alpine", "echo", "hi"], "shards run"),
+        (&["push", "localhost:5000/x"], "shards push"),
+        (&["build", "-t", "x", "."], "shards build"),
+        (&["stop", "daemon"], "shards stop daemon"),
+        (&["stop", "web"], "shards stop"),
+        (&["run", "vm", "--kernel", "k"], "shards run vm"),
+        (&["image", "ls"], "shards image ls"),
+        (&["compose", "up", "-d"], "shards compose up"),
+        (&["buildx", "build", "."], "shards buildx build"),
+        (&["--version"], "shards"),
+        (&["rm", "-f", "t-1234"], "shards rm"),
+        (&["inspect", "t-1234"], "shards inspect"),
+    ] {
+        assert_eq!(words(shards, args), said, "{args:?}");
+    }
+    assert_eq!(words("git", &["clone", "https://x/y"]), "git clone");
+    assert_eq!(words("sh", &["-c", "true"]), "sh");
 }
 
 /// One call site's waits on different commands are judged apart: a quick command's answer
