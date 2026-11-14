@@ -182,6 +182,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** retain A's TCP DNS session across B's departure and D's arrival; require old TCP and fresh UDP to agree that B is absent and D is present. Keep C alive to avoid conflating this with closing the entire DNS grant.
 
+**Status (2026-11-14):** fixed in 339d16ab1 (red `agentdns::tests::an_existing_tcp_session_uses_the_members_current_names`, the Codex lane's e862cfddd cherry-picked as 8c99b9816). Each TCP question is judged under the relay's live askers by the connection's link and address; a revoked asker's session closes. Red/green on merge 38bd7a9d0 (main 2e00a1043), Linux x86_64 (adacachy2), with init clippy; mutation `None => continue` fails the test. Real-guest witness (A's TCP session across B's end and D's start, C alive) owed to ROOT. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-09-a-tcp-dns-session-judged-by-its-asker-as-it-stands`; D181 amended.
+
 ### network-10 — P3 / medium: host-network bind/close cycles retain unlimited listener history
 
 **Location:** `crates/net/src/lib.rs:1705`, `:1717`, `:1369`. Predates the base and is also used by the Windows host-network work in this range.
@@ -198,6 +200,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 
 **Catching test:** perform N publish/unpublish cycles with at most one live listener and require no listeners/hosted IDs remain and slot storage is independent of N. ROOT should repeat actual guest host-network binds and verify host resource return on Unix/Windows.
 
+**Status (2026-11-14):** fixed in acd4a34a8, cf6084eab and dbb7175de (red `tests::host_network_bind_close_cycles_keep_no_listener_history`). Listener slots are reused from a free list under generation-carrying poll tokens; storage is the most ever published at once. Red/green on merge 38bd7a9d0, macOS arm64 (adas-mac-studio-3.local), with net clippy; free-list and generation mutations each fail. Owed to ROOT: a real host-network guest binding/closing one port 10,000 times with the network process's fds and RSS flat, on Linux, macOS and Windows. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-10-listener-slots-reused-under-generation-safe-tokens`; D124 amended.
+
 ### network-11 — P3 / medium: the DNS grant learner treats unrelated answer records as the granted name's addresses
 
 **Location:** `crates/dns/src/lib.rs:291`, `:302`, `:315`; consumers `crates/net/src/lib.rs:2408`, `:2865`. Parser predates the base; D192/D236 increase its use.
@@ -213,6 +217,8 @@ Ranking: P0 critical; P1 high security/resource priority; P2 high correctness pr
 **Fix direction:** validate response semantics and question correlation, class and applicable owner/CNAME chain before deriving authority; handle expiry as network-03 describes.
 
 **Catching test sketch:** `assert!(!a_records(reply_with_unrelated_ch_a()).unwrap().1.contains(&forbidden));` Also test an unrelated IN owner, NXDOMAIN with records, valid compressed names/CNAME chains, A/AAAA, and propagation into `Config::allows` over both transports.
+
+**Status (2026-11-14):** fixed in 658eec242 (red `tests::only_the_asked_names_own_records_are_its_addresses` in shards-dns and `tests::a_named_grant_learns_only_its_names_own_records` in shards-net). Only a whole NOERROR response to one IN question counts, and only records of its type and class owned by the name or its CNAME chain's end; loops, errors and truncation grant nothing. Red/green on merge 38bd7a9d0, macOS arm64, with dns/net clippy; owner, class, RCODE and loop mutations each fail. Evidence: `docs/research/measurements/network-fixes-v1/README.md#network-11-a-responses-addresses-are-its-questions-names-alone`; D192 amended.
 
 ### network-12 — P3 / medium: production network controls still use chosen constants forbidden by current R03
 

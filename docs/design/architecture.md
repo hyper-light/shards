@@ -7501,6 +7501,18 @@ ports` lists, built; (3e) connect and disconnect of a running member, built.
   2026-10-17: 30 s, and 120 s once answered), and says a
   port it cannot bind in shards' words. `--add-host NAME:host-gateway` is refused: a
   member reaches nothing of the command's.
+- **Found and closed: TCP DNS sessions held their accept's names (network-09,
+  2026-11-13).** The agents' resolver cloned a TCP asker's table of names and grants at
+  accept, so an open DNS-over-TCP connection answered a departed member's name, and never
+  a joined one's, for as long as it stayed open. Each question is now judged under the
+  relay's live askers, found by the connection's link and source address, with a typed
+  verdict (`Here`, `Upstream`, `Refused`); an asker let go of, or whose link no longer
+  has that address, has its connection closed. A question already sent upstream finishes
+  on its connection. Red/green and a mutation (`None => continue`) of
+  `an_existing_tcp_session_uses_the_members_current_names` on Linux x86_64;
+  [evidence](../research/measurements/network-fixes-v1/README.md#network-09-a-tcp-dns-session-judged-by-its-asker-as-it-stands).
+  The real-guest witness is ROOT's: an engine's three members, A's TCP session held
+  across B's end and D's start, A's old TCP and a fresh UDP question agreeing.
 - **Tested on real microVMs.** `a_microvms_own_engine_makes_each_container_a_member_of_its_switch`:
   two members serving one port, each at the port it was given on the command's loopback
   and at its own address on that port, from init's end of the switch's link; a port one
@@ -12937,6 +12949,18 @@ receive handler, as the real dispatcher does; send completion alone was no deliv
 witness. It changes no production authority rule. Native red and merged gates are
 in the same evidence record.
 [Unit reproduction and remaining VM checks](../research/measurements/network-fixes-v1/README.md#network-03-dns-authority-lifetime).
+
+**Answer records tied to the name (network-11, 2026-11-13).** What a granted name
+resolved to is what the resolver answered for that name alone: `shards_dns::a_records`
+takes a whole response (QR, OPCODE 0, TC clear, RFC 2181 §9) without error (RCODE 0) to
+one IN question, and of its answer section only records of the question's type and
+class IN owned by the name, or by the end of its CNAME chain (RFC 1034 §§3.6.2, 4.3.2),
+names read with compression (RFC 1035 §4.1.4) and compared without case (RFC 4343). A
+record of another owner, class or type, an error or a truncated response, and a chain
+that loops grant nothing; both transports read answers through it. Before, every A or
+AAAA record of the answer section became the name's address. Red/green and four
+mutations (owner, class, RCODE, loop) on macOS arm64;
+[evidence](../research/measurements/network-fixes-v1/README.md#network-11-a-responses-addresses-are-its-questions-names-alone).
 
 **Next.** IPv6 destinations (the network process learns A records alone); a destination
 on a network whose members' images have agents with grants of their own, held apart by
@@ -19624,6 +19648,17 @@ host networking does for its VM's containers (PM M177).
   daemon waits for the network process (none of 100, quiet and loaded). A joiner's are
   let go so too; without it, the daemon's own letting go at the joiner's end came first
   in each of 100 runs, which nothing but timing ordered.
+- **Found and closed: a slot for every listener ever published (network-10,
+  2026-11-13).** Each `NET_PUBLISHED` pushed a listener slot and each `NET_UNPUBLISHED`
+  only emptied it, so a guest on the host's network that binds and closes one port grew
+  the network process's listener vector by a slot a cycle until its run ended. Listeners
+  now take slots a free list hands on, as the guest's TCP connections do, each slot's
+  generation in its poll token, so the slots are the most ever published at once and a
+  slot's earlier listener's events never reach the next one's. Red/green and two
+  mutations (free list, generation) on macOS arm64;
+  [evidence](../research/measurements/network-fixes-v1/README.md#network-10-listener-slots-reused-under-generation-safe-tokens).
+  ROOT owes the real loop: a host-network guest binding and closing one port 10,000
+  times, the network process's fds and RSS flat, on Linux, macOS and Windows.
 
 ### D123. A run's record of processes: from the kernel, every one, whole
 
