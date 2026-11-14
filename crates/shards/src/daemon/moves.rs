@@ -331,21 +331,20 @@ pub(crate) struct Backing {
 
 /// What a machine lacks to take a [`Plan`]: its image, which the client loads there, and the
 /// files the export is to send; and the packings of a move's stream it unpacks
-/// (`crate::packing`), none where a daemon of an earlier build answers, which is sent the
-/// stream as it is.
+/// (`crate::packing`), [`crate::packing::CODEC`], which the mover refuses an answer without
+/// (cli/moves.rs `needs_of`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Needs {
     pub image: bool,
     pub files: Vec<String>,
-    #[serde(default)]
     pub unpacks: Vec<String>,
 }
 
 /// Why a move is refused before anything of its microVM moves (the `ready` step's answer on
 /// the machine moved to, the `save` or `plan` step's where it runs), or a lease asked under
 /// the key a move replaced (the `key` step's): as JSON on stdout beside its words on
-/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`) and a client
-/// of an earlier build still reads why.
+/// stderr, so that the mover matches what was refused (cli/moves.rs `unready`), and the
+/// step fails in words as any step's failure does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "refused", rename_all = "kebab-case")]
 pub(crate) enum Refused {
@@ -1470,7 +1469,7 @@ impl<D: Disk> Daemon<D> {
     /// (remote.rs): `args` after [`shards_ipc::MOVE_STEP`].
     pub(super) fn move_step(&self, args: &[String], asker: &Asker, reply: &Reply<'_>) -> u8 {
         // A refusal goes typed on stdout, for the mover to match, and in words on stderr, as
-        // any step's failure does, for a client of an earlier build.
+        // any step's failure does.
         let typed = |done: Result<String, Unready>| match done {
             Ok(said) => Ok(said),
             Err(Unready::Failed(e)) => Err(e),
@@ -2220,16 +2219,22 @@ impl<D: Disk> Daemon<D> {
         Ok(String::new())
     }
 
-    /// `import [--packed zstd]`: a move's stream read from the client's descriptor, unpacked
-    /// where it was packed (`crate::packing`), its files put in place, its snapshot made to
+    /// `import --packed zstd`: a move's stream read from the client's descriptor, packed as
+    /// every mover of this build packs it (`crate::packing`), its files put in place, its snapshot made to
     /// restore against this machine's files, and the microVM made here, stopped as saved. Its
     /// name, once it is.
     fn move_import(&self, args: &[String], asker: &Asker) -> Result<String, Unready> {
-        let packed = match args {
-            [] => false,
-            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => true,
-            other => return Err(format!("import: {other:?}").into()),
-        };
+        match args {
+            [flag, codec] if flag == "--packed" && codec == crate::packing::CODEC => {}
+            other => {
+                return Err(format!(
+                    "import: {other:?}: a move's stream is packed as {} (--packed {})",
+                    crate::packing::CODEC,
+                    crate::packing::CODEC
+                )
+                .into());
+            }
+        }
         let input = asker
             .files
             .first()
@@ -2237,11 +2242,7 @@ impl<D: Disk> Daemon<D> {
             .try_clone()
             .map_err(|e| e.to_string())?;
         let read = io::BufReader::with_capacity(CHUNK, File::from(input));
-        let mut input: Box<dyn Read> = if packed {
-            Box::new(crate::packing::Unpacked::new(read))
-        } else {
-            Box::new(read)
-        };
+        let mut input = crate::packing::Unpacked::new(read);
         let staging = self.private_staging()?;
         // A live move's rounds first, where it is one (D176 part 7): what its memory, layer
         // and swap held, kept to be laid under its last save's.
