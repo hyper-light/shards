@@ -1489,7 +1489,10 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let execs = dialed.execs.expect("exec lanes subscribed");
     // The harness's connection to its bridge, held for the controller until it asks.
     let said = on_endpoint(&*guest, "codex's MCP connection", || {
-        let McpConnection { mut from, .. } = answered!(execs.mcp(codex_at)).unwrap();
+        // Its end held while its records are read: an ExecControl let go before its exit is
+        // heard hangs its connection up (D254, d7ff8a094), which a controller does only
+        // when it means to end it.
+        let McpConnection { mut from, end, .. } = answered!(execs.mcp(codex_at)).unwrap();
         let mut said = Vec::new();
         while said.len() < shards_testguest::MCP_INITIALIZE.len() {
             match from.next_record().unwrap() {
@@ -1497,6 +1500,7 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
                 Got::Finished => break,
             }
         }
+        drop(end);
         said
     });
     assert_eq!(

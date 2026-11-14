@@ -792,25 +792,43 @@ fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else what
-/// [`builder_most`] makes of this host's memory, what it has available as the builder
-/// starts, and what the home's builds have needed (`needs`, [`Needed`]). Its steps and its
-/// layers share it. It boots with little of it, and the rest is plugged as the build needs
-/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
-/// (PM M82), not with what it may have.
-fn builder_memory_mib(needs: &Path) -> u64 {
-    if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
+/// The memory a builder may have and boots with, in MiB (D133): the most, `SHARDS_BUILD_MEMORY`
+/// if set, else what [`builder_most`] makes of this host's memory, what it has available as
+/// the builder starts, and what the home's builds have needed (`needs`, [`Needed`]); and what
+/// it boots with, [`builder_boot`] of what the home learned its guest, `identity`
+/// ([`builder_identity`]), needs as it starts. Its steps and its layers share the most, the
+/// rest of it plugged as the build needs it: what a guest costs at boot grows with what it
+/// boots with (PM M82), not with what it may have. A host whose memory is unread, with
+/// nothing recorded, is refused ([`HostMemoryUnread`]).
+fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), HostMemoryUnread> {
+    let needed = Needed::read(needs);
+    let learned = needed.boot_for(identity);
+    let most = match std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
         .and_then(|v| v.parse().ok())
     {
-        return whole_blocks(m);
+        Some(m) => whole_blocks(m),
+        None => builder_most(host_memory(), host_available(), &needed, learned)?,
+    };
+    Ok((most, builder_boot(most, learned)))
+}
+
+/// A builder refused for want of its host's memory: unread, and nothing recorded in its home
+/// to size its builder by (D133, memory-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemoryUnread;
+
+impl std::fmt::Display for HostMemoryUnread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the host's memory cannot be read, and no build of this home has said what a builder needs",
+        )
     }
-    builder_most(host_memory(), host_available(), Needed::read(needs))
 }
 
 /// The most memory a builder may have, in MiB, on a host of `host` bytes that has
-/// `available` as it starts, the home's builds having needed `needed` (D133), in whole
-/// blocks:
+/// `available` as it starts, the home's builds having needed `needed` (D133) and its guest
+/// having been learned to need `learned` bytes to boot, in whole blocks:
 ///
 /// - with no build recorded (a new home: the cold start), what the host has available,
 ///   what its kernel says it can give a new program without taking from what runs;
@@ -818,28 +836,90 @@ fn builder_memory_mib(needs: &Path) -> u64 {
 /// - all the host's memory once a build was ended short of memory, its builder having
 ///   reached its ceiling, as a run with no limit may have (`run::sizes`, D148);
 ///
-/// never more than the host's memory, nor less than a builder boots with, which is all it
-/// may have where the host's memory cannot be read; all of it where what is available
-/// cannot be.
-fn builder_most(host: Option<u64>, available: Option<u64>, needed: Needed) -> u64 {
+/// never more than the host's memory, nor less than what its guest was learned to boot with;
+/// all of it where what is available cannot be read, or holds no whole block, the unit a
+/// builder's memory comes in. Where the host's memory cannot be read: what the home
+/// recorded, the most its builds needed or its guest's boot, else refused, never a guess.
+fn builder_most(
+    host: Option<u64>,
+    available: Option<u64>,
+    needed: &Needed,
+    learned: Option<u64>,
+) -> Result<u64, HostMemoryUnread> {
+    let block = shards_vmm::devices::virtio::mem::BLOCK;
+    let learned = learned.unwrap_or(0);
     let Some(host) = host else {
-        return whole_blocks(builder::BOOT_MEMORY_MIB);
+        let recorded = needed.most.max(learned);
+        return match recorded {
+            0 => Err(HostMemoryUnread),
+            bytes => Ok(whole_blocks_up(bytes.div_ceil(1 << 20))),
+        };
     };
     let most = if needed.short {
         host
     } else {
-        available.unwrap_or(host).max(needed.most)
+        available.filter(|&a| a >= block).unwrap_or(host).max(needed.most)
     };
-    whole_blocks((most.min(host) >> 20).max(builder::BOOT_MEMORY_MIB))
+    Ok(whole_blocks((most.max(learned).min(host)) >> 20))
+}
+
+/// What a builder that may have `most` MiB boots with, in MiB (D133, memory-15): what its
+/// home learned its guest needs as it starts (`learned` bytes, [`boot_need`]), in whole
+/// blocks, within its most; with nothing learned for this guest (the cold start), all it may
+/// have, which always boots: it costs that boot the page structures of all of it, a 64th
+/// (PM M82, M193), once for each home and guest, and never a guessed floor.
+fn builder_boot(most: u64, learned: Option<u64>) -> u64 {
+    learned.map_or(most, |bytes| whole_blocks_up(bytes.div_ceil(1 << 20)).min(most))
+}
+
+/// The memory a builder's guest needs to boot with, in bytes, from what one that booted with
+/// `booted` bytes said as its build ended (`NEEDED`, memory-15): its kernel had `total` of it
+/// (MemTotal as it booted), and needed `start` as its build was held (its kernel's memory
+/// then, the reserve beside its hold and its first growth's working room, `plug::startup`).
+/// What the kernel took at boot past MemTotal is its image and its page structures, a 64th of
+/// what it booted with (`struct page`'s 64 bytes a 4 KiB page, allocated from memblock and
+/// never in MemTotal); the rest of it stands as it was, and the page structures are counted
+/// for the memory booted with: the least `b` with `b − b/64 ≥ fixed + start`.
+fn boot_need(booted: u64, total: u64, start: u64) -> u64 {
+    let fixed = booted.saturating_sub(total).saturating_sub(booted / 64);
+    fixed.saturating_add(start).saturating_mul(64).div_ceil(63)
+}
+
+/// What names a builder's guest in its home's record of what it needs to boot (memory-15):
+/// its kernel's and its init's paths, lengths and times, and its CPUs, whose number its
+/// kernel's reserve grows with; a guest replaced in place, or one of other CPUs, is another,
+/// and learned afresh. A file unread is named by its path alone.
+fn builder_identity(kernel: &Path, init: &Path, cpus: u32) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    for file in [kernel, init] {
+        h.update(file.as_os_str().as_encoded_bytes());
+        h.update([0]);
+        if let Ok(meta) = std::fs::metadata(file) {
+            h.update(meta.len().to_le_bytes());
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            h.update(modified.to_le_bytes());
+        }
+    }
+    h.update(cpus.to_le_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// What a home's builds have needed of memory (D133), as their builders' guests said it as
-/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, and whether any was
-/// ended short of it. Recorded in the home's `builder-memory`, one `KEY VALUE` a line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, whether any was ended
+/// short of it, and what each guest it booted was learned to need to boot ([`boot_need`],
+/// memory-15), by its identity ([`builder_identity`]). Recorded in the home's
+/// `builder-memory`, one `KEY VALUE` a line, a guest's `boot IDENTITY BYTES`: a line for each
+/// guest the home has booted builders of.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Needed {
     most: u64,
     short: bool,
+    boots: Vec<(String, u64)>,
 }
 
 impl Needed {
@@ -854,18 +934,42 @@ impl Needed {
             match line.split_once(' ') {
                 Some(("needed", n)) => needed.most = n.trim().parse().unwrap_or(0),
                 Some(("short", s)) => needed.short = s.trim() == "yes",
+                Some(("boot", rest)) => {
+                    if let Some((id, bytes)) = rest.trim().split_once(' ')
+                        && let Ok(bytes) = bytes.trim().parse()
+                    {
+                        needed.learned(id, bytes);
+                    }
+                }
                 _ => {}
             }
         }
         needed
     }
 
-    fn text(self) -> String {
-        format!(
+    /// What guest `identity` was learned to need to boot, where it was.
+    fn boot_for(&self, identity: &str) -> Option<u64> {
+        self.boots.iter().find(|(id, _)| id == identity).map(|&(_, b)| b)
+    }
+
+    /// Guest `identity` booted needing `bytes`: the most it was seen to need.
+    fn learned(&mut self, identity: &str, bytes: u64) {
+        match self.boots.iter_mut().find(|(id, _)| id == identity) {
+            Some((_, had)) => *had = (*had).max(bytes),
+            None => self.boots.push((identity.to_string(), bytes)),
+        }
+    }
+
+    fn text(&self) -> String {
+        let mut text = format!(
             "needed {}\nshort {}\n",
             self.most,
             if self.short { "yes" } else { "no" }
-        )
+        );
+        for (id, bytes) in &self.boots {
+            text.push_str(&format!("boot {id} {bytes}\n"));
+        }
+        text
     }
 }
 
@@ -875,9 +979,10 @@ fn needs_path(home: &Path) -> PathBuf {
 }
 
 /// Adds a build that needed `need` bytes of memory, `short` where it was ended short of it,
-/// to the record at `path`, under the record's lock, so that builds ending together each
-/// count; unlocked before it closes (PM M244).
-fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
+/// and what its guest was learned to need to boot (`boot`: its identity and bytes), to the
+/// record at `path`, under the record's lock, so that builds ending together each count;
+/// unlocked before it closes (PM M244).
+fn record_need(path: &Path, need: u64, short: bool, boot: Option<(&str, u64)>) -> Result<(), String> {
     use std::io::{Read as _, Seek as _, Write as _};
     let said = |e: std::io::Error| format!("{}: {e}", path.display());
     let mut file = std::fs::File::options()
@@ -893,10 +998,14 @@ fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
         .read_to_string(&mut text)
         .and_then(|_| {
             let had = Needed::parse(&text);
-            let now = Needed {
+            let mut now = Needed {
                 most: had.most.max(need),
                 short: had.short || short,
+                boots: had.boots.clone(),
             };
+            if let Some((identity, bytes)) = boot {
+                now.learned(identity, bytes);
+            }
             if now == had && !text.is_empty() {
                 return Ok(());
             }
@@ -917,6 +1026,12 @@ pub(crate) use shards_vmm::platform::{holdable, host_available, host_memory};
 fn whole_blocks(mib: u64) -> u64 {
     let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
     mib - mib % block
+}
+
+/// `mib` up to whole blocks ([`whole_blocks`]).
+fn whole_blocks_up(mib: u64) -> u64 {
+    let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
+    mib.div_ceil(block).saturating_mul(block)
 }
 
 /// A base image as the build resolved it.
@@ -4120,12 +4235,18 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         false => Some(bases.emulators(&limits).map_err(|e| fail(&v, &e))?),
                     };
                     let needs = needs_path(&home);
+                    let cpus = builder_cpus();
+                    let identity = builder_identity(&guest.0, &guest.1, cpus);
+                    let (memory_mib, boot_mib) =
+                        builder_memory_mib(&needs, &identity).map_err(|e| fail(&v, &e.to_string()))?;
                     let boot = builder::Boot {
                         home: &home,
                         kernel: &guest.0,
                         init: &guest.1,
-                        cpus: builder_cpus(),
-                        memory_mib: builder_memory_mib(&needs),
+                        cpus,
+                        memory_mib,
+                        boot_mib,
+                        identity: &identity,
                         bases: &run_bases,
                         proxy: build_proxy.as_ref(),
                         gpu,
@@ -6358,16 +6479,26 @@ fn redact_credentials(url: &str) -> String {
 
 #[cfg(test)]
 mod memory_tests {
-    use super::{Needed, builder_most};
+    use super::{HostMemoryUnread, Needed, builder_boot, builder_most};
 
     const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+
+    fn needed(most: u64, short: bool) -> Needed {
+        Needed {
+            most,
+            short,
+            boots: Vec::new(),
+        }
+    }
 
     /// A builder's ceiling comes from its host and its home (D133), in whole blocks: with
     /// no build recorded, what the host has available as it starts; past that, the most a
     /// build of its home needed; all the host's memory once a build was ended short of it,
-    /// as a run with no limit may have (D148); never past the host's memory nor below what
-    /// a builder boots with. Hosts: a Windows runner's 16 GiB less what Windows keeps back
-    /// (CI run 38274751000), CI's runners, a Mac Studio's, Fedora's, a size of no whole MiB.
+    /// as a run with no limit may have (D148), or where what is available holds no block;
+    /// never past the host's memory nor below what its guest was learned to boot with. Hosts:
+    /// a Windows runner's 16 GiB less what Windows keeps back (CI run 38274751000), CI's
+    /// runners, a Mac Studio's, Fedora's, a size of no whole MiB.
     #[test]
     fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
         let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
@@ -6382,42 +6513,31 @@ mod memory_tests {
             128 * GIB,
             64 * GIB + 4096,
         ];
+        let most = |host, available, n: &Needed| builder_most(Some(host), available, n, None).unwrap();
         for host in hosts {
             let available = host / 3 + 4096;
-            let cold = builder_most(Some(host), Some(available), Needed::default());
+            let cold = most(host, Some(available), &Needed::default());
             assert_eq!(
                 cold,
                 whole(available),
                 "{host}: the cold start is what is available"
             );
-            let less = Needed {
-                most: available / 2,
-                short: false,
-            };
-            assert_eq!(builder_most(Some(host), Some(available), less), cold, "{host}");
-            let more = Needed {
-                most: available + 2 * GIB,
-                short: false,
-            };
             assert_eq!(
-                builder_most(Some(host), Some(available), more),
+                most(host, Some(available), &needed(available / 2, false)),
+                cold,
+                "{host}"
+            );
+            assert_eq!(
+                most(host, Some(available), &needed(available + 2 * GIB, false)),
                 whole(available + 2 * GIB),
                 "{host}"
             );
-            let past = Needed {
-                most: host + GIB,
-                short: false,
-            };
             assert_eq!(
-                builder_most(Some(host), Some(available), past),
+                most(host, Some(available), &needed(host + GIB, false)),
                 whole(host),
                 "{host}"
             );
-            let short = Needed {
-                most: available / 2,
-                short: true,
-            };
-            let all = builder_most(Some(host), Some(available), short);
+            let all = most(host, Some(available), &needed(available / 2, true));
             assert_eq!(
                 all,
                 super::whole_blocks(crate::run::sizes(&unlimited, Some(host)).2),
@@ -6425,55 +6545,91 @@ mod memory_tests {
             );
             assert!(all << 20 <= host && (host >> 20) - all < block, "{host}");
             assert_eq!(
-                builder_most(Some(host), None, Needed::default()),
+                most(host, None, &Needed::default()),
                 all,
                 "{host}: none known available"
             );
             assert_eq!(
-                builder_most(Some(host), Some(0), Needed::default()),
-                512,
+                most(host, Some(0), &Needed::default()),
+                all,
+                "{host}: none available"
+            );
+            // Never below what its guest boots with.
+            let learned = 3 * GIB;
+            assert_eq!(
+                builder_most(Some(host), Some(GIB), &Needed::default(), Some(learned)).unwrap(),
+                whole(learned.min(host)),
                 "{host}"
             );
         }
+    }
+
+    /// Where the host's memory cannot be read, a builder may have what its home recorded,
+    /// the most a build needed or what its guest boots with, in whole blocks; with nothing
+    /// recorded it is refused, typed, never given a guessed size (memory-15): it was 512 MiB.
+    #[test]
+    fn a_builder_on_a_host_of_unread_memory_has_what_its_home_recorded_or_is_refused() {
         assert_eq!(
-            builder_most(
-                None,
-                Some(8 * GIB),
-                Needed {
-                    most: 4 * GIB,
-                    short: true
-                }
-            ),
-            512
+            builder_most(None, Some(8 * GIB), &needed(4 * GIB, true), None),
+            Ok(4096)
+        );
+        assert_eq!(
+            builder_most(None, None, &Needed::default(), Some(300 * MIB + 1)),
+            Ok(super::whole_blocks_up(301))
+        );
+        assert_eq!(
+            builder_most(None, Some(8 * GIB), &Needed::default(), None),
+            Err(HostMemoryUnread)
         );
     }
 
-    /// A home's record of its builds' needs keeps the most any needed and whether any was
-    /// ended short, whatever order builds end in; a record that does not read is the cold
-    /// start's.
+    /// A builder boots with what its home learned its guest needs as it starts, in whole
+    /// blocks within its ceiling; with nothing learned of this guest, all it may have, which
+    /// always boots (memory-15): never a chosen floor, which was 512 MiB whatever the guest.
+    #[test]
+    fn a_builder_boots_with_what_its_guest_was_learned_to_need_else_all_it_may_have() {
+        let up = super::whole_blocks_up;
+        assert_eq!(builder_boot(16_384, None), 16_384);
+        assert_eq!(builder_boot(16_384, Some(300 * MIB)), up(300));
+        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1)), up(701));
+        assert!(up(701) >= 701);
+        assert_eq!(builder_boot(256, Some(GIB)), 256);
+        // Learned from a guest booted with 16 GiB whose kernel had 15.7 GiB of it: past
+        // MemTotal its image and its page structures, 256 MiB; it needed 372 MiB held.
+        let booted = 16 * GIB;
+        let total = booted - 300 * MIB;
+        let need = super::boot_need(booted, total, 372 * MIB);
+        // 44 MiB of image stays, 416 MiB with what it needs, and its own page structures:
+        // the least b with b - b/64 >= 416 MiB.
+        assert_eq!(need, (416 * MIB * 64).div_ceil(63));
+        assert!(need - need / 64 >= 416 * MIB);
+        assert_eq!(builder_boot(16_384, Some(need)), up(need.div_ceil(MIB)));
+        assert!(builder_boot(16_384, Some(need)) < 16_384 / 8);
+    }
+
+    /// A home's record of its builds' needs keeps the most any needed, whether any was
+    /// ended short, and the most each guest was learned to need to boot, whatever order
+    /// builds end in; a record that does not read is the cold start's.
     #[test]
     fn a_homes_record_keeps_the_most_its_builds_needed() {
         let dir = shards_testdir::TempDir::new("needs").unwrap();
         let path = super::needs_path(&dir);
         assert_eq!(Needed::read(&path), Needed::default());
-        super::record_need(&path, 3 * GIB, false).unwrap();
-        super::record_need(&path, GIB, false).unwrap();
-        assert_eq!(
-            Needed::read(&path),
-            Needed {
-                most: 3 * GIB,
-                short: false
-            }
-        );
-        super::record_need(&path, 2 * GIB, true).unwrap();
-        super::record_need(&path, 5 * GIB, false).unwrap();
-        assert_eq!(
-            Needed::read(&path),
-            Needed {
-                most: 5 * GIB,
-                short: true
-            }
-        );
+        super::record_need(&path, 3 * GIB, false, Some(("a", 400 * MIB))).unwrap();
+        super::record_need(&path, GIB, false, Some(("a", 300 * MIB))).unwrap();
+        super::record_need(&path, GIB, false, Some(("b", 500 * MIB))).unwrap();
+        let read = Needed::read(&path);
+        assert_eq!((read.most, read.short), (3 * GIB, false));
+        assert_eq!(read.boot_for("a"), Some(400 * MIB));
+        assert_eq!(read.boot_for("b"), Some(500 * MIB));
+        assert_eq!(read.boot_for("c"), None);
+        super::record_need(&path, 2 * GIB, true, None).unwrap();
+        super::record_need(&path, 5 * GIB, false, None).unwrap();
+        let read = Needed::read(&path);
+        assert_eq!((read.most, read.short), (5 * GIB, true));
+        assert_eq!(read.boot_for("a"), Some(400 * MIB));
+        // A record of before memory-15, its guests' boots none.
+        assert_eq!(Needed::parse("needed 7\nshort no\n"), needed(7, false));
         std::fs::write(&path, "garbled").unwrap();
         assert_eq!(Needed::read(&path), Needed::default());
         // Builds ending together each count.
@@ -6481,10 +6637,27 @@ mod memory_tests {
         std::thread::scope(|s| {
             for i in 1..=8u64 {
                 let path = &path;
-                s.spawn(move || super::record_need(path, i * GIB, false).unwrap());
+                s.spawn(move || super::record_need(path, i * GIB, false, Some(("a", i))).unwrap());
             }
         });
         assert_eq!(Needed::read(&path).most, 8 * GIB);
+        assert_eq!(Needed::read(&path).boot_for("a"), Some(8));
+    }
+
+    /// A guest is named by its kernel's and its init's files and its CPUs: another of any
+    /// is another guest, learned afresh; the same is the same.
+    #[test]
+    fn a_builders_guest_is_named_by_its_files_and_cpus() {
+        let dir = shards_testdir::TempDir::new("ident").unwrap();
+        let (k, i) = (dir.join("k"), dir.join("i"));
+        std::fs::write(&k, b"kernel").unwrap();
+        std::fs::write(&i, b"init").unwrap();
+        let id = super::builder_identity(&k, &i, 4);
+        assert_eq!(id, super::builder_identity(&k, &i, 4));
+        assert_ne!(id, super::builder_identity(&k, &i, 8));
+        assert_ne!(id, super::builder_identity(&i, &k, 4));
+        std::fs::write(&k, b"another kernel").unwrap();
+        assert_ne!(id, super::builder_identity(&k, &i, 4));
     }
 
     /// What this host says it has available is some of its memory.
