@@ -789,24 +789,27 @@ mod tests {
 
     /// A helper checked starts as the file checked: on Linux through its descriptor, even
     /// once another file is renamed over its name; on Windows its name is held, and nothing
-    /// is renamed over it; on macOS, which has neither, its name (D36's gap).
+    /// is renamed over it; on macOS, which has neither, its name (D36's gap). On Unix the
+    /// two are scripts of the test's own, whose exits say which ran whatever their argv[0]:
+    /// Alpine's true and false are both busybox, which reads its applet from argv[0] and so
+    /// refused `/proc/PID/fd/N` as applet `N` (CI job 132390978195).
     #[test]
     fn a_checked_helper_starts_as_the_file_checked() {
         let dir = shards_testdir::TempDir::new("helper-held").unwrap();
-        let (good, other): (&str, &str) = if cfg!(windows) {
-            (
-                r"C:\Windows\System32\hostname.exe",
-                r"C:\Windows\System32\whoami.exe",
-            )
-        } else if Path::new("/usr/bin/true").exists() {
-            ("/usr/bin/true", "/usr/bin/false")
-        } else {
-            ("/bin/true", "/bin/false")
-        };
-        let bytes = fs::read(good).unwrap();
-        let program = checked(&dir, "tool", &bytes, &sha(&bytes)).unwrap();
         let swapped = dir.join("swapped");
-        fs::copy(other, &swapped).unwrap();
+        #[cfg(windows)]
+        let bytes = {
+            fs::copy(r"C:\Windows\System32\whoami.exe", &swapped).unwrap();
+            fs::read(r"C:\Windows\System32\hostname.exe").unwrap()
+        };
+        #[cfg(unix)]
+        let bytes = {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::write(&swapped, b"#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&swapped, fs::Permissions::from_mode(0o700)).unwrap();
+            b"#!/bin/sh\nexit 0\n".to_vec()
+        };
+        let program = checked(&dir, "tool", &bytes, &sha(&bytes)).unwrap();
         let renamed = fs::rename(&swapped, dir.join("tool"));
         let status = std::process::Command::new(program.path())
             .stdout(std::process::Stdio::null())
