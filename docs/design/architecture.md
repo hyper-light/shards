@@ -13707,6 +13707,34 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
+  machine moved to puts the stream's entries in a directory of the move's own
+  (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
+  component) is not yet one that stays there: a link the stream made earlier is a way out.
+  Until this, the placer joined each name to that directory and made it by path
+  (`create_dir_all`, `open`, the share server's makers from the parent's path), every
+  component followed: `LINK volumes/data/_data/out -> /some/dir` and then `FILE
+  volumes/data/_data/out/new-file` made `new-file` in `/some/dir`, as the daemon's user
+  (`a_streams_symlinks_never_lead_out_of_its_directory`, red at 9efde7252). Now each entry
+  is reached from the move's directory held open, a component at a time, never through a
+  symlink (`server::guest::Beneath`: openat(2) with `O_DIRECTORY | O_NOFOLLOW`, as the share
+  server's own `open_beneath` walks, each component checked a directory once open; on
+  Windows NtCreateFile relative to its parent's handle with FILE_OPEN_REPARSE_POINT, which
+  opens a junction as itself, refused as no directory), made there by its name and never over
+  anything there (`O_CREAT | O_EXCL`), and given its metadata there. A symlink is data, made
+  as its guest made it and never followed; what a stream names below one, or below a file, is
+  refused, by an absolute or a relative target. And a symlink is taken only where a guest
+  makes one, in a volume's files (`volumes/V/_data/…`, `holds_links`): shards makes none in a
+  microVM's own directory or at the files its snapshot restores against, and the move's later
+  steps (`adopt`: its record, `key-replaced` and request written, the files sent moved into
+  `backing/`, a live move's rounds laid under its last save) reach those by their paths, where
+  a link the stream put there would be followed. Held by that test (moves.rs, absolute and
+  relative links, a file, directory, node and link below each, the outside left empty, and a
+  link refused in the microVM's directory, at `key-replaced`, at a file its snapshot restores
+  against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
+  (`server::guest`, every target). Not an
+  archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
+  its own format (version 2).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
