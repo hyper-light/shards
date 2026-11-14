@@ -27581,6 +27581,17 @@ docs/research/s33-veil-creds/STEP3.md).
   `inject::tests::leaks`' chunked echo with the value in a token and in a quoted-string extension,
   red before (the value reached the guest), green after, and the size line read whole a byte at a
   time; the line forwarded as it came, and the size check removed, each fail them.
+- *A trailer section is its own piece (amended 2026-11-13).* `walk` gave a chunked body's trailer
+  section as data, so a sign-in's token response read whole (`Response::Whole`) took it into its
+  JSON: one with a trailer field was refused 502, and one with none reached the guest with a CRLF
+  added to its body. It is now `Piece::Trailers`: masked as fields where a response goes as it came,
+  dropped from a token response, which goes framed by its length and carries none (RFC 9110
+  §6.5.1 lets a recipient that removes the chunked coding discard them; so an echo of a token there
+  never reaches the guest), forwarded as it came on a request, and no part of a refresh or a
+  revocation read whole (§7.1.2), where the request path cut it by its offset before. Tests:
+  `inject::tests::leaks::a_chunked_token_responses_trailers_are_no_part_of_its_body` (a trailer
+  field, and none), red before (502), green after; trailers given as data again fails it,
+  `chunked_bodies_are_read_strictly` and `a_chunked_refresh_and_revocation_are_answered_outside`.
 - *Coded responses are refused (creds-04, amended 2026-11-13).* The mask reads a response's bytes
   as they come, so an echo inside a body coded gzip, br, deflate, zstd or any other content coding
   (RFC 9110 §8.4), or a transfer coding (RFC 9112 §7), or a WebSocket message compressed by

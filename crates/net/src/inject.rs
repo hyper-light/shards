@@ -869,10 +869,12 @@ enum Chunk {
 }
 
 /// A body's bytes, as its framing reads them: data, a chunk's size line whole (its extensions
-/// too, RFC 9112 §7.1.1) and the size it says, or the rest of the framing between.
+/// too, RFC 9112 §7.1.1) and the size it says, a chunked body's trailer section whole (§7.1.2:
+/// fields, no part of its content), or the rest of the framing between.
 enum Piece<'b> {
     Data(&'b [u8]),
     Size { line: &'b [u8], size: u64 },
+    Trailers(&'b [u8]),
     Frame(&'b [u8]),
 }
 
@@ -972,8 +974,7 @@ fn walk(
                             return Err(Broken("a trailer line ends in a bare LF or CR"));
                         }
                         if section.as_slice() == b"\r\n" || section.ends_with(b"\r\n\r\n") {
-                            // The trailers are fields too, which an echo may lie in.
-                            out(Piece::Data(section)).map_err(fail)?;
+                            out(Piece::Trailers(section)).map_err(fail)?;
                             *framing = Framing::Length(0);
                             return Ok((at, true));
                         }
@@ -1927,7 +1928,9 @@ impl Ended {
                     pending,
                     crate::tcp::TO_HOST,
                     &mut |piece| match piece {
-                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b) => host.writer().write_all(b),
+                        Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b) => {
+                            host.writer().write_all(b)
+                        }
                     },
                 )
                 .map_err(|Broken(why)| Refusal::Malformed(why))?;
@@ -1980,15 +1983,12 @@ impl Ended {
     /// the guest no window to send it (`tcp::full`) cannot be read whole: it goes on as any
     /// request, as one whose Content-Length is past `TO_HOST` does.
     fn outside(&mut self, parked: &Parked, mut held: Holding, run: &mut Run<'_>) -> Result<Outside, Refusal> {
-        let chunked = matches!(held.framing, Framing::Chunked(_));
         let Holding {
             framing, read, body, ..
         } = &mut held;
         let rest = self.pending.get(*read..).unwrap_or_default();
-        let mut trailers = body.len();
         let (taken, ended) = walk(framing, rest, crate::tcp::TO_HOST, &mut |piece| {
             if let Piece::Data(data) = piece {
-                trailers = body.len();
                 body.extend_from_slice(data);
             }
             Ok(())
@@ -2003,11 +2003,6 @@ impl Ended {
             } else {
                 Outside::Waiting(held)
             });
-        }
-        if chunked {
-            // `walk` gives a chunked body's trailer section last, as data (an echo may lie in
-            // it): it is fields, not content (§7.1.2).
-            body.truncate(trailers);
         }
         let Some((index, asked)) = ask_whole(&held.whole, &parked.host, &held.body, run) else {
             return Ok(Outside::Pass);
@@ -2283,7 +2278,8 @@ impl Ended {
                     // their bytes would reach the guest, and they are no data to mask.
                     let mut holds = false;
                     let mut piece = |p: Piece<'_>| match p {
-                        Piece::Data(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
+                        // A trailer section is fields, which an echo may lie in, as a head's.
+                        Piece::Data(b) | Piece::Trailers(b) => mask.push(b, true, &mut |b| guest.writer().write_all(b)),
                         Piece::Size { size, .. } => mask
                             .size(size, &mut |b| guest.writer().write_all(b))
                             .inspect_err(|e| holds |= e.get_ref().is_some_and(|e| e.is::<Holds>())),
@@ -2309,6 +2305,9 @@ impl Ended {
                     return Ok(());
                 }
                 Response::Whole { body, framing, .. } => {
+                    // Its data alone is its body: it goes on framed by its length, which carries no
+                    // trailer section, so a chunked one's trailers are dropped (RFC 9110 §6.5.1 lets
+                    // a recipient that removes the chunked coding discard them).
                     let (taken, ended) = walk(framing, bytes, crate::tcp::TO_GUEST, &mut |p| {
                         if let Piece::Data(data) = p {
                             if body.len().saturating_add(data.len()) > crate::tcp::TO_GUEST {
@@ -4420,7 +4419,7 @@ pub(crate) mod tests {
                 };
                 let mut piece = Vec::new();
                 let (n, ended) = walk(&mut framing, &self.inbox, usize::MAX, &mut |p| {
-                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Frame(b)) = p;
+                    let (Piece::Data(b) | Piece::Size { line: b, .. } | Piece::Trailers(b) | Piece::Frame(b)) = p;
                     piece.extend_from_slice(b);
                     Ok(())
                 })
@@ -5219,6 +5218,7 @@ pub(crate) mod tests {
         let body = b"5\r\nhello\r\n6;x=y\r\n world\r\n0\r\nTrailer: t\r\n\r\nNEXT";
         let mut framing = Framing::Chunked(Chunk::Size(Vec::new()));
         let mut data = Vec::new();
+        let mut trailers = Vec::new();
         let mut all = Vec::new();
         // A byte at a time, as segments may bring it.
         let mut took = 0;
@@ -5228,6 +5228,10 @@ pub(crate) mod tests {
                     Piece::Data(d) => {
                         data.extend_from_slice(d);
                         all.extend_from_slice(d);
+                    }
+                    Piece::Trailers(t) => {
+                        trailers.extend_from_slice(t);
+                        all.extend_from_slice(t);
                     }
                     Piece::Size { line: f, .. } | Piece::Frame(f) => all.extend_from_slice(f),
                 }
@@ -5241,7 +5245,8 @@ pub(crate) mod tests {
         }
         assert_eq!(&body[..took], &all[..]);
         assert_eq!(took, body.len() - 4, "the next message was taken as this one's");
-        assert_eq!(data, b"hello worldTrailer: t\r\n\r\n");
+        assert_eq!(data, b"hello world");
+        assert_eq!(trailers, b"Trailer: t\r\n\r\n");
         let mut broken = Framing::Chunked(Chunk::Size(Vec::new()));
         assert!(walk(&mut broken, b"5\r\nhelloXY", 1 << 10, &mut |_| Ok(())).is_err());
     }

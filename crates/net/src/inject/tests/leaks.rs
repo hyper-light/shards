@@ -322,3 +322,45 @@ fn a_filled_websocket_takes_no_extension() {
     assert!(bench.got.starts_with(b"HTTP/1.1 502 "), "{}", lossy(&bench.got));
     assert!(bench.closed);
 }
+
+/// The token host's answer to the code's exchange, chunked, its trailer section `trailers`.
+fn chunked_token_answer(trailers: &str) -> Vec<u8> {
+    let answer = token_response(ISSUED_ACCESS, ISSUED_REFRESH);
+    let (a, b) = answer.split_at(answer.len() / 2);
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n{trailers}\r\n",
+        a.len(),
+        b.len()
+    )
+    .into_bytes()
+}
+
+/// Do: Claude Code's code exchanged at its HTTP/1.1 token host, which answers chunked, with a
+/// trailer field and with none (RFC 9112 §7.1.2). Expect: each captured, the guest given the
+/// token response with the broker's placeholders in their places and nothing else, its trailer
+/// section no part of its body (RFC 9110 §6.5.1 lets a recipient that decodes the chunked coding
+/// drop it); no real token in it.
+#[test]
+fn a_chunked_token_responses_trailers_are_no_part_of_its_body() {
+    let root = root("shards test root");
+    for trailers in ["", "X-Trace: 1\r\n"] {
+        let mut credentials = sign_in_credentials(&root, false);
+        let ca = credentials.ca.der().to_vec();
+        let mut broker = Broker::default();
+        let mut cli = Bench::new(guest(ca.into(), TOKEN_HOST, None), quiet(&root, &[TOKEN_HOST]));
+        cli.guest
+            .writer()
+            .write_all(&post("/v1/oauth/token", TOKEN_HOST, EXCHANGE))
+            .unwrap();
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| !b.h1().had.is_empty());
+        cli.answer(&chunked_token_answer(trailers));
+        cli.until(&mut credentials, &mut |c| broker.serve(c), |b| b.closed || whole(&b.got));
+        let got = lossy(&cli.got);
+        assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "trailers {trailers:?}: {got}");
+        let expected = token_response(SIGNED_ACCESS, SIGNED_REFRESH);
+        assert!(got.ends_with(&format!("\r\n\r\n{expected}")), "trailers {trailers:?}: {got}");
+        assert_eq!(broker.access, ISSUED_ACCESS.as_bytes());
+    }
+}
+
+const EXCHANGE: &str = r#"{"grant_type":"authorization_code","code":"c0de","redirect_uri":"https://platform.claude.com/oauth/code/callback","client_id":"9d1c250a-e61b-44d9-88ed-5944d1962f5e","code_verifier":"v","state":"s"}"#;
