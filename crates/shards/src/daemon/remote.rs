@@ -1697,6 +1697,46 @@ pub(super) fn listen(
 mod tests {
     use super::*;
 
+    #[test]
+    fn remote_requests_never_log_argument_values() {
+        const CHILD: &str = "SHARDS_TEST_REMOTE_LOG_ARGUMENTS";
+        const SECRET: &str = "synthetic-private-request-value";
+        if std::env::var_os(CHILD).is_some() {
+            let home = shards_testdir::TempDir::new("remote-log").unwrap();
+            let identity = identity::Identity::generate().unwrap();
+            crate::context::enroll(home.path(), "alice", identity.spki()).unwrap();
+            let machine = Machine {
+                home: home.path().to_path_buf(),
+                exe: home.path().join("unused"),
+                agents: Arc::default(),
+            };
+            let request = Request {
+                args: ["run", "--env-file", SECRET, "image", "true"]
+                    .into_iter()
+                    .map(|word| word.as_bytes().to_vec())
+                    .collect(),
+                env: Vec::new(),
+                terminal: None,
+            };
+            // Refused before any command starts, but its diagnostic still reaches the log.
+            assert!(machine.start("alice", request).is_err());
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon::remote::tests::remote_requests_never_log_argument_values",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "child failed: {:?}", output.status);
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(log.contains("client alice: refused"), "missing diagnostic");
+        assert!(!log.contains(SECRET), "private request value entered the log");
+    }
+
     #[cfg(unix)]
     /// What a command writes to its terminal is read whole however late its reader comes,
     /// later than XNU waits at a terminal's last close (PM M246), and through what shows a
