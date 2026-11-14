@@ -140,9 +140,25 @@ pub struct Giver {
     conn: UnixStream,
     /// The kind of the ask that is out, whose answer has not yet come: the next answer is
     /// its own, as the builder answers its asks in turn.
-    out: Option<u8>,
+    out: Option<GiveRequest>,
+    /// Latest desired room while a prior request is outstanding, including budget removal.
+    pending_room: RoomUpdate,
     /// What has come of an answer not yet whole.
     held: Vec<u8>,
+}
+
+/// The request whose one reply is due. ROOM carries its value so repeated words
+/// can coalesce without queuing an identical update forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GiveRequest {
+    GiveBack,
+    Room(Option<i64>),
+}
+
+#[derive(Debug)]
+enum RoomUpdate {
+    NoChange,
+    Tell(Option<i64>),
 }
 
 /// What a builder answered an ask with (build::GIVE_PORT).
@@ -163,6 +179,7 @@ impl Giver {
         Giver {
             conn,
             out: None,
+            pending_room: RoomUpdate::NoChange,
             held: Vec::new(),
         }
     }
@@ -176,15 +193,31 @@ impl Giver {
     /// plugged past what it keeps, unless an ask is out: then it is asked nothing until that
     /// answer has come ([`answer`](Self::answer)). Whether this ask went.
     pub fn ask(&mut self) -> Result<bool, String> {
-        self.send(build::kind::GIVE_BACK, b"")
+        if self.out.is_some() {
+            return Ok(false);
+        }
+        self.write(build::kind::GIVE_BACK, b"")?;
+        self.out = Some(GiveRequest::GiveBack);
+        Ok(true)
     }
 
     /// Tells the builder the room its build's budget leaves it, `room` bytes past what it
-    /// uses, none for no budget, which it holds its build within; unless an ask is out, as
-    /// [`ask`](Self::ask). Whether this went.
+    /// uses, none for no budget. While another ask is out, keep the latest word and
+    /// send it as that answer arrives. Whether this word is now awaiting its reply.
     pub fn tell(&mut self, room: Option<i64>) -> Result<bool, String> {
+        if self.out == Some(GiveRequest::Room(room)) {
+            self.pending_room = RoomUpdate::NoChange;
+            // Already transmitted: the caller may consume its acknowledgment now.
+            return Ok(true);
+        }
+        if self.out.is_some() {
+            self.pending_room = RoomUpdate::Tell(room);
+            return Ok(false);
+        }
         let payload = room.map(|r| r.to_string()).unwrap_or_default();
-        self.send(build::kind::ROOM, payload.as_bytes())
+        self.write(build::kind::ROOM, payload.as_bytes())?;
+        self.out = Some(GiveRequest::Room(room));
+        Ok(true)
     }
 
     /// Tells the builder its budget's room before anything is asked of it, so that its
@@ -193,15 +226,6 @@ impl Giver {
     /// each word.
     pub fn tell_first(&mut self, room: i64) -> Result<(), String> {
         self.write(build::kind::ROOM, room.to_string().as_bytes())
-    }
-
-    fn send(&mut self, kind: u8, payload: &[u8]) -> Result<bool, String> {
-        if self.out.is_some() {
-            return Ok(false);
-        }
-        self.write(kind, payload)?;
-        self.out = Some(kind);
-        Ok(true)
     }
 
     fn write(&self, kind: u8, payload: &[u8]) -> Result<(), String> {
@@ -219,10 +243,9 @@ impl Giver {
         let Some(out) = self.out else {
             return Ok(None);
         };
-        let answers = if out == build::kind::ROOM {
-            build::kind::HELD
-        } else {
-            build::kind::GAVE
+        let answers = match out {
+            GiveRequest::Room(_) => build::kind::HELD,
+            GiveRequest::GiveBack => build::kind::GAVE,
         };
         loop {
             if let Some(header) = self
@@ -242,6 +265,11 @@ impl Giver {
                         continue;
                     }
                     self.out = None;
+                    if let RoomUpdate::Tell(room) =
+                        std::mem::replace(&mut self.pending_room, RoomUpdate::NoChange)
+                    {
+                        self.tell(room)?;
+                    }
                     return Ok(Some(parse_answer(which, &said)));
                 }
             }

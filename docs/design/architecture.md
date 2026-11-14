@@ -8830,6 +8830,21 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**R03 review memory-06..10 (2026-11-13):** the pressure windows/thresholds,
+fallback cadence, DAX crossover and cached headroom coefficient remain owed to
+ROOT. Their proposed runtime observations, cold starts, typed unavailable states
+and validation commands are in
+`docs/research/measurements/memory-fixes-v1/owed-designs.md`; existing values below
+are not evidence that these policy choices satisfy R03.
+
+**Review memory-04 (2026-11-13):** the builder's giver retains the latest ROOM
+word while a prior GIVE_BACK or ROOM reply is outstanding, including the explicit
+unbudgeted word. It transmits that word as the reply is consumed and coalesces a
+value already in flight, whose acknowledgment remains consumable. Desired room
+and request/reply state have one owner; budget removal cannot disappear behind
+a late answer. Red and light-check evidence: `docs/research/measurements/memory-fixes-v1/README.md`.
+
+
 **Found.** The user's plan, item 4: memory that tracks the working set, reclaimed at the
 host's pressure, not on a timer. A run's guest keeps what its workload reads in its page
 cache, guest memory the host cannot drop, only swap: a 1 GiB file read from a volume left
@@ -9915,6 +9930,9 @@ template pays it once; what its restores pay is to be measured with mappings.
   blocks).
 
 ### D214. Devices plugged into a running microVM, and its disks grown (built: disks and shared directories through the CLI on Hypervisor.framework, KVM and WHP, WHP's run on CI's Windows runners; host functions in the VMM on KVM, and through the CLI for a run's workload on Linux, both passing nested on arm64 KVM; refused on WHP with Microsoft's documented limit, a function assigned as a VM starts alone)
+
+Review devices-06 (2026-11-14): VFIO hot-unplug disables INTx/MSI/MSI-X and removes their host routes before closing eventfds and removing BAR windows. Slot route owners outlive a function, so descriptor close alone cannot reclaim their GSI records. A Linux unit fixture verifies each removal sees an open eventfd and repeated cleanup removes nothing twice. Hardware/error-path completion remains ROOT's validation; evidence is `docs/research/measurements/device-fixes/README.md`.
+
 
 Review devices-05 (2026-11-14): a file disk publishes capacity and generation under one mutex, held from metadata acquisition through the monotonicity check and both updates. Each capacity/config-generation read takes that same mutex. A guest's split read therefore observes a coherent size or a changed generation; it needs no convention about odd generation values. The focused red/green is retained in `docs/research/measurements/device-fixes/README.md`.
 
@@ -18095,6 +18113,12 @@ changes.
   where BuildKit's names its source's snapshot as its parent (D114).
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
+
+**R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
+retry count, growth/retention ratios and boot floor remain owed to ROOT with
+designs in `docs/research/measurements/memory-fixes-v1/owed-designs.md`.
+Each needs a justified startup rule and typed uncertainty before replacement;
+this review does not approve another chosen number.
 
 A builder may have what its host can give and its home's builds have needed, but the memory
 a guest boots with costs it its page structures as it boots: about 21 MiB and 4 ms per GiB, a
@@ -28107,7 +28131,10 @@ docs/research/s33-veil-creds/STEP3.md).
   the image store and the registry's client already link), its decoded bytes masked as any body's,
   and given to the guest as `identity`: on HTTP/1.1 its Content-Encoding, Transfer-Encoding and
   Content-Length lines cut and `Transfer-Encoding: chunked` written, each run the mask lets go one
-  chunk (`chunk`), its end the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
+  chunk (`chunk`), each chunk's size line this side's own and held to `Mask::holds` as creds-02's
+  are, one holding a value breaking the message (creds-12, amended 2026-11-13: red before, a
+  value of hex digits written as a size line, green after; the check removed fails it), its end
+  the last chunk and its trailers dropped (RFC 9110 §6.5.1); on HTTP/2
   its content-encoding and content-length fields cut (RFC 9113 §8.1.1 lets a response name no
   length), its DATA's credit given back to the host's window once its decoding has reached the
   guest, so that the host sends no faster than the guest reads. Bounds (R03): what one turn of the
@@ -28133,7 +28160,13 @@ docs/research/s33-veil-creds/STEP3.md).
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
   budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
   split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes; a decoded body's buffers, which grow without being wiped, as rustls's own do.
+  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
+  buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
+  while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
+  green after, and either growth by `extend_from_slice` again fails it. Still residual: the
+  decoders' own windows and buffers (zlib-rs's 32 KiB window, flate2's output buffer, ruzstd's
+  window), let go of unwiped as the decoder drops, as rustls's buffers are.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
@@ -31004,9 +31037,34 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `FinalUse`/`Unused`/`UseBroken` wire tags 0 to 4. No other number.
 - *Cold start.* Nothing learned. A machine that never started reads `guest-unread the
   microVM has not started` beside its process's use.
-- *Managed microVMs* (`ManagedGuest::host_use`): not in this slice. A managed microVM's
-  process is no warm VM, has no link to its owner, and ends its vsock socket with it: its
-  final use needs a path of its own (owed, below).
+- *Managed microVMs* (`ManagedGuest`; the person's filesystem rule: shards' own interfaces
+  are files). A managed VM process has no owner's link and its vsock socket goes with it, so its
+  final use is a file: `<vsock>.used`, beside its vsock socket (`shards_api::final_use_file`), in
+  the directory its launcher made for the guest, which goes with the run (shards-api's own
+  `PrivateDir`, or its launcher's). Written whole, by rename (a temporary beside it, made
+  durable, then renamed over it), before its VM process exits:
+  - The VM process, confined (D30), writes no file: once its machine is down (`supervise`'s
+    `wait_then` free, as the warm VM's) it tells its keeper the use's answer, after its length
+    (a u32, big-endian), on a channel of its own (`--final-use`), which the CLI that becomes it
+    adds where it is booted `--host-managed` with a `--vsock` (final_use.rs).
+  - Unix: the keeper is `shards final-use PATH`, started beside it in its launcher's
+    containment as a managed VM's console recorder is, on a socket pair. It writes the record,
+    then answers one byte; the VM waits for the answer (or the keeper's end) before it goes
+    on to exit. So the record is in place before the VM process, whose end its client
+    watches, ends. Not bounded by a clock: the keeper's work is one local file's write.
+  - Windows: the CLI that waits for its VM keeps it, reading the pipe as it comes (a pipe's
+    buffer may not hold it whole), and joins that before it exits, its client watching the
+    CLI's end.
+  - A VM killed, or one that ended before its machine came down, tells nothing or less than
+    it said it would: no record.
+  - The client: `ManagedGuest::wait_ended(timeout) -> Option<ManagedEnded { end: End,
+    final_use: FinalUse }>`; `host_use` answers `ManagedUsed::Running(ManagedUse)` while it
+    runs and `ManagedUsed::Ended(ManagedEnded)` after, from the same record, read once and
+    kept. No record: `Unused::Killed` where its stop came first, else `Untold`; a record none
+    of the protocol's, `Broken(UseBroken)`, read no further than the longest answer and a
+    byte.
+  - *Literals*: `.used`, the record's name; 4, the length's bytes (a u32, which the longest
+    answer fits); the answer byte 1. `ANSWER_MOST` bounds what is read.
 - *Tested* (light, macOS arm64): vmm `a_machines_whole_guest_time_keeps_each_vcpu_by_its_index`;
   shards `a_final_use_reads_its_whole_guest_then_its_process` (vm_run),
   `a_final_use_reaches_its_owner_on_its_link_as_said` (warm),
@@ -31014,11 +31072,20 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   `a_runs_end_reads_back_with_its_final_use` (wire) and
   `a_runs_final_use_comes_with_its_end_and_answers_every_ask_after` (session), with the
   existing end and lease tests over `RunEnded`.
+  Managed: shards `final_use::tests::a_final_use_told_whole_is_recorded_and_nothing_else_is`
+  and `a_managed_vms_record_is_beside_its_socket`; shards-api
+  `a_managed_guests_final_use_is_its_record_once_it_has_ended` and the existing use tests over
+  `ManagedUsed`.
 - *Owed* (ROOT): the real-VM tests on KVM, HVF and WHP, `cargo test --profile test-release -p
   shards --test api_image -- an_images_own_command_ends_its_run_with_its_status
   stop_ends_the_run_at_once` (a command's `exit 3` ends `Exited(3)` with every vCPU's guest
   time by index, none departed, its process's CPU holding them, and `stats` after it refused
-  with that end; a stop's end `Killed`); the managed microVM's final use; Hex's adoption.
+  with that end; a stop's end `Killed`); the managed one's, `cargo test --profile
+  test-release -p shards --test boot -- a_managed_guest_records_its_final_use_as_it_ends
+  a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket` (a spinning managed guest
+  that powers off records its one vCPU's guest time and its process's CPU holding it; one not
+  managed, and one killed, record none; the confined VM process's write to its inherited
+  channel on each OS); Hex's adoption.
 
 ## 4. Start path (≤ 5 ms budget)
 
