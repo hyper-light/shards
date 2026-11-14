@@ -50,6 +50,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** With one admitted lane, fill the granted socket's backlog, open then reset a pending lane, and repeat beyond one lane. Observe guest/VM/host thread, fd and token-registry counts returning after each abort, without accepting connections or ending the run.
 
+**Status (2026-11-13):** fixed in 3c28b68a78f7deaa9ac3db5046bb4df1ea4c53f1 (red `lanes::tests::a_full_socket_backlog_refuses_a_lane_instead_of_holding_its_worker`, bcc79fccdcce043e6f504063463598acfe8664fb; adacachy2 Linux x86_64: retained worker/Timeout before, EAGAIN after; all 6 lane tests and shards-init clippy passed). Full relay-abort integration remains ROOT's; see [evidence](../../research/measurements/control-fixes-v1/README.md).
+
 ### control-03 — P1 / high — the MCP stdio bridge cannot return after its first copy failure
 
 **Location:** `crates/init/src/mcp.rs:201–205`; related `:170–172,188–197`.
