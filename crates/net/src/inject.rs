@@ -1409,14 +1409,18 @@ pub(crate) fn step(v: &[u8], table: &[usize], mut m: usize, b: u8) -> usize {
 }
 
 /// The values just filled into a request toward `host`, each with its credential's reference:
-/// audited once each (f26), and given to `mask` as they went, for its response (creds-03).
+/// audited once each (f26), and given to `mask` as they went, for its response (creds-03); and
+/// every other value the run holds leased toward `host` at `now`, which a response to any request
+/// may carry back too (creds-09), given to it as well.
 fn filled_in(
     mask: &mut Mask,
     sent: &[(&str, &[u8])],
     host: &str,
-    grants: &[crate::Grant],
+    credentials: &Credentials,
+    now: Instant,
     audit: &mut Vec<Audit>,
 ) {
+    let grants = &credentials.grants;
     mask.clear();
     let at = SystemTime::now();
     for (i, &(reference, value)) in sent.iter().enumerate() {
@@ -1435,6 +1439,29 @@ fn filled_in(
             .map_or(&b""[..], |g| g.placeholder.as_bytes());
         mask.fill(value, placeholder);
     }
+    for (value, placeholder) in held_toward(credentials, host, now) {
+        mask.fill(value, placeholder);
+    }
+}
+
+/// Each value the run holds leased at `now` of a credential granted toward `host`, and its
+/// placeholder: what a response from `host` may carry back whether or not its request carried
+/// one (creds-09).
+fn held_toward<'c>(
+    credentials: &'c Credentials,
+    host: &'c str,
+    now: Instant,
+) -> impl Iterator<Item = (&'c [u8], &'c [u8])> + 'c {
+    credentials
+        .grants
+        .iter()
+        .filter(move |g| g.toward.iter().any(|h| h.eq_ignore_ascii_case(host)))
+        .filter_map(move |g| {
+            Some((
+                credentials.leases.held(&g.reference, now)?,
+                g.placeholder.as_bytes(),
+            ))
+        })
 }
 
 /// A chunk's size line that holds a value filled in (`Mask::size`).
@@ -2267,7 +2294,7 @@ impl Ended {
                         fills.push((range, reference));
                     }
                 }
-                if !fills.is_empty() {
+                if !fills.is_empty() || held_toward(run.credentials, &host, run.now).next().is_some() {
                     edits.extend(uncoded(&head, &fields));
                 }
                 None
@@ -2360,7 +2387,8 @@ impl Ended {
             &mut self.mask,
             &sent,
             &parked.host,
-            &run.credentials.grants,
+            run.credentials,
+            run.now,
             &mut run.audit,
         );
         self.owed = Some(parked.owed);
@@ -3651,8 +3679,8 @@ impl H2 {
                 return Ok(());
             }
         }
-        if !go.fills.is_empty() {
-            // Asked as its sender writes it, as the HTTP/1.1 path asks it (creds-04).
+        if !go.fills.is_empty() || held_toward(run.credentials, &go.host, run.now).next().is_some() {
+            // Asked as its sender writes it, as the HTTP/1.1 path asks it (creds-04, creds-09).
             ask_identity(&mut go.fields);
         }
         let path = go
@@ -3997,7 +4025,8 @@ impl H2 {
             &mut s.mask,
             &sent,
             &go.host,
-            &run.credentials.grants,
+            run.credentials,
+            run.now,
             &mut run.audit,
         );
         s.up = Upward::Sent {
