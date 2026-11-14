@@ -17817,6 +17817,9 @@ finding open; no new scheduling or host-fairness result is claimed.
 
 ### M430. Devices plugged into a running microVM: what each step costs, and what a bus of slots costs a boot (D214)
 
+Correctness follow-up devices-05 (2026-11-14): capacity-publication red observed `(2, 0)`; 8 block tests and VMM clippy passed after the shared-lock fix on macOS arm64. See `measurements/device-fixes/README.md`; no M430 performance claim is refreshed.
+
+
 - **Correctness follow-up, devices-03 (2026-11-13, D154).** Response-span validation red: 1 failed; green: 13 IOMMU tests and VMM clippy passed on macOS arm64. Allocation-pressure/RSS and hardware runs remain owed to ROOT. Revisions, commands and scope: `measurements/device-fixes/README.md`. No performance result is inferred.
 
 
@@ -24216,6 +24219,15 @@ source revisions, light results and ROOT's remaining gates are in
   clippy -D warnings for shards-vm-process (macOS) and shards-init
   (aarch64-unknown-linux-musl); cargo fmt --check clean. R11, R15: no VM run here: api_image's
   three cases on KVM are ROOT's, at a main holding 02a03edf2 and this.
+
+### Review memory-04: a budget removed while its builder's reply was outstanding
+
+The real socket/production watcher regression at e8b687a9e, macOS arm64, failed
+WouldBlock when looking for the removed-budget ROOM frame (resumed kiln r2).
+The pending-room owner is fixed at 27522e6ca/aef83d2c4; the existing late-answer
+test additionally caught acknowledgment accounting, corrected at 8951ffa2d.
+Commands, unit results and the still-owed real builder/pressure variant:
+[the memory fix record](measurements/memory-fixes-v1/README.md).
 
 ### M567. A confined VM process changed another process's limits: prlimit64 of any pid (D30)
 
