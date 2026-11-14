@@ -1438,16 +1438,25 @@ impl Outputs {
         }
     }
 
-    /// Run `id`'s command's log has rotated (files.rs): the run's one log cap holds again, where
-    /// its members' logs are kept (D240).
-    pub(super) fn cap(&self, id: &str) {
+    /// Run `id`'s command's log, in `dir`, has rotated (files.rs): its run's logs are held to
+    /// their bound again, one rule for every run (runs-11 `LOG_SEGMENT`, D186): a run whose
+    /// members' logs are kept, all of them together within the run's one cap (D240); any other,
+    /// its command's log alone within `bound` bytes of output, by the same rule (cap.rs), so that
+    /// segments its retention's count keeps past its bound (a log continued under a smaller
+    /// history, or segments of another size) go oldest first, each loss recorded in `log.capped`.
+    pub(super) fn cap(&self, id: &str, dir: &Path, bound: u64) -> io::Result<()> {
         let owner = match lock(&self.runs).get(id) {
-            Some(Entry::Serving(owner)) => Arc::clone(owner),
-            _ => return,
+            Some(Entry::Serving(owner)) => Some(Arc::clone(owner)),
+            _ => None,
         };
-        if let Some(drain) = &owner.drain {
-            drain.cap();
+        if owner
+            .as_ref()
+            .and_then(|owner| owner.drain.as_ref())
+            .is_some_and(|drain| drain.cap())
+        {
+            return Ok(());
         }
+        cap::hold(dir, &[], bound, &mut |_| Ok(())).map(drop)
     }
 }
 
