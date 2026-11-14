@@ -2194,7 +2194,8 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 /// where the window and the periods do not line up, and what its vCPU overruns before the
 /// governor reads, at the window's two ends) and what its VMM's own threads used past its
 /// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
-/// none lifts its hold; each answer says the period its build's hold holds over. Its use
+/// none lifts its hold; each answer says the period its VM derives from g as it knows it then,
+/// 4g held to a quarter and g let be (D191). Its use
 /// (D260, `USE`, as `ManagedGuest::host_use` asks it), sampled twice a window apart once let
 /// be: its one vCPU's guest time and its VM process's own use, every part read, its vCPU's
 /// grown by no more than the time between the asks and its process's CPU holding it. A guest
@@ -2304,16 +2305,25 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         used >= wall / 20,
         "{used} ns of CPU in {wall} ns: held, and never let go"
     );
+    // Let be, an answer says g as its VM knows it then (D191, migrate-09: a let-be is said
+    // over g): never under the least wait, and never above the g its quarter was held over,
+    // a quarter of that period, nor the g a let-be said before, as g only falls.
+    let mut g = Duration::from_nanos(period_ns.get() / 4);
     for (whole_or_none, said) in [(1000, "its one vCPU's whole CPU"), (0, "none")] {
         let line = asked(&socket, whole_or_none).unwrap();
-        assert_eq!(
-            read_answer(line.as_bytes()),
-            Ok(Answer::Held {
-                milli: None,
-                period_ns
-            }),
-            "{said}"
+        let Ok(Answer::Held {
+            milli: None,
+            period_ns: let_be,
+        }) = read_answer(line.as_bytes())
+        else {
+            panic!("{said}: {line:?}");
+        };
+        let let_be = Duration::from_nanos(let_be.get());
+        assert!(
+            (shards_vmm::platform::granule::LEAST_WAIT..=g).contains(&let_be),
+            "{said}: let be over {let_be:?}, g {g:?} before"
         );
+        g = let_be;
     }
     let used = |socket: &std::path::Path| {
         let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
