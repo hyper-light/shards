@@ -11,7 +11,11 @@ Linux, KVM's exits (`perf stat -e kvm:kvm_exit`, which needs perf_event_paranoid
 CAP_PERFMON). Reports n, p50, p90, p99 and max of: guest throughput (MiB/s), host CPU per
 KiB, and exits per KiB, each the KIB boot's less its paired 0-KiB boot's.
 
-Usage: cost.py SHARDS KERNEL TESTGUEST [--n 20] [--kib 1024] [--ways ttyS0,hvc0] [--perf]
+Each way is a console, optionally with the shards build that has it (`ttyS0=/old/shards`):
+the UART and virtio-console are never in one build, so the comparison runs the build before
+the switch against the build after it, both on this host, interleaved.
+
+Usage: cost.py SHARDS KERNEL TESTGUEST [--n 20] [--kib 1024] [--ways ttyS0[=SHARDS],hvc0[=SHARDS]] [--perf]
 """
 
 import argparse
@@ -33,7 +37,7 @@ a.add_argument("--kib", type=int, default=1024)
 a.add_argument("--ways", default="ttyS0,hvc0")
 a.add_argument("--perf", action="store_true")
 args = a.parse_args()
-ways = args.ways.split(",")
+ways = dict((w.split("=", 1) + [args.shards])[:2] for w in args.ways.split(","))
 if args.perf and not shutil.which("perf"):
     sys.exit("--perf: no perf on PATH")
 # No docker config of this host's is read (the tests' rule for manual runs).
@@ -43,7 +47,7 @@ LINE = re.compile(rb"^[!-~]{63}\r?$")
 
 def boot(way, kib):
     cmdline = f"console={way} quiet panic=-1 shards_test=console shards_console_kib={kib}"
-    cmd = [args.shards, "run", "--kernel", args.kernel, "--init", args.testguest,
+    cmd = [ways[way], "run", "--kernel", args.kernel, "--init", args.testguest,
            "--cpus", "1", "--memory", "256", "--cmdline", cmdline]
     stat = None
     if args.perf:
