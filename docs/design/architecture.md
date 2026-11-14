@@ -33731,6 +33731,40 @@ whose command exited before kiln deleted it went uncharged (Hex answered `NotRun
   (red at the test-only commit, green with the fix); the unit
   `a_request_with_the_wrong_descriptors_is_refused` holds `took` empty for a refused request
   (red with `took` set before the request is read). No number added.
+- *A taken run's one end, and no order with `DONE`.* `FINAL_USE` is told from the VM
+  process's main thread as its machine comes down; `DONE` from its workload's thread
+  (`warm::finish`): no ordering joins them, and neither is "last". Every reader reads the link
+  to its close and takes both wherever they fall (api-run's `Told`, the daemon's inbox,
+  `tests/warm.rs`'s `Warm::ended`); none may depend on their order. As built, a run whose
+  setup failed after TAKEN was told no `DONE`: the VM process chose to tell a run's end by
+  whether its client had been kept, which happened only at the end of its setup, so a
+  failure between TAKEN and there (in `warm::receive`: the share process's handshake, the
+  client's stdio taken, a relay; in the VM process: a resumed run's tokens, its engine's or
+  MCP port, its CPU hold, its group's CPU budget, its layer, its swap, its resumed
+  connections or init's ABI) told its owner TAKEN, then `FINAL_USE`, then the link's end. No
+  reader hung on it: the VM process stopped its machine and exited, its link closing. But each
+  read a wrong end: the daemon "VM ended before its command started" (its reason in the
+  daemon's log, or on the client's stderr once its stdio was taken), api-run "the VM ended
+  without its run's end", the client its connection's end with no status (`UNANSWERED`'s
+  "stopped before the command ended" through a slot). Now the run is the VM's from TAKEN:
+  `warm::receive` records it then (`warm::Taken`: its client, its final use's link) and the
+  VM process decides on that, not on its client; `Taken::end` tells it once, whichever of its
+  workload's end and its serving's comes first, as `finish` tells a failure: `UNSERVED` with
+  why, `DONE` of `NOT_RUN`, its client `EXIT` of `NOT_RUN` and why on its stderr; a setup that
+  failed after TAKEN stops its machine, whose guest would otherwise wait for a command that
+  never comes. Its readers then report that end: the daemon logs why and ends the container
+  with that status; api-run `Failed("its VM could not serve its run: …")` with its final use;
+  the client exits 125 with why. The joiner's path (`warm::joiner`) already told `DONE` for
+  every failure after its TAKEN. Live red/green on KVM (adacachy2, main aedbbe154):
+  `tests/warm.rs`'s `a_run_a_warm_vm_took_and_could_not_set_up_is_told_its_end` (an empty
+  group budget, D183) failed at the test-only commit 9a8ff4ed2 on its client's exit status,
+  its connection ending with none; green with the fix (b92e3a8a6), with all of `tests/warm.rs`
+  (8 passed, 1 ignored). Unit: shards-vm-process's
+  `a_run_taken_is_told_exactly_one_end_whatever_fails_after` (the VM's side in a process of
+  its own, as `receive` takes its process's stdio) reads TAKEN, `UNSERVED`, one `DONE` and
+  the link's end, its client one `EXIT`; green on Linux x86_64 (adacachy2), red with `Taken::end`
+  telling every call (two `DONE`s) and with the run taken without its client (no `EXIT`, as
+  the old rule, knowing the client only once set up, told none). No number added.
 - *On the image channel* (VERSION 28): `ENDED` carries `wire::RunEnded { end: RunEnd,
   final_use: FinalUse }`; `FinalUse::Read(Microvm)`, each part its reading or its words, or
   `FinalUse::Unread(Unused)`: `NotStarted` (stopped or refused before its microVM started),
