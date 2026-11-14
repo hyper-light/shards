@@ -42,6 +42,8 @@ Separately, `seal()` applies another thread-only Landlock layer at `vm_run.rs:27
 
 **Catching test:** spawn a held sibling before initial confinement; install a handler and signal that sibling to `openat` a disposable forbidden sentinel. Require refusal. After snapshot sealing, repeat a template-write attempt from each existing worker, not just the sealing thread.
 
+**Status (2026-11-13):** fixed in 4221c9488 (red `confine::tests::every_thread_of_a_confined_process_is_confined`, siblings read a file outside the paths and wrote the sealed directory under a caller-only layer; also `a_thread_that_cannot_be_asked_fails_the_layer`). TSYNC where the ABI has v8, each thread asked by signal on every ABI from v5; PM M568, D30.
+
 ### platform-02 — Linux pathname Unix sockets reach unscoped host authority
 
 **Location:** `crates/shards/src/confine.rs:606`, supporting `:107`, `:255`; `crates/shards/src/daemon.rs:2393`; `crates/shards/src/daemon/engine.rs:502`.
@@ -65,6 +67,8 @@ Its peer check allows `Ok(uid) if uid == ours` (`daemon/engine.rs:504`); the VM 
 **Fix direction:** mediate Linux host dialing as on macOS and deny arbitrary VM connects; use pathname restrictions where supported with an equally closed older-kernel path.
 
 **Catching test:** a same-UID Unix listener outside every grant must reject a confined connection. Repeat against a disposable daemon and require an unscoped Engine request to fail.
+
+**Status (2026-11-13):** fixed in d6f234c6f (red `confine::tests::a_confined_vm_dials_only_beside_its_vsock_path`, a VM given no vsock path dialed a same-user `engine.sock` listener): a seccomp layer on every kernel refuses every connect of a VM given no vsock path (every daemon VM) and every datagram socket, and Landlock v9 `RESOLVE_UNIX` scopes one given a vsock path. Remaining: before ABI v9 a VM given a vsock path (the builder, `run vm --kernel --vsock`) still dials any path; spawner dialing on Linux is owed (D30). PM M569.
 
 ### platform-03 — Windows snapshot staging leaves the grants broker open after guest start
 
@@ -94,6 +98,8 @@ The staging branch keeps the link open without sending `SEALED`. The broker's `s
 
 **Catching test:** start a disposable snapshot-capable, no-vsock confined actor; after initial setup send GRANT Write for an ungranted sentinel. Require refusal and no change, while a valid STAGE/COMMIT still succeeds.
 
+**Status (2026-11-14):** fixed in 1e8c83104 (red `grant_answer::windows_tests::a_vm_that_stages_its_snapshots_is_granted_nothing_more_once_it_starts`, e889915c4: the sentinel overwritten on Windows 10.0.26200 x86_64; PM M570, `docs/research/measurements/windows-p0/`).
+
 ### platform-04 — Unfiltered prlimit64 changes other host processes' hard limits
 
 **Location:** `crates/shards/src/confine.rs:86`.
@@ -117,9 +123,13 @@ The same-user spawner meets Linux's UID/GID permission check; its hard descripto
 
 **Catching test:** use a disposable same-UID target with communication FDs already open. The confined actor attempts the cross-process reduction; target must retain its limits and successfully open a new file. Never target a real daemon during validation.
 
+**Status (2026-11-13):** fixed in 146b02d37 (red `confine::tests::a_confined_vm_sets_only_its_own_limits`: a confined child set a disposable target's `RLIMIT_NOFILE` from 1048576/1048576 to 0/0); prlimit64 is allowed for pid 0 and the process's own pid alone. PM M567, D30.
+
 ## P1 — high
 
 ### platform-05 — WHP's emulator retains pointers into partially unmapped memory
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
 **Location:** `crates/vmm/src/hv/whp/mod.rs:643`, `:605`, `:755`, `:1385`.
 
@@ -141,6 +151,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 ### platform-06 — WHP's emulator ignores guest read-only memory permissions
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm hv::whp::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/vmm/src/hv/whp/mod.rs:1385`, `:1391`, `:1190`.
 
 **Defect:** The fallback emulator writes registered memory without retaining or checking the guest mapping's write permission.
@@ -159,6 +171,8 @@ The original larger mapping survives. `host()` still returns that address; emula
 
 ### platform-07 — Windows spawns leave unrelated handles inheritable
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc windows::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/ipc/src/windows.rs:2636`, `:2611`, `:2123`; `crates/registry/src/credentials.rs:624`.
 
 **Defect:** Confined spawning permanently makes borrowed stdio handles inheritable, and temporary inheritable handles can leak into concurrent ordinary Command children.
@@ -175,6 +189,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-08 — A valid Windows home path can trigger unbounded slot-wait threads
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-ipc slots::named::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/ipc/src/slots/named.rs:724–737`, supporting `:714`, `:660`.
 
 **Defect:** The busy-slot wait converts a Windows directory through lossy Unicode and treats every change-notification error as a changed list, repeatedly spawning uncancellable wait threads.
@@ -189,6 +205,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-09 — Case-insensitive Windows filenames can make versioned saves loop forever
 
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_files::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
+
 **Location:** `crates/vmm/src/platform/windows_files.rs:402`, `:381–395`.
 
 **Defect:** Version enumeration is case-sensitive while filesystem collision handling is case-insensitive, so collision retries can choose the same occupied name forever.
@@ -202,6 +220,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Catching test:** write/read through mixed-case names; precreate case-renamed snapshot pointer versions; require operations to terminate and select the latest data.
 
 ### platform-10 — Windows priority credits do not protect the host against multiple raised threads
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards-vmm platform::windows_thread::tests` on jupiter after adding the specific red regression; jupiter was offline in explicit kiln runs r1/r2. No Windows code change or verification claim. [Blocker, missing regressions and commands](../../research/measurements/platform-fixes/held.md).
 
 **Location:** `crates/vmm/src/platform/windows_thread.rs:226–231`, `:252–258`.
 
@@ -219,6 +239,8 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 
 ### platform-11 — Scheduling periods and pipe quotas remain chosen production constants
 
+**Status (2026-11-13):** owed to ROOT: [online-value and cold-start design, unresolved admission questions and required evidence](../../research/measurements/platform-fixes/held.md#platform-11-online-value-design-owed-with-cold-starts). No picked constants were substituted; this finding remains open.
+
 **Location:** `crates/vmm/src/platform/macos_thread.rs:34–35`, `:46`; `crates/vmm/src/platform/windows_thread.rs:66`; `crates/ipc/src/pipe.rs:68`, `:73`.
 
 **Defect:** Production scheduling and IPC sizing use fixed benchmark/default-derived choices rather than host-learned values or specification bounds required by the binding R03 clarification.
@@ -234,6 +256,10 @@ Local Rust 1.94.1 source `std/src/sys/process/windows.rs:330–342` explicitly d
 **Catching test:** inject different clock/wake/capacity observations and cold-start states; require derived choices to follow those observations and preserve safety/refusal bounds. Coordinator owns real host contention validation.
 
 ### platform-12 — Delegated-cgroup cleanup polls at an arbitrary 10 ms interval
+
+**Status (2026-11-13):** fixed in ab5399eda (red `daemon::parents::tests::a_cold_leaf_waits_for_changes_without_periodic_reads`);
+one red failure, then the regression and six module tests green, plus shards clippy,
+on adacachy2/Linux x86_64. [Evidence and real-cgroup validation owed to ROOT](../../research/measurements/platform-fixes/platform12.md).
 
 **Location:** `crates/shards/src/daemon/parents.rs:339`; `crates/shards/src/daemon.rs:411–412`.
 

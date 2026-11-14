@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/adalundhe/g121-tmp/fix-memory-v1/src/scripts/hvf-run /Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2 'memory::tests::live_copy_page_keeps_bytes_after_their_block_is_unplugged'` (signal: 10, SIGBUS: access to undefined memory)

@@ -53,7 +53,7 @@ pub use client::{
     connect_prepared, pause, prepare_boot, prepare_native_boot, recorded_console_bytes,
     recorded_console_bytes_at,
 };
-pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
+pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
 pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
