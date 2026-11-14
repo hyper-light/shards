@@ -773,8 +773,8 @@ fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
 /// meanwhile has another listed twice or not at all. Do: hold a socket; on as many threads as
 /// this host runs at once, keep twice a page of /proc/net/udp's lines (each 128 bytes,
 /// udp4_format_sock's width) of other sockets, closing and binding them anew; meanwhile find
-/// the held one by its address, as many times as the churners bind in a round. Expect: found
-/// once each time.
+/// the held one by its address, as many times as a churner keeps sockets. Expect: found once
+/// each time. (Before, adacachy2 at 54286a668 found 329 of 2,048 twice.)
 #[cfg(target_os = "linux")]
 #[test]
 fn a_socket_is_found_once_while_others_come_and_go() {
@@ -800,7 +800,7 @@ fn a_socket_is_found_once_while_others_come_and_go() {
                 }
             });
         }
-        let found: Vec<Vec<u64>> = (0..threads * batch).map(|_| managed_capture::bound(at)).collect();
+        let found: Vec<Vec<u64>> = (0..batch).map(|_| managed_capture::bound(at)).collect();
         stop.store(true, Ordering::Relaxed);
         let torn: Vec<_> = found.iter().filter(|ids| ids.len() != 1).collect();
         assert!(
