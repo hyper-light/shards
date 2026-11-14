@@ -24172,7 +24172,7 @@ rule as it was (`Rule::any(SYS_prlimit64)`, the mutant restoring it), the call r
 0`: red. With the rule allowing pid 0 and the process's own alone, the child reads and
 sets its own limits (both 0), the other's call traps (exit 159, `seccomp refused
 syscall 302`), and the target's limits are unchanged: green. `cargo test -p
-shards-vm-process confine::` 8 of 8 and `cargo clippy -p shards-vm-process
+shards-vm-process confine::` 7 of 7 and `cargo clippy -p shards-vm-process
 --all-targets -- -D warnings` clean on that host. No constant. Owed to ROOT: a confined
 VM on KVM (every VM test runs under the filter), x86_64 and arm64 through L1.
 
