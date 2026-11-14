@@ -70,7 +70,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Stage a sentinel under `.config` with A/B as above; member must read it, B must contain it, and A's hidden directory must not. Repeat with a read-only nested cover and require a typed refusal with no hidden write.
 
-**Status (2026-11-13):** fixed in 0d53a7fd7 (red `staged::tests::a_staged_file_uses_its_visible_nested_mount; staged::tests::a_read_only_cover_refuses_staging_before_any_write`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+**Status (2026-11-14):** fixed in 5bcf45657 and 0d53a7fd7 (Codex's; red `staged::tests::a_staged_file_uses_its_visible_nested_mount`, `a_read_only_cover_refuses_staging_before_any_write` at dcbec0e97, [log](../../research/measurements/fix-confine-v1/staged-red.log); green on merge 16de1a879 of p/fix-confine-v1 onto main 97f404be8, adacachy2 Linux 7.3.3 x86_64 musl, staging 14/14; mutant choosing the shallowest mount instead of the deepest red again, 3 of 14). Each staged file goes to the mount visible at its own path; a read-only cover is refused before any write (D231 *Nested HOME mounts*).
 
 ### confine-04 — P1 / high — initial member PATH search uses init's directory and mount view
 
@@ -88,7 +88,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Start `tool` from artifact `bin/tool` with `PATH=bin`; assert it runs. Repeat with a leading empty component and a cwd-local executable. Include a later PATH candidate to catch selection in the wrong view.
 
-**Status (2026-11-13):** fixed in 22ebba75a (red `domains::tests::a_members_relative_path_is_resolved_in_its_working_directory`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+**Status (2026-11-14):** fixed in 22ebba75a (Codex's) and b256ff24f (one search, `run::exec_found`, for a member's start and a command run in it) (red `domains::tests::a_members_relative_path_is_resolved_in_its_working_directory` at 265894e98, [log](../../research/measurements/fix-confine-v1/path-red.log); green on merge 16de1a879 of p/fix-confine-v1 onto main 97f404be8, adacachy2 Linux 7.3.3 x86_64 musl; mutant searching from `/` instead of its working directory red again). Its program is searched for in its own view, after `confine` and `chdir` (D59).
 
 ### confine-05 — P1 / high — concurrent plugs overwrite destination ownership
 
@@ -106,7 +106,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Barrier two requests after admission; require exactly one success and one Taken, one live mount/device, then complete device/share/fd return after unplug. Also reverse completion order and overlap unplug with pending plug.
 
-**Status (2026-11-13):** fixed in d0fea6fb3 (red `real-VM concurrency red owed to ROOT; authored plug::devices_are_plugged_into_a_run_and_its_disk_grows and api_image::a_project_is_plugged_into_the_running_harness; scoped units green`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+**Status (2026-11-14):** fixed: the daemon's plug, unplug and grow by main's devices-01 (74c757e1f, `devices::Steps`, one device step of a microVM at a time from its first read of what is plugged to its last answer), which the merge keeps in place of the branch's `request_turn`; `shards api-run`'s by d0fea6fb3 (Codex's `plug_turn`, held from the `Taken` check through the share, device and guest mount). Unit `devices::tests` and `api_run::hosted::tests` green on merge 16de1a879 of p/fix-confine-v1 onto main 97f404be8, adacachy2 Linux 7.3.3 x86_64. Owed to ROOT (real VMs): `cargo test -p shards --profile test-release --test plug devices_are_plugged_into_a_run_and_its_disk_grows -- --nocapture` and `cargo test -p shards --profile test-release --test api_image a_project_is_plugged_into_the_running_harness -- --nocapture`, each now asking twice at once for one path: one owner, one `Taken`, no hidden mount after the unplug.
 
 ### confine-06 — P1 / high — overflow/coalescing loses wakes for descendant watches
 
@@ -124,7 +124,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Hold only a nested watch, inject/force a root-coalesced event (Mac MUST_SCAN_SUBDIRS, Windows overflow, and pending saturation independently), and assert that watch receives an observable change/loss and reads the final bytes.
 
-**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --profile test-release --test plug a_host_edit_wakes_a_watch_in_the_guest -- --nocapture`, extended with independent subtree/overflow injections and a nested file-only watch; loss-fanout design in `docs/research/measurements/fix-confine-v1/README.md`. Existing basic watch success is not overflow evidence.
+**Status (2026-11-14):** fixed in 9d98d7bfd (red `devices::virtio::fs::server::tests::lost_events_wake_a_file_the_guest_holds` at f8711ac6a, adacachy2 x86_64: an overflow told `["", "d"]`, the watched directories, not the file `d/f` the guest held; green after, with `notices::tests::lost_changes_are_told_by_every_node_the_guest_holds_beneath`; mutants telling no lost place's nodes, and an overflow told as a change at the root, each red again). A loss is typed (`notices::Change::Beneath`: inotify's overflow, ReadDirectoryChangesW's empty answer, FSEvents' MustScanSubDirs) and told by every node the guest holds beneath it (D235 *Lost changes*). Owed to ROOT (real VMs): `cargo test -p shards --profile test-release --test plug a_host_edit_wakes_a_watch_in_the_guest -- --nocapture`, extended with a guest watch of a nested file alone and a host burst past the guest's held nodes.
 
 ### confine-07 — P3 / medium — rejected exec environment values are copied into errors
 
@@ -142,7 +142,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Pass public sentinel values in each rejected-entry shape; assert no error, encoded refusal, stderr or telemetry contains the value, while reason/member identity remain available.
 
-**Status (2026-11-13):** fixed in e272925b4 (red `enter::tests::rejected_environment_values_never_enter_diagnostics`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+**Status (2026-11-14):** fixed in e272925b4 (Codex's; red `enter::tests::rejected_environment_values_never_enter_diagnostics` at ef808cf08, [log](../../research/measurements/fix-confine-v1/env-red.log); green on merge 16de1a879 of p/fix-confine-v1 onto main 97f404be8, adacachy2 Linux 7.3.3 x86_64 musl). A refused variable's cause is typed (`enter::Unsettable`), its value in no error (D243 *Refused environment values*). Owed to ROOT: a managed exec with a public sentinel in a malformed variable, its refusal's wire and stderr read for the sentinel, `cargo test -p shards --profile test-release --test member_exec -- --nocapture`.
 
 ### confine-08 — P3 / medium — Linux host watch admission failures disappear
 
@@ -160,7 +160,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Exhaust the host watch quota, then look up/watch a fresh nested directory. Require an observable admission/degradation result rather than silent success followed by no events. Release quota and verify any promised recovery.
 
-**Status (2026-11-13):** fixed in 70f1bdeae (red `devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+**Status (2026-11-14):** fixed in 70f1bdeae (Codex's) and 5c5c0f79a (the test refused by ENOSPC: on current main a LOOKUP of a directory its share process may not read is refused EACCES whatever its watch, so Codex's 0111 case passed with the guard removed). Red `devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup`, as root of its own user namespace with `max_inotify_watches` lowered to the share root's one: green at 5c5c0f79a (adacachy2 x86_64), and with the admission's errno swallowed red again, the LOOKUP answering 0 for -28; a SKIP outside such a namespace. The admission's errno refuses the LOOKUP before any guest reference is made; a later lookup is admitted (D235).
 
 ### confine-09 — P3 / medium — pending notice capacity is an upstream default
 
@@ -178,7 +178,7 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Change the applicable runtime capacity/resource envelope and show admission follows its authoritative input rather than 16384; exercise cold start and overflow/loss outcomes separately.
 
-**Status (2026-11-13):** owed with its design: derive pending admission from actual retained object/resource ownership, with typed loss and no guessed cold-start allowance; see `docs/research/measurements/fix-confine-v1/README.md`. MOST=16384 remains unchanged and is not claimed fixed.
+**Status (2026-11-14):** fixed in 9d98d7bfd (`MOST` gone: a share's changes waiting, each by its path, are bounded by the nodes its guest holds as each is told, `Server::held`, the root's always among them; past them its changes are told as lost, by every node held; cold start one. Guard test `notices::tests::lost_changes_are_told_by_every_node_the_guest_holds_beneath`; mutant bounding by `usize::MAX` instead red again, adacachy2 x86_64). D235 *What waits is bounded by what the guest holds* records the derivation, cold start, uncertainty and failure.
 
 ### confine-10 — P1 / high — member exec cannot use its member's signal or abstract-socket scope
 

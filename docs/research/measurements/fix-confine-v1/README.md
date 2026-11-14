@@ -117,3 +117,35 @@ real hosts are CI/ROOT's, not claimed passed. R15: implementer only, signed comm
 P0-first merge order; focused remote checks only, no campaigns or main force-push.
 R16: only this lane's target directory is removed after landing; retain evidence and
 source until the run completes. No user data or other lane's builds are touched.
+
+## Takeover landing (Claude implementer, 2026-11-14)
+
+POLICY_READ: role implementer, main `97f404be8`, policy hashes as above. The Codex lane's
+branch was merged onto main in `16de1a879`; its one conflict, `crates/shards/src/daemon/devices.rs`,
+keeps main's devices-01 `devices::Steps` (74c757e1f), which already holds a microVM's
+plug, unplug and grow from first read to last answer, in place of the branch's
+`request_turn`. All runs: adacachy2, Linux 7.3.3 x86_64, `nice -n 10`, cold
+`CARGO_TARGET_DIR=~/g121-tmp/confine-claude/target`, `CARGO_INCREMENTAL=0`, carrier
+`/tmp/g121-shot/carriers/confine-claude` (`check.sh REV CMD…`, `mutants.sh`).
+
+- Merge `16de1a879`: `cargo test -p shards-init --target x86_64-unknown-linux-musl --
+  domains::tests staged::tests enter::tests` 35/35; `cargo test -p shards-vmm --lib --
+  devices::virtio::fs::server::tests` 53/53.
+- `b256ff24f`: the member's start and a command run in it share `run::exec_found`.
+- confine-06 red at `f8711ac6a`: `lost_events_wake_a_file_the_guest_holds` FAILED (an
+  overflow told the watched directories alone). Fixed with confine-09 in `9d98d7bfd`.
+- Tip `ac68f080a`: init (musl) 35/35, `shards-vmm` `devices::virtio::fs::` 85/85 (1
+  ignored), `shards --bin shards -- devices::tests api_run::hosted::tests share::` 17/17;
+  clippy `-D warnings` clean for shards-init (musl), shards-vmm and shards (linux-gnu),
+  shards-vmm (x86_64-pc-windows-gnu). Under `unshare --map-auto --map-root-user`,
+  `enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members` fails as root of a
+  namespace whose devpts is the host's (a chown to an unmapped uid), on main as here:
+  not this change's.
+- Mutants (`mutants.sh` at `ac68f080a`), each red: no lost place told by its held nodes
+  (confine-06); an overflow told as a change at the root (confine-06); the bound
+  `usize::MAX` instead of the nodes held (confine-09); staging to the shallowest mount
+  (confine-03, 3 of 14 staging tests); the program searched for from `/` (confine-04).
+  The watch admission's errno swallowed (confine-08) stayed green: Codex's 0111 directory
+  is refused EACCES on current main whatever its watch, so `5c5c0f79a` holds the test to
+  ENOSPC as root of its own user namespace with `max_inotify_watches` at the share root's
+  one watch.
