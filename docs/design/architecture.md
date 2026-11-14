@@ -7079,7 +7079,21 @@ replaced by:
   (`net::Sender`) to a wake socket of the driver's own, beside the one it serves on, both waited
   on at once (poll(2); WSAPoll), as a socket aimed at its peer takes datagrams from that peer
   alone (connect(2): Linux udp(7), XNU `udp_input`): a wake sent there never came, and a
-  client's resize waited for the daemon's next packet. poll waits whole milliseconds, a wait
+  client's resize waited for the daemon's next packet. Finding fixed (2026-11-14, Hex's
+  default-deny count of every hyper-quic endpoint's sockets): the waker (`net::Sender`) and the
+  wake were two unconnected loopback sockets, so any local process could send datagrams into a
+  run's driver wake, waking it at will, and every endpoint carried two sockets open to every
+  peer. The local datagram injection surface is closed: `Driver::bind_with_limits` connects the
+  waker to the wake and the wake to the waker, by the same rule (connect(2) filters a datagram
+  socket's input to its peer: Linux udp(7), XNU `udp_input`, Winsock's connect, "any datagrams
+  received from an address other than the destination address specified will be discarded"), and
+  drops what came before the connects (connect purges no queue, and no sender has woken it yet).
+  Senders wake with `send`, as XNU's `udp_output` refuses `sendto` an address on a connected
+  socket (EISCONN); every clone (`Sender::try_clone`) holds the same connected socket again. The
+  main socket's check for datagrams from the waker's address, there from before the wake socket,
+  went with it: the waker sends nowhere else. Red/green:
+  `net::tests::the_wake_takes_datagrams_from_its_own_waker_alone`, a stranger's datagram read
+  first before the fix, dropped after it. poll waits whole milliseconds, a wait
   under one taken as one, so that a timer is looked at no sooner than it is due. What its socket
   holds is read with the socket non-blocking: a receive timeout of the least, a microsecond,
   Linux keeps in whole jiffies (SO_RCVTIMEO, net/core/sock.c `sock_set_timeout`), so that a
