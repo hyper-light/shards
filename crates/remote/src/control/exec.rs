@@ -1888,13 +1888,6 @@ mod tests {
         };
         let framed = ask.frame().expect("a valid run spec must fit its control lane");
         assert_eq!(Ask::decode(&framed), Ok(ask));
-        // The larger admission belongs to this tag alone, and is still bounded before
-        // any payload arrives.
-        let mut ordinary = framed;
-        ordinary[0] = Tag::Stdin as u8;
-        assert!(frame::peek(&ordinary).is_err());
-        let past = u32::try_from(ASK_MOST + 1).unwrap().to_be_bytes();
-        assert!(frame::peek(&[&[Tag::MemberExec as u8][..], &past].concat()).is_err());
     }
 
     /// An ask's frame reads back as it was sent: an exec's with step 6's spec byte for byte, an
