@@ -266,16 +266,20 @@ pub fn start(spec: &run::Spec, member: u32, members: &[Started]) -> Result<Enter
 
 /// Why a variable of an exec's is not laid over its member's: it holds a NUL, or names no
 /// variable, or names SHARDS_DOMAIN, which init sets, the member's own name for its domain.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Unsettable(Vec<u8>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unsettable {
+    EmptyName,
+    Nul,
+    Reserved,
+}
 
 impl std::fmt::Display for Unsettable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?}: no NAME=value or NAME without NUL, or SHARDS_DOMAIN, which init sets",
-            String::from_utf8_lossy(&self.0)
-        )
+        f.write_str(match self {
+            Self::EmptyName => "an environment variable names no key",
+            Self::Nul => "an environment variable holds a NUL",
+            Self::Reserved => "SHARDS_DOMAIN, which init sets",
+        })
     }
 }
 
@@ -288,8 +292,14 @@ fn over(own: &[CString], given: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, Unsettable> 
     let key = |e: &[u8]| -> Vec<u8> { e.split(|&b| b == b'=').next().unwrap_or_default().to_vec() };
     for e in given {
         let name = key(e);
-        if name.is_empty() || e.contains(&0) || name == run::members::DOMAIN_VARIABLE {
-            return Err(Unsettable(e.clone()));
+        if name.is_empty() {
+            return Err(Unsettable::EmptyName);
+        }
+        if e.contains(&0) {
+            return Err(Unsettable::Nul);
+        }
+        if name == run::members::DOMAIN_VARIABLE {
+            return Err(Unsettable::Reserved);
         }
         env.retain(|have| key(have) != name);
         if e.contains(&b'=') {
@@ -571,18 +581,14 @@ mod tests {
     /// a NUL: refused whole, by the entry.
     #[test]
     fn an_exec_cannot_set_what_init_sets_or_nothing() {
-        for bad in [
-            &b"SHARDS_DOMAIN=agent other"[..],
-            b"SHARDS_DOMAIN",
-            b"=x",
-            b"",
-            b"A=\0",
+        for (bad, reason) in [
+            (&b"SHARDS_DOMAIN=agent other"[..], Unsettable::Reserved),
+            (b"SHARDS_DOMAIN", Unsettable::Reserved),
+            (b"=x", Unsettable::EmptyName),
+            (b"", Unsettable::EmptyName),
+            (b"A=\0", Unsettable::Nul),
         ] {
-            assert_eq!(
-                over(&own(), &[bad.to_vec()]),
-                Err(Unsettable(bad.to_vec())),
-                "{bad:?}"
-            );
+            assert_eq!(over(&own(), &[bad.to_vec()]), Err(reason));
         }
     }
 
