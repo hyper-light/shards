@@ -385,12 +385,14 @@ fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unre
             .copy_from_slice(&flags.to_le_bytes());
         send(release, node, &body)?;
     }
-    // A complete request's node comes first in told(); only subsequent entry IDs
-    // acquire lookup references. Each returned entry acquires exactly one.
-    for node in told(req, reply).into_iter().skip(1).filter(|node| *node != 0) {
-        send(proto::op::FORGET, node, &1u64.to_le_bytes())?;
-    }
-    Ok(())
+    let mut done = Ok(());
+    for_each_entry(req, reply, |node| {
+        if node != 0 && done.is_ok() {
+            // Each returned entry acquires exactly one lookup reference.
+            done = send(proto::op::FORGET, node, &1u64.to_le_bytes());
+        }
+    });
+    done
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
@@ -1282,6 +1284,19 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
 /// READDIRPLUS entry's. The server serves no COPY_FILE_RANGE, TMPFILE nor STATX, whose
 /// replies would tell more (ENOSYS: the guest copies, makes and asks otherwise).
 fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
+    let mut nodes: Vec<u64> = req
+        .get(16..24)
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map(u64::from_le_bytes)
+        .into_iter()
+        .collect();
+    for_each_entry(req, reply, |node| nodes.push(node));
+    nodes
+}
+
+/// The reply's entry IDs, excluding its request's existing node. Reconciliation and
+/// retiring an unpublished reply use the same wire walk; retirement allocates no list.
+fn for_each_entry(req: &[u8], reply: &[u8], mut each: impl FnMut(u64)) {
     use proto::op::{CREATE, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SYMLINK};
     let long = |b: &[u8], at: usize| {
         b.get(at..at.checked_add(8)?)
@@ -1293,7 +1308,6 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
             .and_then(|b| <[u8; 4]>::try_from(b).ok())
             .map(u32::from_le_bytes)
     };
-    let mut nodes: Vec<u64> = long(req, 16).into_iter().collect();
     // fuse_out_header: len, error, unique; an error tells nothing of an entry.
     const OUT_HEADER: usize = 16;
     // fuse_entry_out: nodeid, generation, entry_valid, attr_valid, their nsecs, fuse_attr.
@@ -1304,7 +1318,11 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
     let failed = word(reply, 4).is_none_or(|e| e != 0);
     match opcode {
         _ if failed => {}
-        LOOKUP | SYMLINK | MKNOD | MKDIR | LINK | CREATE => nodes.extend(long(reply, OUT_HEADER)),
+        LOOKUP | SYMLINK | MKNOD | MKDIR | LINK | CREATE => {
+            if let Some(node) = long(reply, OUT_HEADER) {
+                each(node);
+            }
+        }
         READDIRPLUS => {
             let mut at = OUT_HEADER;
             while let (Some(node), Some(len)) = (
@@ -1312,7 +1330,7 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
                 at.checked_add(ENTRY_OUT + 16).and_then(|n| word(reply, n)),
             ) {
                 if node != 0 {
-                    nodes.push(node);
+                    each(node);
                 }
                 let Some(next) = (DIRENT + len as usize)
                     .checked_next_multiple_of(8)
@@ -1325,7 +1343,6 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
         }
         _ => {}
     }
-    nodes
 }
 
 /// Tells the guest to keep what it has of a file its window maps as it opens it again
