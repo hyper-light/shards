@@ -142,7 +142,7 @@ pub struct Giver {
     /// its own, as the builder answers its asks in turn.
     out: Option<GiveRequest>,
     /// Latest desired room while a prior request is outstanding, including budget removal.
-    pending_room: Option<Option<i64>>,
+    pending_room: RoomUpdate,
     /// What has come of an answer not yet whole.
     held: Vec<u8>,
 }
@@ -153,6 +153,12 @@ pub struct Giver {
 enum GiveRequest {
     GiveBack,
     Room(Option<i64>),
+}
+
+#[derive(Debug)]
+enum RoomUpdate {
+    NoChange,
+    Tell(Option<i64>),
 }
 
 /// What a builder answered an ask with (build::GIVE_PORT).
@@ -173,7 +179,7 @@ impl Giver {
         Giver {
             conn,
             out: None,
-            pending_room: None,
+            pending_room: RoomUpdate::NoChange,
             held: Vec::new(),
         }
     }
@@ -200,11 +206,11 @@ impl Giver {
     /// send it as that answer arrives. Whether this word went immediately.
     pub fn tell(&mut self, room: Option<i64>) -> Result<bool, String> {
         if self.out == Some(GiveRequest::Room(room)) {
-            self.pending_room = None;
+            self.pending_room = RoomUpdate::NoChange;
             return Ok(false);
         }
         if self.out.is_some() {
-            self.pending_room = Some(room);
+            self.pending_room = RoomUpdate::Tell(room);
             return Ok(false);
         }
         let payload = room.map(|r| r.to_string()).unwrap_or_default();
@@ -258,7 +264,9 @@ impl Giver {
                         continue;
                     }
                     self.out = None;
-                    if let Some(room) = self.pending_room.take() {
+                    if let RoomUpdate::Tell(room) =
+                        std::mem::replace(&mut self.pending_room, RoomUpdate::NoChange)
+                    {
                         self.tell(room)?;
                     }
                     return Ok(Some(parse_answer(which, &said)));
