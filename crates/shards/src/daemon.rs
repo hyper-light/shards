@@ -14679,7 +14679,7 @@ mod tests {
             t.until("the ports were not freed", |d| lock(&d.ports_held).is_empty());
             assert!(ended.elapsed() >= slice, "freed within its slice");
             assert!(reaped(net_pid), "the network process was not reaped");
-            let kept = std::fs::read_to_string(t.home.join(ends::RECORD)).unwrap_or_default();
+            let kept = ends::newest(&t.home.join(ends::RECORD)).unwrap_or_default();
             assert!(
                 kept.lines()
                     .filter(|l| l.starts_with("helper "))
