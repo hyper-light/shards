@@ -27,7 +27,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shards_vmm::platform::{Look, Progress};
 
@@ -188,8 +188,10 @@ impl Ends {
 /// provider's command too, so that it is held to one slice.
 #[derive(Debug)]
 pub(crate) struct Followed {
-    /// Its CPU and what its host does to it, as D215's readers see them.
+    /// Its CPU and what its host does to it, as D215's readers see them, and when they last
+    /// read it.
     watch: Option<shards_api::Watch>,
+    looked: Instant,
     /// What it holds, which its host frees as its end goes on, and what it did, for the log.
     usage: Option<Progress>,
 }
@@ -202,6 +204,7 @@ impl Followed {
             .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
         Followed {
             watch,
+            looked: Instant::now(),
             usage: pid.map(Progress::of),
         }
     }
@@ -210,15 +213,28 @@ impl Followed {
     /// or held less than it did, its host freeing it, or its host held it from running, which
     /// is no stall of its own (ROOT's ruling, 2026-11-13); and what it did, for the log.
     /// Waited on for another slice if so; given up on if not, as one stopped or frozen is,
-    /// and one whose CPU could not be read, as before.
+    /// and one whose CPU could not be read, as before. A slice shorter than its CPU reading
+    /// shows (`Watch::resolution`, a clock tick) is no evidence of a stall: it goes on, the
+    /// look before kept, until the slices since add up to one.
     pub(crate) fn goes_on(&mut self) -> Option<Look> {
-        let found = self.watch.as_mut().map(shards_api::Watch::look);
+        let unresolved = self
+            .watch
+            .as_ref()
+            .is_some_and(|watch| self.looked.elapsed() < watch.resolution());
+        let found = match self.watch.as_mut() {
+            Some(_) if unresolved => None,
+            watch => {
+                self.looked = Instant::now();
+                watch.map(shards_api::Watch::look)
+            }
+        };
         let look = self.usage.as_mut()?.look();
         let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
-        let went = matches!(
-            found,
-            Some(Ok(shards_api::Found::Progressed | shards_api::Found::Held))
-        );
+        let went = unresolved
+            || matches!(
+                found,
+                Some(Ok(shards_api::Found::Progressed | shards_api::Found::Held))
+            );
         (went || freed).then_some(look)
     }
 }
@@ -397,16 +413,18 @@ mod tests {
             trickling.goes_on().is_some(),
             "a fiftieth of a CPU is its end going on"
         );
-        // Asleep over a window, until the trickler has gone on once more, in which a second
-        // watch of it finds it ran nothing; looked at again over another where it ran: its
-        // start's own CPU, or a cgroup freezer's cycles, which wake a sleeper (a kiln run's,
-        // about six a second, PM M562), so no window is a sleeper's by its clock.
+        // Asleep over a window as long as its reading shows (`Watch::resolution`: a shorter
+        // one goes on, no evidence), and until the trickler has gone on once more, in which a
+        // second watch of it finds it ran nothing; looked at again over another where it ran:
+        // its start's own CPU, or a cgroup freezer's cycles, which wake a sleeper (a kiln
+        // run's, about six a second, PM M562), so no window is a sleeper's by its clock.
         let pid = asleep.0.id();
         let mut sleeping = loop {
             let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
             let mut witness = shards_api::Watch::of(followed).unwrap().unwrap();
             let from = witness.cpu();
             let mut sleeping = Followed::of(Some(pid));
+            std::thread::sleep(witness.resolution());
             while trickling.goes_on().is_none() {
                 std::thread::yield_now();
             }
@@ -425,6 +443,12 @@ mod tests {
         // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
         let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WSTOPPED | libc::WNOWAIT) };
         assert_eq!(waited, 0);
+        let resolution = shards_api::Followed::of_pid(pid)
+            .unwrap()
+            .and_then(|followed| shards_api::Watch::of(followed).unwrap())
+            .unwrap()
+            .resolution();
+        std::thread::sleep(resolution);
         assert!(sleeping.goes_on().is_none(), "stopped, it goes on with nothing");
     }
 

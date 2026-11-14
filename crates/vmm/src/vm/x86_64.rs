@@ -12,7 +12,7 @@ use crate::devices::acpi_sleep::AcpiSleep;
 use crate::devices::control::Control;
 use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
-use crate::devices::virtio::console::{Console as ConsoleDevice, Port as ConsolePort};
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus, SharedLine};
@@ -379,16 +379,10 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
 /// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
 /// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
 /// (D150, D201).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a boot's CPU baseline (D245) beside the machine's config, which a snapshot keeps without one"
-)]
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
-    console: Console,
-    said: usize,
-    backfill: bool,
+    console: super::ConsoleSetup,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -512,7 +506,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
-    let (console_device, console) = ConsoleDevice::new(super::console_out(console)?, said, backfill)?;
+    let (console_device, console) = console.device()?;
     let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
@@ -742,9 +736,7 @@ pub fn build_reported(
         let a = assemble(
             &memory,
             &config,
-            cfg.console,
-            cfg.said,
-            super::console_backfill(cfg),
+            super::ConsoleSetup::booted(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -834,10 +826,7 @@ pub fn restore(
     let a = assemble(
         &memory,
         &snap.config,
-        console,
-        said,
-        // A restored guest's console registered before its snapshot: nothing missed.
-        false,
+        super::ConsoleSetup::restored(console, said),
         hosts,
         snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {
