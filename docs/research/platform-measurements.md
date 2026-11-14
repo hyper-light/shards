@@ -24280,3 +24280,10 @@ budgets resume as typed Lapsed without retaining a value; retries cannot reset t
 Red at 6eb3ad718; merged 950c1a0fe, 14 lease tests and shards-net all-target clippy pass
 on the same Mac. The linked record includes the causality proof, alternatives and the
 early-refusal/renewal-boundary limitation. No wire timestamp or chosen grace is added.
+
+creds-07: exact grant membership is checked by the CA signer before key generation,
+as typed LeafError::Ungranted; subtree constraints alone do not authorize exact hosts.
+Red 6eb3ad718 signed child.api.example.test under api.example.test. At 09ffbfd32,
+all 4 CA tests and shards-net all-target clippy pass on macOS arm64; unrelated-name
+verifier coverage remains independent. No performance result; linked credential
+record above has commands, evidence, and real-VM coverage owed.
