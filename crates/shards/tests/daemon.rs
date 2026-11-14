@@ -341,11 +341,10 @@ fn threads_of(pid: i32) -> String {
 /// A client that must wait for its daemon to start ends of SIGTERM at once, as the Docker
 /// CLI ends before its microVM is made: with 128 and the signal's number, nothing said
 /// (docker/cli cmd/docker/docker.go, notifyContext). Its daemon cannot start here, the
-/// home's lock held; then it goes, seeing one listen (`take_lock`), before anything is
-/// asserted, so that a failing test leaves no process behind. Windows sends a console
-/// process no SIGTERM: there its interrupt ([`interrupt`]) ends it so, with 128 and
-/// SIGINT's number, and its daemon, which no daemon of an older build listens beside, is
-/// ended by its pid, which its log's lines begin with.
+/// home's lock held; then it is ended by its pid, which its log's lines begin with, before
+/// anything is asserted, so that a failing test leaves no process behind. Windows sends a
+/// console process no SIGTERM: there its interrupt ([`interrupt`]) ends it so, with 128 and
+/// SIGINT's number.
 #[test]
 fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
     // Named short: a socket is bound in it by its whole path (sockaddr_un).
@@ -422,31 +421,11 @@ fn a_client_waiting_for_its_daemon_ends_on_sigterm() {
                 .parse::<i32>()
                 .ok()
         });
-    // Its daemon, waiting for the lock, sees one listen and goes: looked for while it goes
-    // on (`common::Wait`), and while it lives.
-    #[cfg(unix)]
-    let looked = daemon.is_some_and(|pid| {
-        let listener = std::os::unix::net::UnixListener::bind(home.join("daemon.sock")).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let kind = WaitKind::at(std::panic::Location::caller());
-        let mut looking = Wait::begin(kind, pid.unsigned_abs(), Some(&home), "its daemon's look");
-        loop {
-            if listener.accept().is_ok() {
-                looking.answered();
-                return true;
-            }
-            if !alive(pid) || looking.look(false).is_err() {
-                return false;
-            }
-            std::thread::sleep(looking.next_look());
-        }
-    });
     // Its daemon ended.
-    #[cfg(windows)]
     let looked = daemon.inspect(|&pid| kill_now(pid)).is_some();
     let status = status.expect("the client waited on past its signal");
     assert_eq!((status.code(), said.as_str()), (Some(ended), ""), "{status:?}");
-    assert!(looked, "the client's daemon never looked");
+    assert!(looked, "the client's daemon was not found in its log");
 }
 
 #[test]

@@ -2020,7 +2020,9 @@ pub fn start(
         let group = format!("{CGROUPS}/{}", d.cgroup);
         let pids = d
             .pids
-            .map(|n| with_starter(n).ok_or_else(|| format!("{}: {n} processes and its starter overflow", d.label)))
+            .map(|n| {
+                with_starter(n).ok_or_else(|| format!("{}: {n} processes and its starter overflow", d.label))
+            })
             .transpose()?;
         let admitted = admission
             .prepare_child(&d.cgroup)
@@ -4270,7 +4272,13 @@ mod tests {
                 // SAFETY: mount(2) of NUL-terminated literals over /proc, in this test's own
                 // mounts: its PID namespace's /proc.
                 let proc = unsafe {
-                    libc::mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), 0, std::ptr::null())
+                    libc::mount(
+                        c"proc".as_ptr(),
+                        c"/proc".as_ptr(),
+                        c"proc".as_ptr(),
+                        0,
+                        std::ptr::null(),
+                    )
                 };
                 if proc != 0 {
                     return format!("SKIP: its /proc: {}", io::Error::last_os_error());
@@ -4287,14 +4295,18 @@ mod tests {
                 }
                 drop(theirs);
                 let cmdline = format!("/proc/{pid}/cmdline");
-                while !std::fs::read(&cmdline).unwrap_or_default().starts_with(b"sleep\x001000\x00") {
+                while !std::fs::read(&cmdline)
+                    .unwrap_or_default()
+                    .starts_with(b"sleep\x001000\x00")
+                {
                     // SAFETY: waitpid(2) of this process's own child, not waiting.
                     if unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } == pid {
                         return "the member ended before its exec".into();
                     }
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                let comm = |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+                let comm =
+                    |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
                 let born = std::fs::read_dir("/proc")
                     .unwrap()
                     .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -4358,7 +4370,14 @@ mod tests {
     #[test]
     fn a_members_program_at_inits_path_is_listed() {
         let path = std::fs::read_link("/proc/self/exe").unwrap();
-        let name: String = path.file_name().unwrap().to_str().unwrap().chars().take(15).collect();
+        let name: String = path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .chars()
+            .take(15)
+            .collect();
         let mine = CString::new(path.into_os_string().into_encoded_bytes()).unwrap();
         let said = top_of_a_member(|_| {
             // SAFETY: unshare(2), mount(2) and execv(2) of NUL-terminated strings of this
@@ -4412,7 +4431,12 @@ mod tests {
             }
             let made = std::fs::write(format!("{base}/cgroup.subtree_control"), "+pids")
                 .and_then(|()| std::fs::create_dir(&group))
-                .and_then(|()| std::fs::write(format!("{group}/pids.max"), with_starter(declared).unwrap().to_string()));
+                .and_then(|()| {
+                    std::fs::write(
+                        format!("{group}/pids.max"),
+                        with_starter(declared).unwrap().to_string(),
+                    )
+                });
             if let Err(e) = made {
                 return format!("SKIP: its cgroup: {e}");
             }
@@ -4487,7 +4511,9 @@ mod tests {
     /// every command run in it refused `NoStarter`).
     #[test]
     fn a_member_runs_as_many_processes_as_it_declares_its_starter_apart() {
-        let Some(said) = in_a_member_declaring(2, &[c"/bin/true"]) else { return };
+        let Some(said) = in_a_member_declaring(2, &[c"/bin/true"]) else {
+            return;
+        };
         assert_eq!(said, "exited 0");
     }
 
@@ -4499,8 +4525,82 @@ mod tests {
     /// 7.3.3 x86_64).
     #[test]
     fn a_command_past_what_its_member_declared_is_refused() {
-        let Some(said) = in_a_member_declaring(1, &[c"/bin/true"]) else { return };
-        assert_eq!(said, format!("not born: Ok(Some(NotBorn {{ id: 7, errno: {} }}))", libc::EAGAIN));
+        let Some(said) = in_a_member_declaring(1, &[c"/bin/true"]) else {
+            return;
+        };
+        assert_eq!(
+            said,
+            format!("not born: Ok(Some(NotBorn {{ id: 7, errno: {} }}))", libc::EAGAIN)
+        );
+    }
+
+    /// confine-11: `start`'s clone3 of a member's first process, refused at `pids.max`, lets
+    /// go of nothing at the number the kernel wrote into its `Launch`'s pidfd. The kernel
+    /// writes that number before it charges the fork and frees it as it refuses the fork
+    /// (kernel/fork.c `copy_process`), so by the time `start` returns the number may be
+    /// another descriptor's: here one opened after the refusal, which must outlive the
+    /// `Launch`. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write, holding no
+    /// process and offering pids (a delegated scope's: `systemd-run --user --scope -p
+    /// Delegate=yes`, its processes moved into a leaf of its own); else a SKIP.
+    #[test]
+    fn a_first_process_refused_at_pids_max_closes_nothing_at_its_pidfd_number() {
+        let Ok(base) = std::env::var("SHARDS_TEST_CGROUP") else {
+            eprintln!("SKIP: SHARDS_TEST_CGROUP names no cgroup of the test's own");
+            return;
+        };
+        let group = format!("{base}/c11-pidfd-{}", std::process::id());
+        let made = std::fs::write(format!("{base}/cgroup.subtree_control"), "+pids")
+            .and_then(|()| std::fs::create_dir(&group))
+            .and_then(|()| std::fs::write(format!("{group}/pids.max"), "0"));
+        if let Err(e) = made {
+            eprintln!("SKIP: its cgroup: {e}");
+            return;
+        }
+        // In a child of one thread, so that no other thread takes the freed number first.
+        let said = in_child(|| {
+            let cgroup = std::fs::File::open(&group).unwrap();
+            let mut launch = crate::managed::Launch::new(0, &cgroup).unwrap();
+            let mut args = CloneArgs {
+                pidfd: (&raw mut launch.pidfd) as u64,
+                flags: libc::CLONE_PIDFD as u64 | CLONE_INTO_CGROUP,
+                exit_signal: libc::SIGCHLD as u64,
+                cgroup: cgroup.as_raw_fd() as u64,
+                ..CloneArgs::default()
+            };
+            // SAFETY: clone3(2) with a clone_args of the size given; a child born despite
+            // pids.max exits at once.
+            let pid =
+                unsafe { libc::syscall(libc::SYS_clone3, &raw mut args, std::mem::size_of::<CloneArgs>()) };
+            if pid == 0 {
+                // SAFETY: ends the child without running the harness's exit paths.
+                unsafe { libc::_exit(0) }
+            }
+            let errno = io::Error::last_os_error().raw_os_error();
+            let written = launch.pidfd;
+            // Held raw, so that a wrong close is said here, not an abort at its owner's drop.
+            let other = std::os::fd::IntoRawFd::into_raw_fd(std::fs::File::open("/dev/null").unwrap());
+            drop(launch);
+            // SAFETY: fcntl(2) F_GETFD of a number this child opened, then close(2) of it
+            // where it is still open.
+            let open = unsafe { libc::fcntl(other, libc::F_GETFD) } >= 0;
+            if open {
+                // SAFETY: as above.
+                unsafe { libc::close(other) };
+            }
+            format!(
+                "{pid} {errno:?}; written: {}, reused: {}, open: {open}",
+                written >= 0,
+                other == written
+            )
+        });
+        let _ = std::fs::remove_dir(&group);
+        assert_eq!(
+            said,
+            format!(
+                "-1 Some({}); written: true, reused: true, open: true",
+                libc::EAGAIN
+            )
+        );
     }
 
     /// confine-11: a member whose starter has gone is given what it declared, no more: its
