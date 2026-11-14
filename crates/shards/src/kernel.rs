@@ -18,24 +18,24 @@ pub struct Pinned {
 /// (resources/kernel/hyperv.config, D140).
 pub const KERNEL: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows)) {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-hyperv-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64-hyperv",
-        size: 27_789_288,
-        sha256: "e40d77793e63c3f7466967420313a2009e071c771d6b4b78072622d5c1d06ec2",
+        name: "vmlinux-6.18.48-x86_64-hyperv-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-hyperv",
+        size: 27_788_128,
+        sha256: "576c3e25e543b8678b3f48de215a998d8685385f1f5de9170d7e101dbc60f43c",
     })
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64",
-        size: 27_759_968,
-        sha256: "a9e00491d3233cfab80cf1971fd5dd72f2ef3e5dc8eb52390e9521057bf1976a",
+        name: "vmlinux-6.18.48-x86_64-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64",
+        size: 27_758_808,
+        sha256: "f21e65704b3062000bb5d25450872066b22fbe661c5bb795c424de2a90435449",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/Image-6.18.48-aarch64",
+        name: "Image-6.18.48-aarch64-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64",
         size: 19_091_968,
-        sha256: "52e369d56ff5515bdbe3c1bcb536874cb769f3f55a8139812188c6761d7e3cd7",
+        sha256: "27890635bb25d52fcbcde41f5077a7161a70c7bd6fcb4fa57221c934b4c4befb",
     })
 } else {
     None
@@ -48,17 +48,17 @@ pub const KERNEL_KVM: Option<Pinned> = if cfg!(windows) {
     None
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-kvm-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64-kvm",
-        size: 27_818_664,
-        sha256: "11492824539dcd5414b298fb91d90deb621d54a1a063f7b180c4c7ba0cd735a7",
+        name: "vmlinux-6.18.48-x86_64-kvm-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-kvm",
+        size: 27_817_504,
+        sha256: "71b5de5f7c9b4abfc543e230ad09bc1736e2ca15f7e76cbd28efbc546e6fa89e",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-kvm-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/Image-6.18.48-aarch64-kvm",
+        name: "Image-6.18.48-aarch64-kvm-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64-kvm",
         size: 20_244_992,
-        sha256: "b53e264ed81d17eba6a6d19a7b8fd44b5dc64b919f3b1ea438d94cb1b5e443ed",
+        sha256: "ed1e6dabf2f4088b37e3405a40b12962eb5eff76afe4303730e9d76ee1a7a3ba",
     })
 } else {
     None
@@ -69,24 +69,24 @@ pub const KERNEL_KVM: Option<Pinned> = if cfg!(windows) {
 /// keeps Hyper-V's time besides (D140). Of the pinned kernels' own release.
 pub const KERNEL_GPU: Option<Pinned> = if cfg!(all(target_arch = "x86_64", windows)) {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-hyperv-gpu-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64-hyperv-gpu",
-        size: 30_005_264,
-        sha256: "6f14c68bf66fe7f6cffe5fc1502e867627ec9f5e707e68c44a858f4334c60ea2",
+        name: "vmlinux-6.18.48-x86_64-hyperv-gpu-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-hyperv-gpu",
+        size: 30_004_104,
+        sha256: "5bbefce7fbd7f4ae1a2962c0e95c7a72536b3e0320605aeff150e044a506f224",
     })
 } else if cfg!(target_arch = "x86_64") {
     Some(Pinned {
-        name: "vmlinux-6.18.48-x86_64-gpu-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/vmlinux-6.18.48-x86_64-gpu",
-        size: 29_984_144,
-        sha256: "8f7be4e73e1a86191efcdd23df8e17989369b5fa25a5f4fc53ad27fbfef236fc",
+        name: "vmlinux-6.18.48-x86_64-gpu-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/vmlinux-6.18.48-x86_64-gpu",
+        size: 29_982_984,
+        sha256: "000708c81d124a6eb6924c146bf0b50744a664a78b97d73ca626055886fadbab",
     })
 } else if cfg!(target_arch = "aarch64") {
     Some(Pinned {
-        name: "Image-6.18.48-aarch64-gpu-7f8c931141dd",
-        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-7f8c931141dd/Image-6.18.48-aarch64-gpu",
-        size: 19_692_032,
-        sha256: "91a95a8c925ca8b3820c90edb947483e2e5573e1c3878e1256be37d68f02f7bf",
+        name: "Image-6.18.48-aarch64-gpu-54fba99afaee",
+        url: "https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-54fba99afaee/Image-6.18.48-aarch64-gpu",
+        size: 19_689_984,
+        sha256: "1ca72281a0323391b782763d0a3e5fb0a6af455ecf1301c97be61a146013c576",
     })
 } else {
     None
