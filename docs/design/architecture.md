@@ -28303,9 +28303,23 @@ docs/research/s33-veil-creds/STEP3.md).
   coding field; br and gzip twice refused 502; `decode::tests`: each coding whole and a byte at a
   time, truncated, past its budget, and a zstd window of 16 MiB refused. Mutations: the H1 decoder
   bypassed (the coded bytes chunked as they came), the H2 decoder bypassed, and each of the three
-  budget checks removed, each fail their tests. Still residual: a tunnel's own framing (a value
-  split across WebSocket frames, or a protocol other than WebSocket after a 101), which the mask
-  reads as bytes. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
+  budget checks removed, each fail their tests. A tunnel is read by its frames (creds-11, amended
+  2026-11-13): after a 101 whose response masks a value, the host's bytes are a WebSocket's (RFC
+  6455 §5.2), read by `Frames`: a data frame's payload is data, which the mask seeks a value in
+  across frames and continuations as the guest reassembles them (§5.4), each frame's head framing
+  passed over, as a chunked body's; a control frame (§5.5: never fragmented, at most 125 octets) is
+  read whole and each value in its payload masked where it lies, as its payload is no part of the
+  message it may interrupt; a head holding a value, a reserved bit (no extension was taken), a
+  reserved opcode, a masked frame (§5.1), a length past 2^63 or a control frame fragmented or past
+  125 octets breaks the tunnel. A 101 to any other protocol, or a CONNECT's 2xx, is refused 502
+  (`Unmaskable::Protocol`): its own framing or coding is none this side reads. A tunnel with no
+  value to mask passes as it came. Tests: `inject::tests::leaks`' text message echoing the value
+  across three fragments with a ping between and a close whose reason is the value, a frame with a
+  reserved bit and a masked one, and a filled upgrade to `tls/1.3`, red against 91cba0180 (the
+  value reached the guest; the tunnel went on; the 101 passed), green after; the frames read raw,
+  the control frame's cover removed, the reserved-bit and masked-frame checks removed, and the
+  protocol refusal removed, each fail them. Still residual: a value split across two messages, or
+  across a message and a control frame, a part of a value in each. A decoded body's own buffers (its decoder's output, gzip's sink, zstd's pending
   octets, the coded run of a turn, the run the mask lets go) grow through `signin::append`, each
   buffer let go of wiped as it drops (creds-13, amended 2026-11-13); red before (a block let go of
   while a body decoded held its plaintext, seen by the test binary's allocator, `decode::watch`),
