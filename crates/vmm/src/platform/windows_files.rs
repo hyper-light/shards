@@ -426,7 +426,7 @@ impl Naming {
     /// names: ignoring case, as Windows compares file names (CompareStringOrdinal, ordinal by
     /// the operating system's uppercase table, a UTF-16 unit for a unit, which Microsoft Learn
     /// gives for file names).
-    fn rest<'a>(self, entry: &'a OsStr, name: &str) -> Option<String> {
+    fn rest(self, entry: &OsStr, name: &str) -> Option<String> {
         let entry: Vec<u16> = entry.encode_wide().collect();
         let name: Vec<u16> = OsStr::new(name).encode_wide().collect();
         let head = entry.get(..name.len())?;
