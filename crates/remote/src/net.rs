@@ -386,6 +386,9 @@ pub struct Liveness {
     heard: Option<Instant>,
     /// When its handshake ended.
     connected: Option<Instant>,
+    /// This side's own absence before its handshake ended ([`Liveness::absent`]), which the
+    /// handshake's time does not count.
+    absent: Duration,
     longest: Duration,
     /// The slowest answer seen on its path: what was known of it, then this connection's.
     answer: Duration,
@@ -507,6 +510,7 @@ impl Liveness {
             handshake,
             heard: None,
             connected: None,
+            absent: Duration::ZERO,
             longest: Duration::ZERO,
             answer,
             ack_delay: Duration::ZERO,
@@ -599,6 +603,9 @@ impl Liveness {
     /// adacachy2 took 124 ms at its p99, and one 121 ms freeze took six of `tests/loopback.rs`'s
     /// daemons' live clients for dead at once.
     pub fn absent(&mut self, gone: Duration) {
+        if self.connected.is_none() {
+            self.absent = self.absent.saturating_add(gone);
+        }
         let on = |at: Instant| at.checked_add(gone).unwrap_or(at);
         self.began = on(self.began);
         self.heard = self.heard.map(on);
@@ -876,6 +883,12 @@ impl Liveness {
     pub fn handshake_took(&self) -> Option<Duration> {
         self.connected.map(|at| at.saturating_duration_since(self.began))
     }
+
+    /// This side's own absence while its handshake went on, which [`Liveness::handshake_took`]
+    /// does not count.
+    pub fn handshake_absent(&self) -> Duration {
+        self.absent
+    }
 }
 
 /// What a connection saw of the path it crossed, for its caller's record: the longest its
@@ -903,6 +916,9 @@ pub struct Seen {
     /// were judged no sooner than.
     pub pto: Duration,
     pub handshake: Option<Duration>,
+    /// This side's own absence while its handshake went on (`Liveness::absent`), which
+    /// `handshake` does not count: on the clock its handshake took the two together.
+    pub absent: Duration,
     pub answer: Duration,
     pub lost: Option<Duration>,
     pub ran_out: bool,
@@ -979,6 +995,7 @@ impl Io<'_> {
             idle: conn.quic.idle_timeout(),
             pto: conn.quic.probe_timeout(),
             handshake: conn.liveness.handshake_took(),
+            absent: conn.liveness.handshake_absent(),
             answer: conn.liveness.answer,
             lost: conn.liveness.lost(),
             ran_out: conn.liveness.ran_out || conn.liveness.outran(now),
@@ -2693,6 +2710,13 @@ mod tests {
         h.probe_timeout(ms(26));
         h.absent(ms(200));
         assert_eq!(h.due(), t0.checked_add(ms(228)));
+        h.connected(t0 + ms(203), 0, 0);
+        h.absent(ms(5));
+        assert_eq!(
+            (h.handshake_took(), h.handshake_absent()),
+            (Some(ms(3)), ms(200)),
+            "its handshake less the 200 ms its side was absent before it ended, and that absence"
+        );
     }
 
     /// Liveness at use (the person's ruling, 2026-11-13, and ROOT's ruling A): a send waits for
