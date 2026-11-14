@@ -36,6 +36,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 
 **Regression sketch:** Feed the two entries above to `Placer` with a separate disposable outside directory. Require refusal and assert that the outside sentinel is absent, including after import cleanup. Also test relative symlink targets and directory/node/metadata operations below links. Run only in ROOT's disposable scope.
 
+**Status (2026-11-13):** fixed in b97a4336f (red `daemon::moves::tests::a_streams_symlinks_never_lead_out_of_its_directory` at 9efde7252: `new-file` made outside the staging directory through an absolute link; adas-mac-studio.local macOS arm64; green with `server::guest::tests::beneath_goes_through_no_symlink`; mutations red: openat without O_NOFOLLOW (both tests), links allowed outside a volume's files). Each entry is placed through `server::guest::Beneath` (component-wise openat O_DIRECTORY|O_NOFOLLOW from the held staging root, NT FILE_OPEN_REPARSE_POINT), and a stream's symlink is taken only in a volume's `_data`, since `adopt` writes the microVM's own directory by path. Real-VM moves (tests/moved.rs) owed to ROOT.
+
 ### migrate-02 — P0 / critical — Ending HVF working-set recording silently disables live dirty tracking
 
 **Location:** `crates/vmm/src/hv/hvf/mod.rs:516-523`; `crates/vmm/src/vm/runtime.rs:498-535`.
@@ -53,6 +55,8 @@ Priorities: **P0 = critical**, **P1 = high**, **P3 = medium**, **P5 = low**; no 
 **Fix direction:** End recording atomically before installing migration tracking, or preserve dirty-tracking permissions when recording stops, respecting the documented recording → dirty → regions lock order.
 
 **Regression sketch:** On a real HVF VM, execute `watch.start(); watch.watch_writes(); watch.stop();`, guest-write P, and require `written()` to contain P. Then force recording stop during a blocked first migration round and assert the destination observes P's new contents.
+
+**Status (2026-11-13):** fixed in db8604ed6 (red `hv::hvf::tests::vcpu_and_gic_state_round_trip_through_a_fresh_vcpu` at 9efde7252 on real HVF: a guest's read within a recording the watch began in went unrecorded, and its writes after a recording ended went unwritten; adas-mac-studio.local macOS arm64; mutations red: `stop` ignoring the watch, `watch_writes` ignoring the recording). `Watch::rest` puts each region to what both watchers leave it (none while recording, read-only while watched, else full) as either starts or ends. Real-VM live moves on HVF owed to ROOT.
 
 ### migrate-03 — P1 / high — Pre-copy dereferences hotplug RAM after it can be unplugged
 
