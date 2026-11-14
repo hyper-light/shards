@@ -68,6 +68,10 @@ pub const HEADER_BYTES: usize = 16;
 pub const IN_HEADER_BYTES: usize = 40;
 /// The bytes of a reply's header (struct fuse_out_header): its length, error and `unique`.
 pub const OUT_HEADER_BYTES: usize = 16;
+/// fuse_entry_out, including fuse_attr (Linux v6.18 include/uapi/linux/fuse.h).
+pub const ENTRY_OUT_BYTES: usize = 128;
+/// fuse_release_in: fh, flags, release_flags and lock_owner, in that header.
+pub const RELEASE_IN_BYTES: usize = 8 + 4 + 4 + 8;
 /// The bytes of a WRITE's arguments before its data (struct fuse_write_in,
 /// include/uapi/linux/fuse.h l. 839-847): its handle, offset, size, write flags, lock owner,
 /// flags and padding.

@@ -86,6 +86,19 @@ remote target, exit 0. ROOT notification was rejected by Kiln inbox backpressure
 
 ## network-04: conntrack zone retirement
 
+**Fixed 2026-11-14 (Claude takeover lane, network part A), superseding the design below.**
+Zones are not retired or reused at all: each UDP candidate of each contest has a zone
+of its own for the chooser's life, assigned 1 up as it starts, so an entry conntrack
+keeps in a zone is only ever translated to that zone's one holder, whichever turn
+of holding made it. That closes the collision without a timer, a ctnetlink delete
+or a terminal notification: the bound is the kernel's u16 zone identity (0 the
+default zone), refused at start as `ZonesExhausted` before any domain runs.
+Red/green/mutation: [init0406-red-green.log](init0406-red-green.log) (kiln r1774,
+adacachy2, `cargo test -p shards-init --profile test-release --bins chooser::`; m1
+gives every candidate zone 1, failing the zone, split-port and exhaustion tests).
+The live wrap campaign below is no longer the fix's red; ROOT still owes the
+A-B-A-B handoff on real microVMs (D122).
+
 **Owed to ROOT; not fixed or live-confirmed.** Its decisive red is a kernel NAT
 binding being reused, not merely observing u16 arithmetic. The fix brief reserves
 real-VM/kernel campaigns to ROOT. The chooser still wraps its zone to 1, and
@@ -348,6 +361,13 @@ claiming this design implemented.
 
 ### network-06
 
+**Fixed 2026-11-14 (Claude takeover lane).** Per-port holders inside each contest
+(`Choices`), coalesced into runs at each holder's own ports, and contests cut
+where clipped ranges meet in part, with `pre` programming only uncontested rests.
+Red/green and mutations m2 (any port listened takes all) and m3 (contested only
+where equal): [init0406-red-green.log](init0406-red-green.log). The real-VM
+split-listener fixture below stays ROOT's.
+
 Starting command:
 `cargo test -p shards --test build a_port_comes_in_to_the_member_listening_on_it -- --exact --nocapture`.
 Extend to one unmapped 7000–7001 EXPOSE, web only7000 and api only7001, then close
@@ -458,6 +478,19 @@ the contention rule. Native target cleanup r31 exited0. ROOT notification was
 rejected by Kiln429backpressure; acceptance is not claimed. Network08 resumed
 only after that landing, on p/fix-network-v1, preserving its unlanded work.
 
+### network-03 loop at main (2026-11-14, Claude takeover lane)
+
+ROOT asked whether the failure was intermittent at main. On one loaded Mac
+(adas-mac-studio-3, arm64), the pre-fix test at 6389b6e09 failed 20 of 20 runs
+alone; at main 97f404be8, with 68968478b's wait on the stack's own poller, it passed
+50 of 50 alone and the whole shards-net lib 10 of 10 ([log](mac03-loop.log)). The
+pre-fix test also failed one of two whole-lib runs: alone it loses the race between
+loopback delivery and its immediate nonblocking receive every time, beside other
+tests' threads only sometimes, which is why a whole-lib run could pass. The test
+depended on no other ordering: the resolver's question is read with a blocking
+`recv_from`, the poller's `wait` empties its event list first (poll.rs), and
+`a_records` parses deterministically. Fixed by 68968478b.
+
 ## network-08: independent DNS relay clients
 
 Red7aa3c4a34, Kiln r25, Mac3 Docker native Linux6.12.65-linuxkit aarch64 /
@@ -530,3 +563,171 @@ and TCP clients resolve a live peer, withhold one upstream UDP reply, and verify
 progress before that connection closes. Add failed spawn, FD/memory pressure,
 relay death and guest end witnesses under ROOT's campaign bounds. Existing serial
 DNS latency M247 is not such evidence. No such VM/cost campaign ran here.
+
+Network08 landed main97f404be8e0cda228f12f924d3517a1e6afb4a3c (code74ea2d725).
+Focused tested merge4b7e93f10. New mainf8e5948bc touched init/mcp, so merge
+1304c74e4 passed warm `cargo check -p shards-init --tests`, r33, exit0
+([output](check08-landing.log)). First ff-push was refused. Final97f404be8 adds
+only disjoint shards/helpers and docs from f89d7a03d and was pushed immediately,
+with no conflict, as the contention rule permits. Every commit/merge has one
+gpgsig. Owned Linux target cleanup is recorded next.
+
+## network-09-11: part B (Claude implementer)
+
+POLICY_READ at `97f404be8e0cda228f12f924d3517a1e6afb4a3c` (the SHA-256s above);
+role implementer, ROOT coordinator; branch `p/fix-network-b-v1`. The Codex lane's
+red e862cfddd (network-09) is cherry-picked as 8c99b9816, its authorship kept.
+All runs below are on merge 38bd7a9d0 (main 2e00a1043 with these commits), each red
+the same tree with the fix commits reverted, through a carrier (blobless clone plus a
+bundle of the branch), `--profile test-release` on the Mac, dev on Linux.
+
+### network-09: a TCP DNS session judged by its asker as it stands
+
+Red (adacachy2, Linux 7.3.3 x86_64, rustc 1.98.1, fix 339d16ab1 reverted):
+`cargo test -p shards-init -- an_existing_tcp_session_uses_the_members_current_names`
+failed, `the old TCP session kept a departed member` (left 0, right 5): the worker
+answered from the table it cloned at accept. Green after 339d16ab1: that test and the
+other four agentdns/dnsrelay tests pass (5 of 5), `cargo clippy -p shards-init
+--all-targets -- -D warnings` clean ([log](netb-linux.log)).
+
+Fix: `serve_tcp` keeps only the connection's link and source address (`Who`); each
+question is judged under the relay's live askers (`Asker::verdict`: `Here`,
+`Upstream`, `Refused`), so names and grants are as `admit`/`release` last left them
+(D181). An asker let go of, or whose link no longer has the address, has its
+connection closed (`None => break`). In-flight upstream questions finish on their
+own connection; the next question is judged afresh. Mutation: `None => continue`
+leaves a revoked asker's session open, and the test fails ([log](netb-mutations.log)).
+
+### network-10: listener slots reused under generation-safe tokens
+
+Red (adas-mac-studio-3.local, macOS 25.2 arm64, rustc 1.98.1, fixes reverted):
+`host_network_bind_close_cycles_keep_no_listener_history` failed, `64 listener slots
+kept for at most one live listener`, through the real `NET_PUBLISHED` handler and
+`unpublish`. Green after acd4a34a8/cf6084eab/dbb7175de: it, the reworked
+`a_listener_let_go_of_leaves_its_socket_value_to_the_next` (every round in slot 0
+under a new token, the last round's token refused) and `a_hosted_port_is_let_go_by_its_number` pass.
+
+Fix: `Listeners` holds slots and a free list, as `Tcp` does for connections; each
+slot's generation rides in its poll token (`token::of`'s 24 bits), and dispatch
+takes a listener only for its own token (`Listeners::of`). Storage is the most ever
+published at once; UNPUBLISH frees every slot without dropping storage. Mutations:
+the free list's push removed (64 slots again) and the generation check removed (an
+old token names the next listener) each fail their test. Windows' poller
+registration rule (forget before close) is unchanged; ROOT owes the real guest
+host-network bind/close loop on Linux, macOS and Windows with an fd/RSS witness.
+
+### network-11: a response's addresses are its question's name's alone
+
+Red (Mac as above): `cargo test -p shards-dns --lib -- only_the_asked_names_own_records_are_its_addresses`
+failed (an unrelated owner's CH-class A became `allowed.example`'s address), and
+`cargo test -p shards-net --lib -- a_named_grant_learns_only_its_names_own_records`
+failed, `another owner`: `Config::allows` granted 203.0.113.9 at the named port.
+Green after 658eec242: all 12 shards-dns tests, the net test, network-03's
+`dns_authority_expires_without_retaining_answer_history` and
+`dns_answers_replace_the_names_previous_authority` pass; clippy of shards-dns,
+shards-net and shards-netring clean ([log](netb-mac.log)).
+
+Rules and sources: a whole response (QR, OPCODE 0, TC clear, RFC 2181 §9) without
+error (RCODE 0, RFC 1035 §4.1.1) to one IN question; records of the question's type
+and class IN, owned by its name or by the end of its CNAME chain (RFC 1034 §§3.6.2,
+4.3.2); names compared without case (RFC 4343 §3) and read with compression
+(RFC 1035 §4.1.4; pointers strictly backward, 255 bytes, §2.3.4, which together
+end every walk); TTL the least of the chain's and the addresses' records (RFC 2181
+§5.2). A chain longer than the records is a loop and says nothing. Both transports
+use this one parser (UDP `on_udp`, TCP `Stream::from_host`). The old
+`a_responses_addresses_are_read` expected an unrelated owner's A: it now spells a
+real CNAME target. Mutations: owner, class, RCODE and loop checks each removed fail
+the test ([log](netb-mutations.log)). Question-ID correlation is not added: the
+host socket is connected to the one resolver and the flow's answers are that
+resolver's, so the owner chain is what ties records to the granted name.
+
+### network-12: the network controls' derivations, row by row
+
+Each row of the review's inventory, with what it is now. "Fixed" rows changed code
+on this branch, tested on merges of main through the carrier on adas-mac-studio-3.local
+(macOS arm64, `--profile test-release`) ([log](netb-mac.log), [mutations](netb-mutations.log)).
+"Owed" rows keep their value in force: no other picked number replaces one. Each owed
+row's design and the exact measurement ROOT owes follow the table.
+
+| Row | Now | Basis |
+| --- | --- | --- |
+| wire.rs at most eight IPv6 extension headers | fixed 6fb0a6f66 (red 59d06bed7, `wire::tests::ipv6_headers_read_back_as_written`: "nine extension headers"; mutation of the hop-by-hop-first check fails) | RFC 8200 §4.1: any order, any number, hop-by-hop first alone; each header ≥ 8 bytes read within the packet, so the packet's length bounds the walk |
+| wire.rs TTL / hop limit 64 | named 51a4b86fb (`DEFAULT_TTL`) | the Assigned Numbers default (RFC 1700, IANA ip-parameters), which RFC 1122 §3.2.1.7 and RFC 4861 §6.3.2 (CurHopLimit) have hosts use: a registered value, not a choice |
+| ring.rs 4096 page fallback | fixed d0d8abdc5 | an OS that gives no page size (or one not a power of two) is an `io::Error` the queue's growth already returns; no guessed size |
+| netring 16 shared-memory name tries (macOS) | fixed 685d9c214 (red 26e3bce81, `shared_memory_passes_over_every_name_taken`: "no free shared memory name" after 40 taken names) | each refused name is an object another process holds, each try a new name: the OS's finite object table bounds the loop |
+| tcp.rs window scale 7 | derived 41e40fe0a (`wscale_for(TO_HOST)`, test `the_window_scale_offered_is_the_least_that_says_the_whole_queue`) | RFC 7323 §2.3: the least shift whose 16-bit window says the whole queue, 14 at most |
+| lib.rs 64 KiB peer read | derived 41e40fe0a | one whole message of the peer stream: its 4-byte length and `MAX_FRAME` |
+| tcp.rs TO_HOST / TO_GUEST 4 MiB | owed | below |
+| tcp.rs RTO 200 ms, 8 retries, IDLE = RTO | owed | below |
+| tcp.rs window update at a doubling | owed | below |
+| lib.rs BUDGET 64 | owed | below |
+| lib.rs UDP 30 s / 120 s / 2 s | owed | below |
+| lib.rs BACKLOG 1024; Windows UDP_WAITING 16 | owed | below |
+| poll.rs 256 events a wait | owed | below |
+| netring 1 MiB ring | owed | below |
+| init dnsrelay / agentdns WAIT 5 s | owed | below |
+| shards daemon/publish.rs 10 bind tries | owed | below |
+| init chooser.rs 8192 / 16 KiB scratch, 1024 privileged-port fallback | owed to the chooser's lane | network-06/07's lane rewrote chooser.rs on main meanwhile (04f590670); part B left it alone |
+
+Designs and the measurements ROOT owes, each a learned or cited value with its cold
+start and its failure typed:
+
+- **Queues (TO_HOST, TO_GUEST).** A connection's guest-side queue exists to cover what
+  its host socket can take or give while the guest's side is behind. Learn it per
+  connection from the host socket's own buffer (SO_RCVBUF / SO_SNDBUF as the kernel
+  autotunes them, read where the queue would grow), cold start the socket's initial
+  buffer as getsockopt(2) reports it, never above the host's own maximum
+  (Linux `tcp_rmem`/`tcp_wmem`, macOS `net.inet.tcp.autorcvbufmax`/`autosndbufmax`,
+  Windows' autotuning level). A failed getsockopt is a typed refusal of the
+  connection's growth, not a default. The window scale then follows the learned
+  ceiling (`wscale_for`, already in place), fixed at the SYN as RFC 7323 requires, so
+  the SYN's ceiling is the host maximum. ROOT owes: PM M210's bulk-transfer and
+  1,000-idle-connection RSS runs, before and after, on macOS, Linux and Windows.
+- **Retransmission (RTO, RETRIES, IDLE).** RFC 6298's estimator per connection: SRTT and
+  RTTVAR from the guest's ACKs of segments sent once (Karn), RTO = SRTT + max(G,
+  4·RTTVAR), cold start RFC 6298 §2.1's 1 s until the first sample, backoff doubling
+  (§5.5). The floor is the open question: RFC 6298 §2.4 says 1 s, Linux takes 200 ms;
+  the guest's delayed-ACK bound (RFC 9293 §3.8.6.3, under 0.5 s) is what a floor must
+  exceed for a lone segment, and the estimator learns it where samples include it.
+  Give up on time, not a count: RFC 1122 §4.2.3.5's R2, at least 100 s, from the first
+  unanswered retransmission. IDLE becomes the connection's current RTO (RFC 7661 §4.4).
+  ROOT owes: spurious-retransmission counts under a loaded host (vCPUs descheduled,
+  macos-sched/launchd-run.sh on Mac) with the learned RTO and each candidate floor, and
+  M210's idle-memory run with IDLE = current RTO.
+- **Window updates.** RFC 9293 §3.8.6.2.2's receiver rule announces a window that grew
+  by min(RCV.BUFF/2, Eff.snd.MSS); the code announces at a doubling (Linux's
+  `tcp_cleanup_rbuf`). ROOT owes: an A/B of bulk throughput and ACK frames per MiB under
+  each rule (`docs/research/measurements/build-ab/ab.py`'s method), before switching.
+- **BUDGET.** Turn fairness by deficit round robin (Shreedhar and Varghese, SIGCOMM
+  1995): a byte quantum of one largest frame (`MAX_FRAME`) per socket per turn, the
+  paper's O(1) condition, carried over turns; datagram paths stop early when the ring
+  has no room (backpressure, not a count). ROOT owes: per-flow latency p50/p99 with one
+  flooded published port beside a quiet one, before and after.
+- **UDP lifetimes.** RFC 4787 REQ-5: a UDP mapping MUST NOT expire in under 2 min (5 min
+  RECOMMENDED); REQ-5a allows shorter timers only for a well-known destination port's
+  own application. The 30 s unreplied lifetime (Linux conntrack's) breaks REQ-5 for
+  ports past 1023. Design: 120 s at least for every mapping, a DNS transaction (port
+  53) ending at its answer; admission of new flows by the process's real descriptor
+  limit (RLIMIT_NOFILE less open), a refusal typed as the table's. ROOT owes: descriptor
+  and RSS under a churn of 10,000 one-datagram flows, before and after.
+- **BACKLOG, UDP_WAITING.** Bound the frames waiting for the ring in bytes by one ring
+  (`RING`), which is what one drain of the guest moves; Windows' datagrams waiting for
+  the dialer by the dialer socket's send buffer (SO_SNDBUF). ROOT owes: drop counts of
+  a UDP flood into a slow guest, before and after.
+- **poll's 256.** Size each wait's buffer to the handles registered (counted at `set`
+  and `forget`; kqueue counts a filter each), so one wait takes every ready handle;
+  allocation failure is the wait's error. ROOT owes: wait counts and latency with 10,000
+  connections ready at once.
+- **Ring 1 MiB.** Learn it from the host's measured doorbell wake latency times the
+  device's line rate (PM M83's harness), the region's size fixed at the VM's start.
+  ROOT owes: M83's throughput and per-VM memory at each candidate size.
+- **DNS WAIT.** The asker's own retry timer is what the relay's wait serves: shards
+  writes each agent's resolv.conf without `options timeout:`, so its asker waits its
+  libc's documented RES_TIMEOUT (resolv.conf(5), glibc and musl: 5 s). Better, learned:
+  a question is let go when its asker asks it again (same question, same link, a new
+  ID), or answered, with Flight's share as its bound. ROOT owes: real-guest ID-holding
+  and answer latency under a withheld upstream, before and after.
+- **publish.rs 10 tries.** Try each port of the kernel's ephemeral range
+  (`ip_local_port_range`, `net.inet.ip.portrange.first/last`, Windows' dynamic port
+  range) at most once after the kernel's pick collides, a typed refusal once the range
+  is spent. ROOT owes: the daemon's publish tests with a range mostly held.

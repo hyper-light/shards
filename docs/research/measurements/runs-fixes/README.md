@@ -341,3 +341,72 @@ to 02d3fe33b before committing runs-08, preserving its tested helper patch.
 Policy hashes unchanged. Runs-07's two lost races each had clean merged
 `cargo check -p shards --tests` at ecb3da49/a68fc0ce4. The tip went through the
 authorized local peer socket after kiln again rejected its receipt (429).
+
+## Takeover lane (Claude), 2026-11-14
+
+Implementer: Claude, p/runs-tail-v1, worktree .claude/worktrees/runs-tail. Main
+coordinator: ROOT. Policy at main 97f404be8: AGENTS SHA256
+f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41; rules
+df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3; evidence
+61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63. Read
+/tmp/g121-shot/review/takeover-brief.md and /tmp/g121-shot/brief-common.md. No
+children. Cargo ran only through kiln on adas-mac-studio-3.local, macOS 26.2
+arm64, one cargo at a time, ~/g121-tmp/runs-tail (its own blobless clone and
+target), CARGO_INCREMENTAL=0, SHARDS_HELPERS=skip, SHARDS_INIT_BINARY and
+SHARDS_SERVER_BINARY /usr/bin/true. Carrier /tmp/runs-tail-carrier: run.sh
+(green | mutant), mutate.py (each guard removed), the lane's bundle.
+
+## runs-09
+
+Salvaged from the Codex lane's uncommitted edit in rv-runs (read only): the
+design (disk.lock across reread, change and write; publication through
+platform::write_in's writer-owned staging) and both tests. Changed on the way:
+the tests no longer sit between another test's doc comment and its body;
+`read` opens the newest version (`open_newest_in`), since Windows' write_in
+lands `disk.~N` beside the file and removes the plain name, which a plain read
+of `disk` would then never find. Fix 2c148377c, tested on its merge 22d03c1a.
+
+Green (r1765): `cargo test -j 4 -p shards --bin shards disk::tests` 3 passed;
+`cargo clippy -j 4 -p shards --all-targets -- -D warnings` clean.
+[runs09-green.log](runs09-green.log). Red by mutation (r1785), the base's
+transaction restored (update without the lock, write through `.disk.new`):
+`concurrent_settings_updates_keep_each_others_fields` keeps log-history 1 MiB
+where 4 MiB was set (the later stale snapshot won), and
+`settings_publication_leaves_another_writers_staging_file_alone` finds another
+writer's `.disk.new` consumed (NotFound). [runs09-red.log](runs09-red.log).
+
+R01: no unwrap/indexing in production; lock and write failures return the path
+and cause. R03: no literal. R04: the transaction is one function under one
+lock; no new state. R05: no cache; readers stay lock-free on whole files. R11:
+one macOS arm64 host; Windows' version path and Linux are CI's. Owed ROOT: two
+real `shards configure disk` processes racing with a reader, on each OS
+(`cargo test -p shards --test containers a_logs_history_is_what_its_user_set`
+still covers the single-writer path on real VMs).
+
+## runs-10
+
+Fix 0122d69cc, tested on its merge 22d03c1a. vm(), net() and vm_gpu() check a
+helper's SHA-256 against build.rs's digest each time a process is about to
+start it, and write it again whole where it differs or is gone; the daemon's
+kept path is checked in launch::program through helpers::checked. A helper that
+cannot be written again is refused naming its path, digest and cause.
+SHARDS_VM_BINARY's and a carrier's beside helpers (D237) are their giver's.
+
+Green (r1765): `cargo test -j 4 -p shards --bin shards helpers::tests` 6
+passed (two carried-helper cases return early under skip),
+`cargo test -j 4 -p shards --bin shards launch::tests` 4 passed, clippy clean.
+[runs10-green.log](runs10-green.log). Red by mutation (r1785), the base's
+length check restored in verified(): the flipped byte is returned as the
+helper, and the unwritable one is accepted rather than refused.
+[runs10-red.log](runs10-red.log).
+
+R03: none (SHA-256 of the carried bytes; std's buffer). R05: no verified-path
+cache: every start reads the bytes; its cost is unmeasured. R14 owed ROOT:
+`docs/research/measurements/build-ab/ab.py` this build against its parent on
+one template, and cold `shards run --kernel` launch latency, on HVF, KVM, WHP.
+Owed ROOT, carried helpers (not skip):
+`env -u SHARDS_HELPERS -u SHARDS_HELPERS_DIR cargo test -p shards --bin shards helpers::tests`,
+plus a real run after flipping one byte of the cached shards-vm and shards-net
+(the run starts; the cache holds the carried bytes again), and on Windows with
+a VM running from the cache (refused with why, never started as it is). The
+check-to-exec window remains (no portable fexecve).

@@ -1,0 +1,148 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 22.34s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards-1e7d28c4ebee2f50)
+
+running 3 tests
+test daemon::inspect::tests::shm_owner_refuses_cycles_and_missing_records ... ok
+test daemon::inspect::tests::shm_owner_follows_every_join_to_the_vm_budget ... ok
+test daemon::inspect::tests::json_indents_as_go_indents_it ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 909 filtered out; finished in 0.02s
+
+   Compiling libc v0.2.189
+    Checking typenum v1.20.1
+    Checking cfg-if v1.0.5
+    Checking zeroize v1.9.0
+    Checking cpufeatures v0.3.1
+    Checking const-oid v0.10.2
+    Checking memchr v2.8.3
+    Checking zlib-rs v0.6.8
+    Checking aho-corasick v1.1.5
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+    Checking hybrid-array v0.4.15
+    Checking rustls-pki-types v1.15.1
+    Checking serde_core v1.0.229
+    Checking once_cell v1.21.4
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking regex-syntax v0.8.11
+   Compiling cmake v0.1.58
+    Checking digest v0.11.3
+    Checking sha2 v0.11.0
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/g121-tmp/fix-devices/src/vendor/aws-lc-sys)
+    Checking num-traits v0.2.19
+    Checking zmij v1.0.23
+    Checking regex-automata v0.4.18
+    Checking base64 v0.23.1
+    Checking untrusted v0.9.0
+    Checking itoa v1.0.18
+    Checking num-integer v0.1.47
+    Checking serde_json v1.0.151
+    Checking flate2 v1.1.10
+    Checking subtle v2.6.1
+    Checking twox-hash v2.1.4
+    Checking ruzstd v0.9.1
+    Checking regex v1.13.1
+    Checking num-bigint v0.4.8
+    Checking serde v1.0.229
+    Checking rand_core v0.10.1
+    Checking foldhash v0.2.0
+    Checking alloc-no-stdlib v2.0.4
+    Checking generic-array v0.14.7
+    Checking alloc-stdlib v0.2.4
+    Checking shards-erofs v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/erofs)
+    Checking shards-template v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/template)
+    Checking shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/dns)
+    Checking shards-image v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/image)
+    Checking brotli-decompressor v5.0.3
+    Checking powerfmt v0.2.0
+    Checking deranged v0.5.8
+    Checking tinyvec v1.13.3
+    Checking num-conv v0.2.2
+    Checking time-core v0.1.9
+    Checking brotli v8.0.4
+    Checking shards-cmdline v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/cmdline)
+    Checking time v0.3.55
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking getrandom v0.4.3
+    Checking chacha20 v0.10.2
+    Checking tracing-core v0.1.36
+    Checking portable-atomic v1.15.0
+    Checking libm v0.2.16
+    Checking keccak v0.2.2
+    Checking pin-project-lite v0.2.17
+    Checking log v0.4.34
+    Checking siphasher v1.0.4
+    Checking tracing v0.1.44
+    Checking fastbloom v0.17.0
+    Checking sha3 v0.11.0
+    Checking rand v0.10.3
+    Checking digest v0.10.7
+    Checking shards-agentfile v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/agentfile)
+    Checking rand_pcg v0.10.2
+    Checking thiserror v2.0.21
+    Checking cpufeatures v0.2.17
+    Checking lru-slab v0.1.3
+    Checking bytes v1.12.1
+    Checking slab v0.4.12
+    Checking rustc-hash v2.1.3
+    Checking sha1 v0.10.7
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/shards)
+    Checking yasna v0.6.0
+    Checking hashbrown v0.17.1
+    Checking unsize v1.1.0
+    Checking httparse v1.10.1
+    Checking pem v4.0.0
+    Checking percent-encoding v2.3.2
+    Checking libbz2-rs-sys v0.2.5
+    Checking form_urlencoded v1.2.2
+    Checking hashlink v0.12.2
+    Checking bzip2 v0.6.1
+    Checking triomphe v0.1.17
+    Checking sha1-checked v0.10.0
+    Checking unicode-normalization v0.1.25
+    Checking lzma-rust2 v0.21.0
+    Checking encoding_rs v0.8.35
+    Checking arraydeque v0.5.1
+    Checking iri-string v0.7.14
+    Checking shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/build)
+    Checking yaml-rust2 v0.13.0
+    Checking shards-git v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/git)
+    Checking shards-rego v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/rego)
+    Checking shards-seccomp v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/seccomp)
+    Checking shards-testguest v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/testguest)
+    Checking shards-archive v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/archive)
+    Checking shards-flate v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/flate)
+    Checking shards-zstd v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/zstd)
+    Checking shards-ext4 v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/ext4)
+    Checking shards-user v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/user)
+    Checking shards-gateway v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/gateway)
+    Checking shards-tui v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/tui)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-devices/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/g121-tmp/fix-devices/src/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+    Checking rustls-webpki v0.103.16
+    Checking shards-gitsign v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/gitsign)
+    Checking rcgen v0.14.10
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f52)
+    Checking shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/sigstore)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=e0613f524b0df198cc61dc1e82b33c22d604cf7b#e0613f52)
+    Checking shards-verify v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/verify)
+    Checking shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/registry)
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/net)
+    Checking shards-remote v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/remote)
+    Checking shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/api)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 43.00s
