@@ -146,8 +146,10 @@ pub fn ipv4(b: &[u8]) -> Option<Ip<'_>> {
 }
 
 /// An IPv6 packet, its extension headers skipped: hop-by-hop options, routing and
-/// destination options (RFC 8200 §4), at most eight of them, each its own length. A
-/// fragment header drops it, as IPv4's fragments are dropped.
+/// destination options (RFC 8200 §4), each its own length, in any order and any number of
+/// times, as §4.1 has a node accept them, but hop-by-hop options first alone. Each is
+/// at least 8 bytes and read within the packet, so the packet's own length bounds the walk.
+/// A fragment header drops it, as IPv4's fragments are dropped.
 pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
     if *b.first()? >> 4 != 6 {
         return None;
@@ -156,9 +158,8 @@ pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
     let packet = b.get(..end)?;
     let mut next = *packet.get(6)?;
     let mut at = IPV6;
-    let mut skipped = 0;
     while matches!(next, 0 | 43 | 60) {
-        if skipped == 8 {
+        if next == 0 && at != IPV6 {
             return None;
         }
         let ext = packet.get(at..at + 2)?;
@@ -167,7 +168,6 @@ pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
         };
         next = following;
         at = at.checked_add((usize::from(len) + 1) * 8)?;
-        skipped += 1;
     }
     if next == 44 {
         return None;
@@ -728,7 +728,7 @@ mod tests {
             let _ = ipv6(&opts[..cut]).and_then(|i| udp(i.payload));
         }
         // network-12: any number of destination options and routing headers is taken
-        // (RFC 8200 §4: in any order, any number of times), nine as well as one, each
+        // (RFC 8200 §4.1: in any order, any number of times), nine as well as one, each
         // read within the packet; a hop-by-hop header anywhere but first drops it.
         let chain = |kinds: &[u8]| {
             let mut ext = Vec::new();
