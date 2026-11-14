@@ -542,3 +542,6 @@ adas-mac-studio-3.local (kiln r24, r43):
   `send_judged`/`recv_judged`, `health::Judged` on `Answers::take`); [msg-dontwait.c](msg-dontwait.c)
   measures macOS's `MSG_DONTWAIT` sends. D222. [runs11-take-a-red.log](runs11-take-a-red.log),
   [runs11-take-a-green.log](runs11-take-a-green.log). Owed: (b) Windows, (c) the other sites.
+- `TAKE_TIMEOUT` slice (c1): 78b7c630a. A joiner's link and volumes to its join share on Unix,
+  judged on the share's process (`Answers::door`, `::link`). D222.
+  [runs11-take-c1-red.log](runs11-take-c1-red.log), [runs11-take-c1-green.log](runs11-take-c1-green.log).

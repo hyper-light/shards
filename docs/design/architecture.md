@@ -16297,7 +16297,14 @@ resume asks `snapshot::resumable(dir)` before anything restores the snapshot or 
 runs: the daemon's `resumable` (`restore vm`, `start --checkpoint`), a move's `plan` (the
 saved and live moves' first step on the machine moved from), and `shards restore DIR`
 before its VM process starts (not for `--warm` or `--resume`, the daemon's). It reads the
-state's head and saver alone and writes nothing. Refused typed (`ResumeRefused`):
+state's head and saver alone and writes nothing. A move to a machine of another build is
+refused there before anything moves: a move's plan, saved or live, carries the shards that
+made it and its init's contract (`Plan::saved_by`, `Plan::init`, this build's: its guest
+runs under this daemon, or its snapshot was found resumable), and the `ready` step on the
+machine moved to refuses one of another contract, or a plan that names none, an earlier
+daemon's, first (`moves::Refused::OlderInit`, as JSON to the mover beside its words).
+The Engine API's `POST /containers/{id}/start?checkpoint=` reaches the same `resumable`
+and answers its refusal as moby answers a failed start (500, the words as its message). Refused typed (`ResumeRefused`):
 `OlderInit { saved_by, init_abi, ours }`, a saver whose init announced another contract or
 none ("this microVM was saved by shards 0.7.0, whose shards-init (contract …) cannot
 continue in this shards (contract …): start it again from its image; its volumes are
@@ -16317,8 +16324,10 @@ keep them. The CLI user sees the refusal on stderr and exit status 1, as `docker
 failed start (the daemon's `refuse`, and `failed` for `shards restore DIR`). Red/green:
 `a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver` (this build's init
 resumes; another's and none refused naming `SAVED_BY`; 28 refused naming 0.7.0; past 30
-refused; a cut saver unreadable) and `resumable_refuses_another_init_and_leaves_the_snapshot`
-(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable);
+refused; a cut saver unreadable), `resumable_refuses_another_init_and_leaves_the_snapshot`
+(on disk: resumed, refused typed, the state left byte for byte, no snapshot unreadable) and
+`a_guest_whose_init_is_another_builds_is_refused_before_anything_moves` (a plan of another
+contract and one of an earlier daemon refused naming their saver, typed on the wire);
 red before this, where no state recorded a saver. Owed to ROOT: v0.7.0's release binary's
 `save vm m`, then this build's `restore vm m` printing the refusal and exiting 1.
 
@@ -20668,7 +20677,7 @@ were excluded by the review.
 
 | Literal (file) | Now | Design | Owed: proof |
 |---|---|---|---|
-| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | the run's handoff judged on Unix (runs-11 slice (a), below); Windows' twin (b) and the other sites (c) still picked | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
+| `TAKE_TIMEOUT` 10 s (daemon.rs: run-socket writes, link and door handoffs, the connect/take exchange) | judged on Unix: the run's handoff (runs-11 slice (a), below) and a joiner's link and volumes to its join share (slice (c1)); still picked: Windows' twins (b), the run socket's writes, commands' answer wait and reclaim's note (c2) | Each is a write to, or an answer from, a VM whose party is its VM process. Each waits as D215's judge waits (`health::Wait::WhileRuns`), on a record of its own kind (`Answers::take`, `::link`, `::door`): cold while its process lives, then the slowest seen, extended by progress and host holds. | a judged-write helper beside `exec_waiting`; red: a played VM whose reader is held runnable past 10 s, alive, keeps its handoff; ROOT: `cargo test -p shards --profile test-release --test daemon` on a loaded host |
 | `TAKEOVER` 20 s (daemon.rs `take_lock`) | gone (runs-11, D185): waited for while the lock is held, judged once named by the home's slowest start | The lock's holder is the process `daemon.pid` names, written before any slot is offered. Wait while it lives (`Named::lives`, zombies now excluded, waits-08), judged by its record of a start, lock to first slot (`Answers::serve`). A holder that has written no `daemon.pid` yet is followed through its lock file's holder alone, cold. | red: a holder that lives and is slow to offer is waited for past 20 s, and one that died is not |
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
@@ -20722,6 +20731,20 @@ send and receive, judged), and the other `TAKE_TIMEOUT` sites, each with its kin
 ROOT, each phase's latency on a loaded host per platform (`cargo test -p shards --profile
 test-release --test daemon` through `docs/research/measurements/macos-sched/launchd-run.sh` on
 HVF, and on KVM and WHP), n, p50, p90, p99 and max.
+
+Slice (c1), 2026-11-14: a joiner's volumes on Unix (`give_join_volumes`, D119). The daemon's
+send of a joiner's link on its provider's join share's door (`JOIN_LINK`), and each volume on
+that link to the share's `TAKEN` (`give_join_volume`), waited at most `TAKE_TIMEOUT` (socket
+timeouts on the link and the door). Their party is the share's process, whose ID the door now
+keeps (`JoinDoor`): each is judged as the handoff is, by D215 on that process, by its own
+kind's record (`Answers::door`, the link's send; `Answers::link`, a volume sent to its
+`TAKEN`), cold on readiness and the process's end alone, `Stalled` typed; a door whose send
+ended so is let go of, and the next joiner's starts another share, as before. Their timeouts
+are deleted. Red: `a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it` (the share
+answering at 10.5 s, its process busy) by mutation restoring the 10 s read timeout;
+`a_join_share_that_runs_nothing_fails_the_volume` (a sleep as its process) by mutation
+never refusing. Owed to ROOT: a joiner's start with volumes on a loaded host
+(`cargo test -p shards --profile test-release --test daemon`, its join tests) on HVF and KVM.
 
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
@@ -33807,9 +33830,10 @@ seen on real runs:
       in place, which a failing test still shows as its home goes.
     - Literals: none. The bound is the caller's, the tail D12's; nothing learned, no cold start.
     - Tests (light): session.rs `a_bounded_diagnostics_file_is_cut_back_to_the_tail_and_grows_again`
-      (a file opened in place and one to append, each holding two bytes as named: within the
-      bound, at it, cut back to the tail at the part past it, grown again after, a part longer
-      than the tail) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
+      (a file opened in place and one to append, each holding two bytes, named through
+      `keep_diagnostics`: within the bound, at it, cut back to the tail at the part past it,
+      grown again after, a part longer than the tail; on Windows the one opened to append
+      refused `Os { kind: PermissionDenied }` as named and left as it was) and `a_diagnostics_bound_short_of_the_tail_is_refused_and_one_at_it_holds`
       (a bound one short of the tail refused typed, naming nothing; one at it, through the
       keeper's thread, the file never past it, ending as exactly the host's latest bytes).
       Run on adas-mac-studio-3.local (macOS arm64) on the merge 8f2440013 and its test fix
@@ -33818,9 +33842,15 @@ seen on real runs:
       unbounded test kept (`a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names`,
       `u64::MAX`); the bound's check dropped (m2: a part never passes it), the cut test failed at
       its cut; clippy of shards-api and shards clean, and Windows' (`cargo xwin clippy`, x86_64)
-      clean. Owed (ROOT): Windows' run of these tests (an append-only file there refused `Os` as
-      named, unexercised by a test: which a file's mode allows is the OS's), and api_image's
-      real-VM tests with a file per boot.
+      clean. On Windows (the Windows 11 guest on adacachy, x86_64-pc-windows-msvc, NTFS) the
+      cut test was red at 0004b5a1a through df2e693bd: it gave `Diagnostics` the append-only
+      file directly, past the check that refuses it, and its cut's `set_len(0)` failed with
+      ERROR_ACCESS_DENIED (5) at its write's unwrap. Readers were never refused: std opens with
+      `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE` (its `OpenOptions::new`). With the test naming each file
+      through `keep_diagnostics`, `cargo test -p shards-api --lib -- image::session::tests::`
+      passed 37 of 37 there, clippy -D warnings clean; the check's truncation dropped (the
+      mutant), it failed at its refusal, `Ok(())` for `Err(Os { PermissionDenied })`. Owed
+      (ROOT): api_image's real-VM tests with a file per boot.
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.

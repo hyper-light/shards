@@ -88,6 +88,14 @@ pub(crate) struct Plan {
     /// Its guest's architecture, and the snapshot format it was saved in.
     pub arch: String,
     pub format: u32,
+    /// The shards it was saved by (`snapshot::SAVED_BY`), and the contract its guest's init
+    /// speaks (`shards_abi::IDENTITY`): a machine whose shards speaks another refuses it
+    /// before anything moves (D176). None from a daemon of an earlier build, which is
+    /// refused as another's.
+    #[serde(default)]
+    pub saved_by: Option<String>,
+    #[serde(default)]
+    pub init: Option<u64>,
     /// The hypervisor it ran on (`hv::BACKEND`), whose own its snapshot's vCPUs, interrupt
     /// controller and devices are: none from a daemon of an earlier build, which said none.
     #[serde(default)]
@@ -366,6 +374,14 @@ pub(crate) enum Refused {
     },
     /// It was saved in a snapshot format this build does not read.
     Format { name: String, format: u32, here: u32 },
+    /// Its guest's init speaks the contract `init` of the shards `saved_by` (none from a
+    /// daemon of an earlier build, which said neither), where this machine's speaks `here`.
+    OlderInit {
+        name: String,
+        saved_by: Option<String>,
+        init: Option<u64>,
+        here: u64,
+    },
     /// This machine's hypervisor shows a guest less of each of these fields than the CPU
     /// baseline its guest was told.
     Cpu { name: String, short: Vec<CpuShort> },
@@ -613,6 +629,24 @@ impl std::fmt::Display for Refused {
                 f,
                 "{name} was saved in snapshot format {format}, and this machine's shards reads {here}"
             ),
+            Refused::OlderInit {
+                name,
+                saved_by,
+                init,
+                here,
+            } => write!(
+                f,
+                "{name} was saved by {}, whose shards-init ({}) cannot continue in this \
+                 machine's shards (contract {here:016x}): move it between machines of one \
+                 shards, or start it again there from its image",
+                saved_by
+                    .as_deref()
+                    .map_or_else(|| "an earlier shards".to_string(), |by| format!("shards {by}")),
+                init.map_or_else(
+                    || "contract unrecorded".to_string(),
+                    |init| format!("contract {init:016x}")
+                )
+            ),
             Refused::Cpu { name, short } => {
                 // Said as each architecture's `covers` says it: a baseline's shorts are one
                 // architecture's.
@@ -731,6 +765,17 @@ impl std::fmt::Display for Refused {
 /// before anything else is asked of it: a guest of another architecture, a machine of
 /// another hypervisor, a snapshot of another format. A plan of an earlier build names no
 /// hypervisor, and is taken as before, its restore refusing a state of another one.
+/// Why the machine moved to, whose shards-init speaks `here`, refuses a plan's guest: an
+/// init of another contract, or a plan that names none (D176).
+fn init_refused(plan: &Plan, here: u64) -> Option<Refused> {
+    (plan.init != Some(here)).then(|| Refused::OlderInit {
+        name: plan.name.clone(),
+        saved_by: plan.saved_by.clone(),
+        init: plan.init,
+        here,
+    })
+}
+
 fn platform_refused(plan: &Plan, arch: &str, hypervisor: Option<&str>, format: u32) -> Option<Refused> {
     let name = plan.name.clone();
     if plan.arch != arch {
@@ -1530,6 +1575,10 @@ impl<D: Disk> Daemon<D> {
             image_id: c.image_id.clone(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            // Its guest's init is this build's: it runs under this daemon, or its snapshot
+            // was found resumable here.
+            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
+            init: Some(shards_abi::IDENTITY),
             hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot,
             home: home.to_string_lossy().into_owned(),
@@ -1769,6 +1818,10 @@ impl<D: Disk> Daemon<D> {
             image_id: c.image_id.clone(),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            // Its guest's init is this build's: it runs under this daemon, or its snapshot
+            // was found resumable here.
+            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
+            init: Some(shards_abi::IDENTITY),
             hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot: snapshot.to_string(),
             home: home.to_string_lossy().into_owned(),
@@ -1948,6 +2001,9 @@ impl<D: Disk> Daemon<D> {
         let plan: Plan = serde_json::from_str(plan).map_err(|e| format!("the move's plan: {e}"))?;
         let name = || plan.name.clone();
         if let Some(refused) = names_refused(&plan) {
+            return Err(refused.into());
+        }
+        if let Some(refused) = init_refused(&plan, shards_abi::IDENTITY) {
             return Err(refused.into());
         }
         if let Some(refused) = platform_refused(
@@ -2547,6 +2603,10 @@ mod tests {
             image_id: format!("sha256:{}", "b".repeat(64)),
             arch: std::env::consts::ARCH.into(),
             format: shards_vmm::snapshot::FORMAT,
+            // Its guest's init is this build's: it runs under this daemon, or its snapshot
+            // was found resumable here.
+            saved_by: Some(shards_vmm::snapshot::SAVED_BY.to_string()),
+            init: Some(shards_abi::IDENTITY),
             hypervisor: shards_vmm::hv::BACKEND.map(str::to_string),
             snapshot: "s1".into(),
             home: "/h".into(),
@@ -2566,6 +2626,55 @@ mod tests {
             network: String::new(),
             key: None,
         }
+    }
+
+    /// A machine whose shards-init speaks another contract refuses a moved guest's, naming
+    /// the shards it was saved by, before anything moves; so does one of a plan that names
+    /// none, a daemon of an earlier build's. Red before the plan carried them, where only a
+    /// differing snapshot format refused it, and an init of another build with this format
+    /// was taken.
+    #[test]
+    fn a_guest_whose_init_is_another_builds_is_refused_before_anything_moves() {
+        let here = shards_abi::IDENTITY;
+        assert_eq!(init_refused(&plan(), here), None);
+        let refused = init_refused(&plan(), here ^ 1).unwrap();
+        assert_eq!(
+            refused,
+            Refused::OlderInit {
+                name: "web".into(),
+                saved_by: Some(shards_vmm::snapshot::SAVED_BY.into()),
+                init: Some(here),
+                here: here ^ 1,
+            }
+        );
+        let said = refused.to_string();
+        assert!(
+            said.starts_with(&format!(
+                "web was saved by shards {}, ",
+                shards_vmm::snapshot::SAVED_BY
+            )),
+            "{said}"
+        );
+        let mut earlier = serde_json::to_value(plan()).unwrap();
+        let fields = earlier.as_object_mut().unwrap();
+        fields.remove("saved_by");
+        fields.remove("init");
+        let earlier: Plan = serde_json::from_value(earlier).unwrap();
+        let refused = init_refused(&earlier, here).unwrap();
+        assert!(matches!(
+            refused,
+            Refused::OlderInit {
+                saved_by: None,
+                init: None,
+                ..
+            }
+        ));
+        assert!(
+            refused.to_string().contains("saved by an earlier shards"),
+            "{refused}"
+        );
+        let wire: Refused = serde_json::from_str(&serde_json::to_string(&refused).unwrap()).unwrap();
+        assert_eq!(wire, refused);
     }
 
     /// A microVM of another architecture, hypervisor or snapshot format is refused, each by

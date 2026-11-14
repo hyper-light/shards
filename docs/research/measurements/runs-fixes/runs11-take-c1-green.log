@@ -1,0 +1,21 @@
+# runs-11 TAKE_TIMEOUT slice (c1), green on 78b7c630a (over main 1af3cdb70), macOS arm64, adas-mac-studio-3.local, kiln r457
+## cargo test -p shards --bin shards -- daemon::tests::a_join daemon::tests::a_vm daemon::tests::a_handed_over
+running 15 tests
+test daemon::tests::a_vm_that_ended_with_its_run_unread_surely_never_took_it ... ok
+test daemon::tests::a_vm_gone_before_the_wait_surely_never_took_the_run ... ok
+test daemon::tests::a_vm_that_ends_before_taking_a_run_fails_the_hand_over ... ok
+test daemon::tests::a_vm_that_answers_otherwise_may_have_taken_the_run ... ok
+test daemon::tests::a_vms_windows_keep_every_range_within_the_hosts_mappings ... ok
+test daemon::tests::a_vm_no_watcher_takes_is_ended_and_its_network_process_reaped ... ok
+test daemon::tests::a_vm_stopped_partway_through_a_message_holds_up_no_command ... ok
+test daemon::tests::a_vms_pid_is_kept_until_its_ports_are_freed ... ok
+test daemon::tests::a_joiner_and_its_provider_in_one_group_count_their_vm_process_once ... ok
+test daemon::tests::a_handed_over_connection_survives_until_taken ... ok
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... ok
+test daemon::tests::a_join_share_that_runs_nothing_fails_the_volume ... ok
+test daemon::tests::a_vm_ended_before_it_is_followed_is_reaped ... ok
+test daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it ... ok
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 954 filtered out; finished in 10.62s
+## cargo clippy -p shards --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 48.56s

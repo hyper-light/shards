@@ -1,0 +1,30 @@
+## mut-c1-1 (the 10 s read timeout and a plain recv back in give_join_volume): cargo test -p shards --bin shards -- daemon::tests::a_join_share
+running 2 tests
+test daemon::tests::a_join_share_that_runs_nothing_fails_the_volume ... FAILED
+test daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it ... FAILED
+failures:
+---- daemon::tests::a_join_share_that_runs_nothing_fails_the_volume stdout ----
+thread 'daemon::tests::a_join_share_that_runs_nothing_fails_the_volume' (21141352) panicked at crates/shards/src/daemon.rs:14898:13:
+its microVM's join share: operation would block
+---- daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it stdout ----
+thread 'daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it' (21141351) panicked at crates/shards/src/daemon.rs:14871:13:
+assertion `left == right` failed
+  left: Err("its microVM's join share: operation would block")
+ right: Ok(())
+failures:
+    daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it
+    daemon::tests::a_join_share_that_runs_nothing_fails_the_volume
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 967 filtered out; finished in 10.58s
+error: test failed, to rerun pass `-p shards --bin shards`
+## mut-c1-2 (give_join_volume's judge never refusing): cargo test -p shards --bin shards -- daemon::tests::a_join_share
+running 2 tests
+test daemon::tests::a_join_share_that_runs_nothing_fails_the_volume ... FAILED
+test daemon::tests::a_join_share_slow_to_take_a_volume_while_it_runs_keeps_it ... ok
+failures:
+---- daemon::tests::a_join_share_that_runs_nothing_fails_the_volume stdout ----
+thread 'daemon::tests::a_join_share_that_runs_nothing_fails_the_volume' (21142828) panicked at crates/shards/src/daemon.rs:14894:31:
+a share that ran nothing was waited for on: Timeout
+failures:
+    daemon::tests::a_join_share_that_runs_nothing_fails_the_volume
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 967 filtered out; finished in 10.51s
+error: test failed, to rerun pass `-p shards --bin shards`
