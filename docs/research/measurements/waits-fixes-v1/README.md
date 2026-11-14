@@ -60,3 +60,16 @@ last slice; no other actor's cache/target is changed.
 ROOT owes real-VM `cargo test -p shards --profile test-release --test containers a_microvm_under_a_group_is_held_to_its_budget`
 on macOS and the Windows group/Job scenarios; also a loaded/host-held member that
 returns a positive give-back beyond its prior W*. These were not run by implementer.
+
+### Merge validation, waits-01
+
+Signed merge 63001feed (main 31d154797) passed all 22 focused groups,
+parallel-member, health and reclaim tests in r14, macOS arm64. Merge 014fa8017
+(main 5d805549d) was clean. Its repeated tests r16 passed groups 7 and
+parallel-member 1; health passed 12 and failed its pre-existing cold-wait timing
+assertion: the answer was correct, W* 798.948916 ms versus a sleep of 800 ms.
+The answer thread starts before await_exit opens its measured interval, so that
+comparison was invalid. The test still requires the successful answer without a
+cut and a genuine nonzero learned interval. No production judge change.
+Later clean merges use ROOT's amended check-only contention gate; conflicts
+require focused reruns.

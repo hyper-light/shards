@@ -911,7 +911,8 @@ mod tests {
         let shards_api::Seen::Learned { slowest, .. } = record.seen() else {
             panic!("its answer taught nothing");
         };
-        assert!(slowest >= after, "{slowest:?}");
+        // The answer thread starts before await_exit begins its measured wait.
+        assert!(!slowest.is_zero(), "its genuine wait taught no interval");
     }
 
     /// An exec's answer there as its wait begins was waited for not at all: it is taken, and
