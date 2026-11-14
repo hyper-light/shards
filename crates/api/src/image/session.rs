@@ -742,13 +742,14 @@ impl Begun {
         warmed
     }
 
-    /// Waits at most `patience` for the start of the run `request` it was sent: the run's
+    /// Sends CREATE under `stop`, then waits at most `patience` for the run's start: the run's
     /// session; else why not, the host ended, and whether it refused the run as one of
     /// another microVM's than its warm one (`Cause::Unfit`, D253's pools). `stop` holds the
     /// host meanwhile: stopped, it kills the host and all the host started, and the run is
     /// `Ended(Stopped)` once they are gone.
     pub(super) fn started(
         mut self,
+        lessor: Option<RunLessor>,
         request: &wire::Request,
         patience: Duration,
         stop: &super::BootStop,
@@ -757,7 +758,6 @@ impl Begun {
         // start.
         self.armed = false;
         let (shared, host) = (self.shared.clone(), self.host.clone());
-        drop(self);
         let end_it = |shared: &Shared| {
             kill(&host);
             lock(&shared.to_host).take();
@@ -767,31 +767,38 @@ impl Begun {
             end_it(&shared);
             return Err((e, false));
         }
+        // Registration precedes CREATE's potentially blocking write. A stop kills
+        // the reader independently of the writer mutex, unblocking this send.
+        let created = self.create(lessor, request);
+        drop(self);
         // Started, refused, or gone: whichever comes first, within the caller's patience. A
         // refusal is the host's last word, told once it has exited and said all it will.
-        let outcome = shared.wait(patience, |s| {
-            if s.refused.is_some() {
-                if !(s.gone() && s.said_all) {
-                    return None;
+        let outcome = match created {
+            Err(e) => Some(Err(e)),
+            Ok(()) => shared.wait(patience, |s| {
+                if s.refused.is_some() {
+                    if !(s.gone() && s.said_all) {
+                        return None;
+                    }
+                    return s.refused.take().map(|r| Err(with_said(r, &s.said)));
                 }
-                return s.refused.take().map(|r| Err(with_said(r, &s.said)));
-            }
-            if let Some(started) = s.started.take() {
-                return Some(Ok(started));
-            }
-            if let Some(end) = &s.end {
-                return Some(Err(ImageRefusal::Host(format!(
-                    "the run ended before it started: {end:?}{}",
-                    quoted(&s.said)
-                ))));
-            }
-            s.gone().then(|| {
-                Err(ImageRefusal::Host(format!(
-                    "it exited before its run started{}",
-                    quoted(&s.said)
-                )))
-            })
-        });
+                if let Some(started) = s.started.take() {
+                    return Some(Ok(started));
+                }
+                if let Some(end) = &s.end {
+                    return Some(Err(ImageRefusal::Host(format!(
+                        "the run ended before it started: {end:?}{}",
+                        quoted(&s.said)
+                    ))));
+                }
+                s.gone().then(|| {
+                    Err(ImageRefusal::Host(format!(
+                        "it exited before its run started{}",
+                        quoted(&s.said)
+                    )))
+                })
+            }),
+        };
         if stop.release() {
             end_it(&shared);
             // On Windows every process of the host's group followed to its end, its handle
@@ -919,11 +926,12 @@ impl super::pool::Hosts for ShardsHosts {
         stop: &super::BootStop,
     ) -> Result<Box<dyn ImageGuest>, super::pool::Taken> {
         use super::pool::Taken;
-        if let Err(e) = warm.create(spec.lessor.clone(), request) {
-            warm.end();
-            return Err(Taken::Refused(e));
+        // No CREATE has been attempted: this terminal spare cannot have this run.
+        // Check both the watcher and the unreaped process so either ordering is safe.
+        if lock(&warm.shared.state).exited || warm.host.has_ended() {
+            return Err(Taken::Untaken);
         }
-        match warm.started(request, patience, stop) {
+        match warm.started(spec.lessor.clone(), request, patience, stop) {
             Ok(session) => Ok(Box::new(session)),
             Err((_, true)) => Err(Taken::Unfit),
             Err((refused, false)) => Err(Taken::Refused(refused)),
@@ -960,9 +968,8 @@ impl Session {
         stop: &super::BootStop,
     ) -> Result<Session, ImageRefusal> {
         let begun = Begun::begin(spec.binary.as_deref(), &spec.env)?;
-        begun.create(spec.lessor.clone(), request)?;
         begun
-            .started(request, patience, stop)
+            .started(spec.lessor.clone(), request, patience, stop)
             .map_err(|(refused, _)| refused)
     }
 
@@ -3617,6 +3624,104 @@ mod tests {
         tail -f /dev/null >\"$VM_SEEN\" 3>&- &\n\
         echo \"$!\" >&3\n\
         wait\n";
+
+    /// A valid CREATE can fill the pipe before STARTED waits begin. Its stop must own
+    /// the host during that write, even when the host never reads any of it.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_cancels_a_create_whose_host_never_reads() {
+        use super::super::pool::Hosts;
+        let dir = shards_testdir::TempDir::new("bwrite").unwrap();
+        let host = stand_in(dir.path(), "#!/bin/sh\nexec tail -f /dev/null\n");
+        let spec = stand_in_spec(&host, Vec::new());
+        let mut request = super::super::request(&spec).unwrap();
+        request.members.push(wire::MemberStage {
+            kind: wire::MemberKind::Agent,
+            name: "writer".into(),
+            env: Vec::new(),
+            files: vec![wire::StagedFile {
+                path: "stage".into(),
+                mode: 0o600,
+                bytes: wire::Secret(vec![b'x'; shards_abi::run::MAX_PAYLOAD as usize / 2]),
+            }],
+            workdir: None,
+            input: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        });
+        request.encode().unwrap();
+        let begun = Begun::begin(Some(&host), &[]).unwrap();
+        let process = begun.process();
+        let shared = begun.shared.clone();
+        let stop = super::super::BootStop::new();
+        let (sent, answered) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let outcome = ShardsHosts.take(begun, &spec, &request, BOOT_BOUND, &stop);
+                sent.send(outcome.map(drop)).unwrap();
+            });
+            // Once this mutex is held, CREATE is writing. The host reads nothing, so
+            // the protocol-sized staged file keeps it held until its process ends.
+            let until = Instant::now() + BOOT_BOUND;
+            loop {
+                if matches!(
+                    shared.to_host.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ) {
+                    break;
+                }
+                assert!(Instant::now() < until, "CREATE never began");
+                std::thread::yield_now();
+            }
+            stop.stop();
+            let outcome = answered.recv_timeout(BOOT_BOUND);
+            // Clean up a broken cancellation before asserting: the red must leave no
+            // blocked writer or host behind, and never resume the host's reader.
+            if outcome.is_err() {
+                kill(&process);
+                let _ = answered.recv_timeout(BOOT_BOUND);
+            }
+            assert!(
+                matches!(
+                    outcome,
+                    Ok(Err(super::super::pool::Taken::Refused(ImageRefusal::Ended(
+                        RunEnded {
+                            end: RunEnd::Stopped,
+                            ..
+                        }
+                    ))))
+                ),
+                "blocked CREATE did not end stopped: {outcome:?}"
+            );
+        });
+        assert!(
+            shared
+                .wait(BOOT_BOUND, |s| (s.gone() && s.said_all).then_some(()))
+                .is_some()
+        );
+    }
+
+    /// A host can die after WARMED while idle; it never received CREATE for this run.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_warm_host_is_definitely_untaken() {
+        use super::super::pool::{Hosts, Taken};
+        let dir = shards_testdir::TempDir::new("deadwarm").unwrap();
+        let frame = wire::frame(wire::to_client::WARMED, &wire::warmed(wire::StartedFrom::Booted)).unwrap();
+        let octal: String = frame.iter().map(|b| format!("\\{b:03o}")).collect();
+        let host = stand_in(dir.path(), &format!("#!/bin/sh\nprintf '{octal}'\nexit 0\n"));
+        let spec = stand_in_spec(&host, Vec::new());
+        let request = super::super::request(&spec).unwrap();
+        let warm = Begun::begin(Some(&host), &[]).unwrap();
+        assert_eq!(warm.warmed().unwrap(), wire::StartedFrom::Booted);
+        assert!(warm.shared.wait(BOOT_BOUND, |s| s.gone().then_some(())).is_some());
+        let taken = ShardsHosts.take(warm, &spec, &request, BOOT_BOUND, &super::super::BootStop::new());
+        assert!(
+            matches!(taken, Err(Taken::Untaken)),
+            "dead spare was not safely retryable"
+        );
+    }
 
     /// A home whose `layers` holds a file of a run host other than any these tests start
     /// (this process's own pid's): the one a sweep of a host's layers leaves.

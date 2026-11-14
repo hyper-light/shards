@@ -155,29 +155,8 @@ fn read_baseline(at: &Path) -> shards_vmm::arch::cpu::Id {
         .unwrap_or_default()
 }
 
-/// The register of each feature macOS names (`hw.optional.arm.FEAT_*`, [`host_cpu`]) that
-/// its field is in (Arm ARM DDI 0487, the ID_AA64* registers' fields): a baseline that
-/// names the register masks the feature where it is lower, and a feature whose register
-/// the baseline does not name (ISAR2's, which Hypervisor.framework neither says nor lets a
-/// VMM set, PM M460) is the guest's whatever the baseline says, and checked by name.
 #[cfg(target_arch = "aarch64")]
-fn feature_register(feature: &str) -> Option<u16> {
-    Some(match feature {
-        "FEAT_CSV2" | "FEAT_CSV3" | "FEAT_DIT" | "FEAT_FP16" => 0xc020,
-        "FEAT_SSBS" | "FEAT_BTI" => 0xc021,
-        "FEAT_CRC32" | "FEAT_FlagM" | "FEAT_FlagM2" | "FEAT_FHM" | "FEAT_DotProd" | "FEAT_SHA3"
-        | "FEAT_RDM" | "FEAT_LSE" | "FEAT_SHA256" | "FEAT_SHA512" | "FEAT_SHA1" | "FEAT_AES"
-        | "FEAT_PMULL" => 0xc030,
-        "FEAT_SPECRES" | "FEAT_SPECRES2" | "FEAT_SB" | "FEAT_FRINTTS" | "FEAT_PACIMP" | "FEAT_LRCPC"
-        | "FEAT_LRCPC2" | "FEAT_FCMA" | "FEAT_JSCVT" | "FEAT_PAuth" | "FEAT_PAuth2" | "FEAT_FPAC"
-        | "FEAT_FPACCOMBINE" | "FEAT_DPB" | "FEAT_DPB2" | "FEAT_BF16" | "FEAT_EBF16" | "FEAT_I8MM" => 0xc031,
-        "FEAT_WFxT" | "FEAT_RPRES" | "FEAT_CSSC" | "FEAT_HBC" => 0xc032,
-        "FEAT_ECV" => 0xc038,
-        "FEAT_AFP" => 0xc039,
-        "FEAT_LSE2" => 0xc03a,
-        _ => return None,
-    })
-}
+use shards_vmm::arch::aarch64::cpu::feature_register;
 
 /// The features of `ran_on` a guest told `baseline` may still have used: those whose
 /// register the baseline does not name, and every one where it is none.
@@ -1131,69 +1110,83 @@ pub(crate) fn read_entries(
 /// to be one [`relative`] takes, and to be one the plan allows (`allowed`), made new, never
 /// over anything there; each made and given what its guest saw ([`guest::set`]) as the
 /// share server makes and keeps a guest's, so that this host's server shows it the same.
+/// Each is reached from `root` held open, a component at a time, through no symlink
+/// ([`guest::Beneath`]): a stream's link is data, and what it names below one is refused,
+/// never made where the link leads. A link is taken only where a guest makes one, in a
+/// volume's files (`links`): shards makes none in a microVM's own directory or the files
+/// its snapshot restores against, which a move's later steps reach by their paths.
 /// A directory is given its own once all it holds is in it ([`Placer::finish`]), so that a
 /// mode that keeps its owner out (a guest's `0555`, kept as such where no owner of it is
 /// recorded) is no bar to what goes in it.
 struct Placer<'a> {
-    root: &'a Path,
+    root: guest::Beneath,
+    shown: &'a Path,
     allowed: &'a dyn Fn(&str) -> bool,
+    links: &'a dyn Fn(&str) -> bool,
     dirs: Vec<(PathBuf, guest::Meta)>,
 }
 
 impl<'a> Placer<'a> {
-    fn new(root: &'a Path, allowed: &'a dyn Fn(&str) -> bool) -> Placer<'a> {
-        Placer {
-            root,
+    fn new(
+        root: &'a Path,
+        allowed: &'a dyn Fn(&str) -> bool,
+        links: &'a dyn Fn(&str) -> bool,
+    ) -> Result<Placer<'a>, String> {
+        Ok(Placer {
+            root: guest::Beneath::open(root).map_err(|e| format!("{}: {e}", root.display()))?,
+            shown: root,
             allowed,
+            links,
             dirs: Vec::new(),
-        }
+        })
     }
 
+    /// `rel` as this host's components beneath the root, where the plan allows it.
     fn path(&self, rel: &str) -> Result<PathBuf, String> {
         if !(self.allowed)(rel) {
             return Err(format!(
                 "the move's stream holds {rel}, which its plan does not name"
             ));
         }
-        Ok(self.root.join(relative(rel)?))
+        relative(rel)
     }
 
     fn take(&mut self, entry: Entry<'_>) -> Result<(), String> {
-        let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", p.display());
+        let shown = self.shown;
+        let at = |p: &Path, e: &dyn std::fmt::Display| format!("{}: {e}", shown.join(p).display());
         match entry {
             Entry::Dir { rel, meta } => {
                 let path = self.path(&rel)?;
-                make_parent(&path)?;
-                guest::make_dir(&path).map_err(|e| at(&path, &e))?;
+                self.root.make_dir(&parts(&path)).map_err(|e| at(&path, &e))?;
                 self.dirs.push((path, meta));
                 Ok(())
             }
             Entry::Link { rel, target, meta } => {
                 let path = self.path(&rel)?;
-                make_parent(&path)?;
-                guest::make_link(&path, target.as_bytes()).map_err(|e| at(&path, &e))?;
-                guest::set(&path, &meta).map_err(|e| at(&path, &e))
+                if !(self.links)(&rel) {
+                    return Err(format!(
+                        "the move's stream holds a symlink at {rel}, where only a volume's files hold one"
+                    ));
+                }
+                let parts = parts(&path);
+                self.root
+                    .make_link(&parts, target.as_bytes())
+                    .map_err(|e| at(&path, &e))?;
+                self.root.set(&parts, &meta).map_err(|e| at(&path, &e))
             }
             Entry::Node { rel, meta } => {
                 let path = self.path(&rel)?;
-                make_parent(&path)?;
-                guest::make_node(&path, &meta).map_err(|e| at(&path, &e))?;
-                guest::set(&path, &meta).map_err(|e| at(&path, &e))
+                let parts = parts(&path);
+                self.root.make_node(&parts, &meta).map_err(|e| at(&path, &e))?;
+                self.root.set(&parts, &meta).map_err(|e| at(&path, &e))
             }
             Entry::File { rel, meta, len, runs } => {
                 if meta.mode & guest::S_IFMT != guest::S_IFREG {
                     return Err(format!("{rel}: a file of mode {:o}", meta.mode));
                 }
                 let path = self.path(&rel)?;
-                make_parent(&path)?;
-                let file = crate::os::owner_only(
-                    std::fs::OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create_new(true),
-                )
-                .open(&path)
-                .map_err(|e| at(&path, &e))?;
+                let parts = parts(&path);
+                let file = self.root.make_file(&parts).map_err(|e| at(&path, &e))?;
                 shards_vmm::platform::make_sparse(&file).map_err(|e| at(&path, &e))?;
                 file.set_len(len).map_err(|e| at(&path, &e))?;
                 runs(&mut |offset, bytes| {
@@ -1206,7 +1199,7 @@ impl<'a> Placer<'a> {
                 })
                 .map_err(|e| at(&path, &e))?;
                 drop(file);
-                guest::set(&path, &meta).map_err(|e| at(&path, &e))
+                self.root.set(&parts, &meta).map_err(|e| at(&path, &e))
             }
         }
     }
@@ -1215,17 +1208,17 @@ impl<'a> Placer<'a> {
     /// entries are all in place.
     fn finish(self) -> Result<(), String> {
         for (path, meta) in self.dirs.iter().rev() {
-            guest::set(path, meta).map_err(|e| format!("{}: {e}", path.display()))?;
+            self.root
+                .set(&parts(path), meta)
+                .map_err(|e| format!("{}: {e}", self.shown.join(path).display()))?;
         }
         Ok(())
     }
 }
 
-fn make_parent(path: &Path) -> Result<(), String> {
-    match path.parent() {
-        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display())),
-        None => Ok(()),
-    }
+/// `rel`'s components, as [`guest::Beneath`] takes them.
+fn parts(rel: &Path) -> Vec<&std::ffi::OsStr> {
+    rel.iter().collect()
 }
 
 /// Where in a home a move's stream may put what it holds: the microVM's own directory, its
@@ -1235,6 +1228,15 @@ fn allowed(plan: &Plan, needed: &BTreeSet<String>, rel: &str) -> bool {
     under(&format!("containers/{}", plan.id))
         || plan.volumes.iter().any(|v| under(&format!("volumes/{v}")))
         || needed.contains(rel)
+}
+
+/// Where a move's stream may put a symlink: in a volume's files, where its guest made it.
+/// Nowhere else holds one shards made, and a move's later steps reach a microVM's own
+/// directory and the files its snapshot restores against by their paths.
+fn holds_links(plan: &Plan, rel: &str) -> bool {
+    plan.volumes
+        .iter()
+        .any(|v| rel.starts_with(&format!("volumes/{v}/_data/")))
 }
 
 impl<D: Disk> Daemon<D> {
@@ -2017,7 +2019,8 @@ impl<D: Disk> Daemon<D> {
         let plan = read_plan(&mut rest)?;
         let needed: BTreeSet<String> = plan.files.iter().map(|f| f.rel.clone()).collect();
         let allows = |rel: &str| allowed(&plan, &needed, rel);
-        let mut placer = Placer::new(staging.path(), &allows);
+        let links = |rel: &str| holds_links(&plan, rel);
+        let mut placer = Placer::new(staging.path(), &allows, &links)?;
         read_entries(&mut rest, &mut |entry| placer.take(entry))?;
         placer.finish()?;
         self.adopt(&plan, staging.path(), precopied.as_ref())
@@ -2789,7 +2792,7 @@ mod tests {
     }
 
     /// A tree written as a move's stream reads back whole, a sparse file as sparse, its
-    /// modes and links with it; and its names are only those its plan allows.
+    /// modes with it; and its names are only those its plan allows.
     #[test]
     fn a_tree_moves_whole_and_as_sparse() {
         let from = shards_testdir::TempDir::new("mv-from").unwrap();
@@ -2807,7 +2810,6 @@ mod tests {
         shards_vmm::platform::write_all_at(&sparse, b"head", 0).unwrap();
         shards_vmm::platform::write_all_at(&sparse, b"tail", (64 << 20) - 4).unwrap();
         drop(sparse);
-        guest::make_link(&own.join("link"), b"config.json").unwrap();
         let mut bytes = Vec::new();
         {
             let mut w = Writer::new(&mut bytes, &p).unwrap();
@@ -2826,7 +2828,8 @@ mod tests {
         let to = shards_testdir::TempDir::new("mv-to").unwrap();
         let needed: BTreeSet<String> = p.files.iter().map(|f| f.rel.clone()).collect();
         let allows = |rel: &str| allowed(&p, &needed, rel);
-        let mut placer = Placer::new(&to, &allows);
+        let links = |rel: &str| holds_links(&p, rel);
+        let mut placer = Placer::new(&to, &allows, &links).unwrap();
         let mut input = bytes.as_slice();
         assert_eq!(read_plan(&mut input).unwrap(), p);
         read_entries(&mut input, &mut |e| placer.take(e)).unwrap();
@@ -2838,12 +2841,11 @@ mod tests {
         assert_eq!(memory.len(), 64 << 20);
         assert_eq!(&memory[..4], b"head");
         assert_eq!(&memory[(64 << 20) - 4..], b"tail");
-        assert_eq!(guest::read_link(&there.join("link")).unwrap(), b"config.json");
         // Cut short, it is refused.
         let mut cut = &bytes[..bytes.len() - 1];
         let elsewhere = shards_testdir::TempDir::new("mv-cut").unwrap();
         let anything = |_: &str| true;
-        let mut placer = Placer::new(&elsewhere, &anything);
+        let mut placer = Placer::new(&elsewhere, &anything, &anything).unwrap();
         read_plan(&mut cut).unwrap();
         assert!(read_entries(&mut cut, &mut |e| placer.take(e)).is_err());
     }
@@ -2915,7 +2917,8 @@ mod tests {
         let to = shards_testdir::TempDir::new("mv-vto").unwrap();
         let needed = BTreeSet::new();
         let allows = |rel: &str| allowed(&p, &needed, rel);
-        let mut placer = Placer::new(&to, &allows);
+        let links = |rel: &str| holds_links(&p, rel);
+        let mut placer = Placer::new(&to, &allows, &links).unwrap();
         let mut input = bytes.as_slice();
         read_plan(&mut input).unwrap();
         read_entries(&mut input, &mut |e| placer.take(e)).unwrap();
@@ -2956,5 +2959,106 @@ mod tests {
         );
         assert_eq!(rel_of(Path::new("/h"), Path::new("/other/x")), None);
         assert_eq!(rel_of(Path::new("/h"), Path::new("/h")), None);
+    }
+
+    /// A stream's symlink is data, never a way out of the move's directory (migrate-01): no
+    /// entry below one, by an absolute or a relative target, is made where the link leads
+    /// (a file, a directory, a node, or a link), and the volume's link itself stays, as
+    /// its guest made it. And a link is taken only in a volume's files: one in the
+    /// microVM's own directory, which a move's later steps write by path, or at a file
+    /// its snapshot restores against, is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_streams_symlinks_never_lead_out_of_its_directory() {
+        let p = plan();
+        let needed: BTreeSet<String> = p.files.iter().map(|f| f.rel.clone()).collect();
+        let allows = |rel: &str| allowed(&p, &needed, rel);
+        let links = |rel: &str| holds_links(&p, rel);
+        let top = shards_testdir::TempDir::new("mv-esc").unwrap();
+        let to = top.join("move");
+        let outside = top.join("outside");
+        std::fs::create_dir(&to).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let meta = |mode: u32| guest::Meta {
+            mode,
+            ..guest::Meta::default()
+        };
+        let link = |rel: &str, target: &str| Entry::Link {
+            rel: rel.into(),
+            target: target.into(),
+            meta: meta(guest::S_IFLNK | 0o777),
+        };
+        let mut placer = Placer::new(&to, &allows, &links).unwrap();
+        let data = "volumes/data/_data";
+        placer
+            .take(link(&format!("{data}/abs"), outside.to_str().unwrap()))
+            .unwrap();
+        // From the volume's files up to the test's own directory: move/volumes/data/_data/.
+        placer
+            .take(link(&format!("{data}/rel"), "../../../../outside"))
+            .unwrap();
+        for via in ["abs", "rel"] {
+            let bytes = b"from the other machine";
+            let mut runs = |put: &mut dyn FnMut(u64, &[u8]) -> io::Result<()>| put(0, bytes);
+            let file = Entry::File {
+                rel: format!("{data}/{via}/new-file"),
+                meta: meta(guest::S_IFREG | 0o755),
+                len: bytes.len() as u64,
+                runs: &mut runs,
+            };
+            let placed = placer.take(file);
+            assert!(
+                !outside.join("new-file").exists(),
+                "made outside the move's directory through {via}"
+            );
+            let refused = placed.unwrap_err();
+            assert!(refused.contains("no directory of its own"), "{refused}");
+            for entry in [
+                Entry::Dir {
+                    rel: format!("{data}/{via}/dir"),
+                    meta: meta(guest::S_IFDIR | 0o755),
+                },
+                Entry::Node {
+                    rel: format!("{data}/{via}/fifo"),
+                    meta: meta(guest::S_IFIFO | 0o644),
+                },
+                link(&format!("{data}/{via}/link"), "/"),
+                Entry::Dir {
+                    rel: format!("{data}/{via}/deeper/dir"),
+                    meta: meta(guest::S_IFDIR | 0o755),
+                },
+            ] {
+                assert!(placer.take(entry).is_err(), "{via}");
+            }
+        }
+        placer.finish().unwrap();
+        let left: Vec<_> = std::fs::read_dir(&outside).unwrap().collect();
+        assert!(left.is_empty(), "made outside the move's directory: {left:?}");
+        let there = to.join(data);
+        assert_eq!(
+            guest::read_link(&there.join("abs")).unwrap(),
+            outside.as_os_str().as_encoded_bytes()
+        );
+        assert_eq!(
+            guest::read_link(&there.join("rel")).unwrap(),
+            b"../../../../outside"
+        );
+
+        // Nowhere but a volume's files: not the microVM's own directory, nor a file its
+        // snapshot restores against, nor a volume's own directory beside its files.
+        let mut placer = Placer::new(&to, &allows, &links).unwrap();
+        let victim = outside.join("victim");
+        for rel in [
+            format!("containers/{}/{KEY_REPLACED}", p.id),
+            format!("containers/{}", p.id),
+            "images/x.erofs".to_string(),
+            "volumes/data/_data".to_string(),
+            "volumes/data/opts".to_string(),
+        ] {
+            let refused = placer.take(link(&rel, victim.to_str().unwrap())).unwrap_err();
+            assert!(refused.contains("only a volume's files"), "{rel}: {refused}");
+            let kept = std::fs::symlink_metadata(to.join(&rel));
+            assert!(kept.is_err() || kept.unwrap().is_dir(), "{rel}");
+        }
     }
 }

@@ -855,10 +855,10 @@ fn undoes_nesting(setup: &[Vec<u8>]) -> Option<String> {
 
 /// Init's part of a run's nesting grant (D234), before any process of its command is born:
 /// its own check against the image as built (D109), which must declare `NESTING` and no
-/// agent or harness; the command kept in a cgroup namespace of its own, whose root's limits
-/// nsdelegate keeps init's; `fs.nr_open` raised to the run's own `--ulimit nofile` hard
-/// limit, where that is higher, a limit past the kernel's ceiling refused; and the leaf the
-/// command starts in.
+/// agent or harness; `fs.nr_open` raised to the run's own `--ulimit nofile` hard limit,
+/// where that is higher, a limit past the kernel's ceiling refused; and the subtree the
+/// command is given beneath the workload's cgroup, with the leaf it starts in, which its
+/// standby enters (`setup::delegate`) in a cgroup namespace rooted at the subtree.
 fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
     crate::domains::nesting().map_err(|refused| setup_failed(refused.to_string()))?;
     if let Some(why) = undoes_nesting(setup) {
@@ -876,12 +876,15 @@ fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
             return Err(setup_failed(crate::setup::nr_open_refused(asked, ceiling)));
         }
     }
-    match std::fs::create_dir(workload_leaf()) {
-        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(setup_failed(format!(
-            "making the leaf of the command's cgroup, {LEAF}: {e}"
-        ))),
-        _ => Ok(()),
+    for dir in [delegated_in(WORKLOAD_CGROUP), workload_leaf()] {
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(setup_failed(format!("making the command's cgroup {dir}: {e}")));
+            }
+            _ => {}
+        }
     }
+    Ok(())
 }
 
 /// A spec's setup entries as init sorts them: the standby's own, and its microVM's
@@ -1234,14 +1237,23 @@ pub fn joiner_path(id: impl std::fmt::Display) -> String {
     format!("{RUN_PATH}/join-{id}")
 }
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/run/workload";
-/// The leaf of the workload's cgroup that its command starts in under the nesting grant
-/// (D234), and each of its execs joins: the name moby's hack/dind gives the leaf a nested
-/// runtime moves itself into (f35).
+/// The subtree of the workload's cgroup that its command is given under the nesting grant
+/// (D234), its cgroup namespace's root: beneath the workload's cgroup, which keeps its
+/// device program and limits out of the command's reach (inithex-01).
+pub const DELEGATED: &str = "delegated";
+/// The leaf of [`DELEGATED`] that the command starts in under the nesting grant (D234), and
+/// each of its execs joins: the name moby's hack/dind gives the leaf a nested runtime moves
+/// itself into (f35).
 pub const LEAF: &str = "init";
+
+/// [`DELEGATED`] of the workload's cgroup at `workload`.
+fn delegated_in(workload: &str) -> String {
+    format!("{workload}/{DELEGATED}")
+}
 
 /// [`LEAF`], as init sees the hierarchy.
 fn workload_leaf() -> String {
-    format!("{WORKLOAD_CGROUP}/{LEAF}")
+    format!("{}/{LEAF}", delegated_in(WORKLOAD_CGROUP))
 }
 
 /// Whether the run has the nesting grant (D234): set before any process of its command is
@@ -1389,15 +1401,17 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
 /// is in now (`now`), as runc's exec falls back to container init's (D173). Under the
 /// nesting grant (D234), its leaf; and where the leaf takes none, the workload's process's
 /// cgroup, but never the namespace root, whose controllers the workload may be enabling as
-/// an exec comes (moby's hack/dind loops on that race, f35). The errno of what failed.
+/// an exec comes (moby's hack/dind loops on that race, f35), nor the workload's cgroup
+/// above it. The errno of what failed.
 fn join_workload(
     workload: &str,
     granted: bool,
     now: impl FnOnce() -> Result<String, i32>,
 ) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    let root = delegated_in(workload);
     let first = if granted {
-        format!("{workload}/{LEAF}")
+        format!("{root}/{LEAF}")
     } else {
         workload.to_string()
     };
@@ -1405,7 +1419,7 @@ fn join_workload(
         return Ok(());
     };
     let now = now()?;
-    if granted && now == workload {
+    if granted && (now == workload || now == root) {
         return Err(errno(refused));
     }
     enter_cgroup(&now).map_err(errno)
@@ -1736,22 +1750,27 @@ const UNFORWARDED: [libc::c_int; 9] = [
 /// (ptrace(2)). No process is born in its namespace before it is so ([`clone_reaper`]).
 /// A copy of init's memory before any run's. Ended with the run (`relay`).
 fn reaper(last_cap: u32, ids: Ids, ready: RawFd) -> ! {
-    // SAFETY: system calls on local values and literals alone: mount(2), chroot(2) and
-    // chdir(2) to an empty root; for IDs sent, dup2(2) of the two pipes it holds,
-    // close_range(2) of the rest and read(2) into a local buffer; the command's IDs, then
-    // prctl(2) and capset(2) to none of init's privileges; its signals blocked;
-    // close_range(2) of every descriptor past stdio, which says to init that it is ready
-    // ([`await_reaper`]); then waitpid(2), sigwaitinfo(2) and kill(2) for ever. Its
-    // signals stay blocked, so that one sent between the waits waits for sigwaitinfo.
+    // SAFETY: system calls on local values and literals alone: unshare(2) of its cgroup
+    // namespace; mount(2), chroot(2) and chdir(2) to an empty root; for IDs sent, dup2(2)
+    // of the two pipes it holds, close_range(2) of the rest and read(2) into a local
+    // buffer; the command's IDs, then prctl(2) and capset(2) to none of init's
+    // privileges; its signals blocked; close_range(2) of every descriptor past stdio,
+    // which says to init that it is ready ([`await_reaper`]); then waitpid(2),
+    // sigwaitinfo(2) and kill(2) for ever. Its signals stay blocked, so that one sent
+    // between the waits waits for sigwaitinfo.
     unsafe {
         let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
-        let alone = libc::mount(
-            std::ptr::null(),
-            c"/".as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            std::ptr::null(),
-        ) == 0
+        // A cgroup namespace of its own, rooted at its cgroup, so that a process of the
+        // namespace that may enter its namespaces (CAP_SYS_ADMIN beside CAP_SYS_PTRACE)
+        // names through it no cgroup above its own (inithex-01).
+        let alone = libc::unshare(libc::CLONE_NEWCGROUP) == 0
+            && libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            ) == 0
             && libc::mount(
                 c"tmpfs".as_ptr(),
                 c"/proc".as_ptr(),
@@ -7424,12 +7443,18 @@ mod nesting_tests {
         );
     }
 
-    /// A cgroup tree of plain files: the workload's cgroup, its leaf and a box beneath it,
-    /// each with an empty `cgroup.procs`.
+    /// A cgroup tree of plain files: the workload's cgroup, the subtree its command is
+    /// given, that subtree's leaf and a box beneath it, each with an empty `cgroup.procs`.
     fn tree(name: &str) -> (shards_testdir::TempDir, String) {
         let dir = shards_testdir::TempDir::new(name).unwrap();
         let workload = dir.path().join("workload");
-        for d in [workload.clone(), workload.join(LEAF), workload.join("boxes/b1")] {
+        let delegated = workload.join(DELEGATED);
+        for d in [
+            workload.clone(),
+            delegated.clone(),
+            delegated.join(LEAF),
+            delegated.join("boxes/b1"),
+        ] {
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("cgroup.procs"), b"").unwrap();
         }
@@ -7443,30 +7468,34 @@ mod nesting_tests {
 
     /// An exec of a run given the nesting grant joins its leaf, never its cgroup
     /// namespace's root (D234): where the leaf takes no process, the cgroup the workload's
-    /// process is in, beneath the root, and never the root itself. Without the grant, the
-    /// workload's cgroup, as before (D173).
+    /// process is in, beneath the root, and never the root itself, nor the workload's cgroup
+    /// above it. Without the grant, the workload's cgroup, as before (D173).
     #[test]
     fn a_granted_runs_execs_join_its_leaf_never_its_root() {
         let (_dir, w) = tree("exec-leaf");
-        let leaf = format!("{w}/{LEAF}");
+        let root = format!("{w}/{DELEGATED}");
+        let leaf = format!("{root}/{LEAF}");
         // Not asked where the workload's process is: the leaf took it.
         let unasked = || Err(libc::ESRCH);
         join_workload(&w, true, unasked).unwrap();
         assert_eq!(procs(&leaf), "0");
-        assert_eq!(procs(&w), "", "the root holds none");
+        assert_eq!(procs(&root), "", "the root holds none");
+        assert_eq!(procs(&w), "", "the workload's cgroup holds none");
         // The leaf gone: the cgroup the workload's process is in now, beneath the root.
         std::fs::remove_dir_all(&leaf).unwrap();
-        let in_box = format!("{w}/boxes/b1");
+        let in_box = format!("{root}/boxes/b1");
         join_workload(&w, true, || Ok(in_box.clone())).unwrap();
         assert_eq!(procs(&in_box), "0");
-        // But never the root itself, where the workload's process is.
+        // But never the root itself, nor the workload's cgroup above it.
+        assert_eq!(join_workload(&w, true, || Ok(root.clone())), Err(libc::ENOENT));
         assert_eq!(join_workload(&w, true, || Ok(w.clone())), Err(libc::ENOENT));
+        assert_eq!(procs(&root), "");
         assert_eq!(procs(&w), "");
 
         let (_dir, w) = tree("exec-plain");
         join_workload(&w, false, unasked).unwrap();
         assert_eq!(procs(&w), "0");
-        assert_eq!(procs(&format!("{w}/{LEAF}")), "");
+        assert_eq!(procs(&format!("{w}/{DELEGATED}/{LEAF}")), "");
     }
 
     fn setup(list: &[&str]) -> Vec<Vec<u8>> {
@@ -7563,9 +7592,12 @@ mod nesting_tests {
     /// The workload's standby under the grant, on a real kernel (D234), in the cgroup `w`, as
     /// init's view names it: into `w`, a cgroup and mount namespace of its own rooted there,
     /// the hierarchy read-only over /sys/fs/cgroup, as `isolate` makes them; then its
-    /// `cgroups-rw` and `nesting` entries, by init's own setup; then what the workload may and
-    /// may not do there. A user namespace of its own stands in for init's privileges.
-    fn standby_in(w: &str) -> String {
+    /// `cgroups-rw` and `nesting` entries, by init's own setup; then whether any cgroup it
+    /// can name is `w`, where init attaches the workload's device program (`ceiling`, its
+    /// inode): its mount's root, or a fresh mount's at `fresh` (inithex-01); then what the
+    /// workload may and may not do there. A user namespace of its own stands in for init's
+    /// privileges.
+    fn standby_in(w: &str, ceiling: u64, fresh: &str) -> String {
         let mut out = said("enter", enter_cgroup(w));
         // SAFETY: getuid(2) and getgid(2), which cannot fail.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
@@ -7628,6 +7660,29 @@ mod nesting_tests {
                 crate::setup::apply(entry).map_err(io::Error::from_raw_os_error),
             );
         }
+        let mountpoint = std::ffi::CString::new(fresh).unwrap();
+        // SAFETY: mount(2) of NUL-terminated strings, in this child's own mount namespace.
+        let again = unsafe {
+            libc::mount(
+                c"cgroup2".as_ptr(),
+                mountpoint.as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_RDONLY | nosuid | noexec | nodev,
+                std::ptr::null(),
+            )
+        };
+        out += &said("fresh", done(again));
+        let ino = |p: &str| {
+            std::fs::metadata(p)
+                .map(|m| std::os::unix::fs::MetadataExt::ino(&m))
+                .ok()
+        };
+        let named = [ino("/sys/fs/cgroup"), ino(fresh)].contains(&Some(ceiling));
+        out += if named {
+            "ceiling=named "
+        } else {
+            "ceiling=hidden "
+        };
         let read = |p: &str| {
             std::fs::read_to_string(p)
                 .map(|t| t.trim().to_string())
@@ -7659,12 +7714,14 @@ mod nesting_tests {
     }
 
     /// The grant's cgroup on a real kernel (D234), as a granted microVM's init and standby make
-    /// it, in a cgroup of the test's own for `run/workload`: its /sys/fs/cgroup writable; its
-    /// process in the leaf `init` and none in its namespace's root; memory and pids enabled for
-    /// children beside the leaf and a box of them limited; the root's own memory.max and
-    /// pids.max, init's limits, refused it by the kernel (nsdelegate) and left as init set
-    /// them; and an exec, whose join of the root the workload's controllers now refuse (EBUSY,
-    /// f9), in the leaf. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write,
+    /// it, in a cgroup of the test's own for `run/workload`: its namespace rooted at the
+    /// subtree `delegated` beneath it, so that neither its own mount nor a fresh one shows it
+    /// the workload's cgroup, where init attaches its device program (inithex-01); its
+    /// /sys/fs/cgroup writable; its process in the leaf `init` and none in its namespace's
+    /// root; memory and pids enabled for children beside the leaf and a box of them limited;
+    /// the root's own memory.max and pids.max refused it by the kernel (nsdelegate), and the
+    /// workload's, init's limits, left as init set them; and an exec, whose join of the
+    /// workload's cgroup its controllers now refuse (EBUSY, f9), in the leaf. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write,
     /// holding no process and offering memory and pids, on a hierarchy mounted with
     /// nsdelegate (a delegated scope's: `systemd-run --user --scope -p Delegate=yes`, its
     /// processes moved into a leaf of its own); else SKIP.
@@ -7682,12 +7739,17 @@ mod nesting_tests {
             "the hierarchy is mounted with nsdelegate in every guest, and must be here"
         );
         std::fs::write(format!("{base}/cgroup.subtree_control"), "+memory +pids").unwrap();
-        // Init's part: the workload's cgroup, its limits, and the leaf (grant_nesting).
+        // Init's part: the workload's cgroup, its limits, and the subtree with its leaf
+        // (grant_nesting).
         let w = format!("{base}/w-{}", std::process::id());
+        let root = format!("{w}/{DELEGATED}");
         std::fs::create_dir(&w).unwrap();
-        std::fs::create_dir(format!("{w}/{LEAF}")).unwrap();
+        std::fs::create_dir_all(format!("{root}/{LEAF}")).unwrap();
         std::fs::write(format!("{w}/memory.max"), "268435456").unwrap();
         std::fs::write(format!("{w}/pids.max"), "64").unwrap();
+        let ceiling = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&w).unwrap());
+        let fresh_dir = shards_testdir::TempDir::new("fresh-cgroup").unwrap();
+        let fresh = fresh_dir.path().to_str().unwrap().to_string();
 
         let (hold, held) = pipe().map_err(|f| f.message).unwrap();
         let held_fd = held.as_raw_fd();
@@ -7695,7 +7757,7 @@ mod nesting_tests {
         let (standby, mut said_standby) = forked(move |mut out| {
             // SAFETY: this child's copy of the test's end of the pipe it holds on.
             unsafe { libc::close(held_fd) };
-            let _ = out.write_all(standby_in(&standby_w).as_bytes());
+            let _ = out.write_all(standby_in(&standby_w, ceiling, &fresh).as_bytes());
             drop(out);
             // Its process stays in the leaf until the test is done with it.
             let _ = File::from(hold).read(&mut [0u8; 1]);
@@ -7705,7 +7767,7 @@ mod nesting_tests {
         assert_eq!(
             found,
             format!(
-                "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok root=[] leaf=[{standby}] boxes=ok enable=ok box-limits=ok root-memory={} root-pids={} ",
+                "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok fresh=ok ceiling=hidden root=[] leaf=[{standby}] boxes=ok enable=ok box-limits=ok root-memory={} root-pids={} ",
                 libc::EPERM,
                 libc::EPERM
             )
@@ -7730,19 +7792,23 @@ mod nesting_tests {
         let own = w.strip_prefix("/sys/fs/cgroup").unwrap();
         assert_eq!(
             found,
-            format!("exec-root={} exec=ok cgroup=0::{own}/{LEAF}", libc::EBUSY)
+            format!(
+                "exec-root={} exec=ok cgroup=0::{own}/{DELEGATED}/{LEAF}",
+                libc::EBUSY
+            )
         );
         // From init's view: the root holds no process, its limit is init's.
         let read = |p: String| std::fs::read_to_string(p).unwrap().trim().to_string();
         assert_eq!(read(format!("{w}/cgroup.procs")), "");
-        assert_eq!(read(format!("{w}/{LEAF}/cgroup.procs")), standby.to_string());
+        assert_eq!(read(format!("{root}/cgroup.procs")), "");
+        assert_eq!(read(format!("{root}/{LEAF}/cgroup.procs")), standby.to_string());
         assert_eq!(read(format!("{w}/memory.max")), "268435456");
         assert_eq!(read(format!("{w}/pids.max")), "64");
 
         drop(held);
         // SAFETY: waits for the test's own child, which ends as its pipe closes.
         unsafe { libc::waitpid(standby, std::ptr::null_mut(), 0) };
-        for dir in [format!("{w}/boxes"), format!("{w}/{LEAF}"), w] {
+        for dir in [format!("{root}/boxes"), format!("{root}/{LEAF}"), root, w] {
             std::fs::remove_dir(&dir).unwrap();
         }
     }
