@@ -46,6 +46,7 @@ pub use drive::{
     Controller, Dialed, Exec, ExecControl, Execs, Fault, Got, Granted, Hangup, Input, Link, Linked, Log,
     Logged, McpConnection, Member, MemberControl, MemberEnd, MemberSteering, Output, PendingExec, PendingLog,
     PendingMcp, PendingMember, PendingSocket, Socket, SocketReader, SocketWriter, Sockets, Subscriptions,
+    Wake,
 };
 pub use unix::Admission as SocketAdmission;
 

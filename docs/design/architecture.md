@@ -31162,7 +31162,7 @@ WHP; Hex's image_real with a box of no grants once Hex vendors this.
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
 
-### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
 
 **Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
@@ -31252,6 +31252,45 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
   caller's patience*); one let go unanswered is cut as it connects. `Socket` is `Read` and `Write`, with `shutdown_write`, `abort` and `split` (a
   reader and a writer for two threads). `Ok(0)` comes only at the socket's own FIN; a reset
   reads as `ConnectionReset`, its `Fault` its source.
+- *Its controller's wake* (Hex's ask D-10). A controller drives all its lanes from one thread
+  without waiting on any: `SocketReader::try_read` and `SocketWriter::try_write` (and
+  `Socket`'s) say `WouldBlock` where nothing has come or the lane has no room, and otherwise
+  answer, end (`Ok(0)` at the socket's FIN) and fault exactly as `read` and `write` do, typed
+  through the same `Fault`. The blocking `read` and `write` are unchanged; both styles share one
+  state (`ReadState`, `WriteState`), and a call says which it is (`Waits`, R04).
+  - *One wake per controller* (`Dialed::wake`, `drive::Wake`), an OS wait's handle: on Unix the
+    read end of an AF_UNIX datagram socket pair, readable while a ring is pending (`AsFd`); on
+    Windows an auto-reset event (`AsHandle`). The driver rings it once in each of its turns
+    (each `Handler` call, and `Controller::run`'s end) in which it told any lane, or any lane's
+    ask, anything: bytes, an end, a fault, room, an answer. Each lane marks what it was told;
+    the turn's end takes the marks, and a sweep takes those of lanes it lets go first, so a
+    lane's last word (a fault, its end) rings though its lane is gone. The driver's end rings
+    too (`Ring`'s drop), so a controller sleeping on it finds every lane's end. No interval
+    and no poll: the driver's own events are the only rings (R03, R05).
+  - *The wake rule.* Level, and drained before the tries: wait (an OS wait, or `Wake::wait`),
+    `Wake::drain`, then try every lane until each says `WouldBlock`, and wait again. The
+    driver sends a lane's words before it rings, so a ring the drain took told what the tries
+    then find, and a ring after the drain stays pending for the next wait: no wake is lost.
+    The wake names no lane: its controller tries them all (a controller's lanes are bounded by
+    its admission's `lanes`).
+  - *Unix: a datagram pair, both ends nonblocking.* A ring with no room in the queue finds one
+    pending (Linux's `max_dgram_qlen`), so rings coalesce. A ring whose wake is gone is an
+    error, never a signal, where a pipe's or a stream's write to a closed reader raises
+    SIGPIPE (pipe(7), unix(7)); and std makes the pair close-on-exec. *Windows: auto-reset*,
+    as shards-netring's doorbell is: the one wait it satisfies resets it atomically
+    (learn.microsoft.com, "CreateEventW": "the system automatically resets the event state to
+    nonsignaled after a single waiting thread has been released"), so the rule leaves its
+    controller no reset to order after its wait. A manual-reset event would need a
+    `ResetEvent` strictly before the tries, and a reset after them loses the ring. `drain` on
+    Windows is a wait of 0.
+  - *Alternatives.* A Linux eventfd or a kqueue `EVFILT_USER` (mio's `Waker`, tokio's) is one
+    platform's, where the pair is every Unix's (R12). The driver's own UDP waker (`net.rs`) is a
+    SOCKET on Windows, which WaitForMultipleObjects cannot wait on. A readiness list naming
+    ready lanes would add a second state beside each lane's channel for a controller of a
+    handful of lanes; trying each is a `try_recv` per lane.
+  - *Literals.* None chosen: poll(2)'s int and WaitForSingleObject's DWORD of milliseconds
+    (`INFINITE`) are the APIs' own, a patience past them waiting until a ring, rounded up so no
+    patience waits less than asked.
 - *Its scope.* An endpoint that serves its run's member streams knows its run and
   generation, which an ask names. One that serves sockets alone knows only the keys its
   connection pinned, and an ask there names the zero run and generation 0, as a controller of
@@ -31321,6 +31360,21 @@ function"), no time chosen.
   reset each way; lanes past the admitted most refused `Capacity` until one ends; a stranger
   `NotEnrolled`. Plus an endpoint of no socket lanes refusing one `Scope`, and the frames' own
   tests.
+- Its controller's wake (policy df2acf47, implementer): `control::drive::tests`, the wake
+  coalescing a thousand rings into one wait and drained by one drain, the driver's end ringing,
+  and `no_ring_is_lost_while_its_controller_drains` (a thread tells and rings 100,000 words as
+  the controller drains; each wait must ring within the tests' patience); and
+  `control::unix::tests` over the real transport: `a_lanes_bytes_end_and_room_ring_its_controllers_wake`
+  (`WouldBlock` before anything comes; the workload's bytes, written in pieces of every size as
+  the controller drains, then its end, then a write past the lane's room, each found after a
+  ring), `a_lanes_fault_rings_its_controllers_wake` (a cut read and written as
+  `ConnectionReset` through the tries), and `one_thread_drives_several_lanes_on_its_wake` (three
+  echoing lanes, one thread, sleeping on the wake alone).
+  On adas-mac-studio-3.local (macOS arm64): shards-remote's `control::` 70 tests, `loopback`
+  35, and clippy `--all-targets -D warnings` clean. Its guard mutated: the sweep's taking of
+  the marks of the lanes it lets go removed, `a_lanes_fault_rings_its_controllers_wake` and
+  `one_thread_drives_several_lanes_on_its_wake` fail (`no ring within patience: a wake lost`:
+  a lane's fault, and its end, told as it is let go, never rang); restored, green.
 - Its cut: `control::unix::tests::a_socket_cut_short_resets_its_lane_never_ending_it_in_order`,
   the workload reading all the controller sent and then closing, so that its end comes with
   nothing for the writer to fail on, on every host: red on 8bfa6150e's pump (`Ok(0)` where
@@ -31371,6 +31425,9 @@ function"), no time chosen.
   SO_LINGER {on, 0} is known from these alone: M358 set {on, 5} unchecked, and Microsoft's
   documents name no AF_UNIX case.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
+- Windows: the controller's wake (its auto-reset event, `control::drive::tests`), compiled by
+  CI's Windows legs and run by CI's Windows unit tests; its transport tests are Unix's (their
+  workload is an AF_UNIX listener).
 
 **What would falsify it.**
 - A workload reaching a socket outside its root.
