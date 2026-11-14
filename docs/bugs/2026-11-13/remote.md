@@ -90,6 +90,8 @@ Ranking requested by Ada: **P0 critical, P1 high, P3 medium, P5 low**; unused in
 
 **Test:** authenticated malformed timestamp against a disposable release daemon must refuse and leave a second command working. Include nanosecond and host timestamp boundaries; mutation restoring unchecked Add must terminate the fixture for this reason.
 
+**Status (2026-11-13):** fixed in 063a5d339f3e6c6691621fb4bd437475957b4910 (red `synced::tests::malformed_build_file_time_is_refused_before_the_file_is_created`: SystemTime overflow panic; green 9 synced tests and shards all-target clippy, macOS arm64). [Evidence](../../research/measurements/remote-fixes-v1/README.md). Windows range and release-listener validation remain owed to ROOT.
+
 ### remote-05 — P1 / high — Expanded client secrets are persisted in ordinary logs
 
 **Location:** `crates/shards/src/daemon/remote.rs:177`; also `:132`, `:142`, `:160`.

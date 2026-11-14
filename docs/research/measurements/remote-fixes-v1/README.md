@@ -39,3 +39,54 @@ Observed: 5 passed, 0 failed (including the red regression); clippy exit 0. Runn
 - R15/R16: signed scoped commits; no local builds, no delegation, no force push; test target cleanup due after landing. The original review's read-only restriction was superseded by the explicit fix task.
 
 ROOT owed: an isolated real context run with synthetic inherited `-e NAME`, env-file, exec env and build-arg markers; prove guest receives each marker and daemon.log omits it on success/refusal. Retain actual command/revision/logs in the real-VM campaign. No such run was started here.
+
+
+## remote-04: build-file timestamp validation
+
+Red source `c3ad61ab109ae4d507874683d4b6da96f507bde3`, based on fetched main
+`9068a72cd` containing remote-05's landing. Policy files unchanged from the receipt
+above (checked by Git diff). Fix `063a5d339f3e6c6691621fb4bd437475957b4910`.
+Same macOS arm64 runner/toolchain, carrier, target and unused guest artifacts as
+remote-05; no local build.
+
+```sh
+# Red, Kiln r18
+cargo test -p shards --bin shards synced::tests::malformed_build_file_time_is_refused_before_the_file_is_created -- --exact --nocapture
+# Green, Kiln r19
+cargo test -p shards --bin shards synced::tests -- --nocapture
+cargo clippy -p shards --all-targets -- -D warnings
+```
+
+Red: 0 passed/1 failed, `overflow when adding duration to SystemTime` at
+synced.rs:701, directly in the real receiver called with an i64::MAX/u32::MAX
+network time, before any archive is needed. Green: all 9 synced tests passed;
+clippy exit 0. Logs `red04.log`, `green04.log` beside the remote-05 logs on the
+runner. The regression now requires the typed malformed-nanoseconds cause and
+asserts that the named file was never created.
+
+The receiver validates that the nanosecond fraction contains no whole second
+(utimensat(2)'s tv_nsec/SI fractional-second definition) and uses the standard
+library's checked SystemTime operation for the actual host range. No baked-in
+platform maximum, floor, timeout or learning seed is introduced. The writer takes
+a checked SystemTime, so it cannot recreate the unchecked addition. Existing
+pre-epoch normalization remains. `ReceiveError::Timestamp` retains its
+`FileTimeError` cause until the existing context-step stderr presentation; no
+caller parses refusal text. Legacy context parse errors remain the existing
+messages under the Context variant; this change does not claim a whole-wire error
+migration.
+
+R01/R04/R06: checked conversion and explicit typed failures before file effects;
+R02/R03/R05/R12/R13: existing receiver/writer seam, protocol fraction and host
+representation bound, no duplicate platform implementation/cache/wait. R07 cites
+the non-obvious bound; R08/R14 no performance claim. R09/R10 actual receiver red
+and green above; R11 shared code tested on macOS only, Windows-specific range
+assertion is compiled only there and remains unrun here. R15/R16 scoped signed
+commits and private target, no E2E/VM/profiling. D180 records the decision. Merge
+validation/landing pending.
+
+ROOT owed: `cargo test -p shards --bin shards synced::tests` on jupiter (Windows
+host range), and the real-context suite `cargo test -p shards --profile
+test-release --test context` on the release-capable context fixture. The existing
+suite needs the malformed raw request case added to assert that an abort-profile
+listener survives and serves another client; the unit's unwinding test process
+does not establish that runtime cleanup. No such listener/VM run was started here.
