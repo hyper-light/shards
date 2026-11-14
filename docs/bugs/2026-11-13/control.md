@@ -34,6 +34,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 
 **Catching test:** Gate the pump, have a controlled host emit two distinct output records, `OUTPUT_END`, and `ENDED`, wait until the answer reader has accepted them and closed `to_host`, then release the pump. Require the read-to-end bytes to equal the concatenation of A and B, exactly once. Also gate the capture thread so `ENDED` precedes its last host-side output and verify no premature EOF. Existing empty-output-at-run-end coverage (`a_run_ended_before_its_first_credit_still_has_its_outputs`) cannot catch this.
 
+**Status (2026-11-13):** fixed in cf2764c6e (red `image::session::tests::output_taken_before_the_runs_end_reaches_its_owner_whole` and `output_said_after_the_runs_end_reaches_its_owner_before_its_end`, d7b62bd7d; adas-mac-studio-3.local macOS arm64: the owner read A alone, and nothing, before; A then B, and the record said after the run's end, after; both guards' mutations red; shards-api clippy clean). Real-VM managed_output and api_image lanes remain ROOT's; see [evidence](../../research/measurements/control-01-v1/README.md).
+
 ### control-02 — P1 / high — aborting a pending socket lane leaves its workers and frees its admission
 
 **Location:** `crates/remote/src/control/unix.rs:573–577`; related `:186–203`, `:533–539`, `crates/shards/src/api_run.rs:3943–3962`, `crates/shards/src/warm.rs:2379`, `crates/shards/src/workload.rs:1585–1592`, `crates/init/src/lanes.rs:69–74,111–114`.
@@ -49,6 +51,8 @@ There is also an ordering hazard in this same completion path: `api_run.rs:3844�
 **Fix direction:** Propagate request cancellation through endpoint, host, VM and guest into a cancelable connect; hold admission until the worker acknowledges termination.
 
 **Catching test:** With one admitted lane, fill the granted socket's backlog, open then reset a pending lane, and repeat beyond one lane. Observe guest/VM/host thread, fd and token-registry counts returning after each abort, without accepting connections or ending the run.
+
+**Status (2026-11-13):** fixed in 3c28b68a78f7deaa9ac3db5046bb4df1ea4c53f1 (red `lanes::tests::a_full_socket_backlog_refuses_a_lane_instead_of_holding_its_worker`, bcc79fccdcce043e6f504063463598acfe8664fb; adacachy2 Linux x86_64: retained worker/Timeout before, EAGAIN after; all 6 lane tests and shards-init clippy passed). Full relay-abort integration remains ROOT's; see [evidence](../../research/measurements/control-fixes-v1/README.md).
 
 ### control-03 — P1 / high — the MCP stdio bridge cannot return after its first copy failure
 

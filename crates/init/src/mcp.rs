@@ -13,7 +13,7 @@
 //! holds the token: what it says reaches its host as its own, never as another member's.
 
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
@@ -179,37 +179,252 @@ pub fn bridge() -> i32 {
         Ok(socket) => socket,
         Err(e) => return said(format!("{}: {e}", mcp::SOCKET)),
     };
-    match copy_both(io::stdin(), io::stdout(), &socket) {
+    // SAFETY: this dedicated bridge process owns its inherited stdio, and no other
+    // thread or Rust stdio handle uses these descriptors. The copies close them.
+    let (input, output) = unsafe {
+        (
+            std::fs::File::from_raw_fd(libc::STDIN_FILENO),
+            std::fs::File::from_raw_fd(libc::STDOUT_FILENO),
+        )
+    };
+    match copy_both(input, output, socket) {
         Ok(()) => 0,
         Err(e) => said(e.to_string()),
     }
 }
 
-/// Copies `input` to `socket` and `socket` to `output`, each on its own, each way ending as its
-/// source ends: `input`'s end said to the socket as its half-close, the socket's end ending
-/// `output`'s copy. Done once both have ended; the first failure of either.
-fn copy_both(mut input: impl Read + Send, mut output: impl Write, socket: &UnixStream) -> io::Result<()> {
-    let mut up_socket = socket.try_clone()?;
-    std::thread::scope(|s| {
-        let up = std::thread::Builder::new()
-            .name("bridge up".into())
-            .spawn_scoped(s, move || -> io::Result<()> {
-                io::copy(&mut input, &mut up_socket)?;
-                up_socket.shutdown(std::net::Shutdown::Write)
-            })?;
-        let mut down_socket = socket;
-        let down = io::copy(&mut down_socket, &mut output).and_then(|_| output.flush());
-        let up = up
-            .join()
-            .unwrap_or_else(|_| Err(io::Error::other("its input's copy ended unwound")));
-        down.and(up)
-    })
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Half {
+    Reading,
+    Draining,
+    Closed,
+}
+
+struct Copy {
+    // pipe(7): no write exceeds PIPE_BUF, the pipe's atomic-write bound.
+    bytes: [u8; libc::PIPE_BUF],
+    pending: std::ops::Range<usize>,
+    half: Half,
+}
+
+impl Copy {
+    fn new() -> Self {
+        Self {
+            bytes: [0; libc::PIPE_BUF],
+            pending: 0..0,
+            half: Half::Reading,
+        }
+    }
+
+    fn reading(&self) -> bool {
+        self.half == Half::Reading && self.pending.is_empty()
+    }
+
+    fn drained(&self) -> bool {
+        self.half == Half::Draining && self.pending.is_empty()
+    }
+
+    fn read(&mut self, from: &mut impl Read) -> io::Result<()> {
+        if self.reading() {
+            match from.read(&mut self.bytes) {
+                Ok(0) => self.half = Half::Draining,
+                Ok(n) => self.pending = 0..n,
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, to: &mut impl Write) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            let bytes = self
+                .bytes
+                .get(self.pending.clone())
+                .ok_or(io::ErrorKind::InvalidData)?;
+            match to.write(bytes) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    self.pending.start = self
+                        .pending
+                        .start
+                        .checked_add(n)
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                }
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Owns all three descriptors: an error closes every leg without waiting on another
+/// read. A socket half-close drains and closes stdout while stdin can still flow;
+/// POLLHUP (the peer gone) also ends the input, unlike POLLRDHUP (shutdown-write).
+fn copy_both(mut input: std::fs::File, output: std::fs::File, mut socket: UnixStream) -> io::Result<()> {
+    for fd in [input.as_raw_fd(), output.as_raw_fd(), socket.as_raw_fd()] {
+        // SAFETY: fcntl of live descriptors exclusively owned by this copy.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        // SAFETY: preserve all existing flags, adding nonblocking operation.
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let (mut up, mut down) = (Copy::new(), Copy::new());
+    let mut output = Some(output);
+    loop {
+        up.read(&mut input)?;
+        up.write(&mut socket)?;
+        down.read(&mut socket)?;
+        if let Some(out) = &mut output {
+            down.write(out)?;
+        }
+        if up.drained() {
+            socket.shutdown(std::net::Shutdown::Write)?;
+            up.half = Half::Closed;
+        }
+        if down.drained() {
+            drop(output.take());
+            down.half = Half::Closed;
+        }
+        if up.half == Half::Closed && down.half == Half::Closed {
+            return Ok(());
+        }
+        let sock_events = if down.reading() { libc::POLLIN } else { 0 }
+            | if !up.pending.is_empty() { libc::POLLOUT } else { 0 };
+        let mut fds = [
+            libc::pollfd {
+                fd: if up.reading() { input.as_raw_fd() } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: output
+                    .as_ref()
+                    .filter(|_| !down.pending.is_empty())
+                    .map_or(-1, AsRawFd::as_raw_fd),
+                events: libc::POLLOUT,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if sock_events != 0 || up.half == Half::Reading {
+                    socket.as_raw_fd()
+                } else {
+                    -1
+                },
+                events: sock_events,
+                revents: 0,
+            },
+        ];
+        // SAFETY: poll fills this initialized array; -1 waits for an event, not a timer.
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if fds.iter().any(|fd| fd.revents & libc::POLLNVAL != 0) {
+            return Err(io::Error::from_raw_os_error(libc::EBADF));
+        }
+        if fds.last().is_some_and(|fd| fd.revents & libc::POLLHUP != 0) {
+            if !up.pending.is_empty() {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            up.half = Half::Closed;
+        }
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    fn pipe() -> (std::fs::File, std::fs::File) {
+        use std::os::fd::FromRawFd;
+        let mut fds = [-1; 2];
+        // SAFETY: pipe2 initializes both descriptors on success; each becomes owned once.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: the fresh descriptors returned by pipe2, owned by these files alone.
+        unsafe {
+            (
+                std::fs::File::from_raw_fd(fds[0]),
+                std::fs::File::from_raw_fd(fds[1]),
+            )
+        }
+    }
+
+    #[test]
+    fn bridge_peer_end_releases_open_stdin() {
+        let (input, writer) = pipe();
+        let (mut reader, output) = pipe();
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            done.send(copy_both(input, output, socket)).unwrap();
+        });
+        drop(peer);
+        let ended = finished.recv_timeout(std::time::Duration::from_secs(1));
+        // Always unblock the old implementation before asserting, including on red.
+        drop(writer);
+        bridge.join().unwrap();
+        assert!(ended.is_ok(), "the bridge waited for still-open harness stdin");
+        assert!(ended.unwrap().is_ok());
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn bridge_output_failure_releases_open_stdin() {
+        let (input, writer) = pipe();
+        let (reader, output) = pipe();
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let bridge = std::thread::spawn(move || {
+            done.send(copy_both(input, output, socket)).unwrap();
+        });
+        drop(reader);
+        peer.write_all(b"response\n").unwrap();
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let ended = finished.recv_timeout(std::time::Duration::from_secs(1));
+        drop(writer);
+        bridge.join().unwrap();
+        assert!(
+            ended.is_ok(),
+            "stdout failure waited for still-open harness stdin"
+        );
+        assert_eq!(ended.unwrap().unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn bridge_half_close_ends_stdout_but_keeps_stdin() {
+        let (input, mut writer) = pipe();
+        let (mut reader, output) = pipe();
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let bridge = std::thread::spawn(move || copy_both(input, output, socket));
+        peer.write_all(b"response\n").unwrap();
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut response = [0; b"response\n".len()];
+        reader.read_exact(&mut response).unwrap();
+        let mut ready = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live pipe; this test-only bound permits cleanup of a regression.
+        let ended = unsafe { libc::poll(&raw mut ready, 1, 1000) };
+        writer.write_all(b"after eof\n").unwrap();
+        drop(writer);
+        let mut request = Vec::new();
+        peer.read_to_end(&mut request).unwrap();
+        bridge.join().unwrap().unwrap();
+        assert!(ended > 0, "the socket half-close did not close stdout");
+        assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        assert_eq!(request, b"after eof\n");
+    }
 
     /// D254: a run's ask is its members' bridges and its token, together: members named with
     /// no token are refused, a token alone gives no member one, a member named twice refuses
@@ -295,8 +510,13 @@ mod tests {
             theirs.write_all(b"answered\n").unwrap();
             got
         });
+        let (input, mut writer) = pipe();
+        writer.write_all(b"asked\n").unwrap();
+        drop(writer);
+        let (mut reader, output) = pipe();
+        copy_both(input, output, ours).unwrap();
         let mut output = Vec::new();
-        copy_both(&b"asked\n"[..], &mut output, &ours).unwrap();
+        reader.read_to_end(&mut output).unwrap();
         assert_eq!(server.join().unwrap(), b"asked\n");
         assert_eq!(output, b"answered\n");
     }
