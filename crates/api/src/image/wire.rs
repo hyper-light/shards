@@ -3404,10 +3404,11 @@ mod tests {
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
-        // A placeholder is the grants' last field, before the sign-ins' count (version 24) and
-        // the member's MCP bridge's flag (version 25): a request cut in it is refused.
+        // A placeholder is the grants' last field, before the sign-ins' count (version 24), the
+        // member's MCP bridge's flag (version 25), the upstream roots' count (version 26) and
+        // the GPU report's flag (version 29): a request cut in it is refused.
         let bytes = credited.encode().unwrap();
-        assert!(Request::decode(&bytes[..bytes.len() - 1 - 4 - 1]).is_err());
+        assert!(Request::decode(&bytes[..bytes.len() - 1 - 4 - 1 - 4 - 1]).is_err());
         // Each member's working directory, or none, in the members' order (version 5),
         // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
         // several, or an empty one among others (version 18).
@@ -3467,12 +3468,13 @@ mod tests {
         .unwrap();
         // ... the control ask's absence (version 15), the GPUs' count (version 16), the
         // member's arguments' count (version 18), the sign-ins' count (version 24), the
-        // member's MCP bridge (version 25) and the upstream roots' count (version 26) last.
+        // member's MCP bridge (version 25), the upstream roots' count (version 26) and the GPU
+        // report's flag (version 29) last.
         assert_eq!(
-            asked.get(asked.len() - 37..).unwrap(),
+            asked.get(asked.len() - 38..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
@@ -3480,7 +3482,8 @@ mod tests {
              are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
              count (zero, version 16), the member's arguments' count (zero, version 18), then \
              the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25), then \
-             the upstream roots' count (zero, version 26)"
+             the upstream roots' count (zero, version 26), then the GPU report's flag (none, \
+             version 29)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -3668,11 +3671,12 @@ mod tests {
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the twentieth byte from the end (the count's four, its
+        // One member, so its input is the twenty-sixth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
-        // count, the sign-ins' count, its MCP bridge and the upstream roots' count follow it).
+        // count, the sign-ins' count, its MCP bridge, the upstream roots' count and the GPU
+        // report's flag follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 25;
+        let at = bad.len() - 26;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -3752,10 +3756,10 @@ mod tests {
             }
         }
         // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
-        // count, the sign-ins' count, the MCP bridges and the upstream roots' count where none is
-        // held apart.
+        // count, the sign-ins' count, the MCP bridges, the upstream roots' count and the GPU
+        // report's flag where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 19;
+        let at = flag.len() - 20;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3770,8 +3774,9 @@ mod tests {
             .unwrap();
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
         // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
-        // bridge (version 25) and the upstream roots' count (version 26).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4);
+        // bridge (version 25), the upstream roots' count (version 26) and the GPU report's flag
+        // (version 29).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -3784,7 +3789,7 @@ mod tests {
         // Held apart, with four billion members in a few bytes, in place of the reach's flag
         // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.truncate(hostile.len() - 15);
+        hostile.truncate(hostile.len() - 20);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3834,14 +3839,15 @@ mod tests {
             }
         }
         // The second member's one argument, "ü", last before the sign-ins' count (version 24),
-        // the MCP bridges and the upstream roots' count (version 26): its bytes made no UTF-8.
+        // the MCP bridges, the upstream roots' count (version 26) and the GPU report's flag
+        // (version 29): its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - 4 - 2 - 4 - "ü".len();
+        let at = bad.len() - 1 - 4 - 2 - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
         // The second member's count, before the sign-ins', said as four billion in no bytes.
         let mut hostile = with(&[], &[]).encode().unwrap();
-        hostile.truncate(hostile.len() - 4 - 2 - 4);
+        hostile.truncate(hostile.len() - 1 - 4 - 2 - 4);
         let at = hostile.len() - 4;
         hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3944,6 +3950,12 @@ mod tests {
         v24.truncate(v24.len() - 1);
         v24[0] = 24;
         assert_eq!(Request::decode(&v24), Err(WireError::Version(24)));
+        // One of version 28, without its GPU report's scope: refused by its version (D233), so a
+        // run host never starts a GPU run whose orchestrator waits for a report none relays.
+        let mut v28 = request().encode().unwrap();
+        v28.truncate(v28.len() - 1);
+        v28[0] = 28;
+        assert_eq!(Request::decode(&v28), Err(WireError::Version(28)));
         // One of version 13 reads a vCPU's unread guest time as free words
         // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
         // client ends the run at a lease its host asks: each refused by its version, before
@@ -3956,10 +3968,11 @@ mod tests {
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11), the members' reach (version 12), the control ask
-        // (version 15), the GPUs' count (version 16), its arguments' count (version 18) and the
-        // sign-ins' count (version 24): no flag.
+        // (version 15), the GPUs' count (version 16), its arguments' count (version 18), the
+        // sign-ins' count (version 24), its MCP bridge (version 25), the upstream roots' count
+        // (version 26) and the GPU report's flag (version 29): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 25;
+        let at = flag.len() - 30;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3971,9 +3984,9 @@ mod tests {
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
         // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge and
-        // the upstream roots' count: no list of version 3's and on.
+        // the upstream roots' count and the GPU report's flag: no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 27;
+        let at = list.len() - 28;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -4185,11 +4198,11 @@ mod tests {
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 20;
+        let at = bad.len() - 21;
         assert_eq!(
             bad[at], 0,
             "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
-             its arguments, the sign-ins, its MCP bridge and the upstream roots"
+             its arguments, the sign-ins, its MCP bridge, the upstream roots and the GPU report"
         );
         bad[at] = 2;
         assert_eq!(
@@ -4727,9 +4740,12 @@ mod tests {
         let bytes = named.encode().unwrap();
         assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
         // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
-        // count (version 18) and the sign-ins' (version 24), made one D232's grammar refuses.
+        // count (version 18), the sign-ins' (version 24), its MCP bridge (version 25), the
+        // upstream roots' count (version 26) and the GPU report's flag (version 29), made one
+        // D232's grammar refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        let at = unnamed.len() - 1 - 4 - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
         let twice = Request {
@@ -4839,9 +4855,10 @@ mod tests {
             assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
         }
         // The second sign-in's CLI, its code after its name, made one no version has; the one
-        // member's MCP bridge's flag (version 25) and the upstream roots' count (version 26) after it.
+        // member's MCP bridge's flag (version 25), the upstream roots' count (version 26) and
+        // the GPU report's flag (version 29) after it.
         let mut cli = bytes.clone();
-        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4);
+        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));

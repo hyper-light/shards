@@ -27198,7 +27198,11 @@ API's protocol: its output drained, its end, its connections.
   - *Evidence.* Unit and stand-in-host tests in shards-api (wire, image, session's
     `an_image_boot_takes_its_vms_gpu_report_as_a_managed_launch_does`, pool), shards
     (launch's handing, api-run's bounded read) and shards-vm-process (the warm flags), each
-    guard's removal failing its test (the evidence record in the landing report). Owed to
+    guard's removal failing its test (the evidence record in the landing report). Five of
+    shards-api's older wire tests still read version 28's layout, their offsets counted from
+    the request's end one byte short of the scope's flag (`messages_round_trip` and four
+    beside it), red on CI's Linux legs at `9ef3b1247`: the encoder was right, the tests now
+    count the flag, with a version-28 request refused by its version. Owed to
     ROOT: real GPU runs through `ImageShards` on Linux (Venus, NVIDIA/AMD), macOS (Metal)
     and Windows (WHP, a LUID matched against DXGI's), a boot and a template restore each, and
     the gpu-feature VM process's build of `restore_reported` (scripts/gpu-libs).
