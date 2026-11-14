@@ -605,26 +605,27 @@ mod tests {
     /// them, and drain it too, as two would not.
     #[test]
     fn a_pool_is_half_of_its_cpus_time() {
-        let third = u64::try_from(PERIOD.as_nanos() / 3).unwrap();
+        let full = u64::try_from(PERIOD.as_nanos()).unwrap();
         assert!(
-            credited(most_credit(), PERIOD, third, 1) > 0,
-            "one thread's own credit"
+            credited(most_credit(), PERIOD, full / 3, 1) > 0,
+            "each thread's own credit, at a third of the CPU"
         );
-        let (mut pool, mut looks) = (most_credit(), 0);
-        while pool > 0 {
-            pool = credited(pool, PERIOD, 3 * third, 1);
-            looks += 1;
-        }
-        assert_eq!(looks, 1);
+        assert_eq!(
+            credited(most_credit(), PERIOD, full, 1),
+            0,
+            "one CPU's pool, all of it run"
+        );
         let two = 2 * most_credit();
         assert_eq!(
             credited(two, PERIOD, 0, 2),
             two,
             "kept to half a period of each CPU"
         );
-        let full = u64::try_from(PERIOD.as_nanos()).unwrap();
         assert_eq!(credited(two, PERIOD, full, 2), two, "half of two CPUs used");
-        assert!(credited(two, PERIOD, full * 3 / 2, 2) < two);
+        let three_quarters = full * 3 / 2;
+        let once = credited(two, PERIOD, three_quarters, 2);
+        assert!(once < two);
+        assert_eq!(credited(once, PERIOD, three_quarters, 2), 0);
     }
 
     /// A thread its program set at another priority is left at it.
