@@ -38,7 +38,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
-use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows_sys::Win32::Security::Cryptography::ProcessPrng;
 use windows_sys::Win32::Security::{
     GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
@@ -543,22 +543,46 @@ fn user_sid() -> io::Result<String> {
     Ok(sid)
 }
 
-/// `n` random bytes from the system's generator, as hex.
+/// ProcessPrng said FALSE, which Microsoft documents it never does: no bytes are taken as
+/// random.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RandomFailed;
+
+impl std::fmt::Display for RandomFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProcessPrng failed")
+    }
+}
+
+impl std::error::Error for RandomFailed {}
+
+impl From<RandomFailed> for io::Error {
+    fn from(e: RandomFailed) -> Self {
+        io::Error::other(e)
+    }
+}
+
+/// `buf` filled from the system's generator, for every random byte shards' Windows code
+/// takes (D195): ProcessPrng, bcryptprimitives.dll's per-process generator, which Microsoft
+/// documents as always returning TRUE
+/// (https://learn.microsoft.com/en-us/windows/win32/seccng/processprng) and from which Rust's
+/// std fills its own (rust-lang/rust 1.98.1, library/std/src/sys/random/windows.rs, bound in
+/// sys/pal/windows/c.rs as raw-dylib of bcryptprimitives). Not BCryptGenRandom: that is
+/// bcrypt.dll's, which Windows Nano Server does not carry.
+pub fn fill_random(buf: &mut [u8]) -> Result<(), RandomFailed> {
+    // SAFETY: ProcessPrng writes `buf.len()` bytes into `buf`, a buffer of ours of that length.
+    let filled = unsafe { ProcessPrng(buf.as_mut_ptr(), buf.len()) };
+    if filled == 0 {
+        return Err(RandomFailed);
+    }
+    Ok(())
+}
+
+/// `n` random bytes from the system's generator ([`fill_random`]), as hex: a name nobody can
+/// guess and take first.
 pub(crate) fn random_hex(n: usize) -> io::Result<String> {
     let mut bytes = vec![0u8; n];
-    let len = u32::try_from(n).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: `len` bytes for the call to fill, with the system's preferred generator.
-    let status = unsafe {
-        BCryptGenRandom(
-            std::ptr::null_mut(),
-            bytes.as_mut_ptr(),
-            len,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::other(format!("BCryptGenRandom: {status:#x}")));
-    }
+    fill_random(&mut bytes)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -2565,5 +2589,28 @@ mod tests {
         });
         event.reset();
         assert!(!event.is_set());
+    }
+
+    /// Names from ProcessPrng are lowercase hex of twice their bytes, and none repeats: a
+    /// squatter cannot take one first by guessing it.
+    #[test]
+    fn random_names_are_distinct_hex_of_their_length() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..4096 {
+            let name = random_hex(16).unwrap();
+            assert_eq!(name.len(), 32, "{name}");
+            assert!(
+                name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{name}"
+            );
+            assert!(seen.insert(name));
+        }
+        assert_eq!(random_hex(0).unwrap(), "");
+        let mut a = [0u8; 64];
+        let mut b = [0u8; 64];
+        fill_random(&mut a).unwrap();
+        fill_random(&mut b).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 64]);
     }
 }
