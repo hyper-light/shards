@@ -13673,6 +13673,44 @@ four 1-vCPU microVMs of a daemon held to one CPU (started under an affinity mask
 vCPUs across unheld microVMs; the host spinner's CPU time over 60 s, each vCPU's priority
 changes, n=20 a side, before and after, through `cpu-elastic/phases.py`.
 
+**The priority governor's period and credit (platform-11, 2026-11-14).** `PERIOD` (100 ms,
+the hold's old period) is gone: each look's period is D191's for one thread held to half a
+CPU, `granule::period(1, 500 milli-CPU, g)` = 2g, derived as each look begins from g as the
+process knows it (`granule::g`; one function with the hold's, migrate-09), the governor's
+sleeps teaching g their lateness (`granule::LATE`). On a host whose GetThreadTimes counts
+15.625 ms ticks (PM M294), 31.25 ms.
+- *Its credit, a thread's and a pool's per CPU: a whole period, where it was half.* One look
+  can charge a thread the whole period of its one CPU (every tick of the look landing on its
+  runs), a physical bound: the credit holds it, so no single look's ticks put a thread that
+  keeps to its half back to normal. At half a 2g period, one tick of slack, a thread running
+  1 ms of every 6 charged both ticks of a look went back to normal (the risk platform-11's
+  2026-11-14 Status named). A raised thread so takes half a CPU over a long stretch and two
+  periods more at most (4g, 62.5 ms at ticks), where it took a period and a half of 100 ms
+  (150 ms).
+- *Cold start*: the governor measures its thread clock's step as it starts, before it is
+  raised (`granule::measure_clock`: two of its steps of its own CPU time, 31.25 ms at ticks);
+  until then g is `LEAST_WAIT` and the period 2 ms, a thread's credit as small: a raised thread
+  may go back to normal for the moment before the clock is known, less authority, never more.
+- *Failure, typed*: a period that outgrows a u64 of ns (`granule::Outgrown`) raises no thread
+  (`raise_current` errs, the thread at its priority) and, at a look, puts every watched thread
+  back to normal and lets go of them; a clock that cannot be read leaves g its wake's
+  (`Unclocked`), and a thread whose time is unread is refused as before.
+- Held (light, Windows): `platform::windows_thread::tests::the_look_is_d191s_period_for_half_a_cpu`,
+  `a_look_charged_its_whole_period_keeps_a_thread_raised` (red at half a period's credit:
+  none left after one look's two ticks), `credit_carries_a_thread_that_waits_across_its_clocks_steps`
+  and `a_pool_is_half_of_its_cpus_time` at 2g. Linted for x86_64-pc-windows-msvc; their run on
+  Windows is owed to ROOT: `cargo test -p shards-vmm --lib windows_thread` on windows-2025
+  (CI) and jupiter, with `a_thread_that_waits_between_its_runs_stays_raised`,
+  `a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits` and
+  `raised_threads_sharing_a_cpu_take_no_more_than_half_of_it` at the derived period, then PM
+  M495's start latency (`cpu-elastic/phases.py` against `winnone.patch`, n 100 a side) at 2g
+  beside 100 ms.
+- Still owed with platform-11's design (`docs/research/measurements/platform-fixes/held.md`):
+  the Windows pipes' `BUFFER` and `LINE_BUFFER` quotas, whose derivation needs each caller's
+  wire window (a message of `MAX_PAYLOAD` is 6 MiB, past either, so neither is a frame bound),
+  and macOS's 0.5 / 1 ms time-constraint pair (a guest timer's deadline or a measured batch
+  cost). No number replaced another.
+
 The user's plan, item 3 (2026-10-18): a run's `--cpus` as elastic as its memory (D148),
 every microVM given the host's CPUs, init bringing the run's online and `update --cpus`
 more or fewer. Bringing a CPU online as a run starts costs what no start has: 13 ms a CPU

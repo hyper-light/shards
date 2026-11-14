@@ -130,7 +130,7 @@ pub use shards_syscall_filter as seccomp;
 /// watches the thread while it is held (macos_thread.rs): one that runs long goes to
 /// timeshare before XNU's fail-safe would depress it (PM M317). On Windows a priority
 /// governor does (windows_thread.rs): one that uses more than half of its CPU, by more
-/// than half a period over a stretch, goes back to normal priority.
+/// than a period (D191's, 2g) over a stretch, goes back to normal priority.
 #[derive(Debug)]
 pub struct Prioritized {
     #[cfg(target_os = "macos")]
@@ -146,7 +146,7 @@ pub struct Prioritized {
 /// waited for the busy thread's slice to run out, and a run's start in a microVM of every
 /// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a step
 /// above normal priority while the thread uses no more than half of its CPU, its governor's
-/// credit carrying half a period across its clock's coarse steps (windows_thread.rs), where
+/// credit carrying a period across its clock's coarse steps (windows_thread.rs), where
 /// on 4 CPUs that 4 busy loops hold a run's start waited 217 to 337 ms at p50 for its guest
 /// to begin the command, and 8 to 10 so (PM M495, D191).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
