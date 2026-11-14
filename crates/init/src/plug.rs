@@ -1902,6 +1902,18 @@ mod tests {
         assert_eq!(g.raised, [128 * MIB, 256 * MIB, 384 * MIB, 512 * MIB]);
     }
 
+    /// A guest's first plug has no slowest seen to be past: it is waited for for as long as
+    /// its memory takes, here 20 s, never asked for again nor given up (D137, D209 Part 4).
+    #[test]
+    fn a_guests_first_memory_is_waited_for_however_long_it_takes() {
+        let mut g = fake(|asks: &[u64], t: Duration| {
+            PLUG.boot + if t >= Duration::from_secs(20) { asks[0] } else { 0 }
+        });
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert!(g.said.is_empty(), "{:?}", g.said);
+    }
+
     /// Memory that stops coming is asked for again after [`STALLED`], saying so with the
     /// kernel's words, which tells the driver again; it comes then, and is waited for.
     #[test]
