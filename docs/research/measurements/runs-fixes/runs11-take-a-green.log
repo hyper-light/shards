@@ -1,0 +1,58 @@
+# runs-11 TAKE_TIMEOUT slice (a), green on merge 51e3685ff (origin/main f385b8dac), macOS arm64, adas-mac-studio-3.local, kiln r422
+## cargo test -p shards-ipc --lib -- unix::tests::a_judged
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/runs11-owed/target/debug/deps/shards_ipc-f8d457ad8ebf29da)
+
+running 2 tests
+test unix::tests::a_judged_receive_waits_while_its_judge_says_go_on ... ok
+test unix::tests::a_judged_send_goes_on_where_it_was_as_its_peer_reads ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.36s
+
+## cargo test -p shards --bin shards -- daemon::tests::a_vm daemon::tests::a_handed_over daemon::health:: daemon::tests::a_run
+test daemon::health::tests::probes_come_at_their_intervals ... ok
+test daemon::health::tests::output_is_kept_to_its_limit ... ok
+test daemon::health::tests::the_start_period_forgives_failures_until_the_first_success ... ok
+test daemon::health::tests::probe_results_move_the_health_status ... ok
+test daemon::health::tests::the_last_five_results_are_kept ... ok
+test daemon::health::tests::an_exit_said_before_its_wait_teaches_nothing ... ok
+test daemon::health::tests::an_unread_microvm_process_ends_its_exec_typed ... ok
+test daemon::health::tests::checks_run_their_command_or_none ... ok
+test daemon::tests::a_run_whose_vm_cannot_start_is_told_why_at_once ... ok
+test daemon::tests::a_runs_log_is_held_to_its_bound_whatever_its_segments ... ok
+test daemon::tests::a_run_that_publishes_nothing_holds_nothing ... ok
+test daemon::tests::a_run_its_followers_left_lets_go_of_the_execs_handed_its_vm ... ok
+test daemon::tests::a_vm_gone_before_the_wait_surely_never_took_the_run ... ok
+test daemon::tests::a_run_that_ends_before_its_record_is_written_keeps_its_end ... ok
+test daemon::tests::a_vm_no_watcher_takes_is_ended_and_its_network_process_reaped ... ok
+test daemon::tests::a_run_whose_ports_are_closed_holds_them_no_longer ... ok
+test daemon::tests::a_vm_that_answers_otherwise_may_have_taken_the_run ... ok
+test daemon::tests::a_runs_files_are_made_off_the_followers_loop ... ok
+test daemon::tests::a_vm_that_ended_with_its_run_unread_surely_never_took_it ... ok
+test daemon::tests::a_vm_that_ends_before_taking_a_run_fails_the_hand_over ... ok
+test daemon::tests::a_runs_readiness_is_said_as_its_events ... ok
+test daemon::tests::a_vms_windows_keep_every_range_within_the_hosts_mappings ... ok
+test daemon::tests::a_runs_end_waits_for_the_relays_of_its_output ... ok
+test daemon::tests::a_vms_pid_is_kept_until_its_ports_are_freed ... ok
+test daemon::tests::a_vm_stopped_partway_through_a_message_holds_up_no_command ... ok
+test daemon::health::tests::a_group_word_reports_its_refusal_before_the_kill_is_acknowledged ... ok
+test daemon::tests::a_handed_over_connection_survives_until_taken ... ok
+test daemon::tests::a_runs_log_segments_are_made_in_turn ... ok
+test daemon::health::tests::a_timed_wait_ends_its_exec_and_an_untimed_one_waits ... ok
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... ok
+test daemon::health::tests::an_exec_is_ended_once_its_microvm_runs_nothing_for_a_whole_w_star ... ok
+test daemon::tests::a_vm_ended_before_it_is_followed_is_reaped ... ok
+test daemon::health::tests::a_cold_wait_follows_its_microvm_while_it_lives ... ok
+test daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for ... FAILED
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... ok
+failures:
+thread 'daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for' (21101303) panicked at crates/shards/src/daemon/health.rs:1057:9:
+its answer, slower, raised W*: 3.4997515s
+failures:
+test result: FAILED. 34 passed; 1 failed; 0 ignored; 0 measured; 932 filtered out; finished in 10.69s
+## its one failure, daemon::health::tests::a_microvm_that_runs_at_any_rate_is_waited_for (pre-existing, untouched by this slice: its answer's sleep begins on a thread spawned before the wait begins, so under load, 17.85 on 14 cores then, the answer can come in under 3.5 s of the wait), rerun alone 3 times on the same merge
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 966 filtered out; finished in 3.65s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 966 filtered out; finished in 3.52s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 966 filtered out; finished in 3.58s
+## cargo clippy -p shards-ipc -p shards --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 42.43s

@@ -1,0 +1,34 @@
+## mut-take-1-m on 51e3685ff: cargo test -p shards --bin shards -- daemon::tests::a_vm_slow daemon::tests::a_vm_that_reads_nothing
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.13s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/runs11-owed/target/debug/deps/shards-1e7d28c4ebee2f50)
+running 2 tests
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... ok
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... FAILED
+failures:
+---- daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff stdout ----
+thread 'daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff' (21107239) panicked at crates/shards/src/daemon.rs:14813:13:
+assertion `left == right` failed
+  left: Err(Surely("timed out"))
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+thread '<unnamed>' (21107242) panicked at crates/shards/src/daemon.rs:14803:49:
+called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+failures:
+    daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 965 filtered out; finished in 10.65s
+error: test failed, to rerun pass `-p shards --bin shards`
+## mut-take-2-m on 51e3685ff: cargo test -p shards --bin shards -- daemon::tests::a_vm_slow daemon::tests::a_vm_that_reads_nothing
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.69s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/runs11-owed/target/debug/deps/shards-1e7d28c4ebee2f50)
+running 2 tests
+test daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff ... FAILED
+test daemon::tests::a_vm_slow_to_read_its_run_while_it_runs_keeps_its_handoff ... ok
+failures:
+---- daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff stdout ----
+thread 'daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff' (21108295) panicked at crates/shards/src/daemon.rs:14767:33:
+a VM that ran nothing was waited for on: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+failures:
+    daemon::tests::a_vm_that_reads_nothing_and_runs_nothing_fails_its_handoff
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 965 filtered out; finished in 10.59s
+error: test failed, to rerun pass `-p shards --bin shards`
