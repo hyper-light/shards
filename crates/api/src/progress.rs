@@ -1532,6 +1532,11 @@ mod tests {
     /// other in the cgroup this test shares with the sleeper, which ran nothing meanwhile. Red
     /// while a shared cgroup's pressure counted as the sleeper's (main's CI at 5af644eab:
     /// ends.rs's `/bin/sleep 60` judged going on).
+    ///
+    /// Judged over a window in which the sleeper ran nothing, as a look after its spinners
+    /// have ended shows, and looked at again over another where it ran: a sleeper is woken by
+    /// a cgroup freezer's cycles, which a kiln run's cgroup goes through about six times a
+    /// second, each a few µs of its CPU (PM M560), so no window is a sleeper's by its clock.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_sleeper_is_still_whatever_its_cgroups_others_wait_for() {
@@ -1545,27 +1550,30 @@ mod tests {
         {
             std::thread::yield_now();
         }
-        let before = followed.hold();
-        let ran = followed.look().unwrap().unwrap();
-        let shared = shared_cpu_pressure(sleeper.id());
         let cpu = first_cpu();
-        let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
-        // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in the
-        // pressure the sleeper's cgroup shares.
-        if let Some(from) = shared {
-            while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
-                std::thread::yield_now();
+        let (before, now, shared) = loop {
+            let before = followed.hold();
+            let ran = followed.look().unwrap().unwrap();
+            let shared = shared_cpu_pressure(sleeper.id());
+            let mut spinners = [spinner_on(cpu), spinner_on(cpu)];
+            // Waited for, where the kernel keeps it: the spinners' wait for their CPU shown in
+            // the pressure the sleeper's cgroup shares.
+            if let Some(from) = shared {
+                while shared_cpu_pressure(sleeper.id()).is_none_or(|now| now <= from) {
+                    std::thread::yield_now();
+                }
             }
-        }
-        let now = followed.hold();
-        let look = followed.look().unwrap().unwrap();
-        for spinner in &mut spinners {
-            drop(spinner.stdin.take());
-            spinner.wait().unwrap();
-        }
+            let now = followed.hold();
+            for spinner in &mut spinners {
+                drop(spinner.stdin.take());
+                spinner.wait().unwrap();
+            }
+            if !followed.look().unwrap().unwrap().ran_since(&ran) {
+                break (before, now, shared);
+            }
+        };
         sleeper.kill().unwrap();
         sleeper.wait().unwrap();
-        assert!(!look.ran_since(&ran), "the sleeper ran: {ran:?} {look:?}");
         assert_eq!(
             found(false, false, &before, &now),
             Found::Still,
