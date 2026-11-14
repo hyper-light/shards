@@ -24,7 +24,7 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::{Identity, MAX_FDS, MAX_PAYLOAD};
+use crate::{Identity, Judge, MAX_FDS, MAX_PAYLOAD};
 
 /// The signals `docker run` forwards to the container with `--sig-proxy`, its default:
 /// every one but SIGCHLD, SIGPIPE, SIGURG and those the daemon cannot name (docker/cli
@@ -376,11 +376,6 @@ fn space(fds: usize) -> usize {
 pub fn send(sock: &UnixStream, kind: u8, payload: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     send_with(sock, kind, payload, fds, None)
 }
-
-/// When a judged wait ([`send_judged`], [`recv_judged`]) next asks its judge, and whether it
-/// goes on: asked as the wait begins and each time the time it named passes with the socket
-/// not ready; `Ok(None)` waits on the socket's readiness alone, an error ends the wait with it.
-pub type Judge<'a> = dyn FnMut() -> io::Result<Option<Instant>> + 'a;
 
 /// [`send`], judged (runs-11 `TAKE_TIMEOUT`): written as room comes, by sendmsg(2) and send(2)
 /// with `MSG_DONTWAIT`, which leave the socket's own mode and timeouts to its other users, and

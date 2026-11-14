@@ -149,10 +149,10 @@ pub(super) struct Answers {
     /// A warm VM's taking of a run: the run's handoff sent, to its TAKEN (`daemon::hand_over`).
     pub take: Record,
     /// A microVM's join share's taking of a joiner's link: its door's `JOIN_LINK` sent
-    /// (`daemon::give_join_volumes`, Unix).
+    /// (`daemon::give_join_volumes`).
     pub door: Record,
     /// A join share's taking of a joiner's volume: its `JOIN_VOLUME` sent, to its `TAKEN`
-    /// (`daemon::give_join_volume`, Unix).
+    /// (`daemon::give_join_volume`).
     pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
@@ -833,7 +833,6 @@ fn await_exit(ours: &shards_ipc::Stream, wait: Wait<'_>) -> Ended {
 /// first answer, and once its party has gone (its socket's end then ends the wait), the
 /// socket's readiness alone; then its party looked at once each W* and the wait ended, typed
 /// ([`Stalled`]), where it ran nothing since the look before or could not be read.
-#[cfg(unix)]
 pub(super) struct Judged<'r> {
     pid: u32,
     record: &'r Record,
@@ -841,7 +840,6 @@ pub(super) struct Judged<'r> {
     begun: bool,
 }
 
-#[cfg(unix)]
 impl<'r> Judged<'r> {
     pub(super) fn of(pid: u32, record: &'r Record) -> Judged<'r> {
         Judged {
@@ -875,18 +873,15 @@ impl<'r> Judged<'r> {
 }
 
 /// A judged wait's end ([`Judged`]): its party stalled, or could not be read, as [`Cut`] says.
-#[cfg(unix)]
 #[derive(Debug)]
 pub(super) struct Stalled(pub(super) Cut);
 
-#[cfg(unix)]
 impl Stalled {
     fn error(cut: Cut) -> std::io::Error {
         std::io::Error::new(std::io::ErrorKind::TimedOut, Stalled(cut))
     }
 }
 
-#[cfg(unix)]
 impl std::fmt::Display for Stalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
@@ -902,7 +897,6 @@ impl std::fmt::Display for Stalled {
     }
 }
 
-#[cfg(unix)]
 impl std::error::Error for Stalled {}
 
 /// A wait on VM process `vm` judged by `record`, begun now: none where the process has gone

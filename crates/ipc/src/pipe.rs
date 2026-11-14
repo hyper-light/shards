@@ -57,7 +57,7 @@ use windows_sys::Win32::System::Threading::{
     WaitForMultipleObjects, WaitForSingleObject,
 };
 
-use crate::{MAX_FDS, MAX_PAYLOAD, Window};
+use crate::{Judge, MAX_FDS, MAX_PAYLOAD, Window};
 
 mod poll;
 pub use poll::{ExitWatch, Poller};
@@ -155,6 +155,21 @@ pub(crate) fn call(
     deadline: Option<Instant>,
     start: impl FnOnce(*mut OVERLAPPED) -> i32,
 ) -> Called {
+    call_judged(handle, cancels, &mut { deadline }, None, start)
+}
+
+/// [`call`], its deadline `due` judged where `judge` is given (runs-11 `TAKE_TIMEOUT`): as
+/// `due` passes with the call under way, `judge` names the next, and the call stays under
+/// way meanwhile, its OVERLAPPED pending, where a cancel then would lose how much a write had
+/// moved. An error `judge` ends the wait with cancels the call: `Done` where it had finished
+/// first, else that error, nothing it moved told. `due` is left at the judge's last.
+fn call_judged(
+    handle: HANDLE,
+    cancels: &[&Event],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+    start: impl FnOnce(*mut OVERLAPPED) -> i32,
+) -> Called {
     let mut start = Some(start);
     let mut run = |event: &Event| {
         event.reset();
@@ -177,7 +192,7 @@ pub(crate) fn call(
             .collect();
         let count = u32::try_from(waited.len()).unwrap_or(1);
         loop {
-            let ms = deadline.map_or(INFINITE, |d| {
+            let ms = due.map_or(INFINITE, |d| {
                 // Rounded up: a wait of 0 ms would end at once, and spin.
                 let left = d.saturating_duration_since(Instant::now());
                 u32::try_from(left.as_micros().div_ceil(1000))
@@ -191,9 +206,18 @@ pub(crate) fn call(
                 w if w > WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + count => {
                     return cancelled(handle, &ov, Called::Cancelled);
                 }
-                WAIT_TIMEOUT if deadline.is_some_and(|d| Instant::now() >= d) => {
-                    return cancelled(handle, &ov, Called::Late);
-                }
+                WAIT_TIMEOUT if due.is_some_and(|d| Instant::now() >= d) => match judge.as_deref_mut() {
+                    None => return cancelled(handle, &ov, Called::Late),
+                    Some(judge) => match judge() {
+                        Ok(next) => *due = next,
+                        Err(why) => {
+                            return match cancelled(handle, &ov, Called::Cancelled) {
+                                done @ Called::Done(Ok(_)) => done,
+                                _ => Called::Done(Err(why)),
+                            };
+                        }
+                    },
+                },
                 WAIT_TIMEOUT => {}
                 _ => {
                     let e = io::Error::last_os_error();
@@ -269,10 +293,21 @@ pub(crate) fn write_from(
     cancels: &[&Event],
     deadline: Option<Instant>,
 ) -> Called {
+    write_judged(handle, buf, cancels, &mut { deadline }, None)
+}
+
+/// Writes from `buf` to `handle` with [`call_judged`].
+fn write_judged(
+    handle: HANDLE,
+    buf: &[u8],
+    cancels: &[&Event],
+    due: &mut Option<Instant>,
+    judge: Option<&mut Judge<'_>>,
+) -> Called {
     let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
     let at = buf.as_ptr();
     // SAFETY: as `read_into`'s.
-    call(handle, cancels, deadline, |ov| unsafe {
+    call_judged(handle, cancels, due, judge, |ov| unsafe {
         WriteFile(handle, at, len, std::ptr::null_mut(), ov)
     })
 }
@@ -1359,9 +1394,10 @@ impl Stream {
         }
     }
 
-    /// Writes all of `buf`, within its write timeout (`WouldBlock` past it); a shut writing
+    /// Writes all of `buf`, within its write timeout (`WouldBlock` past it), or where `judge`
+    /// is given for as long as it says ([`send_judged`]), never by the timeout; a shut writing
     /// end, or one whose peer has gone, is a broken pipe.
-    fn write_all_now(&self, buf: &[u8]) -> io::Result<()> {
+    fn write_all_now(&self, buf: &[u8], mut judge: Option<&mut Judge<'_>>) -> io::Result<()> {
         let end = &*self.0;
         if end.writes_shut.is_set() {
             return Err(io::ErrorKind::BrokenPipe.into());
@@ -1370,10 +1406,20 @@ impl Stream {
         let Some(handle) = &*guard else {
             return Err(io::ErrorKind::BrokenPipe.into());
         };
-        let deadline = lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t));
+        let mut due = match judge.as_deref_mut() {
+            Some(judge) => judge()?,
+            None => lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t)),
+        };
         let mut left = buf;
         while !left.is_empty() {
-            match write_from(handle.as_raw_handle(), left, &[&end.writes_shut], deadline) {
+            let cancels = [&end.writes_shut];
+            match write_judged(
+                handle.as_raw_handle(),
+                left,
+                &cancels,
+                &mut due,
+                judge.as_deref_mut(),
+            ) {
                 Called::Done(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
                 Called::Done(Ok(n)) => left = left.get(n..).unwrap_or_default(),
                 Called::Done(Err(e)) if ended(&e) => return Err(io::ErrorKind::BrokenPipe.into()),
@@ -1708,7 +1754,7 @@ impl Read for Stream {
 
 impl Write for &Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write_all_now(buf).map(|()| buf.len())
+        self.write_all_now(buf, None).map(|()| buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -1742,6 +1788,31 @@ pub struct Message {
 /// Sends one message on `sock` with `fds`, which go to its peer's process ([`Way`]); this
 /// process keeps its own. Blocks until all of it is written.
 pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>]) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, None)
+}
+
+/// [`send`], judged (runs-11 `TAKE_TIMEOUT`): one overlapped write of the message, waited for
+/// until the time `judge` names and then for as long as it says, the write pending meanwhile
+/// ([`call_judged`]), never by the stream's write timeout. An error `judge` ends it with
+/// cancels the write and leaves the message cut short: its peer never had all of it, and
+/// the handles it gave the peer's process are closed there.
+pub fn send_judged(
+    sock: &Stream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedHandle<'_>],
+    judge: &mut Judge<'_>,
+) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, Some(judge))
+}
+
+fn send_with(
+    sock: &Stream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedHandle<'_>],
+    judge: Option<&mut Judge<'_>>,
+) -> io::Result<()> {
     if payload.len() > MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1774,7 +1845,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
                 lock(theirs).extend(copies);
             }
             drop(way);
-            sock.write_all_now(&bytes)
+            sock.write_all_now(&bytes, judge)
         }
         Way::Gives(process) => {
             // A handle of its own to the child: the way's lock is not held across a write,
@@ -1795,7 +1866,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
             for value in &given {
                 bytes.extend(value.to_le_bytes());
             }
-            let sent = sock.write_all_now(&bytes);
+            let sent = sock.write_all_now(&bytes, judge);
             // Not all of it read, it was not taken: what was given is closed there.
             if sent.is_err() {
                 take_back(process, &given);
@@ -1804,7 +1875,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
         }
         Way::Given | Way::Plain if fds.is_empty() => {
             drop(way);
-            sock.write_all_now(&bytes)
+            sock.write_all_now(&bytes, judge)
         }
         Way::Given | Way::Plain => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1862,21 +1933,37 @@ pub fn recv_by(sock: &Stream, deadline: Instant) -> io::Result<Option<Message>> 
     recv_until(sock, Some(deadline))
 }
 
+/// [`recv`], judged (runs-11 `TAKE_TIMEOUT`): each read waited for until the time `judge`
+/// names, where it is asked again, never by the stream's read timeout. A read cut at a due
+/// had moved nothing ([`Called::Late`]), so the next takes the message on where it was.
+pub fn recv_judged(sock: &Stream, judge: &mut Judge<'_>) -> io::Result<Option<Message>> {
+    let mut due = judge()?;
+    recv_with(sock, &mut due, Some(judge))
+}
+
 fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Message>> {
+    recv_with(sock, &mut { deadline }, None)
+}
+
+fn recv_with(
+    sock: &Stream,
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<Option<Message>> {
     let mut header = [0u8; HEADER];
-    let got = loop {
-        match sock.read_by(&mut header, deadline) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            got => break got?,
-        }
-    };
+    let got = read_judged(sock, &mut header, due, judge.as_deref_mut())?;
     if got == 0 {
         return Ok(None);
     }
-    fill(sock, header.get_mut(got..).unwrap_or_default(), deadline)?;
+    fill(
+        sock,
+        header.get_mut(got..).unwrap_or_default(),
+        due,
+        judge.as_deref_mut(),
+    )?;
     let (len, values) = rest_of(sock, &header)?;
     let mut rest = vec![0u8; len + values];
-    fill(sock, &mut rest, deadline)?;
+    fill(sock, &mut rest, due, judge)?;
     message(sock, &header, rest).map(Some)
 }
 
@@ -1998,13 +2085,32 @@ impl Arriving {
     }
 }
 
+/// A read into `buf` by `due` ([`Stream::read_by`]), made again where a signal cut it; where
+/// `judge` is given, made again as long as it says at each due that passes.
+fn read_judged(
+    sock: &Stream,
+    buf: &mut [u8],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<usize> {
+    loop {
+        match (sock.read_by(buf, *due), judge.as_deref_mut()) {
+            (Err(e), _) if e.kind() == io::ErrorKind::Interrupted => {}
+            (Err(e), Some(judge)) if e.kind() == io::ErrorKind::TimedOut => *due = judge()?,
+            (read, _) => return read,
+        }
+    }
+}
+
 /// Reads exactly `buf.len()` more bytes of a message.
-fn fill(sock: &Stream, mut buf: &mut [u8], deadline: Option<Instant>) -> io::Result<()> {
+fn fill(
+    sock: &Stream,
+    mut buf: &mut [u8],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<()> {
     while !buf.is_empty() {
-        let n = match sock.read_by(buf, deadline) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            n => n?,
-        };
+        let n = read_judged(sock, buf, due, judge.as_deref_mut())?;
         if n == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -2696,5 +2802,84 @@ mod tests {
         fill_random(&mut b).unwrap();
         assert_ne!(a, b);
         assert_ne!(a, [0u8; 64]);
+    }
+
+    /// A judge for a test's judged waits: due `every` from each ask, counting its asks in
+    /// `asked`, refusing from its `refuse`th ask on where that is given.
+    fn judge_every(
+        every: Duration,
+        asked: &AtomicU64,
+        refuse: Option<u64>,
+    ) -> impl FnMut() -> io::Result<Option<Instant>> + '_ {
+        move || {
+            let n = asked.fetch_add(1, Ordering::Relaxed) + 1;
+            if refuse.is_some_and(|at| n >= at) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "judged stalled"));
+            }
+            Ok(Instant::now().checked_add(every))
+        }
+    }
+
+    /// A judged send to a peer that reads late stays under way past its judge's dues, its
+    /// write pending, and its peer reads the message whole (runs-11 `TAKE_TIMEOUT`); its judge's
+    /// refusal cancels it, the message cut short. The pair's window holds one whole message
+    /// ([`MESSAGE_FRAME`]), so a first, unread, leaves the judged one's write to pend. Red
+    /// before, with a write timeout in its judge's place: the write was cancelled at its
+    /// deadline, `WouldBlock`, with no word of how much went.
+    #[test]
+    fn a_judged_send_stays_under_way_as_its_peer_reads() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let payload: Vec<u8> = (0..MAX_PAYLOAD).map(|i| (i % 251) as u8).collect();
+        send(&ours, 6, &payload, &[]).unwrap();
+        let asked = AtomicU64::new(0);
+        std::thread::scope(|s| {
+            let reader = s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                (recv(&theirs).unwrap().unwrap(), recv(&theirs).unwrap().unwrap())
+            });
+            let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+            send_judged(&ours, 7, &payload, &[], &mut judge).unwrap();
+            let (first, judged) = reader.join().unwrap();
+            assert_eq!((first.kind, first.payload == payload), (6, true));
+            assert_eq!((judged.kind, judged.payload == payload), (7, true));
+        });
+        assert!(
+            asked.load(Ordering::Relaxed) > 2,
+            "its judge was not asked at its dues"
+        );
+        let (ours, _theirs) = Stream::pair().unwrap();
+        send(&ours, 6, &payload, &[]).unwrap();
+        let asked = AtomicU64::new(0);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, Some(3));
+        let e = send_judged(&ours, 7, &payload, &[], &mut judge).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+    }
+
+    /// A judged receive waits for its message past its judge's dues while its judge says go on,
+    /// takes it whole as it comes in parts, and ends with its judge's refusal or its peer's end.
+    #[test]
+    fn a_judged_receive_waits_while_its_judge_says_go_on() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let asked = AtomicU64::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(60));
+                // Its header first, then its payload.
+                (&theirs).write_all(&[9, 0, 0, 0, 3, 0]).unwrap();
+                std::thread::sleep(Duration::from_millis(60));
+                (&theirs).write_all(b"abc").unwrap();
+            });
+            let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+            let m = recv_judged(&ours, &mut judge).unwrap().unwrap();
+            assert_eq!((m.kind, m.payload.as_slice()), (9, &b"abc"[..]));
+        });
+        assert!(asked.load(Ordering::Relaxed) > 2);
+        let asked = AtomicU64::new(0);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, Some(3));
+        let e = recv_judged(&ours, &mut judge).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        drop(theirs);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+        assert!(recv_judged(&ours, &mut judge).unwrap().is_none());
     }
 }
