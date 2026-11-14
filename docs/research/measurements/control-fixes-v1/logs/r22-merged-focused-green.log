@@ -1,0 +1,212 @@
+From https://github.com/hyper-light/shards
+ * branch                p/fix-control-v1 -> FETCH_HEAD
+ * [new branch]          p/fix-control-v1 -> origin/p/fix-control-v1
+Previous HEAD position was 717b0f974 Merge main 5f42c9452 after contention; host check required, init inputs disjoint
+HEAD is now at 30d6080e9 Merge main b2e3b069a; retain control-07 record across whitespace-only PM conflict
+30d6080e9b5ad72513cc424bf8edb12d31ed1682
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/dns)
+   Compiling shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/registry)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/vmm)
+   Compiling shards-agentfile v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/agentfile)
+   Compiling shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/net)
+   Compiling shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/tuf)
+   Compiling shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/build)
+   Compiling shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/sigstore)
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/api)
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-control/crates/shards)
+    Finished `test` profile [unoptimized] target(s) in 23.94s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/shards-a998480066674fe3)
+
+running 5 tests
+test daemon::managed::cap::tests::legacy_cap_history_is_read_bounded_and_replaced_by_totals ... ok
+test daemon::managed::cap::tests::a_drop_across_owners_records_the_loss_per_owner ... ok
+test daemon::managed::cap::tests::each_log_loses_its_oldest_first_and_keeps_its_newest ... ok
+test daemon::managed::cap::tests::the_newest_segment_rotation_keeps_the_bound_within_one_segment ... ok
+test daemon::managed::cap::tests::a_caps_loss_record_is_bounded_by_its_totals_not_its_history ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 913 filtered out; finished in 1.05s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/api)
+    Finished `test` profile [unoptimized] target(s) in 1.96s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/shards_api-d02e764ed5d82b48)
+
+running 34 tests
+test image::session::tests::a_rate_no_host_hears_is_refused_and_leaves_no_ask ... ok
+test image::session::tests::a_members_typed_input_is_wiped_where_it_was_read_once_sent ... ok
+test image::session::tests::a_room_no_host_hears_is_refused_and_leaves_no_ask ... ok
+test image::session::tests::a_rates_answer_is_kept_for_its_awaited_ask_alone ... ok
+test image::session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alone ... ok
+test image::session::tests::a_channels_end_is_read_as_its_host_told_it ... ok
+test image::session::tests::a_rooms_answer_is_kept_for_its_awaited_ask_alone ... ok
+test image::session::tests::a_runs_end_once_seen_is_kept_through_its_stop ... ok
+test image::session::tests::a_runs_final_use_comes_with_its_end_and_answers_every_ask_after ... ok
+test image::session::tests::a_run_ended_before_its_first_credit_still_has_its_outputs ... ok
+test image::session::tests::a_lease_the_run_was_not_granted_breaks_the_channel ... ok
+test image::session::tests::a_lease_is_asked_under_the_runs_own_key_where_it_has_one ... ok
+test image::session::tests::a_lease_given_after_the_runs_release_is_released_as_it_comes ... ok
+test image::session::tests::a_saves_answer_is_kept_for_its_awaited_ask_alone ... ok
+test image::session::tests::a_stdins_room_and_end_are_its_hosts_and_come_for_asked_members_alone ... ok
+test image::session::tests::a_stdins_room_right_after_the_start_is_its_members ... ok
+test image::session::tests::a_feed_sends_its_callers_bytes_within_its_room_then_its_end ... ok
+test image::session::tests::a_program_named_alone_is_found_on_path_alone ... ok
+test image::session::tests::a_save_rides_the_runs_channel_and_comes_back_typed ... ok
+test image::session::tests::a_sign_ins_capture_and_refresh_are_kept_by_the_broker_and_its_lease_released_at_the_runs_end ... ok
+test image::session::tests::refusals_come_typed_in_their_hosts_words ... ok
+test image::session::tests::readiness_is_told_as_it_moves ... ok
+test image::session::tests::a_boot_not_stopped_answers_as_before_and_one_stopped_first_ends_stopped ... ok
+test image::session::tests::a_runs_leases_are_given_as_asked_and_released_at_each_end ... ok
+test image::session::tests::an_ended_members_idle_input_releases_its_feeder ... ok
+test image::session::tests::a_hosts_diagnostics_are_written_whole_to_the_file_its_caller_names ... ok
+test image::session::tests::output_said_after_the_runs_end_reaches_its_owner_before_its_end ... ok
+test image::session::tests::a_run_host_holds_no_end_it_was_not_given ... ok
+test image::session::tests::a_run_host_takes_its_environment_and_speaks_on_its_streams ... ok
+test image::session::tests::output_taken_before_the_runs_end_reaches_its_owner_whole ... ok
+test image::session::tests::a_stop_cancels_a_create_whose_host_never_reads ... ok
+test image::session::tests::a_dead_warm_host_is_definitely_untaken ... ok
+test image::session::tests::a_run_host_that_ends_before_its_run_starts_leaves_no_layer ... ok
+test image::session::tests::a_stop_mid_boot_ends_the_boot_its_host_and_all_its_host_started ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 0.72s
+
+     Running tests/allocations.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/allocations-af38158b1560b825)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/control_lanes.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/control_lanes-555d9e880d8af49c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/real.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/real-358aa63cae16e07c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/sim.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/sim-09702ee2c0dedd8b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/wiped.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/wiped-15e1d37a42fb8c3c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized] target(s) in 0.06s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/shards_remote-438ce0e363a2829c)
+
+running 10 tests
+test control::exec::tests::a_steers_refusals_are_codes_of_their_own ... ok
+test control::exec::tests::a_members_lane_holds_its_own_windows_alone ... ok
+test control::exec::tests::a_log_cursor_moves_past_what_its_reader_had ... ok
+test control::exec::tests::what_an_exec_lane_is_told_reads_back ... ok
+test control::exec::tests::steering_reads_back_and_a_signal_no_guest_has_is_refused ... ok
+test control::exec::tests::an_ask_reads_back_as_it_was_sent ... ok
+test control::exec::tests::a_log_ask_reads_back_and_one_amiss_is_refused ... ok
+test control::exec::tests::each_execs_streams_are_scoped_apart ... ok
+test control::exec::tests::a_log_record_reads_back_and_one_amiss_is_refused ... ok
+test control::exec::tests::an_exec_ask_uses_its_run_spec_bound_beyond_an_ordinary_frame ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/loopback-831af44bae4c10aa)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal_prefixed
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-608bd02c6033ac37/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized] target(s) in 0.06s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/shards_remote-438ce0e363a2829c)
+
+running 2 tests
+test frame::tests::frames_come_back_whole_however_they_arrive ... ok
+test frame::tests::a_request_carries_its_arguments_and_printing_variables_alone ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in 0.00s
+
+     Running tests/loopback.rs (/Users/adalundhe/g121-tmp/control-target/debug/deps/loopback-831af44bae4c10aa)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.00s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/dns)
+    Checking shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/registry)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/vmm)
+    Checking shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/api)
+    Checking shards-agentfile v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/agentfile)
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/net)
+    Checking shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/sigstore)
+    Checking shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/build)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-control/crates/shards)
+    Finished `dev` profile [unoptimized] target(s) in 19.66s

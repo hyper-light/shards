@@ -343,3 +343,14 @@ init plug changes and records only. Host crate/dependency paths are unchanged
 from R18's 717b0f974; R19 `cargo check -j 4 -p shards-init --tests` is clean on
 native Linux, target removed. [Native check](logs/r19-contention-native-check.log).
 Full focused green sources remain R14 (host) and R13 (init), not newly run tests.
+
+Merge 30d6080e9b5ad72513cc424bf8edb12d31ed1682 incorporates main b2e3b069a.
+Its PM conflict was whitespace beside the control-07 record; the record and
+neighboring memory records were retained. As required after any conflict, R22
+reran 5 cap, 34 session, 10 exec and 2 frame tests plus all-target clippy for the
+same four host crates on Mac Studio arm64: all clean.
+[Focused green](logs/r22-merged-focused-green.log). Init inputs unchanged from
+R19's checked 41a972609. Source was fetched from the signed checkpoint branch
+p/fix-control-v1 into the same owned runner clone, sync:false, pinned to the SHA
+above; this avoids the observed long carrier handoff. No credentials moved and
+no local build ran. R22 is the latest full host focused green.
