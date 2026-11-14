@@ -128,6 +128,11 @@ pub fn masked(template: &[Leaf], vcpus: u32, invariant_tsc: bool) -> Vec<Masked>
     results
 }
 
+/// Whether the guest may use KVM's TSC-deadline timer after applying its CPU baseline.
+pub fn deadline_timer(supported: bool, _baseline: &[[u32; 7]]) -> bool {
+    supported
+}
+
 /// The CPUID vCPU `index` of `count` sees.
 pub fn for_vcpu(template: &[Leaf], index: u32, count: u32, tsc_deadline: bool) -> Vec<Leaf> {
     let apic = index;
@@ -804,6 +809,22 @@ mod covers_tests {
         let intel = [INTEL, [1, 0, 0, 0, 0, 0x7ef8_320b, 0x178b_fbff]];
         assert_eq!(meet(&a, &intel), Err(Lacks::Vendor));
         assert_eq!(baseline(&[]), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_cpu_baseline_keeps_deadline_timer_shaping_within_its_features() {
+        let template = vec![leaf(1, 0, 0, TSC_DEADLINE, 0)];
+        let baseline = vec![[1, 0, 0, 0, 0, 0, 0]];
+        let mut masked = template.clone();
+        within(&mut masked, &baseline);
+        let guest = for_vcpu(&masked, 0, 1, deadline_timer(true, &baseline));
+        assert_eq!(guest[0].ecx & TSC_DEADLINE, 0);
+        assert!(deadline_timer(true, &[]));
+        assert!(!deadline_timer(false, &[]));
+        let allowed = [[1, 0, 0, 0, 0, TSC_DEADLINE, 0]];
+        assert!(deadline_timer(true, &allowed));
+        assert!(!deadline_timer(false, &allowed));
+        assert!(!deadline_timer(true, &[[0, 0, 0, 0, 0, 0, 0]]));
     }
 
     /// A baseline's text reads back as it was written; one of more leaves than a baseline
