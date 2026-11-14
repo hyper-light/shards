@@ -767,7 +767,8 @@ impl Machine {
                             // As many secrets as the build's words name, and no more.
                             let named = words.iter().filter(|a| a.contains(crate::synced::SECRET)).count();
                             let (sent, secrets) =
-                                crate::synced::receive(&mut in_r, &dockerfile, &context, named)?;
+                                crate::synced::receive(&mut in_r, &dockerfile, &context, named)
+                                    .map_err(|e| e.to_string())?;
                             super::log(format!(
                                 "client {whose}: context {key}: {sent} bytes of files came"
                             ));
