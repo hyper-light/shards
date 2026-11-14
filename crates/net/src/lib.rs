@@ -31,7 +31,7 @@ pub mod tcp;
 pub mod wire;
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 #[cfg(unix)]

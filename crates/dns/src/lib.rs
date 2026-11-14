@@ -722,6 +722,20 @@ mod tests {
     }
 
     #[test]
+    fn a_responses_keep_the_received_lifetime() {
+        let q = query("mcp.example", TYPE_A);
+        for (ttl, expected) in [(0u32, 0), (1, 1), (60, 60), (0x8000_0001, 0)] {
+            let mut reply = answered(&q, [203, 0, 113, 7]);
+            reply[q.len() + 6..q.len() + 10].copy_from_slice(&ttl.to_be_bytes());
+            assert_eq!(a_records(&reply).unwrap().ttl, expected);
+        }
+        let mut reply = answered(&q, [203, 0, 113, 7]);
+        reply[7] = 2;
+        reply.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 203, 0, 113, 8]);
+        assert_eq!(a_records(&reply).unwrap().ttl, 1, "the shortest lifetime wins");
+    }
+
+    #[test]
     fn tcp_questions_go_on_whole_and_only_as_granted() {
         let mut s = Stream::new(false, vec!["mcp.example".into()]);
         let granted = framed_msg(&query("MCP.example", TYPE_A));
