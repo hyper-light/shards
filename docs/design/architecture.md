@@ -7243,26 +7243,36 @@ always did, so that no invitation's name or state is told to a stranger. Green
 taken for unknown, both killed; macOS arm64); the E2E's asks (`tests/context.rs`: no `--valid`
 refused, one past its lifetime refused) are ROOT's to run.
 
-*Frame bounds (remote-08), owed.* `frame::MAX_FRAME` (4 MiB) is not derived, and it stays in force
-until each bound that replaces it is. A bound per tag, as first proposed, cannot be one: the tags are
-shared by lanes whose payloads differ. `StdinEnd` carries nothing on a command stream and
-`OFFSET + ERRNO` bytes on a managed input lane (`managed/input.rs`); `Exit` carries a four-byte
-status on a command stream and on an exec lane, `OFFSET + ERRNO` on a managed input lane; `Refused`
-carries UTF-8 words on a command stream and a four-byte code on an exec lane (`control/exec.rs`);
-`Stdout` carries a pipe's read on a command stream and an offset-headed record up to
-`managed::RECORD_MOST` on a managed output lane. An `Exec` request's words go to an exec, bounded by
-the host's `sysconf(_SC_ARG_MAX)` (POSIX; on Linux a quarter of RLIMIT_STACK, execve(2)), but a step's
-go to the daemon itself (a move's plan up to `daemon::moves::MAX_PLAN`, which borrows `MAX_FRAME`),
-so ARG_MAX bounds only the first. The derivation is therefore one per lane: each lane's reader hands
-`frame::peek` its own grammar's bound for each tag it takes (none for a tag it does not), and
-`MAX_FRAME` goes once every lane has one. For the command stream: a client's stdin chunk and a
-command's output are reads of `server::READ_MOST` (the pipe buffers cited there); a join `JOIN_MAX`;
-a microVM's ID `MADE_MOST`; resizes, signals, controls and exits their fixed sizes; a request's words
-the larger of the exec's ARG_MAX and its steps' own bounds, which each step must first have
-(`MAX_PLAN`'s is a move plan's own contract, unmade); refusal words a bound the server holds its
-words to, unmade. The exec, socket and MCP lanes already check their payloads after admission
-(`TOLD_MOST`, `ASK_MOST`, `LOG_ASK`), which become their peeks' bounds. Owed: an R02 decision on
-the step and refusal bounds, then the per-lane peeks (an implementer's slice).
+*Frame bounds (remote-08), decided by ROOT and built, 2026-11-14.* `frame::MAX_FRAME`, a 4 MiB bound
+of every frame that no grammar derived, is gone. A bound per tag cannot be one, the tags being shared
+by lanes whose payloads differ (`StdinEnd` carries nothing on a command stream and `OFFSET + ERRNO`
+on a managed input lane; `Exit` four bytes on a command stream and an exec lane and `OFFSET + ERRNO`
+on a managed input lane; `Refused` words on a command stream and a four-byte code on an exec lane;
+`Stdout` a pipe's read on a command stream and an offset-headed record on a managed output lane), so
+the bound is the lane's. `frame::peek` reads a frame's kind and its length as the wire says them;
+each lane's reader holds the frame to what it takes of its kind (`frame::Takes`, `frame::Most`,
+`frame::admit`, `frame::take`), judged from the header before a byte of the payload is waited for,
+and refused typed (`frame::Unframed`: no kind, a kind the lane takes none of, past its bound, a host
+that says nothing of its memory). Each bound is its grammar's where one is: a command stream's
+client (`server::client_takes`) sends a join of `invite::JOIN_MAX`, stdin in a client's reads
+(`server::READ_MOST`, the pipe buffers cited there), its control stream's number (8 bytes), a size
+and a signal (4 bytes each); its daemon (`client::daemon_takes`) sends output in its pipe's reads
+(`READ_MOST`), an exit status (4 bytes) and the microVM it made (`MADE_MOST`). Where the grammar
+gives none, a request's words (an exec's, held again by the machine's own ARG_MAX, past which its
+execve refuses them with E2BIG, or a step's, a move's plan or a build's) and a refusal's or a cut's
+words, the bound is what the reading host can hold now (`shards_ipc::holdable_known`: its available
+memory, else its memory), the rule a snapshot's state is read by (D176, migrate-04); `host_memory`
+moved from the VMM's platform to `shards-ipc` for both. A move's plan read from its stream
+(`daemon::moves::plan_most`) is held to the same, which it carried there as the `ready` step's
+request. `managed::RECORD_MOST` is the largest record a managed lane carries, a log lane's output
+record of one part of the guest's capture: `run::MAX_PAYLOAD`, the run protocol's part, plus
+`control::exec::LOG_OUTPUT_HEAD`. The control lanes already held every frame to its exact length or
+its lane's credit before taking it (`control::lane`, `exec::steer`, `exec::told`, `unix::read_answer`,
+`managed::input`, `input::said`, the driver's output records), and do. Tests:
+`frame::tests::a_lane_takes_its_own_kinds_to_its_own_bounds`, and loopback's
+`a_clients_stdin_past_a_read_is_refused_from_its_header` (a chunk of `READ_MOST + 1` refused from its
+header; with `Stdin` admitted up to the host's memory, as under the old bound, the daemon waits for
+its bytes and the test is refused by its judged wait).
 
 #### A client's authority, judged of what runs and of whom its key is now (remote-01 to 03, 2026-11-13)
 
@@ -8459,7 +8469,8 @@ the latch needs (a descriptor; two on macOS, kqueue(2) and its directory's) and 
 watch of the process's one inotify instance (`max_user_watches`, inotify(7)), or an instance
 where the process could not make that one (`max_user_instances`), so a lane refused it is one
 the host is out of resources for, which its controller may ask again. The other `UNWATCHED`
-users (the listener, `logs -f`, a process's events, a log driver's copier) stay owed (runs-11).
+users (the listener, `logs -f`, a process's events, a log driver's copier) refuse as well
+since runs-11 (below).
 
 **Why.** shards is filesystem based (the user, repeatedly; 2026-10-18: `daemon.sock` was an
 error). Its own interfaces are files in the home; a socket stays only where an outside
@@ -8918,10 +8929,73 @@ process.
 | `RETRY` (daemon.rs), the collector | 250 ms | none: `have_room` on a wake | the wake of descriptors let go of |
 | `daemon.pid`, `daemon.stopping` | `PID` | `PID START` | proc(5); `proc_pid_rusage`; `GetProcessTimes` |
 
-Still picked, owed: `UNWATCHED` (250 ms, `RETRY`'s other use), how often what could not make
-a file watch (Linux's 128 inotify instances a user, PM M257) looks instead: the listener at
-its home, `logs -f`, a process's events, a log driver's copier; and the macOS list watcher's
-250 ms look where `daemon.pid` names no live daemon. Neither has an event to wait for.
+Still picked, owed: the macOS list watcher's 250 ms look where `daemon.pid` names no live
+daemon, which has no event to wait for. `UNWATCHED` is gone (runs-11, below).
+
+**runs-11, built (2026-11-14): no follower and no slot waits on a clock.**
+- *`UNWATCHED` (250 ms, picked)*, how often what could not make a file watch looked instead,
+  is gone: where no watch can be made, the follower refuses, typed (`daemon::WatchRefused`,
+  made by `daemon::watch`), as control-08's log lanes do (27fa453ad). ROOT's ruling, 2026-11-14:
+  refuse; no clock fallback, no handle-only mode. A watch needs a descriptor (two on macOS,
+  kqueue(2) and its directory's) and on Linux a watch of the process's one inotify instance
+  (`max_user_watches`) or an instance of its own (`max_user_instances`, inotify(7); PM M257):
+  a host out of them is out of resources the follower could not wait for, and a look's
+  interval has no cost to be derived from. Each user:
+  - *The listener* makes its three watches (the home, `images/`, `contexts/`) before the
+    daemon says it serves (`home_watches`, in `serve`): a daemon that cannot make one does not
+    start, its starter told as of any start it cannot make. `listen` takes `[FileWatch; 3]`,
+    no `Option`.
+  - *`logs -f`* makes each log's watch before any of it is shown, and *`watch processes`*
+    its record's: one refused answers `shards: NAME: …: its watch could not be made, so it is
+    not followed: …`, status 1, its run's end waiter never asked for. `wait_readable` takes
+    no timeout.
+  - *A log driver's shipper* makes its watch as it begins to follow: refused, it ends with
+    `WatchRefused` (its cause in the daemon's log, as a driver that cannot be made ends it),
+    its waiter forgotten and its place kept, so that the shipper its run's next start or the
+    daemon's next start makes sends from there.
+  Red, each by mutation restoring the fallback or swallowing the refusal:
+  `a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown` (`logs -f` and
+  `watch processes`: before, each followed its run to its end and said nothing),
+  `a_shipper_no_watch_can_be_made_for_ends_typed`, and
+  `a_daemon_that_cannot_watch_its_home_is_not_started` (each of the three directories). A
+  test makes a directory's watch fail by the name `unwatchable` in it (`cfg(test)` only).
+- *`SWEEP` (60 s, picked)*, after which a slot taken with no request was marked, and at the
+  second removed, is gone (ROOT's ruling, 2026-11-14: the taker names its process and the
+  daemon follows its end; a `shards_ipc::slots` protocol change). On Unix:
+  - A client names itself as it takes a slot: before it opens anything else of it, it writes
+    `PID START` (`this_process`, `Named`) in one write to the slot's sixth FIFO, `N.taker`
+    (32 bytes at most: a `u32`'s digits, a space, a `u64`'s, a newline; far under
+    `PIPE_BUF`, read whole, POSIX write(2)).
+  - `Slot::wait` waits on `say`, its stop and `taker`; once the name comes it tells its
+    caller (`Event::Named`) and follows that process: a kqueue of its `EVFILT_PROC`
+    `NOTE_EXIT` on macOS, its pidfd on Linux (pidfd_open(2), 5.3), its start checked once its
+    end is watched. A taker that ends before its first byte leaves the slot `Gone`, which its
+    maker replaces at once; what it wrote before it ended goes first.
+  - The gap between a client's read of its record and its name's write is closed by the take
+    lock, `requests/taking`: a client holds it shared (flock(2)) from before it reads a record
+    until it has named itself, let go of before its file closes (M244); a lock goes with its
+    holder's end. Where more slots of a list are taken than have named takers, the maker tries
+    it exclusive, never waiting (`Requests::quiet`): held, no client is taking a slot, so a
+    slot taken whose name is neither there to read (`Probe`) nor read (its wait says so before
+    it reads, drained then) is a taker's that ended in the gap, let go of and another offered.
+    Not held, a client is taking one, and its name or its request is an event that brings the
+    maker back. A slot left so holds no client's place nor the daemon's quiet; one whose taker
+    died in the gap waits for the maker's next event with no client taking.
+  - Windows' slots needed none of it: a client takes an instance by opening it, and its end
+    ends the instance's reads (M340), so `Slot::wait` is `Gone` already; `probe` is always
+    named and `quiet` never held.
+  - A build before takers: a client finds no `N.taker` and no `taking` and names nothing; a
+    daemon of it makes neither. Either way the slot is served as before, its request reaching
+    the daemon to step aside for its client's build.
+  Red, each by mutation: the taker's end not followed (the wait never ends), in
+  `slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone`; the lock not
+  asked, and names not looked at, in
+  `daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes`.
+  Also `the_daemon_holds_the_take_lock_only_while_no_client_takes_a_slot`.
+  Owed to ROOT: a client killed between take and request on HVF, KVM and WHP hosts, its slot
+  re-offered as it ends (`cargo test -p shards --profile test-release --test daemon`); the
+  client path's added cost (an flock pair, a FIFO's open and write) by
+  `docs/research/measurements/build-ab/ab.py` against e0e21e89b.
 
 Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
 unanswered), `a_requests_wait_is_learned_from_its_clients`,
@@ -19567,10 +19641,10 @@ were excluded by the review.
 | 10 ms poll (daemon.rs `take_lock`) | picked | Events, not looks: a blocking `File::lock` on a helper thread; a `platform::FileWatch` of the home (`requests/` lists, `daemon.stopping`); and the holder's exit (kqueue `EVFILT_PROC`/`NOTE_EXIT`, a pidfd, its process handle). | a unit test counting looks: one per event |
 | `HANDOFF_TRIES` 3 (daemon.rs `start_run`) | picked | Try each warm VM its pool held ready when the run began, then one booted for it. A VM booted for the run that also fails is a failure of the run, not of a VM: it ends typed, naming the last cause. The bound is the pool's own count. | `claim` to say whether a VM was ready or booted; red: four played warm VMs, three ending before `TAKEN`, the fourth takes the run |
 | 1 s, 10 ms polls (daemon.rs `with_its_process`) | picked | Wait on the VM process's exit event without reaping it (waitid `WNOWAIT`, kqueue, its handle), judged by D215 on a record of link-close-to-exit: cold while it lives and progresses. | red: a process that ends 1.5 s after its link closes still has its status said |
-| `UNWATCHED` 250 ms (daemon.rs) | picked (D185's admission) | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
+| `UNWATCHED` 250 ms (daemon.rs) | gone (runs-11, D185): refused typed where no watch can be made, ROOT's ruling over this row's design | The followers whose writer is the daemon (`logs -f`, events, the copiers) wait on that writer's own notification: one owner, a condvar, no file watch. Only files written by another process keep a watch. When that watch cannot be made (no inotify instance), wait for an instance to be let go of, as the listener waits for descriptors (`have_room`). | red: `logs -f` with no inotify instance follows each line without a clock |
 | 1 ms poll (cli/client.rs `ask_slot`) | picked | The client started the daemon, so it holds its child: wait on that child's exit and a `FileWatch` of `requests/` for the first list. The daemon's own `daemon.pid` covers one started by another client. | red: a counted-look test, a started daemon that offers slots late |
 | 250 ms (ipc slots/fifo.rs, macOS list with no process watch) | picked (D185) | select(2) sees a FIFO writer's end on macOS (M253's finding), so wait on the list's read end for it: no clock. | macOS unit test, the list's writer ended with no pid |
-| `SWEEP` 60 s (daemon/slots.rs) | picked | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
+| `SWEEP` 60 s (daemon/slots.rs) | gone (runs-11, D185): built as this row says, the gap before a name closed by the take lock | A client names itself (`this_process`) in its slot as it takes it, and the daemon follows that process's exit (one process watch per taken slot, released at its request): an abandoned slot goes as its taker ends, with no sweep. | red: a taker killed before its request; its slot re-offered at its exit |
 | 60 s log window (daemon/slots.rs `said_at_most`) | picked, policy | Say each episode, at reaching the most and as clients in hand go below it, with how many waited and how long. A log line per episode is bounded by the log's own rotation (D163). | a unit test of the transitions |
 | 5 s (vm_run.rs, joiners' end reports, `warm::await_joiners`) | picked | Wait while each joiner's process lives, judged by D215 on a record of joiner end reports: cold, its liveness. | red: a joiner that reports at 6 s keeps its holder |
 | 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
@@ -19649,7 +19723,7 @@ progress; D222's estimators).
 | `KEEP` (shards-api demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
 | `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
 | `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
-| `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
+| `MAX_PLAN` (daemon/moves.rs), now `plan_most` | 16 MiB | what the host can hold now (`shards_ipc::holdable_known`, remote-08) | the `ready` step's request frame (cli/moves.rs), held to the same (D180 *Frame bounds*) |
 | `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
 | `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
 | `EMPTIED` (daemon/parents.rs) | 10 s | D215's judge on its record (`EMPTIED`, learned): cold, while the leaf's processes live; past W*, a look each W* (ROOT's (3) slice 4) | the leaf's processes' CPU (`shards_api::Watch`); it was `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
@@ -19674,7 +19748,7 @@ progress; D222's estimators).
 The daemon's `REQUEST_TIMEOUT` and `RETRY`, and how a client knows its daemon, are D185's
 "Admission" (2026-11-09): a request cut told RESTART and its wait learned, a client out of
 descriptors refused with a spare and the daemon woken as descriptors go, a daemon known by its
-ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is still owed.
+ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is gone (runs-11).
 
 Held by unit tests (`a_pressure_is_said_as_it_doubles`,
 `each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles`,
@@ -27870,7 +27944,7 @@ has taken the pinned key, as many at once as the endpoint's stream limit allows;
   announced (the run's metadata `capacity`) is where its records start, not their bound: the
   endpoint grows a stream's record as the daemon's learner asks (`managed::Producer::admit`,
   QUIC's window as it was), so a lane reads a record up to the managed wire's own bound, one
-  frame's (`managed::RECORD_MOST`, `frame::MAX_FRAME` less the record's offset), its buffer
+  frame's (`managed::RECORD_MOST`, `run::MAX_PAYLOAD` plus a log record's head, remote-08), its buffer
   reserved at the admitted record and grown, fallibly, to what comes; one past that bound
   breaks the protocol. A lane that held the first admission as its bound closed the connection
   `Protocol` once an owned output's record grew (ROOT's KVM run of `log_lanes`, 2026-11-13;

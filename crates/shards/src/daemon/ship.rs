@@ -848,10 +848,10 @@ fn first(at: [Pos; 2]) -> u64 {
     at[0].seq().min(at[1].seq())
 }
 
-/// What a shipper following a run waits on: its log's watch, where it has one, its run's
+/// What a shipper following a run waits on: its log's watch, its run's
 /// end, and the daemon's stop.
 struct Waits<'a> {
-    watch: Option<&'a FileWatch>,
+    watch: &'a FileWatch,
     end: &'a UnixStream,
     stopped: &'a UnixStream,
 }
@@ -865,10 +865,8 @@ impl Waits<'_> {
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
         self.end.readable()
             || self.stopped.readable()
-            || self.watch.is_some_and(|w| {
-                // SAFETY: the watch's event, which it holds, looked at without waiting.
-                unsafe { WaitForSingleObject(w.fd().as_raw_handle(), 0) == WAIT_OBJECT_0 }
-            })
+            // SAFETY: the watch's event, which it holds, looked at without waiting.
+            || unsafe { WaitForSingleObject(self.watch.fd().as_raw_handle(), 0) == WAIT_OBJECT_0 }
     }
 
     /// Waits until one has something, or `within` has passed, where it is given: which do,
@@ -876,7 +874,7 @@ impl Waits<'_> {
     /// wait leaves set (windows_watch.rs).
     fn wait(&self, within: Option<Duration>) -> io::Result<[bool; 3]> {
         let deadline = within.and_then(|d| std::time::Instant::now().checked_add(d));
-        let watch: Vec<_> = self.watch.map(FileWatch::fd).into_iter().collect();
+        let watch = [self.watch.fd()];
         let (streams, set) = super::timed(within, || {
             shards_ipc::await_any(&[self.end, self.stopped], &watch, deadline)
         })?;
@@ -890,7 +888,7 @@ impl Waits<'_> {
     /// Each as poll(2) takes it: one not given is no descriptor, which it passes over.
     fn fds(&self) -> [Option<BorrowedFd<'_>>; 3] {
         [
-            self.watch.map(FileWatch::fd),
+            Some(self.watch.fd()),
             Some(self.end.as_fd()),
             Some(self.stopped.as_fd()),
         ]
@@ -951,7 +949,7 @@ fn wait_ready(fds: &[Option<BorrowedFd<'_>>; 3], within: Option<Duration>) -> io
 }
 
 /// How a shipper's following of a run ended.
-enum Shipped {
+pub(super) enum Shipped {
     /// Its run ended, and all it wrote is sent.
     Ended,
     /// The daemon stops.
@@ -1051,7 +1049,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Ships the log in `dir` with `driver`, from where it last got to, until its run has
     /// ended and all it wrote is sent, or `stopped` is told.
-    fn ship(
+    pub(super) fn ship(
         &self,
         id: &str,
         dir: &Path,
@@ -1076,9 +1074,12 @@ impl<D: Disk> Daemon<D> {
             // Followed as it is written, while its run runs.
             if let Some((number, end)) = self.wake_at_end(id)? {
                 let followed = (|| -> io::Result<Shipped> {
-                    // Where no watch can be had (on Linux, its user's inotify instances
-                    // spent: PM M257), it reads again every UNWATCHED, as `logs -f` does.
-                    let mut watch = FileWatch::new(file.dir()).ok();
+                    // Its watch made before it reads: a log no watch can be made for is not
+                    // followed (runs-11), its shipper ended, its cause in the daemon's log,
+                    // as a driver that cannot be made ends it, never read on a clock. Its
+                    // place is kept, so the shipper its run's next start or the daemon's
+                    // makes sends from there.
+                    let mut watch = super::watch(file.dir())?;
                     let mut watched = None;
                     loop {
                         let mut each = |p: Piece<'_>| lines.take(&p, &mut sender).map(|()| true);
@@ -1090,14 +1091,13 @@ impl<D: Disk> Daemon<D> {
                         }
                         if let Some(segment) = reader.segment()
                             && watched != Some(segment.seq())
-                            && let Some(watch) = watch.as_mut()
                         {
                             watch.file(segment.index())?;
                             watched = Some(segment.seq());
                             continue;
                         }
                         let waits = Waits {
-                            watch: watch.as_ref(),
+                            watch: &watch,
                             end: &end,
                             stopped,
                         };
@@ -1105,23 +1105,15 @@ impl<D: Disk> Daemon<D> {
                             sender.flush()?;
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
-                        // Woken as the driver asks, for what it holds back; without a watch,
-                        // at least every UNWATCHED.
-                        let within = match (sender.driver.due(), &watch) {
-                            (due, Some(_)) => due,
-                            (Some(due), None) => Some(due.min(super::UNWATCHED)),
-                            (None, None) => Some(super::UNWATCHED),
-                        };
-                        let ready = waits.wait(within)?;
+                        // Woken as the driver asks, for what it holds back.
+                        let ready = waits.wait(sender.driver.due())?;
                         if ready[1] {
                             return Ok(Shipped::Ended);
                         }
                         if ready[2] {
                             return Ok(Shipped::Stopped);
                         }
-                        if let Some(watch) = &watch {
-                            watch.clear();
-                        }
+                        watch.clear();
                     }
                 })();
                 self.forget_waiter(id, number);

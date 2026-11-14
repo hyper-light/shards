@@ -290,6 +290,26 @@ impl Requests {
     pub fn remove(&self, n: u64) {
         lock(&self.made).remove(&n);
     }
+
+    /// Never: a slot is taken by its instance's opening, its taker known as it is, whose end
+    /// ends its wait ([`Slot::wait`]); none is taken unknown, for a hold to find.
+    pub fn quiet(&self) -> io::Result<Option<Quiet<'_>>> {
+        Ok(None)
+    }
+}
+
+/// Unix's hold of its take lock, which Windows' slots need not ([`Requests::quiet`]).
+#[derive(Debug)]
+pub struct Quiet<'r>(std::marker::PhantomData<&'r ()>);
+
+/// Whether a slot's taker is known ([`Slot::probe`]): on Windows, as it takes it.
+#[derive(Debug)]
+pub struct Probe;
+
+impl Probe {
+    pub fn named(&self) -> bool {
+        true
+    }
 }
 
 /// A slot the daemon made: waited on by [`Slot::wait`].
@@ -325,12 +345,19 @@ impl Slot {
         Ok(Stopper(self.stop.try_clone()?))
     }
 
+    /// What tells whether its taker is known: always, as a client takes an instance by
+    /// opening it, and its end is the instance's ([`Slot::wait`]).
+    pub fn probe(&self) -> io::Result<Probe> {
+        Ok(Probe)
+    }
+
     /// Waits for a client to take this slot and begin its request, or for its stop: a
-    /// client's bytes first where both have come. A client that opens it is told its number;
-    /// once it has said which streams it opened, the streams it did not are let go of, and
+    /// client's bytes first where both have come. A client that opens it is told its number,
+    /// `named` told as it has: its taker is the instance's client, whose end ends the wait.
+    /// Once it has said which streams it opened, the streams it did not are let go of, and
     /// one it says it opened and did not is refused. A client that ends before its first
     /// byte leaves the slot gone, which its maker replaces.
-    pub fn wait(self) -> io::Result<Waited> {
+    pub fn wait(self, named: impl FnOnce()) -> io::Result<Waited> {
         let Slot {
             n,
             line,
@@ -340,6 +367,7 @@ impl Slot {
         if !pipe::connected(line.raw(), &[&stop])? {
             return Ok(Waited::Stopped);
         }
+        named();
         match line.write_within(record(n)?.as_bytes(), &[&stop], None) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => return Ok(Waited::Stopped),
@@ -918,7 +946,7 @@ mod tests {
         s: &'s std::thread::Scope<'s, '_>,
         slot: Slot,
     ) -> std::thread::ScopedJoinHandle<'s, io::Result<Waited>> {
-        s.spawn(move || slot.wait())
+        s.spawn(move || slot.wait(|| {}))
     }
 
     /// Stops each slot it holds as it drops, as a failed assertion unwinds too: a slot's
@@ -977,7 +1005,7 @@ mod tests {
         requests.offer(gone.number(), false).unwrap();
         requests.remove(gone.number());
         gone.stopper().unwrap().stop().unwrap();
-        assert!(matches!(gone.wait().unwrap(), Waited::Stopped));
+        assert!(matches!(gone.wait(|| {}).unwrap(), Waited::Stopped));
         std::thread::scope(|s| {
             let client = s.spawn(|| take(&home, 0).unwrap());
             std::thread::sleep(Duration::from_millis(50));
@@ -1173,7 +1201,7 @@ mod tests {
                     stops.hold(&slot);
                     let (n, done) = (slot.number(), done.clone());
                     s.spawn(move || {
-                        let _ = slot.wait();
+                        let _ = slot.wait(|| {});
                         let _ = done.send(n);
                     });
                 }
@@ -1267,7 +1295,7 @@ mod tests {
         // Removed, its wait ended, as a sweep removes one.
         requests.remove(gone.number());
         gone.stopper().unwrap().stop().unwrap();
-        assert!(matches!(gone.wait().unwrap(), Waited::Stopped));
+        assert!(matches!(gone.wait(|| {}).unwrap(), Waited::Stopped));
         std::thread::scope(|s| {
             let client = s.spawn(|| take(&home, 0).unwrap());
             std::thread::sleep(Duration::from_millis(50));
@@ -1481,7 +1509,7 @@ mod tests {
         let slot = requests.make(false).unwrap();
         std::thread::scope(|s| {
             let opened = s.spawn(|| {
-                let Waited::Opened(opened) = slot.wait().unwrap() else {
+                let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
                     panic!("no client opened the slot");
                 };
                 opened.request().unwrap()
@@ -1562,7 +1590,7 @@ mod tests {
             requests.offer(slot.number(), false).unwrap();
             std::thread::scope(|s| {
                 let served = s.spawn(move || {
-                    let Waited::Opened(opened) = slot.wait().unwrap() else {
+                    let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
                         panic!("no client opened the slot");
                     };
                     let got = opened.request_within(stall, None).unwrap();

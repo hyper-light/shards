@@ -97,10 +97,12 @@ const SCOPE_BYTES: usize = size_of::<RunId>() + size_of::<u64>() + size_of::<u32
 const SUBSCRIBE_BYTES: usize = SCOPE_BYTES + OFFSET_BYTES;
 pub const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
 pub const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
-/// The most bytes one record takes: its data frame carries the record's offset, then the
-/// record whole, within one frame's [`frame::MAX_FRAME`]. The endpoint admits no window
-/// past it.
-pub const RECORD_MOST: usize = frame::MAX_FRAME - OFFSET_BYTES;
+/// The most bytes one record takes (remote-08, D180 *Frame bounds*): the largest a lane
+/// carries, a log lane's output record (its head, [`crate::control::exec::LOG_OUTPUT_HEAD`])
+/// of one part of the guest's capture, which the run protocol sends in parts of
+/// `run::MAX_PAYLOAD` or less. Its data frame carries the record's offset, then the record
+/// whole. The endpoint admits no window past it.
+pub const RECORD_MOST: usize = shards_abi::run::MAX_PAYLOAD as usize + crate::control::exec::LOG_OUTPUT_HEAD;
 
 /// A run and its current management generation, minted by the trusted owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
