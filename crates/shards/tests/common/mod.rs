@@ -2340,7 +2340,7 @@ impl Patience {
 
     fn on(party: Party, site: &'static std::panic::Location<'static>) -> Patience {
         Patience {
-            wait: Wait::on(WaitKind::at(site), party, "a state its party comes to"),
+            wait: Wait::on(WaitKind::awaiting(site, STATE), party, STATE),
             state: Patient::Holds,
         }
     }
@@ -2926,6 +2926,15 @@ impl WaitKind {
         WaitKind::of(site, "", "")
     }
 
+    /// The kind of `site` waiting for `awaited` ([`STATE`], [`PROGRESS`], [`STREAM`]): kept
+    /// apart from its call site's other waits, as a `#[track_caller]` helper's waits share
+    /// their caller's site (#77: managed_lifecycle.rs' `challenge_healthy`, whose
+    /// `published` state, there before its wait began, taught its stream's wait a W* of
+    /// 3.527 µs).
+    pub fn awaiting(site: &'static std::panic::Location<'static>, awaited: &str) -> &'static WaitKind {
+        WaitKind::of(site, awaited, "")
+    }
+
     /// The kind of `site` waiting on the command whose words are `words` ([`command_words`])
     /// and whose whole line is `line` ([`keyed_line`]), kept apart from its call site's
     /// other commands'. Its record is kept beside the call site's own
@@ -3027,6 +3036,13 @@ impl WaitKind {
     }
 }
 
+/// What a [`Patience`] awaits, and keys its kind by ([`WaitKind::awaiting`]).
+pub const STATE: &str = "a state its party comes to";
+/// What a [`Heard`] awaits.
+pub const PROGRESS: &str = "its guest's progress";
+/// What a [`Following`] awaits.
+pub const STREAM: &str = "a guest's stream";
+
 /// This host, as the records of its waits are kept for it ([`WaitKind`]): its OS, its
 /// architecture and its logical CPUs, which tell two machines' own target directories apart
 /// and which every runner of one CI image shares, whose cached target a CI cache restores.
@@ -3050,6 +3066,8 @@ pub struct Party {
     said: Option<Said>,
     watched: std::collections::BTreeMap<u32, shards_api::Watch>,
     cpu: Cpu,
+    /// Whether it has been looked at: its first look has nothing before it.
+    looked: bool,
 }
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
@@ -3094,6 +3112,8 @@ pub struct Looked {
     pub what: String,
     /// The CPU its processes ran since the look before.
     pub cpu: Duration,
+    /// The coarsest resolution of the counters it read (`shards_api::Watch::resolution`).
+    pub resolution: Duration,
     /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
     /// waiter's own clients where its waiter asked the daemon meanwhile ([`Wait::look`]).
     pub daemon_ran: Option<String>,
@@ -3128,6 +3148,7 @@ impl Party {
             said: home.map(Said::of),
             watched: std::collections::BTreeMap::new(),
             cpu: Cpu::Progress,
+            looked: false,
         }
     }
 
@@ -3195,7 +3216,9 @@ impl Party {
     /// 2026-11-13); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
-    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh.
+    /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
+    /// nothing else, being its first or one that found a process of it anew, is based
+    /// (`Found::Based`): it has nothing before it to show stillness by (#77).
     pub fn look(&mut self) -> Looked {
         use shards_api::Found;
         let members = self.members();
@@ -3205,8 +3228,10 @@ impl Party {
             found: Found::Still,
             what: String::new(),
             cpu: Duration::ZERO,
+            resolution: Duration::ZERO,
             daemon_ran: None,
         };
+        let mut based = !std::mem::replace(&mut self.looked, true);
         if self.said.as_mut().is_some_and(Said::said) {
             looked.found = Found::Progressed;
             looked.what = "its daemon said something".into();
@@ -3220,11 +3245,14 @@ impl Party {
                     .flatten()
                     .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
                 if let Some(watch) = watch {
+                    looked.resolution = looked.resolution.max(watch.resolution());
                     self.watched.insert(pid, watch);
                     live = true;
+                    based = true;
                 }
                 continue;
             };
+            looked.resolution = looked.resolution.max(watch.resolution());
             let before = watch.cpu();
             let found = watch.look();
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
@@ -3251,6 +3279,9 @@ impl Party {
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
             looked.found = Found::Gone;
             looked.what = "none of it runs".into();
+        } else if based && looked.found == Found::Still {
+            looked.found = Found::Based;
+            looked.what = "its first look at a process of it".into();
         }
         looked
     }
@@ -3382,6 +3413,11 @@ impl Wait {
             return Ok(());
         }
         let looked = self.party.look();
+        let span = shards_api::Span {
+            began: now,
+            ended: Instant::now(),
+            resolution: looked.resolution,
+        };
         self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
             self.daemon_ran = looked.daemon_ran;
@@ -3397,7 +3433,7 @@ impl Wait {
                 self.holding = Some(looked.what.clone());
                 self.held.get_or_insert(looked.what);
             }
-            Found::Still | Found::Gone => {}
+            Found::Still | Found::Gone | Found::Based => {}
         }
         let mut judged = Ok(());
         if due.is_some_and(|due| now >= due) {
@@ -3414,13 +3450,19 @@ impl Wait {
                 self.progressed.get_or_insert(ran);
             }
             self.polls = polls;
-            judged = self.judge.found(if self.progressed.take().is_some() {
+            let found = if self.progressed.take().is_some() {
                 Found::Progressed
             } else if self.held.take().is_some() {
                 Found::Held
+            } else if looked.found == Found::Based {
+                Found::Based
             } else {
                 Found::Still
-            });
+            };
+            judged = self.judge.found_over(found, span);
+        } else if looked.found == Found::Based {
+            // Its evidence begins at this look's end, due or not: a based look refuses nothing.
+            judged = self.judge.found_over(Found::Based, span);
         }
         self.live.set(self.account());
         let left = self
@@ -4989,7 +5031,7 @@ impl<'a> Heard<'a> {
         streamed: Option<&'a AtomicU64>,
     ) -> Heard<'a> {
         Heard {
-            wait: Wait::on(WaitKind::at(site), party, "its guest's progress"),
+            wait: Wait::on(WaitKind::awaiting(site, PROGRESS), party, PROGRESS),
             guest,
             bytes: streamed.map_or(0, |s| s.load(Ordering::Relaxed)),
             streamed,
@@ -5217,7 +5259,7 @@ where
         Following {
             stream,
             carried,
-            wait: Wait::on(WaitKind::at(site), party, "a guest's stream"),
+            wait: Wait::on(WaitKind::awaiting(site, STREAM), party, STREAM),
         }
     }
 

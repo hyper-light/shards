@@ -24763,6 +24763,53 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       No number is chosen: lateness is any nanosecond past a meant time, read on the clock
       the looks run by; a host that holds the judge a whole W* at every look holds its waits
       to liveness alone, as a host hold counts as held.
+    - *Stillness is judged over what the looks saw* (#77, ROOT's KVM run at c120c8a95). Two
+      looks that found no change show none from the first's end to the second's beginning,
+      and no more: each reads its counters somewhere within its own span (`Span`: its
+      beginning, its end, and its counters' resolution). A party's window without progress
+      so runs from the end of the look from which it has been still, never from a time no
+      look read, to the beginning of the look that judges it; and it is refused only where
+      that window, less the judge's lateness within it, is a whole W* or its counters'
+      resolution, whichever is longer (`Judge::found_over`): a counter that changes once a
+      tick (/proc's utime, USER_HZ, proc(5)) shows nothing of a stillness shorter than one,
+      so a window shorter than its resolution is no evidence. Resolutions are the OS's own,
+      none chosen: Linux's, clock_getres(2) of the process's CPU clock (1 ns for the
+      scheduler's clock clock_getcpuclockid(3) names, kernel/time/posix-cpu-timers.c
+      `posix_cpu_clock_getres`); macOS's, one Mach absolute-time unit rounded up to whole
+      nanoseconds (mach_timebase_info(3); 42 ns on Apple silicon); Windows', none, as
+      QueryProcessCycleTime counts every cycle. Cold start: a look with nothing before it to
+      compare with, a party's first or one that first found a process of it, is based
+      (`Found::Based`): it shows neither progress nor stillness, judges nothing whether it
+      is due or not, and the evidence begins at its end. `Judge::begin` takes its caller's
+      first look as made at its beginning (`Follow`, which reads its VM process there, says
+      so with a based look as that read ends; the daemon's watchers read theirs as they
+      begin); the tests' waits, whose first look at their party comes later, say theirs.
+      Main's judge took every finding as evidence since the look before, and a wait's start
+      as a look, so that the time before a party's first look counted as seen still. Two of
+      ROOT's KVM refusals ("its last progress its start") were so: managed_lifecycle.rs:209's
+      stream wait, W* 3.527 µs, refused 18.416 ms in by the look right after its first, which
+      had taken those 18 ms to list and find its VM processes anew (its reads are not paced
+      while a look is due), its looks having seen microseconds; common/mod.rs:2601's
+      `shards top` wait, W* 13.996 ms, refused 31.067 ms in, its first look begun as the
+      wait began and not judged (not yet due), its judged look 2 ms of sleep after the look
+      before ended, so about 29 ms of the window before any look's end. Whether either party
+      would have shown a whole W* of real stillness after its first look is ROOT's rerun's
+      to show. Red/green: judge.rs's
+      `a_first_look_longer_than_w_star_is_based_not_still`,
+      `a_window_is_judged_from_its_baselines_end`,
+      `a_counter_coarser_than_w_star_widens_the_window_to_its_resolution` and
+      `a_based_look_starts_the_evidence_anew_before_its_due`, the runs' own times on an
+      injected look clock. The 3.527 µs W* was mis-keyed: managed_lifecycle.rs'
+      `challenge_healthy` is `#[track_caller]`, so its `published` state wait (`Patience`)
+      and its stream wait (`Following`) shared one call site's kind, and the state, there
+      before its wait began, taught the stream's kind 3.527 µs. A test's wait on a state,
+      a guest's words or a stream is now kept apart by what it awaits
+      (`WaitKind::awaiting`). The third refusal, hotplug.rs:127's (W* 1.054 ms, refused
+      2.109 ms in), had evidence for its whole window: its party is a machine of the test's
+      own process, read by its console's words alone (no CPU of its own is read), and its
+      words' baseline was read as the wait began. The guest said nothing for longer than
+      that call site's slowest answer, whose asks (`grow vda`, a plug, an unplug) share one
+      kind: what its guest did is not observable to its wait at all.
     - macOS's scheduler counts each thread's time runnable, running or waiting for a CPU
       (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_runnable_time`, sys/resource.h, Mach
       absolute-time units; public, and like the rest no task port). Grown over a time the
