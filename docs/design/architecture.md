@@ -27915,6 +27915,11 @@ API's protocol: its output drained, its end, its connections.
     shows a kqueue with NOTE_EXIT is readable to poll(2) on macOS. Owed (ROOT): Linux and
     Windows runs of these (CI's matrix; the Windows WSAEventSelect wait is compiled and run
     there first), and Hex's own campaign through a real VM's offered streams.
+    `while_runs::answer` fails a test on finding its worker waiting for an event (an
+    interruptible sleep, `S`; Mach's TH_STATE_WAITING) at two looks in a row, never on the
+    kernel's own uninterruptible work (`D`: a fault waiting for a memory map another thread
+    holds, a `/proc` read), and the worker outlives its answer until the look is done with
+    it: a worker that had ended left a look nothing to read (PM M585).
 - *Its VM process* (Hex lead's ask, 2026-11-14: "Give the managed guest's orchestrator the
   confined VM process's identity (pid and start time, as Identity names the host's), so it can
   read that process's memory as the VMM's"; on Windows `reserve_ram` commits the guest's RAM in
