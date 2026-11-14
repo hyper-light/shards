@@ -173,9 +173,6 @@ fn most_data_runs(memory_mib: u64) -> Option<usize> {
     let ram = memory_mib.checked_mul(1 << 20)?;
     usize::try_from(ram.div_ceil(crate::memory::DATA_BLOCK as u64)).ok()
 }
-/// How often a reader looks again at `current` for a generation a newer write removed
-/// between its look and its open.
-const READ_ATTEMPTS: usize = 8;
 
 /// What restore needs to rebuild the machine the snapshot came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1462,22 +1459,30 @@ pub fn read(dir: &Path) -> Result<Pinned, String> {
     .map_err(|gone| at(&gone))
 }
 
-/// Opens the generation `current` names with `open`, looking at `current` again where a newer
-/// write removed it between the look and the open.
+/// Opens the generation `current` names with `open`, looking at `current` again as long as
+/// each generation it found gone was replaced: a newer write pointed at another between the
+/// look and the open, then removed it. No count (migrate-10): each look again follows a
+/// writer's whole publication, its generation named anew (`fresh_name`: its time, process and
+/// count), and the reader opens the first that stays put for one look's length. A pointer that
+/// still names the generation found gone is no replacement, and is refused as that.
 fn pointed_open<T>(
     mut current: impl FnMut() -> Result<String, String>,
     mut open: impl FnMut(&str) -> Result<T, Open>,
 ) -> Result<T, String> {
-    let mut gone = String::new();
-    for _ in 0..READ_ATTEMPTS {
-        let name = current()?;
+    let mut name = current()?;
+    loop {
         match open(&name) {
             Ok(pinned) => return Ok(pinned),
-            Err(Open::Gone(e)) => gone = e,
             Err(Open::Bad(e)) => return Err(e),
+            Err(Open::Gone(e)) => {
+                let now = current()?;
+                if now == name {
+                    return Err(format!("its pointer names generation {name}, which is gone: {e}"));
+                }
+                name = now;
+            }
         }
     }
-    Err(format!("its generations kept being replaced: {gone}"))
 }
 
 fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
