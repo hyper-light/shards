@@ -14190,6 +14190,12 @@ record the unavailable Windows checks, normal-priority cold state, measured cloc
 inputs and still-unresolved cross-process budget owner. No scheduler change or new
 performance claim is made by that design record.
 
+**2026-11-14, the governor's own CPU is not charged to the rate** (PM M590). A rate holds the
+guest's vCPUs, as `shards_abi::rate` says. The governor thread that holds them is shards' own
+cost: on KVM at a quarter of one vCPU it ran 0.247–0.401% of wall (n=8, 2 s windows, no load
+of ours and 16 busy loops on 32 CPUs), and nothing while unheld. Tests of a rate bound the vCPUs'
+guest time, read in its hypervisor's step, never their VM process's CPU.
+
 **2026-11-14, platform-10 fixed within a process; across processes owed; 11 open** (9f95ae7db,
 f0cd08598; red 190b49d9b; PM M578). The Windows governor also keeps a pool for each set of
 CPUs its raised threads may run on (GetThreadGroupAffinity: a processor group and a mask,

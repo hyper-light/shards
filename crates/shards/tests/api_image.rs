@@ -624,8 +624,9 @@ fn the_orchestrators_room_holds_its_run_within_it() {
 
 /// The CPU rate an orchestrator holds its run's vCPUs to (D247) reaches its VM through its
 /// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
-/// of the time passing, but what a period may overrun and a period's share where the window
-/// and the periods do not line up, and is let go each period; held to its vCPU's whole CPU,
+/// of the time passing, but what a period may overrun, a period's share where the window and
+/// the periods do not line up, and one step of its guest time's count (`guest_time_step`),
+/// and is let go each period; held to its vCPU's whole CPU,
 /// nothing holds it, and the answer says so; told none, its hold is lifted. The period it is
 /// held over is the one its VM said with the rate's answer, D191's for one vCPU at a quarter
 /// CPU: 4g, g its VM process's own and never under the governor's least wait.
@@ -656,11 +657,13 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     std::thread::sleep(Duration::from_secs(2));
     let (used, wall) = (ran() - before, u64::try_from(start.elapsed().as_nanos()).unwrap());
     // A quarter of each period the share, and a period's whole share and what one vCPU
-    // overruns before its governor reads at the window's two ends: two periods.
-    let most = wall / 4 + 2 * u64::try_from(period.as_nanos()).unwrap();
+    // overruns before its governor reads at the window's two ends: two periods. Read twice,
+    // its guest time may say a step of its count more than ran between the reads.
+    let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
+    let most = wall / 4 + 2 * u64::try_from(period.as_nanos()).unwrap() + step;
     assert!(
         used <= most,
-        "{used} ns of guest in {wall} ns, held to a quarter CPU"
+        "{used} ns of guest in {wall} ns, held to a quarter CPU over {period:?}, read in {step} ns steps"
     );
     assert!(
         used >= wall / 20,
