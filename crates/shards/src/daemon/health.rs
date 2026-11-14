@@ -148,6 +148,12 @@ pub(super) struct Answers {
     pub ready: Record,
     /// A warm VM's taking of a run: the run's handoff sent, to its TAKEN (`daemon::hand_over`).
     pub take: Record,
+    /// A microVM's join share's taking of a joiner's link: its door's `JOIN_LINK` sent
+    /// (`daemon::give_join_volumes`, Unix).
+    pub door: Record,
+    /// A join share's taking of a joiner's volume: its `JOIN_VOLUME` sent, to its `TAKEN`
+    /// (`daemon::give_join_volume`, Unix).
+    pub link: Record,
     /// A visit's VM holding its files, its STARTED after its RUN (`visit::await_holding`).
     pub held: Record,
     /// Each request for access a starting VM makes, from the answer before or its spawn
@@ -168,6 +174,8 @@ impl Default for Answers {
             metrics: Record::new(),
             ready: Record::new(),
             take: Record::new(),
+            door: Record::new(),
+            link: Record::new(),
             held: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
