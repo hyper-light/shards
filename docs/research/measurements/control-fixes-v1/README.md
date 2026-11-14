@@ -337,3 +337,9 @@ Conflict-free merge 717b0f97417c74eb2d034a7f1aed2a23c7401478 adds main
 R18: the same warm four-crate Mac `cargo check --tests` clean.
 [Check](logs/r18-contention-check.log). Full focused greens remain R14/R13;
 DNS-combined native init check remains R17. No later conflict was resolved.
+
+Conflict-free merge 41a972609212d38fa838a844e90fe23ca10bce2f adds main dc23bc71f:
+init plug changes and records only. Host crate/dependency paths are unchanged
+from R18's 717b0f974; R19 `cargo check -j 4 -p shards-init --tests` is clean on
+native Linux, target removed. [Native check](logs/r19-contention-native-check.log).
+Full focused green sources remain R14 (host) and R13 (init), not newly run tests.
