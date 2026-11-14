@@ -1039,7 +1039,10 @@ mod windows_tests {
             let serving = scope.spawn(|| serve(&spawner, &Here));
             obtain_sealed(
                 &vm,
-                &[(Access::Read, kernel.clone()), (Access::MakeDir, snapshot.clone())],
+                &[
+                    (Access::Read, kernel.clone()),
+                    (Access::MakeDir, snapshot.clone()),
+                ],
             )
             .unwrap();
             let (name, files) = stage(&vm, &snapshot, shards_vmm::platform::Kept::default()).unwrap();
