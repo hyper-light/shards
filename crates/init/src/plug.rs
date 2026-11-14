@@ -871,10 +871,10 @@ pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
     Ok(())
 }
 
-/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing and a
-/// `ROOM` a number, and a frame past this ends the connection rather than have its answerer
-/// hold it.
-const GIVE_FRAME: usize = 4096;
+/// The longest host request: Giver::tell encodes ROOM as an i64's decimal or nothing;
+/// GIVE_BACK is empty. The minus sign and digits of i64::MIN bound either request.
+/// A longer frame ends the connection before its payload is read or allocated.
+const GIVE_FRAME: usize = 1 + i64::MIN.unsigned_abs().ilog10() as usize + 1;
 
 /// What [`answer_give_backs`]'s process does until its connection ends: each frame read
 /// whole; each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
@@ -2119,6 +2119,54 @@ mod tests {
             answerer.join().unwrap();
         });
         assert_eq!(*rooms.lock().unwrap(), [Some(128 * MIB as i64), None, Some(-5)]);
+    }
+
+    #[test]
+    fn a_give_back_room_past_signed_decimal_ends_before_reading_payload() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(&guest, || Ok((0, 0)), |_| Ok(None));
+                ended.send(()).unwrap();
+            });
+            let len = u32::try_from(i64::MIN.to_string().len() + 1).unwrap();
+            (&host).write_all(&run::header(kind::ROOM, len)).unwrap();
+            let gone = end.recv_timeout(Duration::from_secs(1));
+            // Close a mutant's waiting payload read before asserting/joining.
+            host.shutdown(std::net::Shutdown::Both).unwrap();
+            gone.expect("an impossible ROOM length kept the answerer waiting for its payload");
+        });
+    }
+
+    #[test]
+    fn a_give_back_room_accepts_both_signed_decimal_extremes() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let rooms = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(
+                    &guest,
+                    || Ok((0, 0)),
+                    |room| {
+                        rooms.lock().unwrap().push(room);
+                        Ok(None)
+                    },
+                )
+            });
+            let _shut = Shut(&host);
+            for value in [i64::MIN, i64::MAX] {
+                let payload = value.to_string();
+                (&host)
+                    .write_all(&run::header(kind::ROOM, payload.len() as u32))
+                    .unwrap();
+                (&host).write_all(payload.as_bytes()).unwrap();
+                assert_eq!(heard(&host), (kind::HELD, String::new()));
+            }
+        });
+        assert_eq!(*rooms.lock().unwrap(), [Some(i64::MIN), Some(i64::MAX)]);
     }
 
     /// A frame longer than any its host sends ends the connection, unread and unanswered,

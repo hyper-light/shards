@@ -13,7 +13,7 @@
 //!   snapshot made to restore against that machine's files, and the microVM made there,
 //!   stopped, as saved; `restore vm` resumes it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -28,10 +28,10 @@ use super::snapshots::SNAPSHOTS;
 use super::{Daemon, lock};
 use crate::containers::{Container, Disk};
 
-/// The stream's first bytes, then its version: 2, each entry as its guest sees it
+/// Version 3 preserves regular-file hardlinks; version 2 introduced guest metadata
 /// ([`guest::Meta`]), where 1's held the host's own modes and attributes.
 const MAGIC: &[u8; 8] = b"SHRDMOVE";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 /// Kinds of the stream's entries.
 const END: u8 = 0;
 const DIR: u8 = 1;
@@ -40,6 +40,8 @@ const LINK: u8 = 3;
 const PLAN: u8 = 4;
 /// A FIFO or a device node.
 const NODE: u8 = 5;
+/// Another name of a regular file already sent, both in volume data.
+const HARDLINK: u8 = 6;
 /// The most a name in the stream may hold: a path of the guest's, Linux's `PATH_MAX`
 /// (include/uapi/linux/limits.h l. 13, Linux 6.18).
 const MAX_PATH: usize = 4096;
@@ -792,6 +794,8 @@ fn rel_of(home: &Path, path: &Path) -> Option<String> {
 /// its runs is read.
 pub(crate) struct Writer<W: Write> {
     out: W,
+    /// Only multiply-linked volume files, keyed by the opened source's identity.
+    hardlinks: HashMap<(u64, u64), String>,
 }
 
 impl<W: Write> Writer<W> {
@@ -802,13 +806,24 @@ impl<W: Write> Writer<W> {
         out.write_all(&[PLAN])?;
         out.write_all(&(json.len() as u64).to_le_bytes())?;
         out.write_all(&json)?;
-        Ok(Writer { out })
+        Ok(Writer {
+            out,
+            hardlinks: HashMap::new(),
+        })
     }
 
-    fn name(&mut self, kind: u8, rel: &str) -> io::Result<()> {
-        self.out.write_all(&[kind])?;
-        self.out.write_all(&(rel.len() as u32).to_le_bytes())?;
-        self.out.write_all(rel.as_bytes())
+    fn name(out: &mut W, kind: u8, rel: &str) -> io::Result<()> {
+        out.write_all(&[kind])?;
+        Self::text(out, rel)
+    }
+
+    fn text(out: &mut W, text: &str) -> io::Result<()> {
+        let len = u32::try_from(text.len())
+            .ok()
+            .filter(|_| text.len() <= MAX_PATH)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        out.write_all(&len.to_le_bytes())?;
+        out.write_all(text.as_bytes())
     }
 
     /// A file as its guest sees it: its mode (kind and permissions), its device number,
@@ -841,13 +856,13 @@ impl<W: Write> Writer<W> {
             guest::S_IFLNK => {
                 let target = String::from_utf8(guest::read_link(path)?)
                     .map_err(|_| io::Error::other(format!("{}: a link that is not UTF-8", path.display())))?;
-                self.name(LINK, rel)?;
+                Self::name(&mut self.out, LINK, rel)?;
                 self.out.write_all(&(target.len() as u32).to_le_bytes())?;
                 self.out.write_all(target.as_bytes())?;
                 self.meta(&meta)
             }
             guest::S_IFDIR => {
-                self.name(DIR, rel)?;
+                Self::name(&mut self.out, DIR, rel)?;
                 self.meta(&meta)?;
                 let mut entries: Vec<(String, PathBuf)> = std::fs::read_dir(path)?
                     .map(|e| {
@@ -869,7 +884,7 @@ impl<W: Write> Writer<W> {
             }
             guest::S_IFREG => self.file(path, rel),
             guest::S_IFIFO | guest::S_IFCHR | guest::S_IFBLK => {
-                self.name(NODE, rel)?;
+                Self::name(&mut self.out, NODE, rel)?;
                 self.meta(&meta)
             }
             // A socket is its listener's, which a saved microVM has none of (as tar leaves
@@ -883,9 +898,23 @@ impl<W: Write> Writer<W> {
     pub(crate) fn file(&mut self, path: &Path, rel: &str) -> io::Result<()> {
         let meta = guest::read(path)?;
         let file = File::open(path)?;
+        if volume_file(rel)
+            && meta.mode & guest::S_IFMT == guest::S_IFREG
+            && let Some(id) = guest::hardlink_identity(&file)?
+        {
+            if let Some(target) = self.hardlinks.get(&id) {
+                Self::name(&mut self.out, HARDLINK, rel)?;
+                return Self::text(&mut self.out, target);
+            }
+            self.hardlinks.try_reserve(1).map_err(io::Error::other)?;
+            let mut name = String::new();
+            name.try_reserve_exact(rel.len()).map_err(io::Error::other)?;
+            name.push_str(rel);
+            self.hardlinks.insert(id, name);
+        }
         let len = file.metadata()?.len();
         let runs = shards_vmm::platform::data_ranges(&file, len)?;
-        self.name(FILE, rel)?;
+        Self::name(&mut self.out, FILE, rel)?;
         self.meta(&meta)?;
         self.out.write_all(&len.to_le_bytes())?;
         self.out.write_all(&(runs.len() as u64).to_le_bytes())?;
@@ -935,6 +964,10 @@ pub(crate) enum Entry<'a> {
         rel: String,
         target: String,
         meta: guest::Meta,
+    },
+    Hardlink {
+        rel: String,
+        target: String,
     },
     /// A FIFO or a device node.
     Node {
@@ -1018,7 +1051,7 @@ pub(crate) fn read_plan(r: &mut dyn Read) -> Result<Plan, String> {
         return Err("the move's stream is not one".into());
     }
     let version = u32_of(r).map_err(io)?;
-    if version != VERSION {
+    if !matches!(version, 2 | VERSION) {
         return Err(format!(
             "the move's stream is of version {version}; this shards reads {VERSION}"
         ));
@@ -1056,6 +1089,11 @@ pub(crate) fn read_entries(
                 let target = text_of(r, MAX_PATH, "a link").map_err(io)?;
                 let meta = meta_of(r).map_err(io)?;
                 take(Entry::Link { rel, target, meta })?;
+            }
+            HARDLINK => {
+                let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
+                let target = text_of(r, MAX_PATH, "a hardlink's source").map_err(io)?;
+                take(Entry::Hardlink { rel, target })?;
             }
             NODE => {
                 let rel = text_of(r, MAX_PATH, "a name").map_err(io)?;
@@ -1174,6 +1212,16 @@ impl<'a> Placer<'a> {
                     .map_err(|e| at(&path, &e))?;
                 self.root.set(&parts, &meta).map_err(|e| at(&path, &e))
             }
+            Entry::Hardlink { rel, target } => {
+                let path = self.path(&rel)?;
+                let source = self.path(&target)?;
+                if !(self.links)(&rel) || !(self.links)(&target) {
+                    return Err(io::Error::from(io::ErrorKind::PermissionDenied).to_string());
+                }
+                self.root
+                    .make_hardlink(&parts(&path), &parts(&source))
+                    .map_err(|e| at(&path, &e))
+            }
             Entry::Node { rel, meta } => {
                 let path = self.path(&rel)?;
                 let parts = parts(&path);
@@ -1237,6 +1285,15 @@ fn holds_links(plan: &Plan, rel: &str) -> bool {
     plan.volumes
         .iter()
         .any(|v| rel.starts_with(&format!("volumes/{v}/_data/")))
+}
+
+/// The writer deduplicates only volume contents, never metadata or backing files.
+fn volume_file(rel: &str) -> bool {
+    let mut parts = rel.splitn(4, '/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("volumes"), Some(v), Some("_data"), Some(name)) if !v.is_empty() && !name.is_empty()
+    )
 }
 
 impl<D: Disk> Daemon<D> {
@@ -2848,6 +2905,94 @@ mod tests {
         let mut placer = Placer::new(&elsewhere, &anything, &anything).unwrap();
         read_plan(&mut cut).unwrap();
         assert!(read_entries(&mut cut, &mut |e| placer.take(e)).is_err());
+    }
+
+    #[test]
+    fn a_volumes_hardlinks_keep_shared_contents_after_move() {
+        let from = shards_testdir::TempDir::new("mv-hfrom").unwrap();
+        std::fs::write(from.join("a"), b"before").unwrap();
+        std::fs::hard_link(from.join("a"), from.join("b")).unwrap();
+        let p = plan();
+        let mut bytes = Vec::new();
+        let mut writer = Writer::new(&mut bytes, &p).unwrap();
+        writer.tree(&from, "volumes/data/_data", &|_| false).unwrap();
+        writer.finish().unwrap();
+        let to = shards_testdir::TempDir::new("mv-hto").unwrap();
+        let allows = |_: &str| true;
+        let mut placer = Placer::new(&to, &allows, &allows).unwrap();
+        let mut input = bytes.as_slice();
+        read_plan(&mut input).unwrap();
+        read_entries(&mut input, &mut |entry| placer.take(entry)).unwrap();
+        placer.finish().unwrap();
+        let root = to.join("volumes/data/_data");
+        std::fs::write(root.join("a"), b"after").unwrap();
+        assert_eq!(std::fs::read(root.join("b")).unwrap(), b"after");
+    }
+
+    #[test]
+    fn hardlinks_require_existing_volume_files_at_both_ends() {
+        let p = plan();
+        let needed: BTreeSet<_> = p.files.iter().map(|f| f.rel.clone()).collect();
+        let allows = |rel: &str| allowed(&p, &needed, rel);
+        let links = |rel: &str| holds_links(&p, rel);
+        let to = shards_testdir::TempDir::new("mv-hardlink-guard").unwrap();
+        let data = "volumes/data/_data";
+        std::fs::create_dir_all(to.join(data)).unwrap();
+        std::fs::write(to.join(data).join("source"), b"kept").unwrap();
+        std::fs::create_dir_all(to.join("images")).unwrap();
+        std::fs::write(to.join("images/x.erofs"), b"backing").unwrap();
+        let mut placer = Placer::new(&to, &allows, &links).unwrap();
+        let hardlink = |rel: &str, target: &str| Entry::Hardlink {
+            rel: rel.into(),
+            target: target.into(),
+        };
+        let source = format!("{data}/source");
+        for (rel, target) in [
+            (format!("{data}/early"), format!("{data}/later")),
+            (format!("{data}/dir"), data.into()),
+            (format!("{data}/backing"), "images/x.erofs".into()),
+            (format!("containers/{}/alias", p.id), source.clone()),
+            (format!("{data}/escape"), "../outside".into()),
+            ("volumes/other/_data/alias".into(), source.clone()),
+        ] {
+            assert!(placer.take(hardlink(&rel, &target)).is_err(), "{rel} <- {target}");
+            assert!(std::fs::symlink_metadata(to.join(rel)).is_err());
+        }
+        placer
+            .take(Entry::Link {
+                rel: format!("{data}/sym"),
+                target: "source".into(),
+                meta: guest::Meta {
+                    mode: guest::S_IFLNK | 0o777,
+                    ..guest::Meta::default()
+                },
+            })
+            .unwrap();
+        assert!(
+            placer
+                .take(hardlink(&format!("{data}/bad"), &format!("{data}/sym")))
+                .is_err()
+        );
+        assert!(!to.join(data).join("bad").exists());
+        assert_eq!(std::fs::read(to.join(source)).unwrap(), b"kept");
+        assert_eq!(std::fs::read(to.join("images/x.erofs")).unwrap(), b"backing");
+    }
+
+    #[test]
+    fn hardlink_names_use_the_streams_path_bound() {
+        let mut bytes = vec![HARDLINK];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"a");
+        bytes.extend_from_slice(&((MAX_PATH + 1) as u32).to_le_bytes());
+        let mut taken = false;
+        assert!(
+            read_entries(&mut bytes.as_slice(), &mut |_| {
+                taken = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!taken);
     }
 
     /// A volume's files move as its guest saw them (D176 part 6), whatever this host keeps

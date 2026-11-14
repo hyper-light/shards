@@ -14039,7 +14039,7 @@ other's but what the move sends, and what the other takes by content:
   (D197); each its extended attributes under names of its own (Linux's `trusted.` and
   `security.` under `user.shards.`, Windows' as EAs of hexadecimal names). The move reads
   and makes each through the share server's own calls (`server::guest`: `read`, `set`
-  and its makers), its stream (version 2) holding each entry's kind and mode, its device
+  and its makers), its stream (version 3) holding each entry's kind and mode, its device
   number, its owner where one is recorded (none where the host made it, so that it stays
   its share's default owner's, D38), its attributes by the guest's names, and its name as
   the guest's, which a Windows host keeps escaped as WSL escapes it; a directory takes its
@@ -14052,6 +14052,22 @@ other's but what the move sends, and what the other takes by content:
   its path there, whatever device and inode it had here, its guest's open handles and
   working directory in it going on. A bind's host path is the other machine's to share
   at the same place, as a network file system shares it, checked there before the move.
+- **Its regular-file hardlinks** (migrate-05, 2026-11-13). Version 3 adds an entry naming
+  an earlier regular file in volume data. The source's opened file supplies the share
+  server's device/file-id and link count; only multiply-linked volume files retain a
+  first-name record, for one stream, with fallible map/name growth. Both destination
+  names must be allowed volume-data paths. `Beneath::make_hardlink` walks both parents
+  through held directories, rejects a missing or non-regular source (including a
+  symlink), and uses the existing Unix/NT `link_at` seam, never replacing a destination.
+  No metadata or bytes are replayed for an alias: the inode's contents and attributes
+  stay shared. POSIX.1-2024 `linkat` specifies shared identity and flags 0's no-follow
+  behavior; the share server's LINK handler already uses that seam. Readers accept
+  version 2 as before; older readers refuse version 3 before extraction. Version/tag
+  numbers are assigned grammar, path sizes retain the existing PATH_MAX bound, and
+  link count greater than one is the host's alias fact, not a tuning choice. The red
+  test `a_volumes_hardlinks_keep_shared_contents_after_move` failed at `73af9fb62`
+  against the landed migrate-01 extractor. [Decision, tests and remaining platform/VM
+  checks](../research/measurements/migrate/fix-review-2026-11-13.md).
 - **Nothing it sends reaches out of the move's directory** (migrate-01, 2026-11-13). The
   machine moved to puts the stream's entries in a directory of the move's own
   (`private/move-…`), and a name that passes `relative` (no `..`, no root, no empty
@@ -14079,7 +14095,7 @@ other's but what the move sends, and what the other takes by content:
   against, at a volume's `_data` and beside it) and `beneath_goes_through_no_symlink`
   (`server::guest`, every target). Not an
   archive of go-archive's (crates/archive), whose oracle is untouched: the move's stream is
-  its own format (version 2).
+  its own format (version 3; readers also take version 2).
 - **Its CPU.** A restore on another CPU than its snapshot's is no longer refused where that
   CPU has every feature its guest found: the guest is told the CPU it found, each of its
   vCPUs given its snapshot's ID registers (HVF, KVM on arm64) or CPUID (KVM on x86_64),
@@ -18149,6 +18165,16 @@ changes.
   where BuildKit's names its source's snapshot as its parent (D114).
 
 ### D133. A builder's memory, plugged as its build needs it (virtio-mem)
+
+**Review memory-17 (2026-11-13):** the give-back connection's largest host
+request is ROOM: Giver::tell and tell_first use the canonical decimal `i64`
+encoding, or an empty payload for no budget. GIVE_BACK is empty too. Its exact
+bound is one minus sign plus `floor(log10(abs(i64::MIN))) + 1` decimal digits,
+computed with unsigned_abs and ilog10. No calibration/cold-start guess is needed;
+the fixed integer type bounds the arithmetic on every supported target. A longer
+header follows the existing connection-end path before allocation or payload
+read. Both signed extremes remain accepted. Red/green evidence and platform
+limits: `docs/research/measurements/memory-fixes-v1/README.md`.
 
 **R03 review memory-11..15 (2026-11-13):** reserve slack, pause/read floors,
 retry count, growth/retention ratios and boot floor remain owed to ROOT with
