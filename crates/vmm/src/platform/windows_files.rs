@@ -957,6 +957,29 @@ mod tests {
         assert!(write_in(&dir, "a:b", b"x").is_err(), "a stream's name");
     }
 
+    /// Do: write `state`'s version in a directory of NTFS, which tells no names apart by case
+    /// (OBJ_CASE_INSENSITIVE, as every open here asks), then a version made by another's
+    /// hand under another case (`CURRENT.~1`, as a copy that kept a name's case makes it), and
+    /// read and remove each through a name of another case. Expect each read to find the
+    /// newest version whatever its case, and each removal to leave none: a listing matched
+    /// by case missed `state.~1` for `STATE`, so a write of `STATE` chose `STATE.~1`, which
+    /// the file system has taken, and chose it again for ever (platform-09).
+    #[test]
+    fn a_names_versions_are_found_whatever_their_case() {
+        let base = shards_testdir::TempDir::new("cased").unwrap();
+        let d = base.join("d");
+        std::fs::create_dir(&d).unwrap();
+        let dir = super::super::open_dir(&d).unwrap();
+        write_in(&dir, "state", b"one").unwrap();
+        assert_eq!(newest_in(&dir, "STATE").unwrap(), "state.~1");
+        assert_eq!(read(open_newest_in(&dir, "State").unwrap()), "one");
+        std::fs::write(d.join("CURRENT.~1"), b"theirs").unwrap();
+        assert_eq!(newest_in(&dir, "current").unwrap(), "CURRENT.~1");
+        remove_in(&dir, "STATE").unwrap();
+        remove_in(&dir, "current").unwrap();
+        assert_eq!(names_in(&dir).unwrap(), Vec::<OsString>::new());
+    }
+
     /// A version another holds open sharing no delete, which no rename could replace (PM
     /// M344), as Windows' own holds kept files it refused to replace (PM M345), keeps no write
     /// from landing: the next version is the newest, and the one held goes with a later write
