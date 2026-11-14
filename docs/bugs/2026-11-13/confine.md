@@ -70,6 +70,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Stage a sentinel under `.config` with A/B as above; member must read it, B must contain it, and A's hidden directory must not. Repeat with a read-only nested cover and require a typed refusal with no hidden write.
 
+**Status (2026-11-13):** fixed in 0d53a7fd7 (red `staged::tests::a_staged_file_uses_its_visible_nested_mount; staged::tests::a_read_only_cover_refuses_staging_before_any_write`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+
 ### confine-04 — P1 / high — initial member PATH search uses init's directory and mount view
 
 **Location at HEAD:** `crates/init/src/domains.rs:649`.
@@ -85,6 +87,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 **Fix direction:** Prepare candidate strings, then resolve and attempt them in the actual member filesystem view, cwd and credentials, sharing ordinary exec semantics.
 
 **Catch test:** Start `tool` from artifact `bin/tool` with `PATH=bin`; assert it runs. Repeat with a leading empty component and a cwd-local executable. Include a later PATH candidate to catch selection in the wrong view.
+
+**Status (2026-11-13):** fixed in 22ebba75a (red `domains::tests::a_members_relative_path_is_resolved_in_its_working_directory`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
 
 ### confine-05 — P1 / high — concurrent plugs overwrite destination ownership
 
@@ -102,6 +106,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Barrier two requests after admission; require exactly one success and one Taken, one live mount/device, then complete device/share/fd return after unplug. Also reverse completion order and overlap unplug with pending plug.
 
+**Status (2026-11-13):** fixed in d0fea6fb3 (red `real-VM concurrency red owed to ROOT; authored plug::devices_are_plugged_into_a_run_and_its_disk_grows and api_image::a_project_is_plugged_into_the_running_harness; scoped units green`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+
 ### confine-06 — P1 / high — overflow/coalescing loses wakes for descendant watches
 
 **Location at HEAD:** `crates/vmm/src/devices/virtio/fs/notices.rs:208`, `:293`, `:59`; `crates/init/src/notice.rs:135`.
@@ -117,6 +123,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 **Fix direction:** Preserve subtree/loss semantics and invalidate/wake all affected held directories/files, or expose loss to every affected watcher so it can rescan. A root-only ordinary change is insufficient.
 
 **Catch test:** Hold only a nested watch, inject/force a root-coalesced event (Mac MUST_SCAN_SUBDIRS, Windows overflow, and pending saturation independently), and assert that watch receives an observable change/loss and reads the final bytes.
+
+**Status (2026-11-13):** owed to ROOT: `cargo test -p shards --profile test-release --test plug a_host_edit_wakes_a_watch_in_the_guest -- --nocapture`, extended with independent subtree/overflow injections and a nested file-only watch; loss-fanout design in `docs/research/measurements/fix-confine-v1/README.md`. Existing basic watch success is not overflow evidence.
 
 ### confine-07 — P3 / medium — rejected exec environment values are copied into errors
 
@@ -134,6 +142,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Pass public sentinel values in each rejected-entry shape; assert no error, encoded refusal, stderr or telemetry contains the value, while reason/member identity remain available.
 
+**Status (2026-11-13):** fixed in e272925b4 (red `enter::tests::rejected_environment_values_never_enter_diagnostics`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+
 ### confine-08 — P3 / medium — Linux host watch admission failures disappear
 
 **Location at HEAD:** `crates/vmm/src/devices/virtio/fs/server.rs:2580`.
@@ -150,6 +160,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 
 **Catch test:** Exhaust the host watch quota, then look up/watch a fresh nested directory. Require an observable admission/degradation result rather than silent success followed by no events. Release quota and verify any promised recovery.
 
+**Status (2026-11-13):** fixed in 70f1bdeae (red `devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup`); targeted Linux red/green and remaining VM checks are recorded in `docs/research/measurements/fix-confine-v1/README.md`.
+
 ### confine-09 — P3 / medium — pending notice capacity is an upstream default
 
 **Location at HEAD:** `crates/vmm/src/devices/virtio/fs/notices.rs:27`.
@@ -165,6 +177,8 @@ Review lanes: member_exec, home_env and plug_watch each returned the full policy
 **Fix direction:** Derive admitted capacity from the actual applicable resource/admission constraints and retain explicit loss semantics independently of the number. Do not merely substitute another fixed count.
 
 **Catch test:** Change the applicable runtime capacity/resource envelope and show admission follows its authoritative input rather than 16384; exercise cold start and overflow/loss outcomes separately.
+
+**Status (2026-11-13):** owed with its design: derive pending admission from actual retained object/resource ownership, with typed loss and no guessed cold-start allowance; see `docs/research/measurements/fix-confine-v1/README.md`. MOST=16384 remains unchanged and is not claimed fixed.
 
 ### confine-10 — P1 / high — member exec cannot use its member's signal or abstract-socket scope
 
@@ -211,12 +225,12 @@ pending. Work begins after the earlier assigned list.
 - Linux glibc/musl, HVF, WHP and nested arm64 KVM behavior at HEAD are not newly validated by older retained measurements. Full host/share filesystem security, network policy and managed capture outside the named seams are outside this area.
 - A case-insensitive alias-cache candidate remains uncounted: cache canonical `Foo`, rename guest alias `foo` to `Bar`, then look up cached `Foo` while its canonical positive TTL remains. `server.rs:2622` disables TTL for alias spellings only; Mac IgnoreSelf suppresses the share's own rename notice. The kernel's exact alias/dentry handling needs ROOT's live APFS run before this becomes a finding. Existing canonical-source rename cases do not settle the inverse ordering. No case-fold collision exploit was proved here.
 - Synchronous pre-exec error-pipe waiting and ignored read errors in `enter::start` were inspected, but no concrete reachable indefinite pre-exec stall or pipe-error symptom was established; not counted.
-- D243 explicitly discloses sibling Landlock scopes (exec cannot signal the member's original processes/use their abstract sockets) and omission of the contested-port chooser filter. These are retained design limits, not newly claimed escapes.
+- The original review did not count D243's disclosed sibling Landlock scope limitation. ROOT subsequently rejected that compatibility limit and assigned confine-10 above. The omitted contested-port chooser filter remains outside these fixes.
 - This is a bounded source review, not an exhaustive proof of panic freedom, every literal, allocation safety, absence of fd/thread leaks or race freedom.
 
 ## Result
 
-9 findings: **P0 critical 2; P1 high 4; P3 medium 3; P2/P4/P5 0.** All source-verified; runtime confirmation remains ROOT's. No tracked files changed, no commits/pushes/PRs.
+10 findings including ROOT's confine-10: **P0 critical 2; P1 high 5; P3 medium 3; P2/P4/P5 0.** All source-verified; runtime confirmation remains ROOT's. No tracked files changed, no commits/pushes/PRs.
 
 ## Kiln notification
 

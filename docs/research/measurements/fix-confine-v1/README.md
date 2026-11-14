@@ -42,7 +42,16 @@ signed branch commits. Runner source is `~/g121-tmp/fix-confine-v1/source`.
 - P0 ordering: merged ROOT's `60245cefb` in `f270eb8bf` after confine-01/02 landed.
   The one exec_child conflict preserves `rules -> confine -> chdir -> PATH search`,
   RULESET_FD=4 and all of ROOT's fd/Confinement changes.
-- confine-08 native admission red/green and final merged checks: pending.
+- At merged `c7237d627`, kiln r10: member exec 6/6 and staging 14/14 passed;
+  static-musl init clippy clean. [Merged init green + watch red](merged-init-green-watch-red.log).
+  confine-08 red is a real native inotify MAY_READ/EACCES failure while stat succeeds:
+  `cargo test -p shards-vmm a_failed_host_watch_admission_refuses_lookup -- --nocapture`.
+  LOOKUP returned 0 instead of -13. Fix `70f1bdeae` admits the watch before publishing
+  or counting a guest reference and propagates native errno; later lookup retries.
+  At kiln r11, server module 51/51 passed (including failure, no retained reference,
+  and recovery). [Initial green and clippy diagnostics](watch-green-initial-clippy.log).
+  Clippy found a misplaced safety comment and a scoped-closure lifetime in the new
+  real-VM regressions; `c68292eba` corrects both. Final merged checks recorded below.
 
 ## confine-06 and confine-09: owed with design
 
