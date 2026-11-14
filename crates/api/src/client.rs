@@ -2995,8 +2995,8 @@ mod tests {
     /// close-on-exec, on macOS) and let them go. Expect: no child holds a socket, as none was
     /// given one; each says so from its own descriptor table. Red with std's `Command` in
     /// `spawn_shards`'s place (control-04: one SDK process's run B's `shards` holding run A's input
-    /// or output): children held pairs' ends on macOS. The count of children is how many
-    /// the red run needed with room to spare (docs/bugs/2026-11-13/control.md, control-04).
+    /// or output): on macOS 14 to 26 of the 64 children held pairs' ends in each of six
+    /// runs (D248, control-04).
     #[cfg(unix)]
     #[test]
     fn a_started_shards_holds_no_socket_another_thread_was_making() {

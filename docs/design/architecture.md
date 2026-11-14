@@ -32519,10 +32519,18 @@ so A's member stdin never saw EOF, or A's drain never ended.
 - *Deleted* (no legacy paths): `shards_ipc::spawn_std` and Windows' `INHERITING` lock, which
   only it needed (D195's platform-07), with its test. Linux's std uses pipe2 and
   SOCK_CLOEXEC and was not exposed; it takes the one path all the same.
-- *Literals.* None in production. The test's 4 making threads and 64 children: RED_GREEN.
+- *Literals.* None in production. The test's 4 making threads and 64 children are a test's
+  load, not a runtime value: with std's spawn back, 14 to 26 of the 64 children held a
+  socket in each of six runs, so a run where none holds one is not a miss by chance.
 - *Test* (unit, macOS arm64): `client::tests::a_started_shards_holds_no_socket_another_thread_was_making`:
   4 threads make and drop `shards_ipc::input_pair`s while `spawn_shards` starts this test
-  binary 64 times as a child that reports, from /dev/fd, every socket it holds. RESULTS
+  binary 64 times as a child that reports, from /dev/fd, every socket it holds. On
+  adas-mac-studio-3.local (macOS arm64, rustc 1.98.1), `cargo test -p shards-api --lib
+  <that test> -- --exact`: red, std's `Command` back in `spawn_shards` (the carrier's
+  `mutate.py`), 19, 18 and 14 of 64 children held 1 to 6 sockets each at 85a2727a1, and 26,
+  24 and 23 at f25955697; green, none in any of three runs at f25955697. Beside it: `client::tests` (46), `image::session` (41), the registry's
+  `credentials` (20) and shards-ipc's tests (78) pass; clippy, `-D warnings`, for shards-ipc,
+  shards-api, shards-registry and shards on macOS and Windows x86_64 (cargo xwin): WINLINT.
 - *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
   run of several images in one process on HVF and WHP; the Windows unit
   `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
