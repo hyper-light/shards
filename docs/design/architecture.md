@@ -27591,8 +27591,7 @@ docs/research/s33-veil-creds/STEP3.md).
   recomputed and nothing of a body is held to recompute it (RFC 9112 §6.3; reframing as chunked
   would rewrite every response). Bytes from where a value may still begin wait until it completes
   or fails, the rest going at once; a message's end lets everything go. Not masked, and recorded
-  as the residuals: a value inside a compressed body (Content-Encoding) or a compressed WebSocket
-  message; a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a response's
+  as the residuals: a part of a value (OpenAI's 401 echoes a masked prefix and suffix, f16); a response's
   plaintext in rustls's own buffer, which rustls does not wipe. A tunnel's pause after a value's
   proper prefix holds that prefix until its next bytes or its end.
 - *The mask's values are its own (creds-03, amended 2026-11-13).* A value echoed after its lease
@@ -27626,6 +27625,39 @@ docs/research/s33-veil-creds/STEP3.md).
   `inject::tests::leaks`' chunked echo with the value in a token and in a quoted-string extension,
   red before (the value reached the guest), green after, and the size line read whole a byte at a
   time; the line forwarded as it came, and the size check removed, each fail them.
+- *A trailer section is its own piece (amended 2026-11-13).* `walk` gave a chunked body's trailer
+  section as data, so a sign-in's token response read whole (`Response::Whole`) took it into its
+  JSON: one with a trailer field was refused 502, and one with none reached the guest with a CRLF
+  added to its body. It is now `Piece::Trailers`: masked as fields where a response goes as it came,
+  dropped from a token response, which goes framed by its length and carries none (RFC 9110
+  §6.5.1 lets a recipient that removes the chunked coding discard them; so an echo of a token there
+  never reaches the guest), forwarded as it came on a request, and no part of a refresh or a
+  revocation read whole (§7.1.2), where the request path cut it by its offset before. Tests:
+  `inject::tests::leaks::a_chunked_token_responses_trailers_are_no_part_of_its_body` (a trailer
+  field, and none), red before (502), green after; trailers given as data again fails it,
+  `chunked_bodies_are_read_strictly` and `a_chunked_refresh_and_revocation_are_answered_outside`.
+- *Coded responses are refused (creds-04, amended 2026-11-13).* The mask reads a response's bytes
+  as they come, so an echo inside a body coded gzip, br, deflate, zstd or any other content coding
+  (RFC 9110 §8.4), or a transfer coding (RFC 9112 §7), or a WebSocket message compressed by
+  permessage-deflate (RFC 7692), passed unmasked and decoded to the value in the guest: once a
+  recorded residual, a leak. Decoding, masking and coding again was refused: a decoder of every
+  coding in the network process (zstd and br beside gzip), its output bounded only by a ratio no
+  spec gives, and a coded body whose length changes. So a request with a value filled in asks its
+  response as its sender writes it: its Accept-Encoding lines cut and `Accept-Encoding: identity`
+  added (`uncoded`; HTTP/2's `ask_identity`), as no field means any coding is acceptable (§12.5.3),
+  and its WebSocket extension offer cut (RFC 6455 §9.1: a server takes none not offered). A final
+  or 101 response to it whose content coding is not `identity`, whose transfer coding is not
+  `chunked` (one a guest's TE asked included), or that takes a WebSocket extension, is refused
+  before any of it goes: `Refusal::Unmaskable(Unmaskable::Coded | Extended)`, 502 on HTTP/1.1
+  (the connection closing) and on its HTTP/2 stream alone (`maskable`), as §12.5.3 lets a server
+  code a response anyway. A request with no value filled in asks and gets what it likes. The cost
+  is that an injected exchange's body travels uncoded between the network process and its host.
+  Tests: `inject::tests::leaks`' gzip echo over HTTP/1.1 as a content coding and as a transfer
+  coding and over HTTP/2, red before (the coded echo reached the guest and decoded to the value),
+  green after, and a filled WebSocket upgrade whose host takes permessage-deflate anyway; each of
+  the two response checks and the two request rewrites removed fails them. Still residual: a
+  tunnel's own framing (a value split across WebSocket frames, or a protocol other than WebSocket
+  after a 101), which the mask reads as bytes.
 - *Audit (f26).* `shards-net: credential <reference> filled in toward <host> at <s>.<ns> (Unix
   time)`, on the network process's stderr (its run host's diagnostics); never the value or the
   placeholder.
