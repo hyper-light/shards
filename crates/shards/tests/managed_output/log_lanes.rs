@@ -269,7 +269,10 @@ impl Home {
 /// hangs it up. Should its wait on `home`'s run be refused first (a `Patience`, D209: past the
 /// slowest of its kind, a whole window with no progress of its daemon or microVMs), it is hung
 /// up then, so that every read of its lanes ends with the connection's end and the test fails
-/// at that read rather than waiting on.
+/// at that read rather than waiting on. Its wait's kind is its caller's site: each test's body
+/// does its own work (a quick read of logs written, or agents writing past a log cap), and one
+/// kind for all of them taught the quickest's record to the slowest.
+#[track_caller]
 fn controlled<T>(
     controller: Controller,
     dialed: Dialed,
@@ -284,10 +287,11 @@ fn controlled<T>(
     } = dialed;
     let execs = execs.unwrap();
     let (done, finished) = mpsc::channel::<()>();
+    let site = std::panic::Location::caller();
     std::thread::scope(|scope| {
         let driver = scope.spawn(move || controller.run());
         scope.spawn(move || {
-            let mut patience = common::Patience::of(home);
+            let mut patience = common::Patience::at(home, site);
             loop {
                 match finished.recv_timeout(patience.next_look()) {
                     Err(mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
