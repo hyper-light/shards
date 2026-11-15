@@ -597,7 +597,9 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     } else {
         "a harness"
     };
-    fetch_checked(directive, source, &fetch)?;
+    if !unexpanded(source) {
+        fetch_checked(directive, source, &fetch)?;
+    }
     Ok(Domain {
         name: name(n, what)?,
         source: source.clone(),
@@ -607,10 +609,18 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     })
 }
 
+/// Whether `word` names a variable its stage expands (`$NAME`, `${NAME…}`), as `ADD`'s
+/// sources may (D56): what it is is known only once the plan has expanded it, which checks
+/// it then. A `$` escaped to stand for itself is checked then too.
+pub(crate) fn unexpanded(word: &[u8]) -> bool {
+    word.contains(&b'$')
+}
+
 /// `fetch` held to what `source` is (D54): an http(s) source pinned by `--checksum`; an s3
 /// one by `--checksum` or `--version-id`; S3's own flags on an s3 source alone; a
-/// redirect granted only where a fetch can be redirected; each value well formed.
-fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Vec<u8>> {
+/// redirect granted only where a fetch can be redirected; each value well formed. As
+/// parsed, where its source names no variable; else once the plan has expanded it.
+pub(crate) fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Vec<u8>> {
     let refuse = |why: &str| Err(format!("{directive} {why}").into_bytes());
     let kind = source_of(source)?;
     let s3 = matches!(kind, Source::S3 { .. });
@@ -767,13 +777,8 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
     };
     let f = &req.flags;
     let redirects = f.values("redirect");
-    if !redirects.is_empty() {
-        // A skill another stage or agent holds is copied, not fetched.
-        let kind = match &source {
-            SkillSource::Path(p) if f.value("from").is_empty() => source_of(p)?,
-            _ => Source::Path(Vec::new()),
-        };
-        redirects_checked("SKILL", &kind, &redirects)?;
+    if !matches!(&source, SkillSource::Path(p) if unexpanded(p)) {
+        skill_checked(&source, &f.value("from"), &redirects)?;
     }
     Ok(Skill {
         source,
@@ -793,6 +798,35 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
     })
 }
 
+/// A SKILL's `--redirect` grants held to its source (D54): a skill another stage or agent
+/// holds (`--from`) is copied, not fetched. As parsed, where its source names no variable;
+/// else once the plan has expanded it.
+pub(crate) fn skill_checked(source: &SkillSource, from: &[u8], redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    if redirects.is_empty() {
+        return Ok(());
+    }
+    let kind = match source {
+        SkillSource::Path(p) if from.is_empty() => source_of(p)?,
+        _ => Source::Path(Vec::new()),
+    };
+    redirects_checked("SKILL", &kind, redirects)
+}
+
+/// An MCP server's source held to what MCP takes (§4.4, D54): no s3:// source, and a
+/// `--redirect` only where its source is fetched, never a remote server's URL, which is
+/// reached at run. As parsed, where its source names no variable; else once the plan has
+/// expanded it.
+pub(crate) fn mcp_checked(source: &[u8], redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    let kind = source_of(source)?;
+    if let Source::S3 { .. } = kind {
+        return Err(b"MCP takes no s3:// source: an agent's or harness's is pinned by AGENT's or HARNESS's --checksum or --version-id".to_vec());
+    }
+    if !redirects.is_empty() && matches!(kind, Source::Http(_)) {
+        return Err(b"MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched".to_vec());
+    }
+    redirects_checked("MCP", &kind, redirects)
+}
+
 /// `MCP [--target-kind=…] <name> FROM <source> [FOR <name>…]`.
 fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
     req.flags.add("target-kind", FlagType::String, b"");
@@ -810,16 +844,10 @@ fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
             b"MCP requires a name and FROM <source>: MCP <name> FROM <source> [FOR <name> ...]".to_vec(),
         );
     }
-    let kind = source_of(source)?;
-    if let Source::S3 { .. } = kind {
-        return Err(b"MCP takes no s3:// source: an agent's or harness's is pinned by AGENT's or HARNESS's --checksum or --version-id".to_vec());
-    }
     let redirects = req.flags.values("redirect");
-    // A remote server's URL is reached at run, not fetched by the build (§4.4).
-    if !redirects.is_empty() && matches!(kind, Source::Http(_)) {
-        return Err(b"MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched".to_vec());
+    if !unexpanded(source) {
+        mcp_checked(source, &redirects)?;
     }
-    redirects_checked("MCP", &kind, &redirects)?;
     Ok(Mcp {
         name: name(n, "an MCP server")?,
         source: source.clone(),

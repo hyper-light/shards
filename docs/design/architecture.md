@@ -5628,6 +5628,20 @@ Tested: `agents_expand_their_words_and_are_copied_from` (an `ARG`-named source,
 `COPY --from=main` into a stage without the agent, the image holding the file and no
 `/agents`), the dependency mutation-checked; BuildKit's oracle unchanged.
 
+Checked once expanded (2026-11-15). P4.1 to P4.3 (a9f17f701) checked `AGENT`'s and
+`HARNESS`'s sources as parsed, as `MCP`'s and `SKILL`'s already were (D54's pins, refusals
+and grants), so an `ARG`-named source (`AGENT a FROM $SRC`) was refused before its stage
+expanded it, and `agents_expand_their_words_and_are_copied_from` failed on every backend
+from then (PM M608). A source that names no variable is checked as parsed; one that does
+(a `$` anywhere in it, an escaped one included) is checked by the plan once its stage has
+expanded it, by the same functions (`fetch_checked`, `mcp_checked`, `skill_checked`). Each
+source is checked once, on what will be fetched, and a literal one still fails at parse.
+Tested: `a_sources_variables_expand_before_it_is_checked` (`$SRC` and `${MCP_SRC}` parse as
+written; an `ARG` that expands to an unpinned https or s3 `AGENT`/`HARNESS` source, an s3
+`MCP` source, or a `SKILL --redirect` on a path is refused once expanded, with the words a
+written-out source gets), mutation-checked (no check once expanded: the unpinned source
+plans).
+
 ### An Agentfile's manifest says what it holds (D57)
 
 The manifest of an Agentfile's image carries annotations (OCI image-spec `manifest.md`,
