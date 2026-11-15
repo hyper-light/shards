@@ -11739,10 +11739,18 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     seen (…), … after it began". It was `READY_STALL`'s 10 s looks and `READY_TIMEOUT`'s
     60 s (`a_visits_vm_is_waited_for_while_it_starts_and_refused_once_still_past_the_slowest_hold`:
     a busy stand-in holding 1.5 s on is taken; a stopped one past it is refused).
-  - *A VM's requests for access* (macOS, `grant`) are judged each on `Answers::grants`,
-    taught by each request that came after a wait, never by the link's end; a VM first
-    quiet past W* is sampled once (sample(1)), or logged as not yet started by the host
-    (PM M166). It was `GRANT_STALL`'s 10 s and a 60 s read timeout of `READY_TIMEOUT`'s.
+  - *A VM's requests for access* (macOS, `grant`) after its first are judged each on
+    `Answers::grants`, taught by each request that came after a wait, never by the link's
+    end; a VM first quiet past W* between two is sampled once (sample(1)). Its spawn to its
+    first request is its launch (`launch`), the host's to admit (PM M166: amfid, syspolicyd
+    and secinitd's work, which its threads wait on asleep, so no look at its process tells
+    it from a stall): followed by its liveness alone, its link's end, each launch learned
+    into `Answers::launches`, and one past the slowest seen said once, to the log and to a
+    waiting run's client on a terminal (piped, Docker's text), as macOS launch services' (ROOT's batch 26: a launch refused 16 ms
+    still on a loaded host, M166's decision of 2026-11-14). The tests' judge takes a VM
+    process still in its launch (`platform::in_launch`: no thread named as its own code
+    names its main one, `platform::launch_over`) for its host's hold. It was `GRANT_STALL`'s
+    10 s and a 60 s read timeout of `READY_TIMEOUT`'s.
   - *A builder's dial* (`builder::dialed`) is judged on its own `BOOTED`, as its `NEEDED`
     and `ENDED` are. It was `BOOT_PATIENCE`'s 30 s, judged each `READY_STALL`.
   Each is cold before its kind's first answer: the VM's liveness alone, its connection's

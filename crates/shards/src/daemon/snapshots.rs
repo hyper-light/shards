@@ -455,6 +455,7 @@ impl<D: Disk> Daemon<D> {
         r: &Resumable,
         mac: Option<[u8; 6]>,
         parent: &str,
+        told: &dyn Fn(&str),
     ) -> Result<super::Ready, String> {
         let pinned = shards_vmm::snapshot::read(&r.dir)?;
         let mut args: Vec<OsString> = vec![
@@ -479,7 +480,7 @@ impl<D: Disk> Daemon<D> {
             .then(|| super::layers::LayerFile::for_restore(&self.home, &pinned.path))
             .transpose()?;
         drop(pinned);
-        self.start_for_run(threads, &args, net, parent, layer)
+        self.start_for_run(threads, &args, net, parent, layer, told)
     }
 
     /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,
