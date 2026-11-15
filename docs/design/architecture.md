@@ -33529,6 +33529,8 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     (`run.rs`), so none made with the old init is restored; and a fresh boot runs the init
     this `shards` carries.
   - *Literals.* None added. The shutdown flags are virtio's (1.3 §5.10.6.4).
+  - *On no clock* (D264): a guest's end holds what its host has not taken past it, within the
+    window it had, instead of the 2 s `SHUTDOWN_TIMEOUT` after which it was dropped.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
   `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
@@ -35622,6 +35624,59 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
   - A build with RUN steps through the API on HVF, KVM and WHP: its builder microVM booted by
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
+
+### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
+
+**Why.** The vsock device gave a connection whose guest had ended both ways 2 s to hand its
+host what the host had not taken (`SHUTDOWN_TIMEOUT`, Firecracker's
+`CONN_SHUTDOWN_TIMEOUT_MS`), then reset it and dropped the rest. A host slower than that, a
+busy orchestrator or a paused reader, lost guest bytes, against D251's amended rule that every
+byte a guest sent before its end is its host's. And a guest's own reset dropped them at once
+(the muxer's `remove`), which Linux sends when its close finds no reset from the host within
+`VSOCK_CLOSE_TIMEOUT` (`virtio_transport_close_timeout`, net/vmw_vsock/
+virtio_transport_common.c). The constant is an upstream default with no source of its own
+(R03).
+
+**What the timer guarded, and what bounds it instead.** A host that never reads holding the
+device's memory and a slot. Neither needs a clock:
+- *Memory.* After the guest's end nothing more comes, so all an ended connection may hold is
+  what it holds: at most the window it had granted (`send_host` refuses a byte past its
+  credit). Its grant ends with it (`Conn::end`: `granted_until` brought to what it holds), so
+  its share of the device's lent window (`WINDOW_LENT`) is what it holds past `WINDOW_LEAST`,
+  counted as an open connection's is (`Muxer::check`), and it falls as the host takes its
+  bytes. A guest's other connections are offered less window while it holds more.
+- *Descriptors.* An ended connection still held takes a slot (`Muxer::open`), as an open one
+  does: slots are what this process's descriptors leave (`slots`). Windows' held sockets
+  (M358's hold) took none before, which this mends.
+- *The guest.* Its connection ends at once: its reset goes as both its ways are over
+  (`Conn::flush`), whatever its host has not taken, so its key and port are free. A ringed
+  connection's ring is the guest's memory, drained while its connection lasts, as before.
+
+**Decided.** An ended connection is one of two held states (`conn::Ended`, R04): `Owing`
+(guest bytes its host has not taken, handed over as its socket turns writable) and, on Windows,
+`Lingering` (every byte the host's, its socket held until the host ends its side, D140's
+M358 hold). `Owing` settles once all is the host's (`Conn::settled`): its writes shut down
+where the guest's ended in order, then on Unix its socket closes and on Windows it lingers.
+It goes where its host has gone (a failed write) and with the muxer's reset. No deadline and
+no learned wait: what a host does not read it holds in its own socket, as it would any peer's,
+and a closed connection costs the device no more than an open one. `REQUEST_TIMEOUT`, a host
+dial's wait for the guest's answer, is untouched (its own R03 review is owed).
+
+**Literals.** None added; `SHUTDOWN_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_host_that_reads_long_after_its_guests_close_reads_every_byte_then_its_end` (a
+guest sends all its window lets it past every socket buffer, the host reading none, closes,
+three seconds pass, the host reads: every byte in order, then their end; its slot held until
+then) and `conn::tests::an_ended_connection_keeps_what_its_host_has_not_taken`. Results and
+hosts are in the commit that lands them and in ROOT's record.
+
+**Evidence owed** (ROOT, real VMs): a guest writing past a slow host's socket buffer and
+closing, on HVF, KVM and WHP.
+
+**What would falsify it.** A guest byte its host never read where the host read on to its
+end; an ended connection holding more than the window it had; slots or lent window freed while
+an ended connection still holds its bytes.
 
 ## 4. Start path (≤ 5 ms budget)
 

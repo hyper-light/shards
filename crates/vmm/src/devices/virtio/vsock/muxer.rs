@@ -33,7 +33,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::Span;
-use super::conn::{Conn, WINDOW_LENT};
+use super::conn::{Conn, Ended, WINDOW_LENT};
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
 use super::poll::{Interest, Ready};
 use crate::debug;
@@ -157,8 +157,7 @@ pub enum Token {
     Listener,
     Handshake(usize),
     Conn(Key),
-    #[cfg(windows)]
-    Lingering(usize),
+    Ended(usize),
 }
 
 struct Handshake {
@@ -215,10 +214,10 @@ pub struct Muxer {
     rate: Option<Sender<(UnixStream, shards_abi::rate::Asked)>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
-    /// Ended connections whose host sockets are held until their peers end their sides
-    /// ([`Conn::linger`]).
-    #[cfg(windows)]
-    lingering: Vec<Conn>,
+    /// Ended connections still held ([`Conn::end`]): owing their hosts guest bytes, or on
+    /// Windows held until their hosts end their sides. Each holds a slot and its share of the
+    /// lent window, as an open one does.
+    ended: Vec<Ended>,
     /// Connections with packets for the guest, served in turn.
     rxq: VecDeque<Key>,
     /// RSTs for packets that matched no connection: (host port, guest port).
@@ -285,8 +284,7 @@ impl Muxer {
             rate: host.rate,
             handshakes: Vec::new(),
             conns: HashMap::new(),
-            #[cfg(windows)]
-            lingering: Vec::new(),
+            ended: Vec::new(),
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             max_stray_rsts: MAX_STRAY_RSTS,
@@ -304,8 +302,7 @@ impl Muxer {
         self.handshakes.clear();
         self.conns.clear();
         self.lent = 0;
-        #[cfg(windows)]
-        self.lingering.clear();
+        self.ended.clear();
         self.rxq.clear();
         self.stray_rsts.clear();
         self.local_ports.clear();
@@ -355,10 +352,10 @@ impl Muxer {
         !self.stray_rsts.is_empty() || !self.rxq.is_empty()
     }
 
-    /// The slots no newcomer can take: connections. A pending handshake gives its own up
-    /// to one ([`Muxer::make_room`]).
+    /// The slots no newcomer can take: connections, open or ended and still held. A pending
+    /// handshake gives its own up to one ([`Muxer::make_room`]).
     fn open(&self) -> usize {
-        self.conns.len()
+        self.conns.len() + self.ended.len()
     }
 
     /// Where every slot is taken, frees one for a newcomer: the pending handshake silent
@@ -369,7 +366,7 @@ impl Muxer {
 
     /// [`make_room`](Muxer::make_room) where `slots` are all there are.
     fn make_room_within(&mut self, slots: usize) {
-        if self.handshakes.len() + self.conns.len() < slots {
+        if self.handshakes.len() + self.open() < slots {
             return;
         }
         let silent = self
@@ -408,9 +405,9 @@ impl Muxer {
         if c.allocated_port {
             self.local_ports.remove(&key.local_port);
         }
-        #[cfg(windows)]
-        if let Some(c) = c.linger() {
-            self.lingering.push(c);
+        if let Some(e) = c.end() {
+            self.lent = self.lent.saturating_add(u64::from(e.lent()));
+            self.ended.push(e);
         }
     }
 
@@ -585,9 +582,9 @@ impl Muxer {
                 add(c.fd(), read, write, Token::Conn(*key));
             }
         }
-        #[cfg(windows)]
-        for (i, c) in self.lingering.iter().enumerate() {
-            add(c.fd(), true, false, Token::Lingering(i));
+        for (i, e) in self.ended.iter().enumerate() {
+            let (read, write) = e.interest();
+            add(e.fd(), read, write, Token::Ended(i));
         }
     }
 
@@ -602,15 +599,13 @@ impl Muxer {
         }
         let mut ready_handshakes = Vec::new();
         let mut listener = false;
-        #[cfg(windows)]
-        let mut ready_lingering = Vec::new();
+        let mut ready_ended = Vec::new();
         for e in events {
             match e.token {
                 None => {}
                 Some(Token::Listener) => listener = true,
                 Some(Token::Handshake(i)) => ready_handshakes.push(i),
-                #[cfg(windows)]
-                Some(Token::Lingering(i)) => ready_lingering.push(i),
+                Some(Token::Ended(i)) => ready_ended.push((i, e.read, e.write)),
                 Some(Token::Conn(key)) => {
                     let Some(c) = self.conns.get_mut(&key) else {
                         continue;
@@ -636,13 +631,17 @@ impl Muxer {
         if listener {
             self.accept();
         }
-        #[cfg(windows)]
-        {
-            ready_lingering.sort_unstable_by(|a, b| b.cmp(a));
-            for i in ready_lingering {
-                if self.lingering.get_mut(i).is_some_and(Conn::drained) {
-                    self.lingering.swap_remove(i);
-                }
+        // Highest index first: a swap_remove moves only one handled already into a place.
+        ready_ended.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (i, read, write) in ready_ended {
+            if i >= self.ended.len() {
+                continue;
+            }
+            let e = self.ended.swap_remove(i);
+            self.lent = self.lent.saturating_sub(u64::from(e.lent()));
+            if let Some(e) = e.on_ready((read, write)) {
+                self.lent = self.lent.saturating_add(u64::from(e.lent()));
+                self.ended.push(e);
             }
         }
     }
@@ -678,7 +677,7 @@ impl Muxer {
     /// its MAX_CONNECTIONS.
     fn take(&mut self, stream: UnixStream) {
         self.make_room();
-        if self.handshakes.len() + self.conns.len() >= self.slots {
+        if self.handshakes.len() + self.open() >= self.slots {
             debug!("vsock: every slot a connection's; a host connection refused");
             return;
         }
@@ -773,7 +772,8 @@ impl Muxer {
     /// connection's own ([`Conn::check`]).
     #[cfg(test)]
     fn check(&self) -> Result<(), String> {
-        let held: u64 = self.conns.values().map(|c| u64::from(c.lent())).sum();
+        let held: u64 = self.conns.values().map(|c| u64::from(c.lent())).sum::<u64>()
+            + self.ended.iter().map(|e| u64::from(e.lent())).sum::<u64>();
         if held != self.lent || self.lent > u64::from(WINDOW_LENT) {
             return Err(format!(
                 "lent {} of {WINDOW_LENT}, where its connections hold {held}",
@@ -1714,14 +1714,14 @@ mod tests {
         );
         #[cfg(windows)]
         {
-            assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+            assert_eq!(m.ended.len(), 1, "held while the host's end is open");
             drop(theirs);
             // The host's end reads as its socket's end (poll.rs): the muxer's goes then.
             let mut interests = Vec::new();
             m.interests(&mut interests);
             let ready: Vec<Ready<Option<Token>>> = interests
                 .iter()
-                .filter(|i| matches!(i.token, Some(Token::Lingering(_))))
+                .filter(|i| matches!(i.token, Some(Token::Ended(_))))
                 .map(|i| Ready {
                     token: i.token,
                     read: true,
@@ -1730,7 +1730,7 @@ mod tests {
                 .collect();
             assert_eq!(ready.len(), 1);
             m.on_events(&ready);
-            assert!(m.lingering.is_empty(), "let go once the host's end is gone");
+            assert!(m.ended.is_empty(), "let go once the host's end is gone");
         }
     }
 
@@ -1760,7 +1760,7 @@ mod tests {
             "a write to a guest gone was taken"
         );
         #[cfg(windows)]
-        assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+        assert_eq!(m.ended.len(), 1, "held while the host's end is open");
     }
 
     /// The guest's SHUTDOWN of RCV and SEND on [`spoken`]'s connection after one of RCV
@@ -1819,7 +1819,7 @@ mod tests {
             let (got, end) = read_out(&mut theirs);
             assert_eq!(got, SAID, "what the guest sent, whole");
             assert_eq!(end, None, "end-of-stream after every byte");
-            assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+            assert_eq!(m.ended.len(), 1, "held while the host's end is open");
         }
     }
 
@@ -1839,7 +1839,7 @@ mod tests {
         #[cfg(unix)]
         assert!(hung_up(&theirs), "hung up");
         #[cfg(windows)]
-        assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+        assert_eq!(m.ended.len(), 1, "held while the host's end is open");
     }
 
     /// Whether `theirs` has hung up: POLLHUP or POLLERR, asked for POLLOUT (PM M559).
@@ -2152,6 +2152,81 @@ mod tests {
             Some(op::RST),
             "a byte past the window was taken"
         );
+    }
+
+    /// A host that reads long after its guest closed still reads every byte the guest sent,
+    /// then their end (D264, in place of Firecracker's CONN_SHUTDOWN_TIMEOUT_MS): the guest
+    /// sends all its window lets it past every socket buffer with the host reading none,
+    /// closes (close(2): one SHUTDOWN of RCV and SEND), and has its reset at once; the
+    /// connection, its key free, holds what the host has not taken, its slot and its share
+    /// of the lent window counted, on no clock, until the host has read it all.
+    #[test]
+    fn a_host_that_reads_long_after_its_guests_close_reads_every_byte_then_its_end() {
+        use super::super::packet::shutdown;
+        let (mut m, arrived) = served_every();
+        let mem = GuestMemory::anonymous(&[(PACKETS, 1 << 16)]).unwrap();
+        let mut p = Peer::connect(&mut m, &arrived, &mem, 49_152, WINDOW_MOST);
+        hear(&mut m, std::slice::from_mut(&mut p));
+        p.send(&mut m, &mem, WINDOW_LEAST / 2);
+        p.drain(&mut m);
+        hear(&mut m, std::slice::from_mut(&mut p));
+        p.send_all(&mut m, &mem, false);
+        let sent = p.tx_cnt as usize;
+        let closed = Header {
+            op: op::SHUTDOWN,
+            flags: shutdown::RCV | shutdown::SEND,
+            buf_alloc: p.buf_alloc,
+            ..request(54, 49_152)
+        };
+        m.on_guest_packet(&closed, &[], &mem);
+        // Past any clock a host's reader might be held by: three seconds of none of it read.
+        std::thread::sleep(Duration::from_secs(3));
+        m.expire(Instant::now());
+        hear(&mut m, std::slice::from_mut(&mut p));
+        assert!(p.reset, "the guest's connection is over");
+        m.check().unwrap();
+        assert_eq!(m.open(), 1, "its slot is held while its host's bytes are");
+        // The host reads now, the muxer handing over what it holds as the socket takes it.
+        let mut buf = [0u8; MAX_PAYLOAD as usize];
+        let end = loop {
+            match p.host.read(&mut buf) {
+                Ok(0) => break None,
+                Ok(n) => {
+                    let at = p.read % 251;
+                    assert!(
+                        buf[..n] == pattern()[at..at + n],
+                        "bytes {} on not the guest's",
+                        p.read
+                    );
+                    p.read += n;
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    let mut interests = Vec::new();
+                    m.interests(&mut interests);
+                    let ready: Vec<Ready<Option<Token>>> = interests
+                        .iter()
+                        .map(|i| Ready {
+                            token: i.token,
+                            read: i.read,
+                            write: i.write,
+                        })
+                        .collect();
+                    assert!(
+                        !ready.is_empty(),
+                        "{} of {sent} bytes read, and nothing left to wait for",
+                        p.read
+                    );
+                    m.on_events(&ready);
+                    m.check().unwrap();
+                }
+                Err(e) => break Some(e.kind()),
+            }
+        };
+        assert_eq!((p.read, end), (sent, None), "every byte, then their end");
+        #[cfg(unix)]
+        assert_eq!(m.open(), 0, "let go once its host has every byte");
+        #[cfg(windows)]
+        assert_eq!(m.ended.len(), 1, "held while the host's end is open (PM M358)");
     }
 
     /// Two connections share what the device lends: the second is given the least window

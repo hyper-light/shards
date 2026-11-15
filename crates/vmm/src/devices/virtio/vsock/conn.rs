@@ -37,10 +37,10 @@ pub const WINDOW_MOST: u32 = shards_abi::VSOCK_WINDOW;
 /// stream's whole window at the measured knee. Several streams share one device worker's
 /// bandwidth, and so its window, between them.
 pub const WINDOW_LENT: u32 = WINDOW_MOST - WINDOW_LEAST;
-/// How long the guest has to answer a request, and to finish a shutdown.
-/// Firecracker's CONN_REQUEST_TIMEOUT_MS and CONN_SHUTDOWN_TIMEOUT_MS.
+/// How long the guest has to answer a host's request: Firecracker's
+/// CONN_REQUEST_TIMEOUT_MS. A guest's shutdown has no deadline: what its host has not taken
+/// is held past its end, within the window it had ([`Conn::end`], D264).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -130,6 +130,79 @@ impl std::fmt::Debug for Conn {
     }
 }
 
+/// A connection the muxer still holds once it has ended (R04): its reset sent, or the
+/// guest's taken ([`Conn::end`]).
+pub enum Ended {
+    /// Holding guest bytes its host has not taken, handed over as its socket takes them.
+    Owing(Conn),
+    /// Windows: every byte its host's, its socket held until the host ends its side
+    /// ([`Conn::linger`], PM M358).
+    #[cfg(windows)]
+    Lingering(Conn),
+}
+
+impl Ended {
+    fn conn(&self) -> &Conn {
+        match self {
+            Ended::Owing(c) => c,
+            #[cfg(windows)]
+            Ended::Lingering(c) => c,
+        }
+    }
+
+    pub fn fd(&self) -> RawSocket {
+        self.conn().fd()
+    }
+
+    /// What its socket waits for: room for what it owes, or (lingering) its host's end.
+    pub fn interest(&self) -> (bool, bool) {
+        match self {
+            Ended::Owing(_) => (false, true),
+            #[cfg(windows)]
+            Ended::Lingering(_) => (true, false),
+        }
+    }
+
+    /// Its share of the device's lent window: what it owes past [`WINDOW_LEAST`].
+    pub fn lent(&self) -> u32 {
+        self.conn().lent()
+    }
+
+    /// Its socket turned ready, `(readable, writable)`: an owing one hands over what its
+    /// socket takes, settled once all is the host's ([`Conn::settled`]) and gone where the
+    /// host has (a failed write); a lingering one reads and drops what its host sent, gone
+    /// once the host has ended its side ([`Conn::drained`]).
+    pub fn on_ready(self, ready: (bool, bool)) -> Option<Ended> {
+        match self {
+            Ended::Owing(c) if ready.1 => c.hand_over(),
+            #[cfg(windows)]
+            Ended::Lingering(mut c) if ready.0 => (!c.drained()).then_some(Ended::Lingering(c)),
+            other => Some(other),
+        }
+    }
+}
+
+impl Conn {
+    /// An owing ended connection's turn at its writable socket ([`Ended::on_ready`]).
+    fn hand_over(mut self) -> Option<Ended> {
+        match self.tx_buf.flush_to(&mut self.stream) {
+            Ok(n) => {
+                self.fwd_cnt += n as u32;
+                self.tx_buf.fit(self.exposure() as usize);
+            }
+            Err(e) => {
+                debug!("vsock: ended port {}'s host socket: {e}", self.local_port);
+                return None;
+            }
+        }
+        if self.tx_buf.is_empty() {
+            self.settled()
+        } else {
+            Some(Ended::Owing(self))
+        }
+    }
+}
+
 /// A connection ends with its write side shut down, then its socket closed, as Unix's
 /// close ends it: on Windows a socket whose last reference its process's exit closes loses
 /// what its peer had not read, and one shut down and closed first keeps it (PM M199). A cut
@@ -215,14 +288,54 @@ impl Conn {
         self.expiry
     }
 
-    /// An ended connection, kept for its host socket until the socket's peer ends its side,
+    /// An ended connection, its reset sent or the guest's taken (the muxer's `remove`): held
+    /// while its host has not taken every byte its guest sent, as those are the host's
+    /// whatever the end (D251, amended; D264), then ended as its guest's end says
+    /// ([`Conn::settled`]). Its grant ends with it: nothing more comes, so what it may still
+    /// hold is what it holds, and its share of the device's lent window ([`Conn::lent`])
+    /// falls as its host takes that. A killed one keeps nothing, and its ring, the guest's
+    /// memory, goes with the connection.
+    pub fn end(mut self) -> Option<Ended> {
+        self.ringing = Ringing::Plain;
+        self.pending = Pending::default();
+        self.expiry = None;
+        if self.killed {
+            self.tx_buf = TxBuf::default();
+        }
+        self.granted_until = self.fwd_cnt + Wrapping(u32::try_from(self.tx_buf.len()).unwrap_or(u32::MAX));
+        if self.tx_buf.is_empty() {
+            self.settled()
+        } else {
+            Some(Ended::Owing(self))
+        }
+    }
+
+    /// Ends a connection whose host has taken every byte its guest sent: its writes shut
+    /// down where the guest's ended in order, so the host reads their end; then on Unix its
+    /// socket closes (a cut's with no shutdown first, its host finding it hung up, PM M559),
+    /// and on Windows it is held as [`linger`](Self::linger) says.
+    fn settled(mut self) -> Option<Ended> {
+        if !self.killed && self.guest_send_closed && self.host_writes == HostWrites::Open {
+            self.host_writes = HostWrites::Shut;
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+        #[cfg(windows)]
+        {
+            self.linger().map(Ended::Lingering)
+        }
+        #[cfg(not(windows))]
+        {
+            drop(self);
+            None
+        }
+    }
+
+    /// A settled connection, kept for its host socket until the socket's peer ends its side,
     /// if it has not: on Windows a socket closed while its peer may still read loses the
     /// peer what it had not read yet, where the closer held some of the peer's data unread
     /// and where the peer writes after the close (PM M358). None where the peer has ended
     /// its side, all it sent read, and the socket may close at once.
     ///
-    /// What the guest sent that the host had not taken goes as its connection ends, as on
-    /// Unix: its socket takes no more, and the muxer counts nothing a lingering one holds.
     /// A cut one ([`HostWrites::Cut`]) ends as one in order does: a close that resets loses
     /// its peer every byte it had not read (PM M358), and the guest's bytes before its end
     /// are its host's, whatever the end (D251, amended). Its host reads them, then
@@ -230,10 +343,7 @@ impl Conn {
     /// ends its side is an open limit of Windows' AF_UNIX (M358: a send to a closed socket
     /// succeeds).
     #[cfg(windows)]
-    pub fn linger(mut self) -> Option<Conn> {
-        self.tx_buf = TxBuf::default();
-        // Its ring goes with the connection; only the host socket lingers.
-        self.ringing = Ringing::Plain;
+    fn linger(mut self) -> Option<Conn> {
         if self.host_writes != HostWrites::Shut {
             self.host_writes = HostWrites::Shut;
             let _ = self.stream.shutdown(Shutdown::Write);
@@ -244,7 +354,7 @@ impl Conn {
     /// Reads what a lingering connection's host socket holds, and drops it: whether the
     /// socket's peer has ended its side (end-of-stream, or an error: it is gone).
     #[cfg(windows)]
-    pub fn drained(&mut self) -> bool {
+    fn drained(&mut self) -> bool {
         let mut sink = [0u8; 4096];
         loop {
             match io::Read::read(&mut &self.stream, &mut sink) {
@@ -542,8 +652,6 @@ impl Conn {
                 if let Err(e) = self.flush() {
                     debug!("vsock: host socket for port {}: {e}", self.local_port);
                     self.kill();
-                } else if self.guest_rcv_closed && self.guest_send_closed && !self.tx_buf.is_empty() {
-                    self.expiry = Some(Instant::now() + SHUTDOWN_TIMEOUT);
                 }
             }
             (op::CREDIT_UPDATE, _) => {}
@@ -596,12 +704,21 @@ impl Conn {
     }
 
     /// Moves buffered data to the host, then finishes whatever the guest's shutdown asked
-    /// for once nothing is left.
+    /// for once nothing is left. A plain connection whose guest has ended both ways ends at
+    /// once, its reset owed: what its host has not taken yet is held past its end
+    /// ([`Conn::end`]). A ring is the guest's memory, drained while its connection lasts.
     fn flush(&mut self) -> io::Result<()> {
         let n = self.tx_buf.flush_to(&mut self.stream)?;
         self.fwd_cnt += n as u32;
         self.tx_buf.fit(self.exposure() as usize);
         if !self.tx_buf.is_empty() || !self.ring_drained()? {
+            if self.guest_rcv_closed && self.guest_send_closed && matches!(self.ringing, Ringing::Plain) {
+                self.pending = Pending {
+                    rst: true,
+                    ..Pending::default()
+                };
+                self.expiry = None;
+            }
             return Ok(());
         }
         if self.guest_send_closed && self.host_writes == HostWrites::Open {
@@ -1086,18 +1203,20 @@ mod tests {
         );
     }
 
-    /// A connection kept for its host socket's peer (PM M358) holds none of what the guest
-    /// sent that its host had not taken: its socket takes no more.
-    #[cfg(windows)]
+    /// An ended connection keeps what its guest sent that its host has not taken (D264), its
+    /// grant ending with it: all it may still hold is what it holds, and its share of the
+    /// lent window what it holds past the least.
     #[test]
-    fn a_lingering_connection_holds_none_of_what_its_host_did_not_take() {
+    fn an_ended_connection_keeps_what_its_host_has_not_taken() {
         let g = Guest::new();
         let (mut c, _host) = established(&g, 256 * 1024);
         c.tx_buf
             .append(&g.mem, BASE, 1000, WINDOW_LEAST as usize)
             .unwrap();
-        let lingering = c.linger().expect("its host's end is open");
-        assert_eq!((lingering.tx_buf.len(), lingering.tx_buf.data.capacity()), (0, 0));
+        let Some(Ended::Owing(e)) = c.end() else {
+            panic!("an ended connection let its host's bytes go");
+        };
+        assert_eq!((e.tx_buf.len(), e.exposure(), e.lent()), (1000, 1000, 0));
     }
 
     #[test]
