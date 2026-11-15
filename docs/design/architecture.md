@@ -36188,6 +36188,85 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slice 1 built: the component build; the attach, member restart, swap and saves following)
+
+**Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
+agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
+builds sans microvm re-build." Binding: no rebuild of the Agentfile's image or the microVM,
+no restart of the VM. Plan steps P6c.0 (fleet scale: "Imagine a fleet of millions of agents
+and us needing to hot-swap") and P6c.1; P6c.5 (a harness switch "with just a click").
+
+**Decided, the shape** (ROOT's yes, 2026-11-15):
+1. *The artifact is the OSI artifact Shards already has* (D57, AGENTFILE_ARCH.md §12.17): an
+   OCI 1.1 manifest of `artifactType` `application/vnd.osi.{agent,harness,mcp}.v1`, its
+   config the normalized startup and asks, one content tar rooted at its directory. Its
+   identity is its manifest's digest, kept, pushed, pulled and signed (D126) as agents are,
+   fetched by digest. Alternatives: a new media type of EROFS content (weighed and not
+   taken: an OSI artifact is already what `AGENT`/`HARNESS`/`MCP` take `FROM` an OCI
+   reference, and what kiln and Hex read; the EROFS form is derived from it per digest,
+   slice 2); a directory in the home keyed by a hash of the request (not taken: no
+   signature, no registry, nothing a fleet fetches by digest).
+2. *Built once, as its directive is in a whole build* (slice 1, below).
+3. *Attached as an immutable EROFS layer through virtio-pmem DAX*, every VM of a host that
+   runs one version mapping the same page-cache pages; per-generation mount namespaces;
+   swapped at the member's next start by default, at once where asked; a member restart; the
+   run's desired and held components recorded; saves carry them (slices 2 to 5).
+
+**Slice 1: a component built alone** (`shards_api::Builds::component`, `ComponentSpec`).
+- *The build is a whole build's.* `shards api-build` takes a `COMPONENT` frame (the builds
+  channel's second request kind, appended; its payload's first byte the channel's version)
+  and builds an Agentfile of that one directive over `scratch`, `FROM scratch` then
+  `HARNESS [--checksum=…] [--redirect=…]… [S3 flags] NAME FROM SOURCE`, written to a context
+  of its own in the home's `tmp`, its files to a local output there (D52), no image kept. So
+  the fetch, its pins (a Git ref's commit; `--checksum`; an object's version), its grants
+  (D54: its source's origin and what `--redirect` names, every hop checked) and the build's
+  policies (D101) are the directive's own in any build. A source the build refuses unpinned
+  (an http(s) source without `--checksum`, an s3 one without `--checksum` or
+  `--version-id`) is refused in the build's words (`BuildRefusal::Failed`).
+- *What it is of.* A Git, http(s) or s3 source (`agentfile::source_of`): a context path is no
+  source a component is built of (`shards build agent DIR` makes an artifact of a
+  directory), and an OCI reference names an artifact already, which a run is swapped to by
+  its digest. Each refused, saying so.
+- *The artifact* (`agent::component`): the content the directive laid at its directory
+  (`/agents/NAME`, `/harness/NAME`, `/mcp/NAME`), as a whole build lays it (its descriptor
+  among its files), and the startup the build normalized beside it (`NAME.d/osi.json`),
+  else a config of its name alone (files alone, as such a domain is); its platform the
+  build's, a config naming another refused. Packed as every OSI artifact is (names in order,
+  owned by root, times kept, §9.2's refusals) and kept in the store as its tag, which the
+  spec requires as `shards build agent -t` does: the store keeps what a name holds.
+- *The same pin, the same digest, where the source carries every entry's time.* A Git
+  source's entries are its commit's time (D54's git.rs), an archive's its own; a directory an
+  archive lacks an entry of is made at the build's clock, as BuildKit makes it, so two
+  builds differ there. A component is built once and fetched by digest (P6c.0), never
+  rebuilt per runner.
+- *No index of its own* (R05). The build's cache, keyed by its sources' pins (D62), answers a
+  repeat's fetch and steps; the click path of a swap names a digest and builds nothing. An
+  index of requests to digests would be a second cache with no measured benefit on any path
+  that waits on it.
+- *Both sides check its words* (`ComponentRequest::check`): its name an Agentfile's
+  (`^[a-z][a-z0-9-_.]*$`, D35); each word of the directive one word of the line, refusing
+  whitespace and control characters (a newline would add an instruction), `\` (continues a
+  line), quotes, and `$` (the directive expands it, D56); one platform; a tag. Whether its
+  flags go with its source is the parser's to say.
+
+| Literal | Source |
+|---|---|
+| `scratch` | the empty base (BuildKit's), so nothing but the directive is built |
+| `/agents`, `/harness`, `/mcp` | AGENTFILE_ARCH.md §12.1, the directives' own directories |
+| `COMPONENT` = 2 | the builds channel's next frame kind after `REQUEST` = 1 (append-only) |
+
+**Tests** (light, the change's own): shards-api `builds::tests`
+`a_component_is_its_directives_one_line`, `a_component_whose_words_would_be_more_than_its_directive_is_refused`,
+`a_component_request_reads_back_as_it_was_sent`, `a_component_is_built_by_its_own_request_and_gives_back_its_artifact`
+(a stand-in `shards`); shards `api_build::tests`
+`a_component_is_built_as_an_agentfile_of_its_one_directive_to_a_local_output` (the directive as
+the build's own parser reads it), `an_unpinned_source_is_refused_in_the_builds_words`,
+`a_component_is_built_of_a_fetched_source_alone`.
+
+**Owed to ROOT:** `SHARDS_API_BUILD=1 SHARDS_BIN=… cargo test -p shards-api --test build_real
+a_component_builds_alone_from_its_directives_pinned_source` (no VM boots: `scratch` and a
+fetch) on HVF, KVM and WHP.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
