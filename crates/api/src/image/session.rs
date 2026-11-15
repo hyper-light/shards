@@ -115,6 +115,13 @@ struct State {
     /// Each pause or resume asked and still awaited, by its ask's id, and its answer once it
     /// came (D267), held as [`rooms`](Self::rooms) is.
     pauses: HashMap<u32, Option<Result<wire::Paused, String>>>,
+    /// Each network change asked and still awaited, by its ask's id, and its answer once it
+    /// came (D269), held as [`rooms`](Self::rooms) is.
+    nets: HashMap<u32, Option<NetAnswered>>,
+    /// Every port the run publishes, as its host last said them: its start's, then each
+    /// network change's answer's (D269), which its host makes one at a time and answers in
+    /// that order, whether or not its asker still waits for it.
+    published: Vec<wire::Bound>,
     /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D267),
     /// by its id, until its asker takes it.
     asks_paused: std::collections::HashSet<u32>,
@@ -214,6 +221,9 @@ type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
 
 /// A save's outcome as its host said it (D259): saved, or refused and why.
 type Saved = Result<(), (wire::SaveRefusal, String)>;
+
+/// A network change's outcome as its host said it (D269): made, or refused and why.
+type NetAnswered = Result<wire::NetChanged, (wire::NetRefusal, String)>;
 
 /// A numbered ask of the session's, answered by its id (D241, D247): its kind; the ask and
 /// its send, as a refusal names them; where its answer is awaited; what its host's refusal
@@ -617,6 +627,50 @@ impl Shared {
         answer
     }
 
+    /// Asks its host to change the run's network as `change` says (D269) and waits at most
+    /// `patience` for its answer, its ask awaited from before it is sent until it is answered
+    /// or given up, as [`room`](Self::room)'s is. Never refused as the run is paused: its
+    /// host's network process makes it, which its pause does not hold.
+    fn net(&self, change: wire::NetChange, patience: Duration) -> Result<wire::NetChanged, ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.nets.insert(id, None);
+            id
+        };
+        let ask = wire::NetAsk { id, change }.encode();
+        let answer = self
+            .send(wire::to_host::NET, &ask)
+            .map_err(|e| ImageRefusal::Os {
+                what: "the run host's network change",
+                kind: e.kind(),
+            })
+            .and_then(|()| {
+                self.wait(patience, |s| {
+                    if let Some(answer) = s.nets.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Net(cause, why)));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what: "a network change",
+                        why: format!("no answer within {patience:?}"),
+                    })
+                })
+            });
+        lock(&self.state).nets.remove(&id);
+        answer
+    }
+
     /// Asks the run's microVM paused (`pause`) or let go on (D267) and waits at most `patience`
     /// for its host's answer, its ask awaited from before it is sent until it is answered or
     /// given up, as [`room`](Self::room)'s is.
@@ -791,7 +845,6 @@ pub(super) struct Session {
     shared: Arc<Shared>,
     host: Arc<shards_ipc::Child>,
     members: Vec<MemberInfo>,
-    published: Vec<wire::Bound>,
     /// Where its agent-control endpoint is bound (D252), where it asked for one.
     control: Option<wire::ControlAt>,
     outputs: Mutex<HashMap<(u32, Channel), io::PipeReader>>,
@@ -1121,7 +1174,6 @@ impl Begun {
             shared,
             host,
             members: started.members,
-            published: started.published,
             control: started.control,
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
@@ -1574,6 +1626,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                     inputs.entry(info.index).or_default();
                 }
             }
+            state.published = started.published.clone();
             state.started = Some(started);
         }
         k::WARMED => {
@@ -1671,6 +1724,15 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         k::ASK_PAUSED => {
             let refused = wire::AskPaused::decode(payload).map_err(bad)?;
             state.asks_paused.insert(refused.id);
+        }
+        k::NET_CHANGED => {
+            let answer = wire::NetAnswer::decode(payload).map_err(bad)?;
+            if let Ok(changed) = &answer.result {
+                state.published = changed.published.clone();
+            }
+            if let Some(awaited) = state.nets.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
         }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::GPU_REPORT => match state.report {
@@ -2296,8 +2358,25 @@ impl ImageGuest for Session {
         &self.members
     }
 
-    fn published(&self) -> &[wire::Bound] {
-        &self.published
+    fn published(&self) -> Vec<wire::Bound> {
+        lock(&self.shared.state).published.clone()
+    }
+
+    fn publish(&self, publish: wire::Publish, patience: Duration) -> Result<Vec<wire::Bound>, ImageRefusal> {
+        self.shared
+            .net(wire::NetChange::Publish(publish), patience)
+            .map(|changed| changed.changed)
+    }
+
+    fn unpublish(
+        &self,
+        proto: wire::Proto,
+        host: std::net::SocketAddr,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal> {
+        self.shared
+            .net(wire::NetChange::Unpublish { proto, host }, patience)
+            .map(|_| ())
     }
 
     fn control(&self) -> Option<&wire::ControlAt> {
@@ -3624,6 +3703,147 @@ mod tests {
             );
         }
         assert!(lock(&h.shared.state).saves.is_empty());
+        drop(h.host);
+        h.reader.join().unwrap();
+    }
+
+    /// A network change's answer (D269) is kept for the ask awaiting it alone, as a save's is,
+    /// while the run's published ports follow every answer its host made, awaited or not: its
+    /// host makes one change at a time and answers each in that order. A refusal leaves them as
+    /// they were; one that is no answer breaks the channel; a change no host hears is refused,
+    /// typed, and one of a run that has ended is asked no more.
+    #[test]
+    fn a_network_changes_answer_moves_the_runs_ports_whoever_waits() {
+        let bound = |port: u16| wire::Bound {
+            guest_port: 7100,
+            proto: wire::Proto::Tcp,
+            host: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            to: Vec::new(),
+        };
+        let s = shared();
+        lock(&s.state).published = vec![bound(41000)];
+        lock(&s.state).nets.insert(4, None);
+        let answer = |id, result| wire::NetAnswer { id, result }.encode().unwrap();
+        let made = wire::NetChanged {
+            changed: vec![bound(41001)],
+            published: vec![bound(41000), bound(41001)],
+        };
+        assert_eq!(
+            take(&s, wire::to_client::NET_CHANGED, &answer(4, Ok(made.clone()))),
+            Ok(false)
+        );
+        assert_eq!(lock(&s.state).nets.get(&4), Some(&Some(Ok(made.clone()))));
+        assert_eq!(lock(&s.state).published, made.published);
+        // An answer no ask awaits (its patience ran out) still moves the run's ports.
+        let after = wire::NetChanged {
+            changed: vec![bound(41000)],
+            published: vec![bound(41001)],
+        };
+        assert_eq!(
+            take(&s, wire::to_client::NET_CHANGED, &answer(5, Ok(after.clone()))),
+            Ok(false)
+        );
+        assert!(!lock(&s.state).nets.contains_key(&5));
+        assert_eq!(lock(&s.state).published, after.published);
+        let refused = Err((wire::NetRefusal::Widening, "port 53/udp".to_string()));
+        assert_eq!(
+            take(&s, wire::to_client::NET_CHANGED, &answer(6, refused)),
+            Ok(false)
+        );
+        assert_eq!(lock(&s.state).published, after.published);
+        assert!(take(&s, wire::to_client::NET_CHANGED, &[0, 0, 0, 4, 2]).is_err());
+        let s = shared();
+        let change = || wire::NetChange::Unpublish {
+            proto: wire::Proto::Tcp,
+            host: std::net::SocketAddr::from(([127, 0, 0, 1], 41000)),
+        };
+        assert_eq!(
+            s.net(change(), BOUND),
+            Err(ImageRefusal::Os {
+                what: "the run host's network change",
+                kind: io::ErrorKind::BrokenPipe
+            })
+        );
+        assert!(lock(&s.state).nets.is_empty());
+        lock(&s.state).end = Some(untold(RunEnd::Stopped));
+        assert_eq!(
+            s.net(change(), BOUND),
+            Err(ImageRefusal::Ended(untold(RunEnd::Stopped)))
+        );
+        assert!(lock(&s.state).nets.is_empty());
+    }
+
+    /// A publish and an unpublish ride the run's channel as their changes, and come back as the
+    /// host answered them (D269): what a publish bound, and the run's ports after each as its
+    /// host holds them; a refusal as `ImageRefusal::Net` by what refused it; no ask left
+    /// awaited.
+    #[test]
+    fn a_publish_rides_the_runs_channel_and_comes_back_typed() {
+        let mut h = hosted(None, &[]);
+        let ask = wire::Publish {
+            guest_port: 7100,
+            proto: wire::Proto::Tcp,
+            host: Some([127, 0, 0, 1].into()),
+            host_port: 0,
+        };
+        let bound = wire::Bound {
+            guest_port: 7100,
+            proto: wire::Proto::Tcp,
+            host: std::net::SocketAddr::from(([127, 0, 0, 1], 41000)),
+            to: vec![wire::Receiving {
+                member: 1,
+                port: 7100,
+            }],
+        };
+        for (change, result) in [
+            (
+                wire::NetChange::Publish(ask),
+                Err((wire::NetRefusal::NoNetwork, "no network device".to_string())),
+            ),
+            (
+                wire::NetChange::Publish(ask),
+                Ok(wire::NetChanged {
+                    changed: vec![bound.clone()],
+                    published: vec![bound.clone()],
+                }),
+            ),
+            (
+                wire::NetChange::Unpublish {
+                    proto: bound.proto,
+                    host: bound.host,
+                },
+                Ok(wire::NetChanged {
+                    changed: vec![bound.clone()],
+                    published: Vec::new(),
+                }),
+            ),
+        ] {
+            let shared = Arc::clone(&h.shared);
+            let asked = change.clone();
+            let asking = std::thread::spawn(move || shared.net(asked, BOUND));
+            let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+            assert_eq!(kind, wire::to_host::NET);
+            let ask = wire::NetAsk::decode(&payload).unwrap();
+            assert_eq!(ask.change, change);
+            let answer = wire::NetAnswer {
+                id: ask.id,
+                result: result.clone(),
+            };
+            says(
+                &mut h.host,
+                wire::to_client::NET_CHANGED,
+                &answer.encode().unwrap(),
+            );
+            let published = result.as_ref().map(|c| c.published.clone()).ok();
+            assert_eq!(
+                asking.join().unwrap(),
+                result.map_err(|(cause, why)| ImageRefusal::Net(cause, why))
+            );
+            if let Some(published) = published {
+                assert_eq!(lock(&h.shared.state).published, published);
+            }
+        }
+        assert!(lock(&h.shared.state).nets.is_empty());
         drop(h.host);
         h.reader.join().unwrap();
     }

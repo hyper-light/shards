@@ -36002,6 +36002,74 @@ apply here.
   - `crates/shards/tests/boot.rs` `two_vcpus_boot_to_their_end_in_this_process` and
     `a_reset_with_no_console_says_its_guests_panic` on an x86-64 KVM host and on WHP.
 
+### D269. An orchestrator's run publishes a port and lets one go as it runs, in its running microVM in place: `ImageGuest::publish` and `unpublish` (built; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC1): a kiln session in a Shards microVM
+exposes and closes ports while it runs, "*without* having to force the user to re-build the
+agentfile or MicroVM" (ROOT's binding reading: no image build, no template, no restart, no
+reboot; the run's `started_from` and its VM process unchanged across the change). D231's runs
+took their ports at start alone (`ImageSpec::publish`), and nothing changed a running run's
+network.
+
+**What existed.** A run's ports are host sockets its run host binds (`daemon::publish::bind`,
+dockerd's allocator, D31) and hands its network process, which opens each connection they take
+to the guest; the guest routes a port to the member its Agentfile gives it coming in (`EXPOSE …
+AS ingress`, D122's receivers, init's chooser) or to the run's own command. The network process
+already took sockets as the run went for the daemon's `--network host` (D124): `NET_PUBLISHED`,
+a number then a port and its socket, and `NET_UNPUBLISHED` by that number, answered once its
+copies are closed (net/src/lib.rs `Stack::publish`, `unpublish`, its `hosted` map). Nothing of
+it is the host network's alone, so that mechanism is the live one: no second implementation
+(R12).
+
+**Decided** (image channel version 34, `to_host::NET`, answered `to_client::NET_CHANGED`):
+- *The calls.* `ImageGuest::publish(Publish, patience) -> Vec<Bound>` and
+  `unpublish(Proto, SocketAddr, patience)`; `published()` is now the run's live set
+  (`Vec<Bound>`, as its host last answered it), its start's ports and those published since. A
+  publish is bound as the start's (`publish::bind`: its host address, or every one, IPv6's
+  where it listens, its host port or one the host picks) and checked as the start's
+  (`ports_granted`): a port the Agentfile declares `AS egress`, or one it gives no member coming
+  in on a run with no command of its own, is a widening. Each binding is told its network
+  process under a number of its own (`NET_PUBLISHED`), its socket held by the run host until
+  it is let go of (M24); an unpublish asks `NET_UNPUBLISHED` by that number and closes the run
+  host's copy once that process has closed its own, so the port is free when the call returns.
+  The start's ports are told by number too, so any port is let go of the same way; the VM of
+  every run with a network asks its network process to close them all as the run ends
+  (`RUN_PUBLISHED`), before its end is told.
+- *In place.* Only the run's network process takes the change: the image, its template, the
+  VM process and the guest are untouched (the guest already routes every port its image gives a
+  member), so a warm pool's hosts and templates stay valid. A change is made while the run is
+  paused too: the pause holds its vCPUs (D267), not its network process.
+- *Refusals, typed* (`ImageRefusal::Net(NetRefusal, why)`): `NoNetwork` (a run that started with
+  nothing published, kept or linked past its microVM has no network device, and no device is
+  hot-plugged), `Widening`, `Bind`, `Unknown` (nothing published there), `Network` (its network
+  process did not take it or has ended), `Image` (the image gives the port a member that is none
+  of the run's).
+- *Order and state* (R04, R05). The run host makes one change at a time, under its ports'
+  lock, and answers each before the next, each answer carrying every port published once it is
+  made; shards-api's session takes every answer into the run's set, awaited or not (an asker
+  whose patience ran out still sees the port). The run host reads its network process's control
+  on one thread for the run's whole life (`NetControl`, `relay`): that process's lease and
+  sign-in asks (D242) as before, and the answers to the host's own asks handed to their askers in
+  the order asked; once that control is read no more, an ask waiting and every ask after are
+  refused, never left waiting. No new literal: a port's number is the wire's u32, refused once
+  spent.
+- *What an unpublish leaves.* Its host socket is closed, so nothing more comes in on it: a TCP
+  connection it took before goes on to its end, and its UDP peers' flows end with it
+  (`Stack::unpublish`).
+
+**Tests** (light, red first where behaviour changed): `wire::tests::network_changes_and_their_answers_cross_the_channel`;
+`session::tests::{a_network_changes_answer_moves_the_runs_ports_whoever_waits,
+a_publish_rides_the_runs_channel_and_comes_back_typed}`;
+`api_run::tests::the_network_processs_answers_reach_their_askers_in_the_order_asked` and
+`api_run::hosted::tests::a_port_published_live_is_told_by_its_number_and_let_go_by_it` (a stand-in
+network process: told by number with its socket, a connection taken, let go by number, free to
+bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tests, now over
+`NetControl`.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
+process pid unchanged, no build and no save across it).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
