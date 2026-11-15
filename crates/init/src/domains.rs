@@ -2728,10 +2728,21 @@ impl Server {
     }
 }
 
-/// Writes `shards-init: <what>: errno <n>` to `out` and exits 125, without allocating.
-fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, what: &CStr) -> ! {
+/// Tells its launch on `setup` the step that failed, what it was doing (none for its exec, the
+/// step itself) and its errno; writes `shards-init: <what>: errno <n>` to `out`; exits 125,
+/// without allocating.
+fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, doing: Option<crate::managed::Doing>) -> ! {
     let errno = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
-    crate::managed::report_failure(setup, step, errno);
+    let what = match doing {
+        Some(doing) => {
+            crate::managed::report_doing(setup, step, errno, doing);
+            doing.what()
+        }
+        None => {
+            crate::managed::report_failure(setup, step, errno);
+            c"running its command"
+        }
+    };
     let mut digits = [0u8; 12];
     let mut at = digits.len();
     let mut v = errno.unsigned_abs();
@@ -2762,7 +2773,7 @@ fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, what: &CStr) -> ! 
 
 /// A domain's first process, before its program.
 fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, setup: RawFd) -> ! {
-    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
+    let fail = |out, s: Setting| -> ! { fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Setting(s))) };
     let null = std::ptr::null::<libc::c_char>();
     let nil = std::ptr::null::<libc::c_void>();
     let tmpfs = c"tmpfs".as_ptr();
@@ -2771,7 +2782,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
     unsafe {
         // Nothing of these mounts reaches init's namespace.
         if libc::mount(null, c"/".as_ptr(), null, libc::MS_REC | libc::MS_PRIVATE, nil) != 0 {
-            fail(out, c"making its mounts private");
+            fail(out, Setting::MountsPrivate);
         }
         // The image as built, over the system's /proc, then its root; the system's mounts
         // under it detached (pivot_root(2), NOTES).
@@ -2788,7 +2799,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             || libc::umount2(c".".as_ptr(), libc::MNT_DETACH) != 0
             || libc::chdir(c"/".as_ptr()) != 0
         {
-            fail(out, c"entering the image as built");
+            fail(out, Setting::ImageRoot);
         }
         // The microVM's system, read-only, nosuid and nodev (struct mount_attr).
         let attr: [u64; 4] = [SYSTEM, 0, 0, 0];
@@ -2801,7 +2812,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             std::mem::size_of_val(&attr),
         ) != 0
         {
-            fail(out, c"making the system read-only");
+            fail(out, Setting::SystemReadOnly);
         }
         let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
         let empty = c"size=4k,nr_inodes=1,mode=000".as_ptr().cast();
@@ -2811,16 +2822,16 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             if libc::stat(h.as_ptr(), &raw mut st) == 0
                 && libc::mount(tmpfs, h.as_ptr(), tmpfs, shut, empty) != 0
             {
-                fail(out, c"hiding another domain");
+                fail(out, Setting::OtherDomain);
             }
         }
         if libc::mount(tmpfs, c"/sys".as_ptr(), tmpfs, shut, empty) != 0 {
-            fail(out, c"hiding /sys");
+            fail(out, Setting::Sys);
         }
         // Its PID namespace's /proc.
         let quiet = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
         if libc::mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), quiet, nil) != 0 {
-            fail(out, c"mounting its /proc");
+            fail(out, Setting::Proc);
         }
         // Its /dev.
         let dev = c"mode=755,size=64k".as_ptr().cast();
@@ -2832,26 +2843,26 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             dev,
         ) != 0
         {
-            fail(out, c"mounting its /dev");
+            fail(out, Setting::Dev);
         }
         for (path, major, minor) in DEV {
             if libc::mknod(path.as_ptr(), libc::S_IFCHR | 0o666, libc::makedev(major, minor)) != 0
                 || libc::chmod(path.as_ptr(), 0o666) != 0
             {
-                fail(out, c"making its /dev");
+                fail(out, Setting::DevNodes);
             }
         }
         for (target, path) in LINKS {
             if libc::symlink(target.as_ptr(), path.as_ptr()) != 0 {
-                fail(out, c"linking its /dev");
+                fail(out, Setting::DevLinks);
             }
         }
         if libc::mkdir(c"/dev/shm".as_ptr(), 0o755) != 0 || libc::mkdir(c"/dev/mqueue".as_ptr(), 0o755) != 0 {
-            fail(out, c"making its /dev/shm and /dev/mqueue");
+            fail(out, Setting::ShmMqueue);
         }
         let ro_dev = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NOEXEC;
         if libc::mount(null, c"/dev".as_ptr(), null, ro_dev, nil) != 0 {
-            fail(out, c"making its /dev read-only");
+            fail(out, Setting::DevReadOnly);
         }
         // Its own scratch: /tmp, init's mount of it, which its server instance holds too
         // (D139); and /dev/shm.
@@ -2865,7 +2876,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 mount_api::MOVE_MOUNT_F_EMPTY_PATH,
             ) != 0
         {
-            fail(out, c"making its scratch");
+            fail(out, Setting::Scratch);
         }
         for (path, data) in [(c"/dev/shm", p.shm.as_ptr())] {
             let mut st: libc::stat = std::mem::zeroed();
@@ -2881,7 +2892,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             ) != 0
                 || libc::chown(path.as_ptr(), d.id, d.id) != 0
             {
-                fail(out, c"making its scratch");
+                fail(out, Setting::Scratch);
             }
         }
         // Its POSIX message queues, of its own IPC namespace, as a Docker container's
@@ -2895,7 +2906,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             nil,
         ) != 0
         {
-            fail(out, c"mounting its /dev/mqueue");
+            fail(out, Setting::Mqueue);
         }
         // Its names: its peers', over the system's /etc/hosts, and where it reaches past
         // the microVM its resolver, over /etc/resolv.conf; each read-only, made in its
@@ -2911,15 +2922,15 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 &p.hosts,
                 c"/etc/hosts",
                 c"/tmp/.hosts",
-                c"writing its /etc/hosts",
-                c"mounting its /etc/hosts",
+                Setting::WritingHosts,
+                Setting::MountingHosts,
             ),
             (
                 &p.resolv,
                 c"/etc/resolv.conf",
                 c"/tmp/.resolv",
-                c"writing its /etc/resolv.conf",
-                c"mounting its /etc/resolv.conf",
+                Setting::WritingResolv,
+                Setting::MountingResolv,
             ),
         ] {
             let mut st: libc::stat = std::mem::zeroed();
@@ -2955,14 +2966,14 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 0o444,
             );
             if fd < 0 || libc::write(fd, content.as_ptr().cast(), content.len()) != content.len() as isize {
-                fail(out, c"writing its trust bundle");
+                fail(out, Setting::WritingTrust);
             }
             libc::close(fd);
             if libc::mount(made.as_ptr(), target.as_ptr(), null, libc::MS_BIND, nil) != 0
                 || libc::mount(null, target.as_ptr(), null, ro, nil) != 0
                 || libc::unlink(made.as_ptr()) != 0
             {
-                fail(out, c"mounting its trust bundle");
+                fail(out, Setting::MountingTrust);
             }
         }
         // Its Unix sockets' directories, each its own mount, read-only where it only
@@ -2977,7 +2988,7 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 mount_api::MOVE_MOUNT_F_EMPTY_PATH,
             ) != 0
             {
-                fail(out, c"mounting its Unix sockets");
+                fail(out, Setting::Sockets);
             }
         }
         // Its volumes, at their mount points.
@@ -2991,21 +3002,21 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 mount_api::MOVE_MOUNT_F_EMPTY_PATH,
             ) != 0
             {
-                fail(out, c"mounting its volumes");
+                fail(out, Setting::Volumes);
             }
         }
         // Its own name, and loopback.
         if libc::sethostname(p.hostname.as_ptr(), p.hostname.as_bytes().len()) != 0 {
-            fail(out, c"naming its host");
+            fail(out, Setting::HostName);
         }
         if !crate::run::loopback_up_raw() {
-            fail(out, c"bringing its loopback up");
+            fail(out, Setting::Loopback);
         }
         // Its link, which init makes once it exists.
         if let Some(go) = p.go {
             let mut byte = 0u8;
             if libc::read(go, (&raw mut byte).cast(), 1) != 1 {
-                fail(out, c"waiting for its link");
+                fail(out, Setting::Link);
             }
         }
         // The chooser's filter (D122), whose listener goes to init on its channel, which
@@ -3019,21 +3030,21 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
                 notify,
             );
             let Ok(listener) = RawFd::try_from(listener) else {
-                fail(out, c"loading the chooser's filter");
+                fail(out, Setting::ChooserFilter);
             };
             if listener < 0 {
-                fail(out, c"loading the chooser's filter");
+                fail(out, Setting::ChooserFilter);
             }
             let sent = crate::hostbind::send_fd(channel, b"L", listener, 0);
             libc::close(listener);
             if !sent {
-                fail(out, c"giving init the chooser's listener");
+                fail(out, Setting::ChooserListener);
             }
         }
         // A terminal of its own (D244) is its session's controlling terminal, as an exec's
         // is made (run.rs `child`, TIOCSCTTY after setsid(2)), and its stdin.
         if p.terminal && (libc::setsid() < 0 || libc::ioctl(stdout, libc::TIOCSCTTY, 0) != 0) {
-            fail(out, c"making its terminal its session's");
+            fail(out, Setting::Terminal);
         }
         // Its stdio, and no other descriptor of init's.
         let input = match (p.terminal, p.stdin) {
@@ -3053,23 +3064,23 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
             || libc::dup2(stdout, 1) < 0
             || libc::dup2(out, 2) < 0
         {
-            fail(out, c"giving it its stdio");
+            fail(out, Setting::Stdio);
         }
         if libc::dup3(status, libc::STDERR_FILENO + 1, libc::O_CLOEXEC) < 0 {
-            fail(2, c"retaining its launch status");
+            fail(2, Setting::Status);
         }
         if libc::dup3(ruleset, RULESET_FD, libc::O_CLOEXEC) < 0 {
-            fail(2, c"retaining its Landlock ruleset");
+            fail(2, Setting::Ruleset);
         }
         if libc::dup3(starter, crate::starter::STARTER_FD, libc::O_CLOEXEC) < 0 {
-            fail(2, c"retaining its starter's channel");
+            fail(2, Setting::Starter);
         }
         if libc::syscall(libc::SYS_close_range, above as u32, u32::MAX, 0u32) != 0 {
             crate::domains::fail(
                 2,
                 libc::STDERR_FILENO + 1,
                 crate::managed::Step::Setup,
-                c"closing init's descriptors",
+                Some(crate::managed::Doing::Setting(Setting::Descriptors)),
             );
         }
         exec_child(p, c)
@@ -3079,16 +3090,16 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
 fn exec_child(p: &Prepared, c: &Confinement) -> ! {
     let setup = libc::STDERR_FILENO + 1;
     let out = libc::STDERR_FILENO;
-    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
+    let fail = |out, s: Setting| -> ! { fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Setting(s))) };
     // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
     unsafe {
         if let Err(step) = rules(c, RULESET_FD).and_then(|()| confine(c, RULESET_FD)) {
-            fail(out, step.what());
+            crate::domains::fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Confining(step)));
         }
         // As the member (confine-02): it starts in no directory it could not enter itself,
         // as a command run in it does (crate::enter).
         if libc::chdir(c.workdir.as_ptr()) != 0 {
-            fail(out, c"entering its working directory");
+            fail(out, Setting::WorkingDirectory);
         }
         // Its starter, everything it is now (confine-10): what is run in it is born in its
         // own Landlock domain, as a process of its own would be.
@@ -3100,7 +3111,7 @@ fn exec_child(p: &Prepared, c: &Confinement) -> ! {
             p.argv.as_ptr(),
             p.envp.as_ptr(),
         );
-        crate::domains::fail(out, setup, crate::managed::Step::Exec, c"running its command")
+        crate::domains::fail(out, setup, crate::managed::Step::Exec, None)
     }
 }
 
@@ -3165,6 +3176,27 @@ pub enum Confining {
 }
 
 impl Confining {
+    /// Every step, each once.
+    pub const ALL: [Confining; 12] = [
+        Confining::BoundingSet,
+        Confining::Ids,
+        Confining::Capabilities,
+        Confining::NoNewPrivs,
+        Confining::BaseRule,
+        Confining::VolumeOpen,
+        Confining::VolumeRule,
+        Confining::PlugRootRule,
+        Confining::SocketRule,
+        Confining::Landlock,
+        Confining::Signals,
+        Confining::Seccomp,
+    ];
+
+    /// The step `code` names, as a launch reads it back.
+    pub fn of(code: u8) -> Option<Confining> {
+        Confining::ALL.into_iter().find(|c| *c as u8 == code)
+    }
+
     pub fn what(self) -> &'static CStr {
         match self {
             Confining::BoundingSet => c"dropping its capabilities",
@@ -3180,6 +3212,129 @@ impl Confining {
             Confining::Signals => c"restoring its signals",
             Confining::Seccomp => c"loading its seccomp filter",
         }
+    }
+}
+
+/// The step of a member's setup ([`child`], [`exec_child`]) that failed, told its launch beside
+/// its errno ([`crate::managed::Doing`]), so that the launch's error names it as the member's
+/// output does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Setting {
+    MountsPrivate = 1,
+    ImageRoot,
+    SystemReadOnly,
+    OtherDomain,
+    Sys,
+    Proc,
+    Dev,
+    DevNodes,
+    DevLinks,
+    ShmMqueue,
+    DevReadOnly,
+    Scratch,
+    Mqueue,
+    WritingHosts,
+    MountingHosts,
+    WritingResolv,
+    MountingResolv,
+    WritingTrust,
+    MountingTrust,
+    Sockets,
+    Volumes,
+    HostName,
+    Loopback,
+    Link,
+    ChooserFilter,
+    ChooserListener,
+    Terminal,
+    Stdio,
+    Status,
+    Ruleset,
+    Starter,
+    Descriptors,
+    WorkingDirectory,
+}
+
+impl Setting {
+    /// Every setting, each once.
+    pub const ALL: [Setting; 33] = [
+        Setting::MountsPrivate,
+        Setting::ImageRoot,
+        Setting::SystemReadOnly,
+        Setting::OtherDomain,
+        Setting::Sys,
+        Setting::Proc,
+        Setting::Dev,
+        Setting::DevNodes,
+        Setting::DevLinks,
+        Setting::ShmMqueue,
+        Setting::DevReadOnly,
+        Setting::Scratch,
+        Setting::Mqueue,
+        Setting::WritingHosts,
+        Setting::MountingHosts,
+        Setting::WritingResolv,
+        Setting::MountingResolv,
+        Setting::WritingTrust,
+        Setting::MountingTrust,
+        Setting::Sockets,
+        Setting::Volumes,
+        Setting::HostName,
+        Setting::Loopback,
+        Setting::Link,
+        Setting::ChooserFilter,
+        Setting::ChooserListener,
+        Setting::Terminal,
+        Setting::Stdio,
+        Setting::Status,
+        Setting::Ruleset,
+        Setting::Starter,
+        Setting::Descriptors,
+        Setting::WorkingDirectory,
+    ];
+
+    pub fn what(self) -> &'static CStr {
+        match self {
+            Setting::MountsPrivate => c"making its mounts private",
+            Setting::ImageRoot => c"entering the image as built",
+            Setting::SystemReadOnly => c"making the system read-only",
+            Setting::OtherDomain => c"hiding another domain",
+            Setting::Sys => c"hiding /sys",
+            Setting::Proc => c"mounting its /proc",
+            Setting::Dev => c"mounting its /dev",
+            Setting::DevNodes => c"making its /dev",
+            Setting::DevLinks => c"linking its /dev",
+            Setting::ShmMqueue => c"making its /dev/shm and /dev/mqueue",
+            Setting::DevReadOnly => c"making its /dev read-only",
+            Setting::Scratch => c"making its scratch",
+            Setting::Mqueue => c"mounting its /dev/mqueue",
+            Setting::WritingHosts => c"writing its /etc/hosts",
+            Setting::MountingHosts => c"mounting its /etc/hosts",
+            Setting::WritingResolv => c"writing its /etc/resolv.conf",
+            Setting::MountingResolv => c"mounting its /etc/resolv.conf",
+            Setting::WritingTrust => c"writing its trust bundle",
+            Setting::MountingTrust => c"mounting its trust bundle",
+            Setting::Sockets => c"mounting its Unix sockets",
+            Setting::Volumes => c"mounting its volumes",
+            Setting::HostName => c"naming its host",
+            Setting::Loopback => c"bringing its loopback up",
+            Setting::Link => c"waiting for its link",
+            Setting::ChooserFilter => c"loading the chooser's filter",
+            Setting::ChooserListener => c"giving init the chooser's listener",
+            Setting::Terminal => c"making its terminal its session's",
+            Setting::Stdio => c"giving it its stdio",
+            Setting::Status => c"retaining its launch status",
+            Setting::Ruleset => c"retaining its Landlock ruleset",
+            Setting::Starter => c"retaining its starter's channel",
+            Setting::Descriptors => c"closing init's descriptors",
+            Setting::WorkingDirectory => c"entering its working directory",
+        }
+    }
+
+    /// The setting `code` names, as its launch reads it back.
+    pub fn of(code: u8) -> Option<Setting> {
+        Setting::ALL.into_iter().find(|s| *s as u8 == code)
     }
 }
 

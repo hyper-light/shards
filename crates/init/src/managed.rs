@@ -32,11 +32,55 @@ pub enum Step {
 pub struct Failure {
     pub step: Step,
     pub errno: i32,
+    /// What its setup was doing, where the member's process told it ([`report_doing`]).
+    pub doing: Option<Doing>,
 }
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: errno {}", self.step, self.errno)
+        match self.doing {
+            Some(doing) => write!(
+                f,
+                "{:?} ({}): errno {}",
+                self.step,
+                doing.what().to_string_lossy(),
+                self.errno
+            ),
+            None => write!(f, "{:?}: errno {}", self.step, self.errno),
+        }
+    }
+}
+
+/// What a member's process was doing as a step of its setup failed: one of its settings, or
+/// of its confinement (domains.rs `child` and `exec_child`). Told beside the step's errno, so
+/// the launch's error names it as the member's output does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Doing {
+    Setting(crate::domains::Setting),
+    Confining(crate::domains::Confining),
+}
+
+impl Doing {
+    pub fn what(self) -> &'static std::ffi::CStr {
+        match self {
+            Doing::Setting(s) => s.what(),
+            Doing::Confining(c) => c.what(),
+        }
+    }
+
+    fn encode(self) -> [u8; 2] {
+        match self {
+            Doing::Setting(s) => [1, s as u8],
+            Doing::Confining(c) => [2, c as u8],
+        }
+    }
+
+    fn decode([kind, code]: [u8; 2]) -> Option<Doing> {
+        match kind {
+            1 => crate::domains::Setting::of(code).map(Doing::Setting),
+            2 => crate::domains::Confining::of(code).map(Doing::Confining),
+            _ => None,
+        }
     }
 }
 
@@ -95,6 +139,7 @@ impl Failure {
         Self {
             step,
             errno: libc::EPROTO,
+            doing: None,
         }
     }
 
@@ -117,6 +162,7 @@ impl Failure {
                 _ => return None,
             },
             errno,
+            doing: None,
         })
     }
 }
@@ -641,7 +687,13 @@ fn actor_exec(fd: OwnedFd) -> Result<(), Failure> {
             .map_err(|_| Failure::protocol(Step::Setup))?;
         let [a, b, c, d] = rest;
         let [first] = first;
-        return Err(Failure::decode([first, a, b, c, d]).unwrap_or(Failure::protocol(Step::Setup)));
+        let Some(failure) = Failure::decode([first, a, b, c, d]) else {
+            return Err(Failure::protocol(Step::Setup));
+        };
+        // What it was doing, where it told it in the same write; none where it ended there.
+        let mut told = [0; 2];
+        let doing = setup.read_exact(&mut told).ok().and_then(|()| Doing::decode(told));
+        return Err(Failure { doing, ..failure });
     }
     Ok(())
 }
@@ -731,9 +783,24 @@ pub fn report_failure(fd: RawFd, step: Step, errno: i32) {
     let word = Failure {
         step,
         errno: if errno == 0 { libc::EIO } else { errno },
+        doing: None,
     }
     .encode();
     let _ = raw_write(fd, &word);
+}
+
+/// As [`report_failure`], with what its setup was doing after the word, in one write: a pipe
+/// takes a write of no more than `PIPE_BUF` whole (pipe(7)), so its launch reads all of it or
+/// none.
+pub fn report_doing(fd: RawFd, step: Step, errno: i32, doing: Doing) {
+    let [s, a, b, c, d] = Failure {
+        step,
+        errno: if errno == 0 { libc::EIO } else { errno },
+        doing: None,
+    }
+    .encode();
+    let [kind, code] = doing.encode();
+    let _ = raw_write(fd, &[s, a, b, c, d, kind, code]);
 }
 
 fn raw_read(fd: RawFd, mut bytes: &mut [u8]) -> bool {
@@ -1036,6 +1103,7 @@ mod tests {
         let error = Failure {
             step: Step::Helper,
             errno: libc::EPERM,
+            doing: None,
         };
         assert_eq!(ready_of(&error.encode()), Err(error));
     }
@@ -1055,6 +1123,7 @@ mod tests {
             let error = Failure {
                 step,
                 errno: libc::ENOENT,
+                doing: None,
             };
             assert_eq!(actor_exec(written(&error.encode())), Err(error));
             for cut in 1..error.encode().len() {
@@ -1063,6 +1132,36 @@ mod tests {
                     Err(Failure::protocol(Step::Setup))
                 );
             }
+        }
+    }
+
+    /// A member's setup that failed says what it was doing (its words, as its output has
+    /// them), every setting and confining step read back as told; a told word of no setting
+    /// leaves the failure as told without it.
+    #[test]
+    fn a_setup_failure_says_what_it_was_doing() {
+        use crate::domains::{Confining, Setting};
+        let doing = Doing::Setting(Setting::Volumes);
+        let failure = Failure {
+            step: Step::Setup,
+            errno: libc::ENOENT,
+            doing: Some(doing),
+        };
+        let told = |doing: [u8; 2]| [failure.encode().as_slice(), &doing].concat();
+        assert_eq!(actor_exec(written(&told(doing.encode()))), Err(failure));
+        assert_eq!(failure.to_string(), "Setup (mounting its volumes): errno 2");
+        for doing in Setting::ALL
+            .into_iter()
+            .map(Doing::Setting)
+            .chain(Confining::ALL.into_iter().map(Doing::Confining))
+        {
+            assert_eq!(Doing::decode(doing.encode()), Some(doing));
+        }
+        for unknown in [[0, 1], [3, 1], [1, 0], [2, u8::MAX]] {
+            assert_eq!(
+                actor_exec(written(&told(unknown))),
+                Err(Failure { doing: None, ..failure })
+            );
         }
     }
 
