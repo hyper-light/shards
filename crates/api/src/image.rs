@@ -638,17 +638,18 @@ pub trait ImageGuest: Send + Sync {
     /// The run's microVM paused where it is (D264): every vCPU held out of its guest by its
     /// VMM, as `shards pause vm` holds one, so that its guest runs no CPU and its host's use
     /// of it grows by its VMM's own alone; its memory, devices and connections kept, each
-    /// channel buffered within its flow control. Asks are applied in the order sent. First its
-    /// guest asks under way are answered and the run's stats read, those of its guest from
-    /// then on what it said then ([`Stats::paused`]); then it is held. While paused, an ask its
-    /// guest would answer is refused at once, [`ImageRefusal::Paused`] (`room`, `resize`,
-    /// `plug`, `unplug`, `stats` of its command or a member); the run's stats, its rate, a
-    /// save, a stop and every wait are answered as ever. Its guest's clocks run on through it
-    /// (no snapshot is taken), so its time is the host's as it goes on. A pause of a paused
-    /// run is done already, so that a caller that lost an answer may ask again. Answers its
-    /// paused time as it stands then, waiting at most `patience` (`Duration::MAX`: until it is
-    /// done or the run ends); refused [`ImageRefusal::Pause`] where its VM held nothing, and
-    /// [`ImageRefusal::Ended`] once the run has ended.
+    /// channel buffered within its flow control. Asks are applied in the order sent. It is held
+    /// at once, nothing of it asked of its guest, which may be slow or hung: an ask of its guest
+    /// already under way is answered as it goes on. While paused, an ask its guest would answer
+    /// is refused at once, [`ImageRefusal::Paused`] (`room`, `resize`, `plug`, `unplug`, `stats`
+    /// of its command or a member); the run's stats, its rate, a save, a stop and every wait are
+    /// answered as ever, its stats' guest lines what its init last said before the pause
+    /// ([`Stats::paused`]). Its guest's clocks run on through it (no snapshot is taken), and its
+    /// init sets its clock to its host's as it goes on. A pause of a paused run is done already,
+    /// so that a caller that lost an answer may ask again. Answers its paused time as it stands
+    /// then, waiting at most `patience` (`Duration::MAX`: until it is done or the run ends);
+    /// refused [`ImageRefusal::Pause`] where its VM held nothing, and [`ImageRefusal::Ended`]
+    /// once the run has ended.
     fn pause(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
     /// A paused run goes on where it stopped (D264), its vCPUs held no more but by their rate;
     /// a resume of a running run is done already. Answers its paused time as it stands then,

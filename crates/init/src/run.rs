@@ -4009,6 +4009,8 @@ fn builtin(
             run::builtin::RESIZE => resize_member(args, domains),
             // A member's command signalled (D238, goal 58's step 5).
             run::builtin::SIGNAL => signal_member(args, domains),
+            // Its clock its host's, as its run goes on from a pause (D264).
+            run::builtin::CLOCK => crate::linux::sync_clock(),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),

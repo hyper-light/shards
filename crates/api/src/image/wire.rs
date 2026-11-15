@@ -811,9 +811,9 @@ pub struct Stats {
     /// or a member, whose cgroups are inside the microVM it costs.
     pub microvm: Option<Microvm>,
     /// The run's alone, as [`microvm`](Self::microvm) is: how long it has been paused by its
-    /// owner (D264). While it is paused, init's lines above are what its init said as the run
-    /// paused, the last its guest said before its vCPUs were held, and its microVM part is
-    /// read as it stands.
+    /// owner (D264). While it is paused, init's lines above are what its init last said of the
+    /// run before the pause (none where it was never asked), its guest saying nothing until it
+    /// goes on, and its microVM part is read as it stands.
     pub paused: Option<Paused>,
 }
 

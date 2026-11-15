@@ -601,7 +601,7 @@ fn now_ns() -> u128 {
 /// a window of 3 s while a judged read of its next line waits, ask its guest a room and a
 /// member's stats, hold its rate, then resume it. Expect: its vCPUs' guest time flat across
 /// the window (but a step of its count), its paused time grown by the window and said paused,
-/// its guest's lines what its init said as it paused; no line while paused; the room and the member's stats refused `Paused` at once, the rate
+/// its guest's lines what its init last said before the pause; no line while paused; the room and the member's stats refused `Paused` at once, the rate
 /// answered; the judged read not refused, its next line the count after the last before the
 /// pause, its clock the host's (within the host's reads around it); every count in order, none
 /// lost; and its paused time in its end.
@@ -640,6 +640,8 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     while seen.len() < 5 {
         seen.push(count(&next("a tick").1).0);
     }
+    let before = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+    assert!(before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now), "{before:?}");
     let paused = ask(&*guest, |g| g.pause(Duration::MAX)).unwrap();
     assert!(paused.now, "{paused:?}");
     // What its guest printed before its vCPUs were held, still on its way.
@@ -677,8 +679,9 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         let (at_first, at_later) = (first.paused.unwrap(), later.paused.unwrap());
         assert!(at_first.now && at_later.now, "{at_first:?} {at_later:?}");
         assert!(at_later.total >= at_first.total + window - Duration::from_millis(50), "{at_later:?}");
-        // Its guest's lines as it paused: what its init said then, its count of them unchanged.
-        assert_eq!((later.cpu_ns, later.memory_bytes), (first.cpu_ns, first.memory_bytes));
+        // Its guest's lines while paused: what its init last said before the pause.
+        assert_eq!((first.cpu_ns, first.memory_bytes), (before.cpu_ns, before.memory_bytes));
+        assert_eq!((later.cpu_ns, later.memory_bytes), (before.cpu_ns, before.memory_bytes));
         let before_resume = now_ns();
         let resumed = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
         assert!(!resumed.now && resumed.total >= window, "{resumed:?}");
