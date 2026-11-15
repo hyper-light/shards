@@ -588,6 +588,125 @@ fn stats_read_the_run_and_a_member() {
     );
 }
 
+/// The host's wall clock, in nanoseconds since the Unix epoch.
+fn now_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+/// A run paused by its orchestrator (D264) runs no guest and goes on where it stopped: do boot
+/// a harness that prints its count and its clock every 50 ms, pause it, read its stats across
+/// a window of 3 s while a judged read of its next line waits, ask its guest a room and a
+/// member's stats, hold its rate, then resume it. Expect: its vCPUs' guest time flat across
+/// the window (but a step of its count), its paused time grown by the window and said paused,
+/// its guest's lines what its init said as it paused; no line while paused; the room and the member's stats refused `Paused` at once, the rate
+/// answered; the judged read not refused, its next line the count after the last before the
+/// pause, its clock the host's (within the host's reads around it); every count in order, none
+/// lost; and its paused time in its end.
+#[test]
+fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-pause-home");
+    build(&home, "api-pause:1", &["ticks", "50"], "");
+    let guest = boot(&home, &spec(&home, "api-pause:1"));
+    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let (lines, heard) = std::sync::mpsc::channel::<(u128, String)>();
+    let heard = std::sync::Mutex::new(heard);
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+            if lines.send((now_ns(), line)).is_err() {
+                break;
+            }
+        }
+    });
+    let count = |line: &str| -> (u64, u128) {
+        let (n, ns) = line.split_once(' ').unwrap_or_else(|| panic!("{line:?}"));
+        (n.parse().unwrap(), ns.parse().unwrap())
+    };
+    let next = |what: &str| {
+        common::judged(Party::started(None), what, || {
+            let _ = guest.stop();
+        }, || heard.lock().unwrap().recv().ok())
+        .unwrap_or_else(|refused| panic!("{refused}"))
+        .unwrap_or_else(|| panic!("{what}: its stdout ended"))
+    };
+    assert_eq!(next("its harness's start").1, "ready");
+    let mut seen = Vec::new();
+    while seen.len() < 5 {
+        seen.push(count(&next("a tick").1).0);
+    }
+    let paused = ask(&*guest, |g| g.pause(Duration::MAX)).unwrap();
+    assert!(paused.now, "{paused:?}");
+    // What its guest printed before its vCPUs were held, still on its way.
+    let guest_ns = |stats: &shards_api::image::Stats| stats.microvm.as_ref().unwrap().guest.as_ref().unwrap().total_ns();
+    let first = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+    while let Ok((_, line)) = heard.lock().unwrap().try_recv() {
+        seen.push(count(&line).0);
+    }
+    let last = *seen.last().unwrap();
+    let window = Duration::from_secs(3);
+    let resuming = std::thread::scope(|scope| {
+        // Read on while it is paused: a wait judged by what this test's processes run, which
+        // its pause holds, so it is never refused for its stillness.
+        let reading = scope.spawn(|| next("its first tick past the pause"));
+        let started = Instant::now();
+        assert_eq!(
+            ask(&*guest, |g| g.room(Some(64 << 20), Duration::MAX)),
+            Err(ImageRefusal::Paused { what: "room" })
+        );
+        assert_eq!(
+            ask(&*guest, |g| g.stats(StatsScope::Member(1), Duration::MAX)).map(|_| ()),
+            Err(ImageRefusal::Paused { what: "stats" })
+        );
+        let quarter = NonZeroU64::new(250).unwrap();
+        assert_eq!(ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(), Some(quarter));
+        assert_eq!(ask(&*guest, |g| g.rate(None, Duration::MAX)).unwrap(), None);
+        std::thread::sleep(window.saturating_sub(started.elapsed()));
+        let later = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+        let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
+        assert!(
+            guest_ns(&later) <= guest_ns(&first) + step,
+            "its guest ran {} ns while paused, read in {step} ns steps",
+            guest_ns(&later) - guest_ns(&first)
+        );
+        let (at_first, at_later) = (first.paused.unwrap(), later.paused.unwrap());
+        assert!(at_first.now && at_later.now, "{at_first:?} {at_later:?}");
+        assert!(at_later.total >= at_first.total + window - Duration::from_millis(50), "{at_later:?}");
+        // Its guest's lines as it paused: what its init said then, its count of them unchanged.
+        assert_eq!((later.cpu_ns, later.memory_bytes), (first.cpu_ns, first.memory_bytes));
+        let before_resume = now_ns();
+        let resumed = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
+        assert!(!resumed.now && resumed.total >= window, "{resumed:?}");
+        let again = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
+        assert!(!again.now, "a resume of a running run is done already");
+        (before_resume, reading.join().unwrap())
+    });
+    let (before_resume, (heard_at, line)) = resuming;
+    let (n, realtime) = count(&line);
+    assert_eq!(n, last + 1, "it went on from {last}: {line}");
+    assert!(heard_at >= before_resume, "a line came while it was paused: {line}");
+    assert!(
+        (before_resume..=heard_at).contains(&realtime),
+        "its clock {realtime} past the pause, the host's {before_resume}..={heard_at}"
+    );
+    seen.push(n);
+    assert!(seen.windows(2).all(|w| w[1] == w[0] + 1), "counts lost or out of order: {seen:?}");
+    guest.stop().unwrap();
+    let ended = ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap().unwrap();
+    assert_eq!(ended.end, RunEnd::Stopped);
+    assert!(ended.paused >= window, "{ended:?}");
+    assert_eq!(
+        ask(&*guest, |g| g.pause(Duration::MAX)).map(|_| ()),
+        Err(ImageRefusal::Ended(ended))
+    );
+    reader.join().unwrap();
+}
+
 /// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
 /// its host: told a room past the least a run goes on in, the run is held within it, in
 /// whole pages; told none left, within the least, short of what it had; told no budget,

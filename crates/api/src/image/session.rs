@@ -108,6 +108,18 @@ struct State {
     /// Each save asked and still awaited, by its ask's id, and its answer once it came (D259),
     /// held as [`rooms`](Self::rooms) is.
     saves: HashMap<u32, Option<Saved>>,
+    /// Each pause or resume asked and still awaited, by its ask's id, and its answer once it
+    /// came (D264), held as [`rooms`](Self::rooms) is.
+    pauses: HashMap<u32, Option<Result<wire::Paused, String>>>,
+    /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D264),
+    /// by its id, until its asker takes it.
+    asks_paused: std::collections::HashSet<u32>,
+    /// The run's paused time as its host last told it (a pause's or a resume's answer, the
+    /// run's stats), which an end its host never told carries (D264).
+    paused: wire::Paused,
+    /// The run's processes its pause holds, held for this process's waits on them while it is
+    /// paused (`crate::progress::Held`, D264): none while it runs and once it has ended.
+    held: Option<crate::progress::Held>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -205,12 +217,20 @@ type Saved = Result<(), (wire::SaveRefusal, String)>;
 struct Asked<T> {
     kind: u8,
     what: &'static str,
+    /// What its refusal as its run is paused names it (D264's `ImageRefusal::Paused`).
+    paused: &'static str,
     sending: &'static str,
     awaited: fn(&mut State) -> &mut Awaited<T>,
     refused: fn(String) -> ImageRefusal,
 }
 
 impl State {
+    /// Ask `id`'s refusal as its run was paused or pausing, where its host refused it so
+    /// (`ASK_PAUSED`, D264), named `what`: taken once.
+    fn refused_paused(&mut self, id: u32, what: &'static str) -> Option<ImageRefusal> {
+        self.asks_paused.remove(&id).then_some(ImageRefusal::Paused { what })
+    }
+
     fn close_inputs(&mut self) {
         for input in self.inputs.values_mut() {
             input.close();
@@ -239,13 +259,15 @@ impl State {
     /// them, sees the same.
     fn end_seen(&mut self) -> Option<RunEnded> {
         if self.end.is_none() && self.gone() {
-            self.end = Some(RunEnded::unused(
+            let mut end = RunEnded::unused(
                 RunEnd::Failed(format!(
                     "the run host exited without its run's end{}",
                     quoted(&self.said)
                 )),
                 Unused::Untold,
-            ));
+            );
+            end.paused = self.paused.total;
+            self.end = Some(end);
         }
         self.end.clone()
     }
@@ -254,9 +276,9 @@ impl State {
     /// `Stopped` where none has come, its VM killed with nothing of its use told.
     fn stopped(&mut self) -> RunEnded {
         self.end_seen().unwrap_or_else(|| {
-            self.end
-                .insert(RunEnded::unused(RunEnd::Stopped, Unused::Killed))
-                .clone()
+            let mut end = RunEnded::unused(RunEnd::Stopped, Unused::Killed);
+            end.paused = self.paused.total;
+            self.end.insert(end).clone()
         })
     }
 }
@@ -409,6 +431,7 @@ impl Shared {
         let asked = Asked {
             kind: wire::to_host::ROOM,
             what: "a room",
+            paused: "room",
             sending: "the run host's room",
             awaited: |s| &mut s.rooms,
             refused: ImageRefusal::Room,
@@ -422,6 +445,7 @@ impl Shared {
         let asked = Asked {
             kind: wire::to_host::RATE,
             what: "a rate",
+            paused: "rate",
             sending: "the run host's rate",
             awaited: |s| &mut s.rates,
             refused: ImageRefusal::Rate,
@@ -461,6 +485,9 @@ impl Shared {
                     if let Some(answer) = (asked.awaited)(s).get_mut(&id).and_then(Option::take) {
                         return Some(answer.map_err(asked.refused));
                     }
+                    if let Some(refused) = s.refused_paused(id, asked.paused) {
+                        return Some(Err(refused));
+                    }
                     if let Some(end) = &s.end {
                         return Some(Err(ImageRefusal::Ended(end.clone())));
                     }
@@ -474,7 +501,10 @@ impl Shared {
                     })
                 })
             });
-        (asked.awaited)(&mut lock(&self.state)).remove(&id);
+        let mut state = lock(&self.state);
+        (asked.awaited)(&mut state).remove(&id);
+        state.asks_paused.remove(&id);
+        drop(state);
         answer
     }
 
@@ -509,6 +539,9 @@ impl Shared {
                     if let Some(answer) = s.resizes.get_mut(&id).and_then(Option::take) {
                         return Some(answer.map_err(ImageRefusal::Terminal));
                     }
+                    if let Some(refused) = s.refused_paused(id, "resize") {
+                        return Some(Err(refused));
+                    }
                     if let Some(end) = &s.end {
                         return Some(Err(ImageRefusal::Ended(end.clone())));
                     }
@@ -522,7 +555,10 @@ impl Shared {
                     })
                 })
             });
-        lock(&self.state).resizes.remove(&id);
+        let mut state = lock(&self.state);
+        state.resizes.remove(&id);
+        state.asks_paused.remove(&id);
+        drop(state);
         answer
     }
 
@@ -572,6 +608,49 @@ impl Shared {
                 })
             });
         lock(&self.state).saves.remove(&id);
+        answer
+    }
+
+    /// Asks the run's microVM paused (`pause`) or let go on (D264) and waits at most `patience`
+    /// for its host's answer, its ask awaited from before it is sent until it is answered or
+    /// given up, as [`room`](Self::room)'s is.
+    fn pause(&self, pause: bool, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
+        let what = if pause { "a pause" } else { "a resume" };
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.pauses.insert(id, None);
+            id
+        };
+        let answer = self
+            .send(wire::to_host::PAUSE, &wire::PauseAsk { id, pause }.encode())
+            .map_err(|e| ImageRefusal::Os {
+                what: "the run host's pause",
+                kind: e.kind(),
+            })
+            .and_then(|()| {
+                self.wait(patience, |s| {
+                    if let Some(answer) = s.pauses.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(ImageRefusal::Pause));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what,
+                        why: format!("no answer within {patience:?}"),
+                    })
+                })
+            });
+        lock(&self.state).pauses.remove(&id);
         answer
     }
 
@@ -1177,6 +1256,10 @@ impl Session {
             if let Some(answer) = s.plugs.remove(&id) {
                 return Some(answer.map_err(|(cause, why)| ImageRefusal::Plug(cause, why)));
             }
+            let what = if kind == wire::to_host::UNPLUG { "unplug" } else { "plug" };
+            if let Some(refused) = s.refused_paused(id, what) {
+                return Some(Err(refused));
+            }
             if let Some(end) = &s.end {
                 return Some(Err(ImageRefusal::Ended(end.clone())));
             }
@@ -1184,7 +1267,9 @@ impl Session {
                 .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
         });
         answer.unwrap_or_else(|| {
-            lock(&self.shared.state).plugs.remove(&id);
+            let mut state = lock(&self.shared.state);
+            state.plugs.remove(&id);
+            state.asks_paused.remove(&id);
             Err(ImageRefusal::Unsupported {
                 what: "a plug",
                 why: format!("no answer within {patience:?}"),
@@ -1527,6 +1612,21 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                 *awaited = Some(answer.result);
             }
         }
+        k::PAUSED => {
+            let answer = wire::PauseAnswer::decode(payload).map_err(bad)?;
+            if let Ok(paused) = &answer.result {
+                state.paused = *paused;
+                // Held as its host says it holds them, let go as it goes on.
+                state.held = (paused.now && state.end.is_none()).then(|| crate::progress::Held::of(&answer.held));
+            }
+            if let Some(awaited) = state.pauses.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
+        }
+        k::ASK_PAUSED => {
+            let refused = wire::AskPaused::decode(payload).map_err(bad)?;
+            state.asks_paused.insert(refused.id);
+        }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::GPU_REPORT => match state.report {
             Report::Awaited => state.report = Report::Relayed(payload.to_vec()),
@@ -1560,6 +1660,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             if state.end.replace(end).is_some() {
                 return Err("the run ended twice".into());
             }
+            state.held = None;
             state.close_inputs();
             ended = true;
         }
@@ -2251,7 +2352,13 @@ impl ImageGuest for Session {
             })?;
         let answer = self.shared.wait(patience, |s| {
             if let Some(answer) = s.stats.remove(&id) {
+                if let Ok(Some(paused)) = answer.as_ref().map(|stats| stats.paused) {
+                    s.paused = paused;
+                }
                 return Some(answer.map_err(ImageRefusal::Boot));
+            }
+            if let Some(refused) = s.refused_paused(id, "stats") {
+                return Some(Err(refused));
             }
             if let Some(end) = &s.end {
                 return Some(Err(ImageRefusal::Ended(end.clone())));
@@ -2260,7 +2367,9 @@ impl ImageGuest for Session {
                 .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
         });
         answer.unwrap_or_else(|| {
-            lock(&self.shared.state).stats.remove(&id);
+            let mut state = lock(&self.shared.state);
+            state.stats.remove(&id);
+            state.asks_paused.remove(&id);
             Err(ImageRefusal::Unsupported {
                 what: "stats",
                 why: format!("no answer within {patience:?}"),
@@ -2345,6 +2454,14 @@ impl ImageGuest for Session {
             why: format!("{}: not UTF-8", to.display()),
         })?;
         self.shared.save(to, patience)
+    }
+
+    fn pause(&self, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
+        self.shared.pause(true, patience)
+    }
+
+    fn resume(&self, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
+        self.shared.pause(false, patience)
     }
 
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal> {
@@ -2521,6 +2638,7 @@ mod tests {
                     departed_ns: 0,
                 }),
             }),
+            paused: Duration::from_millis(3),
         };
         assert_eq!(
             take(&s, wire::to_client::ENDED, &ended.encode().unwrap()),
@@ -3455,6 +3573,118 @@ mod tests {
         assert!(lock(&h.shared.state).saves.is_empty());
         drop(h.host);
         h.reader.join().unwrap();
+    }
+
+    /// A pause and a resume ride the run's channel and come back as its host said them
+    /// (D264): each answers the run's paused time, a pause of a paused run done already as its
+    /// host says; while paused, an ask its guest would answer is refused typed at once
+    /// (`ASK_PAUSED`), naming what it was, and no ask is left awaited. A refusal of its VM's comes
+    /// back as `Pause` in its words.
+    #[test]
+    fn a_pause_rides_the_runs_channel_and_asks_of_its_guest_come_back_paused() {
+        let mut h = hosted(None, &[]);
+        let held = |total_ms, now| wire::Paused {
+            total: Duration::from_millis(total_ms),
+            now,
+        };
+        // Paused, then asked again (an owner that lost its answer), then refused by its VM.
+        for (pause, answer) in [
+            (true, Ok(held(0, true))),
+            (true, Ok(held(7, true))),
+            (false, Err("its microVM: the microVM has stopped".to_string())),
+        ] {
+            let shared = Arc::clone(&h.shared);
+            let asking = std::thread::spawn(move || {
+                if pause {
+                    shared.pause(true, BOUND)
+                } else {
+                    shared.pause(false, BOUND)
+                }
+            });
+            let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+            assert_eq!(kind, wire::to_host::PAUSE);
+            let ask = wire::PauseAsk::decode(&payload).unwrap();
+            assert_eq!(ask.pause, pause);
+            let said = wire::PauseAnswer {
+                id: ask.id,
+                result: answer.clone(),
+                held: Vec::new(),
+            };
+            says(&mut h.host, wire::to_client::PAUSED, &said.encode().unwrap());
+            assert_eq!(asking.join().unwrap(), answer.map_err(ImageRefusal::Pause));
+        }
+        assert_eq!(lock(&h.shared.state).paused, held(7, true));
+        // A room and a resize, each refused by its host as the run is paused.
+        let shared = Arc::clone(&h.shared);
+        let asking = std::thread::spawn(move || shared.room(Some(1 << 20), BOUND));
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::ROOM);
+        let id = wire::RoomAsk::decode(&payload).unwrap().id;
+        says(&mut h.host, wire::to_client::ASK_PAUSED, &wire::AskPaused { id }.encode());
+        assert_eq!(asking.join().unwrap(), Err(ImageRefusal::Paused { what: "room" }));
+        let shared = Arc::clone(&h.shared);
+        let asking = std::thread::spawn(move || shared.resize(1, 24, 80, BOUND));
+        let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::RESIZE);
+        let id = wire::ResizeAsk::decode(&payload).unwrap().id;
+        says(&mut h.host, wire::to_client::ASK_PAUSED, &wire::AskPaused { id }.encode());
+        assert_eq!(asking.join().unwrap(), Err(ImageRefusal::Paused { what: "resize" }));
+        {
+            let state = lock(&h.shared.state);
+            assert!(state.pauses.is_empty() && state.rooms.is_empty() && state.resizes.is_empty());
+            assert!(state.asks_paused.is_empty(), "a refusal outlived its ask");
+        }
+        // A run whose host ends without its end carries the paused time its host last told.
+        drop(h.host);
+        h.reader.join().unwrap();
+        lock(&h.shared.state).exited = true;
+        lock(&h.shared.state).answered = true;
+        let ended = lock(&h.shared.state).end_seen().unwrap();
+        assert_eq!(ended.paused, Duration::from_millis(7));
+        assert_eq!(
+            h.shared.pause(true, BOUND),
+            Err(ImageRefusal::Ended(ended.clone()))
+        );
+        assert_eq!(h.shared.pause(false, BOUND), Err(ImageRefusal::Ended(ended)));
+    }
+
+    /// A pause's answer and an ask's refusal as the run is paused are held for the asks that
+    /// await them (D264); one that is no answer breaks the channel.
+    #[test]
+    fn a_pauses_answer_and_a_paused_refusal_are_held_for_their_asks() {
+        let s = shared();
+        lock(&s.state).pauses.insert(4, None);
+        let paused = wire::Paused {
+            total: Duration::from_secs(2),
+            now: true,
+        };
+        let answer = wire::PauseAnswer {
+            id: 4,
+            result: Ok(paused),
+            // No process has it: held as told, holding nothing of this test process's.
+            held: vec![u32::MAX],
+        };
+        assert_eq!(take(&s, wire::to_client::PAUSED, &answer.encode().unwrap()), Ok(false));
+        assert_eq!(lock(&s.state).pauses.get(&4), Some(&Some(Ok(paused))));
+        assert_eq!(lock(&s.state).paused, paused);
+        assert!(lock(&s.state).held.is_some(), "the processes it holds were not held");
+        let resumed = wire::PauseAnswer {
+            id: 4,
+            result: Ok(wire::Paused { now: false, ..paused }),
+            held: Vec::new(),
+        };
+        assert_eq!(take(&s, wire::to_client::PAUSED, &resumed.encode().unwrap()), Ok(false));
+        assert!(lock(&s.state).held.is_none(), "a resumed run's processes were held still");
+        assert!(take(&s, wire::to_client::PAUSED, &[0, 0, 0, 4, 2]).is_err());
+        assert_eq!(
+            take(&s, wire::to_client::ASK_PAUSED, &wire::AskPaused { id: 9 }.encode()),
+            Ok(false)
+        );
+        let mut state = lock(&s.state);
+        assert_eq!(state.refused_paused(9, "stats"), Some(ImageRefusal::Paused { what: "stats" }));
+        assert_eq!(state.refused_paused(9, "stats"), None, "taken once");
+        drop(state);
+        assert!(take(&s, wire::to_client::ASK_PAUSED, &[0, 0, 9]).is_err());
     }
 
     /// A room no host hears is refused, typed, and leaves no ask awaited; a run that has

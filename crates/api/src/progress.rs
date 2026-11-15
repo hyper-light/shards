@@ -220,6 +220,53 @@ fn found(ran: bool, ending: bool, before: &Hold, now: &Hold) -> Found {
     }
 }
 
+/// The processes their owner holds from running on purpose (D264), each by its pid and start
+/// as [`Followed`] reads them: a run its owner paused (`ImageGuest::pause`), its vCPUs held out
+/// of its guest by its VMM, which no OS shows as held (its threads sleep as an idle VM's do).
+/// Each is held so as long as a [`Held`] of it lives, in this process alone: the process that
+/// paused it, whose waits on it are the ones that must not take its pause for a stall.
+static HELD: std::sync::Mutex<Vec<(u32, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn held() -> std::sync::MutexGuard<'static, Vec<(u32, u64)>> {
+    HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Processes held by their owner on purpose while this lives (D264): a look of D215's readers
+/// that finds one ran nothing finds it [`Found::Held`], not still.
+#[derive(Debug)]
+pub(crate) struct Held(Vec<(u32, u64)>);
+
+impl Held {
+    /// Processes `pids`, each as it is now: one gone already is passed over, as no look will
+    /// find it.
+    pub(crate) fn of(pids: &[u32]) -> Held {
+        let ids: Vec<(u32, u64)> = pids
+            .iter()
+            .filter_map(|&pid| Followed::of_pid(pid).ok().flatten())
+            .map(|f| (f.pid(), f.started()))
+            .collect();
+        held().extend_from_slice(&ids);
+        Held(ids)
+    }
+
+    /// Whether `followed` is held by its owner now.
+    fn holds(followed: &Followed) -> bool {
+        let id = (followed.pid(), followed.started());
+        held().contains(&id)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut all = held();
+        for id in &self.0 {
+            if let Some(i) = all.iter().position(|h| h == id) {
+                all.swap_remove(i);
+            }
+        }
+    }
+}
+
 /// Why a wait that follows its VM process gave it up, each as [`Refusal`] carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unfollowed {
@@ -367,7 +414,13 @@ impl Watch {
         if !ran && std::env::var_os("SHARDS_JUDGE_TRACE").is_some() {
             self.followed.trace(&look);
         }
-        Ok(found(ran, look.ending, &hold, &self.hold))
+        let found = found(ran, look.ending, &hold, &self.hold);
+        // Still of its own, unless its owner holds it on purpose (D264): a pause is its host's
+        // hold, as a starved thread is, never a stall. A stopped one stays still.
+        if found == Found::Still && !self.hold.stopped && Held::holds(&self.followed) {
+            return Ok(Found::Held);
+        }
+        Ok(found)
     }
 
     /// The CPU time its process's threads have had by the look before.
@@ -1750,6 +1803,51 @@ mod tests {
             }
             busy.store(false, std::sync::atomic::Ordering::Relaxed);
         });
+    }
+
+    /// A process its owner holds on purpose (D264's pause, [`Held`]) is its host's hold to a
+    /// wait that follows it, never a stall: do follow a sleeper whose kind has an answer (W* 20
+    /// ms) while a `Held` of it lives, looking past W* again and again; then let it go and look
+    /// on. Expect: every look while held goes on (`Found::Held`); once let go, it is held no
+    /// more, and refused `Stalled`, as any sleeper is.
+    #[test]
+    fn a_process_its_owner_holds_is_held_not_stalled() {
+        let slowest = Duration::from_millis(20);
+        let record = Record::new();
+        record.teach(slowest, Duration::from_millis(1));
+        let until_due = |follow: &Follow<'_>| {
+            let due = follow.due().unwrap();
+            while Instant::now() < due {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+        };
+        #[cfg(unix)]
+        let mut sleeper = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+        #[cfg(windows)]
+        let mut sleeper = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 61 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let held = Held::of(&[sleeper.id()]);
+        let followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
+        let mut follow = Follow::begin(&record, followed, Bound::Rate).unwrap().unwrap();
+        // Its start's own CPU taken in first, then ten windows held.
+        for _ in 0..12 {
+            until_due(&follow);
+            assert_eq!(follow.look(), Ok(()), "a held process was refused");
+        }
+        drop(held);
+        let refused = loop {
+            until_due(&follow);
+            if let Err(refused) = follow.look() {
+                break refused;
+            }
+        };
+        let let_go = Followed::of_pid(sleeper.id()).unwrap().unwrap();
+        assert!(!Held::holds(&let_go), "a hold outlived its Held");
+        sleeper.kill().unwrap();
+        sleeper.wait().unwrap();
+        assert!(matches!(refused, Unfollowed::Stalled(_)), "{refused:?}");
     }
 
     /// D215's rate bound on real processes, a kind taught W* 200 ms, R* 1/2 and C* 100 ms

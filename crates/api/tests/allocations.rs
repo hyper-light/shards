@@ -70,7 +70,7 @@ fn a_hostile_vcpu_count_allocates_nothing_its_bytes_cannot_fill() {
         }),
         guest: Ok(GuestTimes::default()),
     };
-    let mut bytes = StatsAnswer::encode(1, Ok((b"cpu 10\n", Some(&microvm)))).unwrap();
+    let mut bytes = StatsAnswer::encode(1, Ok((b"cpu 10\n", Some(&microvm), None))).unwrap();
     // Where it says no vCPU, their count is its last four bytes.
     let count = bytes.len() - 4;
     bytes[count..].copy_from_slice(&u32::MAX.to_be_bytes());

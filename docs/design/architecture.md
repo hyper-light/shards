@@ -35486,6 +35486,126 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
 
+### D264. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
+
+**Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step
+P5.5, kiln plan 01a1dd2e8618733a87f2793aab1322a8): a paused session runs no CPU and its host's
+use of it stops growing, with its memory, devices and connections kept, and goes on where it
+stopped. D231's runs had `save` (D259) and `stop`, and no pause.
+
+**What existed, and what this builds on.** The daemon's `pause vm`/`unpause` (Docker's
+`pause`) holds every vCPU out of its guest with the VMM's own hold (`shards_vmm::vm::Handle::pause`,
+D191's `Hold`, `paused` beside the rate's and the group's holds), asked on the run's link
+(`PAUSE`: 1 to hold or 0 to go on, then its number; answered `PAUSED`: its number, then nothing
+or why not; warm.rs `pauses`, an ordered thread, as a pause waits for every vCPU to be out of its
+guest). The run host plays the daemon's side of that link (D231), so the orchestrator's pause is
+that ask, sent by `api-run`. Alternatives refused: SIGSTOP of the VM process (or a cgroup freezer
+of it) freezes its device threads and its link mid-flight, so no stats, rate or stop could be
+answered, and D215's readers would rightly find it stopped (`Found::Still`, a stall); a snapshot
+and restore per pause (D259's save) frees memory but costs a save and a restore each time, which
+is the long-pause follow-up below, not the pause.
+
+**Decided** (`shards_api::image::ImageGuest::{pause, resume}`, image channel version 32):
+- *The calls.* `pause(patience)` and `resume(patience)`, required of every `ImageGuest`, each
+  answering the run's `Paused { total, now }`: the time it has been paused by its owner, every
+  pause that ended and the one under way so far, on its run host's clock (from its VM's word that
+  every vCPU is held to its word that they go on), and whether it is paused as read. `patience`
+  bounds the caller's wait alone, as `room`'s and `rate`'s do (`Duration::MAX`: until it is done or
+  the run ends); past it, `Unsupported { "a pause" | "a resume" }`, the run host's state moved by
+  its VM's word all the same. Refused `Pause(why)` where its VM held nothing (its machine stopped
+  first), in its VM's words, and `Ended` once the run has ended, as every ask of an ended run is.
+- *Idempotent* (ROOT's ruling for Hex, 2026-11-14, replacing a refusal of a pause of a paused run
+  first planned): a pause of a paused run, and a resume of a running one, are done already and
+  answer the run's paused time, asking its VM nothing. An owner that lost an answer (its patience,
+  a channel's hiccup) asks again and is answered the same, never refused for having succeeded.
+- *Order.* The run host applies pauses and resumes in the order its channel brought them, one at
+  a time, by one worker thread made as one is asked with none at work and ending once none is
+  left (`api_run::Pauses::queue`), so that a pause then a resume sent without waiting ends running.
+- *Its states* (`api_run::Pause`, R04): running → pausing (its owner's pause) → paused (its VM
+  held every vCPU) → resuming (its owner's resume) → running (its VM let them go); pausing back to
+  running where its VM held none, resuming back to paused where it did not go on; any to gone as
+  its VM's link closes, a pause under way then ending in its total.
+- *Nothing waits on a frozen guest.* A pause first refuses every new ask of its guest, then waits
+  for those under way (`room`, `resize`, `plug`, `unplug`, `stats`: counted from their start,
+  `GuestAsk`) to be answered by its still-running guest, then reads the run's stats from its init
+  (the last its guest says), then holds. While it is pausing, paused or going on, an ask its guest
+  would answer is refused at once, `ImageRefusal::Paused { what }` (`room`, `resize`, `plug`,
+  `unplug`, `stats` of its command or a member), on the wire `ASK_PAUSED` by its ask's id; none of
+  it is applied, nothing is queued for its resume (init's room from before the pause stands
+  through it; its orchestrator tells the room again once resumed). Answered without its guest:
+  `stats(Run)` (below), `rate` and `rate_period` (D191's hold is its VM's own, set while held and
+  in force as it goes on), `save` (D259's park of the vCPUs and devices is its VM's own: the
+  snapshot is of the paused machine), `stop`, every wait and take, its diagnostics.
+- *Its connections* (members' stdio, managed output, its agent-control endpoint's lanes, MCP
+  lanes) stay open, each buffered within its own flow control (credits, vsock's, the engine ring);
+  a lane opened while paused is accepted by its guest once it goes on.
+- *Usage while paused* (Hex's P5.5b and D241's host use): `Stats::paused`, the run's alone (as
+  `microvm` is), with every `stats(Run)`; while paused its init's lines are what its init said as
+  the run paused, and its microVM part (its VM process's use, each vCPU's guest time) is read as it
+  stands, so its guest time is flat and its host CPU grows by its VMM's own alone. `RunEnded::paused`
+  carries the total however the run ended (a paused run ends only stopped or failed, with no final
+  use read; an end its host never told carries the total it last told). An orchestrator's window of
+  a run's life (D241's `host_use`) subtracts it.
+- *The judged waits* (D215, D222's slice c2). No wait of Shards' follows an image run's VM process
+  (the run host's asks of its VM wait on their answers; D215's judged waits follow managed guests'
+  and the daemon's runs'); the waits that do are its owner's: Hex's, and the tests'
+  (`common::judged`, `Party::started`), which follow every process the test started. A paused VM
+  runs nothing and no OS shows it held (its vCPU threads sleep as an idle VM's do), so D215's
+  readers would find it still and refuse it. A pause is its host's own hold: the process that
+  paused a run holds its VM process as held (`shards_api::progress::Held`, by pid and start, told
+  with the pause's answer, `PauseAnswer::held`) for as long as it is paused, and a look of D215's
+  readers (`Watch::look`) that finds a held process still finds it `Found::Held`: live, never a
+  stall. A stopped (SIGSTOPped) one stays still. Its record is this process's: only its owner's
+  waits know of its pause, and only they need to.
+- *The guest's clock.* A pause takes no snapshot: the guest's counters run on through it (HVF's
+  `CNTVCT_EL0` is the host's counter less a constant `vtimer_offset`; KVM's kvmclock and arm64's
+  arch timer, and WHP's partition reference time, likewise), so its `CLOCK_REALTIME` is the host's
+  as it goes on, with no `sync_clock` (a restore needs one: its clock is the snapshot's). Tested on
+  real VMs: after a 3 s pause the first line its member prints holds a time within the host's reads
+  around its resume and its receipt (the bound `run.rs` holds a restore to). **Owed:** on KVM x86-64,
+  `KVM_KVMCLOCK_CTRL` on each vCPU as it goes on (QEMU does), so that its guest's soft-lockup
+  watchdog does not take a long pause for a lockup (its warning, never its panic, is the cost now).
+- *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
+  (40, 41, 42 the next free kinds), the paused time is measured, and every wait is on an answer or
+  an end.
+- *Wait and cache review* (R05). New waits: a pause's wait for the guest asks under way (each ends
+  as its guest answers it, its guest running; notified at each end, never polled); a run-scope
+  stats ask's wait for a pause under way (notified at its end); the worker's wait for its VM's
+  `PAUSED` (an answer, or its link's close). The pause's stats sample is held while the run is
+  paused: its source is the run's init, read last before its vCPUs were held; one per run;
+  dropped as the run goes on; its consistency is that no guest code runs while every vCPU is held,
+  and the guest's counters change only as its kernel runs on them. It is short of them by what the
+  guest ran between init's read and the hold, which shows in the first sample after the resume
+  (counters only grow). Without it, no `stats(Run)` could answer while paused (Hex's usage refuses
+  a run with no memory or CPU line).
+- **Tests.** Unit and stand-in: `wire` `pauses_round_trip_and_bad_ones_are_refused`;
+  `session` `a_pause_rides_the_runs_channel_and_asks_of_its_guest_come_back_paused`,
+  `a_pauses_answer_and_a_paused_refusal_are_held_for_their_asks`; `api_run`
+  `a_runs_pause_moves_by_its_vms_word_and_counts_its_time`,
+  `a_pause_waits_for_its_guests_asks_then_holds_its_vm_until_it_resumes` (a stand-in VM: nothing
+  reaches it until the guest ask under way has ended, then init's stats, then `PAUSE` 1; a second
+  pause and resume unasked), `asks_of_a_paused_runs_guest_are_refused_at_once`; `progress`
+  `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held while its
+  `Held` lives and refused `Stalled` once it goes: the red with the hold's check removed). Real VM:
+  `api_image` `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped` (guest time flat across a 3
+  s pause, the room and a member's stats refused `Paused`, the rate answered, a judged read of the
+  member's stdout through the pause not refused, its count going on from the last before the pause
+  with none lost, its clock the host's, the paused time in its stats and its end).
+- **Follow-ups, designed** (ROOT's review, 2026-11-14):
+  1. *A paused VM gives back what its guest does not need.* As the pause's first step, while its
+     guest runs, its init is asked for D188's give-back (`builtin::RECLAIM`: its file pages cold,
+     reported free through free page reporting, D148, so its host takes them back), then its vCPUs
+     are held. What it gave back is told in usage, `Paused::given_bytes` (image channel version
+     33). A give-back refused or failed leaves the pause as it is, said in its words.
+  2. *A long pause becomes a save.* A pause that outlasts a learned break-even, the measured cost
+     of a save and a restore of that VM's size (D259's save and D253's restore, each timed as it
+     runs on that host, in its home's record) against the memory-time it holds paused, becomes a
+     save that frees everything (its VM ended, its snapshot its owner's), and its resume a restore.
+     Cold, with no save or restore measured on that host, a pause stays a pause until one is.
+- **Owed** (ROOT): the real-VM test on KVM and WHP (`cargo test -p shards --profile test-release
+  --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
+  KVM x86-64's `KVM_KVMCLOCK_CTRL` at resume.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
