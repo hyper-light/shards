@@ -25390,3 +25390,39 @@ with delay accounting off, and no page came from storage. So the counts that are
 most such waits between looks, but not every one, and Linux keeps the time waited only with
 delay accounting on or, through a cgroup's own `io.pressure`, where the process is alone in
 it. Neither host's counts are a bound; n is one loop each.
+
+### M602. Memory a guest plugged before its template's save, taken away by HVF's working-set recording, served as a device (D270)
+
+- **Where.** adas-mac-studio-3.local (Apple M4 Max, macOS 26.2), kiln run r99, the
+  test-release profile; Shards 8f4bc8184 (main 6bfdcb1a9 and the tests) for red, d02f9fdcf
+  (the fix) for green. The harness, `docs/research/measurements/hvf-plugged-watch/`: `run.sh`
+  (its steps), `sweep.rs` (a test appended to api_image.rs for the run alone, never
+  committed there), `inst.py` (logging of each plug, each snapshot's plugged runs, what a
+  recording takes away and each fault on memory mapped since a vCPU was made, the red build
+  alone; no behaviour changes) and `mut.py` (the fix's mutation).
+- **The least memory, by its first run** (`sweep.rs`, 1 vCPU, the test image, n = 1 each):
+
+  | MiB | first run: boots, saves its template, records its working set | booted alone (a guest its caller gives: no template, no recording) |
+  |---|---|---|
+  | 64 | **ended before ready**: 128 MiB plugged at 0xc000_0000 0.89 s into its boot; the snapshot staged with plugged runs `[(c0000000, 8000000)]`; the recording took that run away with the rest; `vCPU 0: a fault at 0xc0000000 (ESR 0x92000046) on 0xc0000000+0x8000000, mapped since this vCPU was made, taken as MMIO`, then `unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000, PC 0xffff800080bcf554` | booted, plugged 128 MiB, ran |
+  | 72, 80, 96, 112, 128, 160, 192, 256 | saved (snapshot with no plugged runs), ran | booted, ran |
+
+  So 64 MiB is the only size here whose guest plugged before its template point; with
+  members and shares, as kiln's images have, a guest needs more as it boots. At the fix,
+  every size saved its template and booted alone, 64 MiB's with its plugged run held.
+- **The exit itself** (`hv::hvf::tests::vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`):
+  a page mapped through `Stage2::map` at 0xc000_0000 once vCPU 0 was made, a recording
+  started, then the guest's `str x5, [x4, #16]; ldr x6, [x4, #16]` (ISV 1) and, under a
+  second recording, `stp x4, x4, [x4]` (ISV 0), an `Io` recording each device access. Red:
+  `(Ok(Shutdown), 0, Err("unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000,
+  PC 0x90000040"), [3221225488, 3221225488])`: the store dropped and the load zero at
+  0xc0000010, then kiln's syndrome, a level-2 translation fault on a page the framework had
+  never filled. Green at the fix; red again, the same, with the vCPU's copy never made again
+  (`mut.py`).
+- **The run** (api_image.rs `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`):
+  red at 8f4bc8184 in its first run's boot, as above, before any member or command of the run
+  ran (its first form gave the `alloc 256` to its harness; it now gives it to the run's own
+  command, which D148's grower grows, as the finding below ends a member's).
+- **Found beside it.** In every run of the sweep, both revisions and both ways, the harness
+  member's `alloc 256` was ended by init, `the agents' memory, 21069824 bytes, was past their
+  share, 20873216` at 64 MiB: a member's share does not grow with the plug (D270's owed list).

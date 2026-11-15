@@ -999,19 +999,21 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
 }
 
 /// kiln boots every harness at shards-api's least envelope (`envelope(ARCH, 0, 0)`: 1 vCPU and,
-/// on arm64, 64 MiB) and leaves its workload's memory to D148's plug. At that envelope the
-/// image's first run saves its template and the next restores it, and each run's harness holds
-/// 256 MiB, four times what its microVM booted with, to its end.
+/// on arm64, 64 MiB) and leaves its workload's memory to D148's plug (D270). At that envelope
+/// the image's first run saves its template, which holds memory its guest plugged before the
+/// save, and the next restores it; each run's own command holds 256 MiB, four times what its
+/// microVM booted with, and ends 0.
 #[test]
 fn the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory() {
     if cannot_run_vms() {
         return;
     }
     let home = common::home_with("api-least-home");
-    build(&home, "api-least:1", &["alloc", "256"], "");
+    build(&home, "api-least:1", &["exit", "0"], "");
     let (vcpus, memory_mib) = shards_api::envelope(std::env::consts::ARCH, 0, 0).unwrap();
     let mut s = spec(&home, "api-least:1");
     (s.vcpus, s.memory_mib) = (vcpus, memory_mib);
+    s.command = Some(["alloc", "256"].map(String::from).to_vec());
     // The guest its home recorded, as kiln's runs boot Shards' own: a guest its caller gives
     // saves no template.
     s.env
@@ -1021,9 +1023,18 @@ fn the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_me
         let guest = boot(&home, &s);
         let expected = if restores { from } else { StartedFrom::Booted };
         assert_eq!(guest.started_from(), expected);
-        assert_eq!(read_all(&*guest, Channel::Stdout), b"allocated 256\n");
-        assert_ended(&*guest, MemberEnd::Exited(0));
-        guest.stop().unwrap();
+        let ended = ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap();
+        assert_eq!(ended.map(|e| e.end), Some(RunEnd::Exited(0)));
+    }
+    if restores {
+        let templates: Vec<_> = std::fs::read_dir(home.join("templates"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.is_dir())
+            .collect();
+        assert_eq!(templates.len(), 1, "{templates:?}");
+        let (_, plugged) = shards_vmm::snapshot::layout(&templates[0]).unwrap();
+        assert!(!plugged.is_empty(), "its guest plugged nothing before its save");
     }
 }
 

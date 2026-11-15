@@ -36176,6 +36176,87 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
+### D270. An HVF vCPU takes memory mapped after it was made as memory: plugged blocks a template's recording takes away are given back, never served as a device (built; kiln's real-VM E2E rerun owed)
+
+**What failed.** kiln P1.4 (2026-11-14; Shards d993d83ee under Hex 414aa30d3) boots every
+harness at shards-api's least envelope, 1 vCPU and 64 MiB on arm64 (`envelope(ARCH, 0, 0)`),
+and leaves its workload's memory to D148's plug. 7 of its 10 harness launches on HVF ended as
+their VMs booted, "the VM ended before it was ready" or "sending the command: Broken pipe",
+each quoting `vCPU 0: unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000`
+(also IPA 0xc0003800 and, from a user process, 0xc001a1b0): a write (WnR) with no syndrome to
+emulate (ISV 0), a stage-2 translation fault at level 2, at the first bytes of arm64's
+memory to plug, which starts at the first GiB boundary past RAM (`vm::aarch64::plug_at`:
+0xc000_0000 for 64 MiB). The guest's memory map was sound: its device tree names RAM alone,
+and everything else is placed past the region (`aarch64::assemble`). Reproduced (PM M602).
+
+**Why** (at 6bfdcb1a9):
+- An image's first run boots `--warm` (`run::boot_args`), which records the working set its
+  restores prefetch (`vm_run.rs`, PM M30). On HVF the recording starts as the template's
+  snapshot is written (`runtime::Coordinator::take`, `vm::aarch64::record`), and takes away,
+  at stage 2, every region the watch lists (`hv::hvf::Watch::rest`).
+- D176 part 7 (634ed8c73, 2026-11-03) has the watch list memory mapped while the VM runs,
+  plugged blocks and a run's swap (`Watch::mapped`), so that a live move watches their writes;
+  and part 1 has a snapshot keep memory plugged. D148's and D176's premise that templates are
+  saved before their guests plug anything does not hold at small envelopes: a 64 MiB guest of
+  the test image plugged 128 MiB 0.89 s into its boot, before its template point (PM M602).
+- The vCPU's exit decided whether a fault was memory the watch took away or a device access
+  from a copy of the watch's list made as the vCPU was made (`Vm::create_vcpu`), in which
+  memory plugged since is not; `give_back`'s own look at the watch was never reached. So a
+  fault there was served as MMIO: an access whose syndrome describes it (ISV 1, a single load
+  or store) went to no device, **its store dropped and its load zero, the guest's memory
+  silently wrong**; one whose syndrome does not (ISV 0: a store pair, the kernel's page clears
+  and copies, user space's `stp`) ended the VM, kiln's error.
+- Both revisions kiln's lane compared contain 634ed8c73: what changed between them is only
+  whether their guests plugged before their template points.
+
+**What.** The watch counts the changes of its list, under the list's lock (`Watch::changes`),
+and a vCPU copies the list again at an exit on memory, a data or instruction abort, or before
+it prefetches, once the count has moved (`Vcpu::memory_at`, `refresh_memory`): a fault on
+memory mapped since is given back as RAM's is, and an address the watch does not list is a
+device's, as before. The list holds each mapped range once: a range a report of free memory
+maps again (D151), which a region of the same access holds whole, is not listed again (it was,
+once per report, and every vCPU's copy would have grown with it).
+- *The vCPU's copy* (R05) caches the watch's list, the one authority: the whole list, made
+  again when its change count differs, bounded by the regions mapped (RAM, pmem, the writable
+  layer, the DAX windows' heads, plugged runs, a swap mapping). What it saves is a lock on
+  the one list shared with every vCPU, the plug and report threads at each MMIO exit (PM M4:
+  0.8 µs a round trip); an exit past a change pays one copy of the list. That saving is
+  unmeasured (R14, owed to ROOT).
+- *Ordering.* The count moves under the list's lock before it is released; the watch takes a
+  region away only under that lock, after the move, and the guest faults only after that
+  hypervisor call: an exit's acquire load of the count sees every region the fault can be on.
+- *No new literal* (R03); the least memory (`MIN_MEMORY_MIB`) is not this fault's.
+- *Other backends.* None but HVF takes guest memory away at stage 2: KVM maps the whole region
+  to plug as one memslot (`hv::kvm::Vm::add_hotplug`), records working sets from what its host
+  maps (`vm::mapped`) and live moves from dirty logs; WHP records from the host's mapped pages
+  and tracks writes by `WHvQueryGpaRangeDirtyBitmap`. x86_64's region to plug starts at the
+  first GiB boundary past high RAM, above 4 GiB (`vm::x86_64::plug_at`), and is in no e820
+  entry.
+
+**Verified** (adas-mac-studio-3.local, M4 Max, macOS 26.2; PM M602):
+- `hv::hvf::tests::vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`: a page mapped through
+  `Stage2::map` at 0xc000_0000 once vCPU 0 was made, taken away by a recording; the guest's
+  `str` and `ldr` (ISV 1) and its `stp` (ISV 0) there, under an `Io` that records device
+  accesses. Red at 8f4bc8184 (main and the test): `(Ok(Shutdown), 0, Err("unhandled guest
+  exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000, PC 0x90000040"), [0xc0000010,
+  0xc0000010])`, kiln's syndrome, and the store and load served to no device; green at the
+  fix; red again with the vCPU never copying the list again (mutation).
+- api_image.rs `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`:
+  at 1 vCPU and 64 MiB, the image's first run saves its template, which holds memory its
+  guest plugged, the next restores it, and each run's command holds 256 MiB and ends 0. Red
+  at 8f4bc8184 as kiln's launches: "the VM ended before it was ready", `unhandled guest
+  exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000, PC 0xffff800080bcf554`, one of kiln's
+  PCs.
+
+**Owed.** kiln's P1.4 E2E on this revision (ROOT); the vCPU copy's saving measured (R14);
+a live move of a microVM with memory plugged on HVF, which the same exit served wrongly
+before (D176 part 7), not run. Found beside it, not changed: `Watch::unmapped` forgets only
+regions wholly within what is unmapped, so a block unplugged from within a larger plug's
+range leaves that range listed, and `Watch::rest` then protects a range with a hole in it
+(not reproduced); and a harness member's memory (`domains.rs`, its `memory.high` set once as
+its domains start, from `MemAvailable` and none of the plug) ended `alloc 256` at about
+20 MB at 64 MiB, in boots with no template alike (ROOT's lane p/member-share).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
