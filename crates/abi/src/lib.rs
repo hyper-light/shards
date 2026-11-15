@@ -27,6 +27,25 @@ pub const SERVER_FIRST_ID: u32 = DOMAIN_FIRST_ID + 4 * 1024 * 1024;
 /// `PID_MAX_LIMIT`), which no process of shards' own takes.
 pub const NOTICE_ID: u32 = SERVER_FIRST_ID + 4 * 1024 * 1024;
 
+/// The console of shards' guests (D261), as one literal for [`GUEST_CONSOLE`] and
+/// [`CONSOLE`] to be made of.
+macro_rules! guest_console {
+    () => {
+        "hvc0"
+    };
+}
+
+/// The console of shards' guests (D261): virtio-console's first port, which Linux's
+/// virtio_console driver names `hvc0` (drivers/char/virtio_console.c, its hvc backend). A
+/// guest has no UART: a kernel told any other console (`console=ttyS0`) writes to none, and
+/// a guest that needs its console to start fails.
+pub const GUEST_CONSOLE: &str = guest_console!();
+
+/// The kernel's argument that makes [`GUEST_CONSOLE`] its console, `console=hvc0`: the first
+/// of every default command line shards boots with (the VMM's `Config::new`, the builder's),
+/// and the one an orchestrator's names (`shards_api::CONSOLE`).
+pub const CONSOLE: &str = concat!("console=", guest_console!());
+
 /// The join disk's virtio-blk serial (D119), which init finds it by: the read-only disk
 /// whose ranges are the images of runs joining the microVM's network.
 pub const JOIN_DISK_SERIAL: &str = "shards-join";
@@ -74,6 +93,7 @@ pub mod changes;
 pub mod emulate;
 pub mod gpu;
 pub mod guest_time;
+pub mod host;
 pub mod pace;
 pub mod rate;
 pub mod ring;

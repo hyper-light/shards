@@ -3806,6 +3806,24 @@ mod managed_report_tests {
         parse_run(args.into_iter().map(OsString::from))
     }
 
+    /// The console shards-api tells orchestrators (D261; `shards_api::CONSOLE` is
+    /// `shards_abi::CONSOLE`, re-exported) is the one a default `run vm --kernel` boot's
+    /// command line names: its first argument, as `/proc/cmdline` shows it.
+    #[test]
+    fn the_console_shards_api_exports_is_a_default_boots() {
+        let run = parse_run(
+            ["--kernel", "/never-opened/kernel"]
+                .into_iter()
+                .map(OsString::from),
+        )
+        .unwrap();
+        assert_eq!(run.cfg.cmdline.split(' ').next(), Some(shards_abi::CONSOLE));
+        assert_eq!(
+            shards_abi::CONSOLE,
+            format!("console={}", shards_abi::GUEST_CONSOLE)
+        );
+    }
+
     /// D233: a warm boot and a warm restore write a GPU report of the scope their spawner (an
     /// orchestrator's run host) names, as a direct boot does; a warm boot of no selection, a
     /// resumed run's restore, a restore not warm, and either flag alone are refused.

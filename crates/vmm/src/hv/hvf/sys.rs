@@ -241,12 +241,25 @@ pub fn protect(gpa: u64, len: u64, perms: Perms) -> Result<()> {
 /// Whether this Mac can run Hypervisor.framework VMs: `sysctl kern.hv_support`, the check
 /// Apple documents. It reads 0 inside VMs that lack nested virtualization.
 pub fn supported() -> bool {
+    sysctl_is_1(c"kern.hv_support")
+}
+
+/// Whether this Mac is itself a VM: `sysctl kern.hv_vmm_present`, "running on a vmm", which
+/// XNU reads on arm64 from the device tree's `vmm-present` that a hypervisor sets, readable
+/// by anybody (bsd/kern/hvg_sysctl.c `sysctl_vmm_present`, xnu main f6217f89; 0 on a Mac
+/// that is no VM, as on adas-macbook-pro-2).
+pub fn in_a_vm() -> bool {
+    sysctl_is_1(c"kern.hv_vmm_present")
+}
+
+/// Whether integer sysctl `name` reads 1; a sysctl this macOS lacks reads as not.
+fn sysctl_is_1(name: &std::ffi::CStr) -> bool {
     let mut value: libc::c_int = 0;
     let mut len = size_of::<libc::c_int>();
     // SAFETY: sysctlbyname writes at most `len` bytes into `value`.
     let rc = unsafe {
         libc::sysctlbyname(
-            c"kern.hv_support".as_ptr(),
+            name.as_ptr(),
             (&raw mut value).cast(),
             &mut len,
             std::ptr::null_mut(),

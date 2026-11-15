@@ -35225,6 +35225,20 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     `capture-ring.py`, KVM boots to a snapshot): the unpatched kernel's console is given every
     record from "Linux version" to "console [hvc0] enabled"; the patched one's, none.
   - Owed: HVF and WHP runs.
+- **The console's name, one constant, told to orchestrators** (2026-11-14, ROOT's ask after
+  Hex's break: Hex's own command line said `console=ttyS0`, and its guests panicked once the
+  UART was gone). `shards_abi::GUEST_CONSOLE` (`hvc0`) and `shards_abi::CONSOLE` (the whole
+  kernel argument, `console=hvc0`, the shape Hex asked for), both `&'static str` made of one
+  literal, are the one source: the VMM's default command line (`Config::new`, every `run vm
+  --kernel` boot that gives no `--cmdline`) and the builder's begin with `CONSOLE`, and
+  shards-api re-exports both (`shards_api::CONSOLE`, `shards_api::GUEST_CONSOLE`), so that an
+  orchestrator's command line names the console shards' guests have, never one of its own.
+  `vm_run.rs`'s `the_console_shards_api_exports_is_a_default_boots` (run in the VM process's
+  crate, which compiles `vm_run.rs`) holds it to a default boot's first argument, which is what
+  that boot's `/proc/cmdline` begins with (kernel options are added after it,
+  `with_kernel_options`).
+  Red with the default command line set back to a literal other console. Owed (ROOT): a real
+  default boot's `/proc/cmdline` against it.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
@@ -35274,6 +35288,82 @@ Every ring length is bounded by the guest's RAM (`within_ram`); a larger one is
 - A real panic before hvc0 (pvpanic told, its ring's lines quoted) on HVF, KVM x86-64/arm64
   and WHP.
 - A ring read from a real pinned kernel's memory.
+
+### D262. Whether a host runs microVMs, without booting one: `shards_api::host_check`, typed (built; real runs on KVM and WHP owed)
+
+**Asked.** kiln's runners page and load balancer need each runner to say truthfully whether it
+can run microVMs, and why not, before any session asks for one (kiln × Hex × Shards design
+section A, 2026-11-14): a shards-api call that runs the check a VM process makes at boot,
+without booting.
+
+**Decided.**
+- *The reasons are typed where they are found.* Each backend's `check_host` (KVM `hv/kvm`,
+  Hypervisor.framework `hv/hvf`, WHP `hv/whp`, WHP on arm64 `hv/whp_arm64`) and the
+  backend-less build's (`vm/unsupported.rs`) return `shards_abi::host::Unusable`, not text:
+  `Unsupported { os, arch }` (no backend for this target: an Intel Mac), `KvmMissing`,
+  `KvmDenied`, `HvSupportOff`, `WhpOff`, `NoHypervisor`, `NoNested`, `Lacks(words)` (the backend
+  is there and lacks a capability, API version or feature shards needs, in its words) and
+  `Unasked(words)` (the call that asks failed). Their text is the words each check said
+  before; every caller that said a start's failure as text renders it (`From<Unusable> for
+  String`), so `vm run`'s and the tests' SKIP lines are unchanged. `shards_api::Backend` moved
+  to `shards_abi::host::Backend`, re-exported under the same name and variants, so that the
+  VMM names its backend in the API's type (`shards_vmm::hv::backend`).
+- *Nested virtualization, told apart.* Where the backend finds no hypervisor, a host that is
+  itself a VM given none is `NoNested`:
+  - macOS: `kern.hv_support` is not 1 and `kern.hv_vmm_present` is 1. XNU defines the latter
+    as "running on a vmm", read on arm64 from the device tree's `vmm-present`, readable by
+    anybody (bsd/kern/hvg_sysctl.c `sysctl_vmm_present`, xnu main f6217f89); it reads 0 on
+    adas-macbook-pro-2.
+  - x86-64 (KVM: `/dev/kvm` missing; WHP: `WHvCapabilityCodeHypervisorPresent` 0): CPUID.1:ECX
+    bit 31 set (reserved for a hypervisor to set, Intel SDM vol. 2A, AMD APM vol. 3) and
+    neither VMX (CPUID.1:ECX bit 5) nor SVM (CPUID.80000001h:ECX bit 2) offered, which a
+    hypervisor that nests its guests gives them. Unit-tested over the bits
+    (`a_vm_without_nested_virtualization_is_told_by_cpuid`).
+  - arm64 Linux and arm64 Windows: no architectural word says "a VM without EL2" to a process
+    at EL0, so a missing `/dev/kvm` stays `KvmMissing` and an absent hypervisor
+    `NoHypervisor`.
+- *Where it runs: in `shards`, `shards api-check`, not in the VM process.* shards-api is a
+  client of the `shards` binary and links no VMM (D215), so the check runs in a process of
+  shards'. No backend's check makes a hypervisor call: KVM opens `/dev/kvm` and asks
+  `KVM_GET_API_VERSION` and `KVM_CHECK_EXTENSION` as this user, the same user the VM process
+  runs as; Hypervisor.framework's are two sysctls any process reads
+  (`CTLFLAG_ANYBODY`); WHP's loads its library and asks `WHvGetCapability`, making no
+  partition. So the hypervisor entitlement, which only the VM process carries on macOS (D30),
+  and App Sandbox's grants are not needed, and the check costs one launch of `shards`, which
+  loads no framework at launch (PM M113, 2.5 ms), where the VM process would cost its writing
+  out on a home's first use (D237) and a sandboxed start with a grants broker besides. What
+  the check does not cover: a VM binary that is not signed as it must be (HV_DENIED, a build's
+  defect, not the host's), and resources (memory, disk) a boot needs, which a start's own
+  admission says.
+- *The answer.* One frame on `api-check`'s stdout, the run protocol's header
+  (`shards_abi::run::header`), kind `CHECKED` (1): its version (1, changed only by appending),
+  this build's backend (0 none, 1 KVM, 2 HVF, 3 WHP) and its verdict (0 usable, else the
+  reason's tag 1-9 and its text fields), read whole or refused. `shards_api::host_check(binary)`
+  starts it as a run host is started (`image::session::start_host`: its three standard
+  streams alone, in a group of its own), reads that one frame, never waiting on a pipe's end
+  (D231: its exit watcher follows its group and reaps it, then tells its readers), and keeps
+  its stderr's last bytes (`said_kept`, the run host's bound) for a refusal to quote.
+  `HostCheck` is `Usable(Backend)` or `Unusable { backend, why }`. Why it could not ask is
+  `CheckRefusal`: `Start` (the binary did not start), `Os`, `Ended { status, said }` (it ended
+  without its answer: a `shards` that has no `api-check`), `Version(v)`, `Wire`. A target
+  shards has no backend for is answered `Unsupported` without starting anything, as no
+  `shards` runs there (`shards_api::backend`).
+- *No literal of its own:* the CPUID bits and sysctl names are the specifications' and XNU's;
+  the frame kind, version and tags are the channel's own names; the diagnostics' bound is the
+  run host's (D231); the read buffer (4096 bytes) bounds no behaviour, only how much one
+  read takes.
+
+**Evidence.** Unit tests: `shards-abi` `host::`; `shards-vmm` the CPUID rule; `shards-api`
+`host::` (every verdict reads back as answered; another version, trailing bytes, a short
+answer, unknown tags and a usable answer without a backend refused typed; stand-in hosts:
+an answer read from its one frame, asked by `api-check`; a host that ends without its answer
+refused `Ended` with its status and words; another frame kind refused; a missing binary
+refused `Start`) and `command::`; `shards`' `shards_own_children_run_here` holds `api-check`
+to running on this machine whatever context a home has chosen (`cli::INTERNAL`). A real
+`shards api-check` on HVF answered usable (below, the lane's report). **Owed** (ROOT): the
+same answer on KVM (adacachy2), WHP x86-64 (jupiter) and a host without virtualization (a CI
+runner, `NoNested` or `KvmMissing`), and `api-check`'s launch cost through
+`docs/research/measurements/macos-sched/launchd-run.sh`.
 
 ## 4. Start path (≤ 5 ms budget)
 

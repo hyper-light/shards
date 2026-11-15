@@ -85,6 +85,12 @@ impl From<String> for StartError {
     }
 }
 
+impl From<shards_abi::host::Unusable> for StartError {
+    fn from(why: shards_abi::host::Unusable) -> Self {
+        Self::Legacy(why.into())
+    }
+}
+
 impl From<&str> for StartError {
     fn from(message: &str) -> Self {
         Self::Legacy(message.into())
@@ -1516,7 +1522,7 @@ pub fn passthrough_refused() -> PassthroughRefusal {
     }
     #[cfg(not(any(target_os = "macos", hv = "whp")))]
     {
-        PassthroughRefusal::NoBackend(check_host().err().unwrap_or_default())
+        PassthroughRefusal::NoBackend(check_host().err().map(String::from).unwrap_or_default())
     }
 }
 
@@ -2562,7 +2568,7 @@ impl Config {
             kernel,
             initrd: None,
             init,
-            cmdline: "console=hvc0 panic=-1".into(),
+            cmdline: format!("{} panic=-1", shards_abi::CONSOLE),
             vcpus: 1,
             memory_mib: MEMORY_MIB,
             console: Console::Stdout,

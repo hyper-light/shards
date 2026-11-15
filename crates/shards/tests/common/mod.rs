@@ -220,7 +220,7 @@ pub fn guest_time_step() -> Duration {
 pub fn cannot_run_vms() -> bool {
     match shards_vmm::vm::check_host() {
         Ok(()) => false,
-        Err(why) => skip(&why),
+        Err(why) => skip(&why.to_string()),
     }
 }
 

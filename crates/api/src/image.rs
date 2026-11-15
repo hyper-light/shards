@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 mod pool;
-mod session;
+pub(crate) mod session;
 pub mod wire;
 
 pub use wire::{

@@ -36,7 +36,7 @@ const AHEAD: u64 = shards_abi::run::CHUNK as u64;
 /// How many of the run host's last bytes of diagnostics are kept to quote: shards' longest
 /// report of a VM's end, its console's last bytes escaped (`crate::client::tail` for the
 /// console a direct boot keeps by default).
-fn said_kept() -> usize {
+pub(crate) fn said_kept() -> usize {
     crate::client::tail(shards_abi::bounds::console_said(
         shards_abi::bounds::ConsoleRecords::default(),
         shards_abi::bounds::ConsoleRecords::default(),
@@ -604,11 +604,11 @@ impl Shared {
 }
 
 /// The run host started, and the ends of its standard streams this process holds.
-struct Host {
-    process: shards_ipc::Child,
-    to_host: io::PipeWriter,
-    from_host: Output,
-    said: Output,
+pub(crate) struct Host {
+    pub(crate) process: shards_ipc::Child,
+    pub(crate) to_host: io::PipeWriter,
+    pub(crate) from_host: Output,
+    pub(crate) said: Output,
 }
 
 /// The read end of a run host's answers' or diagnostics' pipe, as its reader waits on it
@@ -616,10 +616,10 @@ struct Host {
 /// Windows, a named pipe's overlapped end, whose read an event cancels (std's anonymous
 /// pipes there are synchronous: a read of one waits for bytes or its writers' end alone).
 #[cfg(unix)]
-type Output = io::PipeReader;
+pub(crate) type Output = io::PipeReader;
 
 #[cfg(windows)]
-type Output = shards_ipc::Pipe;
+pub(crate) type Output = shards_ipc::Pipe;
 
 /// Starts `program` with `args`, its environment this process's with `env` over it, holding
 /// its stdin, stdout and stderr, pipes to this process, and nothing else this process holds
@@ -628,7 +628,11 @@ type Output = shards_ipc::Pipe;
 /// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of its three on Windows), where std's would hand it
 /// whatever another thread of the orchestrator holds inheritable at that moment. A variable's
 /// name that is not UTF-8 is refused, as that spawn names variables in UTF-8.
-fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> Result<Host, ImageRefusal> {
+pub(crate) fn start_host(
+    program: &Path,
+    args: &[&OsStr],
+    env: &[(OsString, OsString)],
+) -> Result<Host, ImageRefusal> {
     let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
     let set = env
         .iter()
@@ -692,7 +696,7 @@ fn start_host(program: &Path, args: &[&OsStr], env: &[(OsString, OsString)]) -> 
 /// processes are in (api_run.rs starts each in it); on Windows its group's job, which they
 /// are made in, nested in the host's own (D141, D197), each of them held to be followed to
 /// its end (`shards_ipc::Child::end_group`, D231).
-pub(super) fn kill(host: &shards_ipc::Child) {
+pub(crate) fn kill(host: &shards_ipc::Child) {
     let _ = host.kill_group(shards_ipc::signal::SIGKILL);
 }
 
@@ -1947,19 +1951,19 @@ fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>, gone:
 /// never read, so that it stays readable; on Windows an event set, manual-reset, which stays
 /// so. Either holds for every reader and every read after it.
 #[cfg(unix)]
-struct Gone(io::PipeWriter);
+pub(crate) struct Gone(pub(crate) io::PipeWriter);
 
 #[cfg(windows)]
-struct Gone(shards_ipc::Event);
+pub(crate) struct Gone(pub(crate) shards_ipc::Event);
 
 impl Gone {
     #[cfg(unix)]
-    fn tell(self) {
+    pub(crate) fn tell(self) {
         let _ = (&self.0).write_all(&[0]);
     }
 
     #[cfg(windows)]
-    fn tell(self) {
+    pub(crate) fn tell(self) {
         self.0.set();
     }
 }
@@ -1973,14 +1977,14 @@ impl Gone {
 /// for its child's handle list (Windows: CreateProcessW with bInheritHandles TRUE and no
 /// list, as std's and an embedder's are, takes every inheritable handle of the process).
 #[cfg(unix)]
-struct UntilGone {
+pub(crate) struct UntilGone {
     pipe: io::PipeReader,
     gone: io::PipeReader,
 }
 
 #[cfg(unix)]
 impl UntilGone {
-    fn new(pipe: Output, told: &io::PipeReader) -> io::Result<UntilGone> {
+    pub(crate) fn new(pipe: Output, told: &io::PipeReader) -> io::Result<UntilGone> {
         Ok(UntilGone {
             pipe,
             gone: told.try_clone()?,
@@ -2007,7 +2011,7 @@ impl io::Read for UntilGone {
 /// set, draining the bytes the pipe held as the reader first saw it set (PeekNamedPipe), and
 /// no more, then ended: a writer outside the run, which no stop ends, cannot keep it reading.
 #[cfg(windows)]
-struct UntilGone {
+pub(crate) struct UntilGone {
     pipe: shards_ipc::Pipe,
     gone: shards_ipc::Event,
     state: Draining,
@@ -2025,7 +2029,7 @@ enum Draining {
 
 #[cfg(windows)]
 impl UntilGone {
-    fn new(pipe: Output, told: &shards_ipc::Event) -> io::Result<UntilGone> {
+    pub(crate) fn new(pipe: Output, told: &shards_ipc::Event) -> io::Result<UntilGone> {
         Ok(UntilGone {
             pipe,
             gone: told.try_clone()?,

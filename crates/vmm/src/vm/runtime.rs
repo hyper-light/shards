@@ -25,7 +25,7 @@ use crate::{debug, info, platform, warn};
 use shards_ipc::device::Refusal;
 
 /// Ok when this host can run VMs; otherwise, why not.
-pub fn check_host() -> Result<(), String> {
+pub fn check_host() -> Result<(), shards_abi::host::Unusable> {
     hv::check_host()
 }
 

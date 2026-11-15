@@ -58,16 +58,18 @@ impl From<sys::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Ok when this host can run VMs: `kern.hv_support` is 1, Apple's documented check.
-pub fn check_host() -> std::result::Result<(), String> {
+/// Ok when this host can run VMs: `kern.hv_support` is 1, Apple's documented check. Where it
+/// is not, `kern.hv_vmm_present` tells a Mac that is itself a VM ([`sys::in_a_vm`]), whose
+/// hypervisor gives it no nested virtualization. Both are sysctls any
+/// process reads: no Hypervisor.framework call, no entitlement.
+pub fn check_host() -> std::result::Result<(), shards_abi::host::Unusable> {
+    use shards_abi::host::Unusable;
     if sys::supported() {
         Ok(())
+    } else if sys::in_a_vm() {
+        Err(Unusable::NoNested)
     } else {
-        Err(
-            "Hypervisor.framework is unavailable on this host (sysctl kern.hv_support is not 1), \
-             as inside a VM without nested virtualization"
-                .into(),
-        )
+        Err(Unusable::HvSupportOff)
     }
 }
 

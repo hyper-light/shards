@@ -66,7 +66,7 @@ const ID_REGS: &[u16] = &[
 /// where KVM sizes no VM's, as every VM then has (api.rst 4.2, KVM_CREATE_VM).
 pub fn max_ipa_bits() -> Result<u32> {
     let bits = kvm()
-        .map_err(Error::Guest)?
+        .map_err(|e| Error::Guest(e.into()))?
         .check_extension(sys::CAP_ARM_VM_IPA_SIZE)
         .map_err(call("KVM_CHECK_EXTENSION"))?;
     Ok(if bits > 0 { bits.unsigned_abs() } else { 40 })
@@ -291,7 +291,7 @@ pub struct Vm {
 impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
         install_kick_handler()?;
-        let kvm = kvm().map_err(Error::Guest)?;
+        let kvm = kvm().map_err(|e| Error::Guest(e.into()))?;
         let has = |cap| {
             kvm.check_extension(cap)
                 .map(|n| n > 0)
