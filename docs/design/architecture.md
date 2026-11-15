@@ -35925,6 +35925,99 @@ is the long-pause follow-up below, not the pause.
   --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
   the watchdogs' run below on KVM x86-64.
 
+### D268. An x86-64 guest resets through its FADT's reset register, the ACPI power device's; the i8042 is gone (built; real-VM runs on KVM and WHP owed)
+
+**Asked.** ROOT, 2026-11-14: the x86-64 machine emulated a fragment of the i8042 keyboard
+controller (`devices/i8042.rs`) only so that a guest's restart, emergency restart and panic
+reset reach the VMM (`reboot=k`, `OUT 0x64 ← 0xFE`). That is Firecracker's choice: its FADT
+populates neither a reset register nor sleep registers (fc:src/vmm/src/acpi/mod.rs:102-115) and
+its default command line carries `reboot=k` (fc:src/vmm/src/vmm_config/boot_source.rs:10-20;
+docs/research/kvm-x86_64-ground-truth.md §4.5). shards builds its own HW-reduced FADT and
+decodes its sleep registers already (`arch/x86_64/acpi.rs`), so Firecracker's reason does not
+apply here.
+
+**Decision.**
+- **The FADT advertises its reset register** (ACPI 6.5 §4.8.3.6; §5.2.9 Tables 5.9, 5.10):
+  flag RESET_REG_SUP (bit 10), RESET_REG at offset 116 a SystemIO Generic Address Structure,
+  8 bits wide at offset 0 (§4.8.3.6 requires both), and RESET_VALUE at 128.
+  - HW_REDUCED_ACPI permits it: with that flag set, OSPM ignores the fields at offsets 46-108
+    and 148-232 and flag bits 1, 2, 3, 7, 8, 13, 14, 16 and 17 (§5.2.9). RESET_REG (116),
+    RESET_VALUE (128) and RESET_REG_SUP (bit 10) are not among them. §4.1's list of what a
+    HW-reduced platform does not support (the Global Lock, SMI_CMD, ACPI enable and disable,
+    bus master reload and arbiter disable, GPE block devices) does not name it either.
+  - Cloud Hypervisor's FADT is the same at d5cfeffb8759: HW_REDUCED_ACPI | RESET_REG_SUP, with
+    RESET_REG on its I/O power device at 0x600 and RESET_VALUE 1 (vmm/src/acpi.rs
+    `create_facp_table`; devices/src/acpi.rs `AcpiShutdownDevice::write`;
+    vmm/src/device_manager.rs:2090-2108).
+- **Its register is the power device's own** (`devices/acpi_power.rs`, which was
+  `acpi_sleep.rs`): the device's third port, `layout::ACPI_POWER + acpi::RESET`. The ports run
+  SLEEP_CONTROL_REG, SLEEP_STATUS_REG, then RESET_REG (`acpi::POWER_PORTS` = 3).
+  - Cloud Hypervisor puts all three on one port and tells them apart by value. shards keeps
+    the reset register apart, so that no write to it is also a sleep request. ACPICA writes
+    SLEEP_CONTROL_REG with SLP_EN in every write it makes, the wake path's S0 type among them
+    (drivers/acpi/acpica/hwesleep.c:102-103, 158-162).
+- **RESET_VALUE** is `acpi::SLP_EN` (0x20). §4.8.3.6 leaves the value to the platform, and no
+  bit of it has a meaning there. It is the power device's existing "act now" bit, not a new
+  literal. A write of RESET_VALUE to RESET_REG is `PowerEvent::Reset`, as the i8042's 0xFE
+  was. Any other value, and RESET_VALUE at either sleep register, does nothing: §4.8.3.6 gives
+  RESET_VALUE alone a meaning. The tables are static, so there is no cold start and no failure
+  to type.
+- **The guest.** Linux's `acpi_reboot` returns unless the FADT is revision 2 or later and has
+  RESET_REG_SUP. For a SystemIO register it calls ACPICA's `acpi_reset`, which writes
+  RESET_VALUE in one byte straight to the port (Linux 7.2-rc4 1590cf032971:
+  drivers/acpi/reboot.c:36-82; drivers/acpi/acpica/hwxface.c:32-62). The machine's required
+  option is `reboot=a`, where it was `reboot=k`. It selects `BOOT_ACPI` first in
+  `native_machine_emergency_restart` (arch/x86/kernel/reboot.c:608-610), which a restart and
+  `panic=-1` both reach (§4.1 of the ground-truth doc). Any `reboot=` also turns off the DMI
+  quirks that could pick another type (kernel/reboot.c:1097-1176), and the machine's option
+  follows the user's (`vm/cmdline.rs`).
+  - `acpi_reboot` waits 15 ms after its write (reboot.c:81). The VMM ends the run at the
+    write, as the i8042's first 0xFE did, so the run's end does not wait for that delay.
+- **Deleted, no dual path:** `devices/i8042.rs`, `layout::I8042` (ports 0x60-0x64) and its
+  slot on the port bus. The FADT's IAPC_BOOT_ARCH 8042 bit stays clear: the machine has none.
+- **Snapshots.** The snapshot format is 34. A state of format 33 holds an i8042 among its port
+  devices and a guest whose FADT has no reset register and whose command line says
+  `reboot=k`. It is refused `ResumeRefused::OlderMachine`, never read, as D261 refuses 30.
+  There is one format for both architectures, so arm64's templates are remade too, keyed by
+  the format (D25).
+- **The backstop.** A triple fault is still a reset: KVM's `KVM_EXIT_SHUTDOWN`
+  (`hv/kvm/mod.rs`) and WHP's `WHvRunVpExitReasonUnrecoverableException` (`hv/whp/mod.rs`).
+  - A guest that falls back to the keyboard controller is harmless. A port no device claims
+    reads as zero and drops its writes, with a debug line (`vm/x86_64.rs` `Bus::pio_read`,
+    `pio_write`; `devices::MmioBus::read`). That holds on KVM (`RunExit::IoIn`, `IoOut`) and on
+    WHP (`pio`, whose 1-byte `OUT` is not the string or odd-width access it refuses). So
+    `kb_wait`'s read of 0x64 finds IBF clear and returns at once, and the ten `OUT 0x64, 0xFE`
+    each end as a debug line, not an error.
+  - The chain does not reach the triple fault promptly, though. After ACPI, KBD, ACPI again
+    and KBD again, Linux tries EFI (none here) and then BIOS before TRIPLE (reboot.c:608-666).
+    BIOS is `machine_real_restart`, a jump to F000:FFF0 in real mode
+    (arch/x86/realmode/rm/reboot.S:119-127), and a machine with no firmware there need not
+    fault. A guest whose reset write never reached the device would therefore not reliably
+    end.
+  - That path needs a kernel that never read the FADT. Such a kernel finds neither its CPUs
+    nor its virtio devices on this machine (`arch/x86_64/acpi.rs`), so it does not boot here
+    at all. With an i8042 the same chain ended at KBD.
+
+**Evidence.**
+- Unit tests (vmm):
+  - `arch::x86_64::acpi::tests::the_fadt_names_the_power_devices_reset_register`: revision,
+    RESET_REG_SUP and HW_REDUCED_ACPI, and RESET_REG a SystemIO 8-bit byte-access register at
+    the power device's reset port, apart from its sleep registers, with RESET_VALUE.
+    `every_table_checksums_and_links` pins the flags word (0x0010_0430).
+  - `devices::acpi_power::tests::reset_value_at_the_reset_register_alone_resets`: each of the
+    255 other values at RESET_REG, RESET_VALUE at either sleep register and an empty write
+    are nothing, and RESET_VALUE at RESET_REG is one `Reset`. `only_s5_with_slp_en_powers_off`
+    still holds.
+  - `snapshot::tests::a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver`:
+    format 33 is refused `OlderMachine`.
+  - `vm::cmdline::tests`: `reboot=a`, after the user's `reboot=b`, with the tests' structure
+    unchanged.
+- **Owed** (ROOT; KVM and WHP were offline at landing). These pass on a triple fault too, so
+  each run's log should show "the guest reset its machine through the ACPI reset register" and
+  no "triple-faulted":
+  - `crates/shards/tests/boot.rs` `two_vcpus_boot_to_their_end_in_this_process` and
+    `a_reset_with_no_console_says_its_guests_panic` on an x86-64 KVM host and on WHP.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

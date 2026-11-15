@@ -545,7 +545,7 @@ x86 has no PSCI. A guest can reach the VMM only through a device access (PIO/MMI
 | `panic=N` | N > 0: busy `mdelay` loop for N s, then `emergency_restart()`. N < 0: restart immediately. N = 0: spin forever. The console is flushed first. | kernel/panic.c:709, 719-744, 771-778; Documentation/admin-guide/kernel-parameters.txt:4813-4817 |
 | `CONFIG_PANIC_TIMEOUT` | 0 in the Firecracker CI kernel, so without `panic=` a guest panic spins forever | kernel/panic.c:74; ART:cfg:3645 |
 
-Derived: with `reboot=k`, a guest restart (and a panic with `panic≠0`) always ends in a PIO write of 0xFE to port 0x64. Without `reboot=k` it still reaches KBD after one `acpi_reboot()` no-op, unless the FADT advertises a reset register. `kb_wait()` returns on its first read if the VMM returns bit 1 clear, so no i8042 driver is needed for the reset path.
+Derived: with `reboot=a` and a FADT of revision ≥ 2 that sets `RESET_REG_SUP`, a guest restart (and a panic with `panic≠0`) first writes `RESET_VALUE` to `RESET_REG`, one byte to an I/O register (drivers/acpi/acpica/hwxface.c:48-62), and then waits 15 ms (drivers/acpi/reboot.c:81). shards' FADT names its ACPI power device's reset port, so that write is the reset (D268). With `reboot=k` the guest writes 0xFE to port 0x64 instead, which is Firecracker's path. `kb_wait()` returns on its first read if the VMM returns bit 1 clear, which an unclaimed port's zero read does.
 
 ### 4.2 KVM side: a halted guest produces no exit
 
@@ -598,7 +598,7 @@ Derived: under Firecracker a guest `poweroff` (`RB_POWER_OFF`) hangs the VM (§4
 
 | Mechanism | Implement? | Why |
 |---|---|---|
-| i8042 command port: write 0xFE to 0x64 → "guest reset" → VMM stops | **Yes** | Terminal state of every restart and emergency restart (§4.1). One PIO exit. Needs only port 0x64 decoded, with reads returning bit 1 clear; no guest i8042 driver required (derived from arch/x86/kernel/reboot.c:522-531, 613-628). |
+| i8042 command port: write 0xFE to 0x64 → "guest reset" → VMM stops | **Superseded by D268:** FADT RESET_REG on the ACPI power device, `reboot=a` | Terminal state of every restart and emergency restart (§4.1). One PIO exit. Needs only port 0x64 decoded, with reads returning bit 1 clear; no guest i8042 driver required (derived from arch/x86/kernel/reboot.c:522-531, 613-628). |
 | `KVM_EXIT_SHUTDOWN` → treat as guest reset/crash, stop the VM | **Yes** (backstop) | Triple fault, `reboot=t`, or a broken guest (§4.3). Firecracker errors out instead (§4.5). |
 | `KVM_EXIT_HLT` | Unreachable with the in-kernel irqchip; treat as a fatal backend bug | §4.2 |
 | ACPI S5 (FADT SLEEP_CONTROL/STATUS + DSDT `\_S5`) | Only if §3 chooses ACPI | Makes `RB_POWER_OFF` work natively and lets the VMM tell power-off from reboot (§4.4). Costs FADT/DSDT generation plus guest ACPI init. |
@@ -619,7 +619,7 @@ Either way, restart and panic paths from other guest code still end at i8042 0xF
 3. **`CONFIG_PANIC_TIMEOUT=0` in the CI kernel.** Without `panic=` on the cmdline, a panic spins a vCPU at 100 % with no exit.
 4. **The VMM must kick all vCPU threads** (signal + `immediate_exit`) after the reset write. The other vCPUs are already parked in-kernel by `stop_other_cpus()` and will not return on their own.
 5. **SVM re-INITs the vCPU before reporting `KVM_EXIT_SHUTDOWN`**, so register state read after the exit is post-reset on AMD, unlike VMX (arch/x86/kvm/svm/svm.c:2159-2180).
-6. **A FADT with `RESET_REG_SUP` changes the default reboot path** to the ACPI reset register (drivers/acpi/reboot.c:54-70). If ACPI is emitted, either implement that register or leave the flag clear and rely on `reboot=k`.
+6. **A FADT with `RESET_REG_SUP` changes the default reboot path** to the ACPI reset register (drivers/acpi/reboot.c:54-70). If ACPI is emitted, either implement that register or leave the flag clear and rely on `reboot=k`. shards implements the register (D268).
 
 ---
 

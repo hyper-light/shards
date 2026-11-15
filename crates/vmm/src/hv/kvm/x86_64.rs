@@ -1,6 +1,6 @@
 //! The KVM backend's x86_64 VM and vCPUs. On x86 the guest powers off and resets through
-//! devices (ACPI sleep control, i8042), so those come from the machine, and a triple fault
-//! is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
+//! devices (ACPI sleep control and reset registers), so those come from the machine, and a
+//! triple fault is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
 
 use std::io;
 use std::os::fd::RawFd;

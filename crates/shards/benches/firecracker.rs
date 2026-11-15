@@ -122,8 +122,10 @@ mod compare {
 
     const FIRECRACKER: &str = "v1.17.0";
     const READY: &str = "SHARDS-TEST READY";
-    /// The guest's command line. shards' x86_64 machine appends `reboot=k pci=off`, so
-    /// Firecracker gets the same there.
+    /// The guest's command line. shards' x86_64 machine appends `reboot=a pci=off`, so
+    /// Firecracker gets the same there: its FADT names no reset register, so its guest's
+    /// `acpi_reboot` returns at once and restarts through its i8042 (drivers/acpi/reboot.c
+    /// l. 54-55, arch/x86/kernel/reboot.c l. 608-619).
     const CMDLINE: &str = "console=hvc0 quiet panic=-1 shards_test=idle";
     const WARMUP: usize = 3;
     const TIMEOUT: Duration = Duration::from_secs(60);
@@ -1375,7 +1377,7 @@ mod compare {
         let cmdline = cmdline.replacen("console=hvc0", "console=ttyS0", 1);
         // shards' x86_64 machine appends these (vm/x86_64.rs, MACHINE_CMDLINE).
         let cmdline = if common::ARCH == "x86_64" {
-            format!("{cmdline} reboot=k pci=off")
+            format!("{cmdline} reboot=a pci=off")
         } else {
             cmdline
         };

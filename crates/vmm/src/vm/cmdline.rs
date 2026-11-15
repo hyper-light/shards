@@ -215,7 +215,7 @@ mod tests {
     #[cfg(all(hv, target_arch = "x86_64"))]
     #[test]
     fn required_options_precede_only_the_first_delimiter_and_keep_raw_tail() {
-        let options = [Some("reboot=k"), Some("pci=off"), Some("cpuhp.parallel=0")];
+        let options = [Some("reboot=a"), Some("pci=off"), Some("cpuhp.parallel=0")];
         let mut bytes = [0; layout::CMDLINE_MAX];
         for delimiter in ["--", "\"--\""] {
             let prefix = "reboot=b pci=on cpuhp.parallel=1\t";
@@ -224,13 +224,13 @@ mod tests {
             let actual = with_machine_options(&told, &options, &mut bytes).unwrap();
             assert_eq!(
                 actual,
-                format!("{prefix}reboot=k pci=off cpuhp.parallel=0 {tail}")
+                format!("{prefix}reboot=a pci=off cpuhp.parallel=0 {tail}")
             );
             assert!(actual.ends_with(tail.as_str()));
         }
         assert_eq!(
             with_machine_options("-- init", &options, &mut bytes).unwrap(),
-            "reboot=k pci=off cpuhp.parallel=0 -- init"
+            "reboot=a pci=off cpuhp.parallel=0 -- init"
         );
     }
 
@@ -239,16 +239,16 @@ mod tests {
     fn without_delimiter_existing_order_and_spacing_are_unchanged() {
         let mut bytes = [0; layout::CMDLINE_MAX];
         for (told, options, expected) in [
-            ("", [Some("reboot=k"), None, None], " reboot=k"),
+            ("", [Some("reboot=a"), None, None], " reboot=a"),
             (
                 "reboot=b  ",
-                [Some("reboot=k"), Some("pci=off"), None],
-                "reboot=b   reboot=k pci=off",
+                [Some("reboot=a"), Some("pci=off"), None],
+                "reboot=b   reboot=a pci=off",
             ),
             (
                 "x=\"--\" --=value",
-                [Some("reboot=k"), None, Some("cpuhp.parallel=0")],
-                "x=\"--\" --=value reboot=k cpuhp.parallel=0",
+                [Some("reboot=a"), None, Some("cpuhp.parallel=0")],
+                "x=\"--\" --=value reboot=a cpuhp.parallel=0",
             ),
         ] {
             assert_eq!(
@@ -265,9 +265,9 @@ mod tests {
     #[cfg(all(hv, target_arch = "x86_64"))]
     #[test]
     fn command_line_max_includes_the_nul_and_overflow_is_typed() {
-        let options = [Some("reboot=k"), Some("pci=off")];
+        let options = [Some("reboot=a"), Some("pci=off")];
         let mut bytes = [0; layout::CMDLINE_MAX];
-        let added = " reboot=k pci=off".len();
+        let added = " reboot=a pci=off".len();
         for tail in ["", " -- init"] {
             let told = format!(
                 "{}{tail}",
