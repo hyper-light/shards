@@ -905,7 +905,6 @@ impl Client {
                 cut,
             },
         };
-        let cut = waited.cut;
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
             Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall, sent),
             None => conn.io.get_mut().flush().map(|()| true),
