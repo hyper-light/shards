@@ -33913,6 +33913,21 @@ endpoints bind.
 - An endpoint outliving its run.
 - A grant shards-api takes and init refuses, or the other way round.
 
+**Amended: a warm host makes its key as it waits** (2026-11-15, the start path's cuts; ROOT's
+go). A warm host (D253) has started its VM before its run asks, and serves one run. It makes the
+microVM's key then (`api_run.rs` `ControlKey`), after its VM is ready and before its run's
+request, so a warm run that asks for an endpoint binds with it and makes none on its way. The
+endpoint is still bound after the request, as the controller's key and the socket grant are the
+run's own, and takes the key as it binds (`bind_control` consumes it). Until then the run host
+holds it, never its guest, never a template: what this decision asks of it still holds, and no
+two runs share one, as no two runs share a host. A key that cannot be made while warm is made
+again as the endpoint binds, refused there as before; one never asked for goes with its host. A
+run host's own runs (not warm) make theirs as their endpoint binds, as before. Tested:
+`a_warm_runs_endpoint_takes_the_key_its_host_made_as_it_waited` (its endpoint's fingerprint is
+the pre-made key's; two hosts' keys differ; a run with none makes its own). Timed:
+`its agent-control key made` as the warm host waits, `its agent-control endpoint bound` on the
+run's way. *Owed* (ROOT): a warm run asking for control in the A/B, which the rig's runs do not.
+
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run

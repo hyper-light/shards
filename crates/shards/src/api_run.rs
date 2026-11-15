@@ -4549,7 +4549,7 @@ mod hosted {
             }
             return Err(No(Cause::Boot, format!("its orchestrator: {e}")));
         }
-        serve_launched(answers, input, home, plan, launched?)
+        serve_launched(answers, input, home, plan, launched?, None)
     }
 
     /// What VM process `vm` costs its host (D241's `HostUse`): read at once, as the run's
@@ -4591,6 +4591,10 @@ mod hosted {
         // The ready VM holds its rootfs and settled template files itself (D26).
         // An idle spare must not keep unrelated collection waiting for its CREATE.
         drop(shaped.prepared.lease.take());
+        // Its endpoint's key, its VM started, made as it waits for a run that may ask for one
+        // (D252); none made here is made again as its endpoint binds, refused there as before.
+        let premade = ControlKey::made().ok();
+        super::step(format_args!("its agent-control key made"));
         super::say(format_args!(
             "warm, its VM process {} ready ({:?})",
             launched.vm.id(),
@@ -4661,7 +4665,7 @@ mod hosted {
         };
         let mut launched = launched;
         launched.from = wire::StartedFrom::Warm;
-        serve_launched(answers, input, &home, plan, launched)
+        serve_launched(answers, input, &home, plan, launched, premade)
     }
 
     /// Ends what of a run was made: its processes, `launched` (its VM killed, then each reaped
@@ -4716,6 +4720,7 @@ mod hosted {
         home: &Path,
         mut plan: Plan,
         mut launched: Launched,
+        mut premade: Option<ControlKey>,
     ) -> Result<(), No> {
         // Readiness and template settlement ended the preparation lease's work.
         drop(plan.prepared.lease.take());
@@ -4780,9 +4785,9 @@ mod hosted {
                 capture.as_ref().map(|(_, theirs)| theirs),
             )
             .map_err(boot)?;
-            // Its agent-control endpoint (D252), its key made now, past its VM's start, held by
-            // the endpoint alone: no template, and no other run, has it; and what its own lanes
-            // are served with.
+            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
+            // held by the endpoint alone once bound: no template, and no other run, has it; and
+            // what its own lanes are served with.
             let agent = plan
                 .control
                 .as_ref()
@@ -4790,7 +4795,12 @@ mod hosted {
                 .transpose()
                 .map_err(boot)?;
             let control = match (plan.control.as_ref(), agent.as_ref()) {
-                (Some(ask), Some(agent)) => Some(bind_control(ask, agent.admissions).map_err(boot)?),
+                (Some(ask), Some(agent)) => {
+                    let key = control_key(premade.take()).map_err(boot)?;
+                    let bound = bind_control(key, ask, agent.admissions).map_err(boot)?;
+                    super::step(format_args!("its agent-control endpoint bound"));
+                    Some(bound)
+                }
                 _ => None,
             };
             let started = wire::Started {
@@ -5047,16 +5057,44 @@ mod hosted {
         }
     }
 
+    /// The microVM's own key for its run's agent-control endpoint (D252): made once its VM has
+    /// started, never in its guest's memory nor a template's, held by its run host until its
+    /// endpoint takes it as it binds ([`bind_control`]), then by the endpoint alone. A warm
+    /// host makes its one as it waits for its run, which may ask for an endpoint: a host
+    /// serves one run, so no two runs share one, and a warm run binds without making one on
+    /// its way.
+    pub(super) struct ControlKey(shards_remote::identity::Identity);
+
+    impl ControlKey {
+        pub(super) fn made() -> Result<ControlKey, String> {
+            shards_remote::identity::Identity::generate()
+                .map(ControlKey)
+                .map_err(|e| format!("its microVM's key: {e}"))
+        }
+
+        /// The SHA-256 its controller pins of it.
+        pub(super) fn fingerprint(&self) -> shards_remote::identity::Fingerprint {
+            self.0.fingerprint()
+        }
+    }
+
+    /// The key a run's endpoint takes: the one its warm host made as it waited, else one made
+    /// now, its VM started; refused where none can be made.
+    pub(super) fn control_key(premade: Option<ControlKey>) -> Result<ControlKey, String> {
+        premade.map_or_else(ControlKey::made, Ok)
+    }
+
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
-    /// its microVM's own key, made now, and the controller's key the one it takes; serving the
-    /// run's socket lanes where its ask grants them (D251), and its execs, its members' MCP
-    /// connections (D254) and its members' own lanes, their streams admitted as `execs` says.
+    /// its microVM's own key `key`, which it takes, and the controller's key the one it admits;
+    /// serving the run's socket lanes where its ask grants them (D251), and its execs, its
+    /// members' MCP connections (D254) and its members' own lanes, their streams admitted as
+    /// `execs` says.
     pub(super) fn bind_control(
+        key: ControlKey,
         ask: &wire::ControlAsk,
         execs: shards_remote::control::exec::Admissions,
     ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
-        let vm =
-            shards_remote::identity::Identity::generate().map_err(|e| format!("its microVM's key: {e}"))?;
+        let ControlKey(vm) = key;
         let sockets = ask
             .sockets
             .as_ref()
@@ -7527,7 +7565,7 @@ mod hosted {
                 controller: kiln.fingerprint(),
                 sockets: None,
             };
-            let (endpoint, served) = bind_control(&ask, admissions).unwrap();
+            let (endpoint, served) = bind_control(ControlKey::made().unwrap(), &ask, admissions).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             std::thread::scope(|scope| {
@@ -9660,8 +9698,8 @@ mod tests {
         }
     }
 
-    /// D252: a run's endpoint is bound on loopback under a key of its own, made as it is bound,
-    /// which no two runs share; it hands its host the socket lanes its grant admits.
+    /// D252: a run's endpoint is bound on loopback under a key of its own, made past its VM's
+    /// start, which no two runs share; it hands its host the socket lanes its grant admits.
     #[test]
     fn a_runs_endpoint_is_bound_on_loopback_under_a_key_of_its_own() {
         let ask = wire::ControlAsk {
@@ -9673,13 +9711,43 @@ mod tests {
             }),
         };
         let execs = shards_api::control::exec_admissions();
-        let (first, served) = hosted::bind_control(&ask, execs).unwrap();
+        let (first, served) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
         // Its execs, its members' MCP connections and its members' own lanes (D254, D238).
         assert!(served.execs.is_some() && served.members.is_some());
-        let (second, _) = hosted::bind_control(&ask, execs).unwrap();
+        let (second, _) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
+    }
+
+    /// D252, a warm host: its run's endpoint takes the key its host made as it waited for the
+    /// run, its VM started, rather than making one on the run's way; two warm hosts' keys are
+    /// never one, each host serving one run; and a run whose host made none makes its own as it
+    /// binds.
+    #[test]
+    fn a_warm_runs_endpoint_takes_the_key_its_host_made_as_it_waited() {
+        let ask = wire::ControlAsk {
+            controller: [7; 32],
+            sockets: None,
+        };
+        let execs = shards_api::control::exec_admissions();
+        let (one, other) = (
+            hosted::ControlKey::made().unwrap(),
+            hosted::ControlKey::made().unwrap(),
+        );
+        let (made, made_other) = (one.fingerprint(), other.fingerprint());
+        assert_ne!(made, made_other, "two warm hosts share one key");
+        let (endpoint, _) =
+            hosted::bind_control(hosted::control_key(Some(one)).unwrap(), &ask, execs).unwrap();
+        assert_eq!(
+            endpoint.fingerprint, made,
+            "its endpoint took another key than its host made"
+        );
+        let (own, _) = hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs).unwrap();
+        assert!(
+            own.fingerprint != made && own.fingerprint != made_other,
+            "a run whose host made none bound with another's"
+        );
     }
 
     /// D252, version 30 (Hex's ask): what the orchestrator reads of a run's endpoint names
@@ -9698,7 +9766,12 @@ mod tests {
                 window: 4096,
             }),
         };
-        let (endpoint, served) = hosted::bind_control(&ask, shards_api::control::exec_admissions()).unwrap();
+        let (endpoint, served) = hosted::bind_control(
+            hosted::ControlKey::made().unwrap(),
+            &ask,
+            shards_api::control::exec_admissions(),
+        )
+        .unwrap();
         let started = wire::Started {
             members: Vec::new(),
             published: Vec::new(),
