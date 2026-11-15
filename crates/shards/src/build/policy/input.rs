@@ -442,6 +442,36 @@ impl Git {
     }
 }
 
+/// `S3`: an `s3://BUCKET/KEY` source an Agentfile's `AGENT` or `HARNESS` names (D54), which
+/// buildx's input has no form for: shards' own (D101; testdata/deviations.json
+/// `policy-input`). Every field is the directive's as planned, so nothing of it is unknown.
+#[derive(Debug, Clone, Default)]
+pub struct S3 {
+    pub url: String,
+    pub bucket: String,
+    pub key: String,
+    pub endpoint: String,
+    pub region: String,
+    pub path_style: bool,
+    pub version_id: String,
+    pub checksum: String,
+}
+
+impl S3 {
+    pub fn json(&self) -> Json {
+        Fields::default()
+            .str("url", &self.url)
+            .str("bucket", &self.bucket)
+            .str("key", &self.key)
+            .str("endpoint", &self.endpoint)
+            .str("region", &self.region)
+            .flag("pathStyle", self.path_style)
+            .str("versionId", &self.version_id)
+            .str("checksum", &self.checksum)
+            .done()
+    }
+}
+
 /// `Input`: the source, and the build's own `Env` (`omitzero`).
 #[derive(Debug, Clone, Default)]
 pub struct Input {
@@ -450,6 +480,7 @@ pub struct Input {
     pub image: Option<Image>,
     pub http: Option<Http>,
     pub git: Option<Git>,
+    pub s3: Option<S3>,
     /// The fields not known yet, as `input.`-less refs (`image.checksum`).
     pub unknowns: Vec<String>,
 }
@@ -467,6 +498,7 @@ impl Input {
             .json("image", self.image.as_ref().map(Image::json))
             .json("http", self.http.as_ref().map(Http::json))
             .json("git", self.git.as_ref().map(Git::json))
+            .json("s3", self.s3.as_ref().map(S3::json))
             .done()
     }
 
@@ -627,6 +659,23 @@ pub fn of_source(
             inp.git = Some(git);
         }
         "local" => inp.local = Some(rest.to_string()),
+        "s3" => {
+            let (bucket, key) = rest
+                .split_once('/')
+                .filter(|(b, k)| !b.is_empty() && !k.is_empty())
+                .ok_or_else(|| format!("failed to parse s3 source: {} names no object", source.identifier))?;
+            let attr = |k: &str| source.attrs.get(k).cloned().unwrap_or_default();
+            inp.s3 = Some(S3 {
+                url: source.identifier.clone(),
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                endpoint: attr("s3.endpoint"),
+                region: attr("s3.region"),
+                path_style: attr("s3.pathstyle") == "true",
+                version_id: attr("s3.versionid"),
+                checksum: attr("s3.checksum"),
+            });
+        }
         // An OSI artifact (D116): to a policy, an object of a registry as an image is,
         // its name's parts, the digest it resolves to, its signatures as an image's, and
         // its artifact type, which no image has.

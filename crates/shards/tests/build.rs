@@ -18020,3 +18020,85 @@ fn agents_install_from_s3_sources() {
     );
     assert_eq!(tree_holds(&home, b"sk-s3cr3t-55"), None);
 }
+
+/// A build policy judges an `s3://` source by its own form, `input.s3` (D101, D54): one
+/// that allows its bucket builds the agent; one that trusts another bucket refuses the
+/// build before anything is fetched, saying the policy's words. Before, either was refused
+/// as an unsupported source scheme.
+#[test]
+fn an_s3_source_builds_as_its_policy_decides() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, buckets) = common::fake_s3();
+    let tarball = common::tar(&[("agent.txt", 0o644, 0, Some(b"agent v1\n"))]);
+    let sum = common::sha256_digest(&tarball);
+    buckets
+        .lock()
+        .unwrap()
+        .objects
+        .insert("/agents/a/v1.tar".into(), (tarball, std::time::SystemTime::now()));
+    let home = TempDir::new("src-s3-policy-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("AK", std::ffi::OsStr::new("AKIDPOLICY")),
+        ("SK", std::ffi::OsStr::new("sk-policy")),
+        ("AWS_ENDPOINT_URL", std::ffi::OsStr::new("")),
+        ("AWS_ENDPOINT_URL_S3", std::ffi::OsStr::new("")),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
+    let build = |name: &str, trusted: &str| {
+        let ctx = TempDir::new(name);
+        std::fs::write(
+            ctx.join("Agentfile"),
+            format!(
+                "FROM {image}\nAGENT --endpoint=http://127.0.0.1:{port} --region=us-east-1 --path-style --checksum={sum} a FROM s3://agents/a/v1.tar\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            ctx.join("Agentfile.rego"),
+            format!(
+                "package docker\n\ndefault allow := false\n\nallow if input.local\n\nallow if input.image\n\nallow if {{\n\tinput.s3.bucket == \"{trusted}\"\n\tinput.s3.checksum == \"{sum}\"\n}}\n\ndeny_msg contains msg if {{\n\tnot allow\n\tmsg := sprintf(\"bucket %s is not trusted\", [input.s3.bucket])\n}}\n\ndecision := {{\"allow\": allow, \"deny_msg\": deny_msg}}\n"
+            ),
+        )
+        .unwrap();
+        shards(&[
+            "build",
+            "--secret",
+            "id=AWS_ACCESS_KEY_ID,env=AK",
+            "--secret",
+            "id=AWS_SECRET_ACCESS_KEY,env=SK",
+            "-t",
+            "src-s3-policy:1",
+            ctx.to_str().unwrap(),
+        ])
+    };
+    let refused = build("src-s3-policy-0", "trusted");
+    assert_eq!(refused.status, Some(1), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("Policy: bucket agents is not trusted\n")
+            && refused.stderr.contains(
+                "error evaluating the source policy: source \"s3://agents/a/v1.tar\" not allowed by policy: action DENY"
+            ),
+        "{}",
+        refused.stderr
+    );
+    assert!(
+        !buckets.lock().unwrap().log.iter().any(|l| l.starts_with("GET ")),
+        "{:?}",
+        buckets.lock().unwrap().log
+    );
+    let built = build("src-s3-policy-1", "agents");
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let stat = shards(&["run", "--rm", "src-s3-policy:1", "stat", "/agents/a/agent.txt"]);
+    assert!(
+        stat.stdout.contains("= agent v1\\n"),
+        "{}{}",
+        stat.stdout,
+        stat.stderr
+    );
+}

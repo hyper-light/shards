@@ -5432,9 +5432,13 @@ Rejected:
 | ports 80 and 443 | RFC 9110 §4.2 |
 | labels of 1-63 characters, names of at most 253 | RFC 1035 §2.3.4 |
 
+**Policies over s3 sources.** A build policy (D101) is asked of an s3 source as
+`input.s3`: its URL, bucket, key, endpoint, region, path style, version and checksum, as
+the directive gives them. buildx's input has no S3 form; this one is a recorded deviation
+(`policy-input` in `crates/agentfile/testdata/deviations.json`). Before, any build with an
+s3 source and a policy was refused (`unsupported source scheme: s3`).
+
 **Not yet.**
-- A build policy (D101) refuses an s3 source (`unsupported source scheme: s3`): buildx's
-  policy input has no S3 form.
 - Real-VM builds of each kind are owed to the coordinator (`crates/shards/tests/build.rs`).
 - SKILL and MCP take no `--redirect`: their sources reach their own origin only.
 
@@ -24742,6 +24746,15 @@ v0.28.1 (Docker 29.3.1):
   found. buildx's `filepath.Rel` cannot relate the two, and reads it as an invalid fs.FS name.
 - **Order.** An image's `volumes` are in name order, where Go's map gives them in no order.
 - **Agentfiles.** An Agentfile's own policy is `Agentfile.rego`.
+- **S3 sources (D54).** buildx's input has no form for an `s3://` source, and
+  sourceToInput refuses any scheme it does not know; an Agentfile's `AGENT|HARNESS FROM
+  s3://BUCKET/KEY` is asked as `input.s3`, shards' own form on `input.http`'s pattern:
+  `url`, `bucket`, `key`, `endpoint`, `region`, `pathStyle`, `versionId`, `checksum`, each as
+  the directive gives it, so none is unknown and nothing is fetched to answer it. It is
+  the recorded deviation `policy-input` (`crates/agentfile/testdata/deviations.json`),
+  which `the_s3_input_is_the_recorded_deviation` holds the input to; a policy allowing or
+  denying one by its fields: `a_policy_allows_or_denies_an_s3_source_by_its_fields`. A
+  policy's own test cases (`policy test`) keep buildx's input, which has no `s3`.
 - **Progress, for every step.** The plain progress shows a step interrupted (`#N ...`)
   and its name again when it resumes, as progressui's printer does. A failed step's last 10
   lines are recapped between rules before the error (printErrorLogs).
