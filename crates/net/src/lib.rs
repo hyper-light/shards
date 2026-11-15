@@ -986,7 +986,7 @@ struct Stack<'r> {
     #[cfg(target_os = "linux")]
     ports_confined: bool,
     /// The most its run could ever be granted past the microVM, as its `NET_POLICY` named it
-    /// (D272), which every grant it is told as the run goes (`NET_GRANTS`) lies within, and
+    /// (D273), which every grant it is told as the run goes (`NET_GRANTS`) lies within, and
     /// which on Linux its Landlock layer holds its TCP connections to: none until a policy of
     /// ports came.
     ceiling: Option<Granted>,
@@ -1581,7 +1581,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
         } else if m.kind == shards_ipc::kind::NET_GRANTS {
-            // The run's grants as it goes (D272), within its ceiling, refused in words where
+            // The run's grants as it goes (D273), within its ceiling, refused in words where
             // past it, as a refusal ends no control of the run's.
             let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
                 return Err(malformed());
@@ -1738,7 +1738,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
 }
 
 /// Why grants `ports`, `named` and `dns_all` lie past `ceiling`, the most a run could be
-/// granted (D272), where they do: a port none of its ranges holds, a destination it names not
+/// granted (D273), where they do: a port none of its ranges holds, a destination it names not
 /// (its host's case aside, RFC 4343 §3), or names asked where it asks none. None where each
 /// lies within it.
 fn past_ceiling(ceiling: &Granted, ports: &Ports, named: &[(String, u16)], dns_all: bool) -> Option<String> {
@@ -2528,7 +2528,7 @@ impl<'r> Stack<'r> {
     #[cfg(windows)]
     fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
         let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
-        // Its grants may have changed while it was dialed (D272): datagrams to what they no
+        // Its grants may have changed while it was dialed (D273): datagrams to what they no
         // longer reach go, as to a far end that refused them.
         if key.1 != IpAddr::V4(self.cfg.gateway_ip) && !self.cfg.allows(key.1, Proto::Udp, key.2) {
             return;
@@ -2852,7 +2852,7 @@ impl<'r> Stack<'r> {
     /// SYN reset, as the far end's refusal would.
     #[cfg(windows)]
     fn dialed(&mut self, d: dial::Dialing, got: io::Result<tcp::HostSock>) {
-        // Its grants may have changed while it was dialed (D272): one they no longer reach is
+        // Its grants may have changed while it was dialed (D273): one they no longer reach is
         // reset, as a far end's refusal would be.
         let granted = d.dns || self.cfg.allows(d.key.remote.0, Proto::Tcp, d.key.remote.1);
         let got = match got {
@@ -2936,7 +2936,7 @@ impl<'r> Stack<'r> {
     /// for what it now wants, its timer armed for its deadline unless an earlier one is,
     /// and its turn kept if a full ring held it back; or its slot emptied if it has
     /// closed, its socket with it, which the poller forgets (review 2.14).
-    /// Ends every flow of its guest's own that its grants no longer reach (D272): each TCP
+    /// Ends every flow of its guest's own that its grants no longer reach (D273): each TCP
     /// connection it opened, reset to it, its host socket closed; each UDP flow past the
     /// gateway, its socket closed. What a published port took, the gateway's own flows (its
     /// names' relay) and its peers' frames are none of its grants'.
@@ -3639,7 +3639,7 @@ mod tests {
         );
     }
 
-    /// D272. Do: on a stack whose policy (its ceiling) grants 443/tcp, 8443/tcp and 5000/udp,
+    /// D273. Do: on a stack whose policy (its ceiling) grants 443/tcp, 8443/tcp and 5000/udp,
     /// open guest connections to 443 and to 8443, accept one a published port took, and open a
     /// UDP flow to 5000; then tell it grants of 443/tcp alone; then grants past the ceiling;
     /// and on a stack no policy came to, any grants. Expect: the grants taken (answered 0) and

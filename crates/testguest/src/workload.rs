@@ -491,6 +491,7 @@ pub fn main() -> ! {
         "spawn" => spawn(args.get(1..).unwrap_or_default()),
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "reach-each" => reach_each(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
         "tls-ask" => crate::tls_ask::main(args.get(1..).unwrap_or_default()),
         // One call of the Engine API at $DOCKER_HOST, as a program in a run reaches its
@@ -1641,6 +1642,26 @@ fn tcp(addr: &str) -> i32 {
             let _ = writeln!(io::stdout(), "tcp error {e}");
             1
         }
+    }
+}
+
+/// `reach-each HOST:PORT`: connects to it again and again, a connection at a time, each given
+/// a second, and says how each went as it goes, `reach ok` or `reach errno N`, until it is
+/// ended: what a run's grants let it reach as they change (D273).
+fn reach_each(addr: &str) -> i32 {
+    use std::net::ToSocketAddrs as _;
+    let wait = std::time::Duration::from_secs(1);
+    loop {
+        let said = match addr.to_socket_addrs().map(|mut a| a.next()) {
+            Ok(Some(to)) => match std::net::TcpStream::connect_timeout(&to, wait) {
+                Ok(_) => "reach ok".to_string(),
+                Err(e) => format!("reach errno {}", e.raw_os_error().unwrap_or(0)),
+            },
+            Ok(None) => "reach errno 0".to_string(),
+            Err(e) => format!("reach errno {}", e.raw_os_error().unwrap_or(0)),
+        };
+        let _ = writeln!(io::stdout(), "{said}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 

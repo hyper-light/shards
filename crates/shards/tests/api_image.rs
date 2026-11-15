@@ -28,11 +28,11 @@ use common::{
     Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
 use shards_api::image::{
-    BootStop, Captured, Channel, Cli, CredentialGrant, FinalUse, ImageGuest, ImagePools, ImageRefusal,
-    ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, Plug, PlugFor,
-    PlugRefusal, PlugSource, Proto, Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant,
-    SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused, UpstreamRoot,
+    BootStop, Captured, Channel, Cli, CredentialGrant, EgressGrant, FinalUse, ImageGuest, ImagePools,
+    ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor,
+    MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, Plug,
+    PlugFor, PlugRefusal, PlugSource, Proto, Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret,
+    SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -3682,6 +3682,87 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
             Err(ImageRefusal::Plug(PlugRefusal::Unknown, _))
         ));
     }
+    // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
+/// as the run runs refuses the next connection to it, and every one after; granted back, it is
+/// reached again. All of it in the running microVM in place: its start (`started_from`) and its
+/// one VM process the same throughout, its template's files untouched. A grant its image does
+/// not give is refused typed (`Widening`).
+#[test]
+fn an_egress_destination_revoked_refuses_the_next_connection_and_granted_back_reaches_again() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = host.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for taken in host.incoming() {
+            drop(taken);
+        }
+    });
+    let to = format!("host.docker.internal:{port}");
+    let home = common::home_with("api-live-egress-home");
+    build(
+        &home,
+        "api-live-egress:1",
+        &["reach-each", &to],
+        &format!(
+            "NETWORK --egress={to} provider FOR codex\n\
+             EXPOSE --harnesses=codex {port} AS egress FOR provider\n\
+             CONNECT codex WITH codex ON provider\n"
+        ),
+    );
+    let mut s = spec(&home, "api-live-egress:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let guest = boot(&home, &s);
+    let from = guest.started_from();
+    let vms = vm_processes(&home);
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    let templates = templates_of(&home);
+    let lines = lines_of(&*guest, Channel::Stdout);
+    said_all(&lines, &["reach ok".to_string()]);
+    let destination = EgressGrant::Destination {
+        at: to.clone(),
+        members: Vec::new(),
+    };
+    let revoked = ask(&*guest, |g| g.revoke_egress(&destination, Duration::MAX)).unwrap();
+    assert!(
+        matches!(&revoked.destinations, Keep::Only(kept) if !kept.contains(&to)),
+        "{revoked:?}"
+    );
+    assert_eq!(guest.egress(), revoked);
+    // What was said before the revoke went may still come: from its first refusal on, every
+    // connection is refused.
+    let mut refused = 0;
+    let mut patience = Patience::started();
+    while refused < 3 {
+        match lines.recv_timeout(patience.next_look()) {
+            Ok(line) if line.starts_with("reach errno") => refused += 1,
+            Ok(line) => assert_eq!(refused, 0, "{line} after a refusal"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => panic!("{e}"),
+        }
+        assert!(patience.holds(), "no refusal once revoked");
+    }
+    patience.done();
+    let granted = ask(&*guest, |g| g.grant_egress(&destination, Duration::MAX)).unwrap();
+    assert!(
+        matches!(&granted.destinations, Keep::Only(kept) if kept.contains(&to)),
+        "{granted:?}"
+    );
+    said_all(&lines, &["reach ok".to_string()]);
+    assert!(matches!(
+        ask(&*guest, |g| g
+            .grant_egress(&EgressGrant::Ports("22/tcp".into()), Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Widening, _))
+    ));
     // In place: the same start, the same VM process, no template saved or replaced.
     assert_eq!(guest.started_from(), from);
     assert_eq!(vm_processes(&home), vms);

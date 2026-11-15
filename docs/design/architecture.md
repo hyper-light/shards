@@ -36489,6 +36489,78 @@ unchanged. A client that dials through `shards_api` takes it with its pin.
 host's write after the guest's end taken without an error; a process other than its user's
 opening its pipe; an instance's name taken before its VM's first.
 
+### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC2): grant and revoke egress
+(destinations, DNS names, MCP endpoints) while a session runs, without a rebuild or a restart
+(ROOT's binding reading, as D269's). D231's runs took their grants at start alone
+(`ImageSpec::egress`, D250), and the network process took one policy, ever: on Linux its
+Landlock layer (D31, net/src/confine.rs `to_ports`) holds its TCP connections to that policy's
+ports, and Landlock only narrows (landlock(7)), so a second policy was refused.
+
+**What holds a run's egress, layer by layer.** The guest: each member's domain is linked to
+the switch by its gate, whose nftables hold its flows to the image's grants for it (D59, D61;
+init links.rs), which no request's narrowing reaches. The network process: its own rule table
+(net/src/lib.rs `Config`: `Policy::Ports`, the named destinations and their learned addresses,
+whether names are asked), consulted for every new flow (`Config::allows`); on Linux beside it
+Landlock's TCP-connect layer and a seccomp filter; on macOS App Sandbox with network.client and
+network.server (resources/net.entitlements) and on Windows its AppContainer, neither of which
+holds ports. Landlock has no UDP rule in any ABI shards takes (4 to 7 handle TCP bind and
+connect alone), so UDP was the rule table's alone everywhere already.
+
+**Decided (ROOT's ruling, 2026-11-15: Landlock never the policy).**
+- *The ceiling and the grants.* `NET_POLICY` names the most the run could ever be granted:
+  its image's grants (`api_run::egress` of `Narrowing::default()`), which the network process
+  records and, on Linux, holds its TCP connections to as before. Its grants as they stand are
+  the process's own rule table within it: told by `NET_GRANTS` (shards_ipc kind 107, a policy as
+  `NET_POLICY` encodes one), at the start where the request keeps less than its image grants,
+  and at each change; answered 0 once taken, or 1 and why not (past the ceiling, or no ceiling at
+  all), nothing taken and the control kept. *Kept:* Landlock's layer (now the image's grants,
+  not the request's), seccomp, the rule table. *Lost:* on Linux the kernel's layer is the
+  image's grants rather than the request's narrower keep: a network process taken over could
+  reach the image's other granted ports. A grant past the image (the person's own policy,
+  `ImageSpec::egress_ceiling`) is the next slice's, with the guest's side below; until then it
+  is refused `Widening`, never skipped.
+- *A revoke ends flows.* Taking new grants, the network process ends at once each flow of the
+  guest's own they no longer reach (`Stack::cut_ungranted`): a TCP connection its guest opened
+  reset to it, its host socket closed; a UDP flow past the gateway closed. What a published
+  port took (`Conn::accepted`), the gateway's own flows (its names' relay) and peers' frames are
+  none of its grants'. Answers learned of names still granted are kept, so a guest that resolved
+  one goes on reaching it while its answer lives. On Windows a dial answered after a change is
+  held to the grants as they stand.
+- *The calls* (image channel version 36). `ImageGuest::egress() -> Narrowing`, the run's grants
+  as its host last said them, written out whole (`Keep::Only` of its image's, told with its
+  start, `Started::egress`, and with each change, `NetChanged::egress`);
+  `grant_egress(&EgressGrant, patience)` and `revoke_egress(&EgressGrant, patience)`, each
+  answering the run's grants once its network process holds them. `EgressGrant::{Ports,
+  Mcp { at, members }, Destination { at, members }, Dns}`, `members` the reach of each member
+  named where the run holds its members apart (D246). shards-api makes the whole narrowing of
+  the run's grants and the one asked (`session::regranted`); the run host checks it as the
+  start's (`api_run::egress`, `held_apart`: a grant its image gives not, or a member's reach
+  other than its image lets it have, `Widening`), tells it, and holds it under the same turn as
+  every change of its network (D269). Refused typed (`ImageRefusal::Net`): `NoNetwork`,
+  `Widening`, `Network` (its network process's words), `Image`.
+- *In place.* Only the run's network process takes the change; nothing of the image, its
+  template, its VM process or its guest changes.
+
+**Tests** (light, red first): `shards-net`
+`tests::grants_told_as_the_run_goes_hold_its_flows_within_its_ceiling` (taken within the
+ceiling and held at once, the revoked connection reset and its host socket closed, the kept one
+and the published port's kept, the UDP flow ended, past the ceiling and with no ceiling
+refused in words); `wire::tests::network_changes_and_their_answers_cross_the_channel` (an
+egress change and the grants in every answer) and the `Started` round trips with its grants;
+`session::tests::a_grant_goes_in_and_out_of_the_runs_grants_as_written_out`;
+`api_run::hosted::tests::a_runs_grants_change_within_its_images_as_it_goes`; the tell_net tests
+with the ceiling.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`an_egress_destination_revoked_refuses_the_next_connection_and_granted_back_reaches_again`
+(the same `started_from`, the same VM process and unchanged templates across it; the test
+guest's `reach-each` mode is new, so the test guests are rebuilt). Next (slice 3c): the
+person's ceiling (`ImageSpec::egress_ceiling`) and the guest's side, init re-programming a
+member's gate and agentdns live with domains' Landlock TCP rights unhandled, an older domain
+refused typed with the member-restart option (D270's).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
