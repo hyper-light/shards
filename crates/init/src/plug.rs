@@ -332,15 +332,17 @@ pub fn kmsg() -> io::Result<OwnedFd> {
 static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 /// The memory the VM may still have plugged, in bytes: a builder's most, or a run's own
-/// (D148), less what is plugged already; none where it plugs none.
-pub fn still_pluggable() -> u64 {
+/// (D148), within what its host's budget leaves `cgroup`, the processes it holds
+/// ([`most_within`], D188, D241, D272), less what is plugged already; none where it plugs
+/// none.
+pub fn still_pluggable(cgroup: &str) -> u64 {
     let Some(&boot) = BOOT.get() else {
         return 0;
     };
     let Ok(most) = control_read64(control::HOTPLUG_SIZE) else {
         return 0;
     };
-    most.saturating_sub(mem_total().map_or(0, |total| total.saturating_sub(boot)))
+    most_within(boot, most, cgroup).saturating_sub(mem_total().map_or(0, |total| total.saturating_sub(boot)))
 }
 
 /// [`Plug::tmpfs`] of a tmpfs made as the microVM runs, a joiner's writable layer (D119):
@@ -1236,16 +1238,17 @@ pub fn open_pluggable() {
     }
 }
 
-/// Tells the kernel what the host may still plug ([`still_pluggable`]), where it reports
-/// it: at offset 0, as a sysctl's writes elsewhere are ignored (`sysctl_writes_strict`).
-/// Once for each run, as it begins, before anything of it grows its memory: the kernel
+/// Tells the kernel what the host may still plug for `cgroup` ([`still_pluggable`]), where
+/// it reports it: at offset 0, as a sysctl's writes elsewhere are ignored
+/// (`sysctl_writes_strict`). Once for each run, as it begins, before anything of it grows its
+/// memory, and again as its most or its budget's room moves (`PLUG`, `ROOM`): the kernel
 /// lowers the report itself as memory is plugged.
-pub fn report_pluggable() -> io::Result<()> {
+pub fn report_pluggable(cgroup: &str) -> io::Result<()> {
     use std::os::unix::fs::FileExt as _;
     let Some(file) = PLUGGABLE.get() else {
         return Ok(());
     };
-    file.write_at(format!("{}\n", still_pluggable() / 1024).as_bytes(), 0)
+    file.write_at(format!("{}\n", still_pluggable(cgroup) / 1024).as_bytes(), 0)
         .map(drop)
         .map_err(|e| err(format!("vm.pluggable_kbytes: {e}")))
 }

@@ -1048,8 +1048,11 @@ fn published(
 /// The run's request (`kind::RUN`) as a warm VM takes one (warm.rs `head`): its head, then
 /// `spec`; `timing` asks for its VM's timing line. It writes no log, yet its head keeps a
 /// run's default retention, as a daemon run's with no log does (`--log-driver none`,
-/// daemon.rs `DEFAULT_LOGS`): a warm VM refuses a request whose log keeps nothing.
-fn run_request(spec: &shards_abi::run::Spec, published: bool, timing: bool) -> Vec<u8> {
+/// daemon.rs `DEFAULT_LOGS`): a warm VM refuses a request whose log keeps nothing. Its head
+/// carries `plug`, the most memory its guest may plug (`Prepared::plug_bytes`, D148), which
+/// its VM sets before its guest hears of the run: a run told none has what it booted with,
+/// its members' share what was free as their domains started.
+fn run_request(spec: &shards_abi::run::Spec, plug: u64, published: bool, timing: bool) -> Vec<u8> {
     let mut payload = Vec::new();
     let flags = if published { shards_ipc::RUN_PUBLISHED } else { 0 };
     shards_ipc::RunHead {
@@ -1062,6 +1065,7 @@ fn run_request(spec: &shards_abi::run::Spec, published: bool, timing: bool) -> V
         },
         log_size: crate::daemon::DEFAULT_LOGS.size,
         log_files: crate::daemon::DEFAULT_LOGS.files,
+        plug,
         ..Default::default()
     }
     .encode_into(&mut payload);
@@ -4471,13 +4475,15 @@ mod hosted {
     ) -> Result<(), String> {
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
+        // Its guest's most to plug, its own, as a daemon run's request carries it (D148).
+        let plug = plan.prepared.plug_bytes();
         let payload = if trust.is_empty() {
-            super::run_request(&plan.prepared.spec, networked, super::timed())
+            super::run_request(&plan.prepared.spec, plug, networked, super::timed())
         } else {
             let mut spec = plan.prepared.spec.clone();
             spec.setup.extend_from_slice(trust);
             crate::spec::fits(&spec)?;
-            super::run_request(&spec, networked, super::timed())
+            super::run_request(&spec, plug, networked, super::timed())
         };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
@@ -9010,19 +9016,54 @@ mod tests {
     }
 
     /// The run's request is one a warm VM takes: its log keeps something by the VM's own
-    /// check (warm.rs `head`), though it writes none, and its head says whether it
-    /// publishes ports.
+    /// check (warm.rs `head`), though it writes none, its head says whether it publishes
+    /// ports, and it carries the most its guest may plug as given, none included.
     #[test]
     fn its_request_is_one_a_warm_vm_takes() {
         for (published, timing) in [(false, false), (true, false), (false, true), (true, true)] {
-            let payload = run_request(&shards_abi::run::Spec::default(), published, timing);
-            let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
-            assert!(head.keeps_its_log(), "{head:?}");
-            assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
-            assert_eq!(head.flags & shards_ipc::RUN_TIMING != 0, timing);
-            assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
-            assert!(shards_abi::run::Spec::decode(spec).is_some());
+            for plug in [0, 1 << 20, u64::MAX] {
+                let payload = run_request(&shards_abi::run::Spec::default(), plug, published, timing);
+                let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
+                assert!(head.keeps_its_log(), "{head:?}");
+                assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
+                assert_eq!(head.flags & shards_ipc::RUN_TIMING != 0, timing);
+                assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
+                assert_eq!(head.plug, plug);
+                assert!(shards_abi::run::Spec::decode(spec).is_some());
+            }
         }
+    }
+
+    /// An orchestrator's run may plug what a daemon's run of the same size may (D148): its
+    /// most, all its host's memory where it names no limit, less what it boots with, the
+    /// least envelope's 64 MiB or any other; none where it boots with all of it. The
+    /// orchestrator's run had none: kiln's harnesses at 64 MiB were ended at what was free as
+    /// their members started (D272).
+    #[test]
+    fn an_orchestrators_run_may_plug_its_most_less_its_boot() {
+        let home = shards_testdir::TempDir::new("plug-most").unwrap();
+        let rootfs = home.path().join("root.erofs");
+        let guest = crate::guest::Guest {
+            kernel: home.path().join("vmlinux"),
+            init: home.path().join("init"),
+            kernel_digest: "sha256:k".into(),
+            init_digest: "sha256:i".into(),
+        };
+        let mut run = prepared(&rootfs, crate::run::Boot::Stored(guest), None);
+        for (boot, most, plug) in [
+            (64, 36_864, (36_864 - 64) << 20),
+            (128, 8192, (8192 - 128) << 20),
+            (256, 256, 0),
+            (512, 256, 0),
+        ] {
+            (run.size.1, run.memory_max) = (boot, most);
+            assert_eq!(run.plug_bytes(), plug, "{boot} MiB booted of {most}");
+            let payload = run_request(&run.spec, run.plug_bytes(), false, false);
+            assert_eq!(shards_ipc::RunHead::decode(&payload).unwrap().0.plug, plug);
+        }
+        run.memory_max = u64::MAX;
+        run.size.1 = 0;
+        assert_eq!(run.plug_bytes(), u64::MAX, "saturates, never wraps");
     }
 
     /// A line says its time only where its lines are timed, as `+US us` after the host's name.

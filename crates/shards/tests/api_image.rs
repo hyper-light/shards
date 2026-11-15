@@ -873,6 +873,150 @@ fn the_orchestrators_room_holds_its_run_within_it() {
     );
 }
 
+/// kiln boots every harness at shards-api's least envelope (`envelope(ARCH, 0, 0)`: 1 vCPU,
+/// and 64 MiB on arm64, 128 on x86-64) and leaves its members' memory to D148's plug. An
+/// orchestrator's run may plug what a daemon's run without a limit may, its host's memory, and
+/// its members' share counts what it may still plug as their domains start (D148, D149): a
+/// harness holding four times what its microVM booted with, a page at a time, is given it as
+/// it grows and ends 0, where init ended kiln's `alloc 256` at 64 MiB's `MemAvailable` (the
+/// agents' memory "past their share, 20873216"). Its kernel reports what its run may have,
+/// its host's memory; and one allocation past all of that, which nothing its run may plug
+/// could hold, is refused by its kernel at once, none of it touched.
+#[test]
+fn a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-share-home");
+    build(&home, "api-share:1", &[], "");
+    let (vcpus, memory_mib) = shards_api::envelope(std::env::consts::ARCH, 0, 0).unwrap();
+    // The harness given `args` (D256) in a run at the least envelope: what it said, its end.
+    let ran = |args: &[&str]| {
+        let mut s = spec(&home, "api-share:1");
+        (s.vcpus, s.memory_mib) = (vcpus, memory_mib);
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args: args.iter().map(ToString::to_string).collect(),
+            mcp: false,
+        }];
+        let guest = boot(&home, &s);
+        let said = String::from_utf8_lossy(&read_all(&*guest, Channel::Stdout)).into_owned();
+        let ended = ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap();
+        guest.stop().unwrap();
+        (said, ended)
+    };
+    let grown = 4 * memory_mib;
+    let alloc = ran(&["alloc", grown.to_string().as_str()]);
+    let (meminfo, _) = ran(&["meminfo", "MemTotal", "SwapTotal"]);
+    let kib = |field: &str| -> u64 {
+        meminfo
+            .lines()
+            .find_map(|l| l.strip_prefix(field))
+            .and_then(|v| v.trim().strip_suffix("kB"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no {field} in {meminfo:?}"))
+    };
+    let (total, swap) = (kib("MemTotal:"), kib("SwapTotal:"));
+    assert_eq!(
+        alloc,
+        (format!("allocated {grown}\n"), Some(MemberEnd::Exited(0))),
+        "its kernel's MemTotal {total} kB"
+    );
+    let host = common::host_memory() / 1024;
+    assert!(
+        total > host / 2 && total <= host,
+        "MemTotal {total} kB, the host's {host} kB"
+    );
+    // A MiB past all the memory its kernel counts, its swap's with it.
+    let past = (total + swap) / 1024 + 1;
+    let (said, ended) = ran(&["alloc-once", past.to_string().as_str()]);
+    assert!(
+        said.starts_with(&format!("alloc-once {past}: memory allocation failed")),
+        "{said:?}, MemTotal {total} kB, SwapTotal {swap} kB"
+    );
+    assert_eq!(ended, Some(MemberEnd::Exited(1)));
+}
+
+/// The room an orchestrator's budget leaves its run (D241), told after it starts, is its
+/// members' share of it too (D272): at the least envelope, a harness that waits for its input
+/// and then holds four times what its microVM booted with, a page at a time, is ended past a
+/// room of half that, in init's words naming the room, and grows within one of twice that,
+/// ending 0.
+#[test]
+fn an_orchestrators_room_is_its_members_share() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-roomshare-home");
+    build(&home, "api-roomshare:1", &[], "");
+    let (vcpus, memory_mib) = shards_api::envelope(std::env::consts::ARCH, 0, 0).unwrap();
+    let grown = 4 * memory_mib;
+    for (room_mib, grows) in [(grown / 2, false), (2 * grown, true)] {
+        let mut s = spec(&home, "api-roomshare:1");
+        (s.vcpus, s.memory_mib) = (vcpus, memory_mib);
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: true,
+            terminal: false,
+            args: vec!["on-input".into(), "alloc".into(), grown.to_string()],
+            mcp: false,
+        }];
+        let guest = booted(&ImageShards::new(), &s).unwrap();
+        let kept = home.join(format!("room-{room_mib}.stderr"));
+        guest
+            .keep_diagnostics(std::fs::File::create(&kept).unwrap(), u64::MAX)
+            .unwrap();
+        let room = room_mib << 20;
+        let held = ask(&*guest, |g| {
+            g.room(Some(i64::try_from(room).unwrap()), Duration::MAX)
+        })
+        .unwrap();
+        assert_eq!(held, Some(room), "held within the room told");
+        drop(guest.take_input(&codex()).unwrap());
+        let said = String::from_utf8_lossy(&read_all(&*guest, Channel::Stdout)).into_owned();
+        let ended = ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap();
+        guest.stop().unwrap();
+        let _ = ask(&*guest, |g| g.wait_for(Duration::MAX));
+        let diagnostics = std::fs::read_to_string(&kept).unwrap();
+        if grows {
+            assert_eq!(
+                (said, ended),
+                (format!("allocated {grown}\n"), Some(MemberEnd::Exited(0))),
+                "within a room of {room_mib} MiB: {diagnostics}"
+            );
+            continue;
+        }
+        assert_eq!(
+            (said.as_str(), ended),
+            ("", Some(MemberEnd::Signaled(9))),
+            "past a room of {room_mib} MiB: {diagnostics}"
+        );
+        // Init's words: past their share, within the room its budget leaves the run, which
+        // is the room told past what the run held as it was told.
+        let line = diagnostics
+            .lines()
+            .find(|l| l.starts_with("[harness codex] shards-init: ended: the agents' memory"))
+            .unwrap_or_else(|| panic!("no end said: {diagnostics}"));
+        let number_after = |words: &str, end: &str| -> u64 {
+            line.split_once(words)
+                .and_then(|(_, rest)| rest.split_once(end))
+                .and_then(|(n, _)| n.parse().ok())
+                .unwrap_or_else(|| panic!("no {words:?} said: {line}"))
+        };
+        let share = number_after("was past their share, ", ",");
+        let within = number_after("within the room its budget leaves the run, ", " bytes in all");
+        assert!(within >= room && share <= within, "{line}");
+    }
+}
+
 /// The CPU rate an orchestrator holds its run's vCPUs to (D247) reaches its VM through its
 /// host: a run spinning its one vCPU, held to a quarter of its CPU, runs its guest a quarter
 /// of the time passing, but what a period may overrun, a period's share where the window and

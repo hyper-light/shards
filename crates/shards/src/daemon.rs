@@ -4501,10 +4501,7 @@ impl<D: Disk> Daemon<D> {
             log_files: retention.files,
             first: container_log.seq,
             // The most memory its guest may plug, in bytes: its own (D148).
-            plug: prepared
-                .memory_max
-                .saturating_sub(prepared.size.1)
-                .saturating_mul(1 << 20),
+            plug: prepared.plug_bytes(),
             // Non-blocking, its queue (D162).
             queue: kept.and_then(|k| k.queue),
             // Its microVM's I/O limits, its VMM's to keep (D178).

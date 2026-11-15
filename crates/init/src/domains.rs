@@ -1359,13 +1359,65 @@ impl Memory {
         };
         let (anon, file, shmem, kernel) = (of("anon"), of("file"), of("shmem"), of("kernel"));
         d.lifecycle.stop()?;
+        // The room their run's budget holds it within, which their share is of (D272).
+        let room = match crate::plug::cap() {
+            u64::MAX => String::new(),
+            cap => format!(", within the room its budget leaves the run, {cap} bytes in all"),
+        };
         say(format!(
-            "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
+            "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}{room}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
             d.label
         )
         .as_bytes());
         Ok(())
     }
+}
+
+/// What the domains together may take, in bytes (D148, D272), where they hold `held`: that,
+/// what the microVM can give now (`MemAvailable`, Documentation/filesystems/proc.rst, the
+/// kernel's own report of what may still be plugged taken off it, D149) and what it may
+/// still have plugged within its budget's room (`plug::still_pluggable`, D188, D241); where a
+/// room holds the run, no more than it leaves them past what the rest of the run holds; less
+/// what the workload's own limit (`-m`) still promises it: never what init and the workload
+/// hold or may. Memory plugged moves from what may be plugged to `MemAvailable`, and a
+/// give-back's back (D188), so their share moves only as the room, the workload or the rest
+/// of the run does. Their scratch tmpfs counts, which the OOM killer's choice by resident
+/// memory does not (mm/oom_kill.c, `oom_badness`), so the kernel does not choose: past
+/// `memory.high` it throttles them and kills none (Documentation/admin-guide/cgroup-v2.rst),
+/// in the charge itself as well as on the way back to user space (mm/memcontrol.c,
+/// `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
+fn share(held: u64) -> Result<u64, String> {
+    let promised = admission::workload_headroom().map_err(|e| e.message("domains"))?;
+    // What may still be plugged counted once: the kernel's own report of it taken off
+    // `MemAvailable` (D149), whose kernel reports it.
+    let [available] = crate::plug::unreported(|| available_memory().map(|a| [a]).map_err(io::Error::other))
+        .map_err(|e| e.to_string())?;
+    let room = match crate::plug::cap() {
+        u64::MAX => None,
+        cap => {
+            let path = format!("{}/memory.current", crate::run::RUN_CGROUP);
+            let run = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .ok_or_else(|| format!("{path}: unread"))?;
+            Some(cap.saturating_sub(run.saturating_sub(held)))
+        }
+    };
+    let pluggable = crate::plug::still_pluggable(crate::run::RUN_CGROUP);
+    admission::share(held, available, pluggable, room, promised).map_err(|e| e.message("domains"))
+}
+
+/// Writes the domains' share again as their `memory.high` ([`share`], D272), as their run's
+/// budget tells it its room (`builtin::ROOM`, D241, D188): within a room, a domain past it
+/// is ended in words naming it ([`Memory`]); with none, their share is all the microVM may
+/// give them again.
+pub fn reshare() -> Result<(), String> {
+    let path = format!("{CGROUPS}/memory.current");
+    let held = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .ok_or_else(|| format!("{path}: unread"))?;
+    admission::reshare(share(held)?).map_err(|e| e.message("domains"))
 }
 
 fn cstr_of(s: &str) -> Result<CString, String> {
@@ -1719,25 +1771,10 @@ pub fn start(
     // kernel.rst), which a workload's `seccomp=unconfined` or `--device /dev/kmsg` would
     // leave it.
     crate::setup::write_sysctl("kernel.dmesg_restrict", "1")?;
-    // The domains together take at most what the microVM can give as they start
-    // (`MemAvailable`, Documentation/filesystems/proc.rst, and what it may still have
-    // plugged, D148), less what the workload's own limit (`-m`) still promises it: never
-    // what init and the workload hold or may. Their
-    // scratch tmpfs counts, which the OOM killer's choice by resident memory does not
-    // (mm/oom_kill.c, `oom_badness`), so the kernel does not choose: past `memory.high`
-    // it throttles them and kills none (Documentation/admin-guide/cgroup-v2.rst), in the
-    // charge itself as well as on the way back to user space (mm/memcontrol.c,
-    // `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
-    let promised = admission::workload_headroom().map_err(|e| e.message("domains"))?;
-    // What may still be plugged counted once: the kernel's own report of it taken off
-    // `MemAvailable` (D149), whose kernel reports it.
-    let [available] = crate::plug::unreported(|| available_memory().map(|a| [a]).map_err(io::Error::other))
-        .map_err(|e| e.to_string())?;
-    let available = admission::pressure_headroom(available, crate::plug::still_pluggable(), promised)
-        .map_err(|e| e.message("domains"))?;
-    // None of the microVM's swap (D159), which a run's limits give it for its own: a
-    // domain's memory is what its Agentfile grants, and nothing grants one swap.
-    let admission = admission::Parent::prepare(available).map_err(|e| e.message("domains"))?;
+    // Their share as they start, holding nothing ([`share`]); none of the microVM's swap
+    // (D159), which a run's limits give it for its own: a domain's memory is what its
+    // Agentfile grants, and nothing grants one swap.
+    let admission = admission::Parent::prepare(share(0)?).map_err(|e| e.message("domains"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let lower =
