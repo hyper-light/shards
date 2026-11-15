@@ -13,7 +13,11 @@
 //! - (d) a half-close over a message-type pipe, as `shards_ipc`'s pipes make one (a
 //!   zero-byte message): what a client reading in byte mode, as a host program's does, reads
 //!   of "abc", a zero-byte message and "def"; whether it writes on after; and what it reads and
-//!   writes once the server has closed.
+//!   writes once the server has closed;
+//! - (e) vsock's pattern: bytes, then a zero-byte message, and nothing more that way, read by
+//!   `std::fs::File` in byte mode on a thread of its own (each read's result waited for two
+//!   seconds at most, a read still waiting said so): whether it reads the bytes, then
+//!   `Ok(0)`, and then writes on.
 //!
 //! Run as `windows-pipes-s0` (the parent); it starts itself as `windows-pipes-s0 child …`.
 
@@ -383,6 +387,7 @@ mod win {
         println!("S0 parent: its child exited {code}");
         pended(&tag)?;
         half_close(&tag)?;
+        half_close_last(&tag)?;
         drop(container);
         let _ = std::fs::remove_dir_all(&records);
         Ok(())
@@ -558,6 +563,59 @@ mod win {
             said(r, &buf),
             file.write(b"late").map_err(|e| (e.kind(), e.raw_os_error()))
         );
+        Ok(())
+    }
+
+    /// (e) Bytes, then a zero-byte message, and nothing more that way.
+    fn half_close_last(tag: &str) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let name = format!(r"\\.\pipe\s0-last-{tag}");
+        let server = message_server(&name)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|e| format!("std's open: {e}"))?;
+        let mut writer = file.try_clone().map_err(|e| format!("its clone: {e}"))?;
+        println!(
+            "S0 last: server writes \"abc\" {:?}, then a zero-byte message {:?}, then nothing",
+            write(&server, b"abc"),
+            write(&server, b"")
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut reader = file;
+        let reading = std::thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            for _ in 0..3 {
+                let r = reader.read(&mut buf);
+                let end = !matches!(r, Ok(n) if n > 0);
+                if tx.send(said(r, &buf)).is_err() || end {
+                    return;
+                }
+            }
+        });
+        for i in 0..3 {
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(r) => println!("S0 last: File::read {i}: {r}"),
+                Err(_) => {
+                    println!("S0 last: File::read {i}: still waiting after 2 s");
+                    break;
+                }
+            }
+        }
+        println!(
+            "S0 last: the client writes on: {:?}",
+            writer.write(b"up").map_err(|e| e.kind())
+        );
+        let mut buf = [0u8; 16];
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 last: the server reads it: {got:?}");
+        // A read still waiting ends with the server's close.
+        drop(server);
+        while let Ok(r) = rx.recv_timeout(Duration::from_secs(2)) {
+            println!("S0 last: once the server has closed: File::read {r}");
+        }
+        let _ = reading.join();
         Ok(())
     }
 
