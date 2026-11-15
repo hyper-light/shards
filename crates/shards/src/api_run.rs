@@ -2323,7 +2323,6 @@ mod hosted {
         let shaped = shape(request, &home)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
-        super::step(format_args!("its run planned"));
         launch_and_serve(answers, input, &home, plan)
     }
 
@@ -2423,6 +2422,42 @@ mod hosted {
         made: Vec<String>,
         server: Option<PathBuf>,
         microvm: super::Microvm,
+        /// Its security's costly parts ([`secure`]), or why not, which its plan says where it
+        /// would have made them, after its run's own refusals.
+        secured: Result<Secured, No>,
+    }
+
+    /// What of a run's security its microVM alone decides (D253), made once of its exemplar:
+    /// the filters its setup installs, compiled for its guest's kernel (`setup::filters`), and
+    /// its domains' filters where its image is an Agentfile's. All a run's plan made of them
+    /// before, each run's own grant entries apart (its deadline), which its plan composes.
+    struct Secured {
+        filters: crate::setup::Filters,
+        domains: Option<[Vec<u8>; 2]>,
+    }
+
+    /// [`Secured`] of the microVM `microvm` that `run` runs in, its Agentfile `agentfile`;
+    /// refused as its plan refused them: its kernel unread `Boot`, its options or a filter
+    /// `Request`, its domains' filters `Boot`. Whether its command has the nesting grant is
+    /// its microVM's: the grant asks its run's asking and its image's declaring alone (D234,
+    /// `agentfile::nesting`), a run's deadline only its entries; a run refused the grant is
+    /// refused by its plan before anything made here is taken.
+    fn secure(
+        agentfile: Option<&crate::agentfile::Agentfile>,
+        run: &shards_ipc::Run,
+        microvm: &super::Microvm,
+    ) -> Result<Secured, No> {
+        let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
+        let granted = matches!(
+            crate::agentfile::nesting(agentfile, run),
+            Ok(crate::agentfile::Nesting::Granted(_))
+        );
+        let filters = crate::setup::filters(run, version, granted).map_err(no(Cause::Request))?;
+        let domains = agentfile
+            .map(|_| crate::setup::domain_seccomp(version))
+            .transpose()
+            .map_err(no(Cause::Boot))?;
+        Ok(Secured { filters, domains })
     }
 
     fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
@@ -2546,6 +2581,11 @@ mod hosted {
         };
         let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
         super::step(format_args!("its microVM shaped"));
+        // Before its run asks, where its host is warm (D253): never on a warm run's way.
+        let secured = secure(agentfile.as_ref(), &run, &microvm);
+        super::step(format_args!(
+            "its security made: its guest's kernel read, its filters compiled"
+        ));
         Ok(Shaped {
             run,
             prepared,
@@ -2562,11 +2602,13 @@ mod hosted {
             made,
             server,
             microvm,
+            secured,
         })
     }
 
     /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
-    /// stages, its published ports bound, its nesting grant decided, its setup and spec.
+    /// stages, its published ports bound, its nesting grant decided, its setup and spec, its
+    /// security's filters its microVM's own (`Shaped::secured`).
     fn plan(request: &wire::Request, ready_by: Option<u64>, shaped: Shaped) -> Result<Plan, No> {
         let Shaped {
             mut run,
@@ -2584,6 +2626,7 @@ mod hosted {
             made,
             server,
             microvm,
+            secured,
         } = shaped;
         run.ready_by = ready_by;
         let say = |line: &str| {
@@ -2609,6 +2652,7 @@ mod hosted {
             publish::InUse::Host
         })
         .map_err(no(Cause::Boot))?;
+        super::step(format_args!("its members staged, its ports bound"));
         // Its setup, as the daemon composes a run's (daemon.rs `start`): its mounts, its
         // capabilities beside its domains, its security, its domains' filter, its managed
         // output, what it stages, its members' ends asked for, and its own command or
@@ -2620,13 +2664,14 @@ mod hosted {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
         }
-        let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
-        crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
+        let Secured { filters, domains } = secured?;
+        crate::setup::security_setup_with(&mut setup, &run, &filters, None, &[], nesting.grant())
             .map_err(no(Cause::Request))?;
         if let Some(a) = &agentfile {
-            setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+            setup.extend(domains.into_iter().flatten());
             setup.extend(a.image_env.iter().cloned());
         }
+        super::step(format_args!("its setup's security composed"));
         // Its domains' plug roots (D235), as a daemon's run names them: this host's own and
         // each share's top-level directory, beneath which a plug asked of it lies.
         let roots = match &agentfile {
@@ -2712,6 +2757,14 @@ mod hosted {
             prepared.spec.builtin = protocol::builtin::ATTEND;
         }
         crate::spec::fits(&prepared.spec).map_err(no(Cause::Request))?;
+        // Each share's host directory as its guest reaches it, which no save is made in
+        // (D259); one that is not there now is none it reaches.
+        let reached = request
+            .shares
+            .iter()
+            .filter_map(|s| std::fs::canonicalize(&s.host).ok())
+            .collect();
+        super::step(format_args!("its run planned"));
         Ok(Plan {
             prepared,
             members,
@@ -2736,13 +2789,7 @@ mod hosted {
             mcps,
             roots,
             control: request.control.clone(),
-            // Each share's host directory as its guest reaches it, which no save is made in
-            // (D259); one that is not there now is none it reaches.
-            reached: request
-                .shares
-                .iter()
-                .filter_map(|s| std::fs::canonicalize(&s.host).ok())
-                .collect(),
+            reached,
             gpu_report: request.gpu_report,
         })
     }
