@@ -4778,7 +4778,8 @@ mod tests {
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
             (microvm_tag + 1, 2, "a VM process's use"),
-            (microvm_tag + 1 + 1 + 24, 2, "a microVM's guest time"),
+            (microvm_tag + 1 + 1 + 24, 3, "a VM process's charge"),
+            (microvm_tag + 1 + 1 + 24 + 1, 2, "a microVM's guest time"),
             (second + 4 + 8, 2, "a vCPU's guest time"),
         ] {
             let mut bad = bytes.clone();
@@ -4789,7 +4790,7 @@ mod tests {
                 "{what}"
             );
         }
-        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 8].to_vec();
+        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 1 + 8].to_vec();
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(StatsAnswer::decode(&hostile), Err(WireError::Short));
     }
