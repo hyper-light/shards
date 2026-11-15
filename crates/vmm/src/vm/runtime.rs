@@ -1794,8 +1794,10 @@ fn vcpu_thread(
             return;
         }
         // Out of the guest while its run's CPU time is spent (D191), or until a snapshot
-        // needs it parked.
-        sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested());
+        // needs it parked; its guest told where it was held through a pause (D267).
+        if sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested()) {
+            vcpu.went_on();
+        }
         match vcpu.run(io) {
             Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),

@@ -572,6 +572,12 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): nothing to tell. arm64 has no
+    /// kvmclock: its guest reads the arch timer, whose counter ran on through the pause
+    /// (CNTVCT less a constant offset), and KVM's paravirtual time (KVM_ARM_VCPU_PVTIME)
+    /// carries stolen time alone, with no stopped flag a watchdog reads.
+    pub fn went_on(&self) {}
+
     pub fn kicker(&self) -> Kicker {
         self.kicker.clone()
     }
