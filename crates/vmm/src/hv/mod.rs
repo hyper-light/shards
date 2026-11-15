@@ -42,6 +42,18 @@ pub use whp::*;
 pub mod assignment;
 
 /// The backend this build drives VMs with, if any.
+/// Whether this backend's vCPU guest time is its thread's CPU time by construction (D265):
+/// KVM charges it to the vCPU thread's user time (`account_guest_time`: `p->utime +=
+/// cputime; ... p->gtime += cputime`, kernel/sched/cputime.c), and Hypervisor.framework runs
+/// a vCPU on the thread that owns it, whose time XNU does not split between guest and host
+/// (docs/research/measurements/guest-cpu-time-v1). WHP's is its host's scheduler's, which
+/// its process learns from its own clocks (`vm::guest_time`): none here.
+pub const GUEST_TIME_CHARGED: Option<crate::vm::Charged> = if cfg!(any(hv = "kvm", hv = "hvf")) {
+    Some(crate::vm::Charged::ToThread)
+} else {
+    None
+};
+
 pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
     Some("hvf")
 } else if cfg!(hv = "kvm") {

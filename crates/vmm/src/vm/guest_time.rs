@@ -160,6 +160,15 @@ mod clocks {
             lock(&self.0).charged.unwrap_or(Charged::Unknown)
         }
 
+        /// Clocks whose charge is `known` before any span tells it: its backend's, where its
+        /// construction fixes it (`hv::GUEST_TIME_CHARGED`).
+        pub(in crate::vm) fn known(known: Option<Charged>) -> GuestClocks {
+            GuestClocks(Mutex::new(Clocks {
+                charged: known,
+                ..Clocks::default()
+            }))
+        }
+
         /// Clocks whose threads' CPU clock counts in `step` ns (tests).
         #[cfg(test)]
         pub(in crate::vm) fn stepped(step: u64) -> GuestClocks {

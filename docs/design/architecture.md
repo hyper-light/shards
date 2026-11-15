@@ -35678,7 +35678,7 @@ closing, on HVF, KVM and WHP.
 end; an ended connection holding more than the window it had; slots or lent window freed while
 an ended connection still holds its bytes.
 
-### D265. Whether a VM process's CPU time holds its vCPUs' guest time, learned from its own clocks (built: the charge and the use it makes; the governor's pace by it is the next slice; a root-scheduler host's run owed)
+### D265. Whether a VM process's CPU time holds its vCPUs' guest time, learned from its own clocks (built: the charge, the use and the hold it makes; a root-scheduler host's run owed)
 
 **Why.** On hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested WHP on KVM) D260's
 use broke its own invariant, its process's CPU time (609,375,000 ns) below its one vCPU's
@@ -35707,8 +35707,17 @@ waits inside the run call), `step` the thread clock's measured step
 (`granule::measure_clock`, 15.625 ms on Windows). A span that reads neither tells nothing.
 The first charge told stands: a host's scheduler is its boot's. A span begins as its vCPU
 joins, so one read only at the end (D260's final use) tells its whole life
-(`vm::guest_time::GuestClocks`). KVM's and Hypervisor.framework's vCPUs are learned the same
-way (R12), and a busy one tells `ToThread`.
+(`vm::guest_time::GuestClocks`). Where a backend's construction fixes it, it is known from the
+start (`hv::GUEST_TIME_CHARGED`): KVM charges guest time to the vCPU thread's user time
+(`account_guest_time`, kernel/sched/cputime.c: `p->utime += cputime; ... p->gtime +=
+cputime`), and Hypervisor.framework runs a vCPU on its owning thread, whose time XNU does not
+split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learned.
+- *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
+  (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
+  `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
+  read once a period, so a period's reads are of one count; the group's governor charges
+  nothing across a change of count. A backend known `ToThread` never reads a guest clock for
+  it, so Hypervisor.framework's vCPUs are never made to leave their guest to be read.
 - *Its use.* A use (`USE`'s `host` line, D260's final-use record, and the warm host's binary
   `USED` and run stats, `shards_api::image::wire`) carries its charge, so a reader sees which
   accounting it holds. `cpu_ns` is its OS's count, its vCPUs' guest time added where `Apart`
@@ -35724,12 +35733,13 @@ way (R12), and a busy one tells `ToThread`.
 `rate::tests` (the `host` line with its charge, one without refused); shards-vmm
 `guest_time::tests::a_processs_charge_is_told_by_its_vcpus_spans`; shards
 `vm_run::tests::a_uses_answer_reads_the_guest_then_its_process` (the guest added apart, the
-count standing unknown). Results and hosts are in the landing commit and ROOT's record.
+count standing unknown); shards-vmm `hold::tests::a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time`
+(a thread spending none while its guest clock runs a whole CPU: held within a quarter CPU's
+periods when `Apart`, and never when counted by its thread alone, as the hold did before). Results and hosts are in the landing commit and ROOT's record.
 
 **Evidence owed.** The two `boot.rs` tests green on hex-winvm; the probe on a client Windows
-host under the root scheduler (whether its thread holds its guest time: `ToThread` told); the
-governor's pace by the charge (D255's hold: next slice); a run host's stats told the charge by
-its VM process.
+host under the root scheduler (whether its thread holds its guest time: `ToThread` told); a
+run host's stats told the charge by its VM process.
 
 **What would falsify it.** A span on one host telling both charges; a use whose `cpu_ns` is
 below its guest time with its charge told; a charge told by a span that could read either.

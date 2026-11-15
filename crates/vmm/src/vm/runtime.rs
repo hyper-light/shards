@@ -377,7 +377,11 @@ impl Handle {
             let shared = sh.clone();
             let made = std::thread::Builder::new()
                 .name("hold".into())
-                .spawn(move || shared.hold.govern(&|| shared.kick_all()))
+                .spawn(move || {
+                    shared
+                        .hold
+                        .govern(&|| shared.kick_all(), &|| shared.guest.charged())
+                })
                 .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
             *governor = Some(made);
         }
@@ -402,7 +406,11 @@ impl Handle {
         let shared = sh.clone();
         let made = std::thread::Builder::new()
             .name("hold-group".into())
-            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .spawn(move || {
+                shared
+                    .hold
+                    .govern_group(&group, &|| shared.kick_all(), &|| shared.guest.charged())
+            })
             .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
         *governor = Some(made);
         Ok(())
@@ -1082,7 +1090,7 @@ impl Shared {
             saving: Mutex::new(None),
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
-            guest: GuestClocks::default(),
+            guest: GuestClocks::known(crate::hv::GUEST_TIME_CHARGED),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
         }
@@ -1756,8 +1764,13 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
-    // Its clock, by which the host holds the vCPUs to their run's CPUs (D191).
-    if let Err(e) = sh.hold.register(index) {
+    // Its clocks, by which the host holds the vCPUs to their run's CPUs (D191): its thread's,
+    // and its guest time, counted as its OS charges it (D265).
+    let guest_read = vcpu.guest_clock();
+    if let Err(e) = sh
+        .hold
+        .register(index, Some(Box::new(move || guest_read.read().ok())))
+    {
         warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
     }
     // Its guest time among its machine's, before its machine is said to be started: read a
