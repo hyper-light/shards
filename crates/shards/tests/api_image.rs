@@ -975,6 +975,366 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
     assert_ne!(run(&other), StartedFrom::Warm, "another microVM's first run");
 }
 
+/// The orchestrator's pools the measured warm starts come through: one construction, which
+/// changes as `ImagePools::new` does.
+fn warm_pools() -> ImagePools {
+    ImagePools::new(2, ImagePools::KEEP).unwrap()
+}
+
+/// One measured start of an image's run: how it started, and its three spans from the boot's
+/// call: its answer (`boot`, as Hex's `hex.image.boot` is bounded: `boot_stoppable` to its
+/// answer, the run host's diagnostics kept), its harness's first output read (`usable`), and
+/// its stop, from its call to its answer (`stop`). `diagnostics` is where its run host's were
+/// kept.
+struct Start {
+    from: StartedFrom,
+    boot: Duration,
+    usable: Duration,
+    stop: Duration,
+    diagnostics: std::path::PathBuf,
+}
+
+/// `s` started through `images`, its harness's first line read (the test guest's `sleep`
+/// prints `ready`, then waits for its end), then stopped: each span timed ([`Start`]).
+#[track_caller]
+fn timed_start(images: &dyn shards_api::image::Images, home: &TempDir, s: &ImageSpec) -> Start {
+    // Made before the boot is asked, as Hex makes its file before its boot's thread starts.
+    let path = diagnostics(home);
+    let kept = std::fs::File::create(&path).unwrap();
+    let stop = BootStop::new();
+    let (guest, t0, boot) = common::judged(
+        Party::started(None),
+        "a measured boot",
+        || stop.stop(),
+        || {
+            let t0 = Instant::now();
+            let guest = images
+                .boot_stoppable(s, Duration::MAX, &stop)
+                .and_then(|g| g.keep_diagnostics(kept, u64::MAX).map(|()| g));
+            (guest, t0, t0.elapsed())
+        },
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"));
+    let guest = guest.unwrap_or_else(|refused| {
+        panic!(
+            "the boot: {refused}; its run host said: {}",
+            std::fs::read_to_string(&path).unwrap_or_default()
+        )
+    });
+    let from = guest.started_from();
+    let mut out = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let (line, usable) = common::judged(
+        Party::started(None),
+        "a measured start's first output",
+        || {
+            let _ = guest.stop();
+        },
+        move || {
+            let mut line = [0u8; 6];
+            out.read_exact(&mut line).map(|()| (line, t0.elapsed()))
+        },
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"))
+    .unwrap_or_else(|e| {
+        panic!(
+            "its harness's first output: {e}; the run's end: {:?}",
+            guest.wait_for(Duration::ZERO)
+        )
+    });
+    assert_eq!(&line, b"ready\n");
+    let (stopped, stop) = ask(&*guest, |g| {
+        let t = Instant::now();
+        (g.stop(), t.elapsed())
+    });
+    stopped.unwrap();
+    Start {
+        from,
+        boot,
+        usable,
+        stop,
+        diagnostics: path,
+    }
+}
+
+/// The ways an image's run starts (D253), each asked of [`image_start_costs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartKind {
+    Booted,
+    Saved,
+    Restored,
+    Warm,
+}
+
+impl StartKind {
+    const ALL: [StartKind; 4] = [
+        StartKind::Booted,
+        StartKind::Saved,
+        StartKind::Restored,
+        StartKind::Warm,
+    ];
+
+    fn started_from(self) -> StartedFrom {
+        match self {
+            StartKind::Booted => StartedFrom::Booted,
+            StartKind::Saved => StartedFrom::Saved,
+            StartKind::Restored => StartedFrom::Restored,
+            StartKind::Warm => StartedFrom::Warm,
+        }
+    }
+}
+
+/// The homes and specs [`image_start_costs`] starts each kind with: one home whose guest is
+/// recorded (D28), its template saved once and then restored, by `ImageShards` (`Restored`)
+/// and by a pool's warm hosts (`Warm`), and a run of a guest given (`Booted`); and another,
+/// whose templates are removed before each start, which then saves one (`Saved`). The image
+/// is the tests' own, its harness the test guest's `sleep`.
+struct CostRig {
+    home: TempDir,
+    saved_home: TempDir,
+    booted: ImageSpec,
+    saved: ImageSpec,
+    restored: ImageSpec,
+    pools: ImagePools,
+}
+
+impl CostRig {
+    fn new() -> CostRig {
+        let home = common::home_with("api-cost-home");
+        let saved_home = common::home_with("api-cost-saved");
+        let tag = "api-cost:1";
+        build(&home, tag, &["sleep"], "");
+        build(&saved_home, tag, &["sleep"], "");
+        let stored = |mut s: ImageSpec| {
+            s.env
+                .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+            s
+        };
+        CostRig {
+            booted: spec(&home, tag),
+            saved: stored(spec(&saved_home, tag)),
+            restored: stored(spec(&home, tag)),
+            pools: warm_pools(),
+            home,
+            saved_home,
+        }
+    }
+
+    /// Its run hosts and their VMs log at debug from now on (`SHARDS_LOG`), each step of a
+    /// VM's start said with its time; a warm host's pool is then another (its environment).
+    fn traced(&mut self) {
+        for s in [&mut self.booted, &mut self.saved, &mut self.restored] {
+            s.env.push(("SHARDS_LOG".into(), "debug".into()));
+        }
+    }
+
+    /// A start of `kind`, held to it: one that started otherwise fails the measurement.
+    #[track_caller]
+    fn start(&self, kind: StartKind) -> Start {
+        let started = match kind {
+            StartKind::Booted => timed_start(&ImageShards::new(), &self.home, &self.booted),
+            StartKind::Saved => {
+                let templates = self.saved_home.join("templates");
+                if templates.exists() {
+                    for entry in std::fs::read_dir(&templates).unwrap() {
+                        let path = entry.unwrap().path();
+                        if path.is_dir() {
+                            std::fs::remove_dir_all(&path).unwrap();
+                        } else {
+                            std::fs::remove_file(&path).unwrap();
+                        }
+                    }
+                }
+                timed_start(&ImageShards::new(), &self.saved_home, &self.saved)
+            }
+            StartKind::Restored => timed_start(&ImageShards::new(), &self.home, &self.restored),
+            StartKind::Warm => timed_start(&self.pools, &self.home, &self.restored),
+        };
+        assert_eq!(
+            started.from,
+            kind.started_from(),
+            "a start asked as {kind:?} started {:?}{}; its run host said: {}",
+            started.from,
+            if kind == StartKind::Warm {
+                " (its pool had no warm host ready)"
+            } else {
+                ""
+            },
+            std::fs::read_to_string(&started.diagnostics).unwrap_or_default()
+        );
+        started
+    }
+
+    /// What comes before the measured starts: the image's files read once by a start of
+    /// each way, its template saved in the restoring home, and its pool warm.
+    fn warm_up(&self) {
+        self.start(StartKind::Booted);
+        self.start(StartKind::Saved);
+        let first = timed_start(&ImageShards::new(), &self.home, &self.restored);
+        assert!(
+            matches!(first.from, StartedFrom::Saved | StartedFrom::Restored),
+            "{:?}",
+            first.from
+        );
+        self.start(StartKind::Restored);
+        let mut patience = Patience::started();
+        while timed_start(&self.pools, &self.home, &self.restored).from != StartedFrom::Warm {
+            assert!(patience.holds(), "no start took a warm host");
+        }
+        patience.done();
+    }
+}
+
+/// This host's OS and its release, as the measurement's line names it.
+fn os_release() -> String {
+    #[cfg(unix)]
+    let out = std::process::Command::new("uname").arg("-sr").output();
+    #[cfg(windows)]
+    let out = std::process::Command::new("cmd").args(["/c", "ver"]).output();
+    out.ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| std::env::consts::OS.to_string())
+}
+
+/// The lines of a VM process's log (`SHARDS_LOG=debug`, `[PID US LEVEL] TEXT`, its clock
+/// microseconds since its log began) that mark a step of its start, and its run host's
+/// (`shards api-run: TEXT`, untimed), in the order its diagnostics hold them.
+fn start_phases(diagnostics: &str) -> Vec<(Option<u64>, String)> {
+    const STEPS: [&str; 17] = [
+        "VM created and RAM mapped",
+        "GIC created",
+        "kernel and initrd copied",
+        "kernel entry",
+        "working-set pages ahead",
+        "vCPU ",
+        "vCPUs set up in",
+        "restored a ",
+        "ready to run after",
+        "the machine's start finished",
+        "snapshot written",
+        "snapshot made durable",
+        "saved for the host",
+        "writable layer's head mapped back",
+        "DAX windows' heads mapped back",
+        "dropped the restore's state",
+        "huge pages",
+    ];
+    diagnostics
+        .lines()
+        .filter_map(|line| {
+            if let Some(said) = line.strip_prefix("shards api-run: ") {
+                return Some((None, said.to_string()));
+            }
+            let (head, text) = line.strip_prefix('[')?.split_once("] ")?;
+            let us = head.split_whitespace().nth(1)?.strip_suffix("us")?.parse().ok()?;
+            STEPS
+                .iter()
+                .any(|step| text.contains(step))
+                .then(|| (Some(us), text.to_string()))
+        })
+        .collect()
+}
+
+/// Where a shards-api image start's time goes, for each way it starts (D253): from the boot's
+/// call to its answer (Hex's `hex.image.boot`: `boot_stoppable` and the diagnostics' keep), to
+/// its harness's first output, and its stop, `SHARDS_IMAGE_COST_N` starts of each, the kinds
+/// taken round-robin, each round starting one kind later, so that the host's drift and a
+/// pool's refill after its warm start fall on every kind alike (PM M29). Each start's kind is
+/// held to the one asked. Then one start of each kind with its VM's log at debug, whose steps
+/// say where inside its VM process the start went, beside the time its VM's clock does not
+/// see (its run host, the processes' spawn, and the way from ready to started).
+#[test]
+#[ignore = "a measurement: SHARDS_IMAGE_COST_N starts of each kind; ROOT runs it"]
+fn image_start_costs() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_IMAGE_COST_N")
+        .expect("SHARDS_IMAGE_COST_N names the starts of each kind")
+        .parse()
+        .expect("SHARDS_IMAGE_COST_N is a count");
+    let kinds: &[StartKind] = if shards_vmm::vm::restores_here() {
+        &StartKind::ALL
+    } else {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: Saved, Restored and Warm: this host's hypervisor restores no snapshot (PM M345)"
+        );
+        &StartKind::ALL[..1]
+    };
+    let host = format!(
+        "backend {}, {}",
+        shards_vmm::hv::BACKEND.unwrap_or("none"),
+        os_release()
+    );
+    let mut rig = CostRig::new();
+    rig.warm_up();
+    let mut times: Vec<[Vec<Duration>; 3]> = kinds.iter().map(|_| Default::default()).collect();
+    for round in 0..n {
+        for i in 0..kinds.len() {
+            let at = (round + i) % kinds.len();
+            let kind = kinds[at];
+            let s = rig.start(kind);
+            let _ = writeln!(
+                std::io::stdout(),
+                "IMAGE-START-SAMPLE round {round} {kind:?} from {:?} boot_us {} usable_us {} stop_us {}",
+                s.from,
+                s.boot.as_micros(),
+                s.usable.as_micros(),
+                s.stop.as_micros()
+            );
+            times[at][0].push(s.boot);
+            times[at][1].push(s.usable);
+            times[at][2].push(s.stop);
+        }
+    }
+    for (kind, [boot, usable, stop]) in kinds.iter().zip(&times) {
+        common::measured(
+            &format!("IMAGE START {kind:?} boot, hex.image.boot's span ({host})"),
+            boot,
+        );
+        common::measured(&format!("IMAGE START {kind:?} to first output ({host})"), usable);
+        common::measured(&format!("IMAGE START {kind:?} stop ({host})"), stop);
+    }
+    // One start of each kind, its VM's log at debug, which slows it: its steps, apart from
+    // the measured starts.
+    rig.traced();
+    rig.warm_up();
+    for &kind in kinds {
+        let s = rig.start(kind);
+        let said = std::fs::read_to_string(&s.diagnostics).unwrap();
+        let phases = start_phases(&said);
+        let vm_ready = phases
+            .iter()
+            .filter(|(_, text)| text.contains("ready to run after"))
+            .find_map(|(us, _)| *us);
+        let _ = writeln!(
+            std::io::stdout(),
+            "IMAGE-START-PHASES {kind:?} from {:?}: boot {} us, first output {} us, stop {} us; outside its VM's clock to ready: {}",
+            s.from,
+            s.boot.as_micros(),
+            s.usable.as_micros(),
+            s.stop.as_micros(),
+            vm_ready.map_or("its VM said no ready line".to_string(), |us| format!(
+                "{} us",
+                u64::try_from(s.boot.as_micros())
+                    .unwrap_or(u64::MAX)
+                    .saturating_sub(us)
+            ))
+        );
+        let mut before = None;
+        for (us, text) in phases {
+            let step = match (us, before) {
+                (Some(us), Some(b)) => format!("vm {us:>9} us (+{:>7})", us.saturating_sub(b)),
+                (Some(us), None) => format!("vm {us:>9} us           "),
+                (None, _) => "run host (untimed)          ".to_string(),
+            };
+            before = us.or(before);
+            let _ = writeln!(std::io::stdout(), "IMAGE-START-PHASES {kind:?}   {step} {text}");
+        }
+    }
+}
+
 /// Stop ends the run at once, whatever its members do, and its end says so.
 #[test]
 fn stop_ends_the_run_at_once() {
