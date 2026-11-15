@@ -69,10 +69,9 @@ pub mod layout {
     /// (D154): the last of the virtio devices' pins, so that a machine with a PCI bus has
     /// one virtio device fewer.
     pub const GSI_PCI: u32 = 22;
-    /// The i8042 data and command ports (only the reset command is emulated).
-    pub const I8042: u16 = 0x60;
-    /// ACPI SLEEP_CONTROL_REG and SLEEP_STATUS_REG (HW-reduced ACPI), a free port pair.
-    pub const ACPI_SLEEP: u16 = 0x600;
+    /// The ACPI power device's ports (HW-reduced ACPI), free ones: SLEEP_CONTROL_REG,
+    /// SLEEP_STATUS_REG and RESET_REG (`acpi::SLEEP_STATUS`, `acpi::RESET`, D268).
+    pub const ACPI_POWER: u16 = 0x600;
 }
 
 /// A segment register as VM entry wants it (Intel SDM Vol. 3A §3.4.5).
