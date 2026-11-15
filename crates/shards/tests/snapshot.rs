@@ -248,8 +248,19 @@ fn a_restore_given_its_files_refuses_a_snapshot_naming_others() {
 }
 
 /// A directory nothing may write in, as it was again once this goes: read-only on Unix
-/// (mode 0555); on Windows, writing in it denied to everyone (`icacls /deny`).
-struct Unwritable(PathBuf);
+/// (mode 0555); on Windows, writing in it denied to everyone (`icacls /deny`). Root writes
+/// past a mode (CAP_DAC_OVERRIDE, capabilities(7)), as the L1 guest runs these tests
+/// (boot.rs' `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`, aca922771: a
+/// snapshot written into a 0555 directory): on Linux, root's is a read-only bind mount of
+/// it over itself as well, which refuses root too (EROFS, mount(2) `MS_RDONLY`). Either
+/// way it is the directory the run was given, there and granted as it starts, which only
+/// a write refuses.
+struct Unwritable {
+    dir: PathBuf,
+    /// Whether it is mounted read-only over itself (root on Linux).
+    #[cfg(target_os = "linux")]
+    mounted: bool,
+}
 
 impl Unwritable {
     fn new(dir: &Path) -> Unwritable {
@@ -260,20 +271,81 @@ impl Unwritable {
         }
         #[cfg(windows)]
         icacls(dir, &["/deny", "*S-1-1-0:(OI)(CI)(W)"]);
-        Unwritable(dir.to_path_buf())
+        let unwritable = Unwritable {
+            dir: dir.to_path_buf(),
+            #[cfg(target_os = "linux")]
+            // SAFETY: geteuid(2) takes nothing and cannot fail.
+            mounted: unsafe { libc::geteuid() } == 0 && read_only_over_itself(dir),
+        };
+        // What it is for, checked: a test given a directory it could write in proves nothing.
+        let probe = dir.join("probe");
+        assert!(
+            std::fs::create_dir(&probe).is_err(),
+            "{} is writable, by this test itself",
+            dir.display()
+        );
+        unwritable
     }
 }
 
 impl Drop for Unwritable {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.mounted {
+            let path = std::ffi::CString::new(self.dir.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: umount2(2) of a path, its string NUL-terminated.
+            unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o755));
         }
         #[cfg(windows)]
-        icacls(&self.0, &["/remove:d", "*S-1-1-0"]);
+        icacls(&self.dir, &["/remove:d", "*S-1-1-0"]);
     }
+}
+
+/// Mounts `dir` over itself, read-only: a bind mount, then its remount read-only, as a bind
+/// mount takes `MS_RDONLY` only on a remount (mount(2), "Creating a bind mount"). True once
+/// done.
+#[cfg(target_os = "linux")]
+fn read_only_over_itself(dir: &Path) -> bool {
+    let path = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: mount(2) of a path over itself, its strings NUL-terminated, no data.
+    let bound = unsafe {
+        libc::mount(
+            path.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(
+        bound,
+        0,
+        "binding {}: {}",
+        dir.display(),
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: as above, a remount of the bind just made.
+    let read_only = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY,
+            std::ptr::null(),
+        )
+    };
+    let e = std::io::Error::last_os_error();
+    if read_only != 0 {
+        // SAFETY: umount2(2) of the bind just made.
+        unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) };
+    }
+    assert_eq!(read_only, 0, "remounting {} read-only: {e}", dir.display());
+    true
 }
 
 /// Windows' own tool for a directory's access list.
@@ -366,7 +438,7 @@ mod storm {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::common::{self, Vm, echo_of};
     use super::{RO_BYTES, Scratch, cannot_run_vms, cannot_snapshot, kernel, test_guest};
@@ -438,7 +510,8 @@ mod storm {
 
     /// Streams rounds of 4 MiB through the echo of the VM at `sock`, a guest of `size`
     /// ([`size`]), until `stop`, from when it answers, counting what comes back in
-    /// `carried`; returns each round's result.
+    /// `carried`; returns each round's result, a failed one saying when it began and ended
+    /// from `start` (its VM's).
     ///
     /// No wall clock bounds a storm: each round's reads are a wait judged by its kind's
     /// slowest round seen ([`common::Following`]), and each wait on its guest by its next new
@@ -456,6 +529,7 @@ mod storm {
         size: String,
         stop: Arc<AtomicBool>,
         carried: Arc<AtomicU64>,
+        start: Instant,
     ) -> std::thread::JoinHandle<Rounds> {
         std::thread::spawn(move || {
             let mut rounds = Vec::new();
@@ -466,7 +540,9 @@ mod storm {
                     continue;
                 }
                 salt += 1;
-                let round = echo_of(&sock, ECHO_PORT, salt, 4 << 20, Some(&carried), &size);
+                let began = start.elapsed();
+                let round = echo_of(&sock, ECHO_PORT, salt, 4 << 20, Some(&carried), &size)
+                    .map_err(|e| format!("{e} (its round {began:?} to {:?} in)", start.elapsed()));
                 if round.is_err() {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -478,7 +554,7 @@ mod storm {
 
     /// Lets a storm that has done its checks (`storm checked`) give its verdict once the host
     /// has stopped streaming through it, so every round ends with the guest alive. Returns
-    /// the rounds.
+    /// the rounds, and when it said `storm checked` from `start` (its VM's).
     #[track_caller]
     fn storm_done(
         vm: &mut Vm,
@@ -486,11 +562,13 @@ mod storm {
         stop: &AtomicBool,
         streamer: std::thread::JoinHandle<Rounds>,
         carried: &AtomicU64,
-    ) -> Rounds {
+        start: Instant,
+    ) -> (Rounds, Duration) {
         // As long as its guest gets on with its storm, saying something new or carrying the
         // stream: 64 vCPUs on a host of 4 TCG CPUs ran past two minutes (the parity plan's
         // step 10).
         let line = vm.wait_for_any_streamed(&["storm checked", "SHARDS-TEST FAIL"], Some(carried));
+        let checked = start.elapsed();
         stop.store(true, Ordering::Relaxed);
         let rounds = streamer.join().unwrap();
         assert!(line.contains("storm checked"), "{}", vm.seen.join("\n"));
@@ -506,7 +584,7 @@ mod storm {
             vm.wait_exit_streamed(None);
             panic!("telling the guest it may finish: {e}\n{}", vm.seen.join("\n"));
         }
-        rounds
+        (rounds, checked)
     }
 
     /// The guest compared its clock across all its CPUs `when`, many times: a check that
@@ -523,13 +601,16 @@ mod storm {
     }
 
     /// Every round came back whole, but for connections refused before the guest listened,
-    /// and at least `least` did.
-    fn all_whole(rounds: &[Result<(), String>], least: usize, what: &str) {
+    /// and at least `least` did. A failure says what its guest `said`.
+    fn all_whole(rounds: &[Result<(), String>], least: usize, what: &str, said: &str) {
         for e in rounds.iter().filter_map(|r| r.as_ref().err()) {
-            assert!(e.contains("refused"), "{what}: {e}");
+            assert!(e.contains("refused"), "{what}: {e}\n--- its guest said\n{said}");
         }
         let whole = rounds.iter().filter(|r| r.is_ok()).count();
-        assert!(whole >= least, "{what}: {whole} whole rounds");
+        assert!(
+            whole >= least,
+            "{what}: {whole} whole rounds\n--- its guest said\n{said}"
+        );
     }
 
     /// vCPU counts from two to as many as this host and the kernel take, or
@@ -566,8 +647,9 @@ mod storm {
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
+            let start = Instant::now();
             let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop")).sized(size(cpus));
-            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
+            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
             let code = original.wait_exit_streamed(Some(&carried));
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
@@ -583,6 +665,7 @@ mod storm {
                 let sock = s.0.join(format!("r{i}.sock"));
                 let stop = Arc::new(AtomicBool::new(false));
                 let carried = Arc::new(AtomicU64::new(0));
+                let start = Instant::now();
                 let mut copy = Vm::spawn(&[
                     "restore".as_ref(),
                     s.snapshot().as_os_str(),
@@ -590,16 +673,16 @@ mod storm {
                     sock.as_os_str(),
                 ])
                 .sized(size(cpus));
-                let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
-                let rounds = storm_done(&mut copy, &sock, &stop, streamer, &carried);
+                let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
+                let (rounds, checked) = storm_done(&mut copy, &sock, &stop, streamer, &carried, start);
                 let code = copy.wait_exit_following();
-                let what = format!("{cpus} vCPUs, restore {i}");
+                let what = format!("{cpus} vCPUs, restore {i} (storm checked {checked:?} in)");
                 let said = copy.seen.join("\n");
                 assert_eq!(code, Some(0), "{what}: {said}");
                 assert!(said.contains("SHARDS-TEST PASS"), "{what}: {said}");
                 assert!(said.contains("generation=1"), "{what}: {said}");
                 clock_checked(&said, "after the snapshot", &what);
-                all_whole(&rounds, 1, &what);
+                all_whole(&rounds, 1, &what, &said);
             }
         }
     }
@@ -618,9 +701,10 @@ mod storm {
             let sock = s.0.join("v.sock");
             let stop = Arc::new(AtomicBool::new(false));
             let carried = Arc::new(AtomicU64::new(0));
+            let start = Instant::now();
             let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
-            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone());
-            let rounds = storm_done(&mut vm, &sock, &stop, streamer, &carried);
+            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
+            let (rounds, checked) = storm_done(&mut vm, &sock, &stop, streamer, &carried, start);
             let code = vm.wait_exit_following();
             let said = vm.seen.join("\n");
             assert_eq!(code, Some(0), "{cpus} vCPUs: {said}");
@@ -630,7 +714,12 @@ mod storm {
             // from a machine that goes on, as this one does.
             clock_checked(&said, "before the snapshot", &format!("{cpus} vCPUs"));
             clock_checked(&said, "after the snapshot", &format!("{cpus} vCPUs"));
-            all_whole(&rounds, 2, &format!("{cpus} vCPUs"));
+            all_whole(
+                &rounds,
+                2,
+                &format!("{cpus} vCPUs (storm checked {checked:?} in)"),
+                &said,
+            );
         }
     }
 }
