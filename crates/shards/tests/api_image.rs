@@ -384,11 +384,199 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         host: shared.to_path_buf(),
         at: "/work".into(),
         read_only: true,
+        members: None,
     }];
     let guest = boot(&home, &s);
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
     assert_ended(&*guest, MemberEnd::Exited(0));
+}
+
+/// A project shared at its host path, writable, with its harness (D277), as kiln launches one
+/// (its `isolated.rs`): beneath the host's own per-user temporary directory (macOS's
+/// `/var/folders/…`, a path through its `/var` link), its harness's working directory, beside a
+/// plugin folder at `/plugins/p`, read-only, given its harness too, its person's home shared at
+/// the image's `VOLUME` for its harness and given its harness (a share's members narrowing what
+/// a `VOLUME` gives, never widening it), and its run's plug roots its project's top-level
+/// directory, the home's and `/volumes` (D271). Its harness starts in its project, which it
+/// reads at its host path, its files its own (D38), and reads its plugin.
+#[test]
+fn a_project_given_its_harness_is_where_it_works() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-given-home");
+    let person = TempDir::new("api-given-person");
+    let plugin = TempDir::new("api-given-plugin");
+    let proj = HostPathDir::new("api-given-proj");
+    let proj = proj.path();
+    std::fs::write(proj.join("hello.txt"), "from the project\n").unwrap();
+    std::fs::write(plugin.join("plugin.md"), "a plugin\n").unwrap();
+    let at = proj.to_str().unwrap().to_owned();
+    let file = format!("{at}/hello.txt");
+    build(
+        &home,
+        "api-given:1",
+        &["stat", "hello.txt", &file, "/plugins/p/plugin.md", "/tmp"],
+        "VOLUME --target-kind=harness /home/stub FOR codex\n",
+    );
+    let mut s = spec(&home, "api-given:1");
+    let to_codex = Some(PlugFor::Members(vec![codex()]));
+    s.shares = vec![
+        ImageShare {
+            host: proj.clone(),
+            at: at.clone(),
+            read_only: false,
+            members: to_codex.clone(),
+        },
+        ImageShare {
+            host: plugin.to_path_buf(),
+            at: "/plugins/p".into(),
+            read_only: true,
+            members: to_codex,
+        },
+        ImageShare {
+            host: person.to_path_buf(),
+            at: "/home/stub".into(),
+            read_only: false,
+            members: Some(PlugFor::Members(vec![codex()])),
+        },
+    ];
+    let top = at.trim_start_matches('/').split('/').next().unwrap();
+    s.plug_roots = vec![format!("/{top}"), "/home".into(), "/volumes".into()];
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: Some(at.clone()),
+        stdin: false,
+        terminal: false,
+        args: Vec::new(),
+        mcp: false,
+    }];
+    let guest = boot(&home, &s);
+    let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
+    assert_ended(&*guest, MemberEnd::Exited(0));
+    // Each path's kind, mode, owner and size, and a file's bytes: `stat` in the test guest.
+    let owner = |path: &str| {
+        said.lines()
+            .find(|l| l.starts_with(&format!("{path} ")))
+            .and_then(|l| l.split(' ').nth(3))
+            .map(str::to_owned)
+    };
+    assert!(said.contains("hello.txt file") && said.contains("= from the project\\n"), "{said}");
+    assert!(said.contains(&format!("{file} file")), "its project at its host path: {said}");
+    assert!(said.contains("/plugins/p/plugin.md file") && said.contains("= a plugin\\n"), "{said}");
+    assert_eq!(owner("hello.txt"), owner("/tmp"), "its project's files its own, as its scratch is: {said}");
+}
+
+/// A share given no member stays the run's own root's (D277; a member's default deny, D59):
+/// its harness, given none, finds nothing at the share's path.
+#[test]
+fn a_share_given_no_member_is_the_runs_alone() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-ungiven-home");
+    let proj = TempDir::new("api-ungiven-proj");
+    let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
+    std::fs::write(real.join("hello.txt"), "from the project\n").unwrap();
+    let at = real.to_str().unwrap().to_owned();
+    let file = format!("{at}/hello.txt");
+    build(&home, "api-ungiven:1", &["files", &file], "");
+    let mut s = spec(&home, "api-ungiven:1");
+    s.shares = vec![ImageShare {
+        host: real,
+        at,
+        read_only: false,
+        members: None,
+    }];
+    let guest = boot(&home, &s);
+    let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
+    assert_eq!(said, format!("== {file}\nerrno 2\n"));
+    assert_ended(&*guest, MemberEnd::Exited(0));
+}
+
+/// A share given a member the image declares none of, or one of files alone, is refused by its
+/// run host, by what (D277), before any member starts; where the image's own `VOLUME` lies, a
+/// share may narrow whom it reaches (its harness, which the `VOLUME` is for), and is refused as
+/// a widening for a member the `VOLUME`'s `FOR` names not.
+#[test]
+fn a_share_given_no_member_of_its_image_is_refused() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-misgiven-home");
+    let proj = TempDir::new("api-misgiven-proj");
+    let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
+    build(
+        &home,
+        "api-misgiven:1",
+        &["files", "/proc/self/cgroup"],
+        "VOLUME --target-kind=harness /work FOR codex\nVOLUME --target-kind=agent /theirs FOR helper\n",
+    );
+    let given = |at: &str, member: MemberName| {
+        let mut s = spec(&home, "api-misgiven:1");
+        s.shares = vec![ImageShare {
+            host: real.clone(),
+            at: at.into(),
+            read_only: false,
+            members: Some(PlugFor::Members(vec![member])),
+        }];
+        booted(&ImageShards::new(), &s).map(|_| ())
+    };
+    match given("/proj", MemberName::harness("nope")) {
+        Err(ImageRefusal::Image(why)) => assert!(why.contains("declares no such member"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match given("/proj", MemberName::agent("helper")) {
+        Err(ImageRefusal::Image(why)) => assert!(why.contains("files alone"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(given("/work", codex()).is_ok(), "its harness, whom the VOLUME there is for");
+    match given("/theirs", codex()) {
+        Err(ImageRefusal::Widening(why)) => assert!(why.contains("VOLUME") && why.contains("codex"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A test's directory where the host's users keep their temporary files as the OS names it:
+/// on macOS `DARWIN_USER_TEMP_DIR`, beneath `/var/folders`, not where `TMPDIR` may point, made
+/// and removed here; elsewhere the test's own (`TempDir`).
+enum HostPathDir {
+    Os(std::path::PathBuf),
+    Test(TempDir),
+}
+
+impl HostPathDir {
+    fn new(name: &str) -> Self {
+        if !cfg!(target_os = "macos") {
+            return Self::Test(TempDir::new(name));
+        }
+        let out = std::process::Command::new("getconf")
+            .arg("DARWIN_USER_TEMP_DIR")
+            .output()
+            .unwrap();
+        let base = std::path::PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+        let dir = base.join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self::Os(dir)
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        match self {
+            Self::Os(dir) => dir.clone(),
+            Self::Test(dir) => dir.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for HostPathDir {
+    fn drop(&mut self) {
+        if let Self::Os(dir) = self {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 /// A guest port the image gives its harness coming in, published on a host port the
@@ -475,6 +663,7 @@ fn a_project_is_plugged_into_the_running_harness() {
         host: bound.clone(),
         at: "/bound".into(),
         read_only: true,
+        members: None,
     }];
     let guest = booted(&ImageShards::new(), &s).unwrap();
     let plug = |to: &MemberName, at: &str| Plug {
@@ -800,6 +989,7 @@ fn a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64() {
         host: out.to_path_buf(),
         at: "/out".into(),
         read_only: false,
+        members: None,
     }];
     let guest = boot(&home, &s);
     let said = |name: &str| -> std::collections::BTreeMap<String, String> {

@@ -514,6 +514,133 @@ fn staged(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<V
     Ok(entries)
 }
 
+/// A share `request` gives members as they start (D277): where the guest sees it, and each
+/// member it is given to, by declared index, kind and name, ascending by index.
+struct Given {
+    at: String,
+    members: Vec<(u32, wire::MemberKind, String)>,
+}
+
+/// Each share `request` gives members as they start (D277): each member one the image declares
+/// that runs, or every such member for one given to every member; refused by name otherwise, as
+/// a staged member is.
+fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Result<Vec<Given>, No> {
+    let mut given = Vec::new();
+    for share in &request.shares {
+        let Some(to) = &share.members else { continue };
+        let mut found: Vec<&wire::MemberInfo> = Vec::new();
+        match to {
+            wire::ShareTo::Every => found.extend(members.iter().filter(|m| m.runs)),
+            wire::ShareTo::Members(named) => {
+                for n in named {
+                    let info = members
+                        .iter()
+                        .find(|i| i.kind == n.kind && i.name == n.name)
+                        .ok_or_else(|| {
+                            No(
+                                Cause::Image,
+                                format!("{}: {:?} {}: the image declares no such member", share.at, n.kind, n.name),
+                            )
+                        })?;
+                    if !info.runs {
+                        return Err(No(
+                            Cause::Image,
+                            format!(
+                                "{}: {:?} {}: files alone, which run nothing to be given a share",
+                                share.at, n.kind, n.name
+                            ),
+                        ));
+                    }
+                    found.push(info);
+                }
+            }
+        }
+        if found.is_empty() {
+            return Err(No(
+                Cause::Image,
+                format!("{}: given to every member that runs, and none of the image's runs", share.at),
+            ));
+        }
+        found.sort_unstable_by_key(|m| m.index);
+        found.dedup_by_key(|m| m.index);
+        given.push(Given {
+            at: share.at.clone(),
+            members: found.iter().map(|m| (m.index, m.kind, m.name.clone())).collect(),
+        });
+    }
+    Ok(given)
+}
+
+/// Whether the image's volume `v` gives itself to the member `kind` `name`: every agent and
+/// harness where `FOR` names none; else one it names, of the kind `--target-kind` says where it
+/// says one.
+fn volume_gives(v: &crate::agentfile::AgentVolume, kind: wire::MemberKind, name: &str) -> bool {
+    use shards_agentfile::agentfile::TargetKind;
+    let of_kind = match v.scope.kind {
+        None => true,
+        Some(TargetKind::Agent) => kind == wire::MemberKind::Agent,
+        Some(TargetKind::Harness) => kind == wire::MemberKind::Harness,
+    };
+    v.scope.names.is_empty() || (of_kind && v.scope.names.iter().any(|n| n.as_slice() == name.as_bytes()))
+}
+
+/// `mounts`' entry of each share given members (D277) told so: its members, each by its
+/// declared index (`member=N`), as an image's volume is given its members (`domains`), beside
+/// the run's own root as before. Where the image's own `VOLUME` lies there, its Agentfile is
+/// the most it is given: a share there may narrow whom it reaches, refused as a widening for a
+/// member its `FOR` gives it none. Refused for a file shared alone, which no member stands in a
+/// directory for.
+fn give_members(mounts: &mut [(String, Vec<u8>)], given: &[Given], volumes: &[crate::agentfile::AgentVolume]) -> Result<(), No> {
+    for g in given {
+        let at = &g.at;
+        let dest = shards_cmdline::mounts::clean(at);
+        let Some((_, entry)) = mounts.iter_mut().find(|(d, _)| *d == dest) else {
+            return Err(No(Cause::Request, format!("{at}: no share there to give its members")));
+        };
+        let parts: Vec<&[u8]> = entry.splitn(4, |&b| b == 0).collect();
+        let [head, point, flags, only] = parts.as_slice() else {
+            return Err(No(Cause::Boot, format!("{at}: its share's setup entry is not one")));
+        };
+        if !only.is_empty() {
+            return Err(No(
+                Cause::Request,
+                format!("{at}: a file shared alone is given to no member; share the directory it lies in"),
+            ));
+        }
+        let image_volume = flags.split(|&b| b == b',').any(|f| f == b"domains");
+        if image_volume {
+            let volume = volumes
+                .iter()
+                .find(|v| v.paths.iter().any(|p| shards_cmdline::mounts::clean(p) == dest));
+            for (_, kind, name) in &g.members {
+                if !volume.is_some_and(|v| volume_gives(v, *kind, name)) {
+                    return Err(No(
+                        Cause::Widening,
+                        format!(
+                            "{at}: the image's VOLUME there gives it as its Agentfile says, and {kind:?} {name} none; a share there narrows whom it reaches, never widens"
+                        ),
+                    ));
+                }
+            }
+        } else if !head.starts_with(b"volume=") {
+            return Err(No(Cause::Boot, format!("{at}: its share's setup entry is not one")));
+        }
+        let mut words: Vec<Vec<u8>> = flags
+            .split(|&b| b == b',')
+            .filter(|f| !f.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect();
+        if !image_volume {
+            words.push(b"domains".to_vec());
+        }
+        words.extend(g.members.iter().map(|(m, _, _)| format!("member={m}").into_bytes()));
+        let (nul, joined): (&[u8], Vec<u8>) = (b"\0", words.join(&b','));
+        let told = [*head, nul, *point, nul, joined.as_slice(), nul, *only].concat();
+        *entry = told;
+    }
+    Ok(())
+}
+
 /// The members `request` asks `asked` of, by their declared index, ascending: each one of the
 /// image's that runs a program, each asked once, refused by name otherwise; `purpose` what one
 /// of files alone runs nothing for, `what` what is asked.
@@ -2920,7 +3047,7 @@ mod hosted {
             bridge,
             past6,
             points,
-            opened,
+            mut opened,
             made,
             server,
             microvm,
@@ -2956,6 +3083,10 @@ mod hosted {
         // output, what it stages, its members' ends asked for, and its own command or
         // `ATTEND`.
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
+        // The shares it gives members as they start (D277), told in their entries.
+        let given = super::share_members(request, &members)?;
+        let volumes = agentfile.as_ref().map(|a| a.volumes.as_slice()).unwrap_or_default();
+        super::give_members(&mut opened.mounts, &given, volumes)?;
         let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
             .map_err(no(Cause::Request))?;
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {

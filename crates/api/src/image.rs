@@ -192,13 +192,20 @@ pub struct MemberSpec {
 }
 
 /// A host directory the guest sees at `at`, as `-v HOST:AT[:ro]` gives one: a member gets
-/// it where the image's `VOLUME` at `at` is for it (D109), the run's own command where no
-/// `VOLUME` declares `at`.
+/// it where the image's `VOLUME` at `at` is for it (D109), or where `members` names it
+/// (D277); the run's own command in every case.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageShare {
     pub host: PathBuf,
     pub at: String,
     pub read_only: bool,
+    /// The members given it as they start, at `at` in each one's own root before its command
+    /// runs, so that one may work in it from its first instruction (D277): every member that
+    /// runs, or those named, each one the image declares that runs; none, the run's own root
+    /// alone (a member's default deny, D59), and a member gets it later only by a plug
+    /// ([`ImageGuest::plug`]). Its files are the member's where one member alone is given it,
+    /// as a `VOLUME … FOR` one is (D38).
+    pub members: Option<PlugFor>,
 }
 
 /// An image to boot.
@@ -1189,10 +1196,41 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                 why: format!("{:?}: where the guest sees it is an absolute path", s.at),
             });
         }
+        let members = match &s.members {
+            None => None,
+            Some(PlugFor::Every) => Some(wire::ShareTo::Every),
+            Some(PlugFor::Members(named)) => {
+                let mut to: Vec<wire::ShareMember> = Vec::with_capacity(named.len());
+                for m in named {
+                    let m = wire::ShareMember {
+                        kind: m.kind,
+                        name: m.name.clone(),
+                    };
+                    if to.contains(&m) {
+                        return Err(ImageRefusal::Spec {
+                            what: "a share's members",
+                            why: format!("{}: {:?} {} named twice", s.at, m.kind, m.name),
+                        });
+                    }
+                    to.push(m);
+                }
+                if to.is_empty() {
+                    return Err(ImageRefusal::Spec {
+                        what: "a share's members",
+                        why: format!(
+                            "{}: given to members it names none of; give it to one, or to none for the run's own root alone",
+                            s.at
+                        ),
+                    });
+                }
+                Some(wire::ShareTo::Members(to))
+            }
+        };
         shares.push(wire::ShareAt {
             host: host.into(),
             at: s.at.clone(),
             read_only: s.read_only,
+            members,
         });
     }
     // The instant it becomes is nanoseconds since the Unix epoch in a u64, as `ready-by=`
@@ -1376,6 +1414,7 @@ mod tests {
                 host: std::env::current_dir().unwrap(),
                 at: "/work".into(),
                 read_only: true,
+                members: None,
             }],
             nesting: false,
             ready_by: None,
@@ -1767,6 +1806,29 @@ mod tests {
         let mut s = spec();
         s.shares[0].at = "work".into();
         assert_eq!(refused(s), "a share");
+        // A share's members (D277): named none of, or one twice, refused by what; every member,
+        // or those named, carried as asked.
+        let mut s = spec();
+        s.shares[0].members = Some(PlugFor::Members(Vec::new()));
+        assert_eq!(refused(s), "a share's members");
+        let mut s = spec();
+        s.shares[0].members = Some(PlugFor::Members(vec![MemberName::harness("codex"), MemberName::harness("codex")]));
+        assert_eq!(refused(s), "a share's members");
+        for (asked, carried) in [
+            (None, None),
+            (Some(PlugFor::Every), Some(wire::ShareTo::Every)),
+            (
+                Some(PlugFor::Members(vec![MemberName::harness("codex")])),
+                Some(wire::ShareTo::Members(vec![wire::ShareMember {
+                    kind: MemberKind::Harness,
+                    name: "codex".into(),
+                }])),
+            ),
+        ] {
+            let mut s = spec();
+            s.shares[0].members = asked;
+            assert_eq!(request(&s).map(|r| r.shares[0].members.clone()), Ok(carried));
+        }
         for relative_or_escaping in [
             "proj",
             "./proj",

@@ -141,6 +141,10 @@ struct Share {
     main: bool,
     /// The store's own volume, which `--chown` and `--chmod` set: never a host directory.
     own: bool,
+    /// The members its orchestrator gave it as they start (D277, `member=N` each, by declared
+    /// index): those alone are given it, whatever a `VOLUME` would say; none, as a `VOLUME`
+    /// says (D109).
+    members: Option<Vec<u32>>,
 }
 
 /// The shares the run gives its domains, from its setup entries.
@@ -163,6 +167,11 @@ fn shares_of(setup: &[Vec<u8>]) -> Vec<Share> {
             continue;
         }
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let members: Vec<u32> = flags
+            .iter()
+            .filter_map(|f| f.strip_prefix(b"member="))
+            .filter_map(|n| std::str::from_utf8(n).ok()?.parse().ok())
+            .collect();
         out.push(Share {
             tag: text(tag),
             dest: crate::copy::clean(std::path::Path::new(&text(dest)))
@@ -172,6 +181,7 @@ fn shares_of(setup: &[Vec<u8>]) -> Vec<Share> {
             copy: flags.contains(&&b"copy"[..]),
             main,
             own: flags.contains(&&b"own"[..]),
+            members: (!members.is_empty()).then_some(members),
         });
     }
     out
@@ -275,6 +285,17 @@ fn given_at(dest: &str, real: &str, declared: bool) -> Result<bool, DomainMount>
 fn given_volume(d: &Domain, dest: &str) -> bool {
     let rules: Vec<&VolumeRule> = d.volumes.iter().filter(|r| r.path == dest).collect();
     rules.is_empty() || rules.iter().any(|r| r.granted)
+}
+
+/// Whether `d` is given `share`: one its orchestrator gave members (D277) to those alone, by
+/// their declared index, and where a `VOLUME` lies there only as it says too (its run host
+/// refuses a share that would widen it); any other as [`given_volume`] says.
+fn given_share(d: &Domain, share: &Share) -> bool {
+    let named = share
+        .members
+        .as_ref()
+        .is_none_or(|members| d.id.checked_sub(FIRST_ID).is_some_and(|m| members.contains(&m)));
+    named && given_volume(d, &share.dest)
 }
 
 /// The owner `--chown` names (§12 answer 9): an agent or harness by its name, its own
@@ -1799,7 +1820,7 @@ pub fn start(
     // Each share staged, and where it lies in the image.
     let mut staged: Vec<(Share, String, String)> = Vec::new();
     for (k, sh) in shares_of(setup).into_iter().enumerate() {
-        if !domains.iter().any(|d| given_volume(d, &sh.dest)) {
+        if !domains.iter().any(|d| given_share(d, &sh)) {
             continue;
         }
         let fail = |why: String| format!("the volume at {}: {why}", sh.dest);
@@ -1843,10 +1864,10 @@ pub fn start(
         let scoped = domains
             .iter()
             .any(|d| d.volumes.iter().any(|r| r.path == sh.dest));
-        if (scoped || !sh.main)
+        if (scoped || !sh.main || sh.members.is_some())
             && let [only] = domains
                 .iter()
-                .filter(|d| given_volume(d, &sh.dest))
+                .filter(|d| given_share(d, &sh))
                 .collect::<Vec<_>>()
                 .as_slice()
         {
@@ -2122,7 +2143,7 @@ pub fn start(
                 read_only: false,
             });
         }
-        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_volume(d, &sh.dest)) {
+        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_share(d, sh)) {
             for path in [real.as_str(), sh.dest.as_str()] {
                 mounts.push(crate::staged::MountPoint {
                     path,
@@ -2167,7 +2188,7 @@ pub fn start(
         // Its volumes, each a copy of the run's mount of it, at its mount point.
         let mut volumes = Vec::new();
         let mut volume_rules = Vec::new();
-        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_volume(d, &sh.dest)) {
+        for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_share(d, sh)) {
             let attr = libc::MOUNT_ATTR_NOSUID
                 | libc::MOUNT_ATTR_NODEV
                 | if sh.ro { libc::MOUNT_ATTR_RDONLY } else { 0 };
@@ -3810,6 +3831,7 @@ mod tests {
                     copy: true,
                     main: true,
                     own: true,
+                    members: None,
                 },
                 Share {
                     tag: "shards1".into(),
@@ -3818,9 +3840,46 @@ mod tests {
                     copy: false,
                     main: false,
                     own: false,
+                    members: None,
                 },
             ]
         );
+    }
+
+    /// A share its orchestrator gave members as they start (D277): theirs alone, by declared
+    /// index, and where a `VOLUME` lies there only as it says too; one given none, as its
+    /// `VOLUME` says.
+    #[test]
+    fn a_share_given_members_is_theirs_alone() {
+        let entry = |flags: &str| [b"volume=shards0\0/proj\0".as_slice(), flags.as_bytes(), b"\0"].concat();
+        let given_to = |flags: &str| shares_of(&[entry(flags)]).into_iter().next().and_then(|s| s.members);
+        assert_eq!(given_to("domains,member=1,member=3"), Some(vec![1, 3]));
+        assert_eq!(given_to("domains"), None);
+        let member = |m: u32, volumes: Vec<VolumeRule>| Domain {
+            id: FIRST_ID + m,
+            volumes,
+            ..domain_at("/agents/a", &[])
+        };
+        let share = |members: Option<Vec<u32>>| Share {
+            tag: "shards0".into(),
+            dest: "/proj".into(),
+            ro: false,
+            copy: false,
+            main: true,
+            own: false,
+            members,
+        };
+        let denied = vec![VolumeRule {
+            path: "/proj".into(),
+            granted: false,
+            chown: String::new(),
+            chmod: String::new(),
+        }];
+        assert!(given_share(&member(1, Vec::new()), &share(Some(vec![1]))));
+        assert!(!given_share(&member(2, Vec::new()), &share(Some(vec![1]))));
+        assert!(!given_share(&member(1, denied.clone()), &share(Some(vec![1]))));
+        assert!(!given_share(&member(1, denied), &share(None)));
+        assert!(given_share(&member(2, Vec::new()), &share(None)));
     }
 
     /// A volume no `VOLUME` scopes is every domain's; one `FOR` scopes, those it names.

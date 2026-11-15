@@ -1449,16 +1449,19 @@ mod tests {
                 name: Some("data".into()),
                 paths: vec!["/data".into()],
                 scoped: true,
+                scope: Default::default(),
             },
             AgentVolume {
                 name: Some("shared".into()),
                 paths: vec!["/shared".into()],
                 scoped: false,
+                scope: Default::default(),
             },
             AgentVolume {
                 name: None,
                 paths: vec!["/scratch".into()],
                 scoped: true,
+                scope: Default::default(),
             },
         ];
         let none = |_: &str| Ok(Vec::new());

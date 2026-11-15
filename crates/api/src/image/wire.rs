@@ -93,8 +93,11 @@ pub use shards_abi::run::nesting::Ready;
 /// it is asked, before any plug is; 36, the run's grants past its microVM changed as it goes
 /// ([`NetChange::Egress`], D273), the run's grants as its host holds them told with its start
 /// ([`Started::egress`]) and with each change ([`NetChanged::egress`]), so that a side that
-/// changes none refuses the run as it is asked, before any change is.
-pub const VERSION: u8 = 36;
+/// changes none refuses the run as it is asked, before any change is; 37, the members each share
+/// is given to as they start ([`ShareAt::members`], D277), so that a side that gives none
+/// refuses the run as it is asked, rather than starting a member without the directory its
+/// orchestrator gave it.
+pub const VERSION: u8 = 37;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -246,6 +249,8 @@ pub enum WireError {
     Signal(u32),
     /// A plug into no member, or into one twice (version 35, D271).
     PlugMembers,
+    /// A share given to members it names none of, or one twice (version 37, D277).
+    ShareMembers,
 }
 
 impl std::fmt::Display for WireError {
@@ -262,6 +267,7 @@ impl std::fmt::Display for WireError {
             Self::Gpu => f.write_str("a GPU's identity D232's grammar or selection refuses"),
             Self::Signal(n) => write!(f, "a member's end by signal {n}, which no Linux has"),
             Self::PlugMembers => f.write_str("a plug into no member, or into one twice"),
+            Self::ShareMembers => f.write_str("a share given to members it names none of, or one twice"),
         }
     }
 }
@@ -545,6 +551,25 @@ pub struct ShareAt {
     /// Where the guest sees it: absolute.
     pub at: String,
     pub read_only: bool,
+    /// The members given it too as they start, each at `at` in its own root before its
+    /// command runs (D277); none, the run's own root alone (a member's default deny, D59).
+    /// Appended in version 37.
+    pub members: Option<ShareTo>,
+}
+
+/// Whom a share is given to as they start, beside the run's own root (D277): every member of
+/// the image that runs, or those named, each one it declares that runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareTo {
+    Every,
+    Members(Vec<ShareMember>),
+}
+
+/// A member a share names, as its image declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareMember {
+    pub kind: MemberKind,
+    pub name: String,
 }
 
 /// The run an orchestrator asks for.
@@ -2101,6 +2126,22 @@ impl Request {
         for root in &self.plug_roots {
             w.text(root)?;
         }
+        // Each share's members, in the shares' order, appended in version 37 (D277): 0 the
+        // run's own root alone, 1 every member that runs, 2 those named, each its kind and name.
+        for share in &self.shares {
+            match &share.members {
+                None => w.u8(0),
+                Some(ShareTo::Every) => w.u8(1),
+                Some(ShareTo::Members(named)) => {
+                    w.u8(2);
+                    w.count(named.len())?;
+                    for m in named {
+                        w.u8(m.kind as u8);
+                        w.text(&m.name)?;
+                    }
+                }
+            }
+        }
         w.done()
     }
 
@@ -2171,7 +2212,12 @@ impl Request {
             let host = r.text()?;
             let at = r.text()?;
             let read_only = r.flag()?;
-            shares.push(ShareAt { host, at, read_only });
+            shares.push(ShareAt {
+                host,
+                at,
+                read_only,
+                members: None,
+            });
         }
         let nesting = r.flag()?;
         let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
@@ -2299,6 +2345,39 @@ impl Request {
         let mut plug_roots = Vec::with_capacity(n);
         for _ in 0..n {
             plug_roots.push(r.text()?);
+        }
+        // Each share's members, appended in version 37 (D277): refused for a named list of
+        // none, or one named twice, as the run host would refuse it.
+        for share in &mut shares {
+            share.members = match r.u8()? {
+                0 => None,
+                1 => Some(ShareTo::Every),
+                2 => {
+                    // Each at least its kind's byte and its name's length.
+                    let n = r.count(1 + 4)?;
+                    let mut named: Vec<ShareMember> = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let m = ShareMember {
+                            kind: member_kind(r.u8()?)?,
+                            name: r.text()?,
+                        };
+                        if named.contains(&m) {
+                            return Err(WireError::ShareMembers);
+                        }
+                        named.push(m);
+                    }
+                    if named.is_empty() {
+                        return Err(WireError::ShareMembers);
+                    }
+                    Some(ShareTo::Members(named))
+                }
+                tag => {
+                    return Err(WireError::Tag {
+                        what: "a share's members",
+                        tag,
+                    });
+                }
+            };
         }
         r.end()?;
         Ok(Request {
@@ -4200,6 +4279,7 @@ mod tests {
                 host: "/home/u/work".into(),
                 at: "/work".into(),
                 read_only: false,
+                members: None,
             }],
             nesting: false,
             ready_by: None,
@@ -4299,12 +4379,13 @@ mod tests {
         // ... the control ask's absence (version 15), the GPUs' count (version 16), the
         // member's arguments' count (version 18), the sign-ins' count (version 24), the
         // member's MCP bridge (version 25), the upstream roots' count (version 26), the GPU
-        // report's flag (version 29) and the plug roots' count (version 35) last.
+        // report's flag (version 29), the plug roots' count (version 35) and the share's members
+        // (none, version 37) last.
         assert_eq!(
-            asked.get(asked.len() - 42..).unwrap(),
+            asked.get(asked.len() - 43..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
@@ -4515,9 +4596,9 @@ mod tests {
         // One member, so its input is the thirtieth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
         // count, the sign-ins' count, its MCP bridge, the upstream roots' count, the GPU
-        // report's flag and the plug roots' count follow it).
+        // report's flag, the plug roots' count and the share's members follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 30;
+        let at = bad.len() - 31;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -4530,6 +4611,59 @@ mod tests {
                 tag: 2
             })
         ));
+    }
+
+    /// Each share's members (version 37, D277). Do: give shares to none, to every member that
+    /// runs, and to members named. Expect: each reads back as written, after the plug roots.
+    /// Do: name none, name one twice, and write a members tag no version has. Expect: each
+    /// refused by type, never read as another request.
+    #[test]
+    fn each_shares_members_ride_the_request_last() {
+        let with = |members: Option<ShareTo>| {
+            let mut r = request();
+            r.shares = vec![ShareAt {
+                host: "/home/u/proj".into(),
+                at: "/home/u/proj".into(),
+                read_only: false,
+                members,
+            }];
+            r
+        };
+        let codex = ShareMember {
+            kind: MemberKind::Harness,
+            name: "codex".into(),
+        };
+        let helper = ShareMember {
+            kind: MemberKind::Agent,
+            name: "helper".into(),
+        };
+        for members in [
+            None,
+            Some(ShareTo::Every),
+            Some(ShareTo::Members(vec![codex.clone()])),
+            Some(ShareTo::Members(vec![codex.clone(), helper])),
+        ] {
+            let r = with(members);
+            assert_eq!(Request::decode(&r.encode().unwrap()), Ok(r));
+        }
+        for refused in [
+            Some(ShareTo::Members(Vec::new())),
+            Some(ShareTo::Members(vec![codex.clone(), codex])),
+        ] {
+            let bytes = with(refused).encode().unwrap();
+            assert_eq!(Request::decode(&bytes), Err(WireError::ShareMembers));
+        }
+        let mut bytes = with(None).encode().unwrap();
+        if let Some(last) = bytes.last_mut() {
+            *last = 3;
+        }
+        assert_eq!(
+            Request::decode(&bytes),
+            Err(WireError::Tag {
+                what: "a share's members",
+                tag: 3
+            })
+        );
     }
 
     /// A request cut anywhere short, or with a byte past its end, is refused by type; no
@@ -4598,9 +4732,9 @@ mod tests {
         }
         // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
         // count, the sign-ins' count, the MCP bridges, the upstream roots' count, the GPU
-        // report's flag and the plug roots' count where none is held apart.
+        // report's flag, the plug roots' count and the share's members where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 24;
+        let at = flag.len() - 25;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -4616,8 +4750,8 @@ mod tests {
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
         // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
         // bridge (version 25), the upstream roots' count (version 26), the GPU report's flag
-        // (version 29) and the plug roots' count (version 35).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4);
+        // (version 29), the plug roots' count (version 35) and the share's members (version 37).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -4630,7 +4764,7 @@ mod tests {
         // Held apart, with four billion members in a few bytes, in place of the reach's flag
         // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.truncate(hostile.len() - 24);
+        hostile.truncate(hostile.len() - 25);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -4681,14 +4815,15 @@ mod tests {
         }
         // The second member's one argument, "ü", last before the sign-ins' count (version 24),
         // the MCP bridges, the upstream roots' count (version 26), the GPU report's flag
-        // (version 29) and the plug roots' count (version 35): its bytes made no UTF-8.
+        // (version 29), the plug roots' count (version 35) and the share's members (version 37):
+        // its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - 4 - 1 - 4 - 2 - 4 - "ü".len();
+        let at = bad.len() - 1 - 4 - 1 - 4 - 2 - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
         // The second member's count, before the sign-ins', said as four billion in no bytes.
         let mut hostile = with(&[], &[]).encode().unwrap();
-        hostile.truncate(hostile.len() - 4 - 1 - 4 - 2 - 4);
+        hostile.truncate(hostile.len() - 1 - 4 - 1 - 4 - 2 - 4);
         let at = hostile.len() - 4;
         hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -4823,9 +4958,10 @@ mod tests {
         // member's terminal's (version 11), the members' reach (version 12), the control ask
         // (version 15), the GPUs' count (version 16), its arguments' count (version 18), the
         // sign-ins' count (version 24), its MCP bridge (version 25), the upstream roots' count
-        // (version 26) and the GPU report's flag (version 29): no flag.
+        // (version 26), the GPU report's flag (version 29), the plug roots' count (version 35)
+        // and the share's members (version 37): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 30;
+        let at = flag.len() - 31;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -4837,10 +4973,10 @@ mod tests {
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
         // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge,
-        // the upstream roots' count, the GPU report's flag and the plug roots' count: no list of
-        // version 3's and on.
+        // the upstream roots' count, the GPU report's flag, the plug roots' count and the share's
+        // members: no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 32;
+        let at = list.len() - 33;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -5695,10 +5831,11 @@ mod tests {
         assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
         // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
         // count (version 18), the sign-ins' (version 24), its MCP bridge (version 25), the
-        // upstream roots' count (version 26), the GPU report's flag (version 29) and the plug
-        // roots' count (version 35), made one D232's grammar refuses.
+        // upstream roots' count (version 26), the GPU report's flag (version 29), the plug roots'
+        // count (version 35) and the share's members (version 37), made one D232's grammar
+        // refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - 4 - 1 - 4 - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        let at = unnamed.len() - 1 - 4 - 1 - 4 - 1 - 4 - 4 - "metal:00000001000002a1".len();
         assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
@@ -5810,10 +5947,11 @@ mod tests {
         }
         // The second sign-in's CLI, its code after its name, made one no version has; the one
         // member's MCP bridge's flag (version 25), the upstream roots' count (version 26), the
-        // GPU report's flag (version 29) and the plug roots' count (version 35) after it.
+        // GPU report's flag (version 29), the plug roots' count (version 35) and the share's
+        // members (version 37) after it.
         let mut cli = bytes.clone();
-        let at =
-            cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4);
+        let at = cli.len()
+            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));
