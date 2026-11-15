@@ -1002,11 +1002,15 @@ impl Client {
                     slowest: silence,
                     last: Last::Unread,
                 },
+                working: !lookup,
             }),
             Some(_) => None,
         };
-        conn.stall(paced.as_ref().map_or(self.patience.stall, |p| p.wait.bound()))
-            .map_err(|e| Failure::Other(e.into()))?;
+        conn.stall(paced.as_ref().map_or(
+            self.patience.stall,
+            |p| if p.working { None } else { p.wait.bound() },
+        ))
+        .map_err(|e| Failure::Other(e.into()))?;
         let mut body = Body {
             conn: Some(conn),
             paced,
@@ -2130,6 +2134,11 @@ struct Paced<'c> {
     /// bounded its path's silences as the body began, until a run-out it began after ends.
     wait: Bounded,
     body: Silenced,
+    /// A non-lookup's body before its first bytes: what its server does with the request (a
+    /// git fetch's pack made, an upload's digest checked) after sending its head, which is
+    /// none of its path's silences. Waited out as its connection lives, as the answer's own
+    /// first byte is (D276); its bytes' gaps from its first on are its path's silences.
+    working: bool,
 }
 
 impl Drop for Paced<'_> {
@@ -2170,6 +2179,14 @@ impl Body<'_> {
         self.finish_if_done();
         if let Some(p) = self.paced.as_mut() {
             match &read {
+                // A non-lookup's first bytes end its server's work with the request, which
+                // taught its path nothing: its gaps from here are its path's silences.
+                Ok(n) if *n > 0 && p.working => {
+                    p.working = false;
+                    if let Some(conn) = &self.conn {
+                        let _ = conn.stall(p.wait.bound());
+                    }
+                }
                 Ok(n) if *n > 0 => {
                     // The silence it ended: how long its socket waited for its bytes, the gap
                     // past which its timeout would have cut it; none where they were there, in
@@ -3865,6 +3882,75 @@ mod tests {
             slowest.is_none_or(|us| us < 300_000),
             "the reader's own time counted: {slowest:?} µs"
         );
+    }
+
+    /// D276's rule for a non-lookup's answer, its server's work with the request waited out as
+    /// its connection lives, holds past its head: a server that sends its head at once and its
+    /// body only after its work (GitHub's git-upload-pack, whose `ERR upload-pack: not our ref`
+    /// or pack follows its `200` by that work's time) is waited for, though its path has shown
+    /// silences of 1 ms; a lookup's body is cut there as before. Before, the gap was taken for a
+    /// silence of the path's: cut, asked again, the run-out ended by the next request's quick
+    /// body, and cut again for as long as the build ran (kiln's P1.4 E2E, 2026-11-15).
+    #[test]
+    fn a_non_lookups_body_waits_out_its_servers_work_before_its_first_bytes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Each request's head answered at once, its body 300 ms later.
+        let serving = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut got = Vec::new();
+                let mut b = [0u8; 4096];
+                let whole = |got: &[u8]| {
+                    let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        return false;
+                    };
+                    let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    got.len() >= end + 4 + len
+                };
+                while !whole(&got) {
+                    let n = s.read(&mut b).unwrap();
+                    assert!(n > 0, "the request ended early");
+                    got.extend_from_slice(&b[..n]);
+                }
+                s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                s.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = s.write_all(b"5\r\nhello\r\n0\r\n\r\n");
+            }
+        });
+        let one_ms = crate::patience::Shown {
+            slowest_silence_us: Some(1_000),
+            ..crate::patience::Shown::default()
+        };
+        let client = learner().asking_again().showing("127.0.0.1", port, one_ms);
+        let url = at("http", "127.0.0.1", port);
+        let send = |method: &'static str, body: &'static [u8]| {
+            client
+                .send(&Request {
+                    method,
+                    url: &url,
+                    headers: &[],
+                    body,
+                    file: None,
+                })
+                .unwrap()
+        };
+        let mut answered = String::new();
+        send("POST", b"0000").read_to_string(&mut answered).unwrap();
+        assert_eq!(answered, "hello", "its server's work waited out");
+        let cut = send("GET", b"").read_to_string(&mut String::new());
+        assert!(
+            cut.is_err(),
+            "a lookup's body cut past its path's silence: {cut:?}"
+        );
+        serving.join().unwrap();
     }
 
     /// A read whose bytes were there as it began, in a buffer, the TLS session or the

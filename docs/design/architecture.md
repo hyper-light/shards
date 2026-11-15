@@ -36785,6 +36785,16 @@ crates/shards `build/git.rs`):
   again (advertisement, refs, the pack), since a pack is made afresh by each asking and its
   bytes cannot be resumed; a submodule's fetch likewise. Planning's fetches (a commit's time,
   a policy's metadata) ride the same way, saying nothing, as no step's log is open then.
+- **A non-lookup's body waits out its server's work before its first bytes** (amended
+  2026-11-15, PM M607): a server that sends its head at once and its body only after its
+  work with the request (GitHub's git-upload-pack: its `200`, then the pack or `ERR
+  upload-pack: not our ref` once made) had that work cut as a silence of its path's, at the
+  slowest its quick advertisement and ls-refs bodies had shown; `ridden` asked again, the
+  next asking's quick bodies ended the run-out, and the pack's wait was cut again for as long
+  as the build ran. A non-lookup's body now follows its connection's liveness until its
+  first bytes, as its answer's first byte does, and they teach its path no silence; the gaps
+  between its bytes are its path's silences, and a lookup's body is cut as before
+  (`Paced::working`).
 - **A resolver failure is now a registry's trouble too**: before, it failed a pull at once
   (D222's "a name that does not resolve"); now its first is ridden and a re-ask that fails so
   while the trouble follows liveness is the far end's end (`Trouble::gone`), as a refusal is.
@@ -36796,6 +36806,7 @@ crates/shards `build/git.rs`):
 | a lookup: no deadline, the resolver's answer or failure its end | `resolve`, `system_lookup` | getaddrinfo(3), GetAddrInfoW; resolv.conf(5) `timeout`, `attempts`: the host's own retries |
 | a connect: its path's pace, doubled at each of its own timeouts, made again | `Client::dial` | RFC 6298 §2, §5.5 (D222's `Pace`) |
 | an answer: its first byte's gap alone; past it, silences | `read_head`, `HeadWait` | a stall is a gap with no progress (the person, 2026-11-13; D222) |
+| a non-lookup's body before its first bytes: its connection's liveness | `Paced::working` | its server's work with the request, as its answer's first byte (PM M607) |
 | a lookup cut: asked again at once, each kind once while none ends | `Client::send_now` | RFC 9110 §9.2.1 (a safe method); D222's run-out clause |
 | an answer, a silence, a handshake cut by its path's only where its caller asks again | `Client::asking_again`, `Paced`, `Client::handshake` | a cut fails a caller that does not; records break with chance 1/k (Glick 1978) |
 | a caller's bound: none by default | `Patience` | the caller's protocol (D168's AWS SDK figures stay theirs) |
