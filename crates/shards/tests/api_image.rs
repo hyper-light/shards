@@ -30,9 +30,9 @@ use common::{
 use shards_api::image::{
     BootStop, Captured, Channel, Cli, CredentialGrant, FinalUse, ImageGuest, ImagePools, ImageRefusal,
     ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, PlugRefusal, Proto,
-    Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
-    StartedFrom, StatsScope, Unused, UpstreamRoot,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, Plug, PlugFor,
+    PlugRefusal, PlugSource, Proto, Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant,
+    SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -117,6 +117,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        plug_roots: Vec::new(),
         gpu_report: None,
     }
 }
@@ -476,8 +477,14 @@ fn a_project_is_plugged_into_the_running_harness() {
         read_only: true,
     }];
     let guest = booted(&ImageShards::new(), &s).unwrap();
+    let plug = |to: &MemberName, at: &str| Plug {
+        source: PlugSource::Host(proj.clone()),
+        to: PlugFor::Members(vec![to.clone()]),
+        at: at.into(),
+        read_only: false,
+    };
     match ask(&*guest, |g| {
-        g.plug(&codex(), &proj, "/outside/proj", false, Duration::MAX)
+        g.plug(&plug(&codex(), "/outside/proj"), Duration::MAX)
     }) {
         Err(ImageRefusal::Plug(PlugRefusal::Outside, why)) => {
             assert!(why.contains(roots[0].as_str()), "{why}");
@@ -490,7 +497,7 @@ fn a_project_is_plugged_into_the_running_harness() {
     };
     assert!(
         matches!(
-            ask(&*guest, |g| g.plug(&helper, &proj, &dest, false, Duration::MAX)),
+            ask(&*guest, |g| g.plug(&plug(&helper, &dest), Duration::MAX)),
             Err(ImageRefusal::Plug(PlugRefusal::Member, _))
         ),
         "a member of files alone"
@@ -498,7 +505,7 @@ fn a_project_is_plugged_into_the_running_harness() {
     let barrier = std::sync::Barrier::new(2);
     let attempt = || {
         barrier.wait();
-        ask(&*guest, |g| g.plug(&codex(), &proj, &dest, false, Duration::MAX))
+        ask(&*guest, |g| g.plug(&plug(&codex(), &dest), Duration::MAX))
     };
     let results = std::thread::scope(|scope| {
         let a = scope.spawn(attempt);
@@ -742,6 +749,94 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         Err(ImageRefusal::Ended(ended))
     );
     reader.join().unwrap();
+}
+
+/// A guest's watchdogs take its run's pause for its host's hold, not a lockup (D267): on KVM
+/// x86-64 each vCPU held through the pause tells its guest's kvmclock it was stopped as it goes
+/// on (`KVM_KVMCLOCK_CTRL`), which the soft-lockup and RCU stall watchdogs read before they
+/// report (kernel/watchdog.c, kernel/rcu/tree_stall.h, `kvm_check_and_clear_guest_paused`). Do
+/// run an image's own command (`watchdogs`, the test guest's) that says its guest's
+/// `watchdog_thresh`, the kernel's taint and its count of RCU stalls; pause the run past the
+/// soft-lockup threshold that follows (twice `watchdog_thresh`) by one of the watchdog's sample
+/// periods (a fifth of the threshold), the kernel's own rule, so that its look after the pause
+/// is past it whatever its phase; resume; and read the taint and the count once the watchdog
+/// has looked since. Expect: its soft-lockup watchdog on, and neither moved: no `L` taint (a
+/// soft lockup's report sets it, as it prints `BUG: soft lockup`) and no RCU stall counted (as
+/// `rcu_sched self-detected stall` is printed). A member of an Agentfile's image reads no
+/// kernel log (D115: `dmesg_restrict` 1, no CAP_SYSLOG) and the run's console is discarded, so
+/// these are what the kernel keeps of those reports that its guest may read. Red with
+/// `Vcpu::went_on` emptied on KVM x86-64. Elsewhere there is nothing to tell (D267).
+#[test]
+fn a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        eprintln!(
+            "SKIP: kvmclock's stopped flag is KVM x86-64's alone; arm64 KVM, Hypervisor.framework and WHP \
+             give their guests no flag to read (D267)"
+        );
+        return;
+    }
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-dog-home");
+    build(&home, "api-dog:1", &["sleep-for", "600000"], "");
+    let out = TempDir::new("api-dog-out");
+    let mut s = spec(&home, "api-dog:1");
+    s.command = Some(["/bin/testguest", "watchdogs", "/out"].map(String::from).to_vec());
+    s.shares = vec![ImageShare {
+        host: out.to_path_buf(),
+        at: "/out".into(),
+        read_only: false,
+    }];
+    let guest = boot(&home, &s);
+    let said = |name: &str| -> std::collections::BTreeMap<String, String> {
+        let at = out.join(name);
+        let mut patience = Patience::started();
+        let text = loop {
+            if let Ok(text) = std::fs::read_to_string(&at) {
+                break text;
+            }
+            assert!(patience.holds(), "its command wrote no {}", at.display());
+            std::thread::sleep(patience.next_look());
+        };
+        patience.done();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        words
+            .chunks(2)
+            .map(|kv| {
+                (
+                    kv[0].to_string(),
+                    kv.get(1).copied().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let before = said("before");
+    assert_eq!(before["soft"], "1", "its soft-lockup watchdog is off: {before:?}");
+    let thresh: u64 = before["thresh"].parse().unwrap();
+    // kernel/watchdog.c: the soft-lockup threshold is twice `watchdog_thresh`, looked at five
+    // times within it (`get_softlockup_thresh`, `NUM_SAMPLE_PERIODS`).
+    let threshold = Duration::from_secs(thresh * 2);
+    let sample = threshold / 5;
+    assert!(ask(&*guest, |g| g.pause(Duration::MAX)).unwrap().now);
+    std::thread::sleep(threshold + sample);
+    assert!(!ask(&*guest, |g| g.resume(Duration::MAX)).unwrap().now);
+    // Its command's sleep across the pause ends as its vCPU goes on; one sample later the
+    // watchdog has looked, and its command says so.
+    std::thread::sleep(sample);
+    let after = said("after");
+    assert_eq!(
+        (&after["tainted"], &after["stalls"]),
+        (&before["tainted"], &before["stalls"]),
+        "its guest took a pause of {:?} for a lockup (taint `L` is 1 << 14): before {before:?}, after {after:?}",
+        threshold + sample
+    );
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
+        Some(RunEnd::Exited(0))
+    );
 }
 
 /// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
@@ -3156,6 +3251,7 @@ fn pooled_spec(home: &std::path::Path, image: &str, binary: &std::path::Path) ->
         gpu_devices: Vec::new(),
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
+        plug_roots: Vec::new(),
         gpu_report: None,
     }
 }
@@ -3411,4 +3507,174 @@ fn a_port_published_live_answers_and_is_gone_after_unpublish() {
         assert_eq!(next.started_from(), StartedFrom::Restored);
         next.stop().unwrap();
     }
+}
+
+/// The lines a running member writes on `channel`, as they come, read on a thread of their own
+/// until its channel ends (its run's end): each sent on the receiver this returns.
+fn lines_of(guest: &dyn ImageGuest, channel: Channel) -> std::sync::mpsc::Receiver<String> {
+    let pipe = guest.take_output(&codex(), channel).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(pipe).lines() {
+            let Ok(line) = line else { return };
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// Waits, as long as its run goes on (`Patience` of what this test started), for the member's
+/// lines on `rx` to hold each of `wanted`: every line read meanwhile.
+#[track_caller]
+fn said_all(rx: &std::sync::mpsc::Receiver<String>, wanted: &[String]) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut patience = Patience::started();
+    while !wanted.iter().all(|w| seen.contains(w)) {
+        match rx.recv_timeout(patience.next_look()) {
+            Ok(line) => seen.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        assert!(patience.holds(), "the member said {seen:?}, short of {wanted:?}");
+    }
+    patience.done();
+    seen
+}
+
+/// D271, P6b.2: a host directory plugged read-write into a running member is read there and
+/// written back; one plugged read-only refuses the member's writes (EROFS); a volume of the
+/// home's store, made by its plug, is read and written alike, its files kept in the home; each
+/// beneath the plug root the run was granted at its start (`ImageSpec::plug_roots`), and one
+/// outside every root refused typed (`Outside`). Unplugging one the member holds busy (its
+/// working directory there) is refused typed (`Busy`) and leaves it plugged; the others let go
+/// of, and refused unplugged again (`Unknown`). All of it in the running microVM in place: its
+/// start (`started_from`) and its one VM process the same throughout, its template's files
+/// untouched.
+#[test]
+fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-live-vol-home");
+    let files = TempDir::new("api-live-vol-files");
+    let mut dirs = Vec::new();
+    for (name, text) in [("rw", "rw host"), ("ro", "ro host")] {
+        std::fs::create_dir(files.join(name)).unwrap();
+        let dir = std::fs::canonicalize(files.join(name)).unwrap();
+        std::fs::write(dir.join("from-host"), format!("{text}\n")).unwrap();
+        dirs.push(dir);
+    }
+    let (rw, ro) = (dirs[0].clone(), dirs[1].clone());
+    let volume = "api-live-vol";
+    build(
+        &home,
+        "api-live-vol:1",
+        &["plugged-volumes", "/session/rw", "/session/ro", "/session/vol"],
+        "",
+    );
+    let mut s = spec(&home, "api-live-vol:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.plug_roots = vec!["/session".into()];
+    let guest = boot(&home, &s);
+    let from = guest.started_from();
+    let vms = vm_processes(&home);
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    let templates = templates_of(&home);
+    let lines = lines_of(&*guest, Channel::Stdout);
+    let plug = |source, to, at: &str, read_only| Plug {
+        source,
+        to,
+        at: at.into(),
+        read_only,
+    };
+    match ask(&*guest, |g| {
+        g.plug(
+            &plug(
+                PlugSource::Host(rw.clone()),
+                PlugFor::Every,
+                "/elsewhere/rw",
+                false,
+            ),
+            Duration::MAX,
+        )
+    }) {
+        Err(ImageRefusal::Plug(PlugRefusal::Outside, why)) => {
+            assert!(why.contains("/session"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    ask(&*guest, |g| {
+        g.plug(
+            &plug(PlugSource::Host(rw.clone()), PlugFor::Every, "/session/rw", false),
+            Duration::MAX,
+        )
+    })
+    .unwrap();
+    ask(&*guest, |g| {
+        g.plug(
+            &plug(
+                PlugSource::Host(ro.clone()),
+                PlugFor::Members(vec![codex()]),
+                "/session/ro",
+                true,
+            ),
+            Duration::MAX,
+        )
+    })
+    .unwrap();
+    ask(&*guest, |g| {
+        g.plug(
+            &plug(
+                PlugSource::Volume(volume.into()),
+                PlugFor::Every,
+                "/session/vol",
+                false,
+            ),
+            Duration::MAX,
+        )
+    })
+    .unwrap();
+    let data = home.join("volumes").join(volume).join("_data");
+    std::fs::write(data.join("from-host"), "vol host\n").unwrap();
+    let wanted: Vec<String> = [
+        "/session/rw from-host rw host",
+        "/session/rw from-member ok",
+        "/session/ro from-host ro host",
+        "/session/ro from-member errno 30",
+        "/session/vol from-host vol host",
+        "/session/vol from-member ok",
+        "holding /session/rw",
+    ]
+    .map(String::from)
+    .to_vec();
+    said_all(&lines, &wanted);
+    assert_eq!(
+        std::fs::read_to_string(rw.join("from-member")).unwrap(),
+        "member\n"
+    );
+    assert!(!ro.join("from-member").exists(), "a read-only plug took a write");
+    assert_eq!(
+        std::fs::read_to_string(data.join("from-member")).unwrap(),
+        "member\n"
+    );
+    match ask(&*guest, |g| g.unplug("/session/rw", Duration::MAX)) {
+        Err(ImageRefusal::Plug(PlugRefusal::Busy, why)) => assert!(why.contains("codex"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    for at in ["/session/ro", "/session/vol"] {
+        ask(&*guest, |g| g.unplug(at, Duration::MAX)).unwrap();
+        assert!(matches!(
+            ask(&*guest, |g| g.unplug(at, Duration::MAX)),
+            Err(ImageRefusal::Plug(PlugRefusal::Unknown, _))
+        ));
+    }
+    // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
 }
