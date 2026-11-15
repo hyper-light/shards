@@ -2857,7 +2857,11 @@ mod tests {
         let whats: Vec<&str> = said.iter().map(|(_, what)| *what).collect();
         assert_eq!(
             whats,
-            ["its start taken", "its diagnostics' file named", "its diagnostics kept"]
+            [
+                "its start taken",
+                "its diagnostics' file named",
+                "its diagnostics kept"
+            ]
         );
         assert!(said.windows(2).all(|w| w[0].0 <= w[1].0), "{said:?}");
         let kept: Vec<u8> = lock(&timed_one.state).said.iter().copied().collect();
