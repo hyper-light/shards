@@ -170,16 +170,19 @@ impl Hold {
     /// and returns at once once `stop` says so (the machine ends, or a snapshot needs it).
     /// Held by its share, it waits no longer than its period: a governor that wakes late
     /// on a busy host held its vCPUs as late, up to 57 s past their period on an overloaded
-    /// one (PM M441).
-    pub(super) fn wait(&self, stop: &dyn Fn() -> bool) {
+    /// one (PM M441). Returns whether it held the vCPU through a pause (D267), which its
+    /// guest is then told of where its hypervisor tells one (`Vcpu::went_on`).
+    pub(super) fn wait(&self, stop: &dyn Fn() -> bool) -> bool {
         if !self.held.load(Ordering::Acquire) {
-            return;
+            return false;
         }
         let mut s = lock(&self.state);
         s.waiting = s.waiting.saturating_add(1);
         self.waited.notify_all();
+        let mut paused = false;
         while !stop() {
             if s.group_held || s.paused {
+                paused |= s.paused;
                 s = wait(&self.released, s);
                 continue;
             }
@@ -193,6 +196,7 @@ impl Hold {
             s = wait_timeout(&self.released, s, left);
         }
         s.waiting = s.waiting.saturating_sub(1);
+        paused
     }
 
     /// The machine paused: every vCPU held out of its guest whatever its share, `kick`
@@ -670,7 +674,7 @@ mod tests {
     }
 
     /// A vCPU seen to have overrun its share by many at once, as a run its governor sees late
-    /// is (WHP's guest time moves ~10 ms apart on hex-winvm, PM M601), is held through the
+    /// is (WHP's guest time moves ~10 ms apart on hex-winvm, PM M602), is held through the
     /// periods its debt owes, across their ends, never let go at the end of the first: a hold
     /// let go at each period's end let its vCPU run again until its governor woke and kicked
     /// it, every period (hex-winvm: 38.8% of the wall at a quarter CPU, D255's bound 31%).
@@ -1088,6 +1092,28 @@ mod tests {
             !hold.pause(1, &|| {}, &|| false),
             "an ended machine is no pause's"
         );
+    }
+
+    /// A vCPU held through a pause says so as it goes on, so that its guest is told (D267's
+    /// `Vcpu::went_on`); one held by its share alone, or not held, does not.
+    #[test]
+    fn a_vcpu_held_through_a_pause_says_so() {
+        let hold = Hold::new(1);
+        assert!(!hold.wait(&|| false), "no hold is no pause");
+        hold.set_held(Some(Instant::now() + Duration::from_millis(20)));
+        assert!(!hold.wait(&|| false), "a share's hold is no pause");
+        std::thread::scope(|s| {
+            let pausing = s.spawn(|| hold.pause(1, &|| {}, &|| false));
+            // Its vCPU comes to its guest's door once the pause holds it, as a kicked one does.
+            while !hold.held.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let waiting = s.spawn(|| hold.wait(&|| false));
+            assert!(pausing.join().unwrap());
+            hold.resume();
+            assert!(waiting.join().unwrap(), "a pause it was held through went unsaid");
+        });
+        assert!(!hold.wait(&|| false), "a pause is said once, as it ends");
     }
 
     /// A vCPU waiting while held goes once the machine ends.

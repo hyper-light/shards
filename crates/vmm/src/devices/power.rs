@@ -1,6 +1,6 @@
 //! Power events that devices raise: on x86 the guest powers off and resets through
-//! device writes (ACPI sleep control, the i8042 reset command), not through a vCPU exit
-//! (docs/research/kvm-x86_64-ground-truth.md §4).
+//! device writes (ACPI sleep control and reset registers), not through a vCPU exit
+//! (docs/research/kvm-x86_64-ground-truth.md §4, D268).
 
 use std::sync::OnceLock;
 

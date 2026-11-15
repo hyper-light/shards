@@ -35,9 +35,9 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
     GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
-    PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
-    SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
-    decide,
+    NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret,
+    SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken,
+    VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -364,6 +364,15 @@ pub enum ImageRefusal {
     /// A [`WarmTicket`] booted with the spec of another pool than the one it reserved; `asked`
     /// none for a spec that is no pool's.
     OtherPool { reserved: PoolId, asked: Option<PoolId> },
+    /// An ask its guest would answer, refused at once as its run is paused or pausing (D267):
+    /// `room`, `resize`, `plug`, `unplug`, or `stats` of its own command or a member. Its guest
+    /// runs nothing until the run goes on ([`ImageGuest::resume`]); none of it was applied.
+    Paused { what: &'static str },
+    /// A pause or a resume its run's VM did not do (D267), in its words: its machine stopped
+    /// before every vCPU was held.
+    Pause(String),
+    /// A change of the running run's network its host refused (D269), by what refused it.
+    Net(NetRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -394,6 +403,12 @@ impl std::fmt::Display for ImageRefusal {
                 f,
                 "the run host's diagnostics: a bound of {bound} bytes, short of the {tail} kept to quote"
             ),
+            Self::Paused { what } => write!(
+                f,
+                "{what}: the run is paused, and its guest answers nothing until it resumes"
+            ),
+            Self::Pause(why) => write!(f, "the pause: {why}"),
+            Self::Net(cause, why) => write!(f, "the run's network: {cause:?}: {why}"),
         }
     }
 }
@@ -518,8 +533,34 @@ impl BootStop {
 pub trait ImageGuest: Send + Sync {
     /// Every member the image declares, by its declared index.
     fn members(&self) -> &[MemberInfo];
-    /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
-    fn published(&self) -> &[Bound];
+    /// Each port the run publishes now, as bound, and the members it reaches ([`Bound::to`]):
+    /// its start's, and those [`publish`](Self::publish)ed since and not let go of, as its
+    /// host last said them.
+    fn published(&self) -> Vec<Bound>;
+    /// Guest port `publish` published on the host as the run goes (D269), in its running
+    /// microVM in place: no image built, no template saved, its guest neither restarted nor
+    /// rebooted. Bound as the run's start binds its [`ImageSpec::publish`]: at its host address,
+    /// or at every one (IPv4's, and IPv6's where IPv6 listens), its host port or one the host
+    /// picks; checked as the start checks them, so that a port the image's Agentfile declares
+    /// `AS egress`, or one it gives no member coming in on a run with no command of its own, is
+    /// refused as [`NetRefusal::Widening`]. Answers what it bound, each binding one of
+    /// [`published`](Self::published)'s from then on, waiting at most `patience`; refused as
+    /// [`ImageRefusal::Net`], by what refused it: [`NetRefusal::NoNetwork`] for a run its
+    /// microVM started with no network device (nothing published, kept or linked past it).
+    /// Answered while the run is paused too: its host's network process makes it, not its guest.
+    fn publish(&self, publish: Publish, patience: Duration) -> Result<Vec<Bound>, ImageRefusal>;
+    /// The port the run publishes at `host` for `proto` let go of, in place (D269): one of
+    /// [`published`](Self::published)'s, its start's among them; its host's socket closed, so
+    /// that nothing more comes in on it: a TCP connection it took before goes on to its end,
+    /// and its UDP peers' flows end with it. Waiting and refused as
+    /// [`publish`](Self::publish), [`NetRefusal::Unknown`] where the run publishes nothing
+    /// there.
+    fn unpublish(
+        &self,
+        proto: Proto,
+        host: std::net::SocketAddr,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its
@@ -639,6 +680,26 @@ pub trait ImageGuest: Send + Sync {
     /// nowhere else, and its owner's to remove. Waits at most `patience`; refused as
     /// [`ImageRefusal::Save`], by what refused it: a path not UTF-8 as [`ImageRefusal::Spec`].
     fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal>;
+    /// The run's microVM paused where it is (D267): every vCPU held out of its guest by its
+    /// VMM, as `shards pause vm` holds one, so that its guest runs no CPU and its host's use
+    /// of it grows by its VMM's own alone; its memory, devices and connections kept, each
+    /// channel buffered within its flow control. Asks are applied in the order sent. It is held
+    /// at once, nothing of it asked of its guest, which may be slow or hung: an ask of its guest
+    /// already under way is answered as it goes on. While paused, an ask its guest would answer
+    /// is refused at once, [`ImageRefusal::Paused`] (`room`, `resize`, `plug`, `unplug`, `stats`
+    /// of its command or a member); the run's stats, its rate, a save, a stop and every wait are
+    /// answered as ever, its stats' guest lines what its init last said before the pause
+    /// ([`Stats::paused`]). Its guest's clocks run on through it (no snapshot is taken), and its
+    /// init sets its clock to its host's as it goes on. A pause of a paused run is done already,
+    /// so that a caller that lost an answer may ask again. Answers its paused time as it stands
+    /// then, waiting at most `patience` (`Duration::MAX`: until it is done or the run ends);
+    /// refused [`ImageRefusal::Pause`] where its VM held nothing, and [`ImageRefusal::Ended`]
+    /// once the run has ended.
+    fn pause(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
+    /// A paused run goes on where it stopped (D267), its vCPUs held no more but by their rate;
+    /// a resume of a running run is done already. Answers its paused time as it stands then,
+    /// the pause ended in its total; waiting and refused as [`pause`](Self::pause) is.
+    fn resume(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
     /// its host's failure, in its words, as `wait_for` saw it. Returns released, as a boot's

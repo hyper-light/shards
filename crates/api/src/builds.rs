@@ -10,6 +10,11 @@
 //! ([`wire`]). Secrets and SSH are given by reference, as the CLI takes them (D51, D68): a
 //! file's path or a variable's name of the caller's environment, which the build reads, and a
 //! key's path or the agent at `SSH_AUTH_SOCK`; no secret's bytes cross this channel.
+//!
+//! [`Builds::component`] builds one `AGENT`, `HARNESS` or `MCP` install alone (D270), from its
+//! directive's own source, into an OSI artifact in the same store ([`ComponentSpec`]): the
+//! build of an Agentfile of that one directive over `scratch`, so its fetch, pins, grants and
+//! policies are a whole build's. Its digest is what a running image's members are swapped to.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -69,10 +74,108 @@ pub struct BuildSsh {
 }
 
 /// A built image: its ID (`sha256:<hex>`, the digest of its index or manifest), which names it
-/// in its store whatever its tags are.
+/// in its store whatever its tags are. A built component's is its OSI artifact's manifest's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pinned {
     pub digest: String,
+}
+
+/// What a component installs, as its directive and its OSI artifact's type say it (D54, D57).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentKind {
+    Agent,
+    Harness,
+    /// An MCP server spoken to over stdio: one a member's harness runs from its directory.
+    Mcp,
+}
+
+impl ComponentKind {
+    /// Its directive's word in an Agentfile.
+    pub fn directive(self) -> &'static str {
+        match self {
+            Self::Agent => "AGENT",
+            Self::Harness => "HARNESS",
+            Self::Mcp => "MCP",
+        }
+    }
+
+    /// The directory its directive lays it in where no `TO` says another (§12.1), beneath
+    /// which its name is its own.
+    pub fn parent(self) -> &'static str {
+        match self {
+            Self::Agent => "/agents",
+            Self::Harness => "/harness",
+            Self::Mcp => "/mcp",
+        }
+    }
+
+    fn tag(self) -> u8 {
+        match self {
+            Self::Agent => 0,
+            Self::Harness => 1,
+            Self::Mcp => 2,
+        }
+    }
+
+    fn of_tag(tag: u8) -> Result<ComponentKind, WireError> {
+        Ok(match tag {
+            0 => Self::Agent,
+            1 => Self::Harness,
+            2 => Self::Mcp,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a component's kind",
+                    tag,
+                });
+            }
+        })
+    }
+}
+
+/// An `s3://` source's own flags (D54): where its store is and which version of the object.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct S3Source {
+    /// `--endpoint=URL`: an S3-compatible store's (R2, Mantle), else AWS's for its region.
+    pub endpoint: Option<String>,
+    /// `--region=R`.
+    pub region: Option<String>,
+    /// `--path-style`.
+    pub path_style: bool,
+    /// `--version-id=V`: the object's version, immutable in S3.
+    pub version_id: Option<String>,
+    /// `--credentials=aws-default`: signed through the host's AWS default chain, which the
+    /// build names on its step; else by the build's secrets, else unsigned (D54).
+    pub aws_default_credentials: bool,
+}
+
+/// One `AGENT`, `HARNESS` or `MCP` install to build alone (D270): its directive's name, source
+/// and flags, as an Agentfile would say them, built as that directive is in a whole build, so
+/// that a source the build refuses unpinned (an http(s) or s3 source without `--checksum` or
+/// `--version-id`) is refused here in the build's own words. Its content and normalized startup
+/// become an OSI artifact (D57) kept in the store as `tag`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentSpec {
+    pub kind: ComponentKind,
+    /// Its name, as the directive declares it (`^[a-z][a-z0-9-_.]*$`).
+    pub name: String,
+    /// Its source, as BuildKit reads one (D54): a Git remote (`https://…/REPO.git#REF`,
+    /// `ssh://…`, `git://…`, `git@HOST:…`), an http(s) URL, or an `s3://BUCKET/KEY` object; a
+    /// context path or an OCI reference is no source a component is built of.
+    pub source: String,
+    /// `--checksum=sha256:<hex>`.
+    pub checksum: Option<String>,
+    /// Each `--redirect=HOST[:PORT]` the fetch is granted besides its source's origin.
+    pub redirects: Vec<String>,
+    pub s3: S3Source,
+    /// The platform it is built for, as OCI names one (`linux/arm64`); none for this host's.
+    pub platform: Option<String>,
+    /// The name it is kept by in the store beside its digest, as `shards build agent -t` names
+    /// one.
+    pub tag: String,
+    /// The secrets its fetch may use, by reference (`GIT_AUTH_TOKEN`, `AWS_ACCESS_KEY_ID`, …).
+    pub secrets: Vec<BuildSecret>,
+    /// Its fetch's SSH agents (a `git@…` remote).
+    pub ssh: Vec<BuildSsh>,
 }
 
 /// A build's progress, step by step, as `shards build image` shows it.
@@ -171,25 +274,52 @@ impl Builds {
         events: &mut dyn FnMut(BuildEvent),
     ) -> Result<Pinned, BuildRefusal> {
         let request = wire::Request::of(spec)?;
+        self.follow(wire::request(&request).map_err(BuildRefusal::Wire), events)
+    }
+
+    /// Builds `spec`'s one install alone (D270) and gives back its OSI artifact, pinned by its
+    /// manifest's digest and kept in the store as its tag, each step's progress told to
+    /// `events`; or why none was made, typed as [`build`](Self::build)'s are: a spec this side
+    /// refuses before anything starts as [`BuildRefusal::Spec`], a source the build refuses
+    /// (unpinned, not granted, of a kind its directive takes none of) in the build's words.
+    pub fn component(
+        &self,
+        spec: &ComponentSpec,
+        events: &mut dyn FnMut(BuildEvent),
+    ) -> Result<Pinned, BuildRefusal> {
+        let request = wire::ComponentRequest::of(spec)?;
+        self.follow(
+            wire::component_request(&request).map_err(BuildRefusal::Wire),
+            events,
+        )
+    }
+
+    /// Starts `shards api-build`, sends it `frame`, its one request, and follows it to its end.
+    fn follow(
+        &self,
+        frame: Result<Vec<u8>, BuildRefusal>,
+        events: &mut dyn FnMut(BuildEvent),
+    ) -> Result<Pinned, BuildRefusal> {
+        let frame = frame?;
         let env: Vec<(OsString, OsString)> = self
             .home
             .iter()
             .map(|home| (OsString::from("SHARDS_HOME"), home.clone().into_os_string()))
             .collect();
         let mut command = Command::start(self.binary.as_deref(), &[OsStr::new("api-build")], &env)?;
-        let asked = wire::request(&request)
-            .map_err(BuildRefusal::Wire)
-            .and_then(|frame| {
-                let os = |e: std::io::Error| BuildRefusal::Os {
-                    what: "the build's request",
-                    kind: e.kind(),
-                };
-                let input = command.input().ok_or(BuildRefusal::Os {
+        let asked = {
+            let os = |e: std::io::Error| BuildRefusal::Os {
+                what: "the build's request",
+                kind: e.kind(),
+            };
+            command
+                .input()
+                .ok_or(BuildRefusal::Os {
                     what: "the build's request",
                     kind: std::io::ErrorKind::BrokenPipe,
-                })?;
-                input.write_all(&frame).map_err(os)
-            });
+                })
+                .and_then(|input| input.write_all(&frame).map_err(os))
+        };
         // Its request is whole: nothing more goes its way.
         command.close();
         let mut steps = Steps::default();
@@ -267,6 +397,9 @@ pub mod wire {
     pub mod to_host {
         /// The build to make ([`super::Request`]), the one frame the client sends.
         pub const REQUEST: u8 = 1;
+        /// A component to build alone ([`super::ComponentRequest`], D270), in a request's
+        /// place.
+        pub const COMPONENT: u8 = 2;
     }
 
     /// What `shards api-build` answers.
@@ -304,6 +437,198 @@ pub mod wire {
         Env(String),
     }
 
+    /// A component's spec as `shards api-build` takes it (D270): its directive's words, each
+    /// one word of an Agentfile's line ([`ComponentRequest::directive`]), checked so on both
+    /// sides of the channel ([`ComponentRequest::check`]).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ComponentRequest {
+        pub kind: ComponentKind,
+        pub name: String,
+        pub source: String,
+        pub checksum: Option<String>,
+        pub redirects: Vec<String>,
+        pub s3: S3Source,
+        pub platform: Option<String>,
+        pub tag: String,
+        pub secrets: Vec<(String, Source)>,
+        pub ssh: Vec<(String, Vec<String>)>,
+    }
+
+    /// A stage-style name, as an Agentfile names agents, harnesses and MCP servers
+    /// (`^[a-z][a-z0-9-_.]*$`, D35).
+    fn valid_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+    }
+
+    /// Why `word` is no single word of an Agentfile's line, as written: empty, or holding what
+    /// the parser would read as more than the word (whitespace and control characters end a
+    /// word or a line, `\` continues one, quotes group, `$` expands a variable, D56); none where
+    /// it is one.
+    fn unplain(word: &str) -> Option<&'static str> {
+        if word.is_empty() {
+            return Some("empty");
+        }
+        word.chars().find_map(|c| match c {
+            c if c.is_whitespace() || c.is_control() => Some("whitespace or a control character"),
+            '\\' => Some("`\\`, which continues a line"),
+            '"' | '\'' | '`' => Some("a quote"),
+            '$' => Some("`$`, which the directive expands"),
+            _ => None,
+        })
+    }
+
+    impl ComponentRequest {
+        /// `spec` checked as a request, or refused, naming what of it, before anything starts.
+        pub fn of(spec: &ComponentSpec) -> Result<ComponentRequest, BuildRefusal> {
+            let (secrets, ssh) = access_of(&spec.secrets, &spec.ssh)?;
+            let request = ComponentRequest {
+                kind: spec.kind,
+                name: spec.name.clone(),
+                source: spec.source.clone(),
+                checksum: spec.checksum.clone(),
+                redirects: spec.redirects.clone(),
+                s3: spec.s3.clone(),
+                platform: spec.platform.clone(),
+                tag: spec.tag.clone(),
+                secrets,
+                ssh,
+            };
+            request.check()?;
+            Ok(request)
+        }
+
+        /// What both sides check of a request, as neither trusts the other's: its name an
+        /// Agentfile's, each word of its directive one word of the line, one platform alone,
+        /// and a tag. What its source is, and whether its flags go with it, is the build's to
+        /// say, in its own words.
+        pub fn check(&self) -> Result<(), BuildRefusal> {
+            if !valid_name(&self.name) {
+                return Err(refuse(
+                    "the name",
+                    format!(
+                        "{:?}: no name an Agentfile gives: lowercase letters, digits, '-', '_' and '.', a letter first",
+                        self.name
+                    ),
+                ));
+            }
+            let mut words: Vec<(&'static str, &str)> = vec![
+                ("the source", self.source.as_str()),
+                ("the tag", self.tag.as_str()),
+            ];
+            words.extend(self.checksum.as_deref().map(|c| ("the checksum", c)));
+            words.extend(self.redirects.iter().map(|r| ("a redirect", r.as_str())));
+            words.extend(self.s3.endpoint.as_deref().map(|e| ("the S3 endpoint", e)));
+            words.extend(self.s3.region.as_deref().map(|r| ("the S3 region", r)));
+            words.extend(self.s3.version_id.as_deref().map(|v| ("the S3 version", v)));
+            words.extend(self.platform.as_deref().map(|p| ("the platform", p)));
+            for (what, word) in words {
+                if let Some(why) = unplain(word) {
+                    return Err(refuse(what, format!("{word:?}: {why}")));
+                }
+            }
+            if self.platform.as_deref().is_some_and(|p| p.contains(',')) {
+                return Err(refuse(
+                    "the platform",
+                    "one platform alone: a component is one platform's build".into(),
+                ));
+            }
+            Ok(())
+        }
+
+        /// The directive the build is of: one line of an Agentfile, its flags before its name
+        /// as the parser takes them (D54).
+        pub fn directive(&self) -> String {
+            let mut line = vec![self.kind.directive().to_string()];
+            line.extend(self.checksum.iter().map(|c| format!("--checksum={c}")));
+            line.extend(self.redirects.iter().map(|r| format!("--redirect={r}")));
+            line.extend(self.s3.endpoint.iter().map(|e| format!("--endpoint={e}")));
+            line.extend(self.s3.region.iter().map(|r| format!("--region={r}")));
+            if self.s3.path_style {
+                line.push("--path-style".into());
+            }
+            line.extend(self.s3.version_id.iter().map(|v| format!("--version-id={v}")));
+            if self.s3.aws_default_credentials {
+                line.push("--credentials=aws-default".into());
+            }
+            line.extend([self.name.clone(), "FROM".into(), self.source.clone()]);
+            line.join(" ")
+        }
+
+        /// Where the build lays it, as its directive does with no `TO` (§12.1).
+        pub fn dir(&self) -> String {
+            format!("{}/{}", self.kind.parent(), self.name)
+        }
+    }
+
+    /// `request` as its frame.
+    pub fn component_request(request: &ComponentRequest) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u8(VERSION);
+        w.u8(request.kind.tag());
+        w.text(&request.name)?;
+        w.text(&request.source)?;
+        optional(&mut w, &request.checksum)?;
+        w.count(request.redirects.len())?;
+        for r in &request.redirects {
+            w.text(r)?;
+        }
+        optional(&mut w, &request.s3.endpoint)?;
+        optional(&mut w, &request.s3.region)?;
+        w.u8(u8::from(request.s3.path_style));
+        optional(&mut w, &request.s3.version_id)?;
+        w.u8(u8::from(request.s3.aws_default_credentials));
+        optional(&mut w, &request.platform)?;
+        w.text(&request.tag)?;
+        write_access(&mut w, &request.secrets, &request.ssh)?;
+        frame(to_host::COMPONENT, &w.done()?)
+    }
+
+    /// The request a [`to_host::COMPONENT`] frame's payload holds.
+    pub fn read_component(payload: &[u8]) -> Result<ComponentRequest, RequestError> {
+        let mut r = Reader(payload);
+        let wire = RequestError::Wire;
+        match r.u8().map_err(wire)? {
+            VERSION => {}
+            v => return Err(RequestError::Version(v)),
+        }
+        let kind = ComponentKind::of_tag(r.u8().map_err(wire)?).map_err(wire)?;
+        let (name, source, checksum) = (
+            r.text().map_err(wire)?,
+            r.text().map_err(wire)?,
+            read_optional(&mut r).map_err(wire)?,
+        );
+        let mut redirects = Vec::new();
+        // Each holds at least its length.
+        for _ in 0..r.count(4).map_err(wire)? {
+            redirects.push(r.text().map_err(wire)?);
+        }
+        let s3 = S3Source {
+            endpoint: read_optional(&mut r).map_err(wire)?,
+            region: read_optional(&mut r).map_err(wire)?,
+            path_style: r.flag().map_err(wire)?,
+            version_id: read_optional(&mut r).map_err(wire)?,
+            aws_default_credentials: r.flag().map_err(wire)?,
+        };
+        let platform = read_optional(&mut r).map_err(wire)?;
+        let tag = r.text().map_err(wire)?;
+        let (secrets, ssh) = read_access(&mut r).map_err(wire)?;
+        r.end().map_err(wire)?;
+        Ok(ComponentRequest {
+            kind,
+            name,
+            source,
+            checksum,
+            redirects,
+            s3,
+            platform,
+            tag,
+            secrets,
+            ssh,
+        })
+    }
+
     /// One of the host's answers.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Answer {
@@ -318,19 +643,6 @@ pub mod wire {
         /// or tag; an id said twice or empty; and what the build's command line could not say
         /// whole (an SSH id with `=`, a key's path with `,`: buildx's `--ssh` splits there).
         pub fn of(spec: &BuildSpec) -> Result<Request, BuildRefusal> {
-            let refuse = |what: &'static str, why: String| BuildRefusal::Spec { what, why };
-            let utf8 = |what: &'static str, path: &Path| {
-                path.to_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| refuse(what, format!("{}: not UTF-8", path.display())))
-            };
-            let absolute = |what: &'static str, path: &Path| {
-                if path.is_absolute() {
-                    utf8(what, path)
-                } else {
-                    Err(refuse(what, format!("{}: not an absolute path", path.display())))
-                }
-            };
             let context = absolute("the context", &spec.context)?;
             if !spec.context.is_dir() {
                 return Err(refuse("the context", format!("{context}: not a directory")));
@@ -353,48 +665,7 @@ pub mod wire {
             };
             let platform = named("the platform", &spec.platform)?;
             let tag = named("the tag", &spec.tag)?;
-            let mut ids = std::collections::BTreeSet::new();
-            let mut secrets = Vec::new();
-            for s in &spec.secrets {
-                if s.id.is_empty() || !ids.insert(("secret", s.id.as_str())) {
-                    return Err(refuse(
-                        "a secret's id",
-                        format!("{:?}: empty or given twice", s.id),
-                    ));
-                }
-                let source = match &s.source {
-                    SecretSource::File(path) => Source::File(absolute("a secret's file", path)?),
-                    SecretSource::Env(name) if name.is_empty() || name.contains('=') => {
-                        return Err(refuse(
-                            "a secret's variable",
-                            format!("{name:?}: no variable's name"),
-                        ));
-                    }
-                    SecretSource::Env(name) => Source::Env(name.clone()),
-                };
-                secrets.push((s.id.clone(), source));
-            }
-            let mut ssh = Vec::new();
-            for agent in &spec.ssh {
-                if agent.id.is_empty() || agent.id.contains('=') || !ids.insert(("ssh", agent.id.as_str())) {
-                    return Err(refuse(
-                        "an SSH agent's id",
-                        format!("{:?}: empty, with `=`, or given twice", agent.id),
-                    ));
-                }
-                let mut paths = Vec::new();
-                for path in &agent.paths {
-                    let path = absolute("an SSH key's path", path)?;
-                    if path.contains(',') {
-                        return Err(refuse(
-                            "an SSH key's path",
-                            format!("{path}: holds `,`, where --ssh splits"),
-                        ));
-                    }
-                    paths.push(path);
-                }
-                ssh.push((agent.id.clone(), paths));
-            }
+            let (secrets, ssh) = access_of(&spec.secrets, &spec.ssh)?;
             Ok(Request {
                 context,
                 file,
@@ -404,6 +675,135 @@ pub mod wire {
                 ssh,
             })
         }
+    }
+
+    fn refuse(what: &'static str, why: String) -> BuildRefusal {
+        BuildRefusal::Spec { what, why }
+    }
+
+    /// `path` as the request carries it: absolute and UTF-8, else refused as `what`.
+    fn absolute(what: &'static str, path: &Path) -> Result<String, BuildRefusal> {
+        if !path.is_absolute() {
+            return Err(refuse(what, format!("{}: not an absolute path", path.display())));
+        }
+        path.to_str()
+            .map(str::to_string)
+            .ok_or_else(|| refuse(what, format!("{}: not UTF-8", path.display())))
+    }
+
+    /// A build's secrets and SSH agents as a request carries them, or refused, naming what of
+    /// them: an id said twice or empty, and what the build's command line could not say whole
+    /// (an SSH id with `=`, a key's path with `,`: buildx's `--ssh` splits there).
+    #[allow(clippy::type_complexity)]
+    fn access_of(
+        secrets: &[BuildSecret],
+        agents: &[BuildSsh],
+    ) -> Result<(Vec<(String, Source)>, Vec<(String, Vec<String>)>), BuildRefusal> {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for s in secrets {
+            if s.id.is_empty() || !ids.insert(("secret", s.id.as_str())) {
+                return Err(refuse(
+                    "a secret's id",
+                    format!("{:?}: empty or given twice", s.id),
+                ));
+            }
+            let source = match &s.source {
+                SecretSource::File(path) => Source::File(absolute("a secret's file", path)?),
+                SecretSource::Env(name) if name.is_empty() || name.contains('=') => {
+                    return Err(refuse(
+                        "a secret's variable",
+                        format!("{name:?}: no variable's name"),
+                    ));
+                }
+                SecretSource::Env(name) => Source::Env(name.clone()),
+            };
+            out.push((s.id.clone(), source));
+        }
+        let mut ssh = Vec::new();
+        for agent in agents {
+            if agent.id.is_empty() || agent.id.contains('=') || !ids.insert(("ssh", agent.id.as_str())) {
+                return Err(refuse(
+                    "an SSH agent's id",
+                    format!("{:?}: empty, with `=`, or given twice", agent.id),
+                ));
+            }
+            let mut paths = Vec::new();
+            for path in &agent.paths {
+                let path = absolute("an SSH key's path", path)?;
+                if path.contains(',') {
+                    return Err(refuse(
+                        "an SSH key's path",
+                        format!("{path}: holds `,`, where --ssh splits"),
+                    ));
+                }
+                paths.push(path);
+            }
+            ssh.push((agent.id.clone(), paths));
+        }
+        Ok((out, ssh))
+    }
+
+    fn write_access(
+        w: &mut Writer,
+        secrets: &[(String, Source)],
+        ssh: &[(String, Vec<String>)],
+    ) -> Result<(), WireError> {
+        w.count(secrets.len())?;
+        for (id, source) in secrets {
+            w.text(id)?;
+            match source {
+                Source::File(path) => {
+                    w.u8(0);
+                    w.text(path)?;
+                }
+                Source::Env(name) => {
+                    w.u8(1);
+                    w.text(name)?;
+                }
+            }
+        }
+        w.count(ssh.len())?;
+        for (id, paths) in ssh {
+            w.text(id)?;
+            w.count(paths.len())?;
+            for path in paths {
+                w.text(path)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn read_access(
+        r: &mut Reader<'_>,
+    ) -> Result<(Vec<(String, Source)>, Vec<(String, Vec<String>)>), WireError> {
+        // Each secret holds at least its id's and value's lengths and its tag.
+        let mut secrets = Vec::new();
+        for _ in 0..r.count(9)? {
+            let id = r.text()?;
+            let source = match r.u8()? {
+                0 => Source::File(r.text()?),
+                1 => Source::Env(r.text()?),
+                tag => {
+                    return Err(WireError::Tag {
+                        what: "a secret's source",
+                        tag,
+                    });
+                }
+            };
+            secrets.push((id, source));
+        }
+        let mut ssh = Vec::new();
+        for _ in 0..r.count(8)? {
+            let id = r.text()?;
+            let mut paths = Vec::new();
+            for _ in 0..r.count(4)? {
+                paths.push(r.text()?);
+            }
+            ssh.push((id, paths));
+        }
+        Ok((secrets, ssh))
     }
 
     fn optional(w: &mut Writer, value: &Option<String>) -> Result<(), WireError> {
@@ -429,28 +829,7 @@ pub mod wire {
         optional(&mut w, &request.file)?;
         optional(&mut w, &request.platform)?;
         optional(&mut w, &request.tag)?;
-        w.count(request.secrets.len())?;
-        for (id, source) in &request.secrets {
-            w.text(id)?;
-            match source {
-                Source::File(path) => {
-                    w.u8(0);
-                    w.text(path)?;
-                }
-                Source::Env(name) => {
-                    w.u8(1);
-                    w.text(name)?;
-                }
-            }
-        }
-        w.count(request.ssh.len())?;
-        for (id, paths) in &request.ssh {
-            w.text(id)?;
-            w.count(paths.len())?;
-            for path in paths {
-                w.text(path)?;
-            }
-        }
+        write_access(&mut w, &request.secrets, &request.ssh)?;
         frame(to_host::REQUEST, &w.done()?)
     }
 
@@ -485,31 +864,7 @@ pub mod wire {
             read_optional(&mut r).map_err(wire)?,
             read_optional(&mut r).map_err(wire)?,
         );
-        // Each secret holds at least its id's and value's lengths and its tag.
-        let mut secrets = Vec::new();
-        for _ in 0..r.count(9).map_err(wire)? {
-            let id = r.text().map_err(wire)?;
-            let source = match r.u8().map_err(wire)? {
-                0 => Source::File(r.text().map_err(wire)?),
-                1 => Source::Env(r.text().map_err(wire)?),
-                tag => {
-                    return Err(wire(WireError::Tag {
-                        what: "a secret's source",
-                        tag,
-                    }));
-                }
-            };
-            secrets.push((id, source));
-        }
-        let mut ssh = Vec::new();
-        for _ in 0..r.count(8).map_err(wire)? {
-            let id = r.text().map_err(wire)?;
-            let mut paths = Vec::new();
-            for _ in 0..r.count(4).map_err(wire)? {
-                paths.push(r.text().map_err(wire)?);
-            }
-            ssh.push((id, paths));
-        }
+        let (secrets, ssh) = read_access(&mut r).map_err(wire)?;
         r.end().map_err(wire)?;
         Ok(Request {
             context,
@@ -613,7 +968,10 @@ pub mod wire {
 
 #[cfg(test)]
 mod tests {
-    use super::wire::{Answer, Request, Source, answer, end, event, read_request, request};
+    use super::wire::{
+        Answer, ComponentRequest, Request, Source, answer, component_request, end, event, read_component,
+        read_request, request,
+    };
     use super::*;
 
     fn payload(frame: &[u8]) -> (u8, Vec<u8>) {
@@ -949,5 +1307,202 @@ mod tests {
             builds.build(&spec, &mut |_| {}),
             Err(BuildRefusal::Start(_))
         ));
+    }
+
+    fn harness(source: &str) -> ComponentSpec {
+        ComponentSpec {
+            kind: ComponentKind::Harness,
+            name: "codex".into(),
+            source: source.into(),
+            checksum: None,
+            redirects: Vec::new(),
+            s3: S3Source::default(),
+            platform: None,
+            tag: "kiln/harness-codex:0.58".into(),
+            secrets: Vec::new(),
+            ssh: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_component_is_its_directives_one_line() {
+        let mut spec = harness("https://example.com/codex.tar.gz");
+        spec.checksum = Some(format!("sha256:{}", "a".repeat(64)));
+        spec.redirects = vec!["objects.example.com".into(), "cdn.example.com:8443".into()];
+        let request = ComponentRequest::of(&spec).unwrap();
+        assert_eq!(
+            request.directive(),
+            format!(
+                "HARNESS --checksum=sha256:{} --redirect=objects.example.com --redirect=cdn.example.com:8443 codex FROM https://example.com/codex.tar.gz",
+                "a".repeat(64)
+            )
+        );
+        assert_eq!(request.dir(), "/harness/codex");
+        let mut s3 = harness("s3://bucket/agents/a.tar");
+        s3.kind = ComponentKind::Agent;
+        s3.name = "worker".into();
+        s3.s3 = S3Source {
+            endpoint: Some("https://r2.example.com".into()),
+            region: Some("auto".into()),
+            path_style: true,
+            version_id: Some("v1".into()),
+            aws_default_credentials: true,
+        };
+        let request = ComponentRequest::of(&s3).unwrap();
+        assert_eq!(
+            request.directive(),
+            "AGENT --endpoint=https://r2.example.com --region=auto --path-style --version-id=v1 --credentials=aws-default worker FROM s3://bucket/agents/a.tar"
+        );
+        assert_eq!(request.dir(), "/agents/worker");
+        let mut mcp = harness("https://example.com/org/tools.git#v1.2.0");
+        mcp.kind = ComponentKind::Mcp;
+        mcp.name = "tools".into();
+        let request = ComponentRequest::of(&mcp).unwrap();
+        assert_eq!(
+            request.directive(),
+            "MCP tools FROM https://example.com/org/tools.git#v1.2.0"
+        );
+        assert_eq!(request.dir(), "/mcp/tools");
+    }
+
+    #[test]
+    fn a_component_whose_words_would_be_more_than_its_directive_is_refused() {
+        let refused = |spec: &ComponentSpec| match ComponentRequest::of(spec) {
+            Err(BuildRefusal::Spec { what, .. }) => what,
+            other => panic!("{other:?}"),
+        };
+        let with = |f: &dyn Fn(&mut ComponentSpec)| {
+            let mut s = harness("https://example.com/codex.tar.gz");
+            f(&mut s);
+            s
+        };
+        // A newline would add an instruction to the Agentfile; a space, a word; `\`, the next
+        // line; a quote, a group; `$`, a variable's value.
+        for source in [
+            "https://example.com/a.tar\nRUN rm -rf /",
+            "https://example.com/a.tar\n",
+            "https://example.com/a tar",
+            "https://example.com/a.tar\\",
+            "https://example.com/\"a\"",
+            "https://example.com/$HOME",
+            "",
+        ] {
+            assert_eq!(
+                refused(&with(&|s| s.source = source.into())),
+                "the source",
+                "{source:?}"
+            );
+        }
+        assert_eq!(refused(&with(&|s| s.name = "Codex".into())), "the name");
+        assert_eq!(refused(&with(&|s| s.name = "1codex".into())), "the name");
+        assert_eq!(refused(&with(&|s| s.name = "co dex".into())), "the name");
+        assert_eq!(
+            refused(&with(&|s| s.checksum = Some("sha256:a b".into()))),
+            "the checksum"
+        );
+        assert_eq!(
+            refused(&with(&|s| s.redirects = vec!["a.example.com\tb".into()])),
+            "a redirect"
+        );
+        assert_eq!(
+            refused(&with(&|s| s.s3.endpoint = Some("https://x\ny".into()))),
+            "the S3 endpoint"
+        );
+        assert_eq!(refused(&with(&|s| s.tag = String::new())), "the tag");
+        assert_eq!(
+            refused(&with(&|s| s.platform = Some("linux/arm64,linux/amd64".into()))),
+            "the platform"
+        );
+        assert_eq!(
+            refused(&with(&|s| s.secrets = vec![BuildSecret {
+                id: String::new(),
+                source: SecretSource::Env("T".into())
+            }])),
+            "a secret's id"
+        );
+        assert!(ComponentRequest::of(&with(&|_| {})).is_ok());
+    }
+
+    #[test]
+    fn a_component_request_reads_back_as_it_was_sent() {
+        let mut spec = harness("s3://bucket/codex.tar");
+        spec.checksum = Some(format!("sha256:{}", "b".repeat(64)));
+        spec.redirects = vec!["r.example.com".into()];
+        spec.s3 = S3Source {
+            endpoint: Some("https://s3.example.com".into()),
+            region: Some("eu-west-1".into()),
+            path_style: true,
+            version_id: None,
+            aws_default_credentials: false,
+        };
+        spec.platform = Some("linux/amd64".into());
+        spec.secrets = vec![BuildSecret {
+            id: "AWS_ACCESS_KEY_ID".into(),
+            source: SecretSource::Env("KEY".into()),
+        }];
+        spec.ssh = vec![BuildSsh {
+            id: "default".into(),
+            paths: vec![],
+        }];
+        let sent = ComponentRequest::of(&spec).unwrap();
+        let (kind, bytes) = payload(&component_request(&sent).unwrap());
+        assert_eq!(kind, wire::to_host::COMPONENT);
+        assert_eq!(read_component(&bytes).unwrap(), sent);
+        let mut later = bytes.clone();
+        later[0] = wire::VERSION + 1;
+        assert_eq!(
+            read_component(&later),
+            Err(wire::RequestError::Version(wire::VERSION + 1))
+        );
+        let mut kind_of = bytes.clone();
+        kind_of[1] = 9;
+        assert_eq!(
+            read_component(&kind_of),
+            Err(wire::RequestError::Wire(WireError::Tag {
+                what: "a component's kind",
+                tag: 9
+            }))
+        );
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            read_component(&trailing),
+            Err(wire::RequestError::Wire(WireError::Trailing))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_component_is_built_by_its_own_request_and_gives_back_its_artifact() {
+        let dir = shards_testdir::TempDir::new("components").unwrap();
+        let frames = [end(&Ok("sha256:c0ffee".into())).unwrap()];
+        let builds = Builds {
+            binary: Some(stand_in(dir.path(), &answering(&frames, ""))),
+            home: Some(dir.path().join("home")),
+        };
+        let mut spec = harness("https://example.com/codex.tar.gz");
+        spec.checksum = Some(format!("sha256:{}", "c".repeat(64)));
+        assert_eq!(
+            builds.component(&spec, &mut |_| {}),
+            Ok(Pinned {
+                digest: "sha256:c0ffee".into()
+            })
+        );
+        let sent = std::fs::read(dir.path().join("request")).unwrap();
+        assert_eq!(
+            sent,
+            component_request(&ComponentRequest::of(&spec).unwrap()).unwrap()
+        );
+        // A spec refused here starts nothing.
+        std::fs::remove_file(dir.path().join("request")).unwrap();
+        spec.source = "https://example.com/a b".into();
+        assert!(matches!(
+            builds.component(&spec, &mut |_| {}),
+            Err(BuildRefusal::Spec {
+                what: "the source",
+                ..
+            })
+        ));
+        assert!(!dir.path().join("request").exists());
     }
 }

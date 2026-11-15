@@ -52,7 +52,8 @@ mod while_runs;
 mod proc_allocation;
 
 pub use builds::{
-    BuildEvent, BuildRefusal, BuildSecret, BuildSpec, BuildSsh, Builds, Pinned, SecretSource, StepEnd,
+    BuildEvent, BuildRefusal, BuildSecret, BuildSpec, BuildSsh, Builds, ComponentKind, ComponentSpec, Pinned,
+    S3Source, SecretSource, StepEnd,
 };
 pub use client::{
     ConfiguredShards, ManagedEnded, ManagedGuest, ManagedUse, ManagedUsed, Shards, attach_managed,

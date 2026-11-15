@@ -636,6 +636,22 @@ pub fn main() -> ! {
         "swap-kept" => swap_kept(arg(1).parse().unwrap_or(0)),
         // A counter in memory, printed as it grows, every `arg(1)` ms (100 if none): what a
         // saved microVM keeps, and a restore of it goes on from (D176).
+        // `ready`, then each `arg(1)` ms (100 if none) a line of its count and its clock's
+        // time, CLOCK_REALTIME in ns: a member whose run is paused goes on from its count, its
+        // clock the host's (D267).
+        "ticks" => {
+            let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
+            let _ = writeln!(io::stdout(), "ready");
+            let mut n = 0u64;
+            loop {
+                n += 1;
+                let ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos());
+                let _ = writeln!(io::stdout(), "{n} {ns}");
+                std::thread::sleep(every);
+            }
+        }
         "counter" => {
             let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
             let _ = writeln!(io::stdout(), "ready");

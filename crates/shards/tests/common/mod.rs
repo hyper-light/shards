@@ -2433,6 +2433,15 @@ impl Patience {
         Patience::on(Party::started(None), std::panic::Location::caller())
     }
 
+    /// Patience with every process of process groups `groups`, wherever it is listed
+    /// ([`Party::groups`]): run hosts whose holder has ended, none of them this test's
+    /// process's own since, each leading its group, its VM's among it.
+    #[cfg(unix)]
+    #[track_caller]
+    pub fn groups(groups: &[u32]) -> Patience {
+        Patience::on(Party::groups(groups), std::panic::Location::caller())
+    }
+
     fn with(home: Option<&Path>, site: &'static std::panic::Location<'static>) -> Patience {
         Patience::on(Party::own(home), site)
     }
@@ -2750,6 +2759,24 @@ pub fn processes() -> Vec<(u32, u32, String)> {
             ))
         })
         .collect()
+}
+
+/// The processes of `listed` ([`processes`]) in one of process groups `groups`, as
+/// getpgid(2) reads each now (POSIX.1-2024, XSH getpgid): one gone since it was listed is
+/// left out.
+#[cfg(unix)]
+pub fn grouped<'a>(
+    listed: &'a [(u32, u32, String)],
+    groups: &'a [u32],
+) -> impl Iterator<Item = &'a (u32, u32, String)> + 'a {
+    listed.iter().filter(|(pid, ..)| {
+        let Ok(id) = libc::pid_t::try_from(*pid) else {
+            return false;
+        };
+        // SAFETY: getpgid(2) of a process ID: it reads the kernel's record alone.
+        let group = unsafe { libc::getpgid(id) };
+        u32::try_from(group).is_ok_and(|group| groups.contains(&group))
+    })
 }
 
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
@@ -3531,7 +3558,7 @@ fn process_status(_: u32) -> Option<String> {
 const VM_PROCESS: &str = "shards-vm";
 
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Members {
     /// A client and what descends from it: a command [`run_command`] runs, or a `run
     /// --kernel` or `restore` (the VM process on Unix, its starter on Windows).
@@ -3549,6 +3576,12 @@ enum Members {
     /// shards-api's `ImageShards` starts and its VM process, which a call of the API's waits
     /// on ([`judged`]), the host's work before its VM starts among them.
     Started,
+    /// Every process of these process groups, wherever it is listed ([`grouped`]): a pool's
+    /// warm run hosts, each leading a group of its own with its VM, network and share
+    /// processes in it (shards-api session.rs `start_host`), which their holder's end leaves
+    /// orphans of no process of this test's.
+    #[cfg(unix)]
+    Groups(Vec<u32>),
 }
 
 /// What a [`Party`]'s processes' CPU time says of it.
@@ -3615,6 +3648,12 @@ impl Party {
         Party::with(Members::Started, home)
     }
 
+    /// The party of every process of process groups `groups` ([`Members::Groups`]).
+    #[cfg(unix)]
+    pub fn groups(groups: &[u32]) -> Party {
+        Party::with(Members::Groups(groups.to_vec()), None)
+    }
+
     fn with(members: Members, home: Option<&Path>) -> Party {
         Party {
             members,
@@ -3647,13 +3686,15 @@ impl Party {
     /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
     /// tree of a process, Toolhelp32). None for a machine of this process's.
     fn members(&mut self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
-        let listed = match self.members {
+        let listed = match &self.members {
             Members::Machine => Vec::new(),
             Members::Client(_) if cfg!(windows) => Vec::new(),
             Members::Client(_) | Members::Own | Members::Started => processes(),
+            #[cfg(unix)]
+            Members::Groups(_) => processes(),
         };
-        let own = match self.members {
-            Members::Client(client) => vec![client],
+        let own = match &self.members {
+            Members::Client(client) => vec![*client],
             Members::Own => own_vms(),
             Members::Machine => Vec::new(),
             Members::Started => listed
@@ -3661,6 +3702,8 @@ impl Party {
                 .filter(|(_, ppid, _)| *ppid == std::process::id())
                 .map(|(pid, ..)| *pid)
                 .collect(),
+            #[cfg(unix)]
+            Members::Groups(groups) => grouped(&listed, groups).map(|(pid, ..)| *pid).collect(),
         };
         let daemon = self.daemon();
         let roots: Vec<u32> = own.into_iter().chain(daemon).collect();
@@ -3949,11 +3992,13 @@ impl Party {
 
     /// Who it is, for a wait's account of itself.
     fn named(&self) -> String {
-        let who = match self.members {
+        let who = match &self.members {
             Members::Client(c) => format!("client {c}"),
             Members::Own => "this test's own VM processes".to_string(),
             Members::Machine => "a machine of this test's process".to_string(),
             Members::Started => "the processes this test's process started".to_string(),
+            #[cfg(unix)]
+            Members::Groups(groups) => format!("the processes of process groups {groups:?}"),
         };
         let who = match self.cpu {
             Cpu::Progress => who,

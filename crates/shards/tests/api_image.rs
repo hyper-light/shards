@@ -30,9 +30,9 @@ use common::{
 use shards_api::image::{
     BootStop, Captured, Channel, Cli, CredentialGrant, FinalUse, ImageGuest, ImagePools, ImageRefusal,
     ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
-    RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom,
-    StatsScope, Unused, UpstreamRoot,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, PlugRefusal, Proto,
+    Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
+    StartedFrom, StatsScope, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -588,6 +588,155 @@ fn stats_read_the_run_and_a_member() {
     );
 }
 
+/// The host's wall clock, in nanoseconds since the Unix epoch.
+fn now_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+/// A run paused by its orchestrator (D267) runs no guest and goes on where it stopped: do boot
+/// a harness that prints its count and its clock every 50 ms, pause it, read its stats across
+/// a window of 3 s while a judged read of its next line waits, ask its guest a room and a
+/// member's stats, hold its rate, then resume it. Expect: its vCPUs' guest time flat across
+/// the window (but a step of its count), its paused time grown by the window and said paused,
+/// its guest's lines what its init last said before the pause; no line while paused; the room and the member's stats refused `Paused` at once, the rate
+/// answered; the judged read not refused, its next line the count after the last before the
+/// pause, its clock the host's (within the host's reads around it); every count in order, none
+/// lost; and its paused time in its end.
+#[test]
+fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-pause-home");
+    build(&home, "api-pause:1", &["ticks", "50"], "");
+    let guest = boot(&home, &spec(&home, "api-pause:1"));
+    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let (lines, heard) = std::sync::mpsc::channel::<(u128, String)>();
+    let heard = std::sync::Mutex::new(heard);
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+            if lines.send((now_ns(), line)).is_err() {
+                break;
+            }
+        }
+    });
+    let count = |line: &str| -> (u64, u128) {
+        let (n, ns) = line.split_once(' ').unwrap_or_else(|| panic!("{line:?}"));
+        (n.parse().unwrap(), ns.parse().unwrap())
+    };
+    let next = |what: &str| {
+        common::judged(
+            Party::started(None),
+            what,
+            || {
+                let _ = guest.stop();
+            },
+            || heard.lock().unwrap().recv().ok(),
+        )
+        .unwrap_or_else(|refused| panic!("{refused}"))
+        .unwrap_or_else(|| panic!("{what}: its stdout ended"))
+    };
+    assert_eq!(next("its harness's start").1, "ready");
+    let mut seen = Vec::new();
+    while seen.len() < 5 {
+        seen.push(count(&next("a tick").1).0);
+    }
+    let before = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+    assert!(
+        before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now),
+        "{before:?}"
+    );
+    let paused = ask(&*guest, |g| g.pause(Duration::MAX)).unwrap();
+    assert!(paused.now, "{paused:?}");
+    // What its guest printed before its vCPUs were held, still on its way.
+    let guest_ns =
+        |stats: &shards_api::image::Stats| stats.microvm.as_ref().unwrap().guest.as_ref().unwrap().total_ns();
+    let first = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+    while let Ok((_, line)) = heard.lock().unwrap().try_recv() {
+        seen.push(count(&line).0);
+    }
+    let last = *seen.last().unwrap();
+    let window = Duration::from_secs(3);
+    let resuming = std::thread::scope(|scope| {
+        // Read on while it is paused: a wait judged by what this test's processes run, which
+        // its pause holds, so it is never refused for its stillness.
+        let reading = scope.spawn(|| next("its first tick past the pause"));
+        let started = Instant::now();
+        assert_eq!(
+            ask(&*guest, |g| g.room(Some(64 << 20), Duration::MAX)),
+            Err(ImageRefusal::Paused { what: "room" })
+        );
+        assert_eq!(
+            ask(&*guest, |g| g.stats(StatsScope::Member(1), Duration::MAX)).map(|_| ()),
+            Err(ImageRefusal::Paused { what: "stats" })
+        );
+        let quarter = NonZeroU64::new(250).unwrap();
+        assert_eq!(
+            ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(),
+            Some(quarter)
+        );
+        assert_eq!(ask(&*guest, |g| g.rate(None, Duration::MAX)).unwrap(), None);
+        std::thread::sleep(window.saturating_sub(started.elapsed()));
+        let later = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+        let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
+        assert!(
+            guest_ns(&later) <= guest_ns(&first) + step,
+            "its guest ran {} ns while paused, read in {step} ns steps",
+            guest_ns(&later) - guest_ns(&first)
+        );
+        let (at_first, at_later) = (first.paused.unwrap(), later.paused.unwrap());
+        assert!(at_first.now && at_later.now, "{at_first:?} {at_later:?}");
+        assert!(
+            at_later.total >= at_first.total + window - Duration::from_millis(50),
+            "{at_later:?}"
+        );
+        // Its guest's lines while paused: what its init last said before the pause.
+        assert_eq!(
+            (first.cpu_ns, first.memory_bytes),
+            (before.cpu_ns, before.memory_bytes)
+        );
+        assert_eq!(
+            (later.cpu_ns, later.memory_bytes),
+            (before.cpu_ns, before.memory_bytes)
+        );
+        let before_resume = now_ns();
+        let resumed = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
+        assert!(!resumed.now && resumed.total >= window, "{resumed:?}");
+        let again = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
+        assert!(!again.now, "a resume of a running run is done already");
+        (before_resume, reading.join().unwrap())
+    });
+    let (before_resume, (heard_at, line)) = resuming;
+    let (n, realtime) = count(&line);
+    assert_eq!(n, last + 1, "it went on from {last}: {line}");
+    assert!(
+        heard_at >= before_resume,
+        "a line came while it was paused: {line}"
+    );
+    assert!(
+        (before_resume..=heard_at).contains(&realtime),
+        "its clock {realtime} past the pause, the host's {before_resume}..={heard_at}"
+    );
+    seen.push(n);
+    assert!(
+        seen.windows(2).all(|w| w[1] == w[0] + 1),
+        "counts lost or out of order: {seen:?}"
+    );
+    guest.stop().unwrap();
+    let ended = ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap().unwrap();
+    assert_eq!(ended.end, RunEnd::Stopped);
+    assert!(ended.paused >= window, "{ended:?}");
+    assert_eq!(
+        ask(&*guest, |g| g.pause(Duration::MAX)).map(|_| ()),
+        Err(ImageRefusal::Ended(ended))
+    );
+    reader.join().unwrap();
+}
+
 /// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
 /// its host: told a room past the least a run goes on in, the run is held within it, in
 /// whole pages; told none left, within the least, short of what it had; told no budget,
@@ -974,6 +1123,439 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
         ..s.clone()
     };
     assert_ne!(run(&other), StartedFrom::Warm, "another microVM's first run");
+}
+
+/// The orchestrator's pools the measured warm starts come through: one construction, which
+/// changes as `ImagePools::new` does.
+fn warm_pools() -> ImagePools {
+    ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap()
+}
+
+/// One measured start of an image's run: how it started, and its three spans from the boot's
+/// call: its answer (`boot`, as Hex's `hex.image.boot` is bounded: `boot_stoppable` to its
+/// answer, the run host's diagnostics kept), its harness's first output read (`usable`), and
+/// its stop, from its call to its answer (`stop`). `diagnostics` is where its run host's were
+/// kept; `called_unix_us` is the wall clock as the boot was called, in microseconds since the
+/// Unix epoch, which its run host's and VM's timed lines are lined up with.
+struct Start {
+    from: StartedFrom,
+    called_unix_us: u128,
+    boot: Duration,
+    usable: Duration,
+    stop: Duration,
+    diagnostics: std::path::PathBuf,
+}
+
+/// `s` started through `images`, its harness's first line read (the test guest's `sleep`
+/// prints `ready`, then waits for its end), then stopped: each span timed ([`Start`]).
+#[track_caller]
+fn timed_start(images: &dyn shards_api::image::Images, home: &TempDir, s: &ImageSpec) -> Start {
+    // Made before the boot is asked, as Hex makes its file before its boot's thread starts.
+    let path = diagnostics(home);
+    let kept = std::fs::File::create(&path).unwrap();
+    let stop = BootStop::new();
+    let (guest, t0, called_unix_us, boot) = common::judged(
+        Party::started(None),
+        "a measured boot",
+        || stop.stop(),
+        || {
+            let t0 = Instant::now();
+            let called_unix_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros();
+            let guest = images
+                .boot_stoppable(s, Duration::MAX, &stop)
+                .and_then(|g| g.keep_diagnostics(kept, u64::MAX).map(|()| g));
+            (guest, t0, called_unix_us, t0.elapsed())
+        },
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"));
+    let guest = guest.unwrap_or_else(|refused| {
+        panic!(
+            "the boot: {refused}; its run host said: {}",
+            std::fs::read_to_string(&path).unwrap_or_default()
+        )
+    });
+    let from = guest.started_from();
+    let mut out = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let (line, usable) = common::judged(
+        Party::started(None),
+        "a measured start's first output",
+        || {
+            let _ = guest.stop();
+        },
+        move || {
+            let mut line = [0u8; 6];
+            out.read_exact(&mut line).map(|()| (line, t0.elapsed()))
+        },
+    )
+    .unwrap_or_else(|refused| panic!("{refused}"))
+    .unwrap_or_else(|e| {
+        panic!(
+            "its harness's first output: {e}; the run's end: {:?}",
+            guest.wait_for(Duration::ZERO)
+        )
+    });
+    assert_eq!(&line, b"ready\n");
+    let (stopped, stop) = ask(&*guest, |g| {
+        let t = Instant::now();
+        (g.stop(), t.elapsed())
+    });
+    stopped.unwrap();
+    Start {
+        from,
+        called_unix_us,
+        boot,
+        usable,
+        stop,
+        diagnostics: path,
+    }
+}
+
+/// The ways an image's run starts (D253), each asked of [`image_start_costs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartKind {
+    Booted,
+    Saved,
+    Restored,
+    Warm,
+}
+
+impl StartKind {
+    const ALL: [StartKind; 4] = [
+        StartKind::Booted,
+        StartKind::Saved,
+        StartKind::Restored,
+        StartKind::Warm,
+    ];
+
+    fn started_from(self) -> StartedFrom {
+        match self {
+            StartKind::Booted => StartedFrom::Booted,
+            StartKind::Saved => StartedFrom::Saved,
+            StartKind::Restored => StartedFrom::Restored,
+            StartKind::Warm => StartedFrom::Warm,
+        }
+    }
+}
+
+/// The homes and specs [`image_start_costs`] starts each kind with: one home whose guest is
+/// recorded (D28), its template saved once and then restored, by `ImageShards` (`Restored`)
+/// and by a pool's warm hosts (`Warm`), and a run of a guest given (`Booted`); and another,
+/// whose templates are removed before each start, which then saves one (`Saved`). The image
+/// is the tests' own, its harness the test guest's `sleep`.
+struct CostRig {
+    home: TempDir,
+    saved_home: TempDir,
+    booted: ImageSpec,
+    saved: ImageSpec,
+    restored: ImageSpec,
+    pools: ImagePools,
+}
+
+impl CostRig {
+    fn new() -> CostRig {
+        let home = common::home_with("api-cost-home");
+        let saved_home = common::home_with("api-cost-saved");
+        let tag = "api-cost:1";
+        build(&home, tag, &["sleep"], "");
+        build(&saved_home, tag, &["sleep"], "");
+        let stored = |mut s: ImageSpec| {
+            s.env
+                .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+            s
+        };
+        CostRig {
+            booted: spec(&home, tag),
+            saved: stored(spec(&saved_home, tag)),
+            restored: stored(spec(&home, tag)),
+            pools: warm_pools(),
+            home,
+            saved_home,
+        }
+    }
+
+    /// Its run hosts and their VMs log at debug from now on (`SHARDS_LOG`), each step of a
+    /// VM's start said with its time, and each run host's step with its own (`SHARDS_TIMING`),
+    /// each process's clock said on the wall's; a warm host's pool is then another (its
+    /// environment).
+    fn traced(&mut self) {
+        for s in [&mut self.booted, &mut self.saved, &mut self.restored] {
+            s.env.push(("SHARDS_LOG".into(), "debug".into()));
+            s.env.push(("SHARDS_TIMING".into(), "1".into()));
+        }
+    }
+
+    /// A start of `kind`, held to it: one that started otherwise fails the measurement.
+    #[track_caller]
+    fn start(&self, kind: StartKind) -> Start {
+        let started = match kind {
+            StartKind::Booted => timed_start(&ImageShards::new(), &self.home, &self.booted),
+            StartKind::Saved => {
+                let templates = self.saved_home.join("templates");
+                if templates.exists() {
+                    for entry in std::fs::read_dir(&templates).unwrap() {
+                        let path = entry.unwrap().path();
+                        if path.is_dir() {
+                            std::fs::remove_dir_all(&path).unwrap();
+                        } else {
+                            std::fs::remove_file(&path).unwrap();
+                        }
+                    }
+                }
+                timed_start(&ImageShards::new(), &self.saved_home, &self.saved)
+            }
+            StartKind::Restored => timed_start(&ImageShards::new(), &self.home, &self.restored),
+            StartKind::Warm => timed_start(&self.pools, &self.home, &self.restored),
+        };
+        assert_eq!(
+            started.from,
+            kind.started_from(),
+            "a start asked as {kind:?} started {:?}{}; its run host said: {}",
+            started.from,
+            if kind == StartKind::Warm {
+                " (its pool had no warm host ready)"
+            } else {
+                ""
+            },
+            std::fs::read_to_string(&started.diagnostics).unwrap_or_default()
+        );
+        started
+    }
+
+    /// What comes before the measured starts: the image's files read once by a start of
+    /// each way, its template saved in the restoring home, and its pool warm.
+    fn warm_up(&self) {
+        self.start(StartKind::Booted);
+        self.start(StartKind::Saved);
+        let first = timed_start(&ImageShards::new(), &self.home, &self.restored);
+        assert!(
+            matches!(first.from, StartedFrom::Saved | StartedFrom::Restored),
+            "{:?}",
+            first.from
+        );
+        self.start(StartKind::Restored);
+        // A start through the pools makes its pool; a start is tried only once the pool says a
+        // host of it is warm, so no start races its pool's refill.
+        let mut patience = Patience::started();
+        timed_start(&self.pools, &self.home, &self.restored);
+        loop {
+            if self.pools.held().iter().any(|p| p.warm > 0)
+                && timed_start(&self.pools, &self.home, &self.restored).from == StartedFrom::Warm
+            {
+                break;
+            }
+            assert!(patience.holds(), "no start took a warm host");
+            std::thread::yield_now();
+        }
+        patience.done();
+    }
+}
+
+/// This host's OS and its release, as the measurement's line names it.
+fn os_release() -> String {
+    #[cfg(unix)]
+    let out = std::process::Command::new("uname").arg("-sr").output();
+    #[cfg(windows)]
+    let out = std::process::Command::new("cmd").args(["/c", "ver"]).output();
+    out.ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| std::env::consts::OS.to_string())
+}
+
+/// Every timed line of a start's diagnostics on the caller's clock, in order: microseconds
+/// from the boot's call (`called_unix_us`, the wall clock then), its run host's lines
+/// (`shards api-run: +US us TEXT`, microseconds since its `main`) and each VM process's
+/// (`[PID US LEVEL] TEXT`, microseconds since its log began), each lined up by the wall clock
+/// its process said its clock began at (`... began at unix US us`, `SHARDS_TIMING`); and
+/// shards-api's own steps on this side of the channel (`shards-api: at unix US us TEXT`, the
+/// wall clock itself), said `caller`. A warm host's lines from before the call come first,
+/// negative. Lines of a process whose clock was not said are none of it.
+fn timeline(diagnostics: &str, called_unix_us: u128) -> Vec<(i128, String)> {
+    let began = |text: &str| -> Option<i128> {
+        text.split_once("began at unix ")?
+            .1
+            .strip_suffix(" us")?
+            .parse()
+            .ok()
+    };
+    let called = i128::try_from(called_unix_us).unwrap();
+    let mut host: Option<i128> = None;
+    let mut vms: std::collections::HashMap<u32, i128> = std::collections::HashMap::new();
+    let mut lines = Vec::new();
+    for line in diagnostics.lines() {
+        // shards-api's own steps (session.rs `Shared::step`), each on the wall clock.
+        if let Some(said) = line.strip_prefix("shards-api: at unix ") {
+            if let Some((us, text)) = said.split_once(" us ")
+                && let Ok(us) = us.parse::<i128>()
+            {
+                lines.push((us - called, format!("caller    {text}")));
+            }
+            continue;
+        }
+        if let Some(said) = line.strip_prefix("shards api-run: +") {
+            let Some((us, text)) = said.split_once(" us ") else {
+                continue;
+            };
+            let Ok(us) = us.parse::<i128>() else { continue };
+            host = host.or_else(|| began(text));
+            if let Some(began) = host {
+                lines.push((began + us - called, format!("run host  {text}")));
+            }
+            continue;
+        }
+        let Some((head, text)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else {
+            continue;
+        };
+        let mut fields = head.split_whitespace();
+        let (Some(Ok(pid)), Some(Some(Ok(us)))) = (
+            fields.next().map(str::parse::<u32>),
+            fields
+                .next()
+                .map(|us| us.strip_suffix("us").map(str::parse::<i128>)),
+        ) else {
+            continue;
+        };
+        if let Some(b) = began(text) {
+            vms.entry(pid).or_insert(b);
+        }
+        if let Some(began) = vms.get(&pid) {
+            lines.push((began + us - called, format!("vm {pid:<6} {text}")));
+        }
+    }
+    // Stable: lines of one instant keep their order in the diagnostics.
+    lines.sort_by_key(|(at, _)| *at);
+    lines
+}
+
+/// Each process's timed lines land on the caller's clock: a run host's by the clock it said, a
+/// VM's by its log's, shards-api's by the wall clock each of its lines says; a process that said
+/// no clock gives none, and the lines come in order.
+#[test]
+fn a_starts_timeline_lines_every_process_up_on_the_callers_clock() {
+    let said = "\
+shards api-run: +5 us its clock began at unix 1000 us
+shards api-run: +40 us its request read
+[77 3us DEBUG] its log began at unix 1100 us
+[77 10us INFO] guest marker 2 at 3 us
+shards-api: at unix 1060 us its start taken
+[88 5us DEBUG] a line of a VM that said no clock
+shards api-run: not timed
+";
+    assert_eq!(
+        timeline(said, 1000),
+        [
+            (5, "run host  its clock began at unix 1000 us".to_string()),
+            (40, "run host  its request read".to_string()),
+            (60, "caller    its start taken".to_string()),
+            (103, "vm 77     its log began at unix 1100 us".to_string()),
+            (110, "vm 77     guest marker 2 at 3 us".to_string()),
+        ]
+    );
+}
+
+/// Where a shards-api image start's time goes, for each way it starts (D253): from the boot's
+/// call to its answer (Hex's `hex.image.boot`: `boot_stoppable` and the diagnostics' keep), to
+/// its harness's first output, and its stop, `SHARDS_IMAGE_COST_N` starts of each, the kinds
+/// taken round-robin, each round starting one kind later, so that the host's drift and a
+/// pool's refill after its warm start fall on every kind alike (PM M29). Each start's kind is
+/// held to the one asked. Then one start of each kind with its VM's log at debug and its run
+/// host's steps timed (`SHARDS_TIMING`), every timed line of both on the caller's clock, from
+/// the boot's call, in order: its run host's spawn, preparation and launches, its VM's spawn,
+/// exec and App Sandbox entry to its `main`, its VM's own steps and its guest's markers, its
+/// grants answered, and the way from `READY` through `TAKEN` and `STARTED` to its first output.
+#[test]
+#[ignore = "a measurement: SHARDS_IMAGE_COST_N starts of each kind; ROOT runs it"]
+fn image_start_costs() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_IMAGE_COST_N")
+        .expect("SHARDS_IMAGE_COST_N names the starts of each kind")
+        .parse()
+        .expect("SHARDS_IMAGE_COST_N is a count");
+    let kinds: &[StartKind] = if shards_vmm::vm::restores_here() {
+        &StartKind::ALL
+    } else {
+        let _ = writeln!(
+            std::io::stderr(),
+            "SKIP: Saved, Restored and Warm: this host's hypervisor restores no snapshot (PM M345)"
+        );
+        &StartKind::ALL[..1]
+    };
+    let host = format!(
+        "backend {}, {}",
+        shards_vmm::hv::BACKEND.unwrap_or("none"),
+        os_release()
+    );
+    let mut rig = CostRig::new();
+    rig.warm_up();
+    let mut times: Vec<[Vec<Duration>; 3]> = kinds.iter().map(|_| Default::default()).collect();
+    for round in 0..n {
+        for i in 0..kinds.len() {
+            let at = (round + i) % kinds.len();
+            let kind = kinds[at];
+            let s = rig.start(kind);
+            let _ = writeln!(
+                std::io::stdout(),
+                "IMAGE-START-SAMPLE round {round} {kind:?} from {:?} boot_us {} usable_us {} stop_us {}",
+                s.from,
+                s.boot.as_micros(),
+                s.usable.as_micros(),
+                s.stop.as_micros()
+            );
+            times[at][0].push(s.boot);
+            times[at][1].push(s.usable);
+            times[at][2].push(s.stop);
+        }
+    }
+    for (kind, [boot, usable, stop]) in kinds.iter().zip(&times) {
+        common::measured(
+            &format!("IMAGE START {kind:?} boot, hex.image.boot's span ({host})"),
+            boot,
+        );
+        common::measured(&format!("IMAGE START {kind:?} to first output ({host})"), usable);
+        common::measured(&format!("IMAGE START {kind:?} stop ({host})"), stop);
+    }
+    // One start of each kind, its VM's log at debug, which slows it: its steps, apart from
+    // the measured starts.
+    rig.traced();
+    // The room holds two warm hosts: the untraced pool's give theirs back for the traced one.
+    rig.pools.release(u64::MAX).unwrap();
+    rig.warm_up();
+    for &kind in kinds {
+        let s = rig.start(kind);
+        let said = std::fs::read_to_string(&s.diagnostics).unwrap();
+        let _ = writeln!(
+            std::io::stdout(),
+            "IMAGE-START-PHASES {kind:?} from {:?}: boot {} us, first output {} us, stop {} us; every timed line in us from the boot's call:",
+            s.from,
+            s.boot.as_micros(),
+            s.usable.as_micros(),
+            s.stop.as_micros()
+        );
+        let mut lines = timeline(&said, s.called_unix_us);
+        let caller = |d: Duration, what: &str| {
+            (
+                i128::try_from(d.as_micros()).unwrap(),
+                format!("caller    {what}"),
+            )
+        };
+        lines.push(caller(s.boot, "the boot answered"));
+        lines.push(caller(s.usable, "its harness's first output read"));
+        lines.sort_by_key(|(at, _)| *at);
+        let mut before: Option<i128> = None;
+        for (at, text) in lines {
+            let gap = before.map_or(String::new(), |b| format!("+{}", at - b));
+            before = Some(at);
+            let _ = writeln!(
+                std::io::stdout(),
+                "IMAGE-START-PHASES {kind:?} {at:>9} {gap:>9}  {text}"
+            );
+        }
+    }
 }
 
 /// Stop ends the run at once, whatever its members do, and its end says so.
@@ -2651,11 +3233,18 @@ fn warm_hosts_end_with_the_process_holding_their_pools() {
         let sent = unsafe { libc::kill(-pid, 0) };
         sent == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     };
-    let mut patience = Patience::started();
+    // Its party is those groups' own processes, the holder's orphans now, none of them this
+    // process's: a wait on the processes this process started followed none of them, and was
+    // refused 322.5 µs in with host 75603 live (ROOT's batch 32, HVF).
+    let groups: Vec<u32> = hosts.iter().filter_map(|&pid| u32::try_from(pid).ok()).collect();
+    let mut patience = Patience::groups(&groups);
     while !hosts.iter().all(|&pid| gone(pid)) {
         assert!(
             patience.holds(),
-            "warm hosts {hosts:?} outlived their pools' holder"
+            "warm hosts {hosts:?} outlived their pools' holder, their groups' processes now {:?}",
+            common::grouped(&common::processes(), &groups)
+                .cloned()
+                .collect::<Vec<_>>()
         );
         std::thread::sleep(patience.next_look());
     }
@@ -2690,4 +3279,129 @@ fn a_warm_hosts_footprint_is_its_vm_processs_reading() {
     };
     patience.done();
     assert!(footprints.iter().all(|&f| f > 0), "{footprints:?}");
+}
+
+/// The Agentfile lines of an image whose harness takes port 7100 coming in (D122), which links
+/// it past its microVM, so that its run has a network with no port published at its start.
+const INGRESS: &str = "NETWORK --ingress=7100 front\n\
+     EXPOSE --harnesses=codex 7100 AS ingress FOR front\n\
+     CONNECT --target-kind=harness codex WITH codex ON front\n";
+
+/// The VM processes of `home`'s runs: those whose command line names the home (their image's
+/// root, or their template's directory) and the VM process's own binary.
+fn vm_processes(home: &TempDir) -> Vec<u32> {
+    let home = home.to_string_lossy().into_owned();
+    let mut vms: Vec<u32> = common::commands_with(&home)
+        .into_iter()
+        .filter(|(_, args)| args.contains("shards-vm"))
+        .map(|(pid, _)| pid)
+        .collect();
+    vms.sort_unstable();
+    vms
+}
+
+/// Every file beneath `home`'s templates, with its length: a save, or a template made or
+/// replaced, changes it (D253).
+fn templates_of(home: &TempDir) -> Vec<(std::path::PathBuf, u64)> {
+    let mut files = Vec::new();
+    let mut dirs = vec![home.join("templates")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            if meta.is_dir() {
+                dirs.push(entry.path());
+            } else {
+                files.push((entry.path(), meta.len()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// D269, P6b.1 AC1: a port published as the run runs answers from the host, reaching the member
+/// its image gives it coming in, and once let go of answers no more; all of it in the running
+/// microVM in place: its start (`started_from`) and its one VM process the same throughout, its
+/// template's files untouched, and its image's next run restoring that template where this host
+/// restores. Refused typed: a port let go of twice (`Unknown`), and one the image gives no member
+/// on a run with no command of its own (`Widening`).
+#[test]
+fn a_port_published_live_answers_and_is_gone_after_unpublish() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-live-port-home");
+    build(&home, "api-live-port:1", &["confined", "listen", "7100"], INGRESS);
+    let mut s = spec(&home, "api-live-port:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let guest = boot(&home, &s);
+    let from = guest.started_from();
+    let vms = vm_processes(&home);
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    let templates = templates_of(&home);
+    assert!(guest.published().is_empty(), "{:?}", guest.published());
+    let asked = |guest_port| Publish {
+        guest_port,
+        proto: Proto::Tcp,
+        host: Some("127.0.0.1".parse().unwrap()),
+        host_port: 0,
+    };
+    let bound = ask(&*guest, |g| g.publish(asked(7100), Duration::MAX)).unwrap();
+    let [bound] = bound.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let [to] = bound.to.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let member = guest.members().iter().find(|m| m.index == to.member).unwrap();
+    assert_eq!(
+        (member.kind, member.name.as_str(), to.port),
+        (MemberKind::Harness, "codex", 7100)
+    );
+    assert_eq!(guest.published(), vec![bound.clone()]);
+    let mut patience = Patience::started();
+    loop {
+        if let Ok(mut c) = std::net::TcpStream::connect(bound.host) {
+            let _ = c.write_all(b"hello\n");
+            let mut got = Vec::new();
+            let _ = common::Following::of(&c, None).read_to_end(&mut got);
+            if !got.is_empty() {
+                break;
+            }
+        }
+        assert!(patience.holds(), "no answer on {}", bound.host);
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
+    ask(&*guest, |g| g.unpublish(Proto::Tcp, bound.host, Duration::MAX)).unwrap();
+    assert!(guest.published().is_empty(), "{:?}", guest.published());
+    assert!(
+        std::net::TcpStream::connect(bound.host).is_err(),
+        "{} answered once let go of",
+        bound.host
+    );
+    assert!(matches!(
+        ask(&*guest, |g| g.unpublish(Proto::Tcp, bound.host, Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Unknown, _))
+    ));
+    assert!(matches!(
+        ask(&*guest, |g| g.publish(asked(7200), Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Widening, _))
+    ));
+    // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+    if shards_vmm::vm::restores_here() {
+        assert_eq!(from, StartedFrom::Saved);
+        let next = boot(&home, &s);
+        assert_eq!(next.started_from(), StartedFrom::Restored);
+        next.stop().unwrap();
+    }
 }

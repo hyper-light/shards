@@ -1,4 +1,4 @@
-# A managed guest's vCPU guest time, against its VM process's CPU time, and how often it moves (PM M601, D265)
+# A managed guest's vCPU guest time, against its VM process's CPU time, and how often it moves (PM M602, D265)
 
 Two probes, each a test of `crates/shards/tests` copied in for its run and removed after:
 
@@ -17,4 +17,4 @@ Run, from a checkout at the revision measured, with a pinned kernel fetched by t
 
 Hosts: hex-winvm (Windows Server 2025 Standard Evaluation 24H2, build 26100.32230, nested
 WHP on KVM, the classic scheduler, event 2 0x1, 12 vCPUs) and jupiter (Windows 11 Pro
-10.0.26200, the root scheduler, event 2 0x4, AMD Ryzen AI Max+ 395). Results: PM M601.
+10.0.26200, the root scheduler, event 2 0x4, AMD Ryzen AI Max+ 395). Results: PM M602.

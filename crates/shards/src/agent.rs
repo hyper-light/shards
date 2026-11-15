@@ -539,11 +539,24 @@ fn make_in(
         }
         config.platform = Some(p.clone());
     }
-    let config_bytes = config.to_bytes().map_err(|e| e.to_string())?;
-    let mut tar = Vec::new();
     let mut skipped = vec![kind.config_file()];
     skipped.extend_from_slice(skip);
-    pack(content, &skipped, &mut tar)?;
+    let desc = stored(kind, &config, content, &skipped, store)?;
+    Ok((desc, config))
+}
+
+/// The artifact of `config` and `content`'s files but `skip` at its root, all stored: its
+/// manifest's descriptor.
+fn stored(
+    kind: Kind,
+    config: &Config,
+    content: &Path,
+    skip: &[&str],
+    store: &Store,
+) -> Result<Descriptor, String> {
+    let config_bytes = config.to_bytes().map_err(|e| e.to_string())?;
+    let mut tar = Vec::new();
+    pack(content, skip, &mut tar)?;
     let put = |bytes: &[u8]| -> Result<Digest, String> {
         let d = sha256(bytes)?;
         store
@@ -565,7 +578,71 @@ fn make_in(
     let manifest =
         osi::manifest(kind, &config_desc, std::slice::from_ref(&layer)).map_err(|e| e.to_string())?;
     let d = put(&manifest)?;
-    Ok((desc(oci::media::OCI_MANIFEST, &d, manifest.len())?, config))
+    desc(oci::media::OCI_MANIFEST, &d, manifest.len())
+}
+
+/// The OSI artifact of a component built alone (D270), from its build's local output `out`:
+/// the content its directive laid at `dir` (`/harness/codex`), and its startup as the build
+/// normalized it beside it (`<dir>.d/osi.json`, D54), else none (files alone, as such a
+/// domain is), named `name` and of `platform`, which a config naming another refuses. Kept in
+/// the store as `tag`; returns its manifest's digest.
+pub(crate) fn component(
+    kind: Kind,
+    name: &str,
+    out: &Path,
+    dir: &str,
+    platform: osi::Platform,
+    tag: &str,
+) -> Result<String, String> {
+    component_in(&store()?, kind, name, out, dir, platform, tag)
+}
+
+/// [`component`], kept in `store`.
+fn component_in(
+    store: &Store,
+    kind: Kind,
+    name: &str,
+    out: &Path,
+    dir: &str,
+    platform: osi::Platform,
+    tag: &str,
+) -> Result<String, String> {
+    let at = dir.trim_start_matches('/');
+    let content = out.join(at);
+    if !content.is_dir() {
+        return Err(format!("{dir}: the build laid no {} there", kind.word()));
+    }
+    let config_path = out.join(format!("{at}.d")).join("osi.json");
+    let mut config = match fs::read(&config_path) {
+        Ok(bytes) => Config::parse(&bytes).map_err(|e| format!("{dir}.d/osi.json: {e}"))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Config {
+            schema_version: osi::SCHEMA_VERSION,
+            name: name.to_string(),
+            version: String::new(),
+            description: String::new(),
+            platform: None,
+            run: None,
+            skills: Vec::new(),
+            mcp: Vec::new(),
+            asks: osi::Asks::default(),
+        },
+        Err(e) => return Err(format!("{}: {e}", config_path.display())),
+    };
+    if let Some(said) = config.platform.as_ref().filter(|said| **said != platform) {
+        return Err(format!(
+            "{dir}.d/osi.json says its platform is {}/{}, not {}/{}",
+            said.os, said.architecture, platform.os, platform.architecture
+        ));
+    }
+    config.platform = Some(platform);
+    let name = reference(tag)?;
+    let _lease = store.lease().map_err(|e| e.to_string())?;
+    let desc = stored(kind, &config, &content, &[], store)?;
+    let digest = desc.digest().map_err(|e| e.to_string())?;
+    store
+        .tag(&name.to_string(), &desc, &digest, &contents(store, &desc)?)
+        .map_err(|e| e.to_string())?;
+    Ok(digest.to_string())
 }
 
 /// Every blob of the artifact `desc` names: its manifest, config and layers.
@@ -1643,6 +1720,97 @@ mod tests {
             ));
         }
         out
+    }
+
+    /// A component's artifact (D270) is what its directive laid in the build's output: its
+    /// directory's files as a whole build lays them, its descriptor among them, and the
+    /// startup the build normalized beside it as its config, of the build's platform; a
+    /// config of its name alone where the build made none; the same output, the same digest;
+    /// another platform said, refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_components_artifact_is_what_its_directive_laid() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let top = shards_testdir::TempDir::new("component").unwrap();
+        let top: &Path = top.as_ref();
+        fs::create_dir_all(top.join("images")).unwrap();
+        let store = Store::open(&top.join("images")).unwrap();
+        let out = top.join("out");
+        fs::create_dir_all(out.join("harness/codex/bin")).unwrap();
+        fs::create_dir_all(out.join("harness/codex.d")).unwrap();
+        fs::write(
+            out.join("harness/codex/harness.json"),
+            br#"{"entrypoint":"codex"}"#,
+        )
+        .unwrap();
+        fs::write(out.join("harness/codex/bin/codex"), b"#!/bin/sh\necho v1\n").unwrap();
+        fs::set_permissions(
+            out.join("harness/codex/bin/codex"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(
+            out.join("harness/codex.d/osi.json"),
+            br#"{"schemaVersion":1,"name":"codex","run":{"command":["codex"]}}"#,
+        )
+        .unwrap();
+        // What else the build laid is not the component's.
+        fs::write(out.join(".agentfile.json"), b"{}").unwrap();
+        let arm64 = || osi::Platform {
+            os: "linux".into(),
+            architecture: "arm64".into(),
+            variant: None,
+        };
+        let made = |out: &Path, tag: &str| {
+            component_in(
+                &store,
+                Kind::Harness,
+                "codex",
+                out,
+                "/harness/codex",
+                arm64(),
+                tag,
+            )
+        };
+        let digest = made(&out, "kiln/codex:1").unwrap();
+        let desc = store
+            .tagged(&reference("kiln/codex:1").unwrap().to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(desc.digest, digest);
+        let (m, kind) = manifest_of(&store, &desc).unwrap();
+        assert_eq!(kind, Kind::Harness);
+        let config = Config::parse(&fs::read(store.blob_path(&m.config.digest().unwrap())).unwrap()).unwrap();
+        assert_eq!(config.run.unwrap().command, ["codex"]);
+        assert_eq!(config.platform, Some(arm64()));
+        let layer = fs::read(store.blob_path(&m.layers[0].digest().unwrap())).unwrap();
+        let names: Vec<String> = entries(&layer).into_iter().map(|e| e.0).collect();
+        // A directory's entries after its parent's, each in name order (`pack`).
+        assert_eq!(names, ["bin/", "harness.json", "bin/codex"]);
+        // The same output, the same artifact.
+        assert_eq!(made(&out, "kiln/codex:2").unwrap(), digest);
+        // No startup normalized: files alone, its name its config's.
+        fs::remove_file(out.join("harness/codex.d/osi.json")).unwrap();
+        let alone = made(&out, "kiln/codex:3").unwrap();
+        let desc = store
+            .tagged(&reference("kiln/codex:3").unwrap().to_string())
+            .unwrap()
+            .unwrap();
+        let (m, _) = manifest_of(&store, &desc).unwrap();
+        let config = Config::parse(&fs::read(store.blob_path(&m.config.digest().unwrap())).unwrap()).unwrap();
+        assert_ne!(alone, digest);
+        assert_eq!((config.name.as_str(), config.run), ("codex", None));
+        // A config of another platform, refused; and a directory the build laid nothing in.
+        fs::write(
+            out.join("harness/codex.d/osi.json"),
+            br#"{"schemaVersion":1,"name":"codex","platform":{"os":"linux","architecture":"amd64"}}"#,
+        )
+        .unwrap();
+        let other = made(&out, "kiln/codex:4").unwrap_err();
+        assert!(other.contains("amd64"), "{other}");
+        let none =
+            component_in(&store, Kind::Agent, "a", &out, "/agents/a", arm64(), "kiln/a:1").unwrap_err();
+        assert!(none.contains("laid no agent"), "{none}");
     }
 
     /// An agent's directory is read as a build reads its context: a file's mode its own on

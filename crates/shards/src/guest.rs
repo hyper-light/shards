@@ -119,9 +119,10 @@ pub fn release(kernel: &Path) -> Option<String> {
     }
     let image = std::fs::read(kernel).ok()?;
     let banner = b"Linux version ";
-    let found = image
-        .windows(banner.len())
-        .position(|w| w == banner)
+    // Found as memchr's memmem finds a needle, a rare byte of it looked for a vector at a
+    // time, never the whole banner compared at each byte: it lies past the kernel's text,
+    // megabytes in (an arm64 Image's `.rodata`), and a run's start waits for it.
+    let found = memchr::memmem::find(&image, banner)
         .and_then(|at| image.get(at + banner.len()..))
         .and_then(|rest| {
             let end = rest.iter().position(|&b| b == b' ' || b == 0)?;
@@ -655,5 +656,39 @@ mod tests {
             });
         }
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A kernel image's release is the word after its banner, wherever in it the banner lies
+    /// (an arm64 Image's past its text, megabytes in), up to a space or a NUL; an image with
+    /// no banner, or only part of one at its end, has none.
+    #[test]
+    fn a_kernels_release_is_read_after_its_banner_wherever_it_lies() {
+        let dir = shards_testdir::TempDir::new("guest-release").unwrap();
+        let text = vec![0xD5u8; 3 << 20];
+        let cases: [(&str, Vec<u8>, Option<&str>); 5] = [
+            (
+                "deep",
+                [&text[..], b"Linux version 6.18.48 (builder@host) #1 SMP"].concat(),
+                Some("6.18.48"),
+            ),
+            ("first", b"Linux version 6.1.0-rc3\0".to_vec(), Some("6.1.0-rc3")),
+            (
+                "twice",
+                [&text[..], b"Linux version 6.18.1 x Linux version 5.4 x"].concat(),
+                Some("6.18.1"),
+            ),
+            ("none", text.clone(), None),
+            ("cut", [&text[..], b"Linux versio"].concat(), None),
+        ];
+        for (name, image, release) in cases {
+            let path = dir.join(name);
+            fs::write(&path, &image).unwrap();
+            assert_eq!(super::release(&path).as_deref(), release, "{name}");
+        }
+        assert_eq!(
+            version_of(&dir.join("deep")).unwrap(),
+            shards_seccomp::Kernel(6, 18)
+        );
+        assert!(version_of(&dir.join("none")).is_err());
     }
 }
