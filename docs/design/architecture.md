@@ -29405,6 +29405,15 @@ D215's spawn alone).
 
 ### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
+**Amended by D271 (2026-11-15).** An orchestrator's plug gives a host directory or a volume
+of its home's store into every member that runs or those named, each its own device, at the
+path asked; and its run's plug roots include those its spec grants at its start
+(`ImageSpec::plug_roots`), beside its host's own and its shares'. A domain's roots are fixed as
+it starts (Landlock only narrows), so **a volume added later is placed beneath a root by
+default**: kiln names a session's roots up front (its project's, the person's home volume's,
+and one for the session's volumes), and an "Add volume" beneath any of them needs no member
+restart. A path outside every root is refused, typed (`PlugRefusal::Outside`).
+
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
 harness, D59) must see the project at that same absolute path, writable, its writes the
@@ -35802,6 +35811,20 @@ start (`hv::GUEST_TIME_CHARGED`): KVM charges guest time to the vCPU thread's us
 (`account_guest_time`, kernel/sched/cputime.c: `p->utime += cputime; ... p->gtime +=
 cputime`), and Hypervisor.framework runs a vCPU on its owning thread, whose time XNU does not
 split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learned.
+- *Its hold across periods* (PM M602). A WHP vCPU's guest time moves in ~10 ms steps
+  (hex-winvm: p50 10,013 us apart, 9,404 us of guest each), so its governor sees a run up to
+  a move late and a hold overruns by that and its kick's landing, which its debt owes the
+  periods after. The hold lasts through them, the whole shares owed (`Hold::govern`'s
+  `held_until`, at a fixed end as before, M441), where it was let go at each period's end and
+  its vCPU ran again until its governor woke and kicked it, every period (38.8% of the wall at
+  a quarter CPU on hex-winvm, D255's bound 31%). A test's bound takes the step its own guest's
+  time is read in, measured as its vCPU spins unheld (`tests/common::guest_time_step`), never
+  a count's unit (WHP's 100 ns). Tested: shards-vmm
+  `hold::tests::a_vcpu_that_overran_is_held_through_the_periods_it_owes` (twelve shares overrun
+  at once, told late: held through the eleven periods owed, where it was let go at the end of
+  the first); live, `boot.rs` `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`
+  on hex-winvm, red at ba6ed94b8 (776,742,300 ns of guest in 2,002,645,300 ns) and green with
+  this hold (the measured step alone moves its bound by a move, 9.4 ms).
 - *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
   (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
   `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
@@ -36190,7 +36213,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slice 1 built: the component build; the attach, member restart, swap and saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 and 2 built: the component build, and its image plugged in and mapped DAX; member restart, swap and saves following)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36268,6 +36291,126 @@ the build's own parser reads it), `an_unpinned_source_is_refused_in_the_builds_w
 **Owed to ROOT:** `SHARDS_API_BUILD=1 SHARDS_BIN=… cargo test -p shards-api --test build_real
 a_component_builds_alone_from_its_directives_pinned_source` (no VM boots: `scratch` and a
 fetch) on HVF, KVM and WHP.
+
+**Slice 2: a component's image plugged into a running microVM, mapped DAX** (ROOT's pick of
+pmem per component over one virtio-fs DAX share, 2026-11-15, on main's records: a window maps
+a file only past the size its device learned, PM M338's 256 KiB on the Mac and 1 MiB on
+Fedora, where working trees are 99.8-99.9% files under 2 MiB, so most of a component would be
+FUSE's copy in each VM's page cache; a 4 KiB file mapped through a window costs its VM 23.6 to
+28.5 KiB more than FUSE's copy (M338); HVF maps no read-only share's file through its window
+(D189's `SHARED_NEEDS_WRITE`); and one share of the machine's store would need a per-run
+allowlist, or a guest's kernel reads every tenant's components. EROFS on pmem maps every file
+from one region, its cost the guest's page structures, 64 bytes a 4 KiB page.)
+- *The components' window* (`MachineConfig::component_window_mib`, snapshot format 35, a guest
+  saved in 34 refused `OlderMachine`): guest addresses past the DAX windows, at a GiB
+  boundary, within the guest's reach and fitted to it where shorter (said), its fitted length
+  kept so that a restore lays the guest out as its save did, refused where this host's reach
+  would shorten it (`window_kept`). A run's microVM has one where it has PCI slots, as long as
+  its host's memory (run.rs `Shape::give`), as its swap window is (D159): the most of the
+  components' files its page cache holds at once. Nothing of it is mapped until a function is
+  plugged, so a run that plugs none pays its addresses alone (`--component-window MIB`).
+- *A component's function* (`vm::Handle::plug_pmem`, the VM process's `device::PMEM` step):
+  its EROFS image's file, opened by its run's host (a confined VM process opens none), mapped
+  read-only into this process (`pmem::Region::of_file`), at the window's first free range
+  that holds it, whole 2 MiB, through a memory slot of its own (`pmem::Components`: KVM's
+  memslots, one for each of the bus's slots; HVF and WHP map by address); a read-only
+  virtio-pmem function on a D214 slot, its config's start and size that range (virtio 1.3
+  §5.19, which every kernel's virtio_pmem reads); its pages given the machine's other devices
+  as a boot's pmem files are (`GuestMemory::give_plugged`, D189's device DMA). Answered
+  `DEVFN ADDRESS GPA LEN`. Its unplug (`device::UNPLUG`, once its guest let it go) takes its
+  pages from its devices, then unmaps it from the guest and this process. Refused typed:
+  `NoBus`, `NoSlots`, and `NoRoom { asked, free }` (the window's longest free range), the
+  device channel's cause 12, its retry `AfterRelease`.
+- *Its guest* (init's `DEVICE` built-in, `pmem ADDR GPA KEY`): the bus rescanned (D214),
+  libnvdimm's drivers binding the region and its namespace of themselves, with page
+  structures (not raw, as the swap window is, D159), so that its files are DAX; its disk found
+  by its region's address as each uevent comes; EROFS mounted read-only, `nosuid`, `nodev`,
+  `dax=always`, attached nowhere, then put beside the run's writable layer at
+  `components/KEY`, where no path from the run's root reaches, as the in-VM server's binary
+  is (domains.rs); KEY the component's digest's 64 lowercase hex digits, refused otherwise.
+  `unpmem ADDR KEY` unmounts it, refused while it is held (`DEVICE_BUSY`), and writes the
+  function's `remove`.
+- *Capacity*: a microVM attaches as many components as its free slots, each within the
+  window's free ranges. Image runs' slots are derived in slice 4 (2 × the image's declared
+  agents, harnesses and stdio MCP servers, for a swap's old and new, plus its plug roots);
+  until then a run has D214's.
+- *What it costs*: a rescan and first read p50 2.4 and 3.1 ms on HVF, 6.6 and 7.6 ms on KVM
+  x86-64 (PM M430, a disk's); the probe and mount, and the page structures (size/64, made
+  as the namespace binds), are ROOT's to measure (slice 4's timing lines), and with them the
+  choice between an altmap head (D190's) and a lazy memmap, scheduled after slice 4.
+
+| Literal | Source |
+|---|---|
+| `PMEM` = 6 | the device channel's next step after `FUNCTION` = 5 (append-only) |
+| `NO_ROOM` = 12 | the device refusal's next cause after `INVALID_REPLY` = 11 |
+| 64 hex digits | a SHA-256 digest's (FIPS 180-4), the component's identity |
+| `components` | the directory beside the writable layer, as `server-binary` is beside it |
+| `dax=always` | EROFS's mount option for DAX (Documentation/filesystems/erofs.rst) |
+| format 35 | the snapshot format's next after D268's 34 |
+
+**Tests** (light): vmm `pmem::tests::a_components_window_maps_each_file_at_a_free_range_through_a_slot_of_its_own`,
+`memory::tests::plugged_device_memory_is_reached_until_it_is_taken_back`, the snapshot tests at
+format 35; ipc `device_refusals_keep_identity_and_retry_across_the_wire` (`NoRoom`); shards
+`run::tests` (the window as long as the host's memory where the run has slots, none
+without; `--component-window` among a boot's words); init
+`hotplug::tests::a_components_key_is_its_digest_alone` (Linux). The guest's probe and mount
+run on real VMs alone: slice 4's E2E tests, ROOT's.
+
+### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
+volume to the microvm(s) for that session, grants the permissions specified, and adds it to the
+harness's/agent's allow directories and session's scope", live, with no rebuild or restart
+(ROOT's binding reading, as D269's). D235 plugged one host directory into one member, beneath
+the run's plug roots, which its host chose alone (its OS's own and its shares' top-level
+directories).
+
+**What constrains it.** A member's domain is given every right beneath its plug roots as it
+starts, by Landlock, and no rule is added to a running process's domain (landlock(7):
+`landlock_restrict_self` only narrows); so what is plugged in live lies beneath a root the
+domain started with, or the member's processes must start again under a widened ruleset. Each
+domain sees a share as its own user (init hotplug.rs `share`: `name_owner_as` for the member's
+ids on its mount), so a share is one member's.
+
+**Decided** (image channel version 35):
+- *Roots granted at the start.* `ImageSpec::plug_roots`: top-level directories of the members'
+  view (`/session`), each one `shards_abi::run::plug::root_name` takes (none of init's own:
+  `/proc`, `/sys`, `/dev`, `/tmp`, `/etc`, `/run`) and each once, refused by field otherwise;
+  added after the host's own (`api_run::granted_roots`). They are the run's setup alone, so a
+  warm pool's microVM is none of them (`Request::exemplar` takes them out) and runs of other
+  roots share its hosts. A volume added later is placed beneath one by default (D235's
+  amendment); a path outside every root is refused `Outside`. The explicit restart of a member
+  that a path outside every root would need is not built: refused typed until it is.
+- *The call.* `ImageGuest::plug(&Plug, patience)`, `Plug { source: PlugSource, to: PlugFor,
+  at, read_only }` in place of D235's one-member form; `PlugSource::Host(PathBuf)` (absolute) or
+  `PlugSource::Volume(name)`, a volume of the run's home's store, made where it is not there as
+  a run's `-v NAME:PATH` makes one (`Store::create`), refused `Volume` where the store would
+  refuse a run's own mount of it (a bad name, another microVM's engine's, D109's scoped volume
+  given elsewhere); `PlugFor::Every` (every member that runs) or `Members(names)`, each one the
+  image declares and that runs, named once (shards-api resolves them to their indices, and the
+  wire carries one at least, each once).
+- *One device for each member,* as D235's plug: its own share process and function on the
+  microVM's bus, mounted by init in that member at `at`, read-only where asked (its mount's
+  attribute; the server refuses the guest's writes too). A plug one member refuses is let go of
+  by those it was given to first.
+- *Unplug.* `unplug(at)` lets go of every member's plug at `at`: unmounted by init, then taken
+  off the bus. One a member holds busy is refused `Busy`, naming the members it stays plugged
+  into, while the others are let go of all the same, so that an unplug asked again finishes it.
+- *In place.* Nothing of the image, its template or its VM process changes: each plug is a
+  device added to the running microVM and a mount in its member.
+
+**Tests** (light): `wire::tests::plugs_round_trip_and_bad_ones_are_refused` (several members,
+a volume source, none or one twice refused, `Volume`);
+`image::tests::a_specs_plug_roots_are_top_level_directories_granted_once`;
+`session::tests::a_plug_is_for_the_members_that_run_and_rides_the_runs_channel`;
+`api_run::hosted::tests::a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots`.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays` (rw read and written
+back, ro refusing the member's write with EROFS, a home volume made by its plug, `Outside`,
+`Busy` and `Unknown`; the same `started_from`, the same VM process and unchanged templates
+across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
+`plugged-volumes` mode is new, so the test guests are rebuilt.
 
 ## 4. Start path (≤ 5 ms budget)
 

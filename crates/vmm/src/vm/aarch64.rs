@@ -448,6 +448,8 @@ struct Assembled {
     gpu_window: Option<u64>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// Its components' window's length in MiB, as its guest's addresses fit it (D270).
+    component_window_mib: u64,
     /// Its PCI host bridge, where it has a PCI bus (D153).
     pci: Option<boot::PciBridge>,
     /// Each pmem region at its guest address, which mapped working sets record.
@@ -525,6 +527,8 @@ fn assemble(
     let (windows, top, share_window_mib) =
         super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
+    // Its components' window past them (D270), which its slots' pmem functions map in.
+    let (component_window, top, component_window_mib) = super::component_layout(config, top, reach)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -569,6 +573,8 @@ fn assemble(
     if let Some(heads) = &window_heads {
         super::map_window_heads(&vm, heads)?;
     }
+    // Its components' window (D270): nothing of it mapped until a pmem function is plugged.
+    let components = super::components(&vm, component_window, config.pci_slots)?;
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
     let swap = super::swap_window(&vm, swap_at)?;
@@ -737,6 +743,7 @@ fn assemble(
                 unpinnable: super::unpinnable(config),
                 #[cfg(target_os = "linux")]
                 vfio: vm.vfio_host(),
+                components: components.clone(),
             });
         }
         boot::PciBridge {
@@ -777,6 +784,7 @@ fn assemble(
         pmem,
         gpu_window,
         share_window_mib,
+        component_window_mib,
         pci,
         #[cfg(any(hv = "kvm", hv = "whp"))]
         pmem_regions: regions
@@ -879,8 +887,10 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
     debug!("kernel and initrd copied");
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
-    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps, and
+    // its components' window's.
     config.share_window_mib = a.share_window_mib;
+    config.component_window_mib = a.component_window_mib;
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     let cmdline = super::kernel_cmdline(cfg);
@@ -1116,6 +1126,7 @@ pub fn restore(
         vm: a.vm.for_restore(state.counter).map_err(|e| e.to_string())?,
         ..a
     };
+    super::window_kept(a.component_window_mib, &snap.config)?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()

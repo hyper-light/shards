@@ -2282,6 +2282,9 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         let u = shards_abi::rate::read_used(answer).unwrap();
         (u.guest.unwrap(), u.host.unwrap())
     };
+    // The step its guest time is read in, measured as its vCPU spins unheld.
+    let step =
+        u64::try_from(common::guest_time_step(|| read(&used(&socket)).0.total_ns()).as_nanos()).unwrap();
     let line = asked(&socket, 250).unwrap();
     let Ok(Answer::Held { milli, period_ns }) = read_answer(line.as_bytes()) else {
         panic!("asked a quarter CPU: {line:?}");
@@ -2299,7 +2302,6 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     std::thread::sleep(Duration::from_secs(2));
     let ran = read(&used(&socket)).0.total_ns() - before;
     let wall = u64::try_from(start.elapsed().as_nanos()).unwrap();
-    let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
     let most = wall / 4 + 2 * period_ns.get() + step;
     assert!(
         ran <= most,

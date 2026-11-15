@@ -22,6 +22,7 @@ use crate::memory::{Access, GuestMemory};
 use crate::platform;
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
+use shards_ipc::device::Refusal;
 
 pub const DEVICE_ID: u32 = 27;
 /// The ring: one flush, its request and its response, two descriptors, as the device
@@ -63,16 +64,23 @@ impl std::fmt::Debug for Region {
 
 impl Region {
     pub fn open(path: &Path) -> Result<Region, String> {
-        let err = |e: std::io::Error| format!("{}: {e}", path.display());
-        let file = crate::platform::open_input(path, false).map_err(err)?;
+        let file =
+            crate::platform::open_input(path, false).map_err(|e| format!("{}: {e}", path.display()))?;
+        Region::of_file(file, &path.display().to_string())
+    }
+
+    /// The region of `file`, opened to read by whoever could (a component's, D270, by its
+    /// run's host, as a confined VM process opens no file), `name` what its errors call it.
+    pub fn of_file(file: File, name: &str) -> Result<Region, String> {
+        let err = |e: std::io::Error| format!("{name}: {e}");
         let size = file.metadata().map_err(err)?.len();
         if size == 0 {
-            return Err(format!("{}: an empty file cannot back pmem", path.display()));
+            return Err(format!("{name}: an empty file cannot back pmem"));
         }
         let len = size
             .checked_next_multiple_of(ALIGN)
             .and_then(|l| usize::try_from(l).ok())
-            .ok_or_else(|| format!("{}: {size} bytes is too large", path.display()))?;
+            .ok_or_else(|| format!("{name}: {size} bytes is too large"))?;
         let (host, viewed) = platform::map_file_padded(&file, size, len).map_err(err)?;
         Ok(Region {
             host,
@@ -117,6 +125,150 @@ pub trait Slots: Send + Sync {
 
     /// Unmaps slot `i`, mapped at `gpa` for `len` bytes.
     fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String>;
+}
+
+/// A machine's components' window (D270): guest addresses past its other regions where each
+/// read-only pmem function plugged in as it runs maps its file, a component's EROFS image, at
+/// a free range of whole [`ALIGN`]s, through a memory slot of its own (KVM's numbering; other
+/// hypervisors map by address). The machine has as many slots as functions its bus holds at
+/// once: one for each. Nothing of it is mapped until a function is plugged, so a machine that
+/// plugs none pays nothing for it but its addresses.
+pub struct Components {
+    gpa: u64,
+    len: u64,
+    slots: Box<dyn Slots>,
+    count: u32,
+    placed: Mutex<Vec<Placed>>,
+}
+
+/// A range of the window a function's file is mapped in: its slot, the function that holds
+/// it once plugged, and the file's mapping, which stays as long as the range is mapped.
+struct Placed {
+    gpa: u64,
+    len: u64,
+    slot: u32,
+    devfn: Option<u8>,
+    _region: Arc<Region>,
+}
+
+impl std::fmt::Debug for Components {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Components")
+            .field("gpa", &self.gpa)
+            .field("len", &self.len)
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Components {
+    /// A window of `len` bytes at `gpa`, whole [`ALIGN`]s at an [`ALIGN`] boundary, its
+    /// files mapped through `count` slots of `slots`.
+    pub fn new(gpa: u64, len: u64, slots: Box<dyn Slots>, count: u32) -> Result<Components, String> {
+        if !len.is_multiple_of(ALIGN) || !gpa.is_multiple_of(ALIGN) {
+            return Err(format!(
+                "a components' window of {len} bytes at {gpa:#x}: whole {} MiB at a {} MiB boundary",
+                ALIGN >> 20,
+                ALIGN >> 20
+            ));
+        }
+        Ok(Components {
+            gpa,
+            len,
+            slots,
+            count,
+            placed: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Maps `region` read-only at the window's first free range that holds it, through a free
+    /// slot: its guest address. Refused where every slot maps a file already, or no free
+    /// range is as long ([`Refusal::NoRoom`], with the longest there is).
+    pub fn place(&self, region: &Arc<Region>) -> Result<u64, Refusal> {
+        let asked = region.len() as u64;
+        let mut placed = lock(&self.placed);
+        let slot = (0..self.count)
+            .find(|s| placed.iter().all(|p| p.slot != *s))
+            .ok_or(Refusal::NoSlots {
+                slots: u64::from(self.count),
+            })?;
+        let (at, free) = first_fit(self.gpa, self.len, &placed, asked);
+        let gpa = at.ok_or(Refusal::NoRoom { asked, free })?;
+        // SAFETY: the region stays mapped in this process while its range is: the record
+        // below holds it until `unmap` takes the range back, or the window drops after the
+        // VM (`Running` drops the VM before the devices).
+        unsafe { self.slots.map(slot, region.host(), gpa, region.len(), false) }.map_err(Refusal::Host)?;
+        placed.push(Placed {
+            gpa,
+            len: asked,
+            slot,
+            devfn: None,
+            _region: region.clone(),
+        });
+        Ok(gpa)
+    }
+
+    /// The range at `gpa` held from now on by the function plugged at `devfn`.
+    pub fn held_by(&self, gpa: u64, devfn: u8) {
+        if let Some(p) = lock(&self.placed).iter_mut().find(|p| p.gpa == gpa) {
+            p.devfn = Some(devfn);
+        }
+    }
+
+    /// The range the function at `devfn` held, once it is off the bus: unmapped, its slot
+    /// free, its file's mapping let go. Nothing where it held none: no component's.
+    pub fn release(&self, devfn: u8) -> Result<(), String> {
+        self.take(|p| p.devfn == Some(devfn))
+    }
+
+    /// The range at `gpa` taken back where no function came to hold it: a plug that failed
+    /// once its file was mapped.
+    pub fn release_at(&self, gpa: u64) -> Result<(), String> {
+        self.take(|p| p.gpa == gpa && p.devfn.is_none())
+    }
+
+    fn take(&self, which: impl Fn(&Placed) -> bool) -> Result<(), String> {
+        let mut placed = lock(&self.placed);
+        let Some(i) = placed.iter().position(which) else {
+            return Ok(());
+        };
+        let p = placed.swap_remove(i);
+        let len = usize::try_from(p.len).map_err(|_| format!("a range of {} bytes", p.len))?;
+        self.slots.unmap(p.slot, p.gpa, len)
+    }
+
+    /// The range the function at `devfn` holds, `(guest address, length)`, where it holds one.
+    pub fn range_of(&self, devfn: u8) -> Option<(u64, u64)> {
+        lock(&self.placed)
+            .iter()
+            .find(|p| p.devfn == Some(devfn))
+            .map(|p| (p.gpa, p.len))
+    }
+
+    /// Each range mapped, `(guest address, length)`, in the order of their addresses.
+    pub fn mapped(&self) -> Vec<(u64, u64)> {
+        let mut out: Vec<(u64, u64)> = lock(&self.placed).iter().map(|p| (p.gpa, p.len)).collect();
+        out.sort_unstable();
+        out
+    }
+}
+
+/// The first free range of `len` bytes in the window `[at, at + window)` that `placed` leave,
+/// and the longest free range there is.
+fn first_fit(at: u64, window: u64, placed: &[Placed], len: u64) -> (Option<u64>, u64) {
+    let mut taken: Vec<(u64, u64)> = placed.iter().map(|p| (p.gpa, p.len)).collect();
+    taken.sort_unstable();
+    let end = at.saturating_add(window);
+    let (mut next, mut found, mut longest) = (at, None, 0u64);
+    for (start, size) in taken.into_iter().chain([(end, 0)]) {
+        let gap = start.saturating_sub(next);
+        if found.is_none() && gap >= len {
+            found = Some(next);
+        }
+        longest = longest.max(gap);
+        next = next.max(start.saturating_add(size));
+    }
+    (found, longest)
 }
 
 /// The slots of a swap window: its head's zeros, and a run's file.
@@ -1454,6 +1606,94 @@ mod tests {
 
     fn window() -> Arc<SwapWindow> {
         Arc::new(SwapWindow::new(1 << 32, 8 * ALIGN, Box::new(Unmapped)).unwrap())
+    }
+
+    /// Slots that keep what is mapped through them, by slot: `(guest address, length,
+    /// writable)`.
+    /// What each slot maps: its guest address, length, and whether the guest may write it.
+    type SlotMaps = std::collections::BTreeMap<u32, (u64, usize, bool)>;
+
+    #[derive(Default)]
+    struct Kept(Arc<Mutex<SlotMaps>>);
+
+    impl Slots for Kept {
+        unsafe fn map(&self, i: u32, _: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+            match lock(&self.0).insert(i, (gpa, len, writable)) {
+                None => Ok(()),
+                Some(was) => Err(format!("slot {i} mapped twice: {was:?}")),
+            }
+        }
+
+        fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String> {
+            match lock(&self.0).remove(&i) {
+                Some((at, l, _)) if at == gpa && l == len => Ok(()),
+                other => Err(format!("slot {i} unmapped as {gpa:#x}+{len}, mapped {other:?}")),
+            }
+        }
+    }
+
+    /// A component's region of `len` bytes: a file of them, mapped as pmem maps one.
+    fn component(dir: &Path, name: &str, len: u64) -> Arc<Region> {
+        let f = file(dir, name, len);
+        Arc::new(Region::of_file(f, name).unwrap())
+    }
+
+    /// A components' window (D270) maps each file read-only at its first free range,
+    /// whole 2 MiB, through a slot of its own; one released gives its range and slot back to
+    /// the next; a file longer than any free range is refused naming the longest, and one
+    /// past its slots refused as the bus refuses a function past its slots.
+    #[test]
+    fn a_components_window_maps_each_file_at_a_free_range_through_a_slot_of_its_own() {
+        let dir = shards_testdir::TempDir::new("components").unwrap();
+        let kept = Kept::default();
+        let maps = kept.0.clone();
+        let at = 64u64 << 30;
+        let window = Components::new(at, 8 * ALIGN, Box::new(kept), 3).unwrap();
+        // 3 MiB is two ranges; 1 byte, one.
+        let a = component(dir.as_ref(), "a", 3 << 20);
+        let b = component(dir.as_ref(), "b", 1);
+        assert_eq!(window.place(&a).unwrap(), at);
+        assert_eq!(window.place(&b).unwrap(), at + 2 * ALIGN);
+        window.held_by(at, 8);
+        window.held_by(at + 2 * ALIGN, 16);
+        assert_eq!(window.range_of(16), Some((at + 2 * ALIGN, ALIGN)));
+        assert_eq!(window.range_of(24), None);
+        assert_eq!(
+            *lock(&maps),
+            std::collections::BTreeMap::from([
+                (0, (at, 2 * ALIGN as usize, false)),
+                (1, (at + 2 * ALIGN, ALIGN as usize, false))
+            ])
+        );
+        // Five ranges are left, at the window's end: six are not there.
+        let big = component(dir.as_ref(), "big", 6 * ALIGN);
+        assert_eq!(
+            window.place(&big),
+            Err(Refusal::NoRoom {
+                asked: 6 * ALIGN,
+                free: 5 * ALIGN
+            })
+        );
+        // The first let go: its range and slot are the next's.
+        window.release(8).unwrap();
+        assert_eq!(
+            *lock(&maps),
+            std::collections::BTreeMap::from([(1, (at + 2 * ALIGN, ALIGN as usize, false))])
+        );
+        let c = component(dir.as_ref(), "c", ALIGN);
+        assert_eq!(window.place(&c).unwrap(), at);
+        assert_eq!(lock(&maps).get(&0), Some(&(at, ALIGN as usize, false)));
+        let d = component(dir.as_ref(), "d", ALIGN);
+        assert_eq!(window.place(&d).unwrap(), at + ALIGN);
+        // Every slot maps a file.
+        let e = component(dir.as_ref(), "e", ALIGN);
+        assert_eq!(window.place(&e), Err(Refusal::NoSlots { slots: 3 }));
+        // A plug that failed gives its range back; a release of no component's is nothing.
+        window.release_at(at + ALIGN).unwrap();
+        window.release(99).unwrap();
+        assert_eq!(window.mapped(), [(at, ALIGN), (at + 2 * ALIGN, ALIGN)]);
+        assert!(Components::new(at + 4096, ALIGN, Box::new(Unmapped), 1).is_err());
+        assert!(Components::new(at, ALIGN + 4096, Box::new(Unmapped), 1).is_err());
     }
 
     fn file(dir: &Path, name: &str, len: u64) -> File {

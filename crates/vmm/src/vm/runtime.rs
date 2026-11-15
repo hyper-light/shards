@@ -113,7 +113,51 @@ impl Handle {
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size,
             steps: Vec::new(),
+            region: None,
         })
+    }
+
+    /// Plugs a component's EROFS image into the running machine (D270): a read-only
+    /// virtio-pmem function, its region `file` mapped at a free range of its components'
+    /// window, which every VM of its host mapping the same file shares in its page cache, as
+    /// an image's root is shared (D15). Its guest finds it as its init rescans its PCI bus,
+    /// and maps its files from the host's pages (DAX). Refused where the machine has no
+    /// window, no free slot, or no free range as long as the file
+    /// ([`Refusal::NoRoom`]).
+    pub fn plug_pmem(&self, file: std::fs::File) -> Result<super::Plugged, Refusal> {
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
+        let window = plugs.components.clone().ok_or_else(|| {
+            Refusal::Unsupported("this microVM has no components' window to map a component in".into())
+        })?;
+        let region = Arc::new(pmem::Region::of_file(file, "a component's image").map_err(Refusal::Host)?);
+        let gpa = window.place(&region)?;
+        let len = region.len() as u64;
+        // Its pages reached by its machine's other devices as the guest names them, as a
+        // boot's pmem files' are (D189's device DMA).
+        // SAFETY: the region stays mapped while the window holds it, which it does until the
+        // unplug takes it back here first (`unplug`).
+        let given =
+            unsafe { self.memory.give_plugged(gpa, region.host(), region.len()) }.map_err(Refusal::Host);
+        let device = pmem::Pmem::new(region, gpa);
+        match given.and_then(|()| self.plug(Box::new(device))) {
+            Ok(devfn) => {
+                window.held_by(gpa, devfn);
+                Ok(super::Plugged {
+                    devfn,
+                    address: super::guest_address((devfn >> 3, devfn & 7)),
+                    size: None,
+                    steps: Vec::new(),
+                    region: Some((gpa, len)),
+                })
+            }
+            Err(refused) => {
+                self.memory.take_plugged(gpa);
+                if let Err(e) = window.release_at(gpa) {
+                    warn!("a component's range at {gpa:#x}, its plug refused, stays mapped: {e}");
+                }
+                Err(refused)
+            }
+        }
     }
 
     /// Plugs a shared directory into the running machine (D214): virtio-fs, mounted by
@@ -134,6 +178,7 @@ impl Handle {
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
             steps: Vec::new(),
+            region: None,
         })
     }
 
@@ -308,13 +353,24 @@ impl Handle {
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
             steps,
+            region: None,
         })
     }
 
     /// Takes the device plugged at `devfn` off its PCI bus (D214), once its guest has let
     /// it go: an error, changing nothing, where its guest's driver still drives it.
     pub fn unplug(&self, devfn: u8) -> Result<(), Refusal> {
-        self.control.plugs().ok_or(Refusal::NoBus)?.hotplug.unplug(devfn)
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
+        plugs.hotplug.unplug(devfn)?;
+        // A component's range taken back once nothing of its guest's drives it (D270): from
+        // its devices first, then from the guest and this process.
+        let Some(window) = &plugs.components else {
+            return Ok(());
+        };
+        if let Some((gpa, _)) = window.range_of(devfn) {
+            self.memory.take_plugged(gpa);
+        }
+        window.release(devfn).map_err(Refusal::Host)
     }
 
     /// What grows its file disk `index` of those it was made with (D214), as its host
@@ -2157,6 +2213,7 @@ mod tests {
                 share_window_mib: 0,
                 layer_mib: 0,
                 pci_slots: 0,
+                component_window_mib: 0,
             },
             plugged: Vec::new(),
             data: None,

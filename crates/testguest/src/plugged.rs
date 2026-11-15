@@ -5,6 +5,12 @@
 //! `from-member`. What it saw it says in DEST's `seen`, renamed into place once whole, for
 //! its host to read; then it waits to be stopped, so that its project can be unplugged as
 //! it runs.
+//!
+//! `plugged-volumes DEST...`: what an orchestrator plugs into a running member at each DEST,
+//! in order (D271): once DEST's `from-host` appears, `DEST from-host TEXT` and then
+//! `DEST from-member ok` (or the errno that refused its write, a read-only plug's EROFS) on
+//! stdout; then it holds the first DEST busy, its working directory there, says `holding
+//! DEST`, and waits to be stopped.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -61,6 +67,41 @@ pub fn main(args: &[String]) -> i32 {
         return 1;
     }
     let _ = write!(std::io::stdout(), "{seen}");
+    loop {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+}
+
+/// `plugged-volumes DEST...` ([the module's words](self)).
+pub fn volumes(dests: &[String]) -> i32 {
+    let Some(first) = dests.first() else {
+        let _ = writeln!(std::io::stderr(), "plugged-volumes: DEST...");
+        return 2;
+    };
+    for dest in dests {
+        let from_host = format!("{dest}/from-host");
+        let start = Instant::now();
+        let host = loop {
+            match std::fs::read_to_string(&from_host) {
+                Ok(text) => break text,
+                Err(_) if start.elapsed() < PATIENCE => std::thread::sleep(LOOK),
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "plugged-volumes: {from_host}: {e}");
+                    return 1;
+                }
+            }
+        };
+        let wrote = std::fs::write(format!("{dest}/from-member"), "member\n");
+        let _ = writeln!(std::io::stdout(), "{dest} from-host {}", host.trim_end());
+        let _ = writeln!(std::io::stdout(), "{dest} from-member {}", said(&wrote));
+    }
+    if let Err(e) = std::env::set_current_dir(first) {
+        let _ = writeln!(std::io::stderr(), "plugged-volumes: {first}: {e}");
+        return 1;
+    }
+    let _ = writeln!(std::io::stdout(), "holding {first}");
+    let _ = std::io::stdout().flush();
     loop {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };

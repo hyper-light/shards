@@ -279,6 +279,15 @@ pub struct ImageSpec {
     /// `Empty`). None: no report. A run that asks one boots on a run host of its own, never a
     /// warm one ([`ImagePools`]), as a warm host's VM starts before its run names the scope.
     pub gpu_report: Option<[u8; 16]>,
+    /// The plug roots the orchestrator grants the run at its start, beside its host's own and
+    /// each share's top-level directory (D235, D271): each a top-level directory of its members'
+    /// view (`/session`), not one of init's own (`/proc`, `/sys`, `/dev`, `/tmp`, `/etc`,
+    /// `/run`), as `shards_abi::run::plug::root_name` takes one. A member's domain is given
+    /// every right beneath its roots as it starts and no right is added to it later (Landlock
+    /// only narrows), so what is plugged into it as it runs ([`ImageGuest::plug`]) lies
+    /// beneath one: a session's volumes are placed beneath a root granted here. Empty: the
+    /// host's own and its shares' alone. Refused by field where one is no root.
+    pub plug_roots: Vec<String>,
 }
 
 /// A root a run's injector trusts beside the host's own ([`ImageSpec::upstream_roots`], D242).
@@ -289,6 +298,36 @@ pub enum UpstreamRoot {
     /// One or more X.509 certificates, PEM (RFC 7468 §5): a bundle's, any text between its
     /// sections, and no section of anything else (a key).
     Pem(String),
+}
+
+/// What [`ImageGuest::plug`] gives the members it plugs into (D235, D271).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlugSource {
+    /// A host directory, absolute: the host's files there are its members'.
+    Host(PathBuf),
+    /// A volume of the run's home's store, by its name, made where it is not there, as a
+    /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run.
+    Volume(String),
+}
+
+/// Whom [`ImageGuest::plug`] plugs into (D271): every member of the run that runs, or those
+/// named, each one that runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlugFor {
+    Every,
+    Members(Vec<MemberName>),
+}
+
+/// A plug into the running run's members (D235, D271): what, into whom, where they see it,
+/// and whether read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plug {
+    pub source: PlugSource,
+    pub to: PlugFor,
+    /// Absolute and plain, strictly beneath one of the run's plug roots (its host's own, each
+    /// share's top-level directory, and [`ImageSpec::plug_roots`]).
+    pub at: String,
+    pub read_only: bool,
 }
 
 /// How a member ended.
@@ -652,22 +691,22 @@ pub trait ImageGuest: Send + Sync {
     /// where it stays. Refused for a run whose spec does not ask for the grant, and once the
     /// run has ended with nothing newer ([`ImageRefusal::Ended`]).
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
-    /// Host directory `host` plugged into running member `member` as the run goes (D235),
-    /// at `at`: absolute, strictly beneath one of the run's plug roots, which its host names
-    /// as it starts (its OS's own, and the top-level directory of each of its shares), so
-    /// that a project is plugged at its host path. The host's files there are the member's,
-    /// read-only where asked; the plug grants nothing beyond its own path. Waits at most
-    /// `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
-    fn plug(
-        &self,
-        member: &MemberName,
-        host: &std::path::Path,
-        at: &str,
-        read_only: bool,
-        patience: Duration,
-    ) -> Result<(), ImageRefusal>;
-    /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
-    /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
+    /// `plug.source` plugged into the running run's members `plug.to` as the run goes (D235,
+    /// D271), in its running microVM in place (no image built, no template saved, no guest
+    /// restarted): a host directory, or a volume of its home's store. Each member is given it
+    /// at `plug.at`, absolute and strictly beneath one of the run's plug roots, which its host
+    /// names as it starts (its OS's own, the top-level directory of each of its shares, and
+    /// those its spec grants, [`ImageSpec::plug_roots`]), so that a project is plugged at its
+    /// host path and a session's volumes beneath a root granted for them; each member its own
+    /// device, read-only where asked. The plug grants nothing beyond its own path. A member
+    /// that is files alone is refused ([`PlugRefusal::Member`]), as is one plugged at `at`
+    /// already; a plug that one member refuses is let go of by those it was given to first.
+    /// Waits at most `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
+    fn plug(&self, plug: &Plug, patience: Duration) -> Result<(), ImageRefusal>;
+    /// What is plugged in at `at` let go of, in each member it was plugged into: unmounted
+    /// there, then taken off the microVM. Refused while anything in a member uses it
+    /// ([`PlugRefusal::Busy`], naming the members whose plug stays); those of other members
+    /// nothing used are let go of all the same, so that an unplug asked again finishes it.
     fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
     /// The run's microVM saved whole and left running (D176, D259): its memory, its vCPUs'
     /// and devices' state, its run's swap and its writable layer, as the daemon's `save vm`
@@ -988,6 +1027,35 @@ fn upstream_roots(roots: &[UpstreamRoot]) -> Result<Vec<Vec<u8>>, ImageRefusal> 
     Ok(ders)
 }
 
+/// The plug roots a spec grants (D271), each a root its guest takes (`plug::root_name`: one
+/// top-level directory, none of init's own) and each once; refused by field otherwise.
+fn plug_roots(roots: &[String]) -> Result<Vec<String>, ImageRefusal> {
+    let mut granted: Vec<String> = Vec::with_capacity(roots.len());
+    for root in roots {
+        if shards_abi::run::plug::root_name(root.as_bytes()).is_none() {
+            return Err(ImageRefusal::Spec {
+                what: "a plug root",
+                why: format!(
+                    "{root:?}: a plug root is one top-level directory (`/session`), none of {}",
+                    shards_abi::run::plug::REFUSED
+                        .iter()
+                        .map(|r| format!("/{}", String::from_utf8_lossy(r)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        if granted.contains(root) {
+            return Err(ImageRefusal::Spec {
+                what: "a plug root",
+                why: format!("{root:?}: granted twice"),
+            });
+        }
+        granted.push(root.clone());
+    }
+    Ok(granted)
+}
+
 /// `spec` as the run host reads it, refused here where it could never be run: a member's
 /// terminal (owed, G24), a share's path that is no UTF-8 or is relative, a variable's key
 /// that holds `=` or a NUL, an argument that holds a NUL, or a key or file the guest would
@@ -1228,6 +1296,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         sign_ins,
         upstream_roots,
         gpu_report: spec.gpu_report,
+        plug_roots: plug_roots(&spec.plug_roots)?,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -1282,6 +1351,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
             gpu_report: None,
         }
     }
@@ -1688,6 +1758,52 @@ mod tests {
         s.members[0].stdin = true;
         assert!(request(&s).unwrap().members[0].input);
         assert!(!request(&spec()).unwrap().members[0].input);
+    }
+
+    /// D271: the plug roots a spec grants ride its request as granted, each a top-level
+    /// directory of the members' view; one that is relative, nested, one of init's own or
+    /// granted twice is refused by field before any run host starts, as the guest would refuse
+    /// it; and they are none of a warm pool's microVM, which runs of other roots share.
+    #[test]
+    fn a_specs_plug_roots_are_top_level_directories_granted_once() {
+        let mut s = spec();
+        s.plug_roots = vec!["/session".into(), "/data".into()];
+        let r = request(&s).unwrap();
+        assert_eq!(r.plug_roots, s.plug_roots);
+        assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
+        assert!(r.exemplar().plug_roots.is_empty());
+        for wrong in [
+            "session",
+            "/",
+            "/session/a",
+            "/session/",
+            "/..",
+            "/tmp",
+            "/run",
+            "/proc",
+        ] {
+            let mut s = spec();
+            s.plug_roots = vec![wrong.into()];
+            assert!(
+                matches!(
+                    request(&s),
+                    Err(ImageRefusal::Spec {
+                        what: "a plug root",
+                        ..
+                    })
+                ),
+                "{wrong:?} was granted"
+            );
+        }
+        let mut twice = spec();
+        twice.plug_roots = vec!["/session".into(), "/session".into()];
+        assert!(matches!(
+            request(&twice),
+            Err(ImageRefusal::Spec {
+                what: "a plug root",
+                ..
+            })
+        ));
     }
 
     /// A spec past the channel's bound is refused before the run host starts: a file's bytes,

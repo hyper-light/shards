@@ -31,7 +31,7 @@ use std::io;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, RwLock};
 
 use crate::platform;
 use crate::sync::lock;
@@ -314,6 +314,10 @@ pub struct GuestMemory {
     /// Device memory its devices reach as they reach RAM ([`give_devices`](Self::give_devices)):
     /// its devices' own mappings, which this memory never releases.
     devices: OnceLock<Box<[Region]>>,
+    /// Device memory plugged in as its machine runs (D270): each component's pmem region,
+    /// which its devices reach as they reach [`give_devices`](Self::give_devices)'s, from its
+    /// plug until [`take_plugged`](Self::take_plugged) takes it back.
+    plugged: RwLock<Vec<Region>>,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -381,6 +385,7 @@ impl GuestMemory {
             given_back: Mutex::new(None),
             pins: Mutex::new(Pins::default()),
             devices: OnceLock::new(),
+            plugged: RwLock::new(Vec::new()),
             holder: AtomicUsize::new(0),
             device_writes: DeviceWrites::default(),
         };
@@ -935,13 +940,71 @@ impl GuestMemory {
     /// Host address of `gpa..gpa+len` within one region of device memory.
     fn device_ptr(&self, gpa: u64, len: usize) -> Option<*mut u8> {
         let end = gpa.checked_add(len as u64)?;
-        let r = self
-            .devices
-            .get()?
+        let within = |r: &Region| {
+            (gpa >= r.gpa && end <= r.end())
+                // SAFETY: offset is within the region's mapping (checked here).
+                .then(|| unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+        };
+        if let Some(at) = self.devices.get().and_then(|d| d.iter().find_map(within)) {
+            return Some(at);
+        }
+        self.plugged
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find(|r| gpa >= r.gpa && end <= r.end())?;
-        // SAFETY: offset is within the region's mapping (found above).
-        Some(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+            .find_map(within)
+    }
+
+    /// Has the host's devices reach `len` bytes at `host`, device memory plugged in at `gpa`
+    /// as the machine runs (D270): a component's pmem region, which the guest maps its files
+    /// from and so names to its other devices as any of its pages. Refused where it meets
+    /// RAM, the memory to plug, or other device memory.
+    ///
+    /// # Safety
+    /// `host..host+len` stays mapped until [`take_plugged`](Self::take_plugged) takes it back
+    /// or this memory drops; as for every device memory, a device's access of it after its
+    /// pages are gone is a system call's EFAULT or a checked copy's failure (`io_ptr`).
+    pub unsafe fn give_plugged(&self, gpa: u64, host: *mut u8, len: usize) -> Result<(), String> {
+        let named = || format!("device memory {gpa:#x}+{len:#x}");
+        let end = gpa
+            .checked_add(len as u64)
+            .filter(|_| len > 0)
+            .ok_or_else(named)?;
+        let host = NonNull::new(host).ok_or_else(|| format!("{} at no host address", named()))?;
+        let meets = |at: u64, to: u64| gpa < to && at < end;
+        let mut plugged = self
+            .plugged
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.regions.iter().any(|r| meets(r.gpa, r.end()))
+            || self.hotplug.as_ref().is_some_and(|h| meets(h.gpa, h.end()))
+            || self
+                .devices
+                .get()
+                .is_some_and(|d| d.iter().any(|r| meets(r.gpa, r.end())))
+            || plugged.iter().any(|r| meets(r.gpa, r.end()))
+        {
+            return Err(format!("{} overlaps other guest memory", named()));
+        }
+        plugged.push(Region {
+            gpa,
+            len,
+            host,
+            views: None,
+        });
+        Ok(())
+    }
+
+    /// The device memory plugged in at `gpa` taken back (D270), as its device goes: its
+    /// devices reach it no more. Whether there was any.
+    pub fn take_plugged(&self, gpa: u64) -> bool {
+        let mut plugged = self
+            .plugged
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = plugged.len();
+        plugged.retain(|r| r.gpa != gpa);
+        plugged.len() < before
     }
 
     /// Pins `gpa..gpa+len` for a device's DMA, as the host's IOMMU has mapped it ([`Pins`]),
@@ -2650,6 +2713,63 @@ mod tests {
     /// the kernel and the hypervisor are given RAM by. A page of it whose file was cut short
     /// fails a copy, and a system call EFAULT, the process going on. It may overlap no other
     /// guest memory, and is given once.
+    /// Device memory plugged in as the machine runs (D270), a component's region, is reached
+    /// as a boot's device memory is, beside it, until it is taken back; one that meets RAM or
+    /// other device memory is refused, and one taken back is reached no more.
+    #[test]
+    fn plugged_device_memory_is_reached_until_it_is_taken_back() {
+        let m = mem();
+        let p = page_size().unwrap();
+        let mut boot = vec![0u8; 2 * p];
+        let mut plugged = vec![0u8; 2 * p];
+        let (boot_at, plugged_at) = (0x2_0000_0000u64, 0x3_0000_0000u64);
+        // SAFETY: both buffers outlive every use of `m`'s, which drops first.
+        unsafe {
+            m.give_devices([(boot_at, boot.as_mut_ptr(), 2 * p)]).unwrap();
+            assert!(
+                m.give_plugged(0x8000_0000, plugged.as_mut_ptr(), p).is_err(),
+                "RAM"
+            );
+            assert!(
+                m.give_plugged(boot_at + p as u64, plugged.as_mut_ptr(), p)
+                    .is_err(),
+                "boot's"
+            );
+            assert!(
+                m.give_plugged(plugged_at, std::ptr::null_mut(), p).is_err(),
+                "no host"
+            );
+            assert!(
+                m.give_plugged(plugged_at, plugged.as_mut_ptr(), 0).is_err(),
+                "empty"
+            );
+            m.give_plugged(plugged_at, plugged.as_mut_ptr(), 2 * p).unwrap();
+            assert!(
+                m.give_plugged(plugged_at + p as u64, plugged.as_mut_ptr(), p)
+                    .is_err(),
+                "its own"
+            );
+        }
+        assert_eq!(
+            m.io_ptr(plugged_at + 8, 8).unwrap(),
+            plugged.as_mut_ptr().wrapping_add(8)
+        );
+        assert_eq!(
+            m.io_ptr(boot_at + 8, 8).unwrap(),
+            boot.as_mut_ptr().wrapping_add(8)
+        );
+        assert!(
+            m.io_ptr(plugged_at + 2 * p as u64 - 4, 8).is_err(),
+            "past its end"
+        );
+        m.access().unwrap().write(plugged_at + 8, b"plugged").unwrap();
+        assert_eq!(plugged.get(8..15), Some(b"plugged".as_slice()));
+        assert!(m.take_plugged(plugged_at));
+        assert!(!m.take_plugged(plugged_at), "taken already");
+        assert!(m.io_ptr(plugged_at + 8, 8).is_err());
+        assert!(m.access().unwrap().write(plugged_at + 8, b"x").is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn device_memory_is_reached_as_ram_is_and_its_lost_pages_fail() {
