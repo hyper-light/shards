@@ -137,8 +137,8 @@ impl Look {
 /// judged by its CPU alone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Hold {
-    /// A thread of it is runnable on no CPU, or waits on its host's memory, as it is looked
-    /// at.
+    /// A thread of it is runnable (running, or waiting for a CPU) as it is looked at; on
+    /// Windows also one waiting on its host's memory.
     runnable: bool,
     /// It is stopped (a stop signal's, a debugger's, a suspension's) or frozen.
     stopped: bool,
@@ -159,6 +159,40 @@ struct Hold {
     /// a shared cgroup's is its neighbours' too.
     #[cfg(target_os = "linux")]
     pressure: Option<u64>,
+    /// What its host's storage has done for it so far ([`Io`]).
+    io: Io,
+}
+
+/// What its host's storage has done for a process so far, as its OS accumulates it: either
+/// count grown since the look before says its host did I/O for it meanwhile, which it may
+/// have waited on, so that window is its host's hold, never its own rest against R* (D215,
+/// PM M601: of the waits in its kernel that a flushing process's samples found, these
+/// counts grew across 54 of 55 on macOS, and across 95% of their time on Linux).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Io {
+    /// The I/O its host's storage did for it, each count its whole process's and summed, of
+    /// which only growth is read: macOS its page-ins, disk bytes read and written and logical
+    /// writes (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_pageins`, `ri_diskio_bytesread`,
+    /// `ri_diskio_byteswritten`, `ri_logical_writes`; a directory's flush grows the last
+    /// alone); Linux its major faults (`/proc/<pid>/stat` field 12) and storage bytes
+    /// (`/proc/<pid>/io` `read_bytes`, `write_bytes`, proc(5)). None where unread.
+    done: Option<u64>,
+    /// The time it waited on that I/O, where its OS keeps one: Linux its tasks' block I/O
+    /// delays (`/proc/<pid>/task/<tid>/stat` field 42, kept only while `kernel.task_delayacct`
+    /// is 1; a task gone since takes its delays out of the sum, as `Queued` says of its
+    /// run-queue wait) and its own cgroup's `io.pressure` `some` total, read where that cgroup
+    /// holds it alone (`Hold::pressure`'s rule). None where its OS keeps none (macOS,
+    /// Windows) or keeps it off: its waits between due looks are then sampled ([`Follow`]).
+    waited: Option<u64>,
+}
+
+impl Io {
+    /// Whether either count grew since `before`.
+    fn grown_since(&self, before: &Io) -> bool {
+        let grown =
+            |before: Option<u64>, now: Option<u64>| matches!((before, now), (Some(b), Some(n)) if n > b);
+        grown(before.done, self.done) || grown(before.waited, self.waited)
+    }
 }
 
 /// What a look read of a process's threads' wait for a CPU, as its scheduler counts it: only
@@ -183,8 +217,10 @@ enum Queued {
 
 impl Hold {
     /// Whether its host held it since the look that saw `before`: a thread of it runnable,
-    /// or waiting on its host's memory, now; or its threads' wait for a CPU grown since; or
-    /// (Linux) its own cgroup's pressure.
+    /// or waiting on its host's memory, now (macOS: a thread waiting uninterruptibly in its
+    /// kernel, of which macOS keeps no pressure record); or its threads' wait for a CPU grown
+    /// since; or (Linux) its own cgroup's pressure; or its host's storage's work for it
+    /// ([`Io`]).
     ///
     /// The kernel adds a thread's wait to its `run_delay` as it reaches a CPU or leaves the
     /// queue (kernel/sched/stats.h `sched_info_arrive`, `sched_info_dequeue`): a thread that
@@ -205,7 +241,11 @@ impl Hold {
         let pressed = matches!((before.pressure, self.pressure), (Some(b), Some(n)) if n > b);
         #[cfg(not(target_os = "linux"))]
         let pressed = false;
-        self.runnable || queued || pressed
+        #[cfg(target_os = "macos")]
+        let in_kernel = self.uninterruptible;
+        #[cfg(not(target_os = "macos"))]
+        let in_kernel = false;
+        self.runnable || in_kernel || queued || pressed || self.io.grown_since(&before.io)
     }
 
     /// Whether a thread of it waited uninterruptibly in its kernel as it was looked at.
@@ -218,19 +258,21 @@ impl Hold {
 }
 
 /// Whether a look that found `found`, its threads read `starved` meanwhile, its host doing
-/// `hold` and its process `ended` or not, vouches for its window as the party's own running
-/// or rest (D215's rate, [`Span::work`]): it ran or rested, and was neither starved of a CPU,
-/// stopped, ending, nor waiting in its kernel on its host's work for it. A party that ran a
-/// moment and then waited on its host's disk the rest of a window is held by its host, not
-/// slow (ROOT's batch 32, HVF: `shards guest use` refused below R* past C*, 13.2 ms of CPU
-/// over 143 ms taken for its own, its one thread blocked). One rule for every judge that
-/// rates a party.
-fn vouches(found: Found, starved: bool, hold: &Hold, ended: bool) -> bool {
+/// `hold`, its host's storage having worked for it since the look before where `stored`, and
+/// its process `ended` or not, vouches for its window as the party's own running or rest
+/// (D215's rate, [`Span::work`]): it ran or rested, and was neither starved of a CPU,
+/// stopped, ending, waiting in its kernel on its host's work for it as looked at, nor served
+/// by its host's storage since the look before ([`Io`]). A party that ran a moment and then
+/// waited on its host's disk the rest of a window is held by its host, not slow (ROOT's
+/// batch 32, HVF: `shards guest use` refused below R* past C*, 13.2 ms of CPU over 143 ms
+/// taken for its own, its one thread blocked). One rule for every judge that rates a party.
+fn vouches(found: Found, starved: bool, hold: &Hold, stored: bool, ended: bool) -> bool {
     matches!(found, Found::Progressed | Found::Still)
         && !starved
         && !hold.stopped
         && !ended
         && !hold.in_kernel()
+        && !stored
 }
 
 /// What a look found of a VM process since the look before: progress where its end is under
@@ -344,6 +386,9 @@ pub struct Watch {
     resolution: Duration,
     /// Its threads as [`starved`](Watch::starved) last read them, none before its first.
     threads: Option<Threads>,
+    /// Whether its host's storage worked for it between the look before and the last
+    /// ([`Io::grown_since`]).
+    stored: bool,
 }
 
 /// A process's threads as one read saw them, each by its OS's ID for it: its own CPU time,
@@ -397,6 +442,7 @@ impl Watch {
             hold,
             resolution,
             threads: None,
+            stored: false,
         }))
     }
 
@@ -438,6 +484,7 @@ impl Watch {
         };
         let before = std::mem::replace(&mut self.last, look);
         let hold = std::mem::replace(&mut self.hold, self.followed.hold());
+        self.stored = self.hold.io.grown_since(&hold.io);
         let ran = look.ran_since(&before);
         // A diagnosis of what Windows shows of a VM process a look finds ran nothing since the
         // look before, the look that may cut it (W2: one inside WHP's partition calls, cut as
@@ -484,7 +531,13 @@ impl Watch {
     /// ([`starved`](Self::starved)), vouches for its window as its own running or rest, its
     /// host not the reason ([`vouches`]).
     pub fn vouched_by(&self, found: Found, starved: bool) -> bool {
-        vouches(found, starved, &self.hold, self.ended())
+        vouches(found, starved, &self.hold, self.stored, self.ended())
+    }
+
+    /// What its host is doing to it now, read apart from its looks: a sample between them
+    /// ([`Follow`]), which moves none of what its next look compares with.
+    fn held_now(&self) -> Hold {
+        self.followed.hold()
     }
 
     /// The CPU time its process's threads have had by now, the look before kept; none where
@@ -521,6 +574,11 @@ pub struct Follow<'a> {
     started: u64,
     /// What its VM process had run as it began.
     from: Duration,
+    /// Whether a sample since its last due look found a thread of its process waiting in its
+    /// kernel: that window is its host's, and vouches for nothing.
+    held: bool,
+    /// When its next sample between due looks is ([`schedule`](Self::schedule)), if any.
+    sample: Option<Instant>,
 }
 
 impl<'a> Follow<'a> {
@@ -554,19 +612,48 @@ impl<'a> Follow<'a> {
         judge
             .found_over(Found::Based, span)
             .map_err(Unfollowed::Stalled)?;
-        Ok(Some(Follow {
+        let hold = watch.hold;
+        let mut follow = Follow {
             judge,
             bound,
             from: watch.cpu(),
             watch,
             pid,
             started,
-        }))
+            held: false,
+            sample: None,
+        };
+        follow.schedule(&hold, Instant::now());
+        Ok(Some(follow))
     }
 
-    /// When its next look is due, W* after the look before: none while it is not judged.
+    /// When it next looks: its judge's due, W* after the look before, or a sample between
+    /// ([`schedule`](Self::schedule)) where one comes first; none while it is not judged.
     pub fn due(&self) -> Option<Instant> {
-        self.judge.due()
+        let due = self.judge.due()?;
+        Some(self.sample.map_or(due, |sample| sample.min(due)))
+    }
+
+    /// Its next sample between due looks: where its bound is a rate, `hold` found its process
+    /// not runnable (every thread of it waiting), and its OS keeps no time it waited on its
+    /// host's I/O ([`Io::waited`]), whose sum would show such a wait between looks without
+    /// one. Each comes its judge's least window past `at`, the finest its looks resolve
+    /// ([`Judge::resolved`]: its counters' tick, or a look's own length where longer), as a
+    /// window's evidence is read no finer; none once a sample found its window its host's
+    /// (D215, ROOT's ruling of 2026-11-14: a hold between looks was missed).
+    fn schedule(&mut self, hold: &Hold, at: Instant) {
+        let blocked = !hold.runnable && hold.io.waited.is_none();
+        self.sample = (cfg!(unix) && self.bound == Bound::Rate && blocked && !self.held)
+            .then(|| at.checked_add(self.judge.resolved()))
+            .flatten();
+    }
+
+    /// A sample between its due looks: its window its host's where a thread of its process
+    /// waits in its kernel, and another to come while its process stays blocked.
+    fn sampled(&mut self, at: Instant) {
+        let hold = self.watch.held_now();
+        self.held |= hold.in_kernel();
+        self.schedule(&hold, at);
     }
 
     /// Looks at its VM process where a look is due: refused `Stalled` where it ran nothing
@@ -579,6 +666,9 @@ impl<'a> Follow<'a> {
         };
         let began = Instant::now();
         if began < due {
+            if self.sample.is_some_and(|sample| began >= sample) {
+                self.sampled(began);
+            }
             return Ok(());
         }
         let (pid, expected_started) = (self.pid, self.started);
@@ -587,9 +677,11 @@ impl<'a> Follow<'a> {
             expected_started,
             failure,
         })?;
-        // Its work since it began, for its rate, where its bound is one and this look vouches
-        // for its window; its threads read only then.
-        let work = (self.bound == Bound::Rate && {
+        // Its work since it began, for its rate, where its bound is one and this look, and
+        // every sample since the look before, vouches for its window; its threads read only
+        // then.
+        let held = std::mem::take(&mut self.held);
+        let work = (self.bound == Bound::Rate && !held && {
             let starved = self.watch.starved();
             self.watch.vouched_by(found, starved)
         })
@@ -601,7 +693,10 @@ impl<'a> Follow<'a> {
             own: Duration::ZERO,
             work,
         };
-        self.judge.found_over(found, span).map_err(Unfollowed::Stalled)
+        let judged = self.judge.found_over(found, span).map_err(Unfollowed::Stalled);
+        let hold = self.watch.hold;
+        self.schedule(&hold, Instant::now());
+        judged
     }
 
     /// Its party answered: its kind learns from the answer, its VM process read now; its
@@ -731,14 +826,19 @@ mod os {
     /// or waiting uninterruptibly in its kernel, `D`, which vouches for no window of its rate;
     /// it stopped, its leader's state `T` or `t`, or its cgroup frozen (`cgroup.events`'
     /// `frozen 1`, Documentation/admin-guide/cgroup-v2.rst); its threads' run-queue wait
-    /// ([`Queued`]); and, where its cgroup holds it alone, that cgroup's pressure
+    /// ([`Queued`]); where its cgroup holds it alone, that cgroup's pressure
     /// (Documentation/accounting/psi.rst), whose `some` totals grow while any of its tasks
     /// waits for a CPU, or is stalled on memory, a task held over its `memory.high` among them
-    /// (mm/memcontrol.c, `mem_cgroup_handle_over_high`). A cgroup it shares, the root's among
-    /// them (the host's, `/proc/pressure`), is not read: its pressure is its other tasks' as
-    /// much as this one's. What it cannot read shows nothing.
+    /// (mm/memcontrol.c, `mem_cgroup_handle_over_high`), or waits on I/O (`io.pressure`, its
+    /// [`Io::waited`](super::Io)); and its storage's work for it ([`Io`](super::Io)): its major
+    /// faults and storage bytes, and its tasks' block I/O delays while task delay accounting is
+    /// on (`kernel.task_delayacct`, Documentation/accounting/delay-accounting.rst). A cgroup it
+    /// shares, the root's among them (the host's, `/proc/pressure`), is not read: its pressure
+    /// is its other tasks' as much as this one's. What it cannot read shows nothing.
     pub(super) fn hold(pid: u32) -> Hold {
         let mut hold = Hold::default();
+        let delays = std::fs::read("/proc/sys/kernel/task_delayacct").is_ok_and(|on| on.trim_ascii() == b"1");
+        let mut waited: Option<u64> = None;
         if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
             for task in tasks.flatten() {
                 let dir = task.path();
@@ -748,11 +848,17 @@ mod os {
                         Queued::Unread => delay,
                     });
                 }
-                let Some(state) = std::fs::read(dir.join("stat")).ok().and_then(|stat| state(&stat)) else {
+                let Some(stat) = std::fs::read(dir.join("stat")).ok() else {
+                    continue;
+                };
+                let Some(state) = state(&stat) else {
                     continue;
                 };
                 hold.runnable |= state == b'R';
                 hold.uninterruptible |= state == b'D';
+                if delays && let Some(ticks) = field(&stat, BLKIO_TICKS) {
+                    waited = Some(waited.unwrap_or(0).saturating_add(ticks));
+                }
                 let leader = task.file_name().to_str().and_then(|tid| tid.parse::<u32>().ok()) == Some(pid);
                 hold.stopped |= leader && matches!(state, b'T' | b't');
             }
@@ -767,9 +873,51 @@ mod os {
                     (None, None) => None,
                     (cpu, memory) => Some(cpu.unwrap_or(0).saturating_add(memory.unwrap_or(0))),
                 };
+                if let Some(io) = some_total(&dir.join("io.pressure")) {
+                    waited = Some(waited.unwrap_or(0).saturating_add(io));
+                }
             }
         }
+        let faults = std::fs::read(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| field(&stat, MAJOR_FAULTS));
+        let bytes = std::fs::read_to_string(format!("/proc/{pid}/io"))
+            .ok()
+            .and_then(|io| {
+                let read = |key: &str| {
+                    io.lines()
+                        .find_map(|line| line.strip_prefix(key)?.trim().parse::<u64>().ok())
+                };
+                Some(read("read_bytes:")?.saturating_add(read("write_bytes:")?))
+            });
+        hold.io = super::Io {
+            done: match (faults, bytes) {
+                (None, None) => None,
+                (faults, bytes) => Some(faults.unwrap_or(0).saturating_add(bytes.unwrap_or(0))),
+            },
+            waited,
+        };
         hold
+    }
+
+    /// `/proc/<pid>/stat`'s field 12, `majflt`: the faults that loaded a page from storage, of
+    /// the whole process where read of its own stat (proc(5)).
+    const MAJOR_FAULTS: usize = 12;
+
+    /// `/proc/<pid>/task/<tid>/stat`'s field 42, `delayacct_blkio_ticks`: the task's block I/O
+    /// delays, in clock ticks (proc(5)).
+    const BLKIO_TICKS: usize = 42;
+
+    /// Field `n` of a stat file (proc(5)'s numbering, from 1), a number, where `n` is past the
+    /// state (field 3): counted after the command's last `)`, which may hold any byte.
+    fn field(stat: &[u8], n: usize) -> Option<u64> {
+        let after = stat.iter().rposition(|byte| *byte == b')')?;
+        let fields = std::str::from_utf8(stat.get(after.saturating_add(1)..)?).ok()?;
+        fields
+            .split_ascii_whitespace()
+            .nth(n.checked_sub(3)?)?
+            .parse()
+            .ok()
     }
 
     /// Process `pid`'s threads ([`Threads`]): each task's run time, its `schedstat`'s first
@@ -990,13 +1138,13 @@ mod os {
     /// task port (`task_for_pid` is refused for a hardened process not built to allow it): it
     /// stopped where its status is `SSTOP` (`PROC_PIDTBSDINFO`'s `pbi_status`, sys/proc.h:
     /// "debugging or suspension"); a thread of it runnable where one's run state is
-    /// `TH_STATE_RUNNING` (running, or waiting for a CPU) or `TH_STATE_UNINTERRUPTIBLE` (a wait
-    /// in the kernel, a page-in among them, which macOS keeps no pressure record of), as
-    /// `PROC_PIDTHREADINFO` reports each (sys/proc_info.h, mach/thread_info.h), the latter
-    /// also said apart, as it vouches for no window of its rate (a disk's flush, PM M600); its
-    /// threads' time runnable ([`Queued`]), which grows over a time it ran no CPU only while
-    /// one waited for a CPU, as a thread its host holds through a look's sample does. What it
-    /// cannot read shows nothing.
+    /// `TH_STATE_RUNNING` (running, or waiting for a CPU), and one waiting in its kernel where
+    /// it is `TH_STATE_UNINTERRUPTIBLE` (a page-in, a disk's flush, PM M600, of which macOS
+    /// keeps no pressure record), as `PROC_PIDTHREADINFO` reports each (sys/proc_info.h,
+    /// mach/thread_info.h); its threads' time runnable ([`Queued`]), which grows over a time
+    /// it ran no CPU only while one waited for a CPU, as a thread its host holds through a
+    /// look's sample does; and its storage's work for it ([`Io::done`](super::Io)), none of
+    /// it a time waited, which macOS keeps no count of. What it cannot read shows nothing.
     pub(super) fn hold(pid: u32) -> Hold {
         let Ok(id) = libc::c_int::try_from(pid) else {
             return Hold::default();
@@ -1006,25 +1154,34 @@ mod os {
             .into_iter()
             .filter_map(|handle| run_state(id, handle))
             .collect();
+        let usage = rusage_v4(id);
         Hold {
-            queued: runnable_time(id).map_or(Queued::Unread, Queued::Waited),
-            runnable: states
-                .iter()
-                .any(|&state| matches!(state, libc::TH_STATE_RUNNING | libc::TH_STATE_UNINTERRUPTIBLE)),
+            queued: usage.map_or(Queued::Unread, |u| Queued::Waited(u.ri_runnable_time)),
+            runnable: states.contains(&libc::TH_STATE_RUNNING),
             uninterruptible: states.contains(&libc::TH_STATE_UNINTERRUPTIBLE),
             stopped: status(id) == Some(libc::SSTOP),
+            io: super::Io {
+                done: usage.map(|u| {
+                    u.ri_pageins
+                        .saturating_add(u.ri_diskio_bytesread)
+                        .saturating_add(u.ri_diskio_byteswritten)
+                        .saturating_add(u.ri_logical_writes)
+                }),
+                waited: None,
+            },
         }
     }
 
-    /// The time process `id`'s threads have been runnable, running or waiting for a CPU
-    /// (`ri_runnable_time`, Mach absolute-time units); none where it could not be read.
-    fn runnable_time(id: libc::c_int) -> Option<u64> {
+    /// Process `id`'s usage (proc_pid_rusage(2) RUSAGE_INFO_V4): its threads' time runnable,
+    /// running or waiting for a CPU (`ri_runnable_time`, Mach absolute-time units), and its
+    /// storage's work for it; none where it could not be read.
+    fn rusage_v4(id: libc::c_int) -> Option<libc::rusage_info_v4> {
         // SAFETY: a rusage_info_v4, plain data, for proc_pid_rusage to fill.
         let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
         // SAFETY: proc_pid_rusage(3) of `id` into a rusage_info_v4 of ours, which
         // RUSAGE_INFO_V4 names.
         let code = unsafe { libc::proc_pid_rusage(id, libc::RUSAGE_INFO_V4, (&raw mut info).cast()) };
-        (code == 0).then_some(info.ri_runnable_time)
+        (code == 0).then_some(info)
     }
 
     /// Process `id`'s BSD status (`pbi_status`); none where it could not be read.
@@ -1358,6 +1515,8 @@ mod os {
             Hold {
                 runnable,
                 stopped: threads > 0 && suspended == threads,
+                // Windows' storage counts are unread here: unverified (D215).
+                io: super::Io::default(),
             }
         }
 
@@ -2002,6 +2161,7 @@ mod tests {
             queued: Queued::Unread,
             #[cfg(target_os = "linux")]
             pressure: None,
+            io: Io::default(),
         };
         let (idle, throttled, stopped) = (hold(false, false), hold(true, false), hold(true, true));
         assert_eq!(found(true, false, &idle, &idle), Found::Progressed);
@@ -2053,7 +2213,9 @@ mod tests {
     /// 55.118958 ms and C* 12.580208 ms, and its wait was refused 224.7 ms in as "too slowly
     /// to be answering", 13.227875 ms of CPU over 142.993081 ms taken for unheld, its one
     /// thread not runnable, blocked. The same looks, its thread found in its kernel at each,
-    /// are never refused; found vouching, they are, as that batch's were.
+    /// or found resting but its storage's counts grown since the look before (a wait between
+    /// looks, D215's ruling of 2026-11-14), are never refused; found vouching, they are, as
+    /// that batch's were.
     #[cfg(unix)]
     #[test]
     fn a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate() {
@@ -2062,21 +2224,52 @@ mod tests {
             ..Hold::default()
         };
         let (flushing, resting) = (hold(true), hold(false));
-        assert!(vouches(Found::Progressed, false, &resting, false));
-        assert!(vouches(Found::Still, false, &resting, false));
+        assert!(vouches(Found::Progressed, false, &resting, false, false));
+        assert!(vouches(Found::Still, false, &resting, false, false));
         assert!(
-            !vouches(Found::Progressed, false, &flushing, false),
+            !vouches(Found::Progressed, false, &flushing, false, false),
             "it ran a moment, then waited on its host's disk"
         );
-        assert!(!vouches(Found::Still, false, &flushing, false));
-        assert!(!vouches(Found::Progressed, true, &resting, false), "starved");
-        assert!(!vouches(Found::Progressed, false, &resting, true), "ending");
+        assert!(!vouches(Found::Still, false, &flushing, false, false));
+        assert!(
+            !vouches(Found::Progressed, false, &resting, true, false),
+            "its storage worked for it between the looks"
+        );
+        assert!(
+            !vouches(Found::Progressed, true, &resting, false, false),
+            "starved"
+        );
+        assert!(
+            !vouches(Found::Progressed, false, &resting, false, true),
+            "ending"
+        );
+        let io = |done, waited| Io { done, waited };
+        assert!(io(Some(2), None).grown_since(&io(Some(1), None)));
+        assert!(io(None, Some(5)).grown_since(&io(None, Some(4))));
+        assert!(!io(Some(1), Some(4)).grown_since(&io(Some(1), Some(4))));
+        assert!(
+            !io(Some(9), None).grown_since(&io(None, None)),
+            "none read before"
+        );
+        let stored = Hold {
+            io: io(Some(2), None),
+            ..Hold::default()
+        };
+        let before = Hold {
+            io: io(Some(1), None),
+            ..Hold::default()
+        };
+        assert_eq!(
+            found(false, false, &before, &stored),
+            Found::Held,
+            "its host's storage worked for it, though it ran nothing"
+        );
         let us = |us: u64| Duration::from_nanos(us * 1000);
         let record = Record::new();
         // W* and R* from the slowest answer; C* from a quicker one, at a rate above R*.
         record.teach(us(55_119), us(11_874));
         record.teach(us(50_000), us(12_580));
-        let judged = |hold: &Hold| {
+        let judged = |hold: &Hold, stored: bool| {
             let mut judge = Judge::begin(&record);
             let began = Instant::now();
             // Its work by each look a W* apart: its hashing at first, then a flush's moments.
@@ -2085,7 +2278,7 @@ mod tests {
                 .zip(1u32..)
                 .try_for_each(|(cpu, n)| {
                     let at = began + us(56_000) * n;
-                    let work = vouches(Found::Progressed, false, hold, false).then_some(cpu);
+                    let work = vouches(Found::Progressed, false, hold, stored, false).then_some(cpu);
                     let span = Span {
                         began: at,
                         ended: at,
@@ -2096,16 +2289,23 @@ mod tests {
                     judge.found_over(Found::Progressed, span)
                 })
         };
-        assert_eq!(judged(&flushing), Ok(()), "held by its host, it goes on");
-        let refused = judged(&resting).expect_err("found vouching, it runs below R* past C*");
+        assert_eq!(judged(&flushing, false), Ok(()), "held by its host, it goes on");
+        assert_eq!(
+            judged(&resting, true),
+            Ok(()),
+            "held between its looks, it goes on"
+        );
+        let refused = judged(&resting, false).expect_err("found vouching, it runs below R* past C*");
         assert!(refused.rate().is_some(), "{refused:?}");
     }
 
-    /// A process whose thread flushes a file to its disk again and again (F_FULLFSYNC) is
-    /// seen waiting uninterruptibly in its kernel, and its look then vouches for no window of
-    /// its rate, though it ran (PM M600). Looked at until seen so, a wait for that fact, with
-    /// no clock.
-    #[cfg(target_os = "macos")]
+    /// A process whose thread writes a file and flushes it to its disk again and again
+    /// (macOS F_FULLFSYNC; Linux fdatasync(2) on a disk, never a tmpfs, whose flush waits on
+    /// nothing) is seen waiting uninterruptibly in its kernel (`TH_STATE_UNINTERRUPTIBLE`,
+    /// `D`), its look then vouching for no window of its rate, though it ran; and its
+    /// storage's counts grow between two looks ([`Io`]: PM M600, M601). Each looked at until
+    /// seen so, a wait for that fact, with no clock.
+    #[cfg(unix)]
     #[test]
     fn a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel() {
         let mut child = this_binary("flush");
@@ -2117,9 +2317,63 @@ mod tests {
             }
             std::thread::yield_now();
         };
-        assert!(!vouches(Found::Progressed, false, &hold, false));
+        assert!(!vouches(Found::Progressed, false, &hold, false, false));
+        while !followed.hold().io.grown_since(&hold.io) {
+            std::thread::yield_now();
+        }
         drop(child.stdin.take());
         assert!(child.wait().unwrap().success());
+    }
+
+    /// A wait bound by its rate looks at its process between due looks while it finds it
+    /// blocked, where its OS keeps no time it waited on its host's I/O, as often as its judge
+    /// resolves; a look there that finds a thread of it waiting in its kernel keeps that
+    /// window out of its rate (D215, ROOT's ruling of 2026-11-14: a hold between looks was
+    /// missed). A spinner, never blocked, and a wait bound by stillness are looked at only
+    /// when due. Where its OS counts its waits, a due look's window shows a flush between
+    /// looks by its count instead. Looked at as its follow says, with no clock of the test's.
+    #[cfg(unix)]
+    #[test]
+    fn a_rate_wait_samples_a_blocked_process_between_its_looks() {
+        let record = Record::new();
+        record.teach(Duration::from_secs(1), Duration::from_millis(100));
+        let follow = |pid: u32, bound| {
+            Follow::begin(&record, Followed::of_pid(pid).unwrap().unwrap(), bound)
+                .unwrap()
+                .unwrap()
+        };
+        let mut spinner = this_binary("spin");
+        let spun = loop {
+            let spun = follow(spinner.id(), Bound::Rate);
+            if spun.watch.hold.runnable {
+                break spun;
+            }
+        };
+        assert_eq!(
+            spun.due(),
+            spun.judge.due(),
+            "a runnable process is looked at when due"
+        );
+        drop(spinner.stdin.take());
+        spinner.wait().unwrap();
+        let mut flusher = this_binary("flush");
+        let still = follow(flusher.id(), Bound::Stillness);
+        assert_eq!(still.due(), still.judge.due(), "a stillness bound keeps no rate");
+        let mut rate = follow(flusher.id(), Bound::Rate);
+        loop {
+            let next = rate.due().unwrap();
+            std::thread::sleep(next.saturating_duration_since(Instant::now()));
+            let between = Instant::now() < rate.judge.due().unwrap();
+            rate.look().unwrap();
+            if between && rate.held {
+                break;
+            }
+            if rate.watch.hold.io.waited.is_some() && rate.watch.stored {
+                break;
+            }
+        }
+        drop(flusher.stdin.take());
+        assert!(flusher.wait().unwrap().success());
     }
 
     /// The readers see what a host does to a process: a sleeping one neither runnable nor
@@ -2463,27 +2717,68 @@ mod tests {
                     std::hint::spin_loop();
                 }
             }
-            // A page written to a file of its own and flushed to its disk's media
-            // (F_FULLFSYNC, fcntl(2)), again and again until its stdin ends: a thread that
-            // waits on its host's disk, as `record`'s in guest.rs does (PM M600).
-            #[cfg(target_os = "macos")]
+            // Written to a file of its own and flushed to its disk, again and again until its
+            // stdin ends: a thread that waits on its host's disk, as `record`'s in guest.rs
+            // does (PM M600, M601). macOS: a page, then F_FULLFSYNC (fcntl(2)), as `record`.
+            // Linux: a MiB, then fdatasync(2), to a file beside this test binary, on the disk
+            // cargo built it on: $TMPDIR may be a tmpfs (adacachy2's is), whose flush waits on
+            // nothing; a MiB keeps the device writing at each flush (on adacachy2's NVMe, 100
+            // flushes of a MiB waited in `D` 117 times for 1 ms or more, PM M601).
+            #[cfg(unix)]
             Ok("flush") => {
-                use std::io::Write as _;
-                use std::os::fd::AsRawFd as _;
+                use std::os::unix::fs::FileExt as _;
                 let ended = std::sync::atomic::AtomicBool::new(false);
-                let dir = shards_testdir::TempDir::new("flush").unwrap();
-                let mut file = std::fs::File::create(dir.join("flushed")).unwrap();
+                #[cfg(target_os = "macos")]
+                let (dir, chunk) = (shards_testdir::TempDir::new("flush").unwrap(), 4096);
+                #[cfg(target_os = "macos")]
+                let path = dir.join("flushed");
+                #[cfg(not(target_os = "macos"))]
+                let (path, chunk) = (
+                    std::env::current_exe()
+                        .unwrap()
+                        .with_file_name(format!("flushed-{}", std::process::id())),
+                    1 << 20,
+                );
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::ffi::OsStrExt as _;
+                    let at = std::ffi::CString::new(path.parent().unwrap().as_os_str().as_bytes()).unwrap();
+                    // SAFETY: a statfs, plain data, for statfs(2) to fill from a path of ours.
+                    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+                    // SAFETY: statfs(2) of a NUL-terminated path into a statfs of ours.
+                    assert_eq!(unsafe { libc::statfs(at.as_ptr(), &raw mut fs) }, 0);
+                    assert_ne!(
+                        i128::from(fs.f_type),
+                        i128::from(libc::TMPFS_MAGIC),
+                        "{}: a tmpfs, its flush no wait",
+                        path.display()
+                    );
+                }
+                let mut file = std::fs::File::create(&path).unwrap();
+                let bytes = vec![1u8; chunk];
                 std::thread::scope(|scope| {
                     scope.spawn(|| {
                         let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
                         ended.store(true, std::sync::atomic::Ordering::Relaxed);
                     });
+                    // Written over its start each time, so the file stays one chunk long.
                     while !ended.load(std::sync::atomic::Ordering::Relaxed) {
-                        file.write_all(&[1u8; 4096]).unwrap();
-                        // SAFETY: fcntl(2) of a descriptor this holds open.
-                        assert_eq!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) }, 0);
+                        file.write_all_at(&bytes, 0).unwrap();
+                        #[cfg(target_os = "macos")]
+                        {
+                            use std::os::fd::AsRawFd as _;
+                            // SAFETY: fcntl(2) of a descriptor this holds open.
+                            assert_eq!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) }, 0);
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        file.sync_data().unwrap();
                     }
                 });
+                drop(file);
+                #[cfg(target_os = "macos")]
+                drop(dir);
+                #[cfg(not(target_os = "macos"))]
+                std::fs::remove_file(&path).unwrap();
                 std::process::exit(0);
             }
             // D215's rate bound's children, each saying it has started first: `tick`, 10 ms

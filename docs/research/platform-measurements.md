@@ -25269,3 +25269,39 @@ binary, its security daemons' work (M166). The CPU, 14.1 to 16.3 ms, was above t
 12.58 ms that the batch's kind had learned in every run: the same work runs to more CPU on
 a loaded host, so C* alone did not keep the rate floor off a party waiting on its host's
 disk. n is 8 on one host: the shares are its, not a bound.
+
+### M601. Which accumulated counts show a flush's wait between two looks (D215)
+
+Question: a look at a process samples its threads' states at one instant, so a wait in the
+kernel that ends between two looks leaves no trace there (M600). Which of each OS's
+accumulated per-process counts grow across such a wait, read without privileges?
+
+Method: `docs/research/measurements/judge-blocked/counters.c` (macOS) and
+`counters-linux.c` (Linux) run a child that writes and flushes a file in a loop and sample
+it every 100 µs: its threads' states, and its accumulated counts. For each stretch of 1 ms
+or more in which a thread of it waited uninterruptibly (macOS `TH_STATE_UNINTERRUPTIBLE`,
+Linux `D`), each count's growth from the sample before the stretch to the first after it.
+
+- macOS: adas-mac-studio.local-2 (Mac15,14, 32 cores, macOS 26.4, load averages 3.9 to 6.6),
+  2026-11-14. Counts: proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_pageins`, `ri_diskio_bytesread`,
+  `ri_diskio_byteswritten`, `ri_logical_writes`. macOS keeps no count of time waited.
+- Linux: adacachy2 (CachyOS, kernel 7.3.3, 32 cores, load averages 13.9 to 15.6, its file
+  on btrfs on NVMe; `/tmp` there is a tmpfs, whose flush waits on nothing), in a
+  `systemd-run --user` scope at nice 10, 2026-11-14. Counts: each task's stat fields 12
+  (`majflt`) and 42 (`delayacct_blkio_ticks`), `/proc/<pid>/io`'s `read_bytes` and
+  `write_bytes`. `kernel.task_delayacct` 0 and `kernel.sched_schedstats` 0 there, the
+  defaults; `/proc/pressure/io` present (PSI on).
+
+| host | loop | waits of 1 ms or more | their time | grew a count | its time |
+|---|---|---|---|---|---|
+| macOS | 4 KiB written, F_FULLFSYNC, x200 | 30 | 948.7 ms | 30 | 948.7 ms |
+| macOS | a file created, F_FULLFSYNC of its directory, x200 | 25 | 966.1 ms | 24 | 963.4 ms |
+| Linux | 4 KiB written, fdatasync(2), x300 | 274 | 2,317.6 ms | 257 | 2,203.6 ms |
+| Linux | 1 MiB written, fdatasync(2), x100 | 117 | 334.9 ms | 111 | 320.6 ms |
+
+On macOS the file's flushes grew bytes written and logical writes; the directory's grew
+logical writes alone. On Linux only `write_bytes` grew: `delayacct_blkio_ticks` stayed 0
+with delay accounting off, and no page came from storage. So the counts that are kept show
+most such waits between looks, but not every one, and Linux keeps the time waited only with
+delay accounting on or, through a cgroup's own `io.pressure`, where the process is alone in
+it. Neither host's counts are a bound; n is one loop each.
