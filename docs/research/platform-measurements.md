@@ -25641,3 +25641,34 @@ host's disk apart, and none is folded in as a hold. The I/O counts are the evide
 grew across 79% of the flusher's reads, and Windows counts a pipe's and a socket's I/O with a
 file's. A thread of the flusher's that only read its stdin showed its process's growth too:
 the counts are a process's, not a thread's. n is one run of each child.
+
+### M607. A git fetch's pack, which GitHub sends after its 200, cut as a silence and asked again for as long as the build ran (D276)
+
+- **Where.** adas-mac-studio-2.local and adas-mac-studio-3.local (Apple M3 Ultra, macOS 26.4), each a kiln run
+  of ROOT's; the LAN's path to github.com about 0.5 to 1 MiB/s. Before: kiln's carried `shards` at the vendor point
+  1c4570e36 (`ci/shards/pack.sh`, test-release). After: `shards` at d756d2a3b (main 4dfa731b1 with this change),
+  test-release.
+- **Found.** kiln's P1.4 E2E on HVF (its stand-ins' Agentfiles take a `HARNESS` from kiln's GitHub repository at
+  the checkout's commit, not yet pushed): a stand-in build sat 26 minutes in `build::git::snapshot` →
+  `shards_registry::http::Client::pause` (sampled), its step saying nothing under `--progress=quiet`.
+- **Reproduced** (R09): `FROM scratch` and `HARNESS x FROM https://github.com/hyper-light/kiln.git#0000…00aa:crates
+  TO /opt/x`, `shards build --progress=plain`, a fresh home: "the server's pack: Resource temporarily unavailable
+  (os error 35): asking github.com again in 0.2 s", then 4.9 s, 8.9 s (a handshake cut) and 23.2 s, still asking
+  at 75 s. Real git (2.50.1) asks the same: `GIT_TRACE_PACKET` shows GitHub's `ERR upload-pack: not our ref …`
+  0.28 s after its request, the whole fetch 0.52 s.
+- **Cause.** GitHub's upload-pack sends its head at once and its pack, or its `ERR`, after its work; the client
+  read the gap before the body's first bytes as a silence, cut at the slowest its advertisement's and ls-refs'
+  quick bodies had shown (D276's rule cut a lookup's answer alone, but a body's silences every request's); the
+  build's fetch asked again, and the next asking's quick bodies ended the run-out (`Paths::silenced` with
+  `Last::Bytes`), so the pack was cut again every time.
+- **After.** The same build at d756d2a3b asks nothing again: its fetch takes GitHub's `ERR` and goes on to D48's
+  whole fetch, as BuildKit's `git fetch --tags origin` does for a commit its server will not send by name (sampled
+  in `protocol::fetched`, reading the pack). At a commit GitHub has (kiln main 8bde8f2d1, the stand-in's
+  `crates/kiln/tests/fixtures/vm-stub/harness`): `#3 DONE 78.7s`, one asking, 80 MiB.
+- **Tests.** `cargo test -p shards-registry --lib -- http::`: 36 of 36, among them
+  `a_non_lookups_body_waits_out_its_servers_work_before_its_first_bytes` (a head at once and a body 300 ms later,
+  its path's silences 1 ms: a POST's body read whole, a GET's cut). Mutation (`working: false`, every body bounded
+  from its first read): that test fails at its POST's read. `cargo clippy -p shards-registry --all-targets`: clean.
+- **Unrun or owed.** Linux and Windows: CI's. A run-out stays its path's (`host:port`): a quick body of another
+  kind on the path ends one a slow body began, so a big pack over a jittery link can still be cut between its
+  bytes past a broken record and fetched whole again; owed to D276's next look.
