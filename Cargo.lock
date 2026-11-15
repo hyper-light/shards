@@ -1158,6 +1158,7 @@ dependencies = [
  "libc",
  "libm",
  "lzma-rust2",
+ "memchr",
  "rcgen",
  "regex",
  "rustls",
