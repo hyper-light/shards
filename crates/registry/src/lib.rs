@@ -51,6 +51,9 @@ pub struct Error {
     /// was left of it, whatever time `Instant` says passed (a connect's or a handshake's,
     /// which its path then counts as timed out, crate::patience).
     timed_out: bool,
+    /// Whether the system's resolver failed its name's lookup, after its own retries: a
+    /// trouble's, which a re-ask that fails so while it follows liveness ends (D276).
+    unresolved: bool,
 }
 
 /// Which of a path's waits ran out on a request's answer, which is then asked again at once
@@ -115,6 +118,7 @@ impl Error {
             cut: false,
             overdue: None,
             timed_out: false,
+            unresolved: false,
         }
     }
 
@@ -138,7 +142,8 @@ impl Error {
         }
     }
 
-    pub(crate) fn is_refused(&self) -> bool {
+    /// Whether every address its server was dialled at refused the connection.
+    pub fn is_refused(&self) -> bool {
         self.refused
     }
 
@@ -168,10 +173,6 @@ impl Error {
         }
     }
 
-    pub(crate) fn is_overdue(&self) -> bool {
-        self.overdue.is_some()
-    }
-
     /// Which of its path's waits cut it, where one did.
     pub(crate) fn overdue_by(&self) -> Option<Overdue> {
         self.overdue
@@ -187,6 +188,19 @@ impl Error {
 
     pub(crate) fn is_timed_out(&self) -> bool {
         self.timed_out
+    }
+
+    /// The same error, of a name the system's resolver did not resolve.
+    pub(crate) fn unresolved(self) -> Error {
+        Error {
+            unresolved: true,
+            ..self
+        }
+    }
+
+    /// Whether the system's resolver failed its name's lookup.
+    pub fn is_unresolved(&self) -> bool {
+        self.unresolved
     }
 
     /// The same error, with what dockerd says of it.
@@ -223,6 +237,7 @@ impl Error {
             cut: self.cut,
             overdue: self.overdue,
             timed_out: self.timed_out,
+            unresolved: self.unresolved,
         }
     }
 }

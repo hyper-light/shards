@@ -20998,7 +20998,7 @@ download.
   | 502, 503, 504, 408 pass; a 500 asked once more | `Trouble` | RFC 9110 §15.5.9, §15.6.1, §15.6.3 to §15.6.5 |
   | merged: each slowest the slower, the newer sample's pace, troubles summed, the longest kept | `Shown::merged` | the slowest of both, each seen; RFC 6298 §2.3 (SRTT, RTTVAR follow their latest samples) |
   | an idle connection kept 2 h 4 min at most | `http::IDLE` | not a wait (RFC 9112 §9.5); RFC 5382 §5 REQ-5 |
-  | 30 s to connect, 10 s a handshake: clients that do not learn | `http::CONNECT`, `http::HANDSHAKE` | Go's dialer and `TLSHandshakeTimeout`, as containerd sets them |
+  | none: every client learns its connects and handshakes (D273) | `Client::dial`, `Client::handshake` | RFC 6298, as above |
 - **Tested:** patience.rs (RFC 6298's arithmetic; the bounds,
   `a_paths_waits_follow_the_slowest_and_a_run_out_learns_nothing`: none before any, the
   slowest after, a run-out learning nothing and ending as the rule says, each kind its own;
@@ -21121,8 +21121,8 @@ were excluded by the review.
 | 5 s (vm_run.rs, the relay's outcome after the VM's end) | picked | The relay ends with its VM's sockets, so join its thread (its own end) and send it nothing to wait on. | red: a relay slow to drain past 5 s still has its outcome said |
 | `ANY_PORT_TRIES` 8 (init hostbind.rs) | picked | Hold each host port that collides in the guest until the bind succeeds, so each try gets a port it has not had. The tries then end with success or the host's own refusal, its ephemeral range spent (pigeonhole: the guest holds finitely many ports). No count. | Linux guest test: the first nine host choices taken in the guest; ROOT's real-VM run |
 | `THROTTLED` [50..800] ms, its 800 ms floor, `WINDOW_MOST` 60 s (registry.rs) | picked (PM M112, one ECR run) | A declared wait (Retry-After, RFC 9110 §10.2.3, or a window) is followed whole: it is the server's statement, ended only by the user's cancel. With none declared, retry after the path's own answer pace (its RFC 6298 estimator of answers), doubling each 429 (§5.5), within the path's learned trouble budget (D222's run-out rules for the rest). | red: a 61 s window that clears at 2 s; ROOT: Docker Hub's real 429s, their windows recorded |
-| `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | Go's, containerd's | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | list each non-learning client's caller; red: a fresh client's second connect paced by its first |
-| `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | Go's, containerd's | A non-lookup request's answer is followed by its connection's liveness and its path's record for that method (`slowest_answer_us` by safe/unsafe). A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`). | red: a POST answered at 31 s is kept |
+| `CONNECT` 30 s, `HANDSHAKE` 10 s (registry http.rs, clients that learn no waits) | gone (D273): every client learns | Every client learns: those that keep no record still pace by RFC 6298 in memory (§2.1's 1 s first, §5.5's doubling), as a learning client's cold path does. | D273's tests |
+| `HEAD` 30 s (a non-lookup request), `STALL` 30 s (request writes) | gone (D273): an answer's first byte alone, then silences; writes follow liveness | A request's write is a send-side silence, learned like the body's read silences, readiness-checked (waits-05's `Sock`): still owed (D273). | `an_answer_that_trickles_past_the_old_head_wait_is_not_cut` |
 
 
 #### A run's handoff, judged (runs-11 `TAKE_TIMEOUT`, slice (a), 2026-11-14)
@@ -36707,6 +36707,126 @@ orchestrator's room is throttled at the run's hold, as before.
 its kernel's `MemTotal` is the host's memory, and one allocation past all of it is refused at
 once); unit (api_run.rs) `an_orchestrators_run_may_plug_its_most_less_its_boot`. Results by
 backend, with their red runs, and 4e0b82699's nesting runs: PM M605.
+
+### D276. Every client's waits are its paths' own: a lookup waited for while its resolver works, bytes that keep coming never cut, a build's fetch asked again through what the network drops (built; real-VM runs owed)
+
+**Found** (kiln's real-VM E2E, 2026-11-14): a build of goose's harness, whose `HARNESS` came
+from git, failed `github.com: resolving: timed out` on a LAN whose resolver failed on and
+off. The builder's git fetch was one of the clients that learned no waits (`Client::learning`
+false: the build's git, HTTP, S3, Azure and GitHub Actions cache clients, a policy's
+signatures, the log shippers, clouds' metadata, the build's proxy). Its dial looked the name
+up within its own deadline, `CONNECT`, 30 s, so a lookup still in flight at 30 s was cut; a
+handshake had `HANDSHAKE`, 10 s; a request's whole head `HEAD`, 30 s, however its bytes kept
+coming; every read and write `STALL`, 30 s. All four were Go's dialer's and transport's as
+containerd sets them, measured and learned nowhere (R03; D222's table of the chosen waits
+left listed them). And nothing asked the build's fetch again: one drop failed the build.
+
+**Decided** (crates/registry `http.rs`, `patience.rs`, `registry.rs` `Trouble`, `lib.rs`;
+crates/shards `build/git.rs`):
+- **Every client learns** (`Client::learning` and the four constants deleted, no other
+  path): every client's connects, handshakes, lookups' answers and bodies' silences teach
+  its paths, and its connects are paced by what they showed (RFC 6298). A client kept in an
+  image store's `links/` starts from what this host learned there (the build's git fetch
+  keeps its paths in its build's store).
+- **A cut belongs to what asks again** (`Client::asking_again`). A connect its pace ended is
+  made again by the client itself (below). A lookup's answer, a body's silence, a head's past
+  its first byte and a handshake are cut where its path has shown how long they take, D222's
+  bounds, only where its caller resumes or asks again what the cut ends: a registry's (its
+  troubles ridden, fetch.rs resuming a download where it was) and the build's git fetch's
+  (below); a cut lookup is asked again at once by the client itself. Any other client's
+  follow their connection's liveness, and their caller's own patience where it names one:
+  there a cut would fail the caller, and a path's k-th wait of a kind breaks its slowest with
+  chance 1/k where its times are alike (Glick 1978, D222), about ln n of n, so a cache
+  backend's many downloads, or a scripted server's tests, would fail now and then.
+- **A name's lookup has no deadline**: it is waited for while the system's resolver works on
+  it, the resolver's own answer or failure its end (`resolve`, getaddrinfo(3), GetAddrInfoW,
+  which retry their servers as the host configures them: resolv.conf(5)'s `timeout` and
+  `attempts`, and their like), or the client's cancel. It is none of the connect's time or
+  sample: the connect's pace, and RFC 8305's learned attempt delay from it, are the TCP
+  connects' own. Its failure is typed (`Error::is_unresolved`), Transient: a trouble's.
+- **A connect its pace ended is made again at once, its time doubled** (RFC 6298 §5.5, as TCP
+  sends its SYN again past its retransmission timeout), until one is answered, its far end
+  refuses or is unreachable, or the cancel. A caller's own bound (EC2's metadata, 250 ms,
+  D168) ends it as before. A handshake its pace ends, where its caller asks again, fails as a
+  passing failure, as D222 has it, since a loopback registry's fallback to plain HTTP reads
+  that end.
+- **Bytes that keep coming are never cut by a clock**: an answer's wait is the gap before its
+  first byte alone, for every request; once it has begun, each read of its head waits as a
+  body's silence does, the path's slowest (`read_head`). Before, a fresh client's whole head
+  had 30 s.
+- **A lookup its path's wait cut is asked again at once, by the client itself** (`send_now`).
+  Its path's next wait of that kind follows liveness until one ends (`Bounded::RanOut`), so
+  each kind cuts it once at most while none ends. The registry's and the token server's own
+  re-asks of an overdue answer are deleted with it (`registry.rs` `send_here`, `auth.rs`).
+- **A caller's patience is its own protocol's bound, none by default** (`Patience`, every
+  field an `Option`): the most a connect, a non-lookup's answer and a read's or write's
+  silence wait, where its protocol names less than its path and its liveness (EC2's metadata;
+  a log shipper's, a token exchange's own). A build's proxy follows liveness alone in every
+  answer and silence (`Client::following_liveness`, D110): the step's own client judges them.
+- **A build's fetch asks again what the network drops** (`build/git.rs` `ridden`): a name not
+  resolved, a connection refused, reset or cut, a wait its own time ended, a 408, 502, 503 or
+  504, an answer's body cut short. Each is a trouble of its path's, ridden as a registry's is
+  (D222's `Trouble`, now public with `Trouble::failed`, `passing`, `over` and `Verdict`): after
+  a random share of how long the trouble has lasted, at least what `Retry-After` names, each
+  asking said in the step's log (`… : asking github.com:443 again in 0.4 s`), the trouble's
+  length taught to its path once it passes. No count and no deadline: it ends answered,
+  cancelled, or as a re-ask while the trouble follows liveness (a path that has passed none,
+  or past its run-out) says its far end is gone, refused, unresolved or cut before any answer,
+  which fails the step naming it: `unable to access '…': …: Connection refused (127.0.0.1:N is
+  gone: it refused the connection again, after 0.4 s of trouble)`. A whole session is asked
+  again (advertisement, refs, the pack), since a pack is made afresh by each asking and its
+  bytes cannot be resumed; a submodule's fetch likewise. Planning's fetches (a commit's time,
+  a policy's metadata) ride the same way, saying nothing, as no step's log is open then.
+- **A resolver failure is now a registry's trouble too**: before, it failed a pull at once
+  (D222's "a name that does not resolve"); now its first is ridden and a re-ask that fails so
+  while the trouble follows liveness is the far end's end (`Trouble::gone`), as a refusal is.
+
+**Every value, and where it comes from:**
+
+| Value | Where | Source |
+|---|---|---|
+| a lookup: no deadline, the resolver's answer or failure its end | `resolve`, `system_lookup` | getaddrinfo(3), GetAddrInfoW; resolv.conf(5) `timeout`, `attempts`: the host's own retries |
+| a connect: its path's pace, doubled at each of its own timeouts, made again | `Client::dial` | RFC 6298 §2, §5.5 (D222's `Pace`) |
+| an answer: its first byte's gap alone; past it, silences | `read_head`, `HeadWait` | a stall is a gap with no progress (the person, 2026-11-13; D222) |
+| a lookup cut: asked again at once, each kind once while none ends | `Client::send_now` | RFC 9110 §9.2.1 (a safe method); D222's run-out clause |
+| an answer, a silence, a handshake cut by its path's only where its caller asks again | `Client::asking_again`, `Paced`, `Client::handshake` | a cut fails a caller that does not; records break with chance 1/k (Glick 1978) |
+| a caller's bound: none by default | `Patience` | the caller's protocol (D168's AWS SDK figures stay theirs) |
+| a fetch's re-ask: a random share of the trouble so far, at least `Retry-After`, no count | `ridden`, `Trouble` | D222's rule for a trouble; RFC 9110 §10.2.3 |
+| its end: a re-ask refused, unresolved or cut while it follows liveness | `Trouble::gone`, `Verdict::Gone` | the far end's own word (D222) |
+| a pack asked again whole | `ridden` | git's protocol v2 makes each pack afresh (gitprotocol-v2.adoc, `fetch`): no offset resumes it |
+
+Cold starts: a path that has shown nothing waits on its connection's liveness in every answer
+and silence, and paces its first connect and handshake at RFC 6298's 1 s, doubled at each
+timeout; a trouble on a path that has passed none rides from its first failure and ends at the
+first re-ask its far end refuses, does not resolve, or cuts. Failures typed: `Error`'s
+`is_unresolved`, `is_refused`, `ErrorKind::Gone`; `Verdict`.
+
+**Tested** (red first by mutation where the old figure was the guard):
+- `http::tests::a_lookup_is_waited_for_while_its_resolver_works`: a stand-in resolver that
+  answers after 31 s, past the old dial's 30 s, resolves, connects and is answered; the
+  connect's sample holds no lookup; a resolver's failure is typed unresolved and Transient.
+- `http::tests::an_answer_that_trickles_past_the_old_head_wait_is_not_cut`: a POST answered a
+  head line each 5 s and its body after, 40 s in all, is read whole, its silences learned.
+- `git::tests::a_fetch_cut_mid_body_is_asked_again_and_completes`: an advertisement cut at 10
+  of its 32 bytes is asked again, said once in the step's log, and read whole.
+- `git::tests::a_remote_that_is_gone_is_refused_naming_it`: nothing listening, asked twice,
+  said once, refused naming `127.0.0.1:N is gone`.
+- `registry::tests::a_callers_trouble_rides_what_the_network_drops_until_its_far_end_is_gone`;
+  `http::tests::an_answer_cut_by_its_wait_is_asked_again_at_once` (the client's own re-ask, no
+  pause; a caller's patience no path's wait, not asked again);
+  `http::tests::a_bodys_silence_is_cut_only_where_its_caller_asks_again`;
+  `fresh_connections_bound_their_writes_as_their_caller_says`.
+
+**Owed:** a write's silence is learned nowhere yet: a request's writes follow their
+connection's liveness (TCP's own end of a dead peer, RFC 1122 §4.2.3.5, and the cancel) where
+their caller names no bound; D222's table has its design (a send-side silence, learned like a
+read's). The build's HTTP(S), S3, Azure and GitHub Actions cache sources, a policy's
+signatures, the log shippers and clouds' metadata learn their waits now but do not ask again
+what the network drops, as the git fetch does, so their answers and silences follow liveness
+alone, which TCP ends only where it has something to send (no keepalive is set): their riding,
+then `asking_again`, is the next slice. ROOT's real-VM runs: a build whose
+`HARNESS` comes from git over a resolver that fails on and off (goose's), and
+`cargo test -p shards --profile test-release --test build` on HVF.
 
 ## 4. Start path (≤ 5 ms budget)
 

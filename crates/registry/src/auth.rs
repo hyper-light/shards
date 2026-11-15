@@ -756,11 +756,7 @@ impl Bearer {
                 ));
             };
             last = failed.status;
-            // An overdue answer, one past the slowest its path has shown, is asked again at
-            // once (crate::patience).
-            if !failed.error.is_overdue() {
-                http.pause(wait)?;
-            }
+            http.pause(wait)?;
         }
     }
 
@@ -1007,11 +1003,10 @@ mod tests {
     use super::*;
     use crate::testing::{After, Server, route, serve};
 
+    /// A scripted token server's client: its waits follow liveness alone (D222,
+    /// `testing::client`), so no asking again takes a scripted answer out of turn.
     fn plain() -> Client {
-        Client::new(
-            Box::new(|_| crate::tls::client_config(Vec::new(), None)),
-            "shards-test",
-        )
+        crate::testing::client()
     }
 
     fn params(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

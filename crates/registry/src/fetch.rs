@@ -922,11 +922,6 @@ mod tests {
             Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
         )
-        .with_patience(crate::http::Patience {
-            connect: Duration::from_secs(30),
-            head: Some(Duration::from_secs(1)),
-            stall: Some(Duration::from_secs(1)),
-        })
         .showing("127.0.0.1", fake.cdn.port, shown);
         let registry = Registry::new(client, &reference, Credentials::Anonymous).unwrap();
         let (store, root) = store("stuck");
