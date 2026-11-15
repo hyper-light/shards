@@ -1368,9 +1368,10 @@ fn os_release() -> String {
 /// from the boot's call (`called_unix_us`, the wall clock then), its run host's lines
 /// (`shards api-run: +US us TEXT`, microseconds since its `main`) and each VM process's
 /// (`[PID US LEVEL] TEXT`, microseconds since its log began), each lined up by the wall clock
-/// its process said its clock began at (`... began at unix US us`, `SHARDS_TIMING`). A warm
-/// host's lines from before the call come first, negative. Lines of a process whose clock
-/// was not said are none of it.
+/// its process said its clock began at (`... began at unix US us`, `SHARDS_TIMING`); and
+/// shards-api's own steps on this side of the channel (`shards-api: at unix US us TEXT`, the
+/// wall clock itself), said `caller`. A warm host's lines from before the call come first,
+/// negative. Lines of a process whose clock was not said are none of it.
 fn timeline(diagnostics: &str, called_unix_us: u128) -> Vec<(i128, String)> {
     let began = |text: &str| -> Option<i128> {
         text.split_once("began at unix ")?
@@ -1384,6 +1385,15 @@ fn timeline(diagnostics: &str, called_unix_us: u128) -> Vec<(i128, String)> {
     let mut vms: std::collections::HashMap<u32, i128> = std::collections::HashMap::new();
     let mut lines = Vec::new();
     for line in diagnostics.lines() {
+        // shards-api's own steps (session.rs `Shared::step`), each on the wall clock.
+        if let Some(said) = line.strip_prefix("shards-api: at unix ") {
+            if let Some((us, text)) = said.split_once(" us ")
+                && let Ok(us) = us.parse::<i128>()
+            {
+                lines.push((us - called, format!("caller    {text}")));
+            }
+            continue;
+        }
         if let Some(said) = line.strip_prefix("shards api-run: +") {
             let Some((us, text)) = said.split_once(" us ") else {
                 continue;
@@ -1417,6 +1427,32 @@ fn timeline(diagnostics: &str, called_unix_us: u128) -> Vec<(i128, String)> {
     // Stable: lines of one instant keep their order in the diagnostics.
     lines.sort_by_key(|(at, _)| *at);
     lines
+}
+
+/// Each process's timed lines land on the caller's clock: a run host's by the clock it said, a
+/// VM's by its log's, shards-api's by the wall clock each of its lines says; a process that said
+/// no clock gives none, and the lines come in order.
+#[test]
+fn a_starts_timeline_lines_every_process_up_on_the_callers_clock() {
+    let said = "\
+shards api-run: +5 us its clock began at unix 1000 us
+shards api-run: +40 us its request read
+[77 3us DEBUG] its log began at unix 1100 us
+[77 10us INFO] guest marker 2 at 3 us
+shards-api: at unix 1060 us its start taken
+[88 5us DEBUG] a line of a VM that said no clock
+shards api-run: not timed
+";
+    assert_eq!(
+        timeline(said, 1000),
+        [
+            (5, "run host  its clock began at unix 1000 us".to_string()),
+            (40, "run host  its request read".to_string()),
+            (60, "caller    its start taken".to_string()),
+            (103, "vm 77     its log began at unix 1100 us".to_string()),
+            (110, "vm 77     guest marker 2 at 3 us".to_string()),
+        ]
+    );
 }
 
 /// Where a shards-api image start's time goes, for each way it starts (D253): from the boot's
