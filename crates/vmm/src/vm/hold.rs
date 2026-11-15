@@ -326,6 +326,9 @@ impl Hold {
         let mut before = 0u64;
         let mut start = Instant::now();
         let mut last = None;
+        // Until when its vCPUs are held: past this period's end where what they overran
+        // already owes the periods after it theirs.
+        let mut held_until: Option<Instant> = None;
         loop {
             let (milli, generation, period) = {
                 let mut s = lock(&self.state);
@@ -351,14 +354,35 @@ impl Hold {
             let base = self.used(counted);
             let share = share_of(milli, u64::try_from(period.as_nanos()).unwrap_or(u64::MAX));
             let allowed = share.saturating_sub(debt);
-            let mut holding = false;
+            // Held on from a period before, by what its vCPUs overran then.
+            let mut holding = held_until.is_some_and(|until| until > start);
             let mut changed = false;
             while let Some(left) = period.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
                 let used = self.used(counted).saturating_sub(base);
-                if !holding && used >= allowed {
-                    holding = true;
-                    self.set_held(Some(start + period));
-                    kick();
+                if used >= allowed {
+                    // Held to this period's end, and through as many after it as what its
+                    // vCPUs overran already owes, whole shares of it: a vCPU let go at each
+                    // period's end, its debt unpaid, runs again until the governor wakes and
+                    // its kick lands, every period (hex-winvm: 38.8% of the wall at a quarter
+                    // CPU, its guest time seen in ~10 ms steps, D265).
+                    let owed = debt.saturating_add(used).saturating_sub(share);
+                    let periods = owed
+                        .checked_div(share)
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|p| p.checked_add(1))
+                        .unwrap_or(1);
+                    let until = period
+                        .checked_mul(periods)
+                        .and_then(|d| start.checked_add(d))
+                        .unwrap_or(start + period);
+                    if held_until.is_none_or(|held| until > held) {
+                        held_until = Some(until);
+                        self.set_held(Some(until));
+                    }
+                    if !holding {
+                        holding = true;
+                        kick();
+                    }
                 }
                 let next = if holding || !busy {
                     left
@@ -397,7 +421,12 @@ impl Hold {
                 )
             };
             start += period;
-            self.set_held(None);
+            // Let go at its period's end unless what it overran holds it on; a new limit
+            // owes nothing of the old one's.
+            if changed || held_until.is_none_or(|until| until <= start) {
+                held_until = None;
+                self.set_held(None);
+            }
         }
     }
 
@@ -637,6 +666,64 @@ mod tests {
             });
             assert_eq!(seen, held, "{charged:?}: held within {periods} periods");
         }
+    }
+
+    /// A vCPU whose run its governor sees only once that run is over, as WHP's runtime
+    /// counter moves in ~10 ms steps (hex-winvm, D265) and a kick lands late, overruns its
+    /// share each time it runs: what it overran holds it through the periods after, across
+    /// their ends, so that over many periods it runs its share. Let go at each period's end
+    /// whatever it owed, it ran again every period (hex-winvm: 38.8% of the wall at a quarter
+    /// CPU, D255's bound a little over a quarter).
+    #[test]
+    fn a_vcpu_seen_late_is_held_across_periods_by_what_it_overran() {
+        let hold = Hold::new(1);
+        let rated = hold.set(250).unwrap();
+        let period = rated.period;
+        let periods = 32;
+        let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (registered, done) = (AtomicBool::new(false), AtomicBool::new(false));
+        let (ran, wall) = std::thread::scope(|s| {
+            let theirs = guest.clone();
+            let (hold, registered, done) = (&hold, &registered, &done);
+            // The vCPU: a period's run at a time, its guest time told once the run is over.
+            s.spawn(move || {
+                let told = theirs.clone();
+                let read: GuestRead = Box::new(move || Some(told.load(Ordering::SeqCst)));
+                hold.register(0, Some(read)).unwrap();
+                registered.store(true, Ordering::SeqCst);
+                while !done.load(Ordering::SeqCst) {
+                    hold.wait(&|| done.load(Ordering::SeqCst));
+                    let run = Instant::now();
+                    std::thread::sleep(period);
+                    let ns = u64::try_from(run.elapsed().as_nanos()).unwrap();
+                    theirs.fetch_add(ns, Ordering::SeqCst);
+                }
+            });
+            while !registered.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+            let governor = s.spawn(|| hold.govern(&|| {}, &|| Charged::Apart));
+            let (t0, g0) = (Instant::now(), guest.load(Ordering::SeqCst));
+            std::thread::sleep(period * periods);
+            let ran = guest.load(Ordering::SeqCst) - g0;
+            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+            done.store(true, Ordering::SeqCst);
+            hold.end();
+            governor.join().unwrap();
+            (ran, wall)
+        });
+        let period_ns = u64::try_from(period.as_nanos()).unwrap();
+        // A quarter of the wall, two of its periods where the window and the periods do not
+        // line up, and one run, the step its guest time is seen in.
+        let most = wall / 4 + 3 * period_ns;
+        assert!(
+            ran <= most,
+            "{ran} ns run in {wall} ns at a quarter CPU, over {period_ns} ns periods"
+        );
+        assert!(
+            ran >= wall / 20,
+            "{ran} ns run in {wall} ns: held, and never let go"
+        );
     }
 
     /// A rate's share of a period is that many thousandths of it, exact to the nanosecond

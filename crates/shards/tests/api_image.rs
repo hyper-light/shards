@@ -639,6 +639,12 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
     build(&home, "api-rate:1", &["spin"], "");
     let guest = booted(&ImageShards::new(), &spec(&home, "api-rate:1")).unwrap();
     assert_eq!(guest.rate_period(), None, "no rate answered yet");
+    let ran = || {
+        let stats = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+        stats.microvm.unwrap().guest.unwrap().total_ns()
+    };
+    // The step its guest time is read in, measured as its vCPU spins unheld.
+    let step = u64::try_from(common::guest_time_step(ran).as_nanos()).unwrap();
     let quarter = NonZeroU64::new(250).unwrap();
     assert_eq!(
         ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(),
@@ -649,17 +655,12 @@ fn the_orchestrators_rate_holds_its_run_to_it() {
         period >= 4 * shards_vmm::platform::granule::LEAST_WAIT,
         "{period:?}"
     );
-    let ran = || {
-        let stats = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
-        stats.microvm.unwrap().guest.unwrap().total_ns()
-    };
     let (start, before) = (Instant::now(), ran());
     std::thread::sleep(Duration::from_secs(2));
     let (used, wall) = (ran() - before, u64::try_from(start.elapsed().as_nanos()).unwrap());
     // A quarter of each period the share, and a period's whole share and what one vCPU
     // overruns before its governor reads at the window's two ends: two periods. Read twice,
     // its guest time may say a step of its count more than ran between the reads.
-    let step = u64::try_from(common::guest_time_step().as_nanos()).unwrap();
     let most = wall / 4 + 2 * u64::try_from(period.as_nanos()).unwrap() + step;
     assert!(
         used <= most,

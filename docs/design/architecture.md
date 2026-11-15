@@ -35712,6 +35712,18 @@ start (`hv::GUEST_TIME_CHARGED`): KVM charges guest time to the vCPU thread's us
 (`account_guest_time`, kernel/sched/cputime.c: `p->utime += cputime; ... p->gtime +=
 cputime`), and Hypervisor.framework runs a vCPU on its owning thread, whose time XNU does not
 split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learned.
+- *Its hold across periods* (PM M601). A WHP vCPU's guest time moves in ~10 ms steps
+  (hex-winvm: p50 10,013 us apart, 9,404 us of guest each), so its governor sees a run up to
+  a move late and a hold overruns by that and its kick's landing, which its debt owes the
+  periods after. The hold lasts through them, the whole shares owed (`Hold::govern`'s
+  `held_until`, at a fixed end as before, M441), where it was let go at each period's end and
+  its vCPU ran again until its governor woke and kicked it, every period (38.8% of the wall at
+  a quarter CPU on hex-winvm, D255's bound 31%). A test's bound takes the step its own guest's
+  time is read in, measured as its vCPU spins unheld (`tests/common::guest_time_step`), never
+  a count's unit (WHP's 100 ns). Tested: shards-vmm
+  `hold::tests::a_vcpu_seen_late_is_held_across_periods_by_what_it_overran` (a vCPU whose run
+  is told only once it is over, a period at a time: a quarter of the wall, and near the whole
+  wall let go at each period's end).
 - *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
   (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
   `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
