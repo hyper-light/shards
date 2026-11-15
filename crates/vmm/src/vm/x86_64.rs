@@ -1,16 +1,15 @@
 //! The x86_64 machine on any backend: RAM around the 32-bit MMIO gap, the in-kernel
-//! IOAPIC, ACPI tables, the i8042 and ACPI sleep ports the guest resets and powers
-//! off through (docs/research/kvm-x86_64-ground-truth.md §3-§6), and the VM generation ID
-//! that makes each restored copy reseed its RNG.
+//! IOAPIC, ACPI tables, the ACPI power ports the guest resets and powers off through
+//! (docs/research/kvm-x86_64-ground-truth.md §3-§6, D268), and the VM generation ID that
+//! makes each restored copy reseed its RNG.
 
 use std::fs::File;
 use std::sync::Arc;
 
 use super::{Config, Console, mapped};
 use crate::arch::x86_64::{self, acpi, boot, layout};
-use crate::devices::acpi_sleep::AcpiSleep;
+use crate::devices::acpi_power::AcpiPower;
 use crate::devices::control::Control;
-use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
 use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
@@ -26,9 +25,10 @@ const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 /// Smallest guest that holds the kernel (loaded at 16 MiB), its bss and early allocations.
 const MIN_MEMORY_MIB: u64 = 128;
-/// Kernel parameters the machine depends on: restart through the i8042 (the device the
-/// VMM emulates), and no PCI bus (there is none yet).
-const MACHINE_CMDLINE: &str = "reboot=k";
+/// Kernel parameters the machine depends on: restart through the FADT's reset register,
+/// the power device's (arch/x86/kernel/reboot.c l. 608-610; D268), whatever `reboot=` the
+/// command line it is told says.
+const MACHINE_CMDLINE: &str = "reboot=a";
 /// Where the machine has no PCI bus, its kernel looks for none (D153).
 const NO_PCI_CMDLINE: &str = "pci=off";
 /// On WHP its kernel brings its APs up one at a time (kernel/cpu.c, `cpuhp.parallel`): in
@@ -209,7 +209,7 @@ pub struct Machine {
     /// Its console, hvc0: what it said, and its input.
     pub console: Arc<ConsolePort>,
     pub control: Arc<Control>,
-    /// Power-off (ACPI sleep control) and reset (i8042).
+    /// Power-off (ACPI sleep control) and reset (ACPI reset register).
     pub power: Arc<Power>,
     pub finish: Finish,
     pub start: Start,
@@ -582,12 +582,10 @@ fn assemble(
     )?;
 
     let power = Arc::new(Power::default());
-    bus.pio
-        .insert(u64::from(layout::I8042), 5, Arc::new(I8042::new(power.clone())))?;
     bus.pio.insert(
-        u64::from(layout::ACPI_SLEEP),
-        2,
-        Arc::new(AcpiSleep::new(power.clone())),
+        u64::from(layout::ACPI_POWER),
+        u64::from(acpi::POWER_PORTS),
+        Arc::new(AcpiPower::new(power.clone())),
     )?;
     let vmgenid = VmGenId::new(
         memory.clone(),

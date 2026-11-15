@@ -34,7 +34,7 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
-    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
+    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused,
     PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
     SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
     decide,
@@ -364,6 +364,13 @@ pub enum ImageRefusal {
     /// A [`WarmTicket`] booted with the spec of another pool than the one it reserved; `asked`
     /// none for a spec that is no pool's.
     OtherPool { reserved: PoolId, asked: Option<PoolId> },
+    /// An ask its guest would answer, refused at once as its run is paused or pausing (D267):
+    /// `room`, `resize`, `plug`, `unplug`, or `stats` of its own command or a member. Its guest
+    /// runs nothing until the run goes on ([`ImageGuest::resume`]); none of it was applied.
+    Paused { what: &'static str },
+    /// A pause or a resume its run's VM did not do (D267), in its words: its machine stopped
+    /// before every vCPU was held.
+    Pause(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -394,6 +401,11 @@ impl std::fmt::Display for ImageRefusal {
                 f,
                 "the run host's diagnostics: a bound of {bound} bytes, short of the {tail} kept to quote"
             ),
+            Self::Paused { what } => write!(
+                f,
+                "{what}: the run is paused, and its guest answers nothing until it resumes"
+            ),
+            Self::Pause(why) => write!(f, "the pause: {why}"),
         }
     }
 }
@@ -639,6 +651,26 @@ pub trait ImageGuest: Send + Sync {
     /// nowhere else, and its owner's to remove. Waits at most `patience`; refused as
     /// [`ImageRefusal::Save`], by what refused it: a path not UTF-8 as [`ImageRefusal::Spec`].
     fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal>;
+    /// The run's microVM paused where it is (D267): every vCPU held out of its guest by its
+    /// VMM, as `shards pause vm` holds one, so that its guest runs no CPU and its host's use
+    /// of it grows by its VMM's own alone; its memory, devices and connections kept, each
+    /// channel buffered within its flow control. Asks are applied in the order sent. It is held
+    /// at once, nothing of it asked of its guest, which may be slow or hung: an ask of its guest
+    /// already under way is answered as it goes on. While paused, an ask its guest would answer
+    /// is refused at once, [`ImageRefusal::Paused`] (`room`, `resize`, `plug`, `unplug`, `stats`
+    /// of its command or a member); the run's stats, its rate, a save, a stop and every wait are
+    /// answered as ever, its stats' guest lines what its init last said before the pause
+    /// ([`Stats::paused`]). Its guest's clocks run on through it (no snapshot is taken), and its
+    /// init sets its clock to its host's as it goes on. A pause of a paused run is done already,
+    /// so that a caller that lost an answer may ask again. Answers its paused time as it stands
+    /// then, waiting at most `patience` (`Duration::MAX`: until it is done or the run ends);
+    /// refused [`ImageRefusal::Pause`] where its VM held nothing, and [`ImageRefusal::Ended`]
+    /// once the run has ended.
+    fn pause(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
+    /// A paused run goes on where it stopped (D267), its vCPUs held no more but by their rate;
+    /// a resume of a running run is done already. Answers its paused time as it stands then,
+    /// the pause ended in its total; waiting and refused as [`pause`](Self::pause) is.
+    fn resume(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`], or the end the run had come to before: its command's, or
     /// its host's failure, in its words, as `wait_for` saw it. Returns released, as a boot's

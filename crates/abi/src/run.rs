@@ -771,6 +771,9 @@ pub mod builtin {
     /// [`SIGNAL`]'s exit status where no member of that index started in this run: ENOENT's
     /// number (errno-base.h), as [`RESIZE`] says it of one.
     pub const SIGNAL_UNKNOWN: u8 = 2;
+    /// Its clock set to its host's (`control::HOST_TIME`), as a restored VM sets its own: asked
+    /// as a paused run goes on (D267), so that a step its host's clock took meanwhile is its too.
+    pub const CLOCK: u8 = 23;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every

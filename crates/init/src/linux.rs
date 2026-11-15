@@ -224,7 +224,8 @@ pub(crate) fn control_read64(register: u64) -> io::Result<u64> {
 }
 
 /// Sets CLOCK_REALTIME to the host's time (`control::HOST_TIME`): at boot, where the RTC
-/// gave whole seconds, and after a restore, where the clock is still the snapshot's.
+/// gave whole seconds; after a restore, where the clock is still the snapshot's; and as a
+/// paused run goes on (`builtin::CLOCK`, D267), where its host's clock may have stepped.
 pub(crate) fn sync_clock() -> io::Result<()> {
     let ns = control_read64(control::HOST_TIME)?;
     if ns == 0 {
