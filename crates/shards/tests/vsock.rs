@@ -276,7 +276,7 @@ fn a_guest_that_ends_its_stream_gives_its_host_every_byte_first() {
         // Past every credit window and socket buffer, so that the end comes while the
         // host still has bytes to read.
         let bytes = 8u64 << 20;
-        for op in [b'C', b'X'] {
+        for op in *b"CX" {
             let s = bench_open(&sock, op, bytes);
             let mut got = Vec::new();
             let read = Following::of(&s, None).read_to_end(&mut got);
