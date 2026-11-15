@@ -175,7 +175,8 @@ struct Io {
     /// writes (proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_pageins`, `ri_diskio_bytesread`,
     /// `ri_diskio_byteswritten`, `ri_logical_writes`; a directory's flush grows the last
     /// alone); Linux its major faults (`/proc/<pid>/stat` field 12) and storage bytes
-    /// (`/proc/<pid>/io` `read_bytes`, `write_bytes`, proc(5)). None where unread.
+    /// (`/proc/<pid>/io` `read_bytes`, `write_bytes`, proc(5)); Windows its I/O operations and
+    /// bytes, its pipes' and sockets' among them (GetProcessIoCounters). None where unread.
     done: Option<u64>,
     /// The time it waited on that I/O, where its OS keeps one: Linux its tasks' block I/O
     /// delays (`/proc/<pid>/task/<tid>/stat` field 42, kept only while `kernel.task_delayacct`
@@ -640,7 +641,9 @@ impl<'a> Follow<'a> {
     /// one. Each comes its judge's least window past `at`, the finest its looks resolve
     /// ([`Judge::resolved`]: its counters' tick, or a look's own length where longer), as a
     /// window's evidence is read no finer; none once a sample found its window its host's
-    /// (D215, ROOT's ruling of 2026-11-14: a hold between looks was missed).
+    /// (D215, ROOT's ruling of 2026-11-14: a hold between looks was missed). None on Windows,
+    /// whose samples could show nothing: a flush and a peer's unanswered pipe both wait
+    /// `Executive` there, and one read of the system's records took 13 ms (PM M606).
     fn schedule(&mut self, hold: &Hold, at: Instant) {
         let blocked = !hold.runnable && hold.io.waited.is_none();
         self.sample = (cfg!(unix) && self.bound == Bound::Rate && blocked && !self.held)
@@ -1397,8 +1400,8 @@ mod os {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
+        GetProcessIoCounters, GetProcessTimes, IO_COUNTERS, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
     use windows_sys::Win32::System::WindowsProgramming::QueryProcessCycleTime;
     use windows_sys::Win32::System::WindowsProgramming::{
@@ -1515,9 +1518,41 @@ mod os {
             Hold {
                 runnable,
                 stopped: threads > 0 && suspended == threads,
-                // Windows' storage counts are unread here: unverified (D215).
-                io: super::Io::default(),
+                io: super::Io {
+                    done: self.io_done(),
+                    waited: None,
+                },
             }
+        }
+
+        /// Its processes' I/O so far, each one's read, write and other operations and their
+        /// bytes summed (GetProcessIoCounters, IO_COUNTERS, processthreadsapi.h), an exited one's
+        /// as its handle keeps them, so the sum only grows; none where none could be read.
+        /// Windows counts its storage's work with its other I/O, a pipe's or a socket's, so a
+        /// window in which a process did any I/O vouches for none of its rate ([`Io`]): a wait
+        /// reason cannot tell them apart instead, as a thread in FlushFileBuffers and one in a
+        /// pipe's read no one answers both wait `Executive` (PM M606), and Windows keeps no time
+        /// a thread waited.
+        fn io_done(&self) -> Option<u64> {
+            self.members.iter().fold(None, |sum, member| {
+                let mut counts = IO_COUNTERS::default();
+                // SAFETY: GetProcessIoCounters of a process handle this holds, with query
+                // access, into an IO_COUNTERS of ours.
+                if unsafe { GetProcessIoCounters(member.handle.as_raw_handle(), &raw mut counts) } == 0 {
+                    return sum;
+                }
+                let done = [
+                    counts.ReadOperationCount,
+                    counts.WriteOperationCount,
+                    counts.OtherOperationCount,
+                    counts.ReadTransferCount,
+                    counts.WriteTransferCount,
+                    counts.OtherTransferCount,
+                ]
+                .into_iter()
+                .fold(0u64, u64::saturating_add);
+                Some(sum.unwrap_or(0).saturating_add(done))
+            })
         }
 
         /// Says on stderr what a look found of its processes, for a diagnosis of a wait on
@@ -2325,6 +2360,41 @@ mod tests {
         assert!(child.wait().unwrap().success());
     }
 
+    /// On Windows, a process whose thread writes a page and flushes it to its disk again and
+    /// again (FlushFileBuffers) shows its storage's work between two looks ([`Io`]), its one
+    /// sign there: its wait reason, `Executive`, is a pipe reader's too (PM M606). Looked at
+    /// until seen so, a wait for that fact, with no clock.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_flushing_to_its_disk_shows_its_storages_work() {
+        let mut child = this_binary("flush");
+        let followed = Followed::of_pid(child.id()).unwrap().unwrap();
+        let first = loop {
+            if let Some(done) = followed.hold().io.done {
+                break done;
+            }
+            std::thread::yield_now();
+        };
+        let grown = loop {
+            let hold = followed.hold();
+            if hold.io.done.is_some_and(|done| done > first) {
+                break hold;
+            }
+            std::thread::yield_now();
+        };
+        let before = Hold {
+            io: Io {
+                done: Some(first),
+                waited: None,
+            },
+            ..Hold::default()
+        };
+        assert!(grown.io.grown_since(&before.io));
+        assert!(!vouches(Found::Progressed, false, &grown, true, false));
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+    }
+
     /// A wait bound by its rate looks at its process between due looks while it finds it
     /// blocked, where its OS keeps no time it waited on its host's I/O, as often as its judge
     /// resolves; a look there that finds a thread of it waiting in its kernel keeps that
@@ -2723,16 +2793,15 @@ mod tests {
             // Linux: a MiB, then fdatasync(2), to a file beside this test binary, on the disk
             // cargo built it on: $TMPDIR may be a tmpfs (adacachy2's is), whose flush waits on
             // nothing; a MiB keeps the device writing at each flush (on adacachy2's NVMe, 100
-            // flushes of a MiB waited in `D` 117 times for 1 ms or more, PM M601).
-            #[cfg(unix)]
+            // flushes of a MiB waited in `D` 117 times for 1 ms or more, PM M601). Windows: a
+            // page, then FlushFileBuffers (std's `sync_data`), as `record` there (PM M606).
             Ok("flush") => {
-                use std::os::unix::fs::FileExt as _;
                 let ended = std::sync::atomic::AtomicBool::new(false);
-                #[cfg(target_os = "macos")]
+                #[cfg(not(target_os = "linux"))]
                 let (dir, chunk) = (shards_testdir::TempDir::new("flush").unwrap(), 4096);
-                #[cfg(target_os = "macos")]
+                #[cfg(not(target_os = "linux"))]
                 let path = dir.join("flushed");
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(target_os = "linux")]
                 let (path, chunk) = (
                     std::env::current_exe()
                         .unwrap()
@@ -2763,7 +2832,13 @@ mod tests {
                     });
                     // Written over its start each time, so the file stays one chunk long.
                     while !ended.load(std::sync::atomic::Ordering::Relaxed) {
-                        file.write_all_at(&bytes, 0).unwrap();
+                        #[cfg(unix)]
+                        std::os::unix::fs::FileExt::write_all_at(&file, &bytes, 0).unwrap();
+                        #[cfg(windows)]
+                        assert_eq!(
+                            std::os::windows::fs::FileExt::seek_write(&file, &bytes, 0).unwrap(),
+                            chunk
+                        );
                         #[cfg(target_os = "macos")]
                         {
                             use std::os::fd::AsRawFd as _;
@@ -2775,9 +2850,9 @@ mod tests {
                     }
                 });
                 drop(file);
-                #[cfg(target_os = "macos")]
+                #[cfg(not(target_os = "linux"))]
                 drop(dir);
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(target_os = "linux")]
                 std::fs::remove_file(&path).unwrap();
                 std::process::exit(0);
             }

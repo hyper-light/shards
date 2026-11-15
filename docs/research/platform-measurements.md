@@ -25606,3 +25606,38 @@ it. Neither host's counts are a bound; n is one loop each.
   counted twice at a re-derivation with no room) are its lane's. No performance is claimed (R14).
 - **The harness.** `docs/research/measurements/vendor-point-1115/svp.sh` (one pass: its steps' commands as above, each
   step's exit and seconds to a summary), run on HVF through `launchd-run.sh` and on KVM as a user unit.
+
+### M606. What a Windows thread in FlushFileBuffers shows a look (D215)
+
+Question: does a thread waiting on its disk's flush show a wait reason of its own to D215's
+Windows reader, as macOS's `TH_STATE_UNINTERRUPTIBLE` and Linux's `D` do (M600, M601), and do
+its process's I/O counts show the wait between two looks?
+
+Method: `docs/research/measurements/judge-blocked/wait-reasons` (`cargo run --release
+--offline -- 3000`) starts three children of its own in turn and reads the system's process
+records 3,000 times for each (NtQuerySystemInformation SystemProcessInformation, as
+progress.rs's `records` does): each thread's state and wait reason (KWAIT_REASON), and its
+process's record's I/O operation and byte counts (`Reserved7`, the counts
+GetProcessIoCounters gives) and hard faults (`Reserved1[8..12]`, `HardFaultCount` in System
+Informer's phnt), and whether those had grown since the read before. Children: `flush`, 4
+KiB written at its file's start and FlushFileBuffers, again and again; `pipe`, a read of a
+pipe no one writes; `sleep`, 1 ms sleeps. Host: jupiter (Windows 10.0.26200, AMD Ryzen AI
+Max+ 395, 32 CPUs, 9 of 32 idle, C: 98% full, Defender real-time protection on), 2026-11-15.
+
+| child | its thread | reads | state and reason | counts grown |
+|---|---|---|---|---|
+| flush | the flusher | 2,360 | waiting, Executive | 1,862 |
+| flush | the flusher | 543 | running | 539 |
+| flush | the flusher | 97 | ready, standby, deferred ready, suspended, WrResource | 82 |
+| flush | its stdin's reader | 3,000 | waiting, Executive | 2,483 |
+| pipe | the pipe's reader | 3,000 | waiting, Executive | 0 |
+| sleep | the sleeper | 2,849 | waiting, UserRequest | 0 |
+
+Each read of the records took 13.1 to 13.8 ms. By their ends, the flusher's process had made
+36,515 write and 36,533 other operations (a FlushFileBuffers is an other one) and written
+149.6 MB, with 12 hard faults; the pipe reader's and the sleeper's counts stayed at their
+starts. So a flush and a read no peer answers wait alike, `Executive`: no reason tells the
+host's disk apart, and none is folded in as a hold. The I/O counts are the evidence: they
+grew across 79% of the flusher's reads, and Windows counts a pipe's and a socket's I/O with a
+file's. A thread of the flusher's that only read its stdin showed its process's growth too:
+the counts are a process's, not a thread's. n is one run of each child.
