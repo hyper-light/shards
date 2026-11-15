@@ -629,9 +629,14 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         (n.parse().unwrap(), ns.parse().unwrap())
     };
     let next = |what: &str| {
-        common::judged(Party::started(None), what, || {
-            let _ = guest.stop();
-        }, || heard.lock().unwrap().recv().ok())
+        common::judged(
+            Party::started(None),
+            what,
+            || {
+                let _ = guest.stop();
+            },
+            || heard.lock().unwrap().recv().ok(),
+        )
         .unwrap_or_else(|refused| panic!("{refused}"))
         .unwrap_or_else(|| panic!("{what}: its stdout ended"))
     };
@@ -641,11 +646,15 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         seen.push(count(&next("a tick").1).0);
     }
     let before = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
-    assert!(before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now), "{before:?}");
+    assert!(
+        before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now),
+        "{before:?}"
+    );
     let paused = ask(&*guest, |g| g.pause(Duration::MAX)).unwrap();
     assert!(paused.now, "{paused:?}");
     // What its guest printed before its vCPUs were held, still on its way.
-    let guest_ns = |stats: &shards_api::image::Stats| stats.microvm.as_ref().unwrap().guest.as_ref().unwrap().total_ns();
+    let guest_ns =
+        |stats: &shards_api::image::Stats| stats.microvm.as_ref().unwrap().guest.as_ref().unwrap().total_ns();
     let first = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
     while let Ok((_, line)) = heard.lock().unwrap().try_recv() {
         seen.push(count(&line).0);
@@ -666,7 +675,10 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
             Err(ImageRefusal::Paused { what: "stats" })
         );
         let quarter = NonZeroU64::new(250).unwrap();
-        assert_eq!(ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(), Some(quarter));
+        assert_eq!(
+            ask(&*guest, |g| g.rate(Some(quarter), Duration::MAX)).unwrap(),
+            Some(quarter)
+        );
         assert_eq!(ask(&*guest, |g| g.rate(None, Duration::MAX)).unwrap(), None);
         std::thread::sleep(window.saturating_sub(started.elapsed()));
         let later = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
@@ -678,10 +690,19 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         );
         let (at_first, at_later) = (first.paused.unwrap(), later.paused.unwrap());
         assert!(at_first.now && at_later.now, "{at_first:?} {at_later:?}");
-        assert!(at_later.total >= at_first.total + window - Duration::from_millis(50), "{at_later:?}");
+        assert!(
+            at_later.total >= at_first.total + window - Duration::from_millis(50),
+            "{at_later:?}"
+        );
         // Its guest's lines while paused: what its init last said before the pause.
-        assert_eq!((first.cpu_ns, first.memory_bytes), (before.cpu_ns, before.memory_bytes));
-        assert_eq!((later.cpu_ns, later.memory_bytes), (before.cpu_ns, before.memory_bytes));
+        assert_eq!(
+            (first.cpu_ns, first.memory_bytes),
+            (before.cpu_ns, before.memory_bytes)
+        );
+        assert_eq!(
+            (later.cpu_ns, later.memory_bytes),
+            (before.cpu_ns, before.memory_bytes)
+        );
         let before_resume = now_ns();
         let resumed = ask(&*guest, |g| g.resume(Duration::MAX)).unwrap();
         assert!(!resumed.now && resumed.total >= window, "{resumed:?}");
@@ -692,13 +713,19 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     let (before_resume, (heard_at, line)) = resuming;
     let (n, realtime) = count(&line);
     assert_eq!(n, last + 1, "it went on from {last}: {line}");
-    assert!(heard_at >= before_resume, "a line came while it was paused: {line}");
+    assert!(
+        heard_at >= before_resume,
+        "a line came while it was paused: {line}"
+    );
     assert!(
         (before_resume..=heard_at).contains(&realtime),
         "its clock {realtime} past the pause, the host's {before_resume}..={heard_at}"
     );
     seen.push(n);
-    assert!(seen.windows(2).all(|w| w[1] == w[0] + 1), "counts lost or out of order: {seen:?}");
+    assert!(
+        seen.windows(2).all(|w| w[1] == w[0] + 1),
+        "counts lost or out of order: {seen:?}"
+    );
     guest.stop().unwrap();
     let ended = ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap().unwrap();
     assert_eq!(ended.end, RunEnd::Stopped);

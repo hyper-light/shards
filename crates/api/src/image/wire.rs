@@ -2919,6 +2919,10 @@ impl MemberEnded {
     }
 }
 
+/// What a stats answer says ([`StatsAnswer::encode`]): init's lines as it said them, the run's
+/// microVM, and the run's paused time (D264), the last two the run's alone.
+pub type StatsSaid<'a> = (&'a [u8], Option<&'a Microvm>, Option<&'a Paused>);
+
 impl StatsAnswer {
     /// Its id, then 0, init's lines as it said them and the run's microVM (0 for none, or 1
     /// and what it costs: its VM process's use, 0 and its CPU time, resident and own memory,
@@ -2926,10 +2930,7 @@ impl StatsAnswer {
     /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), then
     /// the run's paused time (0 for none, or 1, its total in ns and 1 where it is paused now),
     /// or 1 and why none came.
-    pub fn encode(
-        id: u32,
-        result: Result<(&[u8], Option<&Microvm>, Option<&Paused>), &str>,
-    ) -> Result<Vec<u8>, WireError> {
+    pub fn encode(id: u32, result: Result<StatsSaid<'_>, &str>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(id);
         match result {
@@ -3367,7 +3368,10 @@ mod tests {
             let ask = PauseAsk { id: 7, pause };
             assert_eq!(PauseAsk::decode(&ask.encode()), Ok(ask));
         }
-        assert!(matches!(PauseAsk::decode(&[0, 0, 0, 7, 2]), Err(WireError::Tag { .. })));
+        assert!(matches!(
+            PauseAsk::decode(&[0, 0, 0, 7, 2]),
+            Err(WireError::Tag { .. })
+        ));
         assert_eq!(PauseAsk::decode(&[0, 0, 0, 7]), Err(WireError::Short));
         assert_eq!(PauseAsk::decode(&[0, 0, 0, 7, 1, 0]), Err(WireError::Trailing));
         let paused = Paused {
@@ -3902,7 +3906,8 @@ mod tests {
             assert_eq!(RunEnd::decode(&end.encode().unwrap()).unwrap(), end);
         }
         let answer =
-            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None, None))).unwrap()).unwrap();
+            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None, None))).unwrap())
+                .unwrap();
         assert_eq!(answer.id, 4);
         let stats = answer.result.unwrap();
         assert_eq!(

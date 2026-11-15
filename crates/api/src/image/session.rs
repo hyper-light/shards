@@ -228,7 +228,9 @@ impl State {
     /// Ask `id`'s refusal as its run was paused or pausing, where its host refused it so
     /// (`ASK_PAUSED`, D264), named `what`: taken once.
     fn refused_paused(&mut self, id: u32, what: &'static str) -> Option<ImageRefusal> {
-        self.asks_paused.remove(&id).then_some(ImageRefusal::Paused { what })
+        self.asks_paused
+            .remove(&id)
+            .then_some(ImageRefusal::Paused { what })
     }
 
     fn close_inputs(&mut self) {
@@ -1256,7 +1258,11 @@ impl Session {
             if let Some(answer) = s.plugs.remove(&id) {
                 return Some(answer.map_err(|(cause, why)| ImageRefusal::Plug(cause, why)));
             }
-            let what = if kind == wire::to_host::UNPLUG { "unplug" } else { "plug" };
+            let what = if kind == wire::to_host::UNPLUG {
+                "unplug"
+            } else {
+                "plug"
+            };
             if let Some(refused) = s.refused_paused(id, what) {
                 return Some(Err(refused));
             }
@@ -1617,7 +1623,8 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             if let Ok(paused) = &answer.result {
                 state.paused = *paused;
                 // Held as its host says it holds them, let go as it goes on.
-                state.held = (paused.now && state.end.is_none()).then(|| crate::progress::Held::of(&answer.held));
+                state.held =
+                    (paused.now && state.end.is_none()).then(|| crate::progress::Held::of(&answer.held));
             }
             if let Some(awaited) = state.pauses.get_mut(&answer.id) {
                 *awaited = Some(answer.result);
@@ -3620,15 +3627,26 @@ mod tests {
         let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::ROOM);
         let id = wire::RoomAsk::decode(&payload).unwrap().id;
-        says(&mut h.host, wire::to_client::ASK_PAUSED, &wire::AskPaused { id }.encode());
+        says(
+            &mut h.host,
+            wire::to_client::ASK_PAUSED,
+            &wire::AskPaused { id }.encode(),
+        );
         assert_eq!(asking.join().unwrap(), Err(ImageRefusal::Paused { what: "room" }));
         let shared = Arc::clone(&h.shared);
         let asking = std::thread::spawn(move || shared.resize(1, 24, 80, BOUND));
         let (kind, payload) = wire::read_frame(&mut h.sent).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::RESIZE);
         let id = wire::ResizeAsk::decode(&payload).unwrap().id;
-        says(&mut h.host, wire::to_client::ASK_PAUSED, &wire::AskPaused { id }.encode());
-        assert_eq!(asking.join().unwrap(), Err(ImageRefusal::Paused { what: "resize" }));
+        says(
+            &mut h.host,
+            wire::to_client::ASK_PAUSED,
+            &wire::AskPaused { id }.encode(),
+        );
+        assert_eq!(
+            asking.join().unwrap(),
+            Err(ImageRefusal::Paused { what: "resize" })
+        );
         {
             let state = lock(&h.shared.state);
             assert!(state.pauses.is_empty() && state.rooms.is_empty() && state.resizes.is_empty());
@@ -3664,24 +3682,43 @@ mod tests {
             // No process has it: held as told, holding nothing of this test process's.
             held: vec![u32::MAX],
         };
-        assert_eq!(take(&s, wire::to_client::PAUSED, &answer.encode().unwrap()), Ok(false));
+        assert_eq!(
+            take(&s, wire::to_client::PAUSED, &answer.encode().unwrap()),
+            Ok(false)
+        );
         assert_eq!(lock(&s.state).pauses.get(&4), Some(&Some(Ok(paused))));
         assert_eq!(lock(&s.state).paused, paused);
-        assert!(lock(&s.state).held.is_some(), "the processes it holds were not held");
+        assert!(
+            lock(&s.state).held.is_some(),
+            "the processes it holds were not held"
+        );
         let resumed = wire::PauseAnswer {
             id: 4,
             result: Ok(wire::Paused { now: false, ..paused }),
             held: Vec::new(),
         };
-        assert_eq!(take(&s, wire::to_client::PAUSED, &resumed.encode().unwrap()), Ok(false));
-        assert!(lock(&s.state).held.is_none(), "a resumed run's processes were held still");
+        assert_eq!(
+            take(&s, wire::to_client::PAUSED, &resumed.encode().unwrap()),
+            Ok(false)
+        );
+        assert!(
+            lock(&s.state).held.is_none(),
+            "a resumed run's processes were held still"
+        );
         assert!(take(&s, wire::to_client::PAUSED, &[0, 0, 0, 4, 2]).is_err());
         assert_eq!(
-            take(&s, wire::to_client::ASK_PAUSED, &wire::AskPaused { id: 9 }.encode()),
+            take(
+                &s,
+                wire::to_client::ASK_PAUSED,
+                &wire::AskPaused { id: 9 }.encode()
+            ),
             Ok(false)
         );
         let mut state = lock(&s.state);
-        assert_eq!(state.refused_paused(9, "stats"), Some(ImageRefusal::Paused { what: "stats" }));
+        assert_eq!(
+            state.refused_paused(9, "stats"),
+            Some(ImageRefusal::Paused { what: "stats" })
+        );
         assert_eq!(state.refused_paused(9, "stats"), None, "taken once");
         drop(state);
         assert!(take(&s, wire::to_client::ASK_PAUSED, &[0, 0, 9]).is_err());

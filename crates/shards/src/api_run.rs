@@ -2148,9 +2148,13 @@ enum Pause {
     Running,
     Pausing,
     /// Every vCPU held since `since`.
-    Paused { since: Instant },
+    Paused {
+        since: Instant,
+    },
     /// Going on, its VM asked: its guest still answers nothing until its VM says so.
-    Resuming { since: Instant },
+    Resuming {
+        since: Instant,
+    },
     Gone,
 }
 
@@ -5024,7 +5028,11 @@ mod hosted {
             let Some(ask) = next else {
                 return;
             };
-            let done = if ask.pause { pause(live) } else { resume(live, scope) };
+            let done = if ask.pause {
+                pause(live)
+            } else {
+                resume(live, scope)
+            };
             pause_answered(live, ask.id, done, vm);
         }
     }
@@ -5095,13 +5103,15 @@ mod hosted {
         if resumed.is_ok() {
             let synced = std::thread::Builder::new()
                 .name("api-run clock".into())
-                .spawn_scoped(scope, move || match builtin(live, protocol::builtin::CLOCK, Vec::new()) {
-                    Ok(Said { status: Some(0), .. }) => {}
-                    Ok(Said { err, .. }) => super::say(format_args!(
-                        "setting its clock as it went on: {}",
-                        String::from_utf8_lossy(&err).trim_end()
-                    )),
-                    Err(e) => super::say(format_args!("setting its clock as it went on: {e}")),
+                .spawn_scoped(scope, move || {
+                    match builtin(live, protocol::builtin::CLOCK, Vec::new()) {
+                        Ok(Said { status: Some(0), .. }) => {}
+                        Ok(Said { err, .. }) => super::say(format_args!(
+                            "setting its clock as it went on: {}",
+                            String::from_utf8_lossy(&err).trim_end()
+                        )),
+                        Err(e) => super::say(format_args!("setting its clock as it went on: {e}")),
+                    }
                 });
             if let Err(e) = synced {
                 super::say(format_args!("setting its clock as it went on: {e}"));
@@ -5437,7 +5447,7 @@ mod hosted {
     /// member's are refused before this where it is paused. Each run's init answers is kept as
     /// its last.
     fn stats(live: &Live<'_>, ask: wire::StatsAsk, vm: u32) {
-        let answer = |result: Result<(&[u8], Option<&wire::Microvm>, Option<&wire::Paused>), &str>| {
+        let answer = |result: Result<wire::StatsSaid<'_>, &str>| {
             if let Ok(payload) = wire::StatsAnswer::encode(ask.id, result) {
                 let _ = live.answers.send(wire::to_client::STATS, &[&payload]);
             }
@@ -6076,7 +6086,11 @@ mod hosted {
                 let resumed = resume(&live, scope).unwrap();
                 assert!(!resumed.now);
                 assert!(resumed.total >= std::time::Duration::from_millis(20));
-                assert_eq!(resume(&live, scope), Ok(resumed), "a resume of a running run is done already");
+                assert_eq!(
+                    resume(&live, scope),
+                    Ok(resumed),
+                    "a resume of a running run is done already"
+                );
                 assert!(lock(&live.pauses).guest_runs());
                 playing.join().unwrap();
                 following.join().unwrap();
@@ -6095,11 +6109,16 @@ mod hosted {
             let answers = super::super::Answers(Mutex::new(Box::new(said.clone())));
             let (link, vm) = Stream::pair().unwrap();
             let live = live(&answers, dir.path(), link, None);
-            lock(&live.pauses).state = super::super::Pause::Paused { since: Instant::now() };
+            lock(&live.pauses).state = super::super::Pause::Paused {
+                since: Instant::now(),
+            };
             let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
             let child = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
             let asks = [
-                super::super::Ask::Room(wire::RoomAsk { id: 1, room: Some(1 << 20) }),
+                super::super::Ask::Room(wire::RoomAsk {
+                    id: 1,
+                    room: Some(1 << 20),
+                }),
                 super::super::Ask::Resize(wire::ResizeAsk {
                     id: 2,
                     member: 0,
@@ -6117,7 +6136,10 @@ mod hosted {
                     at: "/work".into(),
                     read_only: true,
                 }),
-                super::super::Ask::Unplug(wire::UnplugAsk { id: 5, at: "/work".into() }),
+                super::super::Ask::Unplug(wire::UnplugAsk {
+                    id: 5,
+                    at: "/work".into(),
+                }),
                 super::super::Ask::Pause(wire::PauseAsk { id: 6, pause: true }),
             ];
             std::thread::scope(|scope| {
@@ -6133,7 +6155,9 @@ mod hosted {
             let mut paused = None;
             while let Some((kind, payload)) = wire::read_frame(&mut from).unwrap() {
                 match kind {
-                    wire::to_client::ASK_PAUSED => refused.push(wire::AskPaused::decode(&payload).unwrap().id),
+                    wire::to_client::ASK_PAUSED => {
+                        refused.push(wire::AskPaused::decode(&payload).unwrap().id)
+                    }
                     wire::to_client::PAUSED => paused = Some(wire::PauseAnswer::decode(&payload).unwrap()),
                     other => panic!("answered kind {other}"),
                 }
@@ -6728,15 +6752,30 @@ mod tests {
         assert!(!p.guest_runs(), "its guest asked as it paused");
         assert_eq!(p.said(), Some(Some(&b"cpu 5\n"[..])));
         let held = p.held(at(10)).unwrap();
-        assert_eq!(held, wire::Paused { total: Duration::ZERO, now: true });
+        assert_eq!(
+            held,
+            wire::Paused {
+                total: Duration::ZERO,
+                now: true
+            }
+        );
         assert_eq!(
             p.pause(at(30)),
-            Step::Done(wire::Paused { total: Duration::from_millis(20), now: true })
+            Step::Done(wire::Paused {
+                total: Duration::from_millis(20),
+                now: true
+            })
         );
         assert_eq!(p.resume(at(40)), Step::Ask);
         assert!(!p.guest_runs(), "its guest asked before its VM let it go on");
         let resumed = p.resumed(at(50)).unwrap();
-        assert_eq!(resumed, wire::Paused { total: Duration::from_millis(40), now: false });
+        assert_eq!(
+            resumed,
+            wire::Paused {
+                total: Duration::from_millis(40),
+                now: false
+            }
+        );
         assert_eq!(p.resume(at(60)), Step::Done(resumed));
         assert!(p.guest_runs());
         // Its VM refuses the pause: running; then paused, a resume refused: paused still.
@@ -6750,7 +6789,13 @@ mod tests {
         assert!(matches!(p.state, Pause::Paused { .. }));
         // Gone while paused: the pause's time so far is kept, and nothing is asked again.
         p.gone(at(100));
-        assert_eq!(p.paused(at(500)), wire::Paused { total: Duration::from_millis(60), now: false });
+        assert_eq!(
+            p.paused(at(500)),
+            wire::Paused {
+                total: Duration::from_millis(60),
+                now: false
+            }
+        );
         assert_eq!(p.pause(at(500)), Step::Gone);
         assert_eq!(p.resume(at(500)), Step::Gone);
         assert!(p.held(at(500)).is_none());

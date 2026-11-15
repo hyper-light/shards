@@ -32,9 +32,10 @@ pub mod wire;
 
 pub use wire::{
     Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse, GuestTimes,
-    HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused, PlugRefusal, Proto,
-    Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal,
-    SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime, decide,
+    HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused,
+    PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
+    SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
+    decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -388,7 +389,10 @@ impl std::fmt::Display for ImageRefusal {
                 f,
                 "the run host's diagnostics: a bound of {bound} bytes, short of the {tail} kept to quote"
             ),
-            Self::Paused { what } => write!(f, "{what}: the run is paused, and its guest answers nothing until it resumes"),
+            Self::Paused { what } => write!(
+                f,
+                "{what}: the run is paused, and its guest answers nothing until it resumes"
+            ),
             Self::Pause(why) => write!(f, "the pause: {why}"),
         }
     }
