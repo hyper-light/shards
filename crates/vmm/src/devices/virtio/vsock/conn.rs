@@ -4,9 +4,10 @@
 //! with one difference: EOF from the host is a half-close. It reaches the guest as
 //! SHUTDOWN(SEND), and the guest may keep sending, as with `docker exec -i` after stdin
 //! ends. A host socket that is gone both ways shows up as a failed write. The guest's
-//! SHUTDOWN(SEND) is the host socket's half-close; its SHUTDOWN(RCV) while the host's way is
-//! open, its SEND not ended first, is its going, the socket closed with no half-close first
-//! ([`HostWrites::Cut`], D251).
+//! SHUTDOWN(SEND), alone or with RCV in one packet as Linux's close(2) sends it, is the host
+//! socket's half-close once its bytes are the host's; a SHUTDOWN of RCV alone while the
+//! host's way is open, its SEND not ended first, is its going, the socket closed with no
+//! half-close first on Unix ([`HostWrites::Cut`], D251).
 
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
@@ -71,11 +72,13 @@ enum HostWrites {
     /// Shut down after the guest's writes' end (SHUTDOWN(SEND)), its bytes all taken: the
     /// host reads the end of them and may write on.
     Shut,
-    /// The guest ended its reads while the host's way was open (SHUTDOWN(RCV), its SEND
-    /// with it or after): it is gone, not half-closed, as D251's cut carries a workload's
-    /// going (shards-init's relay). The socket is closed with no shutdown first, its bytes
-    /// all taken, and the host finds it hung up rather than reading an end it would take
-    /// for a half-close (PM M559).
+    /// The guest ended its reads alone while the host's way was open (a SHUTDOWN of RCV
+    /// without SEND, its SEND after): it is gone, not half-closed, as D251's cut carries a
+    /// workload's going (shards-init's relay ends its reads, then both ways). On Unix the
+    /// socket is closed with no shutdown first, its bytes all taken, and the host finds it
+    /// hung up rather than reading an end it would take for a half-close (PM M559). On
+    /// Windows it ends as [`Shut`](Self::Shut) does, as no close there keeps its bytes the
+    /// host's while telling it apart from an end in order ([`Conn::linger`]).
     Cut,
 }
 
@@ -129,11 +132,12 @@ impl std::fmt::Debug for Conn {
 
 /// A connection ends with its write side shut down, then its socket closed, as Unix's
 /// close ends it: on Windows a socket whose last reference its process's exit closes loses
-/// what its peer had not read, and one shut down and closed first keeps it (PM M199).
+/// what its peer had not read, and one shut down and closed first keeps it (PM M199). A cut
+/// one too, as a cut keeps its bytes the host's there ([`Conn::linger`]).
 #[cfg(windows)]
 impl Drop for Conn {
     fn drop(&mut self) {
-        if self.host_writes == HostWrites::Open {
+        if self.host_writes != HostWrites::Shut {
             let _ = self.stream.shutdown(Shutdown::Write);
         }
     }
@@ -219,22 +223,18 @@ impl Conn {
     ///
     /// What the guest sent that the host had not taken goes as its connection ends, as on
     /// Unix: its socket takes no more, and the muxer counts nothing a lingering one holds.
-    /// A cut one ([`HostWrites::Cut`]) closes at once, resetting: its peer is to lose what
-    /// it had not read, as a cut promises no byte before it (D251), and read a reset, never
-    /// end-of-stream, which a plain close with nothing of its peer's unread reads as (PM
-    /// M358) and the VM process's relay would carry on as a half-close (`warm.rs` `pass`).
+    /// A cut one ([`HostWrites::Cut`]) ends as one in order does: a close that resets loses
+    /// its peer every byte it had not read (PM M358), and the guest's bytes before its end
+    /// are its host's, whatever the end (D251, amended). Its host reads them, then
+    /// end-of-stream, as it reads a half-close's; that its writes then go nowhere until it
+    /// ends its side is an open limit of Windows' AF_UNIX (M358: a send to a closed socket
+    /// succeeds).
     #[cfg(windows)]
     pub fn linger(mut self) -> Option<Conn> {
-        if self.host_writes == HostWrites::Cut {
-            if let Err(e) = self.stream.close_resets() {
-                debug!("vsock: resetting port {}'s cut host socket: {e}", self.local_port);
-            }
-            return None;
-        }
         self.tx_buf = TxBuf::default();
         // Its ring goes with the connection; only the host socket lingers.
         self.ringing = Ringing::Plain;
-        if self.host_writes == HostWrites::Open {
+        if self.host_writes != HostWrites::Shut {
             self.host_writes = HostWrites::Shut;
             let _ = self.stream.shutdown(Shutdown::Write);
         }
@@ -524,7 +524,10 @@ impl Conn {
                 }
             }
             (op::SHUTDOWN, Phase::Established) => {
+                // RCV and SEND in one packet are Linux's close(2) (`virtio_transport_close`):
+                // an end in order. RCV alone first is a cut (shards-init's relay, D251).
                 if h.flags & shutdown::RCV != 0
+                    && h.flags & shutdown::SEND == 0
                     && !self.guest_send_closed
                     && !self.host_eof
                     && self.host_writes == HostWrites::Open

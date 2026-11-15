@@ -1734,16 +1734,55 @@ mod tests {
         }
     }
 
-    /// A guest that ends its connection both ways at once while its host still sends (its
-    /// relay's workload gone mid-stream, D251's cut) has the host's socket closed with no end
-    /// of its writes first: the host reads no end until the connection has gone, then finds
-    /// it hung up (POLLHUP, PM M559), as a cut, never a half-close it could take for the
-    /// guest's writes' end alone. On Windows the socket closes at once, held for nothing.
+    /// A guest's plain close (Linux's close(2): one SHUTDOWN of RCV and SEND,
+    /// `virtio_transport_close`) while its host still sends is an end in order: the host
+    /// reads every byte the guest sent, then end-of-stream, on every OS (D251, amended). On
+    /// Unix a write after the connection has gone fails at once; on Windows the muxer holds
+    /// its end until the host ends its own (PM M358), and those writes go nowhere meanwhile,
+    /// an open limit of Windows' AF_UNIX.
     #[test]
-    fn a_guest_gone_both_ways_while_its_host_sends_is_no_half_close() {
+    fn a_guest_that_closes_while_its_host_sends_ends_in_order_after_every_byte() {
         use super::super::packet::shutdown;
         let (mut m, mut theirs, mem) = spoken();
         guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        // Read without waiting: the end is there once the guest's bytes are, before the
+        // connection goes.
+        theirs.set_nonblocking(true).unwrap();
+        let (got, end) = read_out(&mut theirs);
+        theirs.set_nonblocking(false).unwrap();
+        assert_eq!(got, SAID, "what the guest sent, whole");
+        assert_eq!(end, None, "end-of-stream, as its writes' end");
+        assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
+        assert!(m.conns.is_empty(), "the guest's connection is over");
+        #[cfg(unix)]
+        assert!(
+            theirs.write_all(b" and more").is_err(),
+            "a write to a guest gone was taken"
+        );
+        #[cfg(windows)]
+        assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+    }
+
+    /// The guest's SHUTDOWN of RCV and SEND on [`spoken`]'s connection after one of RCV
+    /// alone: shards-init's relay's cut (relay.rs `cut`, D251).
+    fn guest_cuts(m: &mut Muxer, mem: &GuestMemory) {
+        use super::super::packet::shutdown;
+        guest_shuts(m, shutdown::RCV, mem);
+        guest_shuts(m, shutdown::RCV | shutdown::SEND, mem);
+    }
+
+    /// A guest that ends its reads alone, then both ways, while its host still sends (its
+    /// relay's workload gone mid-stream, D251's cut). The host reads every byte the guest
+    /// sent before any end, on every OS. On Unix the socket closes with no end of its
+    /// writes first: the host reads no end until the connection has gone, then finds it hung
+    /// up (POLLHUP, PM M559), never a half-close, and a write fails at once. On Windows the
+    /// cut ends as one in order does (`Conn::linger`): a close that resets would lose the
+    /// host what it had not read (PM M358).
+    #[test]
+    fn a_guest_cut_while_its_host_sends_keeps_every_byte_and_is_no_half_close_on_unix() {
+        use super::super::packet::shutdown;
+        let (mut m, mut theirs, mem) = spoken();
+        guest_shuts(&mut m, shutdown::RCV, &mem);
         #[cfg(unix)]
         {
             theirs.set_nonblocking(true).unwrap();
@@ -1756,6 +1795,7 @@ mod tests {
             );
             theirs.set_nonblocking(false).unwrap();
         }
+        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
         assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
         assert!(m.conns.is_empty(), "the guest's connection is over");
         #[cfg(unix)]
@@ -1768,69 +1808,51 @@ mod tests {
                 end.is_none() || cfg!(target_os = "linux") && end == Some(io::ErrorKind::ConnectionReset),
                 "{end:?}"
             );
-            let mut fd = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
-            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
-            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
+            assert!(hung_up(&theirs), "hung up");
+            assert!(
+                theirs.write_all(b" and more").is_err(),
+                "a write to a guest gone was taken"
+            );
         }
         #[cfg(windows)]
         {
-            assert!(
-                m.lingering.is_empty(),
-                "a cut holds the host's socket for nothing"
-            );
-            // A socket closed without its writes shut down, holding what its peer sent
-            // unread, reads as a reset (PM M358).
-            let (_, end) = read_out(&mut theirs);
-            assert_eq!(end, Some(io::ErrorKind::ConnectionReset));
+            let (got, end) = read_out(&mut theirs);
+            assert_eq!(got, SAID, "what the guest sent, whole");
+            assert_eq!(end, None, "end-of-stream after every byte");
+            assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
         }
     }
 
     /// D251's cut with nothing of the host's unread, as a workload that read all its
-    /// controller sent, then closed: the host still finds a cut, never an end in order. On
-    /// Unix it reads an end hung up (POLLHUP, PM M559). On Windows a socket closed with
-    /// nothing of its peer's unread reads as end-of-stream (PM M358's first row), which the
-    /// VM process's relay passes on as a half-close (`warm.rs` `pass`): the cut closes with
-    /// a reset instead, so its host reads `ConnectionReset`, after a prefix of what the
-    /// guest sent at most (a cut promises no byte before it).
+    /// controller sent, then closed: on Unix the host reads every byte, then an end hung up
+    /// (POLLHUP, PM M559), never an end in order. On Windows it reads every byte, then
+    /// end-of-stream, as a close keeps its bytes there only by ending in order (PM M358).
     #[test]
-    fn a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut() {
-        use super::super::packet::shutdown;
+    fn a_guest_cut_with_nothing_of_its_hosts_unread_keeps_every_byte() {
         let (mut m, mut theirs, mem) = spoken_after(b"");
-        guest_shuts(&mut m, shutdown::RCV | shutdown::SEND, &mem);
+        guest_cuts(&mut m, &mem);
         assert_eq!(m.next_rx(&[]).map(|h| h.op), Some(op::RST));
         assert!(m.conns.is_empty(), "the guest's connection is over");
         let (got, end) = read_out(&mut theirs);
-        assert!(SAID.starts_with(&got), "{got:?}");
+        assert_eq!(got, SAID, "what the guest sent, whole");
+        assert_eq!(end, None, "end-of-stream, nothing of the host's unread");
         #[cfg(unix)]
-        {
-            assert_eq!(got, SAID, "what the guest sent, whole");
-            assert_eq!(end, None, "end-of-stream, nothing of the host's unread");
-            let mut fd = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(&theirs),
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
-            assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
-            assert_ne!(fd.revents & (libc::POLLHUP | libc::POLLERR), 0, "hung up");
-        }
+        assert!(hung_up(&theirs), "hung up");
         #[cfg(windows)]
-        {
-            assert!(
-                m.lingering.is_empty(),
-                "a cut holds the host's socket for nothing"
-            );
-            assert_eq!(
-                end,
-                Some(io::ErrorKind::ConnectionReset),
-                "a cut read as an end in order"
-            );
-        }
+        assert_eq!(m.lingering.len(), 1, "held while the host's end is open");
+    }
+
+    /// Whether `theirs` has hung up: POLLHUP or POLLERR, asked for POLLOUT (PM M559).
+    #[cfg(unix)]
+    fn hung_up(theirs: &crate::platform::UnixStream) -> bool {
+        let mut fd = libc::pollfd {
+            fd: std::os::fd::AsRawFd::as_raw_fd(theirs),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one pollfd of a socket this test holds; a timeout of 0 waits for none.
+        assert!(unsafe { libc::poll(&raw mut fd, 1, 0) } >= 0);
+        fd.revents & (libc::POLLHUP | libc::POLLERR) != 0
     }
 
     /// A save holds one save's worth of streams, however many saves came before it with

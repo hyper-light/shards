@@ -33479,6 +33479,56 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     that fails (WSAECONNRESET from a cut socket) ends the other side both ways, the owner's
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
     the guest's socket shut down both ways; a read's end still half-closes it.
+- *Amended (2026-11-15, the WHP lane): a guest's own end keeps its bytes the host's.* This
+  replaces the relay's one `shutdown(SHUT_RDWR)` and the muxer's reading of RCV and SEND at
+  once as a cut, above, and the Windows cut's reset (`close_resets`, now removed).
+  - *Why.* Linux's close(2) of a vsock stream sends one SHUTDOWN of RCV and SEND
+    (`virtio_transport_close`, net/vmw_vsock/virtio_transport_common.c, Linux 7.2-rc4
+    lines 1281-1282), the same packet the relay's cut sent. So every guest program that
+    wrote and closed while its host's way was open was read as a cut, and on Windows its
+    host socket was closed resetting: Hex's stamps port, a stream its guest writes and
+    closes, reached the host's `read_to_string` as WSAECONNRESET (10054) instead of
+    end-of-stream, 3.1 s into a boot on hex-winvm (Hex 414aa30d3 over shards d993d83ee,
+    hex-cli `tests/guest_boot_record.rs:90`), and a reset loses its peer every byte it had
+    not read (PM M358). On Unix the same close read every byte, then an end.
+  - *The wire.* `shutdown(SHUT_RD)` sends a SHUTDOWN of RCV alone (`vsock_shutdown`,
+    af_vsock.c lines 1205-1216; `virtio_transport_shutdown`, virtio_transport_common.c
+    lines 1071-1083). The relay's cut is now its reads' end, then both ways (`relay.rs`
+    `cut`): RCV alone, then RCV and SEND. The muxer reads a SHUTDOWN of RCV without SEND,
+    while SEND has not come and the host's way is open, as the cut (`HostWrites::Cut`); RCV
+    and SEND in one packet is the guest's writes' end, its host socket shut for writing once
+    its bytes are flushed (`HostWrites::Shut`), as SEND alone always was. The contract is
+    `shards_abi::run::socket`'s (*Its cut*).
+  - *No guest byte lost, on every OS.* Every byte the guest sent before its end, its close
+    or its cut, is its host's before any end. On Unix a cut socket still closes with no
+    `shutdown(Write)` first, after its bytes are flushed, so its host reads them, then an
+    end hung up (PM M559). On Windows a cut ends as an end in order does (`Conn::linger`:
+    flushed, `shutdown(SD_SEND)`, held until the host ends its side, PM M358's hold), as no
+    WinSock AF_UNIX close keeps the bytes its peer has not read while telling it apart from
+    an end in order (M358: a close resets wherever the closer holds any of its peer's bytes
+    unread or its peer sends after it). So on Windows a cut reaches the VM process's `pass`
+    as end-of-stream, which it carries on as a half-close, and the controller reads `Ok(0)`
+    where Unix reads `ConnectionReset`: *What would falsify it*'s "a socket cut short read as
+    `Ok(0)`" holds on Unix and not on Windows, an open limit until the measurement below.
+  - *No black hole.* After the guest's close or cut a host's write fails at once on Unix
+    (its connection gone on the guest's RST, the socket closed: EPIPE). On Windows it does
+    not: the held end reads and drops what the host writes until the host ends its side, and
+    a send to an AF_UNIX socket already closed succeeds (M358's last row), so no close there
+    fails a write without losing the host the guest's bytes it had not read. An open,
+    measured platform limit, not a guarantee. Owed: whether WSAPoll's WRNORM, or the send
+    buffer's draining (M199), tells the muxer its host has read every byte, so that it could
+    reset only then; and, as evidence for the transport's choice alone, whether a Windows
+    named pipe closed by its server (CloseHandle, no DisconnectNamedPipe) gives its client
+    every byte, then ERROR_BROKEN_PIPE, and fails its client's write at once (ERROR_NO_DATA).
+  - *An older shards-init.* One whose relay cuts in one SHUTDOWN of RCV and SEND would now
+    be read as ending in order: its host reads every byte, then end-of-stream, never the cut.
+    No such init runs against this VMM: its contract text in `shards_abi` changed, so
+    `shards_abi::IDENTITY` (crates/abi/build.rs, the FNV-1a of the crate's sources) is
+    another, and a saved microVM whose init announced the old one is refused before its guest
+    runs (`snapshot::ResumeRefused::OlderInit`, D36); a template is keyed by its init's digest
+    (`run.rs`), so none made with the old init is restored; and a fresh boot runs the init
+    this `shards` carries.
+  - *Literals.* None added. The shutdown flags are virtio's (1.3 §5.10.6.4).
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
   `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
@@ -33684,13 +33734,9 @@ function"), no time chosen.
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
 - Windows: `pass`'s test (`warm::tests::a_read_that_fails_ends_the_other_side_both_ways`)
   was compiled (cargo xwin clippy) but not run.
-- Windows: the cut's reset with nothing of the host's unread, unit tested but not run there:
-  shards-vmm `muxer::tests::a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut`
-  (red before `close_resets`, as the WHP nesting run was) and shards-afunix
-  `a_close_made_to_reset_reads_as_a_reset_where_a_plain_one_ends_in_order` (a plain close
-  with nothing unread an end; one made to reset a reset). Whether afunix.sys honours
-  SO_LINGER {on, 0} is known from these alone: M358 set {on, 5} unchecked, and Microsoft's
-  documents name no AF_UNIX case.
+- Windows: the cut's reset was removed by the amendment above (a reset loses its host the
+  guest's bytes); its tests went with it. The amended ends' tests, and what ran where, are
+  listed under the amendment's evidence below.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 - Windows: the controller's wake (its auto-reset event, `control::drive::tests`), compiled by
   CI's Windows legs and run by CI's Windows unit tests; its transport tests are Unix's (their
