@@ -596,7 +596,7 @@ fn now_ns() -> u128 {
         .as_nanos()
 }
 
-/// A run paused by its orchestrator (D264) runs no guest and goes on where it stopped: do boot
+/// A run paused by its orchestrator (D265) runs no guest and goes on where it stopped: do boot
 /// a harness that prints its count and its clock every 50 ms, pause it, read its stats across
 /// a window of 3 s while a judged read of its next line waits, ask its guest a room and a
 /// member's stats, hold its rate, then resume it. Expect: its vCPUs' guest time flat across

@@ -35577,7 +35577,7 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
 
-### D264. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
+### D265. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
 
 **Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step
 P5.5, kiln plan 01a1dd2e8618733a87f2793aab1322a8): a paused session runs no CPU and its host's

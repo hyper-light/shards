@@ -81,7 +81,7 @@ pub use shards_abi::run::nesting::Ready;
 /// a warm host's use asked while it waits for its run ([`to_host::USE`], answered
 /// [`to_client::USED`]; D253's pools), so that an orchestrator charges a warm host what its VM
 /// process holds, and a host that answers none is never asked, as it would end at the frame; 33, the run paused and resumed by its owner (`PAUSE`, answered `PAUSED`;
-/// D264), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
+/// D265), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
 /// time it has been paused told with the run's stats ([`Stats::paused`]) and with its end
 /// ([`RunEnded::paused`]), so that a side that pauses nothing refuses the run as it is asked,
 /// before any pause is.
@@ -135,7 +135,7 @@ pub mod to_host {
     /// answered [`USED`](super::to_client::USED), before `CREATE` alone.
     pub const USE: u8 = 40;
     /// A [`PauseAsk`](super::PauseAsk): the run's microVM paused where it is, or let go on
-    /// (D264).
+    /// (D265).
     pub const PAUSE: u8 = 42;
 }
 
@@ -200,10 +200,10 @@ pub mod to_client {
     /// [`USE`](super::to_host::USE) in order.
     pub const USED: u8 = 41;
     /// [`PauseAnswer`](super::PauseAnswer): a pause's or a resume's outcome, by its ask's id
-    /// (D264).
+    /// (D265).
     pub const PAUSED: u8 = 43;
     /// [`AskPaused`](super::AskPaused): an ask that needs the run's guest, refused at once as
-    /// its run is paused or pausing, by its ask's id (D264): its guest runs nothing to answer
+    /// its run is paused or pausing, by its ask's id (D265): its guest runs nothing to answer
     /// it until the run goes on.
     pub const ASK_PAUSED: u8 = 44;
 }
@@ -820,13 +820,13 @@ pub struct Stats {
     /// or a member, whose cgroups are inside the microVM it costs.
     pub microvm: Option<Microvm>,
     /// The run's alone, as [`microvm`](Self::microvm) is: how long it has been paused by its
-    /// owner (D264). While it is paused, init's lines above are what its init last said of the
+    /// owner (D265). While it is paused, init's lines above are what its init last said of the
     /// run before the pause (none where it was never asked), its guest saying nothing until it
     /// goes on, and its microVM part is read as it stands.
     pub paused: Option<Paused>,
 }
 
-/// How long a run has been paused by its owner (D264), on its run host's clock: from its VM's
+/// How long a run has been paused by its owner (D265), on its run host's clock: from its VM's
 /// word that every vCPU is held to its word that they go on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Paused {
@@ -1077,7 +1077,7 @@ pub struct SaveAnswer {
 }
 
 /// The run's microVM paused where it is (`pause`), every vCPU held out of its guest, or let go
-/// on (D264).
+/// on (D265).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PauseAsk {
     pub id: u32,
@@ -1085,7 +1085,7 @@ pub struct PauseAsk {
 }
 
 /// A pause's or a resume's outcome, by its ask's id: the run's paused time as it stands once it
-/// is done (a pause of a paused run and a resume of a running one done already, D264), or why
+/// is done (a pause of a paused run and a resume of a running one done already, D265), or why
 /// its VM did neither, in its VM's words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PauseAnswer {
@@ -1097,7 +1097,7 @@ pub struct PauseAnswer {
     pub held: Vec<u32>,
 }
 
-/// An ask refused at once as its run is paused or pausing (D264), by its ask's id: one its
+/// An ask refused at once as its run is paused or pausing (D265), by its ask's id: one its
 /// guest would answer, which runs nothing until the run goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AskPaused {
@@ -1122,7 +1122,7 @@ pub enum RunEnd {
 pub struct RunEnded {
     pub end: RunEnd,
     pub final_use: FinalUse,
-    /// How long it was paused by its owner in all (D264), told however it ended: a paused run
+    /// How long it was paused by its owner in all (D265), told however it ended: a paused run
     /// ends only as it is stopped or fails, with no final use read.
     pub paused: std::time::Duration,
 }
@@ -2974,7 +2974,7 @@ impl MemberEnded {
 }
 
 /// What a stats answer says ([`StatsAnswer::encode`]): init's lines as it said them, the run's
-/// microVM, and the run's paused time (D264), the last two the run's alone.
+/// microVM, and the run's paused time (D265), the last two the run's alone.
 pub type StatsSaid<'a> = (&'a [u8], Option<&'a Microvm>, Option<&'a Paused>);
 
 impl StatsAnswer {
@@ -3414,7 +3414,7 @@ mod tests {
     /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a
     /// truncated, trailing or unknown-tagged one is refused, never a default.
     /// A pause's ask, its answer and a refusal as the run is paused read back as written
-    /// (D264), a run's stats carry its paused time, and what is none of them is refused: a
+    /// (D265), a run's stats carry its paused time, and what is none of them is refused: a
     /// flag neither 0 nor 1, an answer's unknown tag, bytes short or past their last field.
     #[test]
     fn pauses_round_trip_and_bad_ones_are_refused() {

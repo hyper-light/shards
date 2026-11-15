@@ -364,11 +364,11 @@ pub enum ImageRefusal {
     /// A [`WarmTicket`] booted with the spec of another pool than the one it reserved; `asked`
     /// none for a spec that is no pool's.
     OtherPool { reserved: PoolId, asked: Option<PoolId> },
-    /// An ask its guest would answer, refused at once as its run is paused or pausing (D264):
+    /// An ask its guest would answer, refused at once as its run is paused or pausing (D265):
     /// `room`, `resize`, `plug`, `unplug`, or `stats` of its own command or a member. Its guest
     /// runs nothing until the run goes on ([`ImageGuest::resume`]); none of it was applied.
     Paused { what: &'static str },
-    /// A pause or a resume its run's VM did not do (D264), in its words: its machine stopped
+    /// A pause or a resume its run's VM did not do (D265), in its words: its machine stopped
     /// before every vCPU was held.
     Pause(String),
 }
@@ -651,7 +651,7 @@ pub trait ImageGuest: Send + Sync {
     /// nowhere else, and its owner's to remove. Waits at most `patience`; refused as
     /// [`ImageRefusal::Save`], by what refused it: a path not UTF-8 as [`ImageRefusal::Spec`].
     fn save(&self, to: &std::path::Path, patience: Duration) -> Result<(), ImageRefusal>;
-    /// The run's microVM paused where it is (D264): every vCPU held out of its guest by its
+    /// The run's microVM paused where it is (D265): every vCPU held out of its guest by its
     /// VMM, as `shards pause vm` holds one, so that its guest runs no CPU and its host's use
     /// of it grows by its VMM's own alone; its memory, devices and connections kept, each
     /// channel buffered within its flow control. Asks are applied in the order sent. It is held
@@ -667,7 +667,7 @@ pub trait ImageGuest: Send + Sync {
     /// refused [`ImageRefusal::Pause`] where its VM held nothing, and [`ImageRefusal::Ended`]
     /// once the run has ended.
     fn pause(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
-    /// A paused run goes on where it stopped (D264), its vCPUs held no more but by their rate;
+    /// A paused run goes on where it stopped (D265), its vCPUs held no more but by their rate;
     /// a resume of a running run is done already. Answers its paused time as it stands then,
     /// the pause ended in its total; waiting and refused as [`pause`](Self::pause) is.
     fn resume(&self, patience: Duration) -> Result<Paused, ImageRefusal>;
