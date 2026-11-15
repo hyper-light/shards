@@ -898,6 +898,12 @@ impl Handle {
         self.shared.guest.sample()
     }
 
+    /// Whether this process's OS charges its vCPUs' guest time to their threads, as their
+    /// spans have told it ([`guest_time::Charged`], D265).
+    pub fn charged(&self) -> guest_time::Charged {
+        self.shared.guest.charged()
+    }
+
     /// What each of its vCPUs ran of its guest in all, by index, those gone among them at
     /// what they read as they left (D260's final use): read once the machine is down
     /// ([`Running::wait_then`]'s `free`), after its last guest instruction, it is the whole.
@@ -1756,9 +1762,11 @@ fn vcpu_thread(
     }
     // Its guest time among its machine's, before its machine is said to be started: read a
     // last time as this goes, on this thread, before the vCPU itself goes (dropped after).
-    let _guest = sh
-        .guest
-        .join(u32::try_from(index).unwrap_or(u32::MAX), guest_clock(&vcpu));
+    let _guest = sh.guest.join(
+        u32::try_from(index).unwrap_or(u32::MAX),
+        guest_clock(&vcpu),
+        thread_clock(index),
+    );
     let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
@@ -1780,6 +1788,19 @@ fn vcpu_thread(
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
+        }
+    }
+}
+
+/// How vCPU `index`'s thread's CPU time is read, from any thread: its own clock, the calling
+/// thread's, which beside its guest time tells whether its OS charges that to it (D265); none
+/// where it has none.
+fn thread_clock(index: usize) -> Option<guest_time::Ran> {
+    match crate::platform::ThreadClock::current() {
+        Ok(clock) => Some(Box::new(move || clock.read().ok())),
+        Err(e) => {
+            warn!("vCPU {index}: its thread's CPU time unread, so its guest time's charge is not told: {e}");
+            None
         }
     }
 }

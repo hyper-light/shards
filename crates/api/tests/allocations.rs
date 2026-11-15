@@ -8,7 +8,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use shards_api::image::wire::{StatsAnswer, WireError};
-use shards_api::image::{GuestTimes, HostUse, Microvm, VcpuTime};
+use shards_api::image::{Charged, GuestTimes, HostUse, Microvm, VcpuTime};
 
 struct Counting;
 
@@ -67,6 +67,7 @@ fn a_hostile_vcpu_count_allocates_nothing_its_bytes_cannot_fill() {
             cpu_ns: 1,
             resident_bytes: 2,
             footprint_bytes: 3,
+            charged: Charged::ToThread,
         }),
         guest: Ok(GuestTimes::default()),
     };

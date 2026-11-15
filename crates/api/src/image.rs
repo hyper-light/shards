@@ -33,10 +33,11 @@ pub mod wire;
 pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
-    Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse, GuestTimes,
-    HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto,
-    Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal,
-    SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime, decide,
+    Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
+    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
+    PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
+    SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
+    decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it

@@ -3766,6 +3766,7 @@ mod tests {
             cpu_ns: 1500,
             resident_bytes: 8192,
             footprint_bytes: 4096,
+            charged: crate::image::Charged::ToThread,
         };
         assert_eq!(
             used.microvm,
@@ -3827,6 +3828,7 @@ mod tests {
                 cpu_ns: 900,
                 resident_bytes: 1,
                 footprint_bytes: 2,
+                charged: crate::image::Charged::ToThread,
             }),
         );
         std::fs::write(final_use_file(&socket), &used).unwrap();

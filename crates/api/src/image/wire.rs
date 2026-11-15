@@ -821,7 +821,7 @@ pub struct Microvm {
 /// What a VM process uses of its host, and what a microVM's vCPUs have run of its guest, each
 /// by index, with what those it no longer has ran (guest-cpu-time-v1): one form for the VM
 /// process, an image run's stats and a managed guest's use (D260).
-pub use shards_abi::guest_time::{GuestTimes, HostUse, VcpuTime};
+pub use shards_abi::guest_time::{Charged, GuestTimes, HostUse, VcpuTime};
 
 impl Microvm {
     /// Its VMM's own CPU time, in ns: its VM process's less what its vCPUs ran of its guest,
@@ -1318,6 +1318,7 @@ impl Writer {
                 self.u64(h.cpu_ns);
                 self.u64(h.resident_bytes);
                 self.u64(h.footprint_bytes);
+                self.u8(h.charged.tag());
             }
             Err(why) => {
                 self.u8(1);
@@ -1377,6 +1378,15 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
         self.take(N)?.try_into().map_err(|_| WireError::Short)
     }
+    /// A VM process's charge (`Charged::tag`).
+    fn charged(&mut self) -> Result<Charged, WireError> {
+        let tag = self.u8()?;
+        Charged::from_tag(tag).ok_or(WireError::Tag {
+            what: "a VM process's charge",
+            tag,
+        })
+    }
+
     pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
@@ -1482,6 +1492,7 @@ impl<'a> Reader<'a> {
                 cpu_ns: self.u64()?,
                 resident_bytes: self.u64()?,
                 footprint_bytes: self.u64()?,
+                charged: self.charged()?,
             }),
             1 => Err(self.text()?),
             tag => {
@@ -2580,6 +2591,7 @@ pub fn used(used: &Result<HostUse, String>) -> Result<Vec<u8>, WireError> {
             w.u64(h.cpu_ns);
             w.u64(h.resident_bytes);
             w.u64(h.footprint_bytes);
+            w.u8(h.charged.tag());
         }
         Err(why) => {
             w.u8(1);
@@ -2597,6 +2609,7 @@ pub fn read_used(payload: &[u8]) -> Result<Result<HostUse, String>, WireError> {
             cpu_ns: r.u64()?,
             resident_bytes: r.u64()?,
             footprint_bytes: r.u64()?,
+            charged: r.charged()?,
         }),
         1 => Err(r.text()?),
         tag => {
@@ -4501,6 +4514,7 @@ mod tests {
             cpu_ns: 7,
             resident_bytes: 300 << 20,
             footprint_bytes: 280 << 20,
+            charged: Charged::ToThread,
         };
         for used in [Ok(read), Err("its VM process: gone".to_string())] {
             let bytes = super::used(&used).unwrap();
@@ -4612,6 +4626,7 @@ mod tests {
                 cpu_ns: 90,
                 resident_bytes: 4096,
                 footprint_bytes: 8192,
+                charged: Charged::ToThread,
             }),
             guest: Ok(GuestTimes {
                 vcpus: vec![
@@ -4701,6 +4716,7 @@ mod tests {
             cpu_ns: 9_000,
             resident_bytes: 64 << 20,
             footprint_bytes: u64::MAX,
+            charged: Charged::ToThread,
         };
         let lines = b"cpu 10\nmemory 7\n";
         let gone = || Err::<HostUse, String>("its VM process: no such process".into());

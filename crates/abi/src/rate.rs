@@ -26,7 +26,7 @@ use core::fmt;
 use core::fmt::Write as _;
 use core::num::NonZeroU64;
 
-use crate::guest_time::{GuestTimes, HostUse};
+use crate::guest_time::{Charged, GuestTimes, HostUse};
 
 /// The ask's word.
 pub const ASK: &str = "RATE";
@@ -204,8 +204,9 @@ fn push_words(text: &mut String, why: &str, most: usize) {
     text.push('\n');
 }
 
-/// The longest held `host` line: its key and three u64s, spaced, and its newline.
-const HOST_MOST: usize = "host".len() + 3 * (1 + decimal_digits(u64::MAX)) + 1;
+/// The longest held `host` line: its key, three u64s and its charge's longest word, spaced,
+/// and its newline.
+const HOST_MOST: usize = "host".len() + 3 * (1 + decimal_digits(u64::MAX)) + 1 + "unknown".len() + 1;
 
 /// The use answer (D260): `USED`, the guest's times or why not, then the VM process's own use
 /// or why not, a line each, within [`ANSWER_MOST`]: a guest's words cut to leave room for the
@@ -225,8 +226,11 @@ pub fn used(guest: Result<&GuestTimes, &str>, host: Result<&HostUse, &str>) -> S
         Ok(u) => {
             let _ = writeln!(
                 text,
-                "host {} {} {}",
-                u.cpu_ns, u.resident_bytes, u.footprint_bytes
+                "host {} {} {} {}",
+                u.cpu_ns,
+                u.resident_bytes,
+                u.footprint_bytes,
+                u.charged.word()
             );
         }
         Err(why) => {
@@ -257,7 +261,7 @@ pub enum UseBroken {
     /// Its guest's part is neither times [`GuestTimes::decode`] reads nor one
     /// `guest-unread` line.
     Guest,
-    /// Its last line is neither `host` and three u64s nor `host-unread`.
+    /// Its last line is neither `host`, three u64s and a charge nor `host-unread`.
     Host,
 }
 
@@ -303,10 +307,12 @@ pub fn read_used(answer: &[u8]) -> Result<Used<'_>, UseBroken> {
                     .and_then(|n| n.parse::<u64>().ok())
                     .ok_or(UseBroken::Host)
             };
+            let (cpu_ns, resident_bytes, footprint_bytes) = (number()?, number()?, number()?);
             let u = HostUse {
-                cpu_ns: number()?,
-                resident_bytes: number()?,
-                footprint_bytes: number()?,
+                cpu_ns,
+                resident_bytes,
+                footprint_bytes,
+                charged: words.next().and_then(Charged::from_word).ok_or(UseBroken::Host)?,
             };
             if words.next().is_some() {
                 return Err(UseBroken::Host);
@@ -481,13 +487,26 @@ mod tests {
             cpu_ns: 5_000,
             resident_bytes: u64::MAX,
             footprint_bytes: 0,
+            charged: Charged::Apart,
         };
         let text = used(Ok(&times), Ok(&host));
         assert_eq!(
             text,
             "USED\ndeparted 7\nvcpu 0 900\nvcpu 3 18446744073709551615 unread hvf-exec-time \
-             -85377023\nhost 5000 18446744073709551615 0\n"
+             -85377023\nhost 5000 18446744073709551615 0 apart\n"
         );
+        // A host line without its charge is none of the protocol's.
+        assert_eq!(
+            read_used(b"USED\ndeparted 0\nhost 1 2 3\n").map(|_| ()),
+            Err(UseBroken::Host)
+        );
+        for c in [Charged::Unknown, Charged::ToThread, Charged::Apart] {
+            let h = HostUse { charged: c, ..host };
+            assert_eq!(
+                read_used(used(Ok(&times), Ok(&h)).as_bytes()).unwrap().host,
+                Ok(h)
+            );
+        }
         let read = read_used(text.as_bytes()).unwrap();
         assert_eq!(read.guest, Ok(times.clone()));
         assert_eq!(read.host, Ok(host));

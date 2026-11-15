@@ -35678,6 +35678,62 @@ closing, on HVF, KVM and WHP.
 end; an ended connection holding more than the window it had; slots or lent window freed while
 an ended connection still holds its bytes.
 
+### D265. Whether a VM process's CPU time holds its vCPUs' guest time, learned from its own clocks (built: the charge and the use it makes; the governor's pace by it is the next slice; a root-scheduler host's run owed)
+
+**Why.** On hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested WHP on KVM) D260's
+use broke its own invariant, its process's CPU time (609,375,000 ns) below its one vCPU's
+guest time (763,174,000 ns), and D255's quarter-CPU hold let a spinning vCPU run 88% of the
+wall (`boot.rs` `a_managed_guest_records_its_final_use_as_it_ends`,
+`a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`, at 39760e391, twice). A
+probe sampled a --host-managed guest's `USE` every 500 ms: while it spun its guest time
+(`WHvGetVirtualProcessorCounters`' TotalRuntime less HypervisorRuntime) grew 470 ms each,
+94% of the wall, and its process's CPU time (GetProcessTimes) none; halted, neither grew. Its
+hypervisor's scheduler is the classic one (System event 2, "Hypervisor scheduler type is
+0x1": "1 Classic scheduler, SMT disabled", learn.microsoft.com
+windows-server/virtualization/hyper-v/manage/manage-hyper-v-scheduler-types), which runs a
+guest's virtual processors itself, as the core scheduler does; the root scheduler, which
+gives the root partition's NT scheduler the work, "isn't supported on Hyper-V on Windows
+Server" and is "the only supported hypervisor scheduler configuration for client systems"
+(the same page). So on every Windows Server a WHP vCPU's guest time is charged to none of
+its process's threads, and on client Windows nothing documented says either way.
+
+**Decided.** The charge is learned per VM process from its own clocks, never from a
+scheduler's name or an OS edition (`shards_abi::guest_time::Charged`, R04: `Unknown`,
+`ToThread`, `Apart`). Each vCPU's span between two reads of its clocks (its thread's CPU time
+`t`, `platform::ThreadClock`; its guest time `g`; the wall `w`) tells `Apart` where
+`t + step < g`, which a thread that ran its guest's time cannot read, and `ToThread` where
+`t + g >= w + step`, which a thread waiting while its hypervisor runs its vCPU cannot (it
+waits inside the run call), `step` the thread clock's measured step
+(`granule::measure_clock`, 15.625 ms on Windows). A span that reads neither tells nothing.
+The first charge told stands: a host's scheduler is its boot's. A span begins as its vCPU
+joins, so one read only at the end (D260's final use) tells its whole life
+(`vm::guest_time::GuestClocks`). KVM's and Hypervisor.framework's vCPUs are learned the same
+way (R12), and a busy one tells `ToThread`.
+- *Its use.* A use (`USE`'s `host` line, D260's final-use record, and the warm host's binary
+  `USED` and run stats, `shards_api::image::wire`) carries its charge, so a reader sees which
+  accounting it holds. `cpu_ns` is its OS's count, its vCPUs' guest time added where `Apart`
+  (`vm_run::use_answer`); `Apart` with no guest time read says `Unknown` with the count. A run
+  host's stats read another process's count with no vCPU clocks: `Unknown`.
+- *Cold start.* `Unknown` until a span tells, never a guess; a quiet guest leaves it so, its
+  count then its OS's.
+
+**Literals.** None: the step is measured, and the rule's bounds are the two clocks' own.
+
+**Built and tested** (unit): shards-abi `guest_time::tests::a_span_tells_a_charge_only_by_what_the_other_cannot_read`
+(hex-winvm's span apart, a charged thread, quiet spans, the boundaries a step either way) and
+`rate::tests` (the `host` line with its charge, one without refused); shards-vmm
+`guest_time::tests::a_processs_charge_is_told_by_its_vcpus_spans`; shards
+`vm_run::tests::a_uses_answer_reads_the_guest_then_its_process` (the guest added apart, the
+count standing unknown). Results and hosts are in the landing commit and ROOT's record.
+
+**Evidence owed.** The two `boot.rs` tests green on hex-winvm; the probe on a client Windows
+host under the root scheduler (whether its thread holds its guest time: `ToThread` told); the
+governor's pace by the charge (D255's hold: next slice); a run host's stats told the charge by
+its VM process.
+
+**What would falsify it.** A span on one host telling both charges; a use whose `cpu_ns` is
+below its guest time with its charge told; a charge told by a span that could read either.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
