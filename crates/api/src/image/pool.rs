@@ -10,9 +10,10 @@
 //!   it, refusing one of another microVM (`Unfit`), whose run then gets a host of its own.
 //! - **Its room.** Every warm host is charged to the orchestrator's room before it starts
 //!   ([`WarmRoom::claim`], its spec's memory and vCPUs), and its room comes back exactly once
-//!   ([`WarmRoom::give`]): to a run that takes it, as it ends, or as its start fails. A run
-//!   whose spec names no size of its own (`0`, as `shards run` sizes it) or asks its GPU report
-//!   is no pool's: its room cannot be charged before its host starts.
+//!   ([`WarmRoom::give`]): to a run that takes it, as it ends, or as its start fails. A size a
+//!   spec leaves to `shards run` (`0`) is resolved first as its run host would give it
+//!   (`shards_ipc::size`), so it pools with the spec that names that size and claims its real
+//!   room. A run that asks its GPU report is no pool's.
 //! - **Its size** is D26's, by the one rule ([`crate::demand`]): the largest burst of its runs
 //!   within one refill window, an RFC 6298 retransmission timeout of its warm hosts' starts as
 //!   timed here, while it is in use, at least one; none once idle past its keep-alive. What it
@@ -149,22 +150,40 @@ struct Key {
     exemplar: Vec<u8>,
 }
 
-/// A run's pool: its key, its exemplar and its hosts' charge. None for a run that is no
-/// pool's: one asking its GPU report (D233: a warm host's VM process starts before its run
-/// names the report's scope, which that process frames its report with as its renderer is
-/// made), and one whose size is not its own (`0`: as `shards run` sizes it, which only its
-/// host knows), whose room no claim can name before its host starts.
+/// A run's pool: its key, its exemplar, its hosts' charge, and the run's request sized. None
+/// for a run that is no pool's: one asking its GPU report (D233: a warm host's VM process
+/// starts before its run names the report's scope, which that process frames its report with
+/// as its renderer is made), and one whose memory's bytes pass a u64.
 struct Of {
     key: Key,
     exemplar: wire::Request,
     size: WarmHost,
+    request: wire::Request,
+}
+
+/// `request` with each size it leaves to `shards run` (`0`) as `shards run` gives it on this
+/// host (`shards_ipc::size::unsized_run`, the run host's own sizing): its run host would boot
+/// it so, so its pool, its claim and its warm host's exemplar are of that size.
+fn sized(request: &wire::Request) -> wire::Request {
+    let mut sized = request.clone();
+    if sized.vcpus == 0 || sized.memory_mib == 0 {
+        let (vcpus, memory_mib) = shards_ipc::size::unsized_run();
+        if sized.vcpus == 0 {
+            sized.vcpus = vcpus;
+        }
+        if sized.memory_mib == 0 {
+            sized.memory_mib = memory_mib;
+        }
+    }
+    sized
 }
 
 fn pool_of(spec: &ImageSpec, request: &wire::Request) -> Result<Option<Of>, ImageRefusal> {
-    if request.gpu_report.is_some() || request.vcpus == 0 {
+    if request.gpu_report.is_some() {
         return Ok(None);
     }
-    let Some(memory) = request.memory_mib.checked_mul(1 << 20).filter(|&m| m > 0) else {
+    let request = sized(request);
+    let Some(memory) = request.memory_mib.checked_mul(1 << 20) else {
         return Ok(None);
     };
     let exemplar = request.exemplar();
@@ -184,6 +203,7 @@ fn pool_of(spec: &ImageSpec, request: &wire::Request) -> Result<Option<Of>, Imag
             vcpus: request.vcpus,
             pool,
         },
+        request,
     }))
 }
 
@@ -971,7 +991,13 @@ impl<H: Hosts> Pooling<H> {
         patience: Duration,
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
-        let Some(Of { key, exemplar, size }) = pool_of(spec, request)? else {
+        let Some(Of {
+            key,
+            exemplar,
+            size,
+            request,
+        }) = pool_of(spec, request)?
+        else {
             return self.hosts.fresh(spec, request, patience, stop);
         };
         let (reply, warm) = mpsc::channel();
@@ -986,7 +1012,7 @@ impl<H: Hosts> Pooling<H> {
             self.room.give(&size, Gave::Taken);
             let _ = self.asks.send(Ask::Refill { key: key.clone() });
         }
-        run(&self.hosts, &self.asks, warm, key, spec, request, patience, stop)
+        run(&self.hosts, &self.asks, warm, key, spec, &request, patience, stop)
     }
 
     /// Holds a warm host of `spec`'s pool for one box, at once, where one is ready: its room
@@ -1126,13 +1152,14 @@ impl<H: Hosts> Ticket<H> {
         patience: Duration,
         stop: &BootStop,
     ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
-        let asked = pool_of(spec, request)?.map(|of| of.size.pool);
-        if asked != Some(self.size.pool) {
+        let of = pool_of(spec, request)?;
+        let asked = of.as_ref().map(|of| of.size.pool);
+        let Some(Of { request, .. }) = of.filter(|_| asked == Some(self.size.pool)) else {
             return Err(ImageRefusal::OtherPool {
                 reserved: self.size.pool,
                 asked,
             });
-        }
+        };
         let warm = self.warm.take();
         run(
             &self.hosts,
@@ -1140,7 +1167,7 @@ impl<H: Hosts> Ticket<H> {
             warm,
             self.key.clone(),
             spec,
-            request,
+            &request,
             patience,
             stop,
         )
@@ -1875,10 +1902,9 @@ mod tests {
 
     /// D233 through D253's pools: a run that asks for its GPU report gets a host of its own and
     /// starts no warm one, as a warm host's VM starts before its run names the report's scope;
-    /// the same run asking none is pooled as every run is. So is one whose size is not its own
-    /// (`0`), whose room no claim can name before its host starts.
+    /// the same run asking none is pooled as every run is.
     #[test]
-    fn a_run_asking_its_gpu_report_or_no_size_gets_a_host_of_its_own_and_no_pool() {
+    fn a_run_asking_its_gpu_report_gets_a_host_of_its_own_and_no_pool() {
         let (hosted, room) = (Hosted::default(), Room::fits(4));
         let pools = Pooling::new(hosted.clone(), room.clone(), KEEP_TEST).unwrap();
         let gpus = vec![crate::PhysicalGpu::MetalRegistry(7)];
@@ -1889,9 +1915,8 @@ mod tests {
         };
         let run = boot(&pools, &scoped);
         let other = boot(&pools, &scoped);
-        let no_size = [sized(0, 1), sized(512, 0)].map(|r| boot(&pools, &r));
-        assert_eq!(hosted.log().fresh, 4);
-        drop((run, other, no_size));
+        assert_eq!(hosted.log().fresh, 2);
+        drop((run, other));
         assert_eq!(hosted.log().begun, 0, "no warm host for a run that is no pool's");
         assert!(pools.held().is_empty());
         let unscoped = wire::Request {
@@ -1900,9 +1925,37 @@ mod tests {
         };
         let pooled = boot(&pools, &unscoped);
         hosted.until("the unscoped run's pool warms a host", |l| {
-            l.fresh == 5 && l.begun == 1
+            l.fresh == 3 && l.begun == 1
         });
         drop(pooled);
+        drop(pools);
+        room.balanced();
+    }
+
+    /// D253's room: a size a spec leaves to `shards run` (`0`) is the size `shards run` gives
+    /// it on this host, so its spec pools with the one that names that size, its warm host's
+    /// exemplar and its claim that size; and a run of it takes the other's warm host.
+    #[test]
+    fn a_spec_of_no_size_pools_with_one_of_the_size_run_gives_it() {
+        let (vcpus, memory_mib) = shards_ipc::size::unsized_run();
+        let pool = |r: &wire::Request| pool_of(&spec(), r).unwrap().unwrap();
+        let named = pool(&sized(memory_mib, vcpus));
+        for left in [sized(0, 0), sized(0, vcpus), sized(memory_mib, 0)] {
+            let of = pool(&left);
+            assert_eq!(of.size, named.size, "{left:?}");
+            assert_eq!(of.key, named.key);
+            assert_eq!((of.request.vcpus, of.request.memory_mib), (vcpus, memory_mib));
+        }
+        assert_eq!(named.size.memory, memory_mib << 20);
+        assert_eq!(named.size.vcpus, vcpus);
+        let (hosted, room) = (Hosted::default(), Room::fits(4));
+        let pools = Pooling::new(hosted.clone(), room.clone(), KEEP_TEST).unwrap();
+        drop(boot(&pools, &sized(memory_mib, vcpus)));
+        until_ready(&pools, 1);
+        let guest = boot(&pools, &sized(0, 0));
+        assert_eq!(guest.started_from(), wire::StartedFrom::Warm);
+        assert_eq!(pools.held().len(), 1, "one pool");
+        drop(guest);
         drop(pools);
         room.balanced();
     }

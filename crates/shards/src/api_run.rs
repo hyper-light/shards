@@ -3739,11 +3739,25 @@ mod hosted {
         serve_launched(answers, input, home, plan, launched?)
     }
 
+    /// What VM process `vm` costs its host (D241's `HostUse`): read at once, as the run's
+    /// stats and a warm host's `USED` alike read it, never asking its guest.
+    fn host_use(vm: u32) -> Result<wire::HostUse, String> {
+        shards_vmm::platform::process_usage(vm)
+            .map(|u| wire::HostUse {
+                cpu_ns: u.cpu_ns,
+                resident_bytes: u.resident,
+                footprint_bytes: u.footprint,
+            })
+            .map_err(|e| format!("its VM process: {e}"))
+    }
+
     /// A warm run host (D253's pools): its microVM made of `exemplar` and started, and once
     /// ready said (`WARMED`); then its run, as it comes (`CREATE`), served as any run of this
-    /// process is, its start said `Warm`. A run of another microVM's than its exemplar's is
-    /// refused `Unfit`, for its orchestrator to start a host of its own for it; its channel
-    /// closed first ends it, its pool having let it go.
+    /// process is, its start said `Warm`. Meanwhile each `USE` is answered `USED`, its VM
+    /// process's use as its run's stats would tell it. A run of another microVM's than its
+    /// exemplar's is refused `Unfit`, for its orchestrator to start a host of its own for it;
+    /// any other frame refuses it, and its channel closed first ends it, its pool having let
+    /// it go.
     pub(super) fn warm(
         answers: &Answers,
         exemplar: &wire::Request,
@@ -3772,13 +3786,24 @@ mod hosted {
             answers
                 .send(wire::to_client::WARMED, &[&wire::warmed(launched.from)])
                 .map_err(|e| No(Cause::Boot, format!("its orchestrator: {e}")))?;
-            let request = match input.next() {
-                Ok(Some(frame)) if frame.kind == wire::to_host::CREATE => {
-                    wire::Request::decode(&frame).map_err(|e| No(Cause::Request, e.to_string()))?
+            let vm = launched.vm.id();
+            let request = loop {
+                match input.next() {
+                    Ok(Some(frame)) if frame.kind == wire::to_host::CREATE => {
+                        break wire::Request::decode(&frame)
+                            .map_err(|e| No(Cause::Request, e.to_string()))?;
+                    }
+                    Ok(Some(frame)) if frame.kind == wire::to_host::USE => {
+                        wire::read_use(&frame).map_err(|e| No(Cause::Request, e.to_string()))?;
+                        let used = wire::used(&host_use(vm)).map_err(|e| No(Cause::Boot, e.to_string()))?;
+                        answers
+                            .send(wire::to_client::USED, &[&used])
+                            .map_err(|e| No(Cause::Boot, format!("its orchestrator: {e}")))?;
+                    }
+                    Ok(Some(frame)) => return Err(super::before_request(frame.kind)),
+                    Ok(None) => return Ok(None),
+                    Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
                 }
-                Ok(Some(frame)) => return Err(super::before_request(frame.kind)),
-                Ok(None) => return Ok(None),
-                Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
             };
             input.shed();
             if request.exemplar() != *exemplar {
@@ -5066,13 +5091,7 @@ mod hosted {
         };
         let microvm = || wire::Microvm {
             guest: guest_times(live),
-            host: shards_vmm::platform::process_usage(vm)
-                .map(|u| wire::HostUse {
-                    cpu_ns: u.cpu_ns,
-                    resident_bytes: u.resident,
-                    footprint_bytes: u.footprint,
-                })
-                .map_err(|e| format!("its VM process: {e}")),
+            host: host_use(vm),
         };
         let args: Vec<Vec<u8>> = match ask.scope {
             wire::StatsScope::Command => Vec::new(),

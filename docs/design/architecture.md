@@ -33960,9 +33960,14 @@ warm hosts yield before it refuses or evicts a real box.
     `Failed` where its start fails;
   - the room decides alone. A claim should be refused only where the host does not fit the room
     free now, with no headroom rule: a box wins its room back through `release`.
-- *A run that is no pool's* is one whose spec names no size (`vcpus` or `memory_mib` 0, which
-  only its host resolves), or one that asks its GPU report (D233). No claim can name its room
-  before its host starts, so it gets a host of its own.
+- *A size left to `shards run`* (`vcpus` or `memory_mib` 0) is resolved before the pool's key
+  and its claim, as its run host would give it: every CPU this process may run on, and the
+  memory that holds what one vCPU's default may allocate, at most the host's. That is
+  `shards_ipc::size::unsized_run`, the very functions `run::sizes_for` sizes with (`host_cpus`,
+  `memory_mib`, `overhead_kib`, `MEMORY_MIB`), moved from the `shards` crate into shards-ipc
+  so that both call one source. So a default-sized box pools with one that names that size,
+  and claims its real room. Its run's request carries the resolved size, which its warm
+  host's exemplar check matches. A run that asks its GPU report (D233) is still no pool's.
 - *`release(memory)`* ends the coldest hosts until at least `memory` bytes are freed, or none
   is left. Warm hosts go first: those of the pools whose demand target is lowest, then the
   longest idle. Starting hosts go after them. It returns once every one's processes have
@@ -33978,9 +33983,13 @@ warm hosts yield before it refuses or evicts a real box.
   booted with another pool's spec is refused, typed: `ImageRefusal::OtherPool`. A
   ticketless `Images::boot` still takes a warm host itself, also giving `Taken` once.
 - *`held()`* is each pool's claimed room (warm and starting hosts, at their spec's whole size)
-  and `footprints`, one reading per warm host whose VM-process reading is in. Today every
-  host's list is empty: a warm host's channel carries no reading of its VM process yet
-  (owed, below).
+  and `footprints`, one reading per warm host whose reading is in. A warm host answers `USE`
+  (image channel version 32: `to_host::USE` 40, `to_client::USED` 41) with its VM process's
+  use while it waits for its run. That is `process_usage(vm)` (`api_run.rs` `host_use`), the
+  one reader a running run's stats use, so the number is theirs. `held()` never waits: each
+  warm host's last told footprint is given, and a `USE` is asked for the next unless one is
+  unanswered. So a host's first `held()` lists none for it, and a later one lists its
+  reading. Any frame other than `CREATE` and `USE` still ends a warm host.
 - *No deadlock, by construction.* The pools' thread, their state's one owner, never calls the
   room. Claims, and the `Failed` gives, go in order on a room thread of their own, which
   answers each claim back to the pools. `release`, `reserve`, `held` and a boot's take are
@@ -34019,9 +34028,8 @@ that claims and gives balance once its pools drop):
 (now with a room of two hosts) and `warm_hosts_end_with_the_process_holding_their_pools`
 (Unix: the holder SIGKILLed, every warm host's process group gone) on HVF and KVM. On Windows
 the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
-unverified. Also owed: the warm host's footprint reading, the next slice. `WARMED` carries the
-VM process's pid, and shards-api reads it as `platform::process_usage` does, or the warm loop
-answers a use ask, whichever matches a running run's `HostUse` on all three OSes.
+unverified. Also owed: `api_image.rs`'s `a_warm_hosts_footprint_is_its_vm_processs_reading`
+(`held().footprints` carries a real reading once asked) on HVF, KVM and WHP.
 
 **Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
 microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as

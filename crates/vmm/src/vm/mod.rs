@@ -2558,8 +2558,7 @@ impl VsockHost {
     }
 }
 
-/// The memory a VM has unless it is given more or less, in MiB.
-pub const MEMORY_MIB: u64 = 256;
+pub use shards_ipc::size::MEMORY_MIB;
 
 impl Config {
     /// A VM with shards' defaults: 1 CPU, [`MEMORY_MIB`], and a console on stdout.

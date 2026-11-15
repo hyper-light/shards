@@ -722,8 +722,9 @@ impl Images for ImageShards {
 /// their members' stages, deadline and control ask ([`wire::Request::exemplar`]); each keeps
 /// the largest burst of its runs within one refill window while in use, at least one, and
 /// none once idle past its keep-alive (`shards_api::demand`, the daemon's own rule), each of
-/// its hosts charged to the orchestrator's [`WarmRoom`] before it starts. A run whose spec
-/// names no size of its own, or asks its GPU report, is no pool's. Nothing is warm until a
+/// its hosts charged to the orchestrator's [`WarmRoom`] before it starts. A size a spec
+/// leaves to `shards run` (`0`) is resolved as its run host would give it, so the spec pools
+/// as one naming that size; a run that asks its GPU report is no pool's. Nothing is warm until a
 /// pool's first run, which starts a host of its own, as [`ImageShards`] would. Dropping it
 /// ends every warm host, each followed to its end and its room given back, before it returns.
 #[derive(Debug)]

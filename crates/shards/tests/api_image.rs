@@ -2536,7 +2536,6 @@ impl shards_api::image::WarmRoom for RoomOfTwo {
 
 /// The pool test's spec in `home`, its run host `binary`: a command that exits 3, granted
 /// nothing past its microVM, booting this build's pinned guest.
-#[cfg(unix)]
 fn pooled_spec(home: &std::path::Path, image: &str, binary: &std::path::Path) -> ImageSpec {
     ImageSpec {
         image: image.into(),
@@ -2660,4 +2659,34 @@ fn warm_hosts_end_with_the_process_holding_their_pools() {
         std::thread::sleep(patience.next_look());
     }
     patience.done();
+}
+
+/// D253's pools: a warm host's footprint is its VM process's, as a running run's stats read it
+/// (`USE`, answered `USED`): asked as `held()` looks, and listed by a later look, never waited
+/// for.
+#[test]
+fn a_warm_hosts_footprint_is_its_vm_processs_reading() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-footprint-home");
+    build_example(&home, "api-footprint:1");
+    let s = pooled_spec(&home, "api-footprint:1", common::shards());
+    let pools = ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap();
+    let guest = booted(&pools, &s).unwrap();
+    ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap();
+    drop(guest);
+    let mut patience = Patience::started();
+    let footprints = loop {
+        let held = pools.held();
+        let footprints: Vec<u64> = held.iter().flat_map(|h| h.footprints.iter().copied()).collect();
+        let warm: usize = held.iter().map(|h| h.warm).sum();
+        if warm > 0 && footprints.len() == warm {
+            break footprints;
+        }
+        assert!(patience.holds(), "no warm host's footprint: {held:?}");
+        std::thread::sleep(patience.next_look());
+    };
+    patience.done();
+    assert!(footprints.iter().all(|&f| f > 0), "{footprints:?}");
 }

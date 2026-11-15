@@ -79,6 +79,10 @@ struct State {
     /// How a warm host's microVM started, once it is ready for its run (`WARMED`, D253's
     /// pools).
     warmed: Option<wire::StartedFrom>,
+    /// A warm host's last footprint its host told (`USED`), and whether a `USE` asked since
+    /// is unanswered: one ask in flight at a time.
+    footprint: Option<u64>,
+    use_asked: bool,
     /// The members whose stdin the request asks for, by kind and name: each one's flow is
     /// made as the run's start is taken ([`take`]), by its index there.
     asked_inputs: Vec<(wire::MemberKind, String)>,
@@ -1086,9 +1090,19 @@ impl super::pool::Hosts for ShardsHosts {
         self::kill(kill);
     }
 
-    /// None yet: a warm host's channel carries no reading of its VM process before its run.
-    fn footprint(&self, _: &Begun) -> Option<u64> {
-        None
+    /// The footprint its host last told (`USED`, its VM process's, as a run's stats read it),
+    /// and a `USE` asked for the next unless one is unanswered: never a wait, its host
+    /// answering as it waits for its run.
+    fn footprint(&self, warm: &Begun) -> Option<u64> {
+        let (footprint, ask) = {
+            let mut state = lock(&warm.shared.state);
+            let ask = !std::mem::replace(&mut state.use_asked, true);
+            (state.footprint, ask)
+        };
+        if ask && warm.shared.send(wire::to_host::USE, &[]).is_err() {
+            lock(&warm.shared.state).use_asked = false;
+        }
+        footprint
     }
 
     fn end(&self, mut warm: Begun) -> Result<(), ImageRefusal> {
@@ -1586,6 +1600,13 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             }
             state.close_inputs();
             ended = true;
+        }
+        k::USED => {
+            state.use_asked = false;
+            // A VM process its host could not read is no reading: the last stands.
+            if let Ok(used) = wire::read_used(payload).map_err(bad)? {
+                state.footprint = Some(used.footprint_bytes);
+            }
         }
         other => return Err(format!("unknown answer kind {other}")),
     }
