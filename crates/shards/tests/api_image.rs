@@ -652,11 +652,6 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     while seen.len() < 5 {
         seen.push(count(&next("a tick").1).0);
     }
-    let before = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
-    assert!(
-        before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now),
-        "{before:?}"
-    );
     let guest_ns =
         |stats: &shards_api::image::Stats| stats.microvm.as_ref().unwrap().guest.as_ref().unwrap().total_ns();
     // The step its guest time is read in, measured as it runs, before its pause.
@@ -667,6 +662,13 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
         .as_nanos(),
     )
     .unwrap();
+    // Its init's last answer before the pause, which its stats say while it is paused (its run
+    // host keeps each answer as its last): read after the step's reads, each an answer too.
+    let before = ask(&*guest, |g| g.stats(StatsScope::Run, Duration::MAX)).unwrap();
+    assert!(
+        before.cpu_ns.is_some() && before.paused.is_some_and(|p| !p.now),
+        "{before:?}"
+    );
     let paused = ask(&*guest, |g| g.pause(Duration::MAX)).unwrap();
     assert!(paused.now, "{paused:?}");
     // What its guest printed before its vCPUs were held, still on its way.
@@ -676,7 +678,18 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     }
     let last = *seen.last().unwrap();
     let window = Duration::from_secs(3);
+    // A failure while its run is paused would leave the reading below waiting for a tick that
+    // never comes, the scope with it: stopped as the failure unwinds, its stdout ends.
+    struct StopOnUnwind<'a>(&'a dyn ImageGuest);
+    impl Drop for StopOnUnwind<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let _ = self.0.stop();
+            }
+        }
+    }
     let resuming = std::thread::scope(|scope| {
+        let _stop = StopOnUnwind(&*guest);
         // Read on while it is paused: a wait judged by what this test's processes run, which
         // its pause holds, so it is never refused for its stillness.
         let reading = scope.spawn(|| next("its first tick past the pause"));
@@ -1281,7 +1294,13 @@ fn the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_me
             .collect();
         assert_eq!(templates.len(), 1, "{templates:?}");
         let (_, plugged) = shards_vmm::snapshot::layout(&templates[0]).unwrap();
-        assert!(!plugged.is_empty(), "its guest plugged nothing before its save");
+        // arm64's least envelope, 64 MiB, has no room for its guest's boot: its guest plugs
+        // before its template point (PM M604), and that memory is what D274 gives back as RAM.
+        // x86-64's, 128 MiB, holds the boot (KVM, PM M605): its template holds nothing plugged,
+        // and each run's 64 MiB is plugged after its restore.
+        if cfg!(target_arch = "aarch64") {
+            assert!(!plugged.is_empty(), "its guest plugged nothing before its save");
+        }
     }
 }
 
@@ -3588,9 +3607,15 @@ const INGRESS: &str = "NETWORK --ingress=7100 front\n\
 /// root, or their template's directory) and the VM process's own binary.
 fn vm_processes(home: &TempDir) -> Vec<u32> {
     let home = home.to_string_lossy().into_owned();
+    // The VM binary by its command line, or on Linux by its name: a run host starts it through
+    // its own descriptor there (`/proc/PID/fd/N`, helpers.rs `Program::path`), which names no
+    // binary, and the binary names itself after its file (shards-ipc `name_after_executable`).
     let mut vms: Vec<u32> = common::commands_with(&home)
         .into_iter()
-        .filter(|(_, args)| args.contains("shards-vm"))
+        .filter(|(pid, args)| {
+            args.contains("shards-vm")
+                || std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "shards-vm")
+        })
         .map(|(pid, _)| pid)
         .collect();
     vms.sort_unstable();
