@@ -2403,7 +2403,15 @@ impl Patience {
     /// Patience with the daemon of `home` and its microVMs, and this test's own.
     #[track_caller]
     pub fn of(home: &Path) -> Patience {
-        Patience::with(Some(home), std::panic::Location::caller())
+        Patience::at(home, std::panic::Location::caller())
+    }
+
+    /// [`of`](Self::of) as the wait at `site`: for a `#[track_caller]` helper that waits on a
+    /// thread of its own, which takes its caller's site before it spawns it, as a closure
+    /// is no `#[track_caller]` and its own site would be every caller's one kind (log
+    /// lanes' `controlled`: a quick read's W* refused a run's bulk write 83 ms in).
+    pub fn at(home: &Path, site: &'static std::panic::Location<'static>) -> Patience {
+        Patience::with(Some(home), site)
     }
 
     /// Patience with client `client`, what descends from it, and the daemon of `home`: a
