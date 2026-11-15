@@ -823,7 +823,7 @@ mod tests {
             while holds.iter().any(|h| h.clocks.iter().any(|c| c.get().is_none())) {
                 std::thread::yield_now();
             }
-            let all = || holds.iter().map(Hold::used).sum::<u64>();
+            let all = || holds.iter().map(|h| h.used(Charged::ToThread)).sum::<u64>();
             let (t0, base) = (Instant::now(), all());
             std::thread::sleep(window);
             let used = all() - base;

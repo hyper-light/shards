@@ -385,7 +385,7 @@ impl Muxer {
             .conns
             .iter()
             .filter_map(|(key, c)| Some((c.asked()?, *key)))
-            .min();
+            .min_by_key(|&(asked, _)| asked);
         if let Some((_, key)) = unanswered
             && let Some(c) = self.conns.remove(&key)
         {
