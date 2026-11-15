@@ -28173,6 +28173,28 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         held windows are out of its wall besides. From one answer, R* times W* is C*, so a
         party can be under R* and over C* only well past W*: b24's ticks would have passed
         its C* within about a minute.
+    - *A party waiting in its kernel is held, not slow* (ROOT's ruling, 2026-11-14, its batch
+      32 at 8d732fb2d, HVF, 2 of 14 cores idle). api_image.rs's `shards guest use`, its kind
+      W* 55.1 ms, R* 11.87 ms of CPU in 55.1 ms and C* 12.58 ms, was refused 224.7 ms in for
+      13.23 ms of CPU over 143.0 ms taken for unheld, its one thread not runnable. That time
+      was its host's: guest.rs `record` flushes each file it keeps to its disk's media
+      (F_FULLFSYNC), and on that loaded host it spent 52 to 172 ms of its 69 to 192 ms in
+      `TH_STATE_UNINTERRUPTIBLE`, at 14.1 to 16.2 ms of CPU, past that C* in every run (PM
+      M600). A look that found it so vouched for its window wherever it had also run a
+      moment in it, as `Watch::vouched_by` read starvation, stops and ends alone. Now a look
+      that finds a thread of its party waiting uninterruptibly in its kernel (macOS
+      `TH_STATE_UNINTERRUPTIBLE`, Linux `D`: `Hold::uninterruptible`) vouches for no window
+      (`progress::vouches`): its time leaves the rate's wall and its work stays in, a doubt
+      that raises the rate. Stillness is judged as before: a look that ran nothing finds
+      macOS's uninterruptible wait `Held` (since 2026-11-13) and Linux's `D` still. A ticker
+      asleep on an event waits interruptibly (`TH_STATE_WAITING`, `S`) and is refused as
+      before. Each look samples its threads at one instant, so a look made once each W*
+      (`Follow::look`) can miss a wait between looks, where the tests' looks come every few
+      ms. Windows reads no wait reason of a flush here: unverified there. Held by progress.rs
+      `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the batch's
+      numbers through `Judge`: refused vouching, going on in its kernel) and, on macOS,
+      `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel` (a child looping
+      F_FULLFSYNC, seen so).
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
@@ -34072,9 +34094,18 @@ that claims and gives balance once its pools drop):
   holds while it calls `release`, `reserve`, `held` and `boot`;
 - `a_run_asking_its_gpu_report_or_no_size_gets_a_host_of_its_own_and_no_pool`.
 
-**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
-(now with a room of two hosts) and `warm_hosts_end_with_the_process_holding_their_pools`
-(Unix: the holder SIGKILLed, every warm host's process group gone) on HVF and KVM. On Windows
+**Run on HVF** (adas-mac-studio.local, macOS arm64, 73109b048, each test alone):
+`warm_hosts_end_with_the_process_holding_their_pools` (Unix: the holder SIGKILLed, every warm
+host's process group gone) green, its wait's party every process of the hosts' own groups,
+wherever listed (`Patience::groups`, getpgid(2)): its first answer W* 34.6 ms from the
+holder's kill to every group gone, then green judged by it. Red with the wait it had,
+`Patience::started()` made once the holder was reaped, whose party, the test process's
+children, held none of the orphaned hosts: refused 218.9 µs in, "its party is gone", host
+89673 live, its parent 1 (ROOT's batch 32 at 8d732fb2d saw the same of host 75603, 322.5 µs
+in). `an_images_next_run_takes_a_warm_host_of_its_pool` (now with a room of two hosts) green
+twice, cold and judged; batch 32's refusal of its `shards guest use` was D215's rate floor
+taking a wait on its host's disk for its own rest (D215: a party waiting in its kernel).
+**Owed** (ROOT, real VMs): both on KVM. On Windows
 the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
 unverified. Also owed: `api_image.rs`'s `a_warm_hosts_footprint_is_its_vm_processs_reading`
 (`held().footprints` carries a real reading once asked) on HVF, KVM and WHP.

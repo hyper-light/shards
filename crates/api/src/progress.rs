@@ -142,6 +142,14 @@ struct Hold {
     runnable: bool,
     /// It is stopped (a stop signal's, a debugger's, a suspension's) or frozen.
     stopped: bool,
+    /// A thread of it waits uninterruptibly in its kernel as it is looked at (macOS
+    /// `TH_STATE_UNINTERRUPTIBLE`, Linux `D`, proc(5)'s "uninterruptible disk sleep"): its
+    /// host's own work for it, a disk's flush or a page-in, which no rate of its own runs at
+    /// (PM M600: `shards guest use` spent 52 to 172 ms of its 69 to 192 ms so on a loaded
+    /// Mac, F_FULLFSYNC's waits, at 14 to 16 ms of CPU). Its look vouches for no window of
+    /// its rate ([`vouches`]). Windows' wait reasons for a flush are unread here.
+    #[cfg(unix)]
+    uninterruptible: bool,
     /// The scheduler's own count of its threads' wait for a CPU.
     #[cfg(unix)]
     queued: Queued,
@@ -199,6 +207,30 @@ impl Hold {
         let pressed = false;
         self.runnable || queued || pressed
     }
+
+    /// Whether a thread of it waited uninterruptibly in its kernel as it was looked at.
+    fn in_kernel(&self) -> bool {
+        #[cfg(unix)]
+        return self.uninterruptible;
+        #[cfg(windows)]
+        false
+    }
+}
+
+/// Whether a look that found `found`, its threads read `starved` meanwhile, its host doing
+/// `hold` and its process `ended` or not, vouches for its window as the party's own running
+/// or rest (D215's rate, [`Span::work`]): it ran or rested, and was neither starved of a CPU,
+/// stopped, ending, nor waiting in its kernel on its host's work for it. A party that ran a
+/// moment and then waited on its host's disk the rest of a window is held by its host, not
+/// slow (ROOT's batch 32, HVF: `shards guest use` refused below R* past C*, 13.2 ms of CPU
+/// over 143 ms taken for its own, its one thread blocked). One rule for every judge that
+/// rates a party.
+fn vouches(found: Found, starved: bool, hold: &Hold, ended: bool) -> bool {
+    matches!(found, Found::Progressed | Found::Still)
+        && !starved
+        && !hold.stopped
+        && !ended
+        && !hold.in_kernel()
 }
 
 /// What a look found of a VM process since the look before: progress where its end is under
@@ -450,10 +482,9 @@ impl Watch {
 
     /// Whether a look of it that found `found`, its threads read `starved` meanwhile
     /// ([`starved`](Self::starved)), vouches for its window as its own running or rest, its
-    /// host not the reason (D215's rate, [`Span::work`]): it ran or rested, and was neither
-    /// starved of a CPU, stopped, nor ending. One rule for every judge that rates a party.
+    /// host not the reason ([`vouches`]).
     pub fn vouched_by(&self, found: Found, starved: bool) -> bool {
-        matches!(found, Found::Progressed | Found::Still) && !starved && !self.stopped() && !self.ended()
+        vouches(found, starved, &self.hold, self.ended())
     }
 
     /// The CPU time its process's threads have had by now, the look before kept; none where
@@ -696,7 +727,8 @@ mod os {
     }
 
     /// What its host is doing to process `pid` ([`Hold`]), from its own evidence alone: a
-    /// thread of it runnable, its state `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5));
+    /// thread of it runnable, its state `R` (`/proc/<pid>/task/<tid>/stat` field 3, proc(5)),
+    /// or waiting uninterruptibly in its kernel, `D`, which vouches for no window of its rate;
     /// it stopped, its leader's state `T` or `t`, or its cgroup frozen (`cgroup.events`'
     /// `frozen 1`, Documentation/admin-guide/cgroup-v2.rst); its threads' run-queue wait
     /// ([`Queued`]); and, where its cgroup holds it alone, that cgroup's pressure
@@ -720,6 +752,7 @@ mod os {
                     continue;
                 };
                 hold.runnable |= state == b'R';
+                hold.uninterruptible |= state == b'D';
                 let leader = task.file_name().to_str().and_then(|tid| tid.parse::<u32>().ok()) == Some(pid);
                 hold.stopped |= leader && matches!(state, b'T' | b't');
             }
@@ -959,7 +992,8 @@ mod os {
     /// "debugging or suspension"); a thread of it runnable where one's run state is
     /// `TH_STATE_RUNNING` (running, or waiting for a CPU) or `TH_STATE_UNINTERRUPTIBLE` (a wait
     /// in the kernel, a page-in among them, which macOS keeps no pressure record of), as
-    /// `PROC_PIDTHREADINFO` reports each (sys/proc_info.h, mach/thread_info.h); and its
+    /// `PROC_PIDTHREADINFO` reports each (sys/proc_info.h, mach/thread_info.h), the latter
+    /// also said apart, as it vouches for no window of its rate (a disk's flush, PM M600); its
     /// threads' time runnable ([`Queued`]), which grows over a time it ran no CPU only while
     /// one waited for a CPU, as a thread its host holds through a look's sample does. What it
     /// cannot read shows nothing.
@@ -967,15 +1001,17 @@ mod os {
         let Ok(id) = libc::c_int::try_from(pid) else {
             return Hold::default();
         };
+        let states: Vec<libc::c_int> = threads(id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|handle| run_state(id, handle))
+            .collect();
         Hold {
             queued: runnable_time(id).map_or(Queued::Unread, Queued::Waited),
-            runnable: threads(id).is_some_and(|handles| {
-                handles.iter().any(|&handle| {
-                    run_state(id, handle).is_some_and(|state| {
-                        matches!(state, libc::TH_STATE_RUNNING | libc::TH_STATE_UNINTERRUPTIBLE)
-                    })
-                })
-            }),
+            runnable: states
+                .iter()
+                .any(|&state| matches!(state, libc::TH_STATE_RUNNING | libc::TH_STATE_UNINTERRUPTIBLE)),
+            uninterruptible: states.contains(&libc::TH_STATE_UNINTERRUPTIBLE),
             stopped: status(id) == Some(libc::SSTOP),
         }
     }
@@ -1961,6 +1997,8 @@ mod tests {
             runnable,
             stopped,
             #[cfg(unix)]
+            uninterruptible: false,
+            #[cfg(unix)]
             queued: Queued::Unread,
             #[cfg(target_os = "linux")]
             pressure: None,
@@ -2005,6 +2043,83 @@ mod tests {
             );
             assert_eq!(found(false, false, &waited(11), &stopped), Found::Still);
         }
+    }
+
+    /// A look that finds a thread of its party waiting uninterruptibly in its kernel, its host
+    /// doing its work for it (a disk's flush, F_FULLFSYNC), vouches for no window of its rate,
+    /// though the party ran a moment in that window: its time there is its host's hold, never
+    /// its own rest against R* (D215). ROOT's batch 32 (HVF, adas-mac-studio-3, 2 of 14 cores
+    /// idle): `shards guest use`'s kind had learned W* 55.118958 ms, R* 11.873833 ms of CPU in
+    /// 55.118958 ms and C* 12.580208 ms, and its wait was refused 224.7 ms in as "too slowly
+    /// to be answering", 13.227875 ms of CPU over 142.993081 ms taken for unheld, its one
+    /// thread not runnable, blocked. The same looks, its thread found in its kernel at each,
+    /// are never refused; found vouching, they are, as that batch's were.
+    #[cfg(unix)]
+    #[test]
+    fn a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate() {
+        let hold = |uninterruptible| Hold {
+            uninterruptible,
+            ..Hold::default()
+        };
+        let (flushing, resting) = (hold(true), hold(false));
+        assert!(vouches(Found::Progressed, false, &resting, false));
+        assert!(vouches(Found::Still, false, &resting, false));
+        assert!(
+            !vouches(Found::Progressed, false, &flushing, false),
+            "it ran a moment, then waited on its host's disk"
+        );
+        assert!(!vouches(Found::Still, false, &flushing, false));
+        assert!(!vouches(Found::Progressed, true, &resting, false), "starved");
+        assert!(!vouches(Found::Progressed, false, &resting, true), "ending");
+        let us = |us: u64| Duration::from_nanos(us * 1000);
+        let record = Record::new();
+        // W* and R* from the slowest answer; C* from a quicker one, at a rate above R*.
+        record.teach(us(55_119), us(11_874));
+        record.teach(us(50_000), us(12_580));
+        let judged = |hold: &Hold| {
+            let mut judge = Judge::begin(&record);
+            let began = Instant::now();
+            // Its work by each look a W* apart: its hashing at first, then a flush's moments.
+            [us(9_000), us(12_100), us(13_228), us(13_300)]
+                .into_iter()
+                .zip(1u32..)
+                .try_for_each(|(cpu, n)| {
+                    let at = began + us(56_000) * n;
+                    let work = vouches(Found::Progressed, false, hold, false).then_some(cpu);
+                    let span = Span {
+                        began: at,
+                        ended: at,
+                        resolution: Duration::ZERO,
+                        own: Duration::ZERO,
+                        work,
+                    };
+                    judge.found_over(Found::Progressed, span)
+                })
+        };
+        assert_eq!(judged(&flushing), Ok(()), "held by its host, it goes on");
+        let refused = judged(&resting).expect_err("found vouching, it runs below R* past C*");
+        assert!(refused.rate().is_some(), "{refused:?}");
+    }
+
+    /// A process whose thread flushes a file to its disk again and again (F_FULLFSYNC) is
+    /// seen waiting uninterruptibly in its kernel, and its look then vouches for no window of
+    /// its rate, though it ran (PM M600). Looked at until seen so, a wait for that fact, with
+    /// no clock.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel() {
+        let mut child = this_binary("flush");
+        let followed = Followed::of_pid(child.id()).unwrap().unwrap();
+        let hold = loop {
+            let hold = followed.hold();
+            if hold.uninterruptible {
+                break hold;
+            }
+            std::thread::yield_now();
+        };
+        assert!(!vouches(Found::Progressed, false, &hold, false));
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
     }
 
     /// The readers see what a host does to a process: a sleeping one neither runnable nor
@@ -2347,6 +2462,29 @@ mod tests {
                 loop {
                     std::hint::spin_loop();
                 }
+            }
+            // A page written to a file of its own and flushed to its disk's media
+            // (F_FULLFSYNC, fcntl(2)), again and again until its stdin ends: a thread that
+            // waits on its host's disk, as `record`'s in guest.rs does (PM M600).
+            #[cfg(target_os = "macos")]
+            Ok("flush") => {
+                use std::io::Write as _;
+                use std::os::fd::AsRawFd as _;
+                let ended = std::sync::atomic::AtomicBool::new(false);
+                let dir = shards_testdir::TempDir::new("flush").unwrap();
+                let mut file = std::fs::File::create(dir.join("flushed")).unwrap();
+                std::thread::scope(|scope| {
+                    scope.spawn(|| {
+                        let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
+                        ended.store(true, std::sync::atomic::Ordering::Relaxed);
+                    });
+                    while !ended.load(std::sync::atomic::Ordering::Relaxed) {
+                        file.write_all(&[1u8; 4096]).unwrap();
+                        // SAFETY: fcntl(2) of a descriptor this holds open.
+                        assert_eq!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) }, 0);
+                    }
+                });
+                std::process::exit(0);
             }
             // D215's rate bound's children, each saying it has started first: `tick`, 10 ms
             // of work in each 100 ms until its stdin ends; `pulse`, 10 ms of work in each

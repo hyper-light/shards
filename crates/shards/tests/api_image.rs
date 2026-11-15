@@ -2799,11 +2799,18 @@ fn warm_hosts_end_with_the_process_holding_their_pools() {
         let sent = unsafe { libc::kill(-pid, 0) };
         sent == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     };
-    let mut patience = Patience::started();
+    // Its party is those groups' own processes, the holder's orphans now, none of them this
+    // process's: a wait on the processes this process started followed none of them, and was
+    // refused 322.5 µs in with host 75603 live (ROOT's batch 32, HVF).
+    let groups: Vec<u32> = hosts.iter().filter_map(|&pid| u32::try_from(pid).ok()).collect();
+    let mut patience = Patience::groups(&groups);
     while !hosts.iter().all(|&pid| gone(pid)) {
         assert!(
             patience.holds(),
-            "warm hosts {hosts:?} outlived their pools' holder"
+            "warm hosts {hosts:?} outlived their pools' holder, their groups' processes now {:?}",
+            common::grouped(&common::processes(), &groups)
+                .cloned()
+                .collect::<Vec<_>>()
         );
         std::thread::sleep(patience.next_look());
     }
