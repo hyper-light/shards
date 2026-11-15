@@ -2930,7 +2930,7 @@ mod hosted {
         // Its domains' plug roots (D235), as a daemon's run names them: this host's own and
         // each share's top-level directory, beneath which a plug asked of it lies.
         let roots = match &agentfile {
-            Some(_) => crate::setup::plug_roots(&points),
+            Some(_) => granted_roots(crate::setup::plug_roots(&points), &request.plug_roots)?,
             None => Vec::new(),
         };
         setup.extend(roots.iter().cloned());
@@ -3048,6 +3048,27 @@ mod hosted {
             gpu_report: request.gpu_report,
             command: request.command.is_some(),
         })
+    }
+
+    /// The setup entries of the run's plug roots (D235, D271): its host's own and its shares'
+    /// top-level directories (`setup::plug_roots`), then each its orchestrator grants that is
+    /// none of those, each checked again as its guest takes one (`plug::root_name`).
+    fn granted_roots(mut roots: Vec<Vec<u8>>, granted: &[String]) -> Result<Vec<Vec<u8>>, No> {
+        for root in granted {
+            if protocol::plug::root_name(root.as_bytes()).is_none() {
+                return Err(No(
+                    Cause::Request,
+                    format!(
+                        "{root:?}: no plug root, which is one top-level directory and none of init's own"
+                    ),
+                ));
+            }
+            let entry = [protocol::plug::ROOT_KEY, root.as_bytes()].concat();
+            if !roots.contains(&entry) {
+                roots.push(entry);
+            }
+        }
+        Ok(roots)
     }
 
     /// The run's processes, started: its network's, its shares', its VM's; how its VM
@@ -3933,8 +3954,8 @@ mod hosted {
         /// number; none once the VM's link has closed, as nothing will answer one then.
         lanes: Mutex<Option<LaneWaits>>,
         next_lane: std::sync::atomic::AtomicU64,
-        /// What is plugged into the run's members, by the path it is at.
-        plugged: Mutex<HashMap<String, Plugged>>,
+        /// What is plugged into the run's members, by the path it is at: each member's.
+        plugged: Mutex<HashMap<String, Vec<Plugged>>>,
         /// A plug/unplug's ownership turn, held through device and guest completion;
         /// replies never need this lock. The mounted registry stays readable meanwhile.
         plug_turn: Mutex<()>,
@@ -4680,7 +4701,7 @@ mod hosted {
             serve(&live, input, &launched, client, control);
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
-            for (_, p) in std::mem::take(&mut *lock(&live.plugged)) {
+            for p in std::mem::take(&mut *lock(&live.plugged)).into_values().flatten() {
                 p.share.end(&live.ends);
             }
             Ok(())
@@ -5474,10 +5495,10 @@ mod hosted {
                 let asked = std::thread::Builder::new()
                     .name("api-run unplug".into())
                     .spawn_scoped(scope, move || {
-                        let (result, share) = unplug(live, &ask);
+                        let (result, shares) = unplug(live, &ask);
                         plugged(live, id, result);
-                        // Its share process ends as its device's stream closes.
-                        if let Some(share) = share {
+                        // Each share process ends as its device's stream closes.
+                        for share in shares {
                             share.end(&live.ends);
                         }
                     });
@@ -6075,7 +6096,7 @@ mod hosted {
             ));
         }
         let mut reached = live.reached.to_vec();
-        reached.extend(lock(&live.plugged).values().map(|p| p.host.clone()));
+        reached.extend(lock(&live.plugged).values().flatten().map(|p| p.host.clone()));
         let target = super::destination(Path::new(to), live.home, &reached)?;
         let said = lock(&live.saving).ask()?;
         if let Err(refused) = super::made(&target) {
@@ -6261,30 +6282,25 @@ mod hosted {
         }
     }
 
-    /// `ask`'s host directory plugged into its member (D235), as `shards plug volume --for`
-    /// plugs one into a daemon's run (daemon/devices.rs): checked here, and by its guest's
-    /// init again; served by a share process of its own; plugged into the microVM's bus;
-    /// then mounted in the member at its path by init, the host's files the member's.
+    /// `ask`'s source plugged into each of its members (D235, D271), as `shards plug volume
+    /// --for` plugs one into a daemon's run (daemon/devices.rs): checked here, and by its
+    /// guest's init again; each member's its own device, served by a share process of its own,
+    /// plugged into the microVM's bus and mounted in the member at its path by init, the host's
+    /// files the member's. A member that refuses it has those given it first let go of it.
     fn plug(live: &Live<'_>, ask: &wire::PlugAsk) -> Result<(), (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
-        let member = live
-            .members
-            .iter()
-            .find(|m| m.index == ask.member)
-            .ok_or_else(|| {
-                (
-                    R::Request,
-                    format!("member {}: the image declares none", ask.member),
-                )
-            })?;
-        if !member.runs {
-            return Err((
-                R::Member,
-                format!("{}: files alone, it runs nothing", member.name),
-            ));
-        }
-        if !Path::new(&ask.host).is_absolute() {
-            return Err((R::Request, format!("{}: not an absolute path", ask.host)));
+        for &index in &ask.members {
+            let member = live
+                .members
+                .iter()
+                .find(|m| m.index == index)
+                .ok_or_else(|| (R::Request, format!("member {index}: the image declares none")))?;
+            if !member.runs {
+                return Err((
+                    R::Member,
+                    format!("{}: files alone, it runs nothing", member.name),
+                ));
+            }
         }
         let roots: Vec<&[u8]> = live.roots.iter().map(Vec::as_slice).collect();
         match protocol::plug::beneath(ask.at.as_bytes(), &roots) {
@@ -6301,16 +6317,85 @@ mod hosted {
         if lock(&live.plugged).contains_key(&ask.at) {
             return Err((R::Taken, format!("{} has something plugged in already", ask.at)));
         }
-        let dir = shards_vmm::platform::open_dir(Path::new(&ask.host))
-            .map_err(|e| (R::Host, format!("{}: {e}", ask.host)))?;
+        let host = source_dir(live, &ask.from, &ask.at)?;
+        let mut given: Vec<Plugged> = Vec::with_capacity(ask.members.len());
+        for &member in &ask.members {
+            match plug_one(live, member, &host, &ask.at, ask.read_only) {
+                Ok(plugged) => given.push(plugged),
+                Err(refused) => {
+                    // Those given it first let go of it: none of theirs has used it yet, and
+                    // one that has keeps it, for an unplug to let go of.
+                    let (kept, _, gone) = unplug_each(live, given, &ask.at);
+                    for share in gone {
+                        share.end(&live.ends);
+                    }
+                    if !kept.is_empty() {
+                        lock(&live.plugged).insert(ask.at.clone(), kept);
+                    }
+                    return Err(refused);
+                }
+            }
+        }
+        lock(&live.plugged).insert(ask.at.clone(), given);
+        Ok(())
+    }
+
+    /// The host directory a plug gives (D271): the one named, absolute; or the data of the
+    /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
+    /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
+    /// volumes, another microVM's engine's).
+    fn source_dir(
+        live: &Live<'_>,
+        from: &wire::PlugFrom,
+        at: &str,
+    ) -> Result<PathBuf, (wire::PlugRefusal, String)> {
+        use wire::PlugRefusal as R;
+        match from {
+            wire::PlugFrom::Host(host) => {
+                if !Path::new(host).is_absolute() {
+                    return Err((R::Request, format!("{host}: not an absolute path")));
+                }
+                Ok(PathBuf::from(host))
+            }
+            wire::PlugFrom::Volume(name) => {
+                let store = crate::volumes::Store::new(live.home);
+                crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
+                let _held = crate::volumes::lock();
+                let (volume, _) = store
+                    .create(
+                        name,
+                        &std::collections::BTreeMap::new(),
+                        &std::collections::BTreeMap::new(),
+                        "",
+                    )
+                    .map_err(|e| (R::Volume, e))?;
+                crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
+                    .map_err(|e| (R::Volume, e))?;
+                Ok(store.data(name))
+            }
+        }
+    }
+
+    /// Host directory `host` plugged into member `member` at `at` (D235): its own share
+    /// process, its own device on the microVM's bus, mounted in the member by init.
+    fn plug_one(
+        live: &Live<'_>,
+        member: u32,
+        host: &Path,
+        at: &str,
+        read_only: bool,
+    ) -> Result<Plugged, (wire::PlugRefusal, String)> {
+        use wire::PlugRefusal as R;
+        let dir = shards_vmm::platform::open_dir(host)
+            .map_err(|e| (R::Host, format!("{}: {e}", host.display())))?;
         if !dir
             .metadata()
-            .map_err(|e| (R::Host, format!("{}: {e}", ask.host)))?
+            .map_err(|e| (R::Host, format!("{}: {e}", host.display())))?
             .is_dir()
         {
-            return Err((R::Host, format!("{}: not a directory", ask.host)));
+            return Err((R::Host, format!("{}: not a directory", host.display())));
         }
-        let dirs = [(OwnedFd::from(dir), ask.read_only, OsString::new())];
+        let dirs = [(OwnedFd::from(dir), read_only, OsString::new())];
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let tag = format!(
             "shards-plug{}",
@@ -6324,7 +6409,7 @@ mod hosted {
         let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
         // On Unix its connection, which the share process sends and holds until it is
         // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
-        let host = |e: String| (R::Host, e);
+        let refused = |e: String| (R::Host, e);
         #[cfg(unix)]
         let answer = match shards_ipc::recv(&share.door) {
             Ok(Some(ends)) if ends.kind == kind::SHARE_ENDS => match ends.fds.first() {
@@ -6333,15 +6418,15 @@ mod hosted {
                     let _ = shards_ipc::send(&share.door, kind::TAKEN, &[], &[]);
                     answer
                 }
-                None => Err(host("its share process sent no connection".into())),
+                None => Err(refused("its share process sent no connection".into())),
             },
-            Ok(_) => Err(host("its share process sent no connection".into())),
-            Err(e) => Err(host(format!("its share process: {e}"))),
+            Ok(_) => Err(refused("its share process sent no connection".into())),
+            Err(e) => Err(refused(format!("its share process: {e}"))),
         };
         #[cfg(windows)]
         let answer = match share.ends.first() {
             Some(end) => ask_device(live, &step, &[end.as_fd()]).map_err(device_refused),
-            None => Err(host("no stream was made for its share".into())),
+            None => Err(refused("no stream was made for its share".into())),
         };
         let placed = answer.and_then(|a| {
             a.split_once(' ')
@@ -6355,11 +6440,11 @@ mod hosted {
                 return Err(e);
             }
         };
-        let flag = if ask.read_only { "ro" } else { "rw" };
-        let index = ask.member.to_string();
-        if let Err((_, e)) = guest_device(live, &["share", &address, &tag, &ask.at, flag, "member", &index]) {
+        let flag = if read_only { "ro" } else { "rw" };
+        let index = member.to_string();
+        if let Err((_, e)) = guest_device(live, &["share", &address, &tag, at, flag, "member", &index]) {
             // Taken off again, its guest having found it or not.
-            let _ = guest_device(live, &["unmount", &address, &ask.at, "member", &index]);
+            let _ = guest_device(live, &["unmount", &address, at, "member", &index]);
             let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
             share.end(&live.ends);
             return Err((R::Device, e));
@@ -6367,54 +6452,84 @@ mod hosted {
         // Its guest told what its host changes beneath it from now on (D235).
         let told = share.notices.take().and_then(|pipe| {
             notice_exec(live, pipe)
-                .map_err(|e| {
-                    super::say(format_args!(
-                        "{}: its guest is told none of its changes: {e}",
-                        ask.at
-                    ))
-                })
+                .map_err(|e| super::say(format_args!("{}: its guest is told none of its changes: {e}", at)))
                 .ok()
         });
-        lock(&live.plugged).insert(
-            ask.at.clone(),
-            Plugged {
-                devfn,
-                address,
-                member: ask.member,
-                host: std::fs::canonicalize(&ask.host).unwrap_or_else(|_| PathBuf::from(&ask.host)),
-                share,
-                _told: told,
-            },
-        );
-        Ok(())
+        Ok(Plugged {
+            devfn,
+            address,
+            member,
+            host: std::fs::canonicalize(host).unwrap_or_else(|_| host.to_path_buf()),
+            share,
+            _told: told,
+        })
     }
 
-    /// What is plugged in at `ask`'s path let go of (D235): unmounted in its member by init,
-    /// refused while anything there uses it, then taken off the microVM's bus; its share
-    /// process given back, to be reaped once its stream has closed.
+    /// What is plugged in at `ask`'s path let go of in each member it was plugged into (D235,
+    /// D271): unmounted there by init, refused while anything there uses it, then taken off the
+    /// microVM's bus; each member's share process given back, to be reaped once its stream has
+    /// closed. Those a member refused stay plugged, the refusal naming them.
     fn unplug(
         live: &Live<'_>,
         ask: &wire::UnplugAsk,
-    ) -> (Result<(), (wire::PlugRefusal, String)>, Option<Shares>) {
+    ) -> (Result<(), (wire::PlugRefusal, String)>, Vec<Shares>) {
         use wire::PlugRefusal as R;
         let _turn = lock(&live.plug_turn);
-        let Some((devfn, address, member)) = lock(&live.plugged)
-            .get(&ask.at)
-            .map(|p| (p.devfn, p.address.clone(), p.member))
-        else {
+        let Some(plugged) = lock(&live.plugged).remove(&ask.at) else {
             return (
                 Err((R::Unknown, format!("nothing is plugged in at {}", ask.at))),
-                None,
+                Vec::new(),
             );
         };
-        let index = member.to_string();
-        if let Err((busy, e)) = guest_device(live, &["unmount", &address, &ask.at, "member", &index]) {
-            return (Err((if busy { R::Busy } else { R::Device }, e)), None);
+        let (kept, refused, gone) = unplug_each(live, plugged, &ask.at);
+        let result = match refused {
+            None => Ok(()),
+            Some((cause, why)) => {
+                let names: Vec<&str> = kept
+                    .iter()
+                    .filter_map(|p| live.members.iter().find(|m| m.index == p.member))
+                    .map(|m| m.name.as_str())
+                    .collect();
+                Err((
+                    cause,
+                    format!("{}: still plugged into {}: {why}", ask.at, names.join(", ")),
+                ))
+            }
+        };
+        if !kept.is_empty() {
+            lock(&live.plugged).insert(ask.at.clone(), kept);
         }
-        if let Err(e) = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]) {
-            return (Err(device_refused(e)), None);
+        (result, gone)
+    }
+
+    /// A plug's refusal, by what refused it (D235).
+    type PlugRefused = (wire::PlugRefusal, String);
+
+    /// Each of `plugged` at `at` let go of (D271): those a member refused, kept, and the first
+    /// refusal; and the share processes of those let go of.
+    fn unplug_each(
+        live: &Live<'_>,
+        plugged: Vec<Plugged>,
+        at: &str,
+    ) -> (Vec<Plugged>, Option<PlugRefused>, Vec<Shares>) {
+        use wire::PlugRefusal as R;
+        let (mut kept, mut gone, mut refused) = (Vec::new(), Vec::new(), None);
+        for p in plugged {
+            let index = p.member.to_string();
+            let let_go = guest_device(live, &["unmount", &p.address, at, "member", &index])
+                .map_err(|(busy, e)| (if busy { R::Busy } else { R::Device }, e))
+                .and_then(|_| {
+                    ask_device(live, &[shards_ipc::device::UNPLUG, p.devfn], &[]).map_err(device_refused)
+                });
+            match let_go {
+                Ok(_) => gone.push(p.share),
+                Err(e) => {
+                    refused.get_or_insert(e);
+                    kept.push(p);
+                }
+            }
         }
-        (Ok(()), lock(&live.plugged).remove(&ask.at).map(|p| p.share))
+        (kept, refused, gone)
     }
 
     /// Runs init's `DEVICE` built-in with `args` in the guest (init hotplug.rs): its answer,
@@ -6711,6 +6826,65 @@ mod hosted {
             assert!(lock(&unnetworked.ports).held.is_empty());
         }
 
+        /// D271. Do: ask a plug's source of a host directory, of a relative one, of a volume of
+        /// the run's home its store has not got, of that volume again, of a name no volume takes,
+        /// and of a volume an image's Agentfile gives its members elsewhere; and grant a run plug
+        /// roots beside its host's own, one of them its host's already. Expect: the host
+        /// directory as named; a relative one refused (`Request`); the volume made, its data
+        /// directory in the home, and the same one taken again; a bad name and a scoped
+        /// volume refused (`Volume`); each root granted once, after its host's, and one of
+        /// init's own refused.
+        #[test]
+        fn a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots() {
+            use wire::PlugRefusal as R;
+            let dir = shards_testdir::TempDir::new("api-vol").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, _vm) = Stream::pair().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            let at = "/session/x";
+            assert_eq!(
+                source_dir(&live, &wire::PlugFrom::Host("/Users/u/proj".into()), at),
+                Ok(PathBuf::from("/Users/u/proj"))
+            );
+            assert!(matches!(
+                source_dir(&live, &wire::PlugFrom::Host("proj".into()), at),
+                Err((R::Request, _))
+            ));
+            let store = crate::volumes::Store::new(dir.path());
+            assert!(store.get("sessions").is_none());
+            let made = source_dir(&live, &wire::PlugFrom::Volume("sessions".into()), at).unwrap();
+            assert_eq!(made, store.data("sessions"));
+            assert!(store.get("sessions").is_some());
+            assert_eq!(
+                source_dir(&live, &wire::PlugFrom::Volume("sessions".into()), at),
+                Ok(made)
+            );
+            assert!(matches!(
+                source_dir(&live, &wire::PlugFrom::Volume("a/b".into()), at),
+                Err((R::Volume, _))
+            ));
+            let scoped: std::collections::BTreeMap<String, String> =
+                [(crate::volumes::SCOPED.to_string(), "1".to_string())]
+                    .into_iter()
+                    .collect();
+            {
+                let _held = crate::volumes::lock();
+                store
+                    .create("scoped", &scoped, &std::collections::BTreeMap::new(), "")
+                    .unwrap();
+            }
+            assert!(matches!(
+                source_dir(&live, &wire::PlugFrom::Volume("scoped".into()), at),
+                Err((R::Volume, _))
+            ));
+            let own = vec![b"plug-root=/Users".to_vec()];
+            assert_eq!(
+                granted_roots(own.clone(), &["/session".into(), "/Users".into()]).unwrap(),
+                vec![b"plug-root=/Users".to_vec(), b"plug-root=/session".to_vec()]
+            );
+            assert!(granted_roots(own, &["/tmp".into()]).is_err());
+        }
+
         /// Do pause a run whose init last said its stats, its stand-in VM answering each `PAUSE`
         /// and init's `CLOCK`; ask its guest while it is paused, pause it again, read its stats,
         /// resume it twice, and pause it once its VM's link has closed (D267). Expect: its VM
@@ -6809,8 +6983,8 @@ mod hosted {
                 }),
                 super::super::Ask::Plug(wire::PlugAsk {
                     id: 4,
-                    member: 0,
-                    host: "/tmp".into(),
+                    members: vec![0],
+                    from: wire::PlugFrom::Host("/tmp".into()),
                     at: "/work".into(),
                     read_only: true,
                 }),
@@ -7909,6 +8083,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
             gpu_report: None,
         }
     }

@@ -29405,6 +29405,15 @@ D215's spawn alone).
 
 ### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
+**Amended by D271 (2026-11-15).** An orchestrator's plug gives a host directory or a volume
+of its home's store into every member that runs or those named, each its own device, at the
+path asked; and its run's plug roots include those its spec grants at its start
+(`ImageSpec::plug_roots`), beside its host's own and its shares'. A domain's roots are fixed as
+it starts (Landlock only narrows), so **a volume added later is placed beneath a root by
+default**: kiln names a session's roots up front (its project's, the person's home volume's,
+and one for the session's volumes), and an "Add volume" beneath any of them needs no member
+restart. A path outside every root is refused, typed (`PlugRefusal::Outside`).
+
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
 harness, D59) must see the project at that same absolute path, writable, its writes the
@@ -35970,9 +35979,23 @@ is the long-pause follow-up below, not the pause.
   on, and KVM's paravirtual time (`KVM_ARM_VCPU_PVTIME`) carries stolen time alone; WHP's guests
   keep time by Hyper-V's reference TSC, which runs on (its partition's time is held for a snapshot
   alone) with no stopped flag. Their guests may say a soft lockup after a long pause, a warning
-  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. **Owed**
-  (ROOT): a long pause on KVM x86-64 with the guest's `dmesg` read for `soft lockup` and
-  `rcu_sched self-detected stall`, red with `went_on` empty.
+  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. Tested by
+  `api_image` `a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64` (KVM x86-64 alone,
+  skipped elsewhere saying why): the image's own command (the test guest's `watchdogs`) says its
+  guest's `watchdog_thresh`, the kernel's taint and its count of RCU stalls into a share; the run
+  is paused past the soft-lockup threshold that follows (twice `watchdog_thresh`) by one of the
+  watchdog's sample periods (a fifth of it), the kernel's own rule (kernel/watchdog.c,
+  `get_softlockup_thresh`, `NUM_SAMPLE_PERIODS`), so that its look after the pause is past it
+  whatever its phase, and neither the taint's `L` (set as `BUG: soft lockup` is printed) nor the
+  stall count (`/sys/kernel/rcu_stall_count`, since Linux 6.16, counted as `rcu_sched
+  self-detected stall` is printed) may move. Those are what the kernel keeps of its reports that
+  the guest may read: a member reads no kernel log (D115: `dmesg_restrict` 1, no CAP_SYSLOG), the
+  run's console is discarded, and `/sys` is hidden from members, so it is the run's own command
+  that reads them. An RCU stall needs a grace period under way and the pause past
+  `rcu_cpu_stall_timeout` (59 s in shards' kernel, `CONFIG_RCU_CPU_STALL_TIMEOUT`), which this
+  pause does not reach: its count guards any other stall there, and the soft lockup is what turns
+  it red. **Owed** (ROOT): its run on KVM x86-64, and its red with `went_on` emptied
+  (crates/vmm/src/hv/kvm/x86_64.rs: `let _ = self.fd.kvmclock_ctrl();` removed).
 - *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
   (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
   an end.
@@ -36318,6 +36341,62 @@ format 35; ipc `device_refusals_keep_identity_and_retry_across_the_wire` (`NoRoo
 without; `--component-window` among a boot's words); init
 `hotplug::tests::a_components_key_is_its_digest_alone` (Linux). The guest's probe and mount
 run on real VMs alone: slice 4's E2E tests, ROOT's.
+
+### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
+volume to the microvm(s) for that session, grants the permissions specified, and adds it to the
+harness's/agent's allow directories and session's scope", live, with no rebuild or restart
+(ROOT's binding reading, as D269's). D235 plugged one host directory into one member, beneath
+the run's plug roots, which its host chose alone (its OS's own and its shares' top-level
+directories).
+
+**What constrains it.** A member's domain is given every right beneath its plug roots as it
+starts, by Landlock, and no rule is added to a running process's domain (landlock(7):
+`landlock_restrict_self` only narrows); so what is plugged in live lies beneath a root the
+domain started with, or the member's processes must start again under a widened ruleset. Each
+domain sees a share as its own user (init hotplug.rs `share`: `name_owner_as` for the member's
+ids on its mount), so a share is one member's.
+
+**Decided** (image channel version 35):
+- *Roots granted at the start.* `ImageSpec::plug_roots`: top-level directories of the members'
+  view (`/session`), each one `shards_abi::run::plug::root_name` takes (none of init's own:
+  `/proc`, `/sys`, `/dev`, `/tmp`, `/etc`, `/run`) and each once, refused by field otherwise;
+  added after the host's own (`api_run::granted_roots`). They are the run's setup alone, so a
+  warm pool's microVM is none of them (`Request::exemplar` takes them out) and runs of other
+  roots share its hosts. A volume added later is placed beneath one by default (D235's
+  amendment); a path outside every root is refused `Outside`. The explicit restart of a member
+  that a path outside every root would need is not built: refused typed until it is.
+- *The call.* `ImageGuest::plug(&Plug, patience)`, `Plug { source: PlugSource, to: PlugFor,
+  at, read_only }` in place of D235's one-member form; `PlugSource::Host(PathBuf)` (absolute) or
+  `PlugSource::Volume(name)`, a volume of the run's home's store, made where it is not there as
+  a run's `-v NAME:PATH` makes one (`Store::create`), refused `Volume` where the store would
+  refuse a run's own mount of it (a bad name, another microVM's engine's, D109's scoped volume
+  given elsewhere); `PlugFor::Every` (every member that runs) or `Members(names)`, each one the
+  image declares and that runs, named once (shards-api resolves them to their indices, and the
+  wire carries one at least, each once).
+- *One device for each member,* as D235's plug: its own share process and function on the
+  microVM's bus, mounted by init in that member at `at`, read-only where asked (its mount's
+  attribute; the server refuses the guest's writes too). A plug one member refuses is let go of
+  by those it was given to first.
+- *Unplug.* `unplug(at)` lets go of every member's plug at `at`: unmounted by init, then taken
+  off the bus. One a member holds busy is refused `Busy`, naming the members it stays plugged
+  into, while the others are let go of all the same, so that an unplug asked again finishes it.
+- *In place.* Nothing of the image, its template or its VM process changes: each plug is a
+  device added to the running microVM and a mount in its member.
+
+**Tests** (light): `wire::tests::plugs_round_trip_and_bad_ones_are_refused` (several members,
+a volume source, none or one twice refused, `Volume`);
+`image::tests::a_specs_plug_roots_are_top_level_directories_granted_once`;
+`session::tests::a_plug_is_for_the_members_that_run_and_rides_the_runs_channel`;
+`api_run::hosted::tests::a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots`.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays` (rw read and written
+back, ro refusing the member's write with EROFS, a home volume made by its plug, `Outside`,
+`Busy` and `Unknown`; the same `started_from`, the same VM process and unchanged templates
+across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
+`plugged-volumes` mode is new, so the test guests are rebuilt.
 
 ## 4. Start path (≤ 5 ms budget)
 
