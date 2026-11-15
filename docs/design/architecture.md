@@ -36689,8 +36689,8 @@ bounds each box with `ImageGuest::room` (D241), whose cap holds the run's cgroup
 grower's plugs, while the domains' share, set once as they start, counts all the host's
 memory: a member past the room is throttled at the run's hold and never ended, and no words say
 why. 4e0b82699 re-derived the share at each `ROOM` and `CGROUP` built-in, within the room, and
-named the room in init's words. On KVM (adacachy2, PM M605) it made nesting.rs fail one test in
-each of five runs, a judged wait on the daemon (`shards stop daemon`, `shards build image`,
+named the room in init's words. On KVM (adacachy2, PM M605) it made nesting.rs fail a test in
+each of four runs, a judged wait on the daemon (`shards stop daemon`, `shards build image`,
 `shards ps`) refused as making no progress past its record, where three runs without it, and
 three with only its re-derivation at `ROOM` taken out, passed 14 of 14: re-deriving the share
 at each `ROOM`, which a daemon's budget tells its runs at each window of its host's pressure,

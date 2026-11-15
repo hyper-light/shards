@@ -25501,3 +25501,108 @@ it. Neither host's counts are a bound; n is one loop each.
 - **Found beside it.** In every run of the sweep, both revisions and both ways, the harness
   member's `alloc 256` was ended by init, `the agents' memory, 21069824 bytes, was past their
   share, 20873216` at 64 MiB: a member's share does not grow with the plug (D274's owed list).
+
+### M605. The 2026-11-15 vendor point's real-VM batch: an orchestrator's run's plug and its members' share (D275), HVF's plugged memory (D274), on HVF and KVM
+
+- **Where.** HVF: adas-mac-studio.local-2 (Apple M3 Ultra, 32 cores, macOS 26.4), each pass a launchd job of
+  the user's session (`docs/research/measurements/macos-sched/launchd-run.sh`). KVM: adacachy2 (AMD Ryzen 9
+  9950X3D2, 32 cores, CachyOS, Linux 7.3.3, glibc 2.44), each pass a transient user unit (`systemd-run --user`,
+  `Delegate=yes`). rustc 1.100.0; the test-release profile; `SHARDS_REQUIRE_VMS=1`. One tree per host
+  (`git archive` of b8a861356 unpacked once, the passes' patches applied in it and taken off, one target), so no two
+  source paths share a target (cargo's metadata hash is relative to the workspace: a second path's build runs the
+  first's binaries). Each pass is `docs/research/measurements/vendor-point-1115/svp.sh`'s; every command is below.
+- **Revisions.** b8a861356 (main ec7de3568, p/small-vm-fault's D274 and `--component-window` fix, p/member-share's
+  d4990fec8 and 4e0b82699, D275's entry); 6a0adfc09 (b8a861356 and the three test fixes below). Red: 6a0adfc09 with
+  `crates/shards/src/{api_run,daemon,daemon/visit,run}.rs` and `crates/init` as at ce5f97ab6 (D275's two fixes out,
+  their tests in). Mutation: 6a0adfc09 without the `ROOM` built-in's `reshare(domains)` (init `run.rs`). The vendor point,
+  4124d8c70: 6a0adfc09 with 4e0b82699 reverted (D275's share within a room held back, below).
+- **Green at b8a861356** (`cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings`; `cargo clippy -p
+  shards-init -p shards-testguest --all-targets --target <arch>-unknown-linux-musl -- -D warnings`; `cargo test -p
+  shards-init --target x86_64-unknown-linux-musl`; `cargo test --profile test-release -p shards-vmm --lib --
+  hv::hvf::tests`; `cargo test --profile test-release -p shards --bin shards --
+  api_run::tests::an_orchestrators_run_may_plug_its_most_less_its_boot`; `cargo test --profile test-release -p
+  shards --no-fail-fast --test api_image --test nesting --test member_exec --test managed_output --test tty --test
+  engine_ring --test guest_time`; `--test boot shards_api_`; `scripts/check-development-policy`):
+
+  | | HVF | KVM |
+  |---|---|---|
+  | clippy (host; init and the test guest for musl) | clean | clean; clean |
+  | shards-init's unit tests (Linux) | | 325 of 326: `a_members_top_lists_its_own_processes_alone` (below) |
+  | `hv::hvf::tests` (D274's exit among them) | 2 of 2 (4 ignored) | |
+  | api_run's plug unit test (D275) | pass | pass |
+  | api_image | 32 of 33 (the pause test, below) | 28 of 33 and the pause test hung (below) |
+  | nesting | 14 of 14 | 12 of 14 (below) |
+  | member_exec, managed_output, tty, engine_ring, guest_time | 6, 29, 7, 8, 1: all | 6, 38, 7, 8, 1: all |
+  | boot `shards_api_` | 3 of 3 | 3 of 3 |
+  | policy check | pass | pass |
+
+- **What failed at b8a861356, each reproduced and its cause found** (test fixes in 6a0adfc09):
+  - KVM, api_image's live publish, egress and volume tests (D269, D273, D271): `vm_processes` matched "shards-vm" in a
+    command line, and a Linux run host starts its VM binary through its own descriptor (`/proc/PID/fd/N`,
+    helpers.rs `Program::path`), so each found no VM process: `assertion left == right failed: [] left: 0 right: 1`
+    (api_image.rs 3642, 3911, 3779). The binary names itself after its file (`name_after_executable`): its
+    `/proc/PID/comm` is matched too.
+  - KVM, `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`: both runs, Saved then
+    Restored, "allocated 64" and ended 0, then "its guest plugged nothing before its save": x86-64's least envelope,
+    128 MiB, holds its guest's boot, so its template holds nothing plugged (arm64's 64 MiB does not, M604). The
+    template's plugged runs are asserted on arm64 alone.
+  - Both, `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped`: it compared the stats said while paused, init's
+    last answer (its run host keeps each answer as its last, `Pauses::said`), with one read before
+    `guest_time_step`'s reads, each an answer too: HVF `left: (Some(2684000), Some(1671168)) right: (Some(2625000),
+    Some(1671168))` (api_image.rs 712); on KVM the same failure, inside the scope, left its run paused and the reading
+    thread waiting for a tick: hung (its VM process's vCPU parked, 0.42 s of CPU in 8 minutes), ended by ROOT. `before`
+    is read after the step's reads, and a failure while paused stops the run as it unwinds.
+- **Green at 6a0adfc09**: api_image HVF 33 of 33 (2 ignored), KVM 33 of 33 twice (2 ignored).
+- **4e0b82699 and nesting on KVM** (`--test nesting`, 14 tests, each run whole):
+
+  | tree | runs | each run |
+  |---|---|---|
+  | with 4e0b82699 (b8a861356 once, 6a0adfc09 three times) | 4 | 1 or 2 failed: `a_granted_workload_is_held_to_its_subtree` and `a_granted_workload_still_reaches_no_host_port_over_vsock` (b8a861356), `a_granted_commands_runtime_makes_boxes_in_its_own_subtree` (twice), `no_box_is_made_without_both_words_or_beside_a_domain` |
+  | D275's fixes out (red) | 3 | 14 of 14 |
+  | 6a0adfc09 without the `ROOM` arm's `reshare(domains)` | 3 | 14 of 14 |
+  | 4124d8c70 (4e0b82699 reverted) | 3 | 14 of 14 |
+
+  Each failure is a judged wait on the daemon refused as making no progress past this host's record: `shards stop
+  daemon made no progress for 34.751041ms, past the slowest answer of its kind seen on this host (19.244182ms)` (in
+  `Home::drop`, nesting.rs:168, while another daemon was starting in its home), `shards build image -q -t plain:1 ...
+  made no progress for 307.311174ms, past ... (156.498513ms)`, `shards ps -q --no-trunc`. 4e0b82699 is reverted from
+  the vendor point and owed to its lane (D275, held back); the pushed revert's message says five runs and four at
+  6a0adfc09: they were four and three, as here.
+- **Green at 4124d8c70, the vendor point** (the passes above at their full scope):
+
+  | | HVF | KVM |
+  |---|---|---|
+  | clippy (host; init and the test guest for musl) | clean | clean; clean |
+  | shards-init's unit tests (Linux) | | 325 of 326 (`a_members_top_lists_its_own_processes_alone`, below) |
+  | `hv::hvf::tests`; api_run's plug unit test | pass; pass | ; pass |
+  | api_image | 32 of 32 (2 ignored) | 32 of 32 (2 ignored) |
+  | nesting | 14 of 14 | 14 of 14, three runs |
+  | member_exec, managed_output, tty, engine_ring, guest_time | 6, 29, 7, 8, 1: all | 6, 38, 7, 8, 1: all |
+  | boot `shards_api_` | 3 of 3 | 3 of 3 |
+  | policy check | pass | pass |
+
+  `scripts/lint aarch64-apple-darwin` (the workspace's clippy and the GPU renderer's) at 6a0adfc09: clean; every other
+  target's lint is CI's (below).
+- **Red (D275's fixes out)**:
+  - `a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug`: HVF `shards-init: ended: the agents'
+    memory, 23465984 bytes, was past their share, 23212032` (kiln's 20873216, P1.4); KVM `75132928 bytes, was past
+    their share, 75083776`: each member ended at its boot's `MemAvailable`, its run told to plug nothing.
+  - `an_orchestrators_room_is_its_members_share`, KVM: ended at its boot share, 75116544, before the room of 256 MiB,
+    in words naming no room.
+  - `the_least_envelope_saves_and_restores_...`: HVF's run did not end 0 (api_image.rs 1271); KVM's passed (its
+    `alloc 64` fits x86-64's 128 MiB boot).
+- **Mutation (no share re-derived at `ROOM`, 4e0b82699's guard)**, KVM: the half-room case's member, held at the run's room, was never
+  ended: its channel made no progress, its VM process asleep (0 of 22 threads runnable), until the test's wait
+  refused it 12.6 s in. Green: ended `Signaled(9)` in init's words naming the room.
+- **Not caused by this batch, each A/B'd:**
+  - shards-init's `a_members_top_lists_its_own_processes_alone` ("the member ended before its exec", domains.rs) fails
+    3 of 3 on adacachy2 with init as at ce5f97ab6 too: this host's (Landlock-confined `execv` of `/bin/sleep`), not
+    the share's.
+- **Unrun or owed.** WHP and every other target's tests and lints: GitHub CI run 43748291795 at 4124d8c70 (its
+  windows-2022 and windows-2025 legs boot WHP), still running when the vendor point was merged to main at Ada's word
+  (2026-11-15, about 18:55Z): its lints had passed on Windows x86-64 and arm64 and Linux glibc x86-64 and arm64 at
+  6a0adfc09, whose code 4124d8c70 changes only in init and the test guest; every other result is owed, ROOT's to follow; KVM arm64 (the L1 guest on an M3+ Mac), musl hosts and other Linux
+  distributions and kernels: unverified here. 4e0b82699's stall and D275's review note on it (a member's page cache
+  counted twice at a re-derivation with no room) are its lane's. No performance is claimed (R14).
+- **The harness.** `docs/research/measurements/vendor-point-1115/svp.sh` (one pass: its steps' commands as above, each
+  step's exit and seconds to a summary), run on HVF through `launchd-run.sh` and on KVM as a user unit.
