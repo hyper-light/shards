@@ -985,6 +985,11 @@ struct Stack<'r> {
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
+    /// The most its run could ever be granted past the microVM, as its `NET_POLICY` named it
+    /// (D272), which every grant it is told as the run goes (`NET_GRANTS`) lies within, and
+    /// which on Linux its Landlock layer holds its TCP connections to: none until a policy of
+    /// ports came.
+    ceiling: Option<Granted>,
     /// What the run's credentials need made before the process confined itself, where its
     /// spawner said the run has credential grants ([`Prepared`]); taken as the grants come.
     prepared: Option<Prepared>,
@@ -1147,6 +1152,7 @@ impl Control {
                     | shards_ipc::kind::NET_LEASE
                     | shards_ipc::kind::NET_SIGN_INS
                     | shards_ipc::kind::NET_SIGN_IN
+                    | shards_ipc::kind::NET_GRANTS
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -1222,6 +1228,7 @@ pub fn serve(
         names: None,
         #[cfg(target_os = "linux")]
         ports_confined: false,
+        ceiling: None,
         prepared,
         credentials: None,
         sign_ins: None,
@@ -1567,11 +1574,40 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
                 }
                 stack.ports_confined = true;
             }
+            stack.ceiling = Some((ports.clone(), named.clone(), dns_all));
             stack.cfg.policy = Policy::Ports(ports);
             stack.cfg.named = named;
             stack.cfg.learned.clear();
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_GRANTS {
+            // The run's grants as it goes (D272), within its ceiling, refused in words where
+            // past it, as a refusal ends no control of the run's.
+            let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
+                return Err(malformed());
+            };
+            let past = match &stack.ceiling {
+                None => Some("no policy named the most its run could be granted".to_string()),
+                Some(ceiling) => past_ceiling(ceiling, &ports, &named, dns_all),
+            };
+            if let Some(why) = past {
+                return reply(
+                    sock,
+                    shards_ipc::kind::NET_GRANTS,
+                    &[&[1u8][..], why.as_bytes()].concat(),
+                );
+            }
+            stack.cfg.policy = Policy::Ports(ports);
+            stack.cfg.dns_all = dns_all;
+            // What it learned of a name still granted it keeps: a guest that resolved one
+            // before goes on reaching it at that address while its answer lives.
+            stack
+                .cfg
+                .learned
+                .retain(|l| named.iter().any(|(h, _)| h.eq_ignore_ascii_case(&l.answer.name)));
+            stack.cfg.named = named;
+            stack.cut_ungranted();
+            reply(sock, shards_ipc::kind::NET_GRANTS, &[0])
         } else if m.kind == shards_ipc::kind::NET_SIGN_INS {
             // The run's sign-in grants (D242, step 8), once, after its policy and before its
             // credential grants, which make its CA: each host its access token goes to, and its
@@ -1699,6 +1735,33 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             answer(sock, shards_ipc::kind::UNPUBLISH)
         }
     }
+}
+
+/// Why grants `ports`, `named` and `dns_all` lie past `ceiling`, the most a run could be
+/// granted (D272), where they do: a port none of its ranges holds, a destination it names not
+/// (its host's case aside, RFC 4343 §3), or names asked where it asks none. None where each
+/// lies within it.
+fn past_ceiling(ceiling: &Granted, ports: &Ports, named: &[(String, u16)], dns_all: bool) -> Option<String> {
+    let (most, most_named, most_dns) = ceiling;
+    for &(proto, lo, hi) in &ports.0 {
+        if let Some(port) = (lo..=hi).find(|&port| !most.has(proto, port)) {
+            return Some(format!(
+                "port {port}/{proto:?} lies past the most its run may be granted"
+            ));
+        }
+    }
+    for (host, port) in named {
+        if !most_named
+            .iter()
+            .any(|(h, p)| p == port && h.eq_ignore_ascii_case(host))
+        {
+            return Some(format!("{host}:{port} lies past the most its run may be granted"));
+        }
+    }
+    if dns_all && !most_dns {
+        return Some("names past the microVM lie past the most its run may be granted".into());
+    }
+    None
 }
 
 /// Answers a control message of `kind`, with nothing more: that it was taken.
@@ -2465,6 +2528,11 @@ impl<'r> Stack<'r> {
     #[cfg(windows)]
     fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
         let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
+        // Its grants may have changed while it was dialed (D272): datagrams to what they no
+        // longer reach go, as to a far end that refused them.
+        if key.1 != IpAddr::V4(self.cfg.gateway_ip) && !self.cfg.allows(key.1, Proto::Udp, key.2) {
+            return;
+        }
         let sock = match got {
             Ok(sock) => sock,
             Err(e) => {
@@ -2784,6 +2852,13 @@ impl<'r> Stack<'r> {
     /// SYN reset, as the far end's refusal would.
     #[cfg(windows)]
     fn dialed(&mut self, d: dial::Dialing, got: io::Result<tcp::HostSock>) {
+        // Its grants may have changed while it was dialed (D272): one they no longer reach is
+        // reset, as a far end's refusal would be.
+        let granted = d.dns || self.cfg.allows(d.key.remote.0, Proto::Tcp, d.key.remote.1);
+        let got = match got {
+            Ok(_) if !granted => Err(io::ErrorKind::ConnectionRefused.into()),
+            got => got,
+        };
         match got {
             Ok(sock) => {
                 if self.tcp.by_key.contains_key(&d.key) {
@@ -2861,6 +2936,48 @@ impl<'r> Stack<'r> {
     /// for what it now wants, its timer armed for its deadline unless an earlier one is,
     /// and its turn kept if a full ring held it back; or its slot emptied if it has
     /// closed, its socket with it, which the poller forgets (review 2.14).
+    /// Ends every flow of its guest's own that its grants no longer reach (D272): each TCP
+    /// connection it opened, reset to it, its host socket closed; each UDP flow past the
+    /// gateway, its socket closed. What a published port took, the gateway's own flows (its
+    /// names' relay) and its peers' frames are none of its grants'.
+    fn cut_ungranted(&mut self) {
+        let opened: Vec<u32> = self
+            .tcp
+            .by_key
+            .iter()
+            .filter(|(key, _)| !self.cfg.allows(key.remote.0, Proto::Tcp, key.remote.1))
+            .map(|(_, &slot)| slot)
+            .collect();
+        for slot in opened {
+            let Some(c) = self.tcp.take(slot) else {
+                continue;
+            };
+            let mut c = c;
+            if !c.accepted {
+                c.reset(&mut self.out());
+            }
+            self.settle(slot, c);
+        }
+        let gateway = IpAddr::V4(self.cfg.gateway_ip);
+        let cut: Vec<(u32, UdpKey)> = self
+            .udp_ids
+            .iter()
+            .filter(|(_, (_, to, port))| *to != gateway && !self.cfg.allows(*to, Proto::Udp, *port))
+            .map(|(&id, &key)| (id, key))
+            .collect();
+        for (id, key) in cut {
+            self.udp_ids.remove(&id);
+            // Forgotten by the poller, its socket closes with it.
+            if let Some(f) = self.udp.remove(&key) {
+                self.forget(
+                    f.sock.raw_sock(),
+                    token::of(token::UDP, 0, id),
+                    poll::Interest::READ,
+                );
+            }
+        }
+    }
+
     fn settle(&mut self, slot: u32, mut c: Conn) {
         if c.closed {
             if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
@@ -3210,6 +3327,7 @@ mod tests {
             names: None,
             #[cfg(target_os = "linux")]
             ports_confined: false,
+            ceiling: None,
             prepared: None,
             credentials: None,
             sign_ins: None,
@@ -3519,6 +3637,116 @@ mod tests {
             (ip.proto, ip.payload.first(), ip.payload.get(1)),
             (wire::PROTO_ICMP, Some(&3), Some(&13))
         );
+    }
+
+    /// D272. Do: on a stack whose policy (its ceiling) grants 443/tcp, 8443/tcp and 5000/udp,
+    /// open guest connections to 443 and to 8443, accept one a published port took, and open a
+    /// UDP flow to 5000; then tell it grants of 443/tcp alone; then grants past the ceiling;
+    /// and on a stack no policy came to, any grants. Expect: the grants taken (answered 0) and
+    /// held at once; the connection to 8443 reset, its host socket closed, its slot let go;
+    /// the one to 443 and the published port's kept; the UDP flow ended; grants past the
+    /// ceiling refused in words (answered 1), the grants before kept; and grants with no
+    /// ceiling refused alike.
+    #[cfg(unix)]
+    #[test]
+    fn grants_told_as_the_run_goes_hold_its_flows_within_its_ceiling() {
+        use std::io::Read as _;
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let ceiling = Ports(vec![
+            (Proto::Tcp, 443, 443),
+            (Proto::Tcp, 8443, 8443),
+            (Proto::Udp, 5000, 5000),
+        ]);
+        let cfg = Config::on_bridge(Policy::Ports(ceiling.clone()), [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.ceiling = Some((ceiling, Vec::new(), false));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local = listener.local_addr().unwrap();
+        let syn = wire::Tcp {
+            src_port: 40000,
+            dst_port: 443,
+            seq: 1,
+            ack: 0,
+            flags: wire::SYN,
+            window: 65535,
+            mss: None,
+            wscale: None,
+            payload: &[],
+        };
+        let opened = |stack: &mut Stack<'_>, guest_port: u16, remote: (IpAddr, u16)| {
+            let key = Key { guest_port, remote };
+            let c = Conn::open_to(key, (local.ip(), local.port()), &syn, 7).unwrap();
+            let slot = stack.tcp.reserve(key);
+            stack.settle(slot, c);
+            let (served, _) = listener.accept().unwrap();
+            (key, served)
+        };
+        let (kept, _kept_peer) = opened(&mut stack, 40000, (IpAddr::from([192, 0, 2, 1]), 443));
+        let (cut, mut cut_peer) = opened(&mut stack, 40001, (IpAddr::from([192, 0, 2, 2]), 8443));
+        let _client = std::net::TcpStream::connect(local).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let published = Key {
+            guest_port: 80,
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
+        };
+        let c = Conn::accept(published, sock, 9, &mut stack.out());
+        let slot = stack.tcp.reserve(published);
+        stack.settle(slot, c);
+        let udp = (40002, IpAddr::from([192, 0, 2, 3]), 5000);
+        stack.flow(udp, (IpAddr::from([127, 0, 0, 1]), 5000), b"x");
+        assert!(stack.udp.contains_key(&udp));
+        let (host, net) = UnixStream::pair().unwrap();
+        let tell = |stack: &mut Stack<'_>, ports: Ports| {
+            let m = shards_ipc::Message {
+                kind: shards_ipc::kind::NET_GRANTS,
+                payload: encode_policy(&ports, &[], false),
+                fds: Vec::new(),
+            };
+            answer_other(stack, &net, &m).unwrap();
+            let answer = shards_ipc::recv(&host).unwrap().unwrap();
+            assert_eq!(answer.kind, shards_ipc::kind::NET_GRANTS);
+            answer.payload
+        };
+        assert_eq!(tell(&mut stack, Ports(vec![(Proto::Tcp, 443, 443)])), [0]);
+        assert_eq!(
+            stack.cfg.policy,
+            Policy::Ports(Ports(vec![(Proto::Tcp, 443, 443)]))
+        );
+        assert!(
+            stack.tcp.by_key.contains_key(&kept),
+            "a connection its grants reach kept"
+        );
+        assert!(
+            stack.tcp.by_key.contains_key(&published),
+            "a published port's kept"
+        );
+        assert!(
+            !stack.tcp.by_key.contains_key(&cut),
+            "a connection its grants no longer reach"
+        );
+        cut_peer.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut rest = [0u8; 8];
+        assert!(
+            matches!(cut_peer.read(&mut rest), Ok(0) | Err(_)),
+            "its host socket closed"
+        );
+        assert!(
+            !stack.udp.contains_key(&udp),
+            "a UDP flow its grants no longer reach"
+        );
+        let past = tell(&mut stack, Ports(vec![(Proto::Tcp, 22, 22)]));
+        assert_eq!(past.first(), Some(&1));
+        assert!(String::from_utf8_lossy(&past[1..]).contains("22"), "{past:?}");
+        assert_eq!(
+            stack.cfg.policy,
+            Policy::Ports(Ports(vec![(Proto::Tcp, 443, 443)]))
+        );
+        stack.ceiling = None;
+        assert_eq!(tell(&mut stack, Ports(Vec::new())).first(), Some(&1));
     }
 
     /// A connection's timer is armed once for its deadline, however often it settles,
