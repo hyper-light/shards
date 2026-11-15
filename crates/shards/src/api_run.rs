@@ -65,10 +65,34 @@ impl Answers {
     }
 }
 
+/// Whether this process's lines say their times (`SHARDS_TIMING`), read once.
+fn timed() -> bool {
+    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TIMED.get_or_init(|| std::env::var_os("SHARDS_TIMING").is_some())
+}
+
 /// One line of the run's progress on this process's stderr, its diagnostics, which a
-/// refusal quotes the last of.
+/// refusal quotes the last of; with `SHARDS_TIMING`, its time: microseconds since this
+/// process's `main` (`shards_vmm::log::uptime_us`), whose wall clock it says once as it
+/// starts ([`command`]). Written in one write, so that its VM's lines on the same stderr
+/// come between lines, never in one.
 fn say(what: std::fmt::Arguments<'_>) {
-    let _ = writeln!(io::stderr(), "shards api-run: {what}");
+    let _ = io::stderr().write_all(said(timed().then(shards_vmm::log::uptime_us), what).as_bytes());
+}
+
+/// [`say`]'s line, timed `at` where its lines are timed.
+fn said(at: Option<u128>, what: std::fmt::Arguments<'_>) -> String {
+    match at {
+        Some(us) => format!("shards api-run: +{us} us {what}\n"),
+        None => format!("shards api-run: {what}\n"),
+    }
+}
+
+/// A step of the run's start, said only where its lines are timed (`SHARDS_TIMING`).
+fn step(what: std::fmt::Arguments<'_>) {
+    if timed() {
+        say(what);
+    }
 }
 
 /// The run's channel from its orchestrator, this process's stdin (D231), read a frame at a
@@ -176,6 +200,14 @@ fn stdout() -> io::Result<std::fs::File> {
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
+    // Its clock on the wall's, said first, for lining its lines up with its caller's and its
+    // VM's (api_image's `image_start_costs`); and its launches' steps said with it.
+    if timed() {
+        crate::launch::say_steps(say);
+        if let Some(at) = shards_vmm::log::began_unix_us() {
+            say(format_args!("its clock began at unix {at} us"));
+        }
+    }
     let answers = match stdout() {
         Ok(out) => Answers(Mutex::new(Box::new(out))),
         // No channel to say anything on: its owner reads its end, and this, on its stderr.
@@ -208,6 +240,7 @@ fn host(answers: &Answers) -> Result<(), No> {
         Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
         Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
     };
+    step(format_args!("its request read"));
     input.shed();
     // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
     if kind == wire::to_host::WARM {
@@ -986,13 +1019,20 @@ fn published(
 }
 
 /// The run's request (`kind::RUN`) as a warm VM takes one (warm.rs `head`): its head, then
-/// `spec`. It writes no log, yet its head keeps a run's default retention, as a daemon
-/// run's with no log does (`--log-driver none`, daemon.rs `DEFAULT_LOGS`): a warm VM
-/// refuses a request whose log keeps nothing.
-fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
+/// `spec`; `timing` asks for its VM's timing line. It writes no log, yet its head keeps a
+/// run's default retention, as a daemon run's with no log does (`--log-driver none`,
+/// daemon.rs `DEFAULT_LOGS`): a warm VM refuses a request whose log keeps nothing.
+fn run_request(spec: &shards_abi::run::Spec, published: bool, timing: bool) -> Vec<u8> {
     let mut payload = Vec::new();
+    let flags = if published { shards_ipc::RUN_PUBLISHED } else { 0 };
     shards_ipc::RunHead {
-        flags: if published { shards_ipc::RUN_PUBLISHED } else { 0 },
+        // Its VM's timing line in its `EXIT`, its guest's markers in it, where its lines are
+        // timed (`SHARDS_TIMING`).
+        flags: if timing {
+            flags | shards_ipc::RUN_TIMING
+        } else {
+            flags
+        },
         log_size: crate::daemon::DEFAULT_LOGS.size,
         log_files: crate::daemon::DEFAULT_LOGS.files,
         ..Default::default()
@@ -2283,6 +2323,7 @@ mod hosted {
         let shaped = shape(request, &home)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
+        super::step(format_args!("its run planned"));
         launch_and_serve(answers, input, &home, plan)
     }
 
@@ -2399,6 +2440,7 @@ mod hosted {
         }
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&run, home, &say, &cancel).map_err(no(Cause::Image))?;
+        super::step(format_args!("its image prepared"));
         if request.vcpus > 0 {
             prepared.size.0 = request.vcpus;
         }
@@ -2503,6 +2545,7 @@ mod hosted {
             Ok((opened, server, microvm))
         };
         let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
+        super::step(format_args!("its microVM shaped"));
         Ok(Shaped {
             run,
             prepared,
@@ -2845,6 +2888,9 @@ mod hosted {
             .then(|| start_shares(home, plan.dirs, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
+        if let Some(shares) = &shares {
+            super::step(format_args!("its share process {} started", shares.child.id()));
+        }
         let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
             let mut host = Host {
                 home,
@@ -3001,6 +3047,7 @@ mod hosted {
                 }
                 None => (None, None),
             };
+            super::step(format_args!("launching its VM"));
             let (launched, link) = crate::launch::run_reported(
                 crate::launch::Plan {
                     args: &argv,
@@ -3021,7 +3068,10 @@ mod hosted {
 
         fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String> {
             let said = match shards_ipc::recv(&vm.1) {
-                Ok(Some(m)) if m.kind == kind::READY => Ok(()),
+                Ok(Some(m)) if m.kind == kind::READY => {
+                    super::step(format_args!("its VM said READY"));
+                    Ok(())
+                }
                 Ok(Some(m)) => Err(format!("the VM said message kind {} before it was ready", m.kind)),
                 Ok(None) => Err("the VM ended before it was ready".into()),
                 Err(e) => Err(format!("the VM was not ready: {e}")),
@@ -3665,12 +3715,12 @@ mod hosted {
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
         let payload = if trust.is_empty() {
-            super::run_request(&plan.prepared.spec, !plan.listeners.is_empty())
+            super::run_request(&plan.prepared.spec, !plan.listeners.is_empty(), super::timed())
         } else {
             let mut spec = plan.prepared.spec.clone();
             spec.setup.extend_from_slice(trust);
             crate::spec::fits(&spec)?;
-            super::run_request(&spec, !plan.listeners.is_empty())
+            super::run_request(&spec, !plan.listeners.is_empty(), super::timed())
         };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
@@ -3805,6 +3855,7 @@ mod hosted {
                     Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
                 }
             };
+            super::step(format_args!("its run's request read"));
             input.shed();
             if request.exemplar() != *exemplar {
                 return Err(No(
@@ -4027,6 +4078,7 @@ mod hosted {
             answers
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
+            super::step(format_args!("its start told its orchestrator"));
             serve(&live, input, &launched, client, control);
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
@@ -4055,6 +4107,9 @@ mod hosted {
         client: Stream,
         control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
     ) {
+        if super::timed() {
+            timing_line(&client);
+        }
         std::thread::scope(|scope| {
             // Its agent-control endpoint's driver, and its socket lanes, each opened through the
             // VM (D251, D252); revoked as the run's asks end, which ends both.
@@ -4164,6 +4219,32 @@ mod hosted {
             lock(&live.lanes).take();
         });
         drop(client);
+    }
+
+    /// Says its VM's timing line (`RUN_TIMING`), which comes in its `EXIT` on the run's client
+    /// as its command ends, its guest's markers in it: read on a thread of its own, not the
+    /// run's scope's, as no `EXIT` comes of a VM killed (a `STOP`) and this process holds the
+    /// VM's end of the client until its run is over; it goes as this process does.
+    fn timing_line(client: &Stream) {
+        let reading = client.try_clone().and_then(|client| {
+            std::thread::Builder::new()
+                .name("api-run timing".into())
+                .spawn(move || {
+                    if let Ok(Some(m)) = shards_ipc::recv(&client)
+                        && m.kind == kind::EXIT
+                        && let Some((_, line)) = m.payload.split_first()
+                        && !line.is_empty()
+                    {
+                        super::say(format_args!(
+                            "its VM's timing line: {}",
+                            String::from_utf8_lossy(line)
+                        ));
+                    }
+                })
+        });
+        if let Err(e) = reading {
+            super::say(format_args!("its VM's timing line is not read: {e}"));
+        }
     }
 
     /// Its VM gone and its end said, a run's network process that relays its leases (D242)
@@ -4519,6 +4600,7 @@ mod hosted {
             } else if m.kind == kind::UNSERVED {
                 told.unserved = Some(String::from_utf8_lossy(&m.payload).into_owned());
             } else if m.kind == kind::STARTED {
+                super::step(format_args!("its VM said STARTED"));
                 told.started = true;
                 if let Some(agent) = &live.agent {
                     agent.stands(Begun::Started);
@@ -7227,14 +7309,28 @@ mod tests {
     /// publishes ports.
     #[test]
     fn its_request_is_one_a_warm_vm_takes() {
-        for published in [false, true] {
-            let payload = run_request(&shards_abi::run::Spec::default(), published);
+        for (published, timing) in [(false, false), (true, false), (false, true), (true, true)] {
+            let payload = run_request(&shards_abi::run::Spec::default(), published, timing);
             let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
             assert!(head.keeps_its_log(), "{head:?}");
             assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
+            assert_eq!(head.flags & shards_ipc::RUN_TIMING != 0, timing);
             assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
             assert!(shards_abi::run::Spec::decode(spec).is_some());
         }
+    }
+
+    /// A line says its time only where its lines are timed, as `+US us` after the host's name.
+    #[test]
+    fn a_line_says_its_time_only_where_its_lines_are_timed() {
+        assert_eq!(
+            said(None, format_args!("its VM said READY")),
+            "shards api-run: its VM said READY\n"
+        );
+        assert_eq!(
+            said(Some(1234), format_args!("its VM said READY")),
+            "shards api-run: +1234 us its VM said READY\n"
+        );
     }
 
     /// With no command of its own, a run publishes only ports the image gives a member
