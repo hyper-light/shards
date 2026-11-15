@@ -737,6 +737,94 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     reader.join().unwrap();
 }
 
+/// A guest's watchdogs take its run's pause for its host's hold, not a lockup (D267): on KVM
+/// x86-64 each vCPU held through the pause tells its guest's kvmclock it was stopped as it goes
+/// on (`KVM_KVMCLOCK_CTRL`), which the soft-lockup and RCU stall watchdogs read before they
+/// report (kernel/watchdog.c, kernel/rcu/tree_stall.h, `kvm_check_and_clear_guest_paused`). Do
+/// run an image's own command (`watchdogs`, the test guest's) that says its guest's
+/// `watchdog_thresh`, the kernel's taint and its count of RCU stalls; pause the run past the
+/// soft-lockup threshold that follows (twice `watchdog_thresh`) by one of the watchdog's sample
+/// periods (a fifth of the threshold), the kernel's own rule, so that its look after the pause
+/// is past it whatever its phase; resume; and read the taint and the count once the watchdog
+/// has looked since. Expect: its soft-lockup watchdog on, and neither moved: no `L` taint (a
+/// soft lockup's report sets it, as it prints `BUG: soft lockup`) and no RCU stall counted (as
+/// `rcu_sched self-detected stall` is printed). A member of an Agentfile's image reads no
+/// kernel log (D115: `dmesg_restrict` 1, no CAP_SYSLOG) and the run's console is discarded, so
+/// these are what the kernel keeps of those reports that its guest may read. Red with
+/// `Vcpu::went_on` emptied on KVM x86-64. Elsewhere there is nothing to tell (D267).
+#[test]
+fn a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        eprintln!(
+            "SKIP: kvmclock's stopped flag is KVM x86-64's alone; arm64 KVM, Hypervisor.framework and WHP \
+             give their guests no flag to read (D267)"
+        );
+        return;
+    }
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-dog-home");
+    build(&home, "api-dog:1", &["sleep-for", "600000"], "");
+    let out = TempDir::new("api-dog-out");
+    let mut s = spec(&home, "api-dog:1");
+    s.command = Some(["/bin/testguest", "watchdogs", "/out"].map(String::from).to_vec());
+    s.shares = vec![ImageShare {
+        host: out.to_path_buf(),
+        at: "/out".into(),
+        read_only: false,
+    }];
+    let guest = boot(&home, &s);
+    let said = |name: &str| -> std::collections::BTreeMap<String, String> {
+        let at = out.join(name);
+        let mut patience = Patience::started();
+        let text = loop {
+            if let Ok(text) = std::fs::read_to_string(&at) {
+                break text;
+            }
+            assert!(patience.holds(), "its command wrote no {}", at.display());
+            std::thread::sleep(patience.next_look());
+        };
+        patience.done();
+        let words: Vec<&str> = text.split_whitespace().collect();
+        words
+            .chunks(2)
+            .map(|kv| {
+                (
+                    kv[0].to_string(),
+                    kv.get(1).copied().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let before = said("before");
+    assert_eq!(before["soft"], "1", "its soft-lockup watchdog is off: {before:?}");
+    let thresh: u64 = before["thresh"].parse().unwrap();
+    // kernel/watchdog.c: the soft-lockup threshold is twice `watchdog_thresh`, looked at five
+    // times within it (`get_softlockup_thresh`, `NUM_SAMPLE_PERIODS`).
+    let threshold = Duration::from_secs(thresh * 2);
+    let sample = threshold / 5;
+    assert!(ask(&*guest, |g| g.pause(Duration::MAX)).unwrap().now);
+    std::thread::sleep(threshold + sample);
+    assert!(!ask(&*guest, |g| g.resume(Duration::MAX)).unwrap().now);
+    // Its command's sleep across the pause ends as its vCPU goes on; one sample later the
+    // watchdog has looked, and its command says so.
+    std::thread::sleep(sample);
+    let after = said("after");
+    assert_eq!(
+        (&after["tainted"], &after["stalls"]),
+        (&before["tainted"], &before["stalls"]),
+        "its guest took a pause of {:?} for a lockup (taint `L` is 1 << 14): before {before:?}, after {after:?}",
+        threshold + sample
+    );
+    assert_eq!(
+        ask(&*guest, |g| g.wait_for(Duration::MAX))
+            .unwrap()
+            .map(|e| e.end),
+        Some(RunEnd::Exited(0))
+    );
+}
+
 /// The room an orchestrator's budget leaves its run (D241) reaches the run's init through
 /// its host: told a room past the least a run goes on in, the run is held within it, in
 /// whole pages; told none left, within the least, short of what it had; told no budget,

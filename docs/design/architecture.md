@@ -35911,9 +35911,23 @@ is the long-pause follow-up below, not the pause.
   on, and KVM's paravirtual time (`KVM_ARM_VCPU_PVTIME`) carries stolen time alone; WHP's guests
   keep time by Hyper-V's reference TSC, which runs on (its partition's time is held for a snapshot
   alone) with no stopped flag. Their guests may say a soft lockup after a long pause, a warning
-  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. **Owed**
-  (ROOT): a long pause on KVM x86-64 with the guest's `dmesg` read for `soft lockup` and
-  `rcu_sched self-detected stall`, red with `went_on` empty.
+  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. Tested by
+  `api_image` `a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64` (KVM x86-64 alone,
+  skipped elsewhere saying why): the image's own command (the test guest's `watchdogs`) says its
+  guest's `watchdog_thresh`, the kernel's taint and its count of RCU stalls into a share; the run
+  is paused past the soft-lockup threshold that follows (twice `watchdog_thresh`) by one of the
+  watchdog's sample periods (a fifth of it), the kernel's own rule (kernel/watchdog.c,
+  `get_softlockup_thresh`, `NUM_SAMPLE_PERIODS`), so that its look after the pause is past it
+  whatever its phase, and neither the taint's `L` (set as `BUG: soft lockup` is printed) nor the
+  stall count (`/sys/kernel/rcu_stall_count`, since Linux 6.16, counted as `rcu_sched
+  self-detected stall` is printed) may move. Those are what the kernel keeps of its reports that
+  the guest may read: a member reads no kernel log (D115: `dmesg_restrict` 1, no CAP_SYSLOG), the
+  run's console is discarded, and `/sys` is hidden from members, so it is the run's own command
+  that reads them. An RCU stall needs a grace period under way and the pause past
+  `rcu_cpu_stall_timeout` (59 s in shards' kernel, `CONFIG_RCU_CPU_STALL_TIMEOUT`), which this
+  pause does not reach: its count guards any other stall there, and the soft lockup is what turns
+  it red. **Owed** (ROOT): its run on KVM x86-64, and its red with `went_on` emptied
+  (crates/vmm/src/hv/kvm/x86_64.rs: `let _ = self.fd.kvmclock_ctrl();` removed).
 - *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
   (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
   an end.
