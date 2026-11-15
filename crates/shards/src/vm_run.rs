@@ -1137,7 +1137,7 @@ fn serve_rates(
                 Ok((milli, period_ns)) => answer(&Answer::Held { milli, period_ns }),
                 Err(why) => answer(&Answer::Refused(&why)),
             },
-            Asked::Use => use_answer(guest_times, || {
+            Asked::Use => use_answer(guest_times, charged, || {
                 shards_vmm::platform::process_usage(std::process::id())
             }),
         };
@@ -1151,20 +1151,34 @@ fn serve_rates(
     }
 }
 
-/// What this machine's vCPUs have run of its guest, read by `guest`, then what this process
-/// has used of its host, read by `host` (D260): the later read holds the earlier, as an image
-/// run's stats read them (D241), so that the process's CPU time less its vCPUs' is its VMM's
-/// own and never less than none past the clocks' steps.
+/// What this machine's vCPUs have run of its guest, read by `guest`, whether its OS charges
+/// that to their threads, read by `charged` after it (D265), then what this process has used
+/// of its host, read by `host` (D260): the later read holds the earlier, as an image run's
+/// stats read them (D241), so that the process's CPU time less its vCPUs' is its VMM's own
+/// and never less than none past the clocks' steps. Where its hypervisor runs its vCPUs apart
+/// from their threads, their guest time is added to its OS's count; told apart with no guest
+/// time read, its count stands, its charge unknown.
 fn use_answer(
     guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>,
+    charged: impl FnOnce() -> shards_vmm::vm::Charged,
     host: impl FnOnce() -> std::io::Result<shards_vmm::platform::Usage>,
 ) -> String {
+    use shards_vmm::vm::Charged;
     let guest = guest();
+    let charged = charged();
     let host = host()
-        .map(|u| shards_abi::guest_time::HostUse {
-            cpu_ns: u.cpu_ns,
-            resident_bytes: u.resident,
-            footprint_bytes: u.footprint,
+        .map(|u| {
+            let (cpu_ns, charged) = match (charged, &guest) {
+                (Charged::Apart, Ok(times)) => (u.cpu_ns.saturating_add(times.total_ns()), Charged::Apart),
+                (Charged::Apart, Err(_)) => (u.cpu_ns, Charged::Unknown),
+                (charged, _) => (u.cpu_ns, charged),
+            };
+            shards_abi::guest_time::HostUse {
+                cpu_ns,
+                resident_bytes: u.resident,
+                footprint_bytes: u.footprint,
+                charged,
+            }
         })
         .map_err(|e| format!("its VM process: {e}"));
     shards_abi::rate::used(
@@ -1176,7 +1190,9 @@ fn use_answer(
 /// What this machine used in all (D260's final use), as a use's answer says it: its vCPUs'
 /// whole guest time, read by `guest` once they have stopped, then this process's own use.
 fn final_use_of(guest: impl FnOnce() -> Result<shards_vmm::vm::GuestTimes, String>) -> String {
-    use_answer(guest, || shards_vmm::platform::process_usage(std::process::id()))
+    use_answer(guest, charged, || {
+        shards_vmm::platform::process_usage(std::process::id())
+    })
 }
 
 /// Tells a managed VM's keeper its final use, `used` (final_use.rs, D260): its length, a u32,
@@ -1215,6 +1231,14 @@ pub(crate) fn rate_answer(
 /// What each of this VM's vCPUs has run of its guest, by index, read now, and what those it
 /// no longer has ran (`GUEST_TIME`), beside which this process's own CPU time is its total's
 /// less theirs.
+/// Whether this process's OS charges its vCPUs' guest time to their threads, as their spans
+/// have told it (D265): unknown before the microVM has started.
+fn charged() -> shards_vmm::vm::Charged {
+    RUNNING
+        .get()
+        .map_or(shards_vmm::vm::Charged::Unknown, |r| r.charged())
+}
+
 pub fn guest_times() -> Result<shards_vmm::vm::GuestTimes, String> {
     Ok(RUNNING.get().ok_or("the microVM has not started")?.guest_times())
 }
@@ -3699,6 +3723,7 @@ mod rate_tests {
             }],
             departed_ns: 2,
         };
+        use shards_vmm::vm::Charged;
         let usage = shards_vmm::platform::process_usage(std::process::id()).unwrap();
         let answer = use_answer(
             || {
@@ -3706,20 +3731,46 @@ mod rate_tests {
                 Ok(times.clone())
             },
             || {
+                order.borrow_mut().push("charged");
+                Charged::ToThread
+            },
+            || {
                 order.borrow_mut().push("host");
                 Ok(usage)
             },
         );
-        assert_eq!(*order.borrow(), ["guest", "host"]);
+        assert_eq!(*order.borrow(), ["guest", "charged", "host"]);
         let read = shards_abi::rate::read_used(answer.as_bytes()).unwrap();
-        assert_eq!(read.guest, Ok(times));
+        assert_eq!(read.guest, Ok(times.clone()));
         let host = read.host.unwrap();
         assert_eq!(
-            (host.cpu_ns, host.resident_bytes, host.footprint_bytes),
-            (usage.cpu_ns, usage.resident, usage.footprint)
+            (
+                host.cpu_ns,
+                host.resident_bytes,
+                host.footprint_bytes,
+                host.charged
+            ),
+            (usage.cpu_ns, usage.resident, usage.footprint, Charged::ToThread)
         );
+        // Run apart from their threads (WHP's classic and core schedulers, D265), the vCPUs'
+        // guest time is added to the process's count; with none read, the count stands.
+        let apart = |guest: Result<shards_vmm::vm::GuestTimes, String>| {
+            let answer = use_answer(|| guest, || Charged::Apart, || Ok(usage));
+            shards_abi::rate::read_used(answer.as_bytes())
+                .unwrap()
+                .host
+                .unwrap()
+        };
+        let host = apart(Ok(times.clone()));
+        assert_eq!(
+            (host.cpu_ns, host.charged),
+            (usage.cpu_ns + times.total_ns(), Charged::Apart)
+        );
+        let host = apart(Err("the microVM has not started".into()));
+        assert_eq!((host.cpu_ns, host.charged), (usage.cpu_ns, Charged::Unknown));
         let refused = use_answer(
             || Err("the microVM has not started".into()),
+            || Charged::Unknown,
             || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
         );
         let read = shards_abi::rate::read_used(refused.as_bytes()).unwrap();

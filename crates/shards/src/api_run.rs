@@ -1145,6 +1145,7 @@ enum Ask<'a> {
     Plug(wire::PlugAsk),
     Unplug(wire::UnplugAsk),
     Save(wire::SaveAsk),
+    Pause(wire::PauseAsk),
 }
 
 /// The orchestrator's next ask, from what reading its next frame gave (`read`: its kind and
@@ -1182,6 +1183,7 @@ fn judged(which: u8, payload: &[u8]) -> Result<Ask<'_>, AsksEnd> {
         wire::to_host::PLUG => ("PLUG", wire::PlugAsk::decode(payload).map(Ask::Plug)),
         wire::to_host::UNPLUG => ("UNPLUG", wire::UnplugAsk::decode(payload).map(Ask::Unplug)),
         wire::to_host::SAVE => ("SAVE", wire::SaveAsk::decode(payload).map(Ask::Save)),
+        wire::to_host::PAUSE => ("PAUSE", wire::PauseAsk::decode(payload).map(Ask::Pause)),
         other => return Err(broke(format_args!("a frame of kind {other}, which is no ask"))),
     };
     ask.map_err(|e| broke(format_args!("a malformed {what}: {e}")))
@@ -2134,6 +2136,158 @@ impl Saving {
     }
 }
 
+/// The run's pause, as its host holds it (D267, R04). Running to pausing as its owner asks a
+/// pause, which refuses every ask of its guest from then on; pausing to paused as its VM says
+/// every vCPU is held, or back to running where its VM held none; paused to resuming as its
+/// owner asks it to go on, and resuming to running once its VM says they go on, or back to
+/// paused where it did not. Any to gone as its VM's link closes. A pause of a paused run and a
+/// resume of a running one are done already: an owner that lost an answer asks again and is
+/// answered the same. Nothing of it waits on its guest: a pause is its VM's alone.
+#[derive(Debug)]
+enum Pause {
+    Running,
+    Pausing,
+    /// Every vCPU held since `since`.
+    Paused {
+        since: Instant,
+    },
+    /// Going on, its VM asked: its guest still answers nothing until its VM says so.
+    Resuming {
+        since: Instant,
+    },
+    Gone,
+}
+
+/// The run's pause (D267): its state; the time every pause that has ended took; what its init
+/// last said of the run's stats, which its stats say while it is paused; and the pauses and
+/// resumes asked, applied in their order by one worker at a time.
+#[derive(Debug)]
+struct Pauses {
+    state: Pause,
+    ended: Duration,
+    last: Option<Vec<u8>>,
+    queue: std::collections::VecDeque<wire::PauseAsk>,
+    draining: bool,
+}
+
+/// What a pause or a resume asked now is to do ([`Pauses::pause`], [`Pauses::resume`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Done already: the run is as asked, its paused time this.
+    Done(wire::Paused),
+    /// Its VM is to be asked.
+    Ask,
+    /// Its VM has gone.
+    Gone,
+}
+
+impl Pauses {
+    fn new() -> Pauses {
+        Pauses {
+            state: Pause::Running,
+            ended: Duration::ZERO,
+            last: None,
+            queue: std::collections::VecDeque::new(),
+            draining: false,
+        }
+    }
+
+    /// The run's paused time at `now`: every pause that has ended, and the one under way so far.
+    fn paused(&self, now: Instant) -> wire::Paused {
+        match &self.state {
+            Pause::Paused { since } | Pause::Resuming { since } => wire::Paused {
+                total: self.ended.saturating_add(now.saturating_duration_since(*since)),
+                now: true,
+            },
+            Pause::Running | Pause::Pausing | Pause::Gone => wire::Paused {
+                total: self.ended,
+                now: false,
+            },
+        }
+    }
+
+    /// Whether its guest runs to answer an ask now: not while it is pausing, paused or going
+    /// on. A gone VM's asks go on, to be refused as its VM has stopped.
+    fn guest_runs(&self) -> bool {
+        matches!(self.state, Pause::Running | Pause::Gone)
+    }
+
+    /// A pause asked: to ask its VM where it runs, the pause then under way; done already where
+    /// it is paused or going on.
+    fn pause(&mut self, now: Instant) -> Step {
+        match self.state {
+            Pause::Running => {
+                self.state = Pause::Pausing;
+                Step::Ask
+            }
+            Pause::Pausing | Pause::Paused { .. } | Pause::Resuming { .. } => Step::Done(self.paused(now)),
+            Pause::Gone => Step::Gone,
+        }
+    }
+
+    /// Its VM held every vCPU at `now`: paused, and its time then; none where its VM went
+    /// meanwhile.
+    fn held(&mut self, now: Instant) -> Option<wire::Paused> {
+        if !matches!(self.state, Pause::Pausing) {
+            return None;
+        }
+        self.state = Pause::Paused { since: now };
+        Some(self.paused(now))
+    }
+
+    /// Its VM held none: it runs as it did.
+    fn unheld(&mut self) {
+        if matches!(self.state, Pause::Pausing) {
+            self.state = Pause::Running;
+        }
+    }
+
+    /// A resume asked: to ask its VM where it is paused, then going on; done already where it
+    /// runs.
+    fn resume(&mut self, now: Instant) -> Step {
+        match self.state {
+            Pause::Paused { since } => {
+                self.state = Pause::Resuming { since };
+                Step::Ask
+            }
+            Pause::Gone => Step::Gone,
+            Pause::Running | Pause::Pausing | Pause::Resuming { .. } => Step::Done(self.paused(now)),
+        }
+    }
+
+    /// Its VM let its vCPUs go on at `now`: running, the pause's time among those ended.
+    fn resumed(&mut self, now: Instant) -> Option<wire::Paused> {
+        let Pause::Resuming { since } = self.state else {
+            return None;
+        };
+        self.ended = self.ended.saturating_add(now.saturating_duration_since(since));
+        self.state = Pause::Running;
+        Some(self.paused(now))
+    }
+
+    /// Its VM did not let them go on: paused still.
+    fn unresumed(&mut self) {
+        if let Pause::Resuming { since } = self.state {
+            self.state = Pause::Paused { since };
+        }
+    }
+
+    /// What its init last said of the run's stats, while it is pausing, paused or going on
+    /// (`Some(None)`: it said none before its pause); none while its guest runs to say it.
+    fn said(&self) -> Option<Option<&[u8]>> {
+        match &self.state {
+            Pause::Pausing | Pause::Paused { .. } | Pause::Resuming { .. } => Some(self.last.as_deref()),
+            Pause::Running | Pause::Gone => None,
+        }
+    }
+
+    /// Its VM's link closed at `now`: gone, a pause under way ended then.
+    fn gone(&mut self, now: Instant) {
+        self.ended = self.paused(now).total;
+        self.state = Pause::Gone;
+    }
+}
+
 /// Where a save its owner asks at `to` is made (D259): `to` with its parent's canonical path,
 /// so that what follows names no link. Refused unless `to` is absolute and names a directory,
 /// its parent is the run's `home` or beneath it, and neither is beneath a directory its guest
@@ -2209,6 +2363,7 @@ mod hosted {
     use std::io::{self, Read as _, Write as _};
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::time::Instant;
 
     use shards_abi::run::{self as protocol, managed};
     use shards_api::image::wire::{self, Cause, Channel, RunEnd};
@@ -3361,6 +3516,10 @@ mod hosted {
         leasing: Option<super::Leasing<'a>>,
         /// Its save, as its VM is asked for one (D259).
         saving: Mutex<super::Saving>,
+        /// Its pause (D267).
+        pauses: Mutex<super::Pauses>,
+        /// Each pause or resume asked of the VM and not yet answered (`PAUSED`), as devices.
+        pause_asks: Mutex<Option<Vec<Asked<Unheld>>>>,
         /// The host directories its shares give its guest, canonical (D259).
         reached: &'a [PathBuf],
         /// What its own lanes of its agent-control endpoint are served with, where its
@@ -3486,6 +3645,30 @@ mod hosted {
         }
         fn said(self) -> String {
             format!("its microVM: {self}")
+        }
+    }
+
+    /// Why its VM did not pause or let go on its vCPUs (`PAUSED`, D267), in its words.
+    #[derive(Debug)]
+    struct Unheld(String);
+
+    /// `PAUSED`: nothing for done, else why not.
+    impl VmRefusal for Unheld {
+        fn read(said: &[u8]) -> Result<String, Unheld> {
+            if said.is_empty() {
+                Ok(String::new())
+            } else {
+                Err(Unheld(String::from_utf8_lossy(said).into_owned()))
+            }
+        }
+        fn stopped() -> Unheld {
+            Unheld("its microVM stopped".into())
+        }
+        fn unsent(e: &std::io::Error) -> Unheld {
+            Unheld(format!("asking its microVM: {e}"))
+        }
+        fn said(self) -> Unheld {
+            Unheld(format!("its microVM: {}", self.0))
         }
     }
 
@@ -3747,6 +3930,8 @@ mod hosted {
                 cpu_ns: u.cpu_ns,
                 resident_bytes: u.resident,
                 footprint_bytes: u.footprint,
+                // Another process's count: its vCPUs' clocks are its own (D265).
+                charged: wire::Charged::Unknown,
             })
             .map_err(|e| format!("its VM process: {e}"))
     }
@@ -4019,6 +4204,8 @@ mod hosted {
                 notices: Mutex::new(Vec::new()),
                 leasing,
                 saving: Mutex::new(super::Saving::Idle),
+                pauses: Mutex::new(super::Pauses::new()),
+                pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &plan.reached,
                 agent,
                 #[cfg(windows)]
@@ -4138,6 +4325,7 @@ mod hosted {
                     let end = wire::RunEnded {
                         end: super::ended_by(asks.as_ref(), end, said),
                         final_use: super::final_use(used.as_deref(), asks.as_ref()),
+                        paused: lock(&live.pauses).paused(Instant::now()).total,
                     };
                     // Every end of the run's comes here, its leases released before it is said:
                     // its own command's, `STOP`, its owner's channel closed, its VM gone.
@@ -4546,6 +4734,8 @@ mod hosted {
                 answered(&live.rates, &m.payload);
             } else if m.kind == kind::SAVED {
                 lock(&live.saving).answered(&m.payload);
+            } else if m.kind == kind::PAUSED {
+                answered(&live.pause_asks, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -4587,7 +4777,9 @@ mod hosted {
         *lock(&live.devices) = None;
         *lock(&live.guest_times) = None;
         *lock(&live.rates) = None;
+        *lock(&live.pause_asks) = None;
         lock(&live.saving).gone();
+        lock(&live.pauses).gone(Instant::now());
         // Socket lanes no answer will come for: their asks hear the VM has gone.
         lock(&live.lanes).take();
         // Its VM gone: its own lanes hear the run is over, and what its members' bridges held
@@ -4692,9 +4884,14 @@ mod hosted {
                 super::refreshed(leasing, payload).map_err(|e| super::broke(format_args!("{e}")))?;
             }
             // On a thread of its own: an exec its guest is slow to answer holds up no
-            // credit and no stop.
+            // credit and no stop. Its command's or a member's, an ask of its guest, refused at
+            // once while it is paused (D267); the run's answered then from what it said as it
+            // paused.
             Ask::Stats(ask) => {
                 let vm = vm.id();
+                if !matches!(ask.scope, wire::StatsScope::Run) && !lock(&live.pauses).guest_runs() {
+                    return refused_paused(live, ask.id);
+                }
                 let asked = std::thread::Builder::new()
                     .name("api-run stats".into())
                     .spawn_scoped(scope, move || stats(live, ask, vm));
@@ -4707,6 +4904,9 @@ mod hosted {
             // On a thread of its own, as stats: a guest slow to hold its run holds up
             // nothing else.
             Ask::Room(ask) => {
+                if !lock(&live.pauses).guest_runs() {
+                    return refused_paused(live, ask.id);
+                }
                 let asked = std::thread::Builder::new()
                     .name("api-run room".into())
                     .spawn_scoped(scope, move || held(live, ask.id, room(live, ask.room)));
@@ -4727,6 +4927,9 @@ mod hosted {
             // On a thread of its own, as a room: a guest slow to size a member's terminal
             // holds up nothing else (D244).
             Ask::Resize(ask) => {
+                if !lock(&live.pauses).guest_runs() {
+                    return refused_paused(live, ask.id);
+                }
                 let asked = std::thread::Builder::new()
                     .name("api-run resize".into())
                     .spawn_scoped(scope, move || resized(live, ask.id, resize(live, ask)));
@@ -4737,6 +4940,9 @@ mod hosted {
             // On a thread of its own, as stats: a plug's guest steps hold up nothing else.
             Ask::Plug(ask) => {
                 let id = ask.id;
+                if !lock(&live.pauses).guest_runs() {
+                    return refused_paused(live, id);
+                }
                 let asked = std::thread::Builder::new()
                     .name("api-run plug".into())
                     .spawn_scoped(scope, move || plugged(live, id, plug(live, &ask)));
@@ -4764,6 +4970,9 @@ mod hosted {
             }
             Ask::Unplug(ask) => {
                 let id = ask.id;
+                if !lock(&live.pauses).guest_runs() {
+                    return refused_paused(live, id);
+                }
                 let asked = std::thread::Builder::new()
                     .name("api-run unplug".into())
                     .spawn_scoped(scope, move || {
@@ -4782,8 +4991,184 @@ mod hosted {
                     );
                 }
             }
+            Ask::Pause(ask) => pause_asked(live, ask, vm.id(), scope),
         }
         Ok(())
+    }
+
+    /// Ask `id` refused at once, its run paused or pausing (`ASK_PAUSED`, D267).
+    fn refused_paused(live: &Live<'_>, id: u32) -> Result<(), super::AsksEnd> {
+        let _ = live
+            .answers
+            .send(wire::to_client::ASK_PAUSED, &[&wire::AskPaused { id }.encode()]);
+        Ok(())
+    }
+
+    /// A pause or a resume asked (D267), queued behind those before it and applied in their
+    /// order by one worker on a thread of its own, made as one is asked with none at work and
+    /// ending once none is left: a pause waits on its guest's asks and its VM, which hold up no
+    /// other ask.
+    fn pause_asked<'scope, 'env>(
+        live: &'env Live<'env>,
+        ask: wire::PauseAsk,
+        vm: u32,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        {
+            let mut pauses = lock(&live.pauses);
+            pauses.queue.push_back(ask);
+            if std::mem::replace(&mut pauses.draining, true) {
+                return;
+            }
+        }
+        let worked = std::thread::Builder::new()
+            .name("api-run pause".into())
+            .spawn_scoped(scope, move || pauses_worked(live, vm, scope));
+        if worked.is_err() {
+            let asked: Vec<wire::PauseAsk> = {
+                let mut pauses = lock(&live.pauses);
+                pauses.draining = false;
+                pauses.queue.drain(..).collect()
+            };
+            for ask in asked {
+                pause_answered(live, ask.id, Err("no thread to ask it on".into()), vm);
+            }
+        }
+    }
+
+    /// Applies the pauses and resumes asked, in their order, until none is left: VM process `vm`
+    /// held while each answer says the run is paused.
+    fn pauses_worked<'scope, 'env>(
+        live: &'env Live<'env>,
+        vm: u32,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        loop {
+            let next = {
+                let mut pauses = lock(&live.pauses);
+                let next = pauses.queue.pop_front();
+                if next.is_none() {
+                    pauses.draining = false;
+                }
+                next
+            };
+            let Some(ask) = next else {
+                return;
+            };
+            let done = if ask.pause {
+                pause(live)
+            } else {
+                resume(live, scope)
+            };
+            pause_answered(live, ask.id, done, vm);
+        }
+    }
+
+    /// A pause's or a resume's outcome, told its owner (`PAUSED`), with VM process `vm` where
+    /// it says the run is paused.
+    fn pause_answered(live: &Live<'_>, id: u32, result: Result<wire::Paused, String>, vm: u32) {
+        let held = match &result {
+            Ok(paused) if paused.now => vec![vm],
+            _ => Vec::new(),
+        };
+        if let Ok(payload) = (wire::PauseAnswer { id, result, held }).encode() {
+            let _ = live.answers.send(wire::to_client::PAUSED, &[&payload]);
+        }
+    }
+
+    /// The run paused (D267): asks of its guest refused from now, its VM asked to hold every
+    /// vCPU at once (`PAUSE`, as the daemon's `pause` asks it), its paused time counted from its
+    /// word. Nothing of it waits on its guest, which may be slow or hung: an ask of it already
+    /// under way is answered as it goes on. Done already where it is paused.
+    fn pause(live: &Live<'_>) -> Result<wire::Paused, String> {
+        match lock(&live.pauses).pause(Instant::now()) {
+            super::Step::Done(paused) => return Ok(paused),
+            super::Step::Gone => return Err("its microVM has stopped".into()),
+            super::Step::Ask => {}
+        }
+        let held = ask_pause(live, true);
+        let mut pauses = lock(&live.pauses);
+        let paused = match held {
+            Ok(()) => pauses
+                .held(Instant::now())
+                .ok_or_else(|| "its microVM has stopped".to_string()),
+            Err(why) => {
+                pauses.unheld();
+                Err(why)
+            }
+        };
+        drop(pauses);
+        paused
+    }
+
+    /// The paused run goes on where it stopped (D267): its VM asked to let its vCPUs go
+    /// (`PAUSE`), the pause's time ended at its word; then its init asked, on a thread of its
+    /// own, to set its clock to its host's (`builtin::CLOCK`, as a restored VM sets its own), so
+    /// that a step its host's clock took meanwhile is its too, holding up nothing. Done already
+    /// where it runs.
+    fn resume<'scope, 'env>(
+        live: &'env Live<'env>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> Result<wire::Paused, String> {
+        match lock(&live.pauses).resume(Instant::now()) {
+            super::Step::Done(paused) => return Ok(paused),
+            super::Step::Gone => return Err("its microVM has stopped".into()),
+            super::Step::Ask => {}
+        }
+        let went = ask_pause(live, false);
+        let mut pauses = lock(&live.pauses);
+        let resumed = match went {
+            Ok(()) => pauses
+                .resumed(Instant::now())
+                .ok_or_else(|| "its microVM has stopped".to_string()),
+            Err(why) => {
+                pauses.unresumed();
+                Err(why)
+            }
+        };
+        drop(pauses);
+        if resumed.is_ok() {
+            let synced = std::thread::Builder::new()
+                .name("api-run clock".into())
+                .spawn_scoped(scope, move || {
+                    match builtin(live, protocol::builtin::CLOCK, Vec::new()) {
+                        Ok(Said { status: Some(0), .. }) => {}
+                        Ok(Said { err, .. }) => super::say(format_args!(
+                            "setting its clock as it went on: {}",
+                            String::from_utf8_lossy(&err).trim_end()
+                        )),
+                        Err(e) => super::say(format_args!("setting its clock as it went on: {e}")),
+                    }
+                });
+            if let Err(e) = synced {
+                super::say(format_args!("setting its clock as it went on: {e}"));
+            }
+        }
+        resumed
+    }
+
+    /// Asks the VM to hold every vCPU out of its guest (`frozen`) or let them go on, as the
+    /// daemon's `pause_vm` asks it (`PAUSE`: whether, then its number), and waits for its answer
+    /// (`PAUSED`: its number, then nothing, or why not), which comes as long as its link is open.
+    fn ask_pause(live: &Live<'_>, frozen: bool) -> Result<(), String> {
+        let number = live.next_exec.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (told, answer) = std::sync::mpsc::channel();
+        match lock(&live.pause_asks).as_mut() {
+            Some(asked) => asked.push((number, told)),
+            None => return Err(Unheld::stopped().0),
+        }
+        let ask = [&[u8::from(frozen)][..], &number.to_be_bytes()].concat();
+        if let Err(e) = shards_ipc::send(&lock(&live.link), kind::PAUSE, &ask, &[]) {
+            if let Some(asked) = lock(&live.pause_asks).as_mut() {
+                asked.retain(|(n, _)| *n != number);
+            }
+            return Err(Unheld::unsent(&e).0);
+        }
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err(Unheld::stopped()))
+            .map(drop)
+            .map_err(|why| why.said().0)
     }
 
     /// A member's input connection, as its VM handed it over (`MANAGED_INPUT`): on Unix beside
@@ -5083,8 +5468,13 @@ mod hosted {
     /// for the run's, beside it what its microVM costs its host (D43's `microvm`, D241): its
     /// vCPUs' guest time, then its VM process `vm`'s use, which holds that time, so that the
     /// later read is never the less.
+    ///
+    /// The run's, while it is paused (D267), with what its init last said of it before the pause,
+    /// its guest running nothing since, its microVM read as it stands; its command's and a
+    /// member's are refused before this where it is paused. Each run's init answers is kept as
+    /// its last.
     fn stats(live: &Live<'_>, ask: wire::StatsAsk, vm: u32) {
-        let answer = |result: Result<(&[u8], Option<&wire::Microvm>), &str>| {
+        let answer = |result: Result<wire::StatsSaid<'_>, &str>| {
             if let Ok(payload) = wire::StatsAnswer::encode(ask.id, result) {
                 let _ = live.answers.send(wire::to_client::STATS, &[&payload]);
             }
@@ -5093,6 +5483,18 @@ mod hosted {
             guest: guest_times(live),
             host: host_use(vm),
         };
+        let run = matches!(ask.scope, wire::StatsScope::Run);
+        if run {
+            let pauses = lock(&live.pauses);
+            if let Some(said) = pauses.said() {
+                // Its init's last lines, or none where it said none before: its microVM's
+                // part stands either way.
+                let lines = said.map(<[u8]>::to_vec).unwrap_or_default();
+                let paused = pauses.paused(Instant::now());
+                drop(pauses);
+                return answer(Ok((&lines, Some(&microvm()), Some(&paused))));
+            }
+        }
         let args: Vec<Vec<u8>> = match ask.scope {
             wire::StatsScope::Command => Vec::new(),
             wire::StatsScope::Run => vec![protocol::builtin::stats::RUN.to_vec()],
@@ -5105,8 +5507,13 @@ mod hosted {
             Ok(Said {
                 status: Some(0), out, ..
             }) => {
-                let microvm = matches!(ask.scope, wire::StatsScope::Run).then(microvm);
-                answer(Ok((&out, microvm.as_ref())))
+                let microvm = run.then(microvm);
+                let paused = run.then(|| {
+                    let mut pauses = lock(&live.pauses);
+                    pauses.last = Some(out.clone());
+                    pauses.paused(Instant::now())
+                });
+                answer(Ok((&out, microvm.as_ref(), paused.as_ref())))
             }
             Ok(Said { err, .. }) => answer(Err(String::from_utf8_lossy(&err).trim_end())),
             Err(e) => answer(Err(&e)),
@@ -5640,9 +6047,154 @@ mod hosted {
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
                 saving: Mutex::new(super::super::Saving::Idle),
+                pauses: Mutex::new(super::super::Pauses::new()),
+                pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &[],
                 agent: None,
             }
+        }
+
+        /// Do pause a run whose init last said its stats, its stand-in VM answering each `PAUSE`
+        /// and init's `CLOCK`; ask its guest while it is paused, pause it again, read its stats,
+        /// resume it twice, and pause it once its VM's link has closed (D267). Expect: its VM
+        /// asked to hold at once (`PAUSE` 1, its number), nothing of its guest asked first; an
+        /// ask of its guest refused while it is paused; the second pause and resume done already,
+        /// unasked; its stats what its init last said; its paused time counting from its VM's word
+        /// and ending at its resume's; its init asked to set its clock once it goes on; and a
+        /// pause after its link closed refused.
+        #[test]
+        fn a_pause_holds_its_vm_at_once_and_its_resume_sets_its_guests_clock() {
+            let dir = shards_testdir::TempDir::new("api-pause").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            vm.set_read_timeout(Some(std::time::Duration::from_secs(120)))
+                .unwrap();
+            let followed = link.try_clone().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            lock(&live.pauses).last = Some(b"cpu 5\nmemory 9\n".to_vec());
+            std::thread::scope(|scope| {
+                let (watched, followed) = (&live, &followed);
+                let following = scope.spawn(move || follow(watched, followed, scope));
+                let playing = scope.spawn(move || {
+                    // Held, then let go: each `PAUSE` its whether, then its number.
+                    for frozen in [1u8, 0] {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::PAUSE, "its VM was asked something else first");
+                        let (whether, number) = m.payload.split_first().unwrap();
+                        assert_eq!(*whether, frozen);
+                        shards_ipc::send(&vm, kind::PAUSED, number, &[]).unwrap();
+                    }
+                    // Its init's clock set, once it goes on.
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::EXEC_RUN);
+                    let spec = protocol::Spec::decode(&m.payload[9..]).unwrap();
+                    assert_eq!(spec.builtin, protocol::builtin::CLOCK);
+                    let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                    shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    drop(vm);
+                });
+                let held = pause(&live).unwrap();
+                assert!(held.now);
+                assert!(!lock(&live.pauses).guest_runs(), "its guest asked while paused");
+                let again = pause(&live).unwrap();
+                assert!(again.now && again.total >= held.total);
+                assert_eq!(
+                    lock(&live.pauses).said(),
+                    Some(Some(&b"cpu 5\nmemory 9\n"[..])),
+                    "its stats while paused are not what its init last said"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let resumed = resume(&live, scope).unwrap();
+                assert!(!resumed.now);
+                assert!(resumed.total >= std::time::Duration::from_millis(20));
+                assert_eq!(
+                    resume(&live, scope),
+                    Ok(resumed),
+                    "a resume of a running run is done already"
+                );
+                assert!(lock(&live.pauses).guest_runs());
+                playing.join().unwrap();
+                following.join().unwrap();
+                assert_eq!(pause(&live), Err("its microVM has stopped".to_string()));
+                assert_eq!(lock(&live.pauses).paused(Instant::now()).total, resumed.total);
+            });
+        }
+
+        /// Do ask a paused run's guest for a room, a resize, a member's stats, a plug and an
+        /// unplug (D267). Expect: each refused at once, `ASK_PAUSED` by its id, none of them
+        /// sent to its VM; and its pause's own ask answered the run's paused time.
+        #[test]
+        fn asks_of_a_paused_runs_guest_are_refused_at_once() {
+            let dir = shards_testdir::TempDir::new("api-paused").unwrap();
+            let said = Said::default();
+            let answers = super::super::Answers(Mutex::new(Box::new(said.clone())));
+            let (link, vm) = Stream::pair().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            lock(&live.pauses).state = super::super::Pause::Paused {
+                since: Instant::now(),
+            };
+            let args = [OsStr::new("-c"), OsStr::new("sleep 30")];
+            let child = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
+            let asks = [
+                super::super::Ask::Room(wire::RoomAsk {
+                    id: 1,
+                    room: Some(1 << 20),
+                }),
+                super::super::Ask::Resize(wire::ResizeAsk {
+                    id: 2,
+                    member: 0,
+                    rows: 24,
+                    cols: 80,
+                }),
+                super::super::Ask::Stats(wire::StatsAsk {
+                    id: 3,
+                    scope: wire::StatsScope::Member(0),
+                }),
+                super::super::Ask::Plug(wire::PlugAsk {
+                    id: 4,
+                    member: 0,
+                    host: "/tmp".into(),
+                    at: "/work".into(),
+                    read_only: true,
+                }),
+                super::super::Ask::Unplug(wire::UnplugAsk {
+                    id: 5,
+                    at: "/work".into(),
+                }),
+                super::super::Ask::Pause(wire::PauseAsk { id: 6, pause: true }),
+            ];
+            std::thread::scope(|scope| {
+                for ask in asks {
+                    assert!(take(&live, ask, &child, scope).is_ok());
+                }
+                // Nothing of its guest's asks reached its VM; its link then closed, so that one
+                // that did is answered (its VM gone) rather than waiting on it for ever.
+                let reached = shards_ipc::recv_by(&vm, Instant::now());
+                drop(vm);
+                assert!(
+                    matches!(&reached, Err(e) if e.kind() == io::ErrorKind::TimedOut),
+                    "an ask of its paused guest reached its VM: {reached:?}"
+                );
+            });
+            let _ = child.kill(libc::SIGKILL);
+            let _ = child.wait();
+            let all = lock(&said.0).clone();
+            let mut from = &all[..];
+            let mut refused = Vec::new();
+            let mut paused = None;
+            while let Some((kind, payload)) = wire::read_frame(&mut from).unwrap() {
+                match kind {
+                    wire::to_client::ASK_PAUSED => {
+                        refused.push(wire::AskPaused::decode(&payload).unwrap().id)
+                    }
+                    wire::to_client::PAUSED => paused = Some(wire::PauseAnswer::decode(&payload).unwrap()),
+                    other => panic!("answered kind {other}"),
+                }
+            }
+            assert_eq!(refused, [1, 2, 3, 4, 5]);
+            let paused = paused.unwrap();
+            assert_eq!(paused.id, 6);
+            assert!(paused.result.unwrap().now);
         }
 
         /// Do give room to a run whose VM takes no more of its managed output, its end of it
@@ -6197,12 +6749,104 @@ mod tests {
         );
     }
 
+    /// D267: a `PAUSE` is its owner's ask once its run runs, a malformed one breaking the
+    /// channel; before the run's request (a warm host waiting for its `CREATE`) it is refused,
+    /// typed, as every ask before a run is.
+    #[test]
+    fn a_pause_is_an_ask_of_a_run_and_refused_before_one() {
+        for pause in [true, false] {
+            let ask = wire::PauseAsk { id: 3, pause };
+            match judged(wire::to_host::PAUSE, &ask.encode()) {
+                Ok(Ask::Pause(read)) => assert_eq!(read, ask),
+                _ => panic!("the owner's PAUSE is not its ask"),
+            }
+        }
+        assert!(matches!(
+            judged(wire::to_host::PAUSE, &[0, 0, 0, 3, 7]),
+            Err(AsksEnd::Failed(_))
+        ));
+        let No(cause, why) = before_request(wire::to_host::PAUSE);
+        assert_eq!(cause, Cause::Request);
+        assert_eq!(
+            why,
+            format!("message kind {} before the run's request", wire::to_host::PAUSE)
+        );
+    }
+
     /// D259, R04: a run's saves go one at a time, and none once its VM's link has closed. Do:
     /// ask a save, ask another while it is under way, answer it, ask again and have its VM
     /// refuse, give one up before its VM heard it, answer when none was asked, then close the
     /// link with one asked. Expect: the second refused `State`; each answer told its own save
     /// alone, saved or in its VM's words; an answer none asked changing nothing; the save asked
     /// as the link closes hearing its microVM stopped; and every save after refused `State`.
+    /// Do walk the run's pause through its states (D267): a pause, a second pause, a resume, a
+    /// second resume, a pause its VM refused, a resume its VM refused, and the VM gone while
+    /// paused. Expect: its guest asked nothing from the pause's start to its resume's end; a
+    /// pause or resume of a run already so done, unasked; paused time counting from the VM's
+    /// word to its resume's and folding in a pause under way as its VM goes; what its init last
+    /// said its stats while paused alone; a refused pause leaving it running and a refused
+    /// resume paused.
+    #[test]
+    fn a_runs_pause_moves_by_its_vms_word_and_counts_its_time() {
+        let t0 = Instant::now();
+        let at = |ms| t0 + Duration::from_millis(ms);
+        let mut p = Pauses::new();
+        p.last = Some(b"cpu 5\n".to_vec());
+        assert!(p.guest_runs());
+        assert_eq!(p.said(), None, "a running run's stats are its guest's to say");
+        assert_eq!(p.pause(at(0)), Step::Ask);
+        assert!(!p.guest_runs(), "its guest asked as it paused");
+        assert_eq!(p.said(), Some(Some(&b"cpu 5\n"[..])));
+        let held = p.held(at(10)).unwrap();
+        assert_eq!(
+            held,
+            wire::Paused {
+                total: Duration::ZERO,
+                now: true
+            }
+        );
+        assert_eq!(
+            p.pause(at(30)),
+            Step::Done(wire::Paused {
+                total: Duration::from_millis(20),
+                now: true
+            })
+        );
+        assert_eq!(p.resume(at(40)), Step::Ask);
+        assert!(!p.guest_runs(), "its guest asked before its VM let it go on");
+        let resumed = p.resumed(at(50)).unwrap();
+        assert_eq!(
+            resumed,
+            wire::Paused {
+                total: Duration::from_millis(40),
+                now: false
+            }
+        );
+        assert_eq!(p.resume(at(60)), Step::Done(resumed));
+        assert!(p.guest_runs());
+        // Its VM refuses the pause: running; then paused, a resume refused: paused still.
+        assert_eq!(p.pause(at(70)), Step::Ask);
+        p.unheld();
+        assert!(matches!(p.state, Pause::Running));
+        assert_eq!(p.pause(at(80)), Step::Ask);
+        assert!(p.held(at(80)).is_some());
+        assert_eq!(p.resume(at(90)), Step::Ask);
+        p.unresumed();
+        assert!(matches!(p.state, Pause::Paused { .. }));
+        // Gone while paused: the pause's time so far is kept, and nothing is asked again.
+        p.gone(at(100));
+        assert_eq!(
+            p.paused(at(500)),
+            wire::Paused {
+                total: Duration::from_millis(60),
+                now: false
+            }
+        );
+        assert_eq!(p.pause(at(500)), Step::Gone);
+        assert_eq!(p.resume(at(500)), Step::Gone);
+        assert!(p.held(at(500)).is_none());
+    }
+
     #[test]
     fn a_runs_saves_go_one_at_a_time_and_end_with_its_vm() {
         let mut saving = Saving::Idle;
@@ -6393,6 +7037,7 @@ mod tests {
             cpu_ns: 100,
             resident_bytes: 1,
             footprint_bytes: 2,
+            charged: shards_abi::guest_time::Charged::ToThread,
         };
         let told = shards_abi::rate::used(Ok(&times), Ok(&host));
         assert_eq!(

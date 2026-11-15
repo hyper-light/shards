@@ -112,12 +112,81 @@ impl fmt::Display for Unread {
 /// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostUse {
-    /// Its CPU time, user and system together, in ns: its vCPUs' guest time among it.
+    /// Its CPU time, user and system together, in ns, as its OS counts it, its vCPUs' guest
+    /// time added where its OS charges that to none of its threads ([`Charged::Apart`]).
     pub cpu_ns: u64,
     pub resident_bytes: u64,
     /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
     /// Linux's anonymous resident pages, Windows' private working set.
     pub footprint_bytes: u64,
+    /// Whether its OS counts its vCPUs' guest time as its own, as `cpu_ns` was made by.
+    pub charged: Charged,
+}
+
+/// Whether a VM process's CPU time, as its OS counts it, holds its vCPUs' guest time (D265),
+/// learned from its own clocks: a vCPU thread's CPU time `t`, its guest time `g` and the wall
+/// time `w` over one span. Where a hypervisor runs a vCPU on the thread that asks it to, `t`
+/// holds `g`; where it runs it on its own, the thread waits meanwhile, so `t + g` is within
+/// `w`. Each is told apart by what the other cannot read, past one step of the thread's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charged {
+    /// Not yet told: no span has read what only one of the two can, or its reader has no
+    /// clocks of its vCPUs (a run host reading another process). Its CPU time is its OS's
+    /// count, which may not hold its guest time.
+    Unknown,
+    /// Its vCPU threads' CPU time holds their guest time (`t + g` past `w`): KVM's,
+    /// Hypervisor.framework's, WHP's under Windows' root scheduler.
+    ToThread,
+    /// Its hypervisor runs its vCPUs apart from their threads (`g` past `t`): WHP's under
+    /// the classic and core schedulers, every Windows Server's (D265).
+    Apart,
+}
+
+impl Charged {
+    /// Its word in a use answer (`shards_abi::rate::used`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::ToThread => "thread",
+            Self::Apart => "apart",
+        }
+    }
+
+    /// The charge a word names, as [`word`](Self::word) says it.
+    pub fn from_word(word: &str) -> Option<Charged> {
+        [Self::Unknown, Self::ToThread, Self::Apart]
+            .into_iter()
+            .find(|c| c.word() == word)
+    }
+
+    /// Its tag in a binary record.
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::ToThread => 1,
+            Self::Apart => 2,
+        }
+    }
+
+    /// The charge a tag names, as [`tag`](Self::tag) says it.
+    pub fn from_tag(tag: u8) -> Option<Charged> {
+        [Self::Unknown, Self::ToThread, Self::Apart]
+            .into_iter()
+            .find(|c| c.tag() == tag)
+    }
+
+    /// What one span read of a vCPU tells: `t` its thread's CPU time, `g` its guest time and
+    /// `w` the wall time between the span's reads, each in ns, `step` the thread clock's step.
+    /// None where the span reads what either could.
+    pub fn told(t: u64, g: u64, w: u64, step: u64) -> Option<Charged> {
+        if t.saturating_add(step) < g {
+            Some(Self::Apart)
+        } else if t.saturating_add(g) >= w.saturating_add(step) {
+            Some(Self::ToThread)
+        } else {
+            None
+        }
+    }
 }
 
 /// One vCPU's guest time, as a sample read it.
@@ -210,7 +279,36 @@ impl GuestTimes {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{GuestTimes, Unread, VcpuTime};
+    use super::{Charged, GuestTimes, Unread, VcpuTime};
+
+    /// A span tells a charge only by what the other cannot read, one step of the thread's
+    /// clock past it: hex-winvm's spinning vCPU (WHP, the classic scheduler; 500 ms of wall,
+    /// 470 ms of guest, its thread none, at GetThreadTimes' 15.625 ms) is apart; a thread
+    /// that ran its guest's time (KVM, Hypervisor.framework) is charged it once the two pass
+    /// the wall; a quiet guest, or a thread busy with what its guest asks, tells neither.
+    #[test]
+    fn a_span_tells_a_charge_only_by_what_the_other_cannot_read() {
+        let (w, step) = (500_000_000, 15_625_000);
+        assert_eq!(Charged::told(0, 470_000_000, w, step), Some(Charged::Apart));
+        assert_eq!(
+            Charged::told(480_000_000, 470_000_000, w, step),
+            Some(Charged::ToThread)
+        );
+        assert_eq!(Charged::told(0, 0, w, step), None);
+        assert_eq!(Charged::told(300_000_000, 100_000_000, w, step), None);
+        // A thread within one step of its guest time is not apart; the two together a
+        // step short of passing the wall tell nothing.
+        assert_eq!(
+            Charged::told(470_000_000 - step, 470_000_000, w, step),
+            Some(Charged::ToThread)
+        );
+        assert_eq!(Charged::told(w - 1, step, w, step), None);
+        for c in [Charged::Unknown, Charged::ToThread, Charged::Apart] {
+            assert_eq!(Charged::from_word(c.word()), Some(c));
+            assert_eq!(Charged::from_tag(c.tag()), Some(c));
+        }
+        assert_eq!(Charged::from_tag(3), None);
+    }
     use alloc::string::String;
     use alloc::vec;
 

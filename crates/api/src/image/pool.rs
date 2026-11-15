@@ -1336,6 +1336,14 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.save(to, patience)
     }
 
+    fn pause(&self, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
+        self.guest.pause(patience)
+    }
+
+    fn resume(&self, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
+        self.guest.resume(patience)
+    }
+
     fn stop(&self) -> Result<(), ImageRefusal> {
         self.guest.stop()
     }
@@ -1535,6 +1543,12 @@ mod tests {
             none()
         }
         fn save(&self, _: &std::path::Path, _: Duration) -> Result<(), ImageRefusal> {
+            none()
+        }
+        fn pause(&self, _: Duration) -> Result<wire::Paused, ImageRefusal> {
+            none()
+        }
+        fn resume(&self, _: Duration) -> Result<wire::Paused, ImageRefusal> {
             none()
         }
         fn stop(&self) -> Result<(), ImageRefusal> {

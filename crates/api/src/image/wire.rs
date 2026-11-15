@@ -80,8 +80,12 @@ pub use shards_abi::run::nesting::Ready;
 /// a host of an earlier version, which tells a period no rate is held over, starts no run; 32,
 /// a warm host's use asked while it waits for its run ([`to_host::USE`], answered
 /// [`to_client::USED`]; D253's pools), so that an orchestrator charges a warm host what its VM
-/// process holds, and a host that answers none is never asked, as it would end at the frame.
-pub const VERSION: u8 = 32;
+/// process holds, and a host that answers none is never asked, as it would end at the frame; 33, the run paused and resumed by its owner (`PAUSE`, answered `PAUSED`;
+/// D267), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
+/// time it has been paused told with the run's stats ([`Stats::paused`]) and with its end
+/// ([`RunEnded::paused`]), so that a side that pauses nothing refuses the run as it is asked,
+/// before any pause is.
+pub const VERSION: u8 = 33;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -130,6 +134,9 @@ pub mod to_host {
     /// A warm host's use, asked while it waits for its run (D253's pools), its payload empty:
     /// answered [`USED`](super::to_client::USED), before `CREATE` alone.
     pub const USE: u8 = 40;
+    /// A [`PauseAsk`](super::PauseAsk): the run's microVM paused where it is, or let go on
+    /// (D267).
+    pub const PAUSE: u8 = 42;
 }
 
 /// What the run host sends.
@@ -192,6 +199,13 @@ pub mod to_client {
     /// A warm host's VM process's use ([`used`](super::used)), each answering one
     /// [`USE`](super::to_host::USE) in order.
     pub const USED: u8 = 41;
+    /// [`PauseAnswer`](super::PauseAnswer): a pause's or a resume's outcome, by its ask's id
+    /// (D267).
+    pub const PAUSED: u8 = 43;
+    /// [`AskPaused`](super::AskPaused): an ask that needs the run's guest, refused at once as
+    /// its run is paused or pausing, by its ask's id (D267): its guest runs nothing to answer
+    /// it until the run goes on.
+    pub const ASK_PAUSED: u8 = 44;
 }
 
 /// Why a payload could not be read or written.
@@ -805,6 +819,21 @@ pub struct Stats {
     /// The run's alone ([`StatsScope::Run`]), as its run host reads it: none for its command
     /// or a member, whose cgroups are inside the microVM it costs.
     pub microvm: Option<Microvm>,
+    /// The run's alone, as [`microvm`](Self::microvm) is: how long it has been paused by its
+    /// owner (D267). While it is paused, init's lines above are what its init last said of the
+    /// run before the pause (none where it was never asked), its guest saying nothing until it
+    /// goes on, and its microVM part is read as it stands.
+    pub paused: Option<Paused>,
+}
+
+/// How long a run has been paused by its owner (D267), on its run host's clock: from its VM's
+/// word that every vCPU is held to its word that they go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Paused {
+    /// Every pause's time, the one under way so far among it: zero for a run never paused.
+    pub total: std::time::Duration,
+    /// Whether it was paused as this was read.
+    pub now: bool,
 }
 
 /// What a run's microVM costs its host, which no cgroup of its guest holds, as a daemon's
@@ -821,7 +850,7 @@ pub struct Microvm {
 /// What a VM process uses of its host, and what a microVM's vCPUs have run of its guest, each
 /// by index, with what those it no longer has ran (guest-cpu-time-v1): one form for the VM
 /// process, an image run's stats and a managed guest's use (D260).
-pub use shards_abi::guest_time::{GuestTimes, HostUse, VcpuTime};
+pub use shards_abi::guest_time::{Charged, GuestTimes, HostUse, VcpuTime};
 
 impl Microvm {
     /// Its VMM's own CPU time, in ns: its VM process's less what its vCPUs ran of its guest,
@@ -1047,6 +1076,34 @@ pub struct SaveAnswer {
     pub result: Result<(), (SaveRefusal, String)>,
 }
 
+/// The run's microVM paused where it is (`pause`), every vCPU held out of its guest, or let go
+/// on (D267).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PauseAsk {
+    pub id: u32,
+    pub pause: bool,
+}
+
+/// A pause's or a resume's outcome, by its ask's id: the run's paused time as it stands once it
+/// is done (a pause of a paused run and a resume of a running one done already, D267), or why
+/// its VM did neither, in its VM's words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PauseAnswer {
+    pub id: u32,
+    pub result: Result<Paused, String>,
+    /// The processes of the run its pause holds, by pid, while it is paused (its VM's): what
+    /// its owner's waits on them take for its host's hold ([`crate::Watch`]), never a stall.
+    /// None once it goes on.
+    pub held: Vec<u32>,
+}
+
+/// An ask refused at once as its run is paused or pausing (D267), by its ask's id: one its
+/// guest would answer, which runs nothing until the run goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AskPaused {
+    pub id: u32,
+}
+
 /// How the run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -1065,6 +1122,9 @@ pub enum RunEnd {
 pub struct RunEnded {
     pub end: RunEnd,
     pub final_use: FinalUse,
+    /// How long it was paused by its owner in all (D267), told however it ended: a paused run
+    /// ends only as it is stopped or fails, with no final use read.
+    pub paused: std::time::Duration,
 }
 
 /// What a run's microVM used of its host in all (D260's final use): read by its VM process once
@@ -1104,6 +1164,7 @@ impl RunEnded {
         RunEnded {
             end,
             final_use: FinalUse::Unread(why),
+            paused: std::time::Duration::ZERO,
         }
     }
 
@@ -1133,6 +1194,7 @@ impl RunEnded {
                 }
             }
         }
+        w.duration(self.paused);
         w.done()
     }
 
@@ -1158,8 +1220,13 @@ impl RunEnded {
             }),
             t => return Err(tag("a run's final use", t)),
         };
+        let paused = r.duration()?;
         r.end()?;
-        Ok(RunEnded { end, final_use })
+        Ok(RunEnded {
+            end,
+            final_use,
+            paused,
+        })
     }
 }
 
@@ -1257,6 +1324,21 @@ impl Writer {
     pub(crate) fn text(&mut self, s: &str) -> Result<(), WireError> {
         self.bytes(s.as_bytes())
     }
+    /// A duration in nanoseconds, a u64's most past it (584 years).
+    fn duration(&mut self, d: std::time::Duration) {
+        self.u64(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    }
+    /// 0 for none, or 1, its total ([`duration`](Self::duration)) and whether it is paused now.
+    fn paused(&mut self, paused: Option<&Paused>) {
+        match paused {
+            None => self.u8(0),
+            Some(p) => {
+                self.u8(1);
+                self.duration(p.total);
+                self.u8(u8::from(p.now));
+            }
+        }
+    }
     /// A capture's access reference and its placeholder, then 1 and its refresh token's
     /// placeholder where it has one, else 0 (D242, step 8).
     fn captured(&mut self, c: &Captured) -> Result<(), WireError> {
@@ -1318,6 +1400,7 @@ impl Writer {
                 self.u64(h.cpu_ns);
                 self.u64(h.resident_bytes);
                 self.u64(h.footprint_bytes);
+                self.u8(h.charged.tag());
             }
             Err(why) => {
                 self.u8(1);
@@ -1377,6 +1460,15 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
         self.take(N)?.try_into().map_err(|_| WireError::Short)
     }
+    /// A VM process's charge (`Charged::tag`).
+    fn charged(&mut self) -> Result<Charged, WireError> {
+        let tag = self.u8()?;
+        Charged::from_tag(tag).ok_or(WireError::Tag {
+            what: "a VM process's charge",
+            tag,
+        })
+    }
+
     pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
@@ -1417,6 +1509,19 @@ impl<'a> Reader<'a> {
     }
     pub(crate) fn text(&mut self) -> Result<String, WireError> {
         String::from_utf8(self.bytes()?.to_vec()).map_err(|_| WireError::Text)
+    }
+    fn duration(&mut self) -> Result<std::time::Duration, WireError> {
+        Ok(std::time::Duration::from_nanos(self.u64()?))
+    }
+    /// What [`Writer::paused`] wrote.
+    fn paused(&mut self) -> Result<Option<Paused>, WireError> {
+        if !self.flag()? {
+            return Ok(None);
+        }
+        Ok(Some(Paused {
+            total: self.duration()?,
+            now: self.flag()?,
+        }))
     }
     fn ip(&mut self) -> Result<Option<IpAddr>, WireError> {
         match self.u8()? {
@@ -1482,6 +1587,7 @@ impl<'a> Reader<'a> {
                 cpu_ns: self.u64()?,
                 resident_bytes: self.u64()?,
                 footprint_bytes: self.u64()?,
+                charged: self.charged()?,
             }),
             1 => Err(self.text()?),
             tag => {
@@ -2387,6 +2493,89 @@ impl SaveAnswer {
     }
 }
 
+impl PauseAsk {
+    /// Its id, then 1 to pause or 0 to go on.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u8(u8::from(self.pause));
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PauseAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = PauseAsk {
+            id: r.u32()?,
+            pause: r.flag()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl PauseAnswer {
+    /// Its id, then 0 and the run's paused time, its total in ns and whether it is paused now;
+    /// or 1 and why not; then the pids it holds.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(paused) => {
+                w.u8(0);
+                w.duration(paused.total);
+                w.u8(u8::from(paused.now));
+            }
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.count(self.held.len())?;
+        for pid in &self.held {
+            w.u32(*pid);
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PauseAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(Paused {
+                total: r.duration()?,
+                now: r.flag()?,
+            }),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a pause's answer",
+                    tag,
+                });
+            }
+        };
+        let n = r.count(4)?;
+        let mut held = Vec::with_capacity(n);
+        for _ in 0..n {
+            held.push(r.u32()?);
+        }
+        r.end()?;
+        Ok(PauseAnswer { id, result, held })
+    }
+}
+
+impl AskPaused {
+    pub fn encode(&self) -> Vec<u8> {
+        self.id.to_be_bytes().to_vec()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<AskPaused, WireError> {
+        let mut r = Reader(payload);
+        let ask = AskPaused { id: r.u32()? };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -2580,6 +2769,7 @@ pub fn used(used: &Result<HostUse, String>) -> Result<Vec<u8>, WireError> {
             w.u64(h.cpu_ns);
             w.u64(h.resident_bytes);
             w.u64(h.footprint_bytes);
+            w.u8(h.charged.tag());
         }
         Err(why) => {
             w.u8(1);
@@ -2597,6 +2787,7 @@ pub fn read_used(payload: &[u8]) -> Result<Result<HostUse, String>, WireError> {
             cpu_ns: r.u64()?,
             resident_bytes: r.u64()?,
             footprint_bytes: r.u64()?,
+            charged: r.charged()?,
         }),
         1 => Err(r.text()?),
         tag => {
@@ -2795,20 +2986,26 @@ impl MemberEnded {
     }
 }
 
+/// What a stats answer says ([`StatsAnswer::encode`]): init's lines as it said them, the run's
+/// microVM, and the run's paused time (D267), the last two the run's alone.
+pub type StatsSaid<'a> = (&'a [u8], Option<&'a Microvm>, Option<&'a Paused>);
+
 impl StatsAnswer {
     /// Its id, then 0, init's lines as it said them and the run's microVM (0 for none, or 1
     /// and what it costs: its VM process's use, 0 and its CPU time, resident and own memory,
     /// or 1 and why none was read; its vCPUs' guest time, 0, what departed vCPUs ran and each
-    /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), or
-    /// 1 and why none came.
-    pub fn encode(id: u32, result: Result<(&[u8], Option<&Microvm>), &str>) -> Result<Vec<u8>, WireError> {
+    /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), then
+    /// the run's paused time (0 for none, or 1, its total in ns and 1 where it is paused now),
+    /// or 1 and why none came.
+    pub fn encode(id: u32, result: Result<StatsSaid<'_>, &str>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(id);
         match result {
-            Ok((lines, microvm)) => {
+            Ok((lines, microvm, paused)) => {
                 w.u8(0);
                 w.bytes(lines)?;
                 w.microvm(microvm)?;
+                w.paused(paused);
             }
             Err(why) => {
                 w.u8(1);
@@ -2825,6 +3022,7 @@ impl StatsAnswer {
             0 => {
                 let mut stats = Stats::parse(&String::from_utf8_lossy(r.bytes()?));
                 stats.microvm = r.microvm()?;
+                stats.paused = r.paused()?;
                 Ok(stats)
             }
             1 => Err(r.text()?),
@@ -3228,6 +3426,67 @@ mod tests {
 
     /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a
     /// truncated, trailing or unknown-tagged one is refused, never a default.
+    /// A pause's ask, its answer and a refusal as the run is paused read back as written
+    /// (D267), a run's stats carry its paused time, and what is none of them is refused: a
+    /// flag neither 0 nor 1, an answer's unknown tag, bytes short or past their last field.
+    #[test]
+    fn pauses_round_trip_and_bad_ones_are_refused() {
+        for pause in [true, false] {
+            let ask = PauseAsk { id: 7, pause };
+            assert_eq!(PauseAsk::decode(&ask.encode()), Ok(ask));
+        }
+        assert!(matches!(
+            PauseAsk::decode(&[0, 0, 0, 7, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert_eq!(PauseAsk::decode(&[0, 0, 0, 7]), Err(WireError::Short));
+        assert_eq!(PauseAsk::decode(&[0, 0, 0, 7, 1, 0]), Err(WireError::Trailing));
+        let paused = Paused {
+            total: std::time::Duration::from_nanos(u64::MAX),
+            now: true,
+        };
+        for result in [
+            Ok(paused),
+            Ok(Paused::default()),
+            Err("its microVM: the microVM has stopped".to_string()),
+        ] {
+            for held in [vec![], vec![4242, u32::MAX]] {
+                let answer = PauseAnswer {
+                    id: 9,
+                    result: result.clone(),
+                    held,
+                };
+                assert_eq!(PauseAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+            }
+        }
+        assert!(matches!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        // A count of pids past the bytes left is refused, allocating nothing.
+        assert_eq!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 1, 0, 0, 0, 0, 255, 255, 255, 255]),
+            Err(WireError::Short)
+        );
+        let refused = AskPaused { id: 11 };
+        assert_eq!(AskPaused::decode(&refused.encode()), Ok(refused));
+        assert_eq!(AskPaused::decode(&[0, 0, 11]), Err(WireError::Short));
+        // A run's stats with its paused time, and with none (its command's, a member's).
+        let bytes = StatsAnswer::encode(3, Ok((b"cpu 10\n", None, Some(&paused)))).unwrap();
+        let stats = StatsAnswer::decode(&bytes).unwrap().result.unwrap();
+        assert_eq!((stats.cpu_ns, stats.paused), (Some(10), Some(paused)));
+        assert_eq!(
+            StatsAnswer::decode(&bytes[..bytes.len() - 1]),
+            Err(WireError::Short)
+        );
+        let none = StatsAnswer::encode(3, Ok((b"", None, None))).unwrap();
+        assert_eq!(StatsAnswer::decode(&none).unwrap().result.unwrap().paused, None);
+    }
+
     #[test]
     fn saves_round_trip_and_bad_ones_are_refused() {
         let ask = SaveAsk {
@@ -3714,7 +3973,8 @@ mod tests {
             assert_eq!(RunEnd::decode(&end.encode().unwrap()).unwrap(), end);
         }
         let answer =
-            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None))).unwrap()).unwrap();
+            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None, None))).unwrap())
+                .unwrap();
         assert_eq!(answer.id, 4);
         let stats = answer.result.unwrap();
         assert_eq!(
@@ -4501,6 +4761,7 @@ mod tests {
             cpu_ns: 7,
             resident_bytes: 300 << 20,
             footprint_bytes: 280 << 20,
+            charged: Charged::ToThread,
         };
         for used in [Ok(read), Err("its VM process: gone".to_string())] {
             let bytes = super::used(&used).unwrap();
@@ -4612,6 +4873,7 @@ mod tests {
                 cpu_ns: 90,
                 resident_bytes: 4096,
                 footprint_bytes: 8192,
+                charged: Charged::ToThread,
             }),
             guest: Ok(GuestTimes {
                 vcpus: vec![
@@ -4654,6 +4916,7 @@ mod tests {
                 let ended = RunEnded {
                     end: end.clone(),
                     final_use: final_use.clone(),
+                    paused: std::time::Duration::from_nanos(u64::MAX),
                 };
                 let bytes = ended.encode().unwrap();
                 assert_eq!(RunEnded::decode(&bytes), Ok(ended));
@@ -4701,6 +4964,7 @@ mod tests {
             cpu_ns: 9_000,
             resident_bytes: 64 << 20,
             footprint_bytes: u64::MAX,
+            charged: Charged::ToThread,
         };
         let lines = b"cpu 10\nmemory 7\n";
         let gone = || Err::<HostUse, String>("its VM process: no such process".into());
@@ -4723,7 +4987,7 @@ mod tests {
                 guest: Ok(times.clone()),
             },
         ] {
-            let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm)))).unwrap();
+            let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm), None))).unwrap();
             let stats = StatsAnswer::decode(&bytes).unwrap().result.unwrap();
             assert_eq!((stats.cpu_ns, stats.memory_bytes), (Some(10), Some(7)));
             assert_eq!(stats.microvm, Some(microvm));
@@ -4738,11 +5002,11 @@ mod tests {
             host: Ok(host),
             guest: Ok(times),
         };
-        let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both)))).unwrap();
+        let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both), None))).unwrap();
         // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its
-        // host's tag and three numbers, its guest's tag, departed time and count, and the
-        // first vCPU's index, time and flag: made the first's, out of order.
-        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 8 + 4 + 13;
+        // host's tag, three numbers and charge, its guest's tag, departed time and count, and
+        // the first vCPU's index, time and flag: made the first's, out of order.
+        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 1 + 8 + 4 + 13;
         let mut out_of_order = bytes.clone();
         out_of_order[second..second + 4].copy_from_slice(&0u32.to_be_bytes());
         assert_eq!(
@@ -4762,7 +5026,8 @@ mod tests {
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
             (microvm_tag + 1, 2, "a VM process's use"),
-            (microvm_tag + 1 + 1 + 24, 2, "a microVM's guest time"),
+            (microvm_tag + 1 + 1 + 24, 3, "a VM process's charge"),
+            (microvm_tag + 1 + 1 + 24 + 1, 2, "a microVM's guest time"),
             (second + 4 + 8, 2, "a vCPU's guest time"),
         ] {
             let mut bad = bytes.clone();
@@ -4773,7 +5038,7 @@ mod tests {
                 "{what}"
             );
         }
-        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 8].to_vec();
+        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 1 + 8].to_vec();
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(StatsAnswer::decode(&hostile), Err(WireError::Short));
     }

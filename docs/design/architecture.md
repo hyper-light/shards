@@ -33529,6 +33529,8 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     (`run.rs`), so none made with the old init is restored; and a fresh boot runs the init
     this `shards` carries.
   - *Literals.* None added. The shutdown flags are virtio's (1.3 §5.10.6.4).
+  - *On no clock* (D264): a guest's end holds what its host has not taken past it, within the
+    window it had, instead of the 2 s `SHUTDOWN_TIMEOUT` after which it was dropped.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
   `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
@@ -35622,6 +35624,290 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
   - A build with RUN steps through the API on HVF, KVM and WHP: its builder microVM booted by
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
+
+### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
+
+**Why.** The vsock device gave a connection whose guest had ended both ways 2 s to hand its
+host what the host had not taken (`SHUTDOWN_TIMEOUT`, Firecracker's
+`CONN_SHUTDOWN_TIMEOUT_MS`), then reset it and dropped the rest. A host slower than that, a
+busy orchestrator or a paused reader, lost guest bytes, against D251's amended rule that every
+byte a guest sent before its end is its host's. And a guest's own reset dropped them at once
+(the muxer's `remove`), which Linux sends when its close finds no reset from the host within
+`VSOCK_CLOSE_TIMEOUT` (`virtio_transport_close_timeout`, net/vmw_vsock/
+virtio_transport_common.c). The constant is an upstream default with no source of its own
+(R03).
+
+**What the timer guarded, and what bounds it instead.** A host that never reads holding the
+device's memory and a slot. Neither needs a clock:
+- *Memory.* After the guest's end nothing more comes, so all an ended connection may hold is
+  what it holds: at most the window it had granted (`send_host` refuses a byte past its
+  credit). Its grant ends with it (`Conn::end`: `granted_until` brought to what it holds), so
+  its share of the device's lent window (`WINDOW_LENT`) is what it holds past `WINDOW_LEAST`,
+  counted as an open connection's is (`Muxer::check`), and it falls as the host takes its
+  bytes. A guest's other connections are offered less window while it holds more.
+- *Descriptors.* An ended connection still held takes a slot (`Muxer::open`), as an open one
+  does: slots are what this process's descriptors leave (`slots`). Windows' held sockets
+  (M358's hold) took none before, which this mends.
+- *The guest.* Its connection ends at once: its reset goes as both its ways are over
+  (`Conn::flush`), whatever its host has not taken, so its key and port are free. A ringed
+  connection's ring is the guest's memory, drained while its connection lasts, as before.
+
+**Decided.** An ended connection is one of two held states (`conn::Ended`, R04): `Owing`
+(guest bytes its host has not taken, handed over as its socket turns writable) and, on Windows,
+`Lingering` (every byte the host's, its socket held until the host ends its side, D140's
+M358 hold). `Owing` settles once all is the host's (`Conn::settled`): its writes shut down
+where the guest's ended in order, then on Unix its socket closes and on Windows it lingers.
+It goes where its host has gone (a failed write) and with the muxer's reset. No deadline and
+no learned wait: what a host does not read it holds in its own socket, as it would any peer's,
+and a closed connection costs the device no more than an open one. `REQUEST_TIMEOUT`, a host
+dial's wait for the guest's answer, is untouched (its own R03 review is owed).
+
+**Literals.** None added; `SHUTDOWN_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_host_that_reads_long_after_its_guests_close_reads_every_byte_then_its_end` (a
+guest sends all its window lets it past every socket buffer, the host reading none, closes,
+three seconds pass, the host reads: every byte in order, then their end; its slot held until
+then) and `conn::tests::an_ended_connection_keeps_what_its_host_has_not_taken`. Results and
+hosts are in the commit that lands them and in ROOT's record.
+
+**Evidence owed** (ROOT, real VMs): a guest writing past a slow host's socket buffer and
+closing, on HVF, KVM and WHP.
+
+**What would falsify it.** A guest byte its host never read where the host read on to its
+end; an ended connection holding more than the window it had; slots or lent window freed while
+an ended connection still holds its bytes.
+
+### D265. Whether a VM process's CPU time holds its vCPUs' guest time, learned from its own clocks (built: the charge, the use and the hold it makes; a root-scheduler host's run owed)
+
+**Why.** On hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested WHP on KVM) D260's
+use broke its own invariant, its process's CPU time (609,375,000 ns) below its one vCPU's
+guest time (763,174,000 ns), and D255's quarter-CPU hold let a spinning vCPU run 88% of the
+wall (`boot.rs` `a_managed_guest_records_its_final_use_as_it_ends`,
+`a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`, at 39760e391, twice). A
+probe sampled a --host-managed guest's `USE` every 500 ms: while it spun its guest time
+(`WHvGetVirtualProcessorCounters`' TotalRuntime less HypervisorRuntime) grew 470 ms each,
+94% of the wall, and its process's CPU time (GetProcessTimes) none; halted, neither grew. Its
+hypervisor's scheduler is the classic one (System event 2, "Hypervisor scheduler type is
+0x1": "1 Classic scheduler, SMT disabled", learn.microsoft.com
+windows-server/virtualization/hyper-v/manage/manage-hyper-v-scheduler-types), which runs a
+guest's virtual processors itself, as the core scheduler does; the root scheduler, which
+gives the root partition's NT scheduler the work, "isn't supported on Hyper-V on Windows
+Server" and is "the only supported hypervisor scheduler configuration for client systems"
+(the same page). So on every Windows Server a WHP vCPU's guest time is charged to none of
+its process's threads, and on client Windows nothing documented says either way.
+
+**Decided.** The charge is learned per VM process from its own clocks, never from a
+scheduler's name or an OS edition (`shards_abi::guest_time::Charged`, R04: `Unknown`,
+`ToThread`, `Apart`). Each vCPU's span between two reads of its clocks (its thread's CPU time
+`t`, `platform::ThreadClock`; its guest time `g`; the wall `w`) tells `Apart` where
+`t + step < g`, which a thread that ran its guest's time cannot read, and `ToThread` where
+`t + g >= w + step`, which a thread waiting while its hypervisor runs its vCPU cannot (it
+waits inside the run call), `step` the thread clock's measured step
+(`granule::measure_clock`, 15.625 ms on Windows). A span that reads neither tells nothing.
+The first charge told stands: a host's scheduler is its boot's. A span begins as its vCPU
+joins, so one read only at the end (D260's final use) tells its whole life
+(`vm::guest_time::GuestClocks`). Where a backend's construction fixes it, it is known from the
+start (`hv::GUEST_TIME_CHARGED`): KVM charges guest time to the vCPU thread's user time
+(`account_guest_time`, kernel/sched/cputime.c: `p->utime += cputime; ... p->gtime +=
+cputime`), and Hypervisor.framework runs a vCPU on its owning thread, whose time XNU does not
+split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learned.
+- *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
+  (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
+  `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
+  read once a period, so a period's reads are of one count; the group's governor charges
+  nothing across a change of count. A backend known `ToThread` never reads a guest clock for
+  it, so Hypervisor.framework's vCPUs are never made to leave their guest to be read.
+- *Its use.* A use (`USE`'s `host` line, D260's final-use record, and the warm host's binary
+  `USED` and run stats, `shards_api::image::wire`) carries its charge, so a reader sees which
+  accounting it holds. `cpu_ns` is its OS's count, its vCPUs' guest time added where `Apart`
+  (`vm_run::use_answer`); `Apart` with no guest time read says `Unknown` with the count. A run
+  host's stats read another process's count with no vCPU clocks: `Unknown`.
+- *Cold start.* `Unknown` until a span tells, never a guess; a quiet guest leaves it so, its
+  count then its OS's.
+
+**Literals.** None: the step is measured, and the rule's bounds are the two clocks' own.
+
+**Built and tested** (unit): shards-abi `guest_time::tests::a_span_tells_a_charge_only_by_what_the_other_cannot_read`
+(hex-winvm's span apart, a charged thread, quiet spans, the boundaries a step either way) and
+`rate::tests` (the `host` line with its charge, one without refused); shards-vmm
+`guest_time::tests::a_processs_charge_is_told_by_its_vcpus_spans`; shards
+`vm_run::tests::a_uses_answer_reads_the_guest_then_its_process` (the guest added apart, the
+count standing unknown); shards-vmm `hold::tests::a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time`
+(a thread spending none while its guest clock runs a whole CPU: held within a quarter CPU's
+periods when `Apart`, and never when counted by its thread alone, as the hold did before). Results and hosts are in the landing commit and ROOT's record.
+
+**Evidence owed.** The two `boot.rs` tests green on hex-winvm; the probe on a client Windows
+host under the root scheduler (whether its thread holds its guest time: `ToThread` told); a
+run host's stats told the charge by its VM process.
+
+**What would falsify it.** A span on one host telling both charges; a use whose `cpu_ns` is
+below its guest time with its charge told; a charge told by a span that could read either.
+
+### D266. A host's request waits for its guest on no clock; one left unanswered gives its slot up, longest first (built; real-VM runs owed)
+
+**Why.** A host's dial (`CONNECT <port>`) became a connection that asked its guest (REQUEST)
+and was reset 2 s later if the guest had not answered (`REQUEST_TIMEOUT`, Firecracker's
+`CONN_REQUEST_TIMEOUT_MS`), an upstream default with no source of its own (R03). A live Linux
+guest answers a REQUEST at once: a RESPONSE, or a reset where nothing listens on its port or
+the listener's backlog is full (`virtio_transport_recv_listen`,
+net/vmw_vsock/virtio_transport_common.c). So the timer fired only where the guest was not
+running its queue, held to its rate (D255), paused, snapshotting or slow, and there it failed a
+request the guest would have answered.
+
+**What it guarded, and what bounds it instead.** A slot and a descriptor held by a request no
+guest answers. A pending handshake already holds its slot on no clock and gives it up, silent
+longest first, only to a newcomer (`Muxer::make_room`, `Handshake::heard`). A request now does
+the same: its REQUEST's time is kept to rank it (`Conn::asked`), never to end it, and where
+every slot is taken and no handshake is pending, the request its guest has left unanswered
+longest gives its slot up at once, its client seeing its socket close and its guest a reset
+(a stray RST, `Muxer::stray_rst`). One its guest answered is a connection and is never given
+up. The device's loop now waits on its events alone: none of its waits is on a clock (D264).
+
+**A client gone meanwhile.** While its request is unanswered the device does not read its
+client's socket (as before: what a client sends after its line is the connection's, read once
+it is established), so a client that closes is seen once its guest answers, or when its slot is
+given up. Telling a close from a half-close without reading would need a hang-up the poller
+does not carry, and Windows' AF_UNIX reports both alike (PM M199).
+
+**Literals.** None added; `REQUEST_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_hosts_request_its_guest_answers_late_is_connected` (red with the timer, the
+device's turn run after three seconds; green after) and
+`muxer::tests::an_unanswered_request_gives_its_slot_up_longest_first`;
+`conn::tests::host_initiated_connections_answer_ok_or_wait_for_their_guest`.
+
+**Evidence owed** (ROOT, real VMs): a dial to a guest held to a quarter CPU, and to a paused
+one, connected once it runs, on HVF, KVM and WHP.
+
+**What would falsify it.** A request its guest answered that is reset; a newcomer refused while
+a request its guest has not answered holds a slot.
+
+### D267. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
+
+**Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step
+P5.5, kiln plan 01a1dd2e8618733a87f2793aab1322a8): a paused session runs no CPU and its host's
+use of it stops growing, with its memory, devices and connections kept, and goes on where it
+stopped. D231's runs had `save` (D259) and `stop`, and no pause.
+
+**What existed, and what this builds on.** The daemon's `pause vm`/`unpause` (Docker's
+`pause`) holds every vCPU out of its guest with the VMM's own hold (`shards_vmm::vm::Handle::pause`,
+D191's `Hold`, `paused` beside the rate's and the group's holds), asked on the run's link
+(`PAUSE`: 1 to hold or 0 to go on, then its number; answered `PAUSED`: its number, then nothing
+or why not; warm.rs `pauses`, an ordered thread, as a pause waits for every vCPU to be out of its
+guest). The run host plays the daemon's side of that link (D231), so the orchestrator's pause is
+that ask, sent by `api-run`. Alternatives refused: SIGSTOP of the VM process (or a cgroup freezer
+of it) freezes its device threads and its link mid-flight, so no stats, rate or stop could be
+answered, and D215's readers would rightly find it stopped (`Found::Still`, a stall); a snapshot
+and restore per pause (D259's save) frees memory but costs a save and a restore each time, which
+is the long-pause follow-up below, not the pause.
+
+**Decided** (`shards_api::image::ImageGuest::{pause, resume}`, image channel version 32):
+- *The calls.* `pause(patience)` and `resume(patience)`, required of every `ImageGuest`, each
+  answering the run's `Paused { total, now }`: the time it has been paused by its owner, every
+  pause that ended and the one under way so far, on its run host's clock (from its VM's word that
+  every vCPU is held to its word that they go on), and whether it is paused as read. `patience`
+  bounds the caller's wait alone, as `room`'s and `rate`'s do (`Duration::MAX`: until it is done or
+  the run ends); past it, `Unsupported { "a pause" | "a resume" }`, the run host's state moved by
+  its VM's word all the same. Refused `Pause(why)` where its VM held nothing (its machine stopped
+  first), in its VM's words, and `Ended` once the run has ended, as every ask of an ended run is.
+- *Idempotent* (ROOT's ruling for Hex, 2026-11-14, replacing a refusal of a pause of a paused run
+  first planned): a pause of a paused run, and a resume of a running one, are done already and
+  answer the run's paused time, asking its VM nothing. An owner that lost an answer (its patience,
+  a channel's hiccup) asks again and is answered the same, never refused for having succeeded.
+- *Order.* The run host applies pauses and resumes in the order its channel brought them, one at
+  a time, by one worker thread made as one is asked with none at work and ending once none is
+  left (`api_run::Pauses::queue`), so that a pause then a resume sent without waiting ends running.
+- *Its states* (`api_run::Pause`, R04): running → pausing (its owner's pause) → paused (its VM
+  held every vCPU) → resuming (its owner's resume) → running (its VM let them go); pausing back to
+  running where its VM held none, resuming back to paused where it did not go on; any to gone as
+  its VM's link closes, a pause under way then ending in its total.
+- *A pause is immediate* (ROOT, 2026-11-14: a guest that is slow or hung must never stall it).
+  Nothing of it asks or waits on its guest: the run host refuses asks of its guest from its start
+  and asks its VM to hold at once. While it is pausing, paused or going on, an ask its guest would
+  answer is refused at once, `ImageRefusal::Paused { what }` (`room`, `resize`, `plug`, `unplug`,
+  `stats` of its command or a member), on the wire `ASK_PAUSED` by its ask's id; none of it is
+  applied, nothing is queued for its resume (init's room from before the pause stands through it;
+  its orchestrator tells the room again once resumed). An ask of its guest already under way as
+  the pause lands is answered once its guest goes on, its exec waiting in its guest: never
+  answered for it, as one may be applied after (a room, a plug). Answered without its guest:
+  `stats(Run)` (below), `rate` and `rate_period` (D191's hold is its VM's own, set while held and
+  in force as it goes on), `save` (D259's park of the vCPUs and devices is its VM's own: the
+  snapshot is of the paused machine), `stop`, every wait and take, its diagnostics.
+- *Its connections* (members' stdio, managed output, its agent-control endpoint's lanes, MCP
+  lanes) stay open, each buffered within its own flow control (credits, vsock's, the engine ring);
+  a lane opened while paused is accepted by its guest once it goes on.
+- *Usage while paused* (Hex's P5.5b and D241's host use): `Stats::paused`, the run's alone (as
+  `microvm` is), with every `stats(Run)`; while paused its init's lines are what its init last
+  said of the run before the pause (its last answered `stats(Run)`; none where none was asked),
+  and its microVM part (its VM process's use, each vCPU's guest time, read without its guest) as
+  it stands, so its guest time is flat and its host CPU grows by its VMM's own alone. Its host's
+  use is what is resident as it is read: free page reporting runs throughout in an image run's
+  guest (its microVM is the daemon's runs' shape, `run::Shape`, which gives it the reporting
+  balloon, D151), so what its guest freed before the pause was given back as it freed it. `RunEnded::paused`
+  carries the total however the run ended (a paused run ends only stopped or failed, with no final
+  use read; an end its host never told carries the total it last told). An orchestrator's window of
+  a run's life (D241's `host_use`) subtracts it.
+- *The judged waits* (D215, D222's slice c2). No wait of Shards' follows an image run's VM process
+  (the run host's asks of its VM wait on their answers; D215's judged waits follow managed guests'
+  and the daemon's runs'); the waits that do are its owner's: Hex's, and the tests'
+  (`common::judged`, `Party::started`), which follow every process the test started. A paused VM
+  runs nothing and no OS shows it held (its vCPU threads sleep as an idle VM's do), so D215's
+  readers would find it still and refuse it. A pause is its host's own hold: the process that
+  paused a run holds its VM process as held (`shards_api::progress::Held`, by pid and start, told
+  with the pause's answer, `PauseAnswer::held`) for as long as it is paused, and a look of D215's
+  readers (`Watch::look`) that finds a held process still finds it `Found::Held`: live, never a
+  stall. A stopped (SIGSTOPped) one stays still. Its record is this process's: only its owner's
+  waits know of its pause, and only they need to.
+- *The guest's clock.* A pause takes no snapshot: the guest's counters run on through it (HVF's
+  `CNTVCT_EL0` is the host's counter less a constant `vtimer_offset`; KVM's kvmclock and arm64's
+  arch timer, and WHP's partition reference time, likewise), so its `CLOCK_REALTIME` goes on from
+  where its host's was. A step its host's clock took meanwhile (NTP, a person) is not its guest's,
+  so as it goes on its init is asked, on a thread of its own once its VM has let it go, to set its
+  clock to its host's (`builtin::CLOCK`, init's `sync_clock`, as a restored VM sets its own): after
+  resume's answer, holding up nothing, a failure said in the run host's diagnostics. Tested on real
+  VMs: after a 3 s pause the first line its member prints holds a time within the host's reads
+  around its resume and its receipt (the bound `run.rs` holds a restore to). **Owed:** on KVM x86-64,
+  `KVM_KVMCLOCK_CTRL` on each vCPU as it goes on (QEMU does), so that its guest's soft-lockup
+  watchdog does not take a long pause for a lockup (its warning, never its panic, is the cost now).
+- *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
+  (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
+  an end.
+- *Wait and cache review* (R05). New waits: the worker's for its VM's `PAUSED` (an answer, or its
+  link's close), its VM's own, never its guest's. Kept: init's last lines of the run's stats
+  (`Pauses::last`), one per run, replaced by each `stats(Run)` its init answers, said only while
+  the run is pausing, paused or going on. Its source is its init; it is stale by whatever its guest
+  ran between that answer and the hold, which the first answer after its resume shows (counters
+  only grow), and nothing of its guest moves while every vCPU is held. Without it no `stats(Run)`
+  could answer while paused without asking its guest (Hex's usage refuses a run with no memory or
+  CPU line); a sample taken at the pause would make the pause wait on its guest.
+- **Tests.** Unit and stand-in: `wire` `pauses_round_trip_and_bad_ones_are_refused`;
+  `session` `a_pause_rides_the_runs_channel_and_asks_of_its_guest_come_back_paused`,
+  `a_pauses_answer_and_a_paused_refusal_are_held_for_their_asks`; `api_run`
+  `a_runs_pause_moves_by_its_vms_word_and_counts_its_time`,
+  `a_pause_holds_its_vm_at_once_and_its_resume_sets_its_guests_clock` (a stand-in VM: `PAUSE` 1
+  first, nothing of its guest asked; a second pause and resume unasked; init's `CLOCK` once it goes
+  on), `asks_of_a_paused_runs_guest_are_refused_at_once`; `progress`
+  `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held while its
+  `Held` lives and refused `Stalled` once it goes: the red with the hold's check removed). Real VM:
+  `api_image` `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped` (guest time flat across a 3
+  s pause, the room and a member's stats refused `Paused`, the rate answered, a judged read of the
+  member's stdout through the pause not refused, its count going on from the last before the pause
+  with none lost, its clock the host's, the paused time in its stats and its end).
+- **Follow-ups, designed** (ROOT's review, 2026-11-14):
+  1. *No give-back in a pause's path* (ROOT's correction, 2026-11-14): a guest round trip (a
+     reclaim, a balloon request) there would let a slow or hung guest stall it, and free page
+     reporting gives back what the guest frees throughout (above). A pause holds at once; usage
+     says what is resident then.
+  2. *A long pause becomes a save.* A pause that outlasts a learned break-even, the measured cost
+     of a save and a restore of that VM's size (D259's save and D253's restore, each timed as it
+     runs on that host, in its home's record) against the memory-time it holds paused, becomes a
+     save that frees everything (its VM ended, its snapshot its owner's), and its resume a restore.
+     Cold, with no save or restore measured on that host, a pause stays a pause until one is.
+- **Owed** (ROOT): the real-VM test on KVM and WHP (`cargo test -p shards --profile test-release
+  --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
+  KVM x86-64's `KVM_KVMCLOCK_CTRL` at resume.
 
 ### D268. An x86-64 guest resets through its FADT's reset register, the ACPI power device's; the i8042 is gone (built; real-VM runs on KVM and WHP owed)
 
