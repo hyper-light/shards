@@ -668,12 +668,13 @@ mod tests {
         }
     }
 
-    /// A vCPU whose run its governor sees only once that run is over, as WHP's runtime
-    /// counter moves in ~10 ms steps (hex-winvm, D265) and a kick lands late, overruns its
-    /// share each time it runs: what it overran holds it through the periods after, across
-    /// their ends, so that over many periods it runs its share. Let go at each period's end
-    /// whatever it owed, it ran again every period (hex-winvm: 38.8% of the wall at a quarter
-    /// CPU, D255's bound a little over a quarter).
+    /// A vCPU its governor sees only in steps past its share, half its period at a time, as
+    /// on hex-winvm each release ran past a quarter CPU's share before it was held again (its
+    /// guest time seen in ~10 ms steps and its governor waking late, PM M601), overruns its
+    /// share each time it is let go: what it overran holds it through the periods after,
+    /// across their ends, so that over many periods it runs its share. Let go at each
+    /// period's end whatever it owed, it ran a step every period (hex-winvm: 38.8% of the
+    /// wall at a quarter CPU).
     #[test]
     fn a_vcpu_seen_late_is_held_across_periods_by_what_it_overran() {
         let hold = Hold::new(1);
@@ -685,7 +686,7 @@ mod tests {
         let (ran, wall) = std::thread::scope(|s| {
             let theirs = guest.clone();
             let (hold, registered, done) = (&hold, &registered, &done);
-            // The vCPU: a period's run at a time, its guest time told once the run is over.
+            // The vCPU: a run of half a period at a time, its guest time told once it is over.
             s.spawn(move || {
                 let told = theirs.clone();
                 let read: GuestRead = Box::new(move || Some(told.load(Ordering::SeqCst)));
@@ -694,7 +695,7 @@ mod tests {
                 while !done.load(Ordering::SeqCst) {
                     hold.wait(&|| done.load(Ordering::SeqCst));
                     let run = Instant::now();
-                    std::thread::sleep(period);
+                    std::thread::sleep(period / 2);
                     let ns = u64::try_from(run.elapsed().as_nanos()).unwrap();
                     theirs.fetch_add(ns, Ordering::SeqCst);
                 }
@@ -715,7 +716,7 @@ mod tests {
         let period_ns = u64::try_from(period.as_nanos()).unwrap();
         // A quarter of the wall, two of its periods where the window and the periods do not
         // line up, and one run, the step its guest time is seen in.
-        let most = wall / 4 + 3 * period_ns;
+        let most = wall / 4 + 2 * period_ns + period_ns / 2;
         assert!(
             ran <= most,
             "{ran} ns run in {wall} ns at a quarter CPU, over {period_ns} ns periods"
