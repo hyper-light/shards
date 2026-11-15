@@ -25238,6 +25238,91 @@ microseconds with no growth is no evidence that a process ran nothing: D215's re
 the kernel's tick as their resolution (`Watch::resolution`). The wake mode's n is small:
 its 1 ms sleeps between pokes ran about 8 ms under the session's QoS clamp.
 
+### M593. Where a shards-api image start's time goes, by the way it starts (D231, D253; api_image's `image_start_costs`)
+
+Why: Hex's `hex.image.boot` measured 122–719 ms on HVF and 167–235 ms on KVM (n=6), and the
+person asks for an order of magnitude less. This entry is the method; its numbers are owed.
+
+Method: `crates/shards/tests/api_image.rs` `image_start_costs` (`#[ignore]`), run as
+`SHARDS_IMAGE_COST_N=<n> cargo test -p shards --profile release --test api_image -- --ignored
+--exact image_start_costs --nocapture`, on the host whose backend it measures (HVF on an
+M-series Mac, KVM on Linux x86_64; WHP restores where `vm::restores_here`, else only `Booted`
+runs and the rest are said SKIP). The tests' own image, its harness the test guest's `sleep`
+(it prints `ready`, then waits for its end), 1 vCPU and 512 MiB, no members' stages, no
+network. Four kinds of start, each held to the `started_from` its run reports (a start of
+another kind fails the measurement):
+- `Booted`: `ImageShards`, the guest given by `SHARDS_KERNEL`/`SHARDS_INIT`, so no template.
+- `Saved`: `ImageShards` in a home of its own whose `templates/` is emptied before each start,
+  so each boots and saves its template.
+- `Restored`: `ImageShards` in a home whose template was saved once before the samples.
+- `Warm`: `ImagePools::new(2, ImagePools::KEEP)` over the restoring home's spec, warmed until a
+  start takes a warm host before the samples.
+
+Each start is timed from its `boot_stoppable` call: to its answer with the run host's
+diagnostics kept (`boot`, the span Hex's `ImageWaits::boot` measures: hex-runtime
+guest/image.rs `boot_on_its_thread`, its slot asked before the call and answered after
+`keep_diagnostics`); to the harness's first stdout line read (`first output`); and its
+`stop`, from its call to its answer. The kinds run round-robin, each round starting one kind
+later, so host drift and a pool's refill after a warm start fall on every kind alike (PM M29);
+one discarded start of each kind first. Each sample's line is printed
+(`IMAGE-START-SAMPLE`), then n, p50, p90, p99 and max per kind and span (`MEASURED IMAGE
+START …`, with host, OS-arch-CPUs, revision, backend and OS release).
+
+Then one start of each kind with `SHARDS_LOG=debug` in its run host's environment, which its
+VM process inherits (`netproc::child_env`) and logs to the run host's diagnostics with
+microseconds since its `main` (`shards_vmm::log`): the VM's own steps (`VM created and RAM
+mapped`, `GIC created`, `kernel and initrd copied` on a boot; the working set mapped ahead,
+each vCPU created and its state restored, `restored a N MiB guest`, layer and DAX heads mapped
+back on a restore; `N vCPU(s) ready to run after`, `the machine's start finished`; the
+snapshot written and made durable on a save), printed as below.
+
+What those outputs did not split, and the smallest instrument for each, built behind
+`SHARDS_TIMING` (which reaches the run host from its spec's environment and its VM through
+`netproc::child_env`); with it unset each is one `OnceLock` read and says nothing:
+- The run host's own steps before its VM's `main`: `api_run::say` prefixes `+US us`,
+  microseconds since the run host's `main` (`shards_vmm::log::uptime_us`), and its first line
+  says that clock's wall time (`its clock began at unix US us`, `log::began_unix_us`). Steps
+  said only when timed (`api_run::step`): its request read, its image prepared
+  (`run::prepare`), its microVM shaped, its run planned, its share process started,
+  launching its VM; and through `launch::say_steps`, which only the run host sets: its network
+  process started, spawning the VM, the VM spawned (Windows: made suspended, resumed). The VM
+  process's first log line (at debug) says its own clock's wall time (`its log began at unix US
+  us`), so its spawn, exec and App Sandbox entry are the way from `spawning the VM` to it.
+- The grants a macOS VM asks of its run host (D30): `the VM's grants: N of its asks answered`
+  as each is answered (`grant_answer::serve_waiting`'s hook, launch.rs `Grants::Answered`).
+- The guest's markers: the VMM already logs each at info (`guest marker N at US us`), on its
+  clock. `run_request` also sets `RUN_TIMING`, and the run host says the timing line its VM
+  sends in `EXIT` (`its VM's timing line: {...}`); a run stopped (the harness's `stop`) is
+  killed and sends none, so the measurement reads the markers from the VM's log.
+- `READY`, `TAKEN` and `STARTED`: `its VM said READY`, `its VM took the run`, `its start told
+  its orchestrator`, `its VM said STARTED`.
+The phase pass sets `SHARDS_TIMING` beside `SHARDS_LOG=debug` and prints every timed line,
+the run host's and each VM process's, on the caller's clock (each process's began wall clock
+plus its line's time, less the wall clock at the `boot_stoppable` call), in order, with the gap
+to the line before, beside the caller's own `the boot answered` and `its harness's first
+output read` (`IMAGE-START-PHASES KIND US +GAP WHO TEXT`). A warm host's lines from before the
+call are negative. Wall clocks line processes up to the host clock's resolution and its slew
+over one start; no number here is measured yet.
+
+Steps timed since, for the stretches ROOT's first phase pass (8d732fb2d, HVF, a loaded M4
+Max) left untimed (D253's amendment, the start path's cuts):
+- Planning (stretches 1 and 4): `its security made: its guest's kernel read, its filters
+  compiled` after `its microVM shaped`, which a warm host says before its run asks; then
+  `its members staged, its ports bound`, `its setup's security composed` and `its run
+  planned`, which `plan` says on every kind, a warm run's too.
+- Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
+  from the run host's first step, api_run.rs `Checking`), `its network decided`, `its
+  writable layer cloned|made|none`, then `launching its VM`.
+- Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
+  then `its VM process … is ready`.
+- shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
+  diagnostics, its own wall clock's (session.rs `Shared::step`), said `caller` by the
+  timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
+  answer K read` (STARTED 16, WARMED 32), `its start taken`, `its members' outputs pumped`,
+  `its diagnostics' file named` and `kept`, beside the harness's own `the boot answered`.
+
+Numbers: owed (ROOT runs it), on HVF and on KVM.
+
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)
 
 Method: `docs/research/measurements/judge-blocked/states.c` (`cc -O2 -o states states.c &&
@@ -25269,3 +25354,76 @@ binary, its security daemons' work (M166). The CPU, 14.1 to 16.3 ms, was above t
 12.58 ms that the batch's kind had learned in every run: the same work runs to more CPU on
 a loaded host, so C* alone did not keep the rate floor off a party waiting on its host's
 disk. n is 8 on one host: the shares are its, not a bound.
+
+### M601. Which accumulated counts show a flush's wait between two looks (D215)
+
+Question: a look at a process samples its threads' states at one instant, so a wait in the
+kernel that ends between two looks leaves no trace there (M600). Which of each OS's
+accumulated per-process counts grow across such a wait, read without privileges?
+
+Method: `docs/research/measurements/judge-blocked/counters.c` (macOS) and
+`counters-linux.c` (Linux) run a child that writes and flushes a file in a loop and sample
+it every 100 µs: its threads' states, and its accumulated counts. For each stretch of 1 ms
+or more in which a thread of it waited uninterruptibly (macOS `TH_STATE_UNINTERRUPTIBLE`,
+Linux `D`), each count's growth from the sample before the stretch to the first after it.
+
+- macOS: adas-mac-studio.local-2 (Mac15,14, 32 cores, macOS 26.4, load averages 3.9 to 6.6),
+  2026-11-14. Counts: proc_pid_rusage(2) RUSAGE_INFO_V4 `ri_pageins`, `ri_diskio_bytesread`,
+  `ri_diskio_byteswritten`, `ri_logical_writes`. macOS keeps no count of time waited.
+- Linux: adacachy2 (CachyOS, kernel 7.3.3, 32 cores, load averages 13.9 to 15.6, its file
+  on btrfs on NVMe; `/tmp` there is a tmpfs, whose flush waits on nothing), in a
+  `systemd-run --user` scope at nice 10, 2026-11-14. Counts: each task's stat fields 12
+  (`majflt`) and 42 (`delayacct_blkio_ticks`), `/proc/<pid>/io`'s `read_bytes` and
+  `write_bytes`. `kernel.task_delayacct` 0 and `kernel.sched_schedstats` 0 there, the
+  defaults; `/proc/pressure/io` present (PSI on).
+
+| host | loop | waits of 1 ms or more | their time | grew a count | its time |
+|---|---|---|---|---|---|
+| macOS | 4 KiB written, F_FULLFSYNC, x200 | 30 | 948.7 ms | 30 | 948.7 ms |
+| macOS | a file created, F_FULLFSYNC of its directory, x200 | 25 | 966.1 ms | 24 | 963.4 ms |
+| Linux | 4 KiB written, fdatasync(2), x300 | 274 | 2,317.6 ms | 257 | 2,203.6 ms |
+| Linux | 1 MiB written, fdatasync(2), x100 | 117 | 334.9 ms | 111 | 320.6 ms |
+
+On macOS the file's flushes grew bytes written and logical writes; the directory's grew
+logical writes alone. On Linux only `write_bytes` grew: `delayacct_blkio_ticks` stayed 0
+with delay accounting off, and no page came from storage. So the counts that are kept show
+most such waits between looks, but not every one, and Linux keeps the time waited only with
+delay accounting on or, through a cgroup's own `io.pressure`, where the process is alone in
+it. Neither host's counts are a bound; n is one loop each.
+
+### M602. A WHP vCPU's guest time: charged to its thread under the root scheduler, apart under the classic, and seen in ~10 ms steps (D265)
+
+- **Question.** On hex-winvm a managed guest's final use read its VM process's CPU time below
+  its vCPU's guest time, and a quarter CPU's hold let its vCPU run 88% of the wall (D265's
+  why). Does Windows charge a WHP vCPU's guest time to the thread that runs it, and how often
+  does the runtime counter (`WHvGetVirtualProcessorCounters`, TotalRuntime less
+  HypervisorRuntime) move?
+- **Method.** `docs/research/measurements/whp-guest-time-cadence` (`whp_probe.rs`,
+  `whp_cadence.rs`), at shards 39760e391 and ba6ed94b8, on hex-winvm (Windows Server 2025
+  24H2 build 26100.32230, nested WHP on KVM, AMD Ryzen 9 9950X3D2, 12 vCPUs; the classic
+  scheduler with SMT off, System event 2 "Hypervisor scheduler type is 0x1") and jupiter
+  (Windows 11 Pro 10.0.26200, AMD Ryzen AI Max+ 395, 32 CPUs; the root scheduler, event 2
+  0x4), 2026-11-15.
+- **Found.**
+  - Charge (whp_probe, 500 ms samples while the guest spins): hex-winvm's guest time grew
+    470-471 ms a sample (93.8-94.1% of the wall) and its process's CPU time none at 39760e391;
+    jupiter's guest grew 95.1-98.5% of the wall and its process's CPU 96.6-102.9% with it.
+    Halted, neither grew on either. At ba6ed94b8 each process told its charge from its own
+    clocks: hex-winvm `Apart` from its second answer, its use's CPU then its guest's added;
+    jupiter `ToThread` from its first.
+  - Cadence (whp_cadence, hex-winvm, ba6ed94b8): asks back to back, n 8,213, latency p50 234
+    us, p90 279, p99 378, max 1,196; the guest time moved n 200 times, p50 10,013 us apart,
+    p90 10,139, p99 10,318, max 10,511, by p50 9,404 us of guest each (p90 9,479, p99 9,598,
+    max 9,887). On jupiter (bare metal, the root scheduler), asks n 9,884, p50 191 us, p90
+    289, p99 387, max 1,156; moves n 1,216, p50 1,895 us apart, p90 2,121, p99 2,280, max
+    2,395, by p50 1,971 us of guest each (p90 1,989, p99 2,001, max 2,204). Its unit is
+    100 ns on both; its step, what a read may lag what ran, is a move's, five times coarser in
+    the nested guest.
+- **Consequence (D265).** The charge is learned per process (`Charged`), and the governor
+  counts a vCPU's time as it says. A vCPU seen a move late overruns each hold by up to a move
+  and a kick's landing, which its debt owes the periods after: the hold lasts across their
+  ends for the whole shares owed (`Hold::govern`), where it was let go at each period's end
+  and ran again before its governor woke (hex-winvm at ba6ed94b8: 776,742,300 ns of guest in
+  2,002,645,300 ns at a quarter CPU, 38.8%). A test's bound takes the step measured from its
+  own guest (`tests/common::guest_time_step`), never a unit.
+

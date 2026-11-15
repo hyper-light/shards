@@ -68,6 +68,9 @@ pub struct Plugs {
     /// What its functions passed through reach of its VM: KVM's.
     #[cfg(all(hv, target_os = "linux"))]
     pub vfio: crate::hv::VfioHost,
+    /// Where a component's file plugged in as a pmem function is mapped (D270), where the
+    /// machine has a components' window.
+    pub components: Option<std::sync::Arc<crate::devices::virtio::pmem::Components>>,
 }
 
 impl std::fmt::Debug for Control {

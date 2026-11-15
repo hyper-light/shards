@@ -170,16 +170,19 @@ impl Hold {
     /// and returns at once once `stop` says so (the machine ends, or a snapshot needs it).
     /// Held by its share, it waits no longer than its period: a governor that wakes late
     /// on a busy host held its vCPUs as late, up to 57 s past their period on an overloaded
-    /// one (PM M441).
-    pub(super) fn wait(&self, stop: &dyn Fn() -> bool) {
+    /// one (PM M441). Returns whether it held the vCPU through a pause (D267), which its
+    /// guest is then told of where its hypervisor tells one (`Vcpu::went_on`).
+    pub(super) fn wait(&self, stop: &dyn Fn() -> bool) -> bool {
         if !self.held.load(Ordering::Acquire) {
-            return;
+            return false;
         }
         let mut s = lock(&self.state);
         s.waiting = s.waiting.saturating_add(1);
         self.waited.notify_all();
+        let mut paused = false;
         while !stop() {
             if s.group_held || s.paused {
+                paused |= s.paused;
                 s = wait(&self.released, s);
                 continue;
             }
@@ -193,6 +196,7 @@ impl Hold {
             s = wait_timeout(&self.released, s, left);
         }
         s.waiting = s.waiting.saturating_sub(1);
+        paused
     }
 
     /// The machine paused: every vCPU held out of its guest whatever its share, `kick`
@@ -326,6 +330,9 @@ impl Hold {
         let mut before = 0u64;
         let mut start = Instant::now();
         let mut last = None;
+        // Until when its vCPUs are held: past this period's end where what they overran
+        // already owes the periods after it theirs.
+        let mut held_until: Option<Instant> = None;
         loop {
             let (milli, generation, period) = {
                 let mut s = lock(&self.state);
@@ -351,14 +358,35 @@ impl Hold {
             let base = self.used(counted);
             let share = share_of(milli, u64::try_from(period.as_nanos()).unwrap_or(u64::MAX));
             let allowed = share.saturating_sub(debt);
-            let mut holding = false;
+            // Held on from a period before, by what its vCPUs overran then.
+            let mut holding = held_until.is_some_and(|until| until > start);
             let mut changed = false;
             while let Some(left) = period.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
                 let used = self.used(counted).saturating_sub(base);
-                if !holding && used >= allowed {
-                    holding = true;
-                    self.set_held(Some(start + period));
-                    kick();
+                if used >= allowed {
+                    // Held to this period's end, and through as many after it as what its
+                    // vCPUs overran already owes, whole shares of it: a vCPU let go at each
+                    // period's end, its debt unpaid, runs again until the governor wakes and
+                    // its kick lands, every period (hex-winvm: 38.8% of the wall at a quarter
+                    // CPU, its guest time seen in ~10 ms steps, D265).
+                    let owed = debt.saturating_add(used).saturating_sub(share);
+                    let periods = owed
+                        .checked_div(share)
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|p| p.checked_add(1))
+                        .unwrap_or(1);
+                    let until = period
+                        .checked_mul(periods)
+                        .and_then(|d| start.checked_add(d))
+                        .unwrap_or(start + period);
+                    if held_until.is_none_or(|held| until > held) {
+                        held_until = Some(until);
+                        self.set_held(Some(until));
+                    }
+                    if !holding {
+                        holding = true;
+                        kick();
+                    }
                 }
                 let next = if holding || !busy {
                     left
@@ -397,7 +425,12 @@ impl Hold {
                 )
             };
             start += period;
-            self.set_held(None);
+            // Let go at its period's end unless what it overran holds it on; a new limit
+            // owes nothing of the old one's.
+            if changed || held_until.is_none_or(|until| until <= start) {
+                held_until = None;
+                self.set_held(None);
+            }
         }
     }
 
@@ -600,7 +633,8 @@ mod tests {
     fn a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time() {
         for (charged, held) in [(Charged::Apart, true), (Charged::ToThread, false)] {
             let hold = Hold::new(1);
-            let rated = hold.set(250).unwrap();
+            // A g of the test's own: the process's is other tests' to learn.
+            let rated = hold.set_at(250, Duration::from_millis(4)).unwrap();
             let periods = 8;
             let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let (registered, done) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -637,6 +671,56 @@ mod tests {
             });
             assert_eq!(seen, held, "{charged:?}: held within {periods} periods");
         }
+    }
+
+    /// A vCPU seen to have overrun its share by many at once, as a run its governor sees late
+    /// is (WHP's guest time moves ~10 ms apart on hex-winvm, PM M602), is held through the
+    /// periods its debt owes, across their ends, never let go at the end of the first: a hold
+    /// let go at each period's end let its vCPU run again until its governor woke and kicked
+    /// it, every period (hex-winvm: 38.8% of the wall at a quarter CPU, D255's bound 31%).
+    #[test]
+    fn a_vcpu_that_overran_is_held_through_the_periods_it_owes() {
+        let hold = Hold::new(1);
+        // A g of the test's own: the process's is other tests' to learn.
+        let rated = hold.set_at(250, Duration::from_millis(4)).unwrap();
+        let period = rated.period;
+        // Twelve of a quarter CPU's shares overrun at once: eleven owed past its first.
+        let overrun = u64::try_from((period / 4 * 12).as_nanos()).unwrap();
+        let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let done = AtomicBool::new(false);
+        let blocked = std::thread::scope(|s| {
+            let (told, counted) = (guest.clone(), reads.clone());
+            let (hold, done) = (&hold, &done);
+            let vcpu = s.spawn(move || {
+                let (theirs, read_count) = (told.clone(), counted.clone());
+                let read: GuestRead = Box::new(move || {
+                    read_count.fetch_add(1, Ordering::SeqCst);
+                    Some(theirs.load(Ordering::SeqCst))
+                });
+                hold.register(0, Some(read)).unwrap();
+                // Its governor's first reading taken, its overrun told at once.
+                while counted.load(Ordering::SeqCst) == 0 {
+                    std::thread::yield_now();
+                }
+                told.fetch_add(overrun, Ordering::SeqCst);
+                while !hold.held.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                let held = Instant::now();
+                hold.wait(&|| done.load(Ordering::SeqCst));
+                held.elapsed()
+            });
+            let governor = s.spawn(|| hold.govern(&|| {}, &|| Charged::Apart));
+            let blocked = vcpu.join().unwrap();
+            done.store(true, Ordering::SeqCst);
+            hold.end();
+            governor.join().unwrap();
+            blocked
+        });
+        // Through the shares it owes past its first period's, but for what of that period
+        // passed before its governor saw the overrun: ten periods at the least, of eleven.
+        assert!(blocked >= period * 10, "held {blocked:?} over {period:?} periods");
     }
 
     /// A rate's share of a period is that many thousandths of it, exact to the nanosecond
@@ -1008,6 +1092,28 @@ mod tests {
             !hold.pause(1, &|| {}, &|| false),
             "an ended machine is no pause's"
         );
+    }
+
+    /// A vCPU held through a pause says so as it goes on, so that its guest is told (D267's
+    /// `Vcpu::went_on`); one held by its share alone, or not held, does not.
+    #[test]
+    fn a_vcpu_held_through_a_pause_says_so() {
+        let hold = Hold::new(1);
+        assert!(!hold.wait(&|| false), "no hold is no pause");
+        hold.set_held(Some(Instant::now() + Duration::from_millis(20)));
+        assert!(!hold.wait(&|| false), "a share's hold is no pause");
+        std::thread::scope(|s| {
+            let pausing = s.spawn(|| hold.pause(1, &|| {}, &|| false));
+            // Its vCPU comes to its guest's door once the pause holds it, as a kicked one does.
+            while !hold.held.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let waiting = s.spawn(|| hold.wait(&|| false));
+            assert!(pausing.join().unwrap());
+            hold.resume();
+            assert!(waiting.join().unwrap(), "a pause it was held through went unsaid");
+        });
+        assert!(!hold.wait(&|| false), "a pause is said once, as it ends");
     }
 
     /// A vCPU waiting while held goes once the machine ends.

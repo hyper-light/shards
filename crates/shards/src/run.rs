@@ -1229,6 +1229,15 @@ impl Shape<'_> {
             cfg.share_window_mib = cfg.share_window_mib.min(bound);
         }
         cfg.pci_slots = self.pci_slots;
+        // And a components' window where it has slots to plug a component's pmem function
+        // into (D270): as long as the host's memory, the most of the components' files its
+        // page cache holds at once, as its swap window is (D159); nothing of it mapped until
+        // one is plugged.
+        cfg.component_window_mib = if self.pci_slots > 0 {
+            host_mib.unwrap_or(0)
+        } else {
+            0
+        };
         if let Some(bridge) = self.bridge {
             cfg.cmdline.push(' ');
             cfg.cmdline.push_str(&bridge.cmdline());
@@ -1303,6 +1312,12 @@ pub fn boot_args(cfg: &Config, rootfs: &Path, save: Option<&Path>, link: &str) -
         if cfg.pci_slots_iommu {
             args.push("--pci-slots-iommu".into());
         }
+    }
+    if cfg.component_window_mib > 0 {
+        args.extend([
+            "--component-window".into(),
+            cfg.component_window_mib.to_string().into(),
+        ]);
     }
     // The CPU baseline its guest is told (D176 part 6).
     if !cfg.cpu_baseline.is_empty() {
@@ -2069,6 +2084,7 @@ mod tests {
         assert!(bound < 4096);
         assert_eq!(cfg.share_window_mib, bound);
         assert_eq!(cfg.pci_slots, 4);
+        assert_eq!(cfg.component_window_mib, 8192);
         assert_eq!(
             cfg.cmdline,
             format!(
@@ -2088,7 +2104,10 @@ mod tests {
         };
         let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
         unknown.give(&mut cfg);
-        assert_eq!((cfg.hotplug_mib, cfg.swap_mib), (0, 0));
+        assert_eq!(
+            (cfg.hotplug_mib, cfg.swap_mib, cfg.component_window_mib),
+            (0, 0, 0)
+        );
         assert_eq!(cfg.cmdline, base);
         assert!(cfg.pmem.is_empty() && cfg.shares.is_empty());
         assert_eq!(cfg.share_window_mib, 4096);
@@ -2115,6 +2134,7 @@ mod tests {
         cfg.share_window_mib = 870;
         cfg.pci_slots = 4;
         cfg.pci_slots_iommu = true;
+        cfg.component_window_mib = 8192;
         #[cfg(target_arch = "aarch64")]
         let baseline: shards_vmm::arch::cpu::Id = vec![(0xc000, 0x11)];
         #[cfg(target_arch = "x86_64")]
@@ -2157,6 +2177,8 @@ mod tests {
                 "--pci-slots",
                 "4",
                 "--pci-slots-iommu",
+                "--component-window",
+                "8192",
                 "--cpu-baseline",
                 encoded.as_str(),
                 "--join",

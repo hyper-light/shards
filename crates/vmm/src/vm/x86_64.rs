@@ -347,6 +347,8 @@ struct Assembled {
     pci: Option<acpi::PciBridge>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// Its components' window's length in MiB, as its guest's addresses fit it (D270).
+    component_window_mib: u64,
     /// The GPU's window's length, where it has a GPU (D201).
     gpu_window: Option<u64>,
 }
@@ -465,6 +467,8 @@ fn assemble(
     let (windows, top, share_window_mib) =
         super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
+    // Its components' window past them (D270), which its slots' pmem functions map in.
+    let (component_window, top, component_window_mib) = super::component_layout(config, top, reach)?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -486,6 +490,8 @@ fn assemble(
     if let Some(heads) = &window_heads {
         super::map_window_heads(&vm, heads)?;
     }
+    // Its components' window (D270): nothing of it mapped until a pmem function is plugged.
+    let components = super::components(&vm, component_window, config.pci_slots)?;
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
     let swap = super::swap_window(&vm, swap_at)?;
@@ -630,6 +636,7 @@ fn assemble(
                 unpinnable: super::unpinnable(config),
                 #[cfg(target_os = "linux")]
                 vfio: vm.vfio_host(),
+                components: components.clone(),
             });
         }
         acpi::PciBridge {
@@ -651,6 +658,7 @@ fn assemble(
         virtio,
         pci,
         share_window_mib,
+        component_window_mib,
         gpu_window,
     })
 }
@@ -759,6 +767,7 @@ pub fn build_reported(
     // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps,
     // and its GPU's window's (D150).
     config.share_window_mib = a.share_window_mib;
+    config.component_window_mib = a.component_window_mib;
     config.gpu = a.gpu_window;
     let told = super::kernel_cmdline(cfg);
     let required = [
@@ -834,6 +843,7 @@ pub fn restore(
         // Its vCPUs are told the CPUID their snapshot keeps, the baseline within it.
         &[],
     )?;
+    super::window_kept(a.component_window_mib, &snap.config)?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
