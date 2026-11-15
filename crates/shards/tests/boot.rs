@@ -462,7 +462,7 @@ fn explains_when_this_host_cannot_run_vms() {
     };
     let r = vm_run(&["--kernel", "k"]);
     assert_eq!(r.status, Some(1), "{r}");
-    assert!(r.stderr.contains(&why), "{r}");
+    assert!(r.stderr.contains(&why.to_string()), "{r}");
 }
 
 #[test]

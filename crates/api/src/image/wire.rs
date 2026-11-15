@@ -1215,37 +1215,37 @@ pub fn read_frame_into(
     Ok(Some((kind, len)))
 }
 
-struct Writer(Vec<u8>);
+pub(crate) struct Writer(pub(crate) Vec<u8>);
 
 impl Writer {
-    fn u8(&mut self, v: u8) {
+    pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
-    fn u16(&mut self, v: u16) {
+    pub(crate) fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u32(&mut self, v: u32) {
+    pub(crate) fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u64(&mut self, v: u64) {
+    pub(crate) fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn i32(&mut self, v: i32) {
+    pub(crate) fn i32(&mut self, v: i32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn i64(&mut self, v: i64) {
+    pub(crate) fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn count(&mut self, n: usize) -> Result<(), WireError> {
+    pub(crate) fn count(&mut self, n: usize) -> Result<(), WireError> {
         self.u32(u32::try_from(n).map_err(|_| WireError::TooLong)?);
         Ok(())
     }
-    fn bytes(&mut self, b: &[u8]) -> Result<(), WireError> {
+    pub(crate) fn bytes(&mut self, b: &[u8]) -> Result<(), WireError> {
         self.count(b.len())?;
         self.0.extend_from_slice(b);
         Ok(())
     }
-    fn text(&mut self, s: &str) -> Result<(), WireError> {
+    pub(crate) fn text(&mut self, s: &str) -> Result<(), WireError> {
         self.bytes(s.as_bytes())
     }
     /// A capture's access reference and its placeholder, then 1 and its refresh token's
@@ -1340,7 +1340,7 @@ impl Writer {
         }
         Ok(())
     }
-    fn done(self) -> Result<Vec<u8>, WireError> {
+    pub(crate) fn done(self) -> Result<Vec<u8>, WireError> {
         if self.0.len() > run::MAX_PAYLOAD as usize {
             return Err(WireError::TooLong);
         }
@@ -1348,7 +1348,7 @@ impl Writer {
     }
 }
 
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Reader<'a> {
     /// What [`Writer::captured`] wrote.
@@ -1368,25 +1368,25 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
         self.take(N)?.try_into().map_err(|_| WireError::Short)
     }
-    fn u8(&mut self) -> Result<u8, WireError> {
+    pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
-    fn u16(&mut self) -> Result<u16, WireError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, WireError> {
         Ok(u16::from_be_bytes(self.array()?))
     }
-    fn u32(&mut self) -> Result<u32, WireError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, WireError> {
         Ok(u32::from_be_bytes(self.array()?))
     }
-    fn u64(&mut self) -> Result<u64, WireError> {
+    pub(crate) fn u64(&mut self) -> Result<u64, WireError> {
         Ok(u64::from_be_bytes(self.array()?))
     }
-    fn i32(&mut self) -> Result<i32, WireError> {
+    pub(crate) fn i32(&mut self) -> Result<i32, WireError> {
         Ok(i32::from_be_bytes(self.array()?))
     }
-    fn i64(&mut self) -> Result<i64, WireError> {
+    pub(crate) fn i64(&mut self) -> Result<i64, WireError> {
         Ok(i64::from_be_bytes(self.array()?))
     }
-    fn flag(&mut self) -> Result<bool, WireError> {
+    pub(crate) fn flag(&mut self) -> Result<bool, WireError> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -1395,18 +1395,18 @@ impl<'a> Reader<'a> {
     }
     /// A count no larger than the bytes left could hold, each item at least `least` bytes:
     /// a hostile count allocates nothing it cannot fill.
-    fn count(&mut self, least: usize) -> Result<usize, WireError> {
+    pub(crate) fn count(&mut self, least: usize) -> Result<usize, WireError> {
         let n = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
         if n.checked_mul(least.max(1)).is_none_or(|need| need > self.0.len()) {
             return Err(WireError::Short);
         }
         Ok(n)
     }
-    fn bytes(&mut self) -> Result<&'a [u8], WireError> {
+    pub(crate) fn bytes(&mut self) -> Result<&'a [u8], WireError> {
         let n = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
         self.take(n)
     }
-    fn text(&mut self) -> Result<String, WireError> {
+    pub(crate) fn text(&mut self) -> Result<String, WireError> {
         String::from_utf8(self.bytes()?.to_vec()).map_err(|_| WireError::Text)
     }
     fn ip(&mut self) -> Result<Option<IpAddr>, WireError> {
@@ -1526,7 +1526,7 @@ impl<'a> Reader<'a> {
         };
         Ok(Some(Microvm { host, guest }))
     }
-    fn end(self) -> Result<(), WireError> {
+    pub(crate) fn end(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
         } else {

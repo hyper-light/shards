@@ -26,8 +26,11 @@ pub fn restore_from(
     Err(no_backend())
 }
 
-pub fn check_host() -> Result<(), String> {
-    Err(no_backend())
+pub fn check_host() -> Result<(), shards_abi::host::Unusable> {
+    Err(shards_abi::host::Unusable::Unsupported {
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+    })
 }
 
 pub fn restores_here() -> bool {

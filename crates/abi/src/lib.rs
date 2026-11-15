@@ -74,6 +74,7 @@ pub mod changes;
 pub mod emulate;
 pub mod gpu;
 pub mod guest_time;
+pub mod host;
 pub mod pace;
 pub mod rate;
 pub mod ring;

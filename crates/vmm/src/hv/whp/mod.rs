@@ -29,6 +29,7 @@ use crate::arch::x86_64::ioapic::{Ioapic, Message, Sent};
 use crate::arch::x86_64::mmio::{self, Access, Extend, Mode};
 use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
 use crate::sync::lock;
+use shards_abi::host::Unusable;
 
 pub use self::state::{Tsc, TscStart, VcpuState, VmState};
 pub use self::vpci::Assigned;
@@ -114,7 +115,7 @@ fn capability(code: WHV_CAPABILITY_CODE) -> Result<WHV_CAPABILITY> {
 /// The features this host's partitions offer their guests: [`SYNTHETIC`] of what it has,
 /// asked once a process. Only an answer that passed is kept: a host whose platform is
 /// missing now is looked at again next time.
-fn features() -> std::result::Result<u64, String> {
+fn features() -> std::result::Result<u64, Unusable> {
     static FEATURES: OnceLock<u64> = OnceLock::new();
     if let Some(f) = FEATURES.get() {
         return Ok(*f);
@@ -123,15 +124,11 @@ fn features() -> std::result::Result<u64, String> {
     Ok(*FEATURES.get_or_init(|| f))
 }
 
-fn probe_host() -> std::result::Result<u64, String> {
+fn probe_host() -> std::result::Result<u64, Unusable> {
     if !ffi::loaded() {
-        return Err(
-            "the Windows Hypervisor Platform is not on this host: turn on the optional feature \
-                    \"Windows Hypervisor Platform\" (HypervisorPlatform) and restart"
-                .into(),
-        );
+        return Err(Unusable::WhpOff);
     }
-    let says = |e: Error| format!("asking the Windows Hypervisor Platform: {e}");
+    let says = |e: Error| Unusable::Unasked(format!("asking the Windows Hypervisor Platform: {e}"));
     // SAFETY: the union member each code fills.
     let present = unsafe {
         capability(WHvCapabilityCodeHypervisorPresent)
@@ -139,11 +136,11 @@ fn probe_host() -> std::result::Result<u64, String> {
             .HypervisorPresent
     };
     if present == 0 {
-        return Err(
-            "no hypervisor runs on this host: hardware virtualization is off in its firmware, or Windows \
-                    started without Hyper-V"
-                .into(),
-        );
+        return Err(if super::no_nested() {
+            Unusable::NoNested
+        } else {
+            Unusable::NoHypervisor
+        });
     }
     // SAFETY: as above.
     let features = unsafe {
@@ -153,11 +150,11 @@ fn probe_host() -> std::result::Result<u64, String> {
             .AsUINT64
     };
     if features & LOCAL_APIC_EMULATION == 0 {
-        return Err(
+        return Err(Unusable::Lacks(
             "this host's Windows Hypervisor Platform cannot emulate a local APIC, which shards' guests need \
                     (Windows 10 1809 or later)"
                 .into(),
-        );
+        ));
     }
     // SAFETY: as above.
     let bank = unsafe {
@@ -168,17 +165,17 @@ fn probe_host() -> std::result::Result<u64, String> {
             .AsUINT64[0]
     };
     if bank & NEEDED != NEEDED {
-        return Err(format!(
+        return Err(Unusable::Lacks(format!(
             "this host's hypervisor offers its guests no clock shards' guests can keep time by: synthetic \
              features {bank:#x}, where {NEEDED:#x} are needed"
-        ));
+        )));
     }
     Ok(bank & SYNTHETIC)
 }
 
 /// Ok when this host can run VMs: WHP is there, a hypervisor runs, and it offers what shards
 /// needs.
-pub fn check_host() -> std::result::Result<(), String> {
+pub fn check_host() -> std::result::Result<(), Unusable> {
     features().map(drop)
 }
 
@@ -1087,7 +1084,7 @@ pub struct Vm {
 /// assignment where `assign` says (D154): a property set before setup alone, as WHP refuses
 /// it after (E_INVALIDARG, PM M401).
 fn partition(vcpus: u32, assign: bool) -> Result<Partition> {
-    let features = features().map_err(Error::Guest)?;
+    let features = features().map_err(|e| Error::Guest(e.into()))?;
     let mut handle: WHV_PARTITION_HANDLE = 0;
     // SAFETY: a handle for the call to fill.
     check("WHvCreatePartition", unsafe {

@@ -12,6 +12,7 @@ mod agent;
 mod agentfile;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
+mod api_check;
 mod api_run;
 mod aws;
 mod build;
@@ -110,6 +111,9 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // an image's run for an orchestrator, which shards-api starts (D231): not for
         // people to run.
         Some("api-run") => api_run::command(),
+        // whether this host runs microVMs now, which shards-api asks (D262): not for people
+        // to run.
+        Some("api-check") => api_check::command(),
         // what serves a client's binds for a run through its context that goes on without
         // its command (D228): not for people to run.
         Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),

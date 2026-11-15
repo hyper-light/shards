@@ -29,9 +29,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 mod client;
+mod command;
 pub mod conformance;
 pub mod control;
 pub mod demand;
+pub mod host;
 pub mod image;
 mod judge;
 mod native;
@@ -53,6 +55,7 @@ pub use client::{
     boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
 };
+pub use host::{CheckRefusal, HostCheck, Unusable, host_check};
 pub use judge::{Found, Judge, Rate, Rated, Record, Seen, Span, Stall};
 pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
@@ -353,13 +356,8 @@ pub struct Share {
     pub read_only: bool,
 }
 
-/// What boots guests on this host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    Kvm,
-    HypervisorFramework,
-    WindowsHypervisorPlatform,
-}
+/// What boots guests on a host.
+pub use shards_abi::host::Backend;
 
 /// How a guest ended: shards-vmm's `ExitReason`, but `Snapshotted`, which no guest booted
 /// here asks for.
