@@ -360,6 +360,8 @@ fn shadow(g: &GoInput) -> Input {
             }),
             ..input::Git::default()
         }),
+        // A test case's input is buildx's, which has no s3 form.
+        s3: None,
         unknowns: Vec::new(),
     }
 }

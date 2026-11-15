@@ -56,7 +56,14 @@ pub struct Fetch {
     pub region: Vec<u8>,
     pub path_style: bool,
     pub version_id: Vec<u8>,
+    /// `--credentials=aws-default`: an s3 source signed through the host's AWS default
+    /// credential chain, which it opts into by name; else only the build's named secrets
+    /// sign it, or nothing does.
+    pub aws_default: bool,
 }
+
+/// `--credentials`'s one value: the host's AWS default credential chain (D54).
+pub const AWS_DEFAULT: &[u8] = b"aws-default";
 
 /// Whom a grant is for: `FOR`'s names, of the kind `--target-kind` says or each name's
 /// own. None named is every one.
@@ -86,6 +93,8 @@ pub struct Skill {
     pub exclude: Vec<Vec<u8>>,
     pub keep_git_dir: Option<bool>,
     pub checksum: Vec<u8>,
+    /// Each `host[:port]` its fetch may be redirected to, beyond its source's origin (D54).
+    pub redirects: Vec<Vec<u8>>,
     pub scope: Scope,
 }
 
@@ -96,6 +105,8 @@ pub struct Mcp {
     /// As written: a URL is a remote server; a path, git URL or OCI reference, one spoken
     /// to over stdio, `[:<version>]` naming what is fetched (§12.3).
     pub source: Vec<u8>,
+    /// Each `host[:port]` its fetch may be redirected to, beyond its source's origin (D54).
+    pub redirects: Vec<Vec<u8>>,
     pub scope: Scope,
 }
 
@@ -521,7 +532,16 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     req.flags.add("region", FlagType::String, b"");
     req.flags.add("path-style", FlagType::Bool, b"false");
     req.flags.add("version-id", FlagType::String, b"");
+    req.flags.add("credentials", FlagType::String, b"");
     req.flags.parse()?;
+    let credentials = req.flags.value("credentials");
+    if !credentials.is_empty() && credentials != AWS_DEFAULT {
+        return Err(errf(&[
+            directive.as_bytes(),
+            b" --credentials is aws-default, the host's AWS default credential chain, not ",
+            go::quote(&credentials).as_bytes(),
+        ]));
+    }
     let fetch = Fetch {
         checksum: req.flags.value("checksum"),
         redirects: req.flags.values("redirect"),
@@ -529,6 +549,7 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
         region: req.flags.value("region"),
         path_style: req.flags.is_true("path-style"),
         version_id: req.flags.value("version-id"),
+        aws_default: !credentials.is_empty(),
     };
     let processes = match req.flags.value("processes").as_slice() {
         b"" => Processes::Unbounded,
@@ -597,9 +618,12 @@ fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Ve
     let s3_flags = !fetch.endpoint.is_empty()
         || !fetch.region.is_empty()
         || fetch.path_style
-        || !fetch.version_id.is_empty();
+        || !fetch.version_id.is_empty()
+        || fetch.aws_default;
     if s3_flags && !s3 {
-        return refuse("--endpoint, --region, --path-style and --version-id are an s3:// source's");
+        return refuse(
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        );
     }
     if !fetch.endpoint.is_empty()
         && !(fetch.endpoint.starts_with(b"https://") || fetch.endpoint.starts_with(b"http://"))
@@ -610,9 +634,7 @@ fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Ve
             go::quote(&fetch.endpoint).as_bytes(),
         ]));
     }
-    if !fetch.redirects.is_empty() && !matches!(kind, Source::Http(_) | Source::Git(_)) {
-        return refuse("--redirect grants where an http(s) or Git source is redirected; this source is not");
-    }
+    redirects_checked(directive, &kind, &fetch.redirects)?;
     if !fetch.checksum.is_empty() {
         if !fetched {
             return refuse(
@@ -634,7 +656,19 @@ fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Ve
     if s3 && fetch.checksum.is_empty() && fetch.version_id.is_empty() {
         return refuse("from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>");
     }
-    for r in &fetch.redirects {
+    Ok(())
+}
+
+/// `redirects` held to what a directive's source `kind` is (D54): granted only where its
+/// fetch can be redirected, an http(s) or Git source's, each `HOST[:PORT]`.
+fn redirects_checked(directive: &str, kind: &Source, redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    if !redirects.is_empty() && !matches!(kind, Source::Http(_) | Source::Git(_)) {
+        return Err(format!(
+            "{directive} --redirect grants where an http(s) or Git source is redirected; this source is not"
+        )
+        .into_bytes());
+    }
+    for r in redirects {
         if redirect_origin(r).is_none() {
             return Err(errf(&[
                 directive.as_bytes(),
@@ -708,6 +742,7 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
     req.flags.add("exclude", FlagType::Strings, b"");
     req.flags.add("from", FlagType::String, b"");
     req.flags.add("target-kind", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
     req.flags.parse()?;
     let all = req.args.clone();
     let (taken, after) = split_at(&all, b"for");
@@ -731,6 +766,15 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
         _ => return Err(usage),
     };
     let f = &req.flags;
+    let redirects = f.values("redirect");
+    if !redirects.is_empty() {
+        // A skill another stage or agent holds is copied, not fetched.
+        let kind = match &source {
+            SkillSource::Path(p) if f.value("from").is_empty() => source_of(p)?,
+            _ => Source::Path(Vec::new()),
+        };
+        redirects_checked("SKILL", &kind, &redirects)?;
+    }
     Ok(Skill {
         source,
         dest,
@@ -741,6 +785,7 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
         exclude: f.values("exclude"),
         keep_git_dir: f.used("keep-git-dir").then(|| f.is_true("keep-git-dir")),
         checksum: f.value("checksum"),
+        redirects,
         scope: Scope {
             kind: target_kind(req)?,
             names: for_names(after, "SKILL")?,
@@ -751,6 +796,7 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
 /// `MCP [--target-kind=…] <name> FROM <source> [FOR <name>…]`.
 fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
     req.flags.add("target-kind", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
     req.flags.parse()?;
     let all = req.args.clone();
     let (declared, after) = split_at(&all, b"for");
@@ -764,12 +810,20 @@ fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
             b"MCP requires a name and FROM <source>: MCP <name> FROM <source> [FOR <name> ...]".to_vec(),
         );
     }
-    if let Source::S3 { .. } = source_of(source)? {
+    let kind = source_of(source)?;
+    if let Source::S3 { .. } = kind {
         return Err(b"MCP takes no s3:// source: an agent's or harness's is pinned by AGENT's or HARNESS's --checksum or --version-id".to_vec());
     }
+    let redirects = req.flags.values("redirect");
+    // A remote server's URL is reached at run, not fetched by the build (§4.4).
+    if !redirects.is_empty() && matches!(kind, Source::Http(_)) {
+        return Err(b"MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched".to_vec());
+    }
+    redirects_checked("MCP", &kind, &redirects)?;
     Ok(Mcp {
         name: name(n, "an MCP server")?,
         source: source.clone(),
+        redirects,
         scope: Scope {
             kind: target_kind(req)?,
             names: for_names(after, "MCP")?,
@@ -3146,11 +3200,13 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
                         exclude: Vec::new(),
                         keep_git_dir: None,
                         checksum: Vec::new(),
+                        redirects: Vec::new(),
                         scope: scope(v)?,
                     }),
                     3 => Directive::Mcp(Mcp {
                         name: bytes(v, "name")?,
                         source: bytes(v, "source")?,
+                        redirects: Vec::new(),
                         scope: scope(v)?,
                     }),
                     4 => {

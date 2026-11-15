@@ -129,6 +129,7 @@ fn mcp_servers_are_named_and_offered_to_every_agent_or_those_named() {
         Directive::Mcp(Mcp {
             name: b("files"),
             source: b("./servers/files"),
+            redirects: Vec::new(),
             scope: Scope {
                 kind: None,
                 names: vec![b("main")]
@@ -140,6 +141,7 @@ fn mcp_servers_are_named_and_offered_to_every_agent_or_those_named() {
         Directive::Mcp(Mcp {
             name: b("web"),
             source: b("https://mcp.example.com/sse"),
+            redirects: Vec::new(),
             scope: Scope::default()
         })
     );
@@ -1965,7 +1967,15 @@ fn fetched_sources_are_pinned_and_say_where_they_are() {
         ("AGENT a FROM s3:///key", "names no object"),
         (
             "AGENT --region=us-east-1 a FROM ./a",
-            "--endpoint, --region, --path-style and --version-id are an s3:// source's",
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=aws-default a FROM https://h/a.tgz",
+            "--credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=env --version-id=1 a FROM s3://b/k",
+            "AGENT --credentials is aws-default, the host's AWS default credential chain, not \"env\"",
         ),
         ("AGENT --version-id=1 a FROM https://h/a.tgz", "an s3:// source's"),
         (
@@ -1999,6 +2009,53 @@ fn fetched_sources_are_pinned_and_say_where_they_are() {
         panic!()
     };
     assert_eq!(g.fetch.redirects, vec![b("mirror.example")]);
+}
+
+/// SKILL and MCP take `--redirect` as AGENT and HARNESS do (D54): where their source is
+/// fetched from an http(s) URL or Git and can be redirected, each `HOST[:PORT]`; refused for
+/// a context path, a skill copied from another stage, and a remote MCP server, which is
+/// reached at run rather than fetched.
+#[test]
+fn skills_and_mcp_servers_grant_their_redirects() {
+    let Directive::Skill(sk) = one(
+        "SKILL --redirect=objects.githubusercontent.com --redirect=[::1]:8443 https://github.com/o/r/raw/main/s.md /skills/s/SKILL.md",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        sk.redirects,
+        [b("objects.githubusercontent.com"), b("[::1]:8443")]
+    );
+    let Directive::Mcp(m) =
+        one("MCP --redirect=mirror.example files FROM https://git.example/o/files.git#main")
+    else {
+        panic!()
+    };
+    assert_eq!(m.redirects, [b("mirror.example")]);
+    for (line, words) in [
+        (
+            "SKILL --redirect=cdn.example ./skills/s",
+            "SKILL --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+        (
+            "SKILL --from=build --redirect=cdn.example /out/s",
+            "SKILL --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+        (
+            "SKILL --redirect=*.example https://h.example/s.md /skills/s/SKILL.md",
+            "SKILL --redirect is HOST or HOST:PORT, not \"*.example\"",
+        ),
+        (
+            "MCP --redirect=cdn.example web FROM https://mcp.example.com/sse",
+            "MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched",
+        ),
+        (
+            "MCP --redirect=cdn.example files FROM ./servers/files",
+            "MCP --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+    ] {
+        assert!(refused(line).contains(words), "{line}: {}", refused(line));
+    }
 }
 
 /// What the planner makes of a fetched source (D54): an http(s) one checked against its
@@ -2084,6 +2141,8 @@ fn fetched_sources_carry_their_pins_and_grants_into_the_plan() {
     ] {
         assert_eq!(s3.get(k).map(String::as_str), Some(v), "{k}");
     }
+    // Signed only by what the build names: no opt-in to the host's chain unless written.
+    assert!(!s3.contains_key("s3.credentials"), "{s3:?}");
     let g = sources
         .iter()
         .find(|(i, _)| i.starts_with("git://git.example/o/r.git"))

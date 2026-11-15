@@ -5334,13 +5334,20 @@ object store). Every fetched source is pinned, and every one is held to the gran
 directive makes.
 
 **Forms.** `AGENT|HARNESS [--checksum=sha256:<hex>] [--redirect=HOST[:PORT]]…
-[--endpoint=URL] [--region=R] [--path-style] [--version-id=V] <name> FROM <source>`.
+[--endpoint=URL] [--region=R] [--path-style] [--version-id=V] [--credentials=aws-default]
+<name> FROM <source>`.
 - An http(s) source needs `--checksum`: the content behind a URL changes without notice.
 - An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
   S3; the bytes are hashed either way.
-- `--endpoint`, `--region`, `--path-style` and `--version-id` go only with `s3://`.
+- `--endpoint`, `--region`, `--path-style`, `--version-id` and `--credentials` go only with
+  `s3://`; `--credentials` takes `aws-default` alone.
   `--checksum` goes only with http(s) and s3, as a Git source is pinned by the commit its
   `#REF` resolves to (recorded as before). `--redirect` goes only with http(s) and Git.
+- `SKILL` and `MCP` take `--redirect=HOST[:PORT]`, repeated, exactly as `AGENT` and
+  `HARNESS` do, where their source is fetched from http(s) or Git. It is refused for a
+  context path, a skill `--from` another stage or agent (copied, not fetched), and a
+  remote MCP server's URL, which its agents reach at run under the network's grants
+  rather than the build fetching it (`skills_and_mcp_servers_grant_their_redirects`).
 - Each refusal names what to write instead (`fetched_sources_are_pinned_and_say_where_they_are`).
 - `MCP` takes no `s3://` source: it has no flags to pin one.
 - Dockerfile `ADD` keeps BuildKit's grammar and meaning. BuildKit's ADD reads `s3://…` as
@@ -5362,11 +5369,32 @@ directive names none. Its errors say `s3 source` where the cache's say `s3 cache
 - One `GetObject`, with `versionId` where pinned. The body streams to disk, hashed, within
   the limits an HTTP source's download holds to (audit A10).
 - A `--checksum` mismatch is refused (`digest mismatch GOT: WANT`).
-- Credentials are taken by reference: the build's secrets `AWS_ACCESS_KEY_ID`,
-  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` (AWS's own variable names), each
-  `NAME.<bucket>` before `NAME`, as Git's `GIT_AUTH_TOKEN.<host>` comes before
-  `GIT_AUTH_TOKEN`. Else the SDK's default chain (crate::aws::credentials). The copies
-  the client is made from are zeroized once it holds its own.
+- Credentials are taken only by explicit reference, never implicitly (`build::s3::Signer`):
+  - the build's secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`
+    (AWS's own variable names), each `NAME.<bucket>` before `NAME`, as Git's
+    `GIT_AUTH_TOKEN.<host>` comes before `GIT_AUTH_TOKEN`. A key ID without its secret, or
+    the reverse, is refused (`the build's secrets name half a key`), not completed from
+    elsewhere;
+  - or `--credentials=aws-default`, which opts into the host's AWS default chain
+    (crate::aws::credentials: the environment, profiles, SSO, sign-in, web identity, a
+    container's endpoint, EC2's instance metadata, a credential process). The opt-in is
+    the grant to the chain's own endpoints, as its configuration names them; the chain
+    records each origin it reached (`Chain::reached`, and `credential_process` where it ran
+    one) and the build names them on the source's step: `s3://B/K: signed through the
+    host's AWS default credential chain (--credentials=aws-default), which reached
+    http://169.254.169.254:80` (or `no endpoint` for the environment's keys). The build's
+    secrets are not read for such a source;
+  - with neither, the GET goes unsigned, as the SDK's anonymous credentials send it: a
+    public object's. The step says `sent unsigned: …`, and a store that requires
+    signing refuses it with its status, the refusal ending with why it went unsigned.
+  Before, a source with no secrets fell back to the host's chain, which reached IMDS,
+  SSO or STS without the Agentfile naming any of them. The S3 cache keeps BuildKit's
+  rule (its attributes' keys, else the chain): `Unkeyed::Chain` for it,
+  `Unkeyed::Unsigned` for a source. A policy sees the opt-in as `input.s3.credentials`.
+  The copies the client is made from are zeroized once it holds its own.
+  Tests: `an_s3_source_is_signed_only_by_what_the_build_names` (unit, against a stand-in
+  that refuses unsigned requests with 403 and a container endpoint as the chain; and on
+  real VMs).
 - The build records the object as `s3://BUCKET/KEY?versionId=V` (or `?etag=E` where S3
   keeps no versions) with its SHA-256, among the provenance's materials.
 - An s3 source is fetched and keyed by its content, as an HTTP source is
@@ -5413,7 +5441,9 @@ Agentfile directive's source is its own grant.
   (D101) is how a build refuses an `ADD`'s hosts.
 - Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
   `a_git_source_opens_only_the_remotes_it_grants`,
-  `a_granted_fetch_is_refused_a_redirect_it_does_not_name`.
+  `a_granted_fetch_is_refused_a_redirect_it_does_not_name`,
+  `a_skill_from_a_redirecting_source_is_fetched_once_granted`; real VMs:
+  `a_skill_from_a_redirecting_source_builds_once_granted`.
 
 Rejected:
 - **Fetching inside the builder microVM under its network policy.** SSH keys and agents
@@ -5429,14 +5459,18 @@ Rejected:
 | `sha256:` and 64 hex digits | the pin is a SHA-256 (FIPS 180-4), as `http.checksum` is |
 | `HTTP_AUTH_HEADER_`, `HTTP_AUTH_TOKEN_`, `Bearer ` | BuildKit v0.28.1 source/http/source.go |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | AWS's own variable names (SDK configuration) |
+| `aws-default` | shards' name for the SDK's default credential chain (aws-sdk-go-v2 config.LoadDefaultConfig), the one value `--credentials` takes |
 | ports 80 and 443 | RFC 9110 §4.2 |
 | labels of 1-63 characters, names of at most 253 | RFC 1035 §2.3.4 |
 
+**Policies over s3 sources.** A build policy (D101) is asked of an s3 source as
+`input.s3`: its URL, bucket, key, endpoint, region, path style, version and checksum, as
+the directive gives them. buildx's input has no S3 form; this one is a recorded deviation
+(`policy-input` in `crates/agentfile/testdata/deviations.json`). Before, any build with an
+s3 source and a policy was refused (`unsupported source scheme: s3`).
+
 **Not yet.**
-- A build policy (D101) refuses an s3 source (`unsupported source scheme: s3`): buildx's
-  policy input has no S3 form.
 - Real-VM builds of each kind are owed to the coordinator (`crates/shards/tests/build.rs`).
-- SKILL and MCP take no `--redirect`: their sources reach their own origin only.
 
 ### Skills checked as the Agent Skills reference checks them (D54)
 
@@ -24742,6 +24776,15 @@ v0.28.1 (Docker 29.3.1):
   found. buildx's `filepath.Rel` cannot relate the two, and reads it as an invalid fs.FS name.
 - **Order.** An image's `volumes` are in name order, where Go's map gives them in no order.
 - **Agentfiles.** An Agentfile's own policy is `Agentfile.rego`.
+- **S3 sources (D54).** buildx's input has no form for an `s3://` source, and
+  sourceToInput refuses any scheme it does not know; an Agentfile's `AGENT|HARNESS FROM
+  s3://BUCKET/KEY` is asked as `input.s3`, shards' own form on `input.http`'s pattern:
+  `url`, `bucket`, `key`, `endpoint`, `region`, `pathStyle`, `versionId`, `checksum`, each as
+  the directive gives it, so none is unknown and nothing is fetched to answer it. It is
+  the recorded deviation `policy-input` (`crates/agentfile/testdata/deviations.json`),
+  which `the_s3_input_is_the_recorded_deviation` holds the input to; a policy allowing or
+  denying one by its fields: `a_policy_allows_or_denies_an_s3_source_by_its_fields`. A
+  policy's own test cases (`policy test`) keep buildx's input, which has no `s3`.
 - **Progress, for every step.** The plain progress shows a step interrupted (`#N ...`)
   and its name again when it resumes, as progressui's printer does. A failed step's last 10
   lines are recapped between rules before the error (printErrorLogs).

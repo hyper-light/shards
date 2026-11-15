@@ -3193,7 +3193,10 @@ impl Planner<'_> {
                             .collect()
                     };
                     for dest in dests {
-                        let fetch = crate::agentfile::Fetch::default();
+                        let fetch = crate::agentfile::Fetch {
+                            redirects: m.redirects.clone(),
+                            ..crate::agentfile::Fetch::default()
+                        };
                         self.fetch_into(d, b"mcp", &m.name, &m.source, &fetch, &dest, &code, &loc, &lint)?;
                     }
                 }
@@ -3207,7 +3210,7 @@ impl Planner<'_> {
                 };
                 let first = self.graph.vertices.len();
                 self.dispatch_skill(d, &sk, &step.sources, domain, &code, &loc, &lint)?;
-                self.granted(first, &[]);
+                self.granted(first, &sk.redirects);
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Skill(sk));
             }
             Kind::User(u) => self.dispatch_user(d, &u, true),
@@ -4615,6 +4618,9 @@ impl Planner<'_> {
                 }
                 if fetch.path_style {
                     attrs.insert(b"s3.pathstyle".to_vec(), b"true".to_vec());
+                }
+                if fetch.aws_default {
+                    attrs.insert(b"s3.credentials".to_vec(), crate::agentfile::AWS_DEFAULT.to_vec());
                 }
                 let st = self
                     .graph

@@ -2068,5 +2068,36 @@
     }
    ]
   }
+ },
+ {
+  "kind": "policy-input",
+  "field": "input.s3",
+  "reason": "buildx v0.37.1's policy input (policy/types.go Input) has forms for local, image, http and git sources alone, and validate.go sourceToInput refuses any other scheme; BuildKit has no s3 source op at all. An Agentfile's AGENT or HARNESS FROM s3://BUCKET/KEY (D54) is shards' own source, so a build policy (D101) is given shards' own form for it, input.s3, on the pattern of input.http: the object's url, bucket and key, the --endpoint, --region and --path-style it is reached by, the --version-id and --checksum that pin it, and credentials, aws-default where it opts into the host's AWS credential chain, each as the directive gives it, so none is unknown (crates/shards/src/build/policy/input.rs S3). A Dockerfile's inputs are buildx's, byte for byte.",
+  "source": {
+   "identifier": "s3://agents/a/v1.tgz",
+   "attrs": {
+    "s3.filename": "v1.tgz",
+    "s3.checksum": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "s3.versionid": "v7",
+    "s3.endpoint": "http://127.0.0.1:9000",
+    "s3.region": "us-east-1",
+    "s3.pathstyle": "true",
+    "shards.grant": "",
+    "s3.credentials": "aws-default"
+   }
+  },
+  "ours": {
+   "s3": {
+    "url": "s3://agents/a/v1.tgz",
+    "bucket": "agents",
+    "key": "a/v1.tgz",
+    "endpoint": "http://127.0.0.1:9000",
+    "region": "us-east-1",
+    "pathStyle": true,
+    "versionId": "v7",
+    "checksum": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "credentials": "aws-default"
+   }
+  }
  }
 ]
