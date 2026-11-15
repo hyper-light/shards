@@ -2474,11 +2474,12 @@ mod hosted {
         ready_by: Option<u64>,
         input: super::Input,
     ) -> Result<(), No> {
+        let checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let shaped = shape(request, &home)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
-        launch_and_serve(answers, input, &home, plan)
+        launch_and_serve(answers, input, &home, plan, checking)
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
@@ -3065,14 +3066,48 @@ mod hosted {
         }
     }
 
+    /// Its VM process's binary, checked on a thread of its own from the run host's first step,
+    /// beside its run's making, which needs nothing of it: `helpers::vm` reads the binary whole
+    /// and hashes it as a process first starts it (helpers.rs `checked`, runs-10), and a run
+    /// host is a process of one run, so every run's start paid it before its launch. Taken as
+    /// its VM is launched; checked there where no thread could be started for it.
+    struct Checking(Option<std::thread::JoinHandle<Result<PathBuf, String>>>);
+
+    impl Checking {
+        fn begin() -> Checking {
+            Checking(
+                std::thread::Builder::new()
+                    .name("api-run vm binary".into())
+                    .spawn(crate::helpers::vm)
+                    .ok(),
+            )
+        }
+
+        /// The binary checked, or why not.
+        fn taken(self) -> Result<PathBuf, String> {
+            match self.0 {
+                Some(checking) => checking
+                    .join()
+                    .unwrap_or_else(|_| Err("its VM's binary: its check ended unanswered".into())),
+                None => crate::helpers::vm(),
+            }
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
     /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
     /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
-    /// ready one's, or the one's whose start failed last.
-    fn launch(home: &Path, plan: &Launch<'_>, reported: &mut Option<Vec<u8>>) -> Result<Launched, No> {
+    /// ready one's, or the one's whose start failed last. Its VM process's binary is
+    /// `checking`'s, checked beside its run's making.
+    fn launch(
+        home: &Path,
+        plan: &Launch<'_>,
+        checking: Checking,
+        reported: &mut Option<Vec<u8>>,
+    ) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -3093,7 +3128,9 @@ mod hosted {
         if let Some(shares) = &shares {
             super::step(format_args!("its share process {} started", shares.child.id()));
         }
-        let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
+        let vm = checking.taken();
+        super::step(format_args!("its VM's binary checked"));
+        let started = vm.map_err(boot).and_then(|vm| {
             let mut host = Host {
                 home,
                 plan,
@@ -3106,6 +3143,7 @@ mod hosted {
             let template = plan.microvm.template.as_ref().map(|t| t.dir.as_path());
             let started = super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists));
             *reported = host.reported.take();
+            super::step(format_args!("its VM's start settled"));
             started
         });
         let ((launched, link, _, _), from, held) = match started {
@@ -3196,6 +3234,7 @@ mod hosted {
                 }),
                 _ => None,
             };
+            super::step(format_args!("its network decided"));
             // Its writable layer (D190): made empty of the run's size for a boot, a clone of its
             // template's for a restore where its template keeps one.
             let (mut args, layer) = match way {
@@ -3239,6 +3278,14 @@ mod hosted {
                     )
                 }
             };
+            super::step(format_args!(
+                "its writable layer {}",
+                match (way, &layer) {
+                    (super::Way::Restore { .. }, Some(l)) if l.cloned_of().is_some() => "cloned",
+                    (_, Some(_)) => "made",
+                    (_, None) => "none",
+                }
+            ));
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
             // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
@@ -3280,6 +3327,7 @@ mod hosted {
             };
             // Its writable layer's file is its VM's once it is ready or has failed (D190).
             vm.2 = None;
+            super::step(format_args!("its writable layer's name let go of"));
             // A ready VM's GPU report was written, and its writer closed, before its guest ran
             // (D233): read now, at once. One not ready is read once it has ended (`end`).
             if said.is_ok()
@@ -3999,13 +4047,19 @@ mod hosted {
         Stream::plain_pair()
     }
 
-    fn launch_and_serve(answers: &Answers, input: super::Input, home: &Path, plan: Plan) -> Result<(), No> {
+    fn launch_and_serve(
+        answers: &Answers,
+        input: super::Input,
+        home: &Path,
+        plan: Plan,
+        checking: Checking,
+    ) -> Result<(), No> {
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
         let mut reported = None;
-        let launched = launch(home, &plan.launch(), &mut reported);
+        let launched = launch(home, &plan.launch(), checking, &mut reported);
         // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
         // VM did not start.
         if let Some(frame) = reported
@@ -4045,9 +4099,10 @@ mod hosted {
         exemplar: &wire::Request,
         mut input: super::Input,
     ) -> Result<(), No> {
+        let checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let mut shaped = shape(exemplar, &home)?;
-        let launched = match launch(&home, &shaped.launch(), &mut None) {
+        let launched = match launch(&home, &shaped.launch(), checking, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -6133,6 +6188,16 @@ mod hosted {
     #[allow(clippy::unwrap_used)]
     mod tests {
         use super::*;
+
+        /// The VM binary checked beside a run's making is the one its launch would have checked
+        /// itself: the same path, or the same refusal (this build's carries no VM process,
+        /// `SHARDS_HELPERS=skip`, unless `SHARDS_VM_BINARY` names one); checked at once where
+        /// no thread was started for it.
+        #[test]
+        fn a_vm_binary_checked_beside_its_runs_making_is_its_launchs_own() {
+            assert_eq!(Checking::begin().taken(), crate::helpers::vm());
+            assert_eq!(Checking(None).taken(), crate::helpers::vm());
+        }
 
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
         /// with no bound of its own waits: what it answered, or why not.
