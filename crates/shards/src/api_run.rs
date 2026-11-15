@@ -7436,6 +7436,7 @@ mod tests {
                 source: b"./a".to_vec(),
                 to: None,
                 processes: Processes::Unbounded,
+                fetch: Default::default(),
             }),
             Directive::Nesting,
         ]);

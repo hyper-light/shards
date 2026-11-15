@@ -725,6 +725,7 @@ mod tests {
             source: b"./artifact".to_vec(),
             to: None,
             processes: Processes::Unbounded,
+            fetch: Default::default(),
         });
         let json = spec(&[declaration]);
         let expected = String::from_utf8(digest(&json)).unwrap();
@@ -811,6 +812,7 @@ mod tests {
             source: b"./artifact".to_vec(),
             to: None,
             processes: Processes::Unbounded,
+            fetch: Default::default(),
         };
         let declarations = [
             Directive::Harness(domain("h")),
@@ -888,6 +890,7 @@ mod tests {
                 source: b("./a"),
                 to: None,
                 processes: Processes::Unbounded,
+                fetch: Default::default(),
             })
         };
         let volume = |source: Option<&str>, path: &str, names: &[&str]| {

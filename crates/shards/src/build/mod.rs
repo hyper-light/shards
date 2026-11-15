@@ -49,6 +49,7 @@ pub mod gc;
 mod gha;
 mod git;
 mod give;
+mod grant;
 pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
@@ -1583,7 +1584,7 @@ impl Bases<'_> {
                 offset,
             }))
         } else if id.starts_with(b"http://") || id.starts_with(b"https://") {
-            let made = self.http_time(id, op.attrs.get(b"http.checksum".as_slice()).map(Vec::as_slice))?;
+            let made = self.http_time(id, &op.attrs)?;
             Ok(made.map(|(secs, nanos)| plan::Epoch {
                 secs,
                 nanos,
@@ -1598,17 +1599,21 @@ impl Bases<'_> {
 
     /// When an HTTP source was made: its Last-Modified where nothing pins its bytes, else
     /// the newest regular file of the archive it is (none where it is no archive).
-    fn http_time(&self, url: &[u8], checksum: Option<&[u8]>) -> Result<Option<(i64, u32)>, String> {
+    fn http_time(
+        &self,
+        url: &[u8],
+        attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<(i64, u32)>, String> {
         let limits = crate::pull::limits()?;
         // Removed, with what it holds, once the time is known.
         let stage = self.store.stage().map_err(|e| e.to_string())?;
-        let checksum = checksum.map(show);
-        let fetched = http::fetch_now(
-            &show(url),
-            checksum.as_deref(),
-            stage.path().join("source"),
-            &limits,
-        )?;
+        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
+        let source = http::Source::Url {
+            url: show(url),
+            checksum: checksum.clone(),
+            reach: http::Reach::of(&show(url), attrs, self.secrets)?,
+        };
+        let fetched = http::fetch_source(source, stage.path().join("source"), &limits)?;
         if checksum.is_none()
             && let Some(t) = fetched.last_modified
         {
@@ -2072,7 +2077,17 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
             // BuildKit resolves an HTTP source's metadata by fetching it: its digest.
             let limits = crate::pull::limits()?;
             let stage = self.bases.store.stage().map_err(|e| e.to_string())?;
-            let fetched = http::fetch_now(&source.identifier, None, stage.path().join("source"), &limits)?;
+            let attrs = source
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.clone().into_bytes(), v.clone().into_bytes()))
+                .collect();
+            let fetch = http::Source::Url {
+                url: source.identifier.clone(),
+                checksum: None,
+                reach: http::Reach::of(&source.identifier, &attrs, self.bases.secrets)?,
+            };
+            let fetched = http::fetch_source(fetch, stage.path().join("source"), &limits)?;
             // A ChecksumRequest: the content, then the suffix, hashed as asked.
             let signature_checksum = match &request.http_checksum {
                 None => None,
@@ -2572,6 +2587,11 @@ fn stored_at(path: &Path) -> Option<Time> {
 }
 
 /// An HTTP source's identifier: its URL.
+/// Whether a source is an S3 object's (D54).
+fn is_s3(identifier: &[u8]) -> bool {
+    identifier.starts_with(b"s3://")
+}
+
 fn is_http(identifier: &[u8]) -> bool {
     identifier.starts_with(b"https://") || identifier.starts_with(b"http://")
 }
@@ -3699,23 +3719,28 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     }
     // Every HTTP source is fetched from the start, as BuildKit's solver fetches them (D33); a
     // step waits only for the one it reads.
-    let sources: Vec<(usize, String, Option<String>)> = def
-        .ops
-        .iter()
-        .enumerate()
-        .filter_map(|(i, op)| match &op.kind {
+    let mut sources: Vec<(usize, http::Source)> = Vec::new();
+    for (i, op) in def.ops.iter().enumerate() {
+        match &op.kind {
             OpKind::Source { identifier, attrs }
                 if is_http(identifier) && !given.iter().any(|g| g.identifier == *identifier) =>
             {
-                Some((
+                let url = show(identifier);
+                sources.push((
                     i,
-                    show(identifier),
-                    attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
-                ))
+                    http::Source::Url {
+                        reach: http::Reach::of(&url, attrs, &secrets)?,
+                        url,
+                        checksum: attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                    },
+                ));
             }
-            _ => None,
-        })
-        .collect();
+            OpKind::Source { identifier, attrs } if is_s3(identifier) => {
+                sources.push((i, http::Source::S3(s3::Object::of(identifier, attrs, &secrets)?)));
+            }
+            _ => {}
+        }
+    }
     let dir = if sources.is_empty() {
         PathBuf::new()
     } else {
@@ -4085,7 +4110,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 progress.borrow().done(&v);
                 vec![r]
             }
-            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+            OpKind::Source { identifier, attrs } if is_http(identifier) || is_s3(identifier) => {
                 let v = progress.borrow_mut().start(&name);
                 let download = match downloads.take(i) {
                     Ok(d) => d,
@@ -4102,11 +4127,16 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 };
                 let file = attrs
                     .get(b"http.filename".as_slice())
+                    .or_else(|| attrs.get(b"s3.filename".as_slice()))
                     .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
                 let pin = download.digest.to_string();
                 let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                let uri = match &download.served_as {
+                    Some(served) => format!("{}?{served}", show(identifier)),
+                    None => show(identifier),
+                };
                 http_materials.push(provenance::Material {
-                    uri: redact_credentials(&show(identifier)),
+                    uri: redact_credentials(&uri),
                     algorithm: algorithm.to_string(),
                     hex: hex.to_string(),
                 });
@@ -7264,14 +7294,18 @@ fn solve_context(
                             size: stdin.size,
                             digest: stdin.digest.clone(),
                             last_modified: None,
+                            served_as: None,
                         },
                         None,
                     ),
                     _ => {
                         let path = exec.stage()?.join("context");
-                        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
-                        let d = http::fetch_now(&url, checksum.as_deref(), path, limits)
-                            .map_err(|e| failed(&v, &e))?;
+                        let source = http::Source::Url {
+                            reach: http::Reach::of(&url, attrs, secrets).map_err(|e| failed(&v, &e))?,
+                            url: url.clone(),
+                            checksum: attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                        };
+                        let d = http::fetch_source(source, path, limits).map_err(|e| failed(&v, &e))?;
                         let pin = d.digest.to_string();
                         let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
                         let m = provenance::Material {

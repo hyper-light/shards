@@ -55,6 +55,15 @@ pub struct Source {
     pub auth_header: Option<String>,
     /// The SSH agent its fetches over SSH authenticate with (`git.mountsshsock`).
     pub ssh_agent: Option<String>,
+    /// An Agentfile directive's grant (D54): the origins beyond its own it may reach.
+    pub grant: Option<super::grant::Redirects>,
+}
+
+impl Source {
+    /// Its grant, with the URL it is the grant of.
+    fn granted(&self) -> Option<(&str, &super::grant::Redirects)> {
+        self.grant.as_ref().map(|g| (self.url.as_str(), g))
+    }
 }
 
 /// The source `identifier` (`git://HOST/PATH[#REF[:SUBDIR]]`) and `attrs` name.
@@ -94,6 +103,7 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
         auth_token: attr(b"git.authtokensecret")?,
         auth_header: attr(b"git.authheadersecret")?,
         ssh_agent: attr(b"git.mountsshsock")?,
+        grant: super::grant::of(attrs)?,
     })
 }
 
@@ -127,10 +137,17 @@ struct Http {
     authorization: Option<String>,
     /// The URL as messages show it.
     shown: String,
+    /// Each hop held to the grant of an Agentfile directive's source (D54).
+    hops: Option<super::grant::Hops>,
 }
 
 impl Http {
-    fn new(url: &str, cancel: Cancel, auth: Option<&Auth>) -> Result<Http, String> {
+    fn new(
+        url: &str,
+        cancel: Cancel,
+        auth: Option<&Auth>,
+        grant: Option<(&str, &super::grant::Redirects)>,
+    ) -> Result<Http, String> {
         let (target, authorization) = super::http::userinfo(url)?;
         let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
         let client = Client::new(Box::new(move |_| Ok(config.clone())), &agent())
@@ -142,13 +159,42 @@ impl Http {
         let secret_auth = auth
             .filter(|a| in_scope(&a.scope, &base))
             .map(|a| a.value.clone());
+        let hops = match grant {
+            None => None,
+            Some((source, redirects)) => {
+                let (first, _) = super::http::userinfo(source)?;
+                Some(super::grant::Hops::new(
+                    Url::parse(&first).map_err(|e| e.to_string())?,
+                    redirects.clone(),
+                ))
+            }
+        };
         Ok(Http {
             client,
             secret_auth,
             shown: super::http::shown(url).trim_end_matches('/').to_string(),
             base: RefCell::new(base),
             authorization,
+            hops,
         })
+    }
+
+    /// Whether the hop to `to` is granted.
+    fn check(&self, to: &Url) -> Result<(), shards_registry::Error> {
+        match &self.hops {
+            Some(h) => h
+                .check(to)
+                .map_err(|r| std::io::Error::other(r.to_string()).into()),
+            None => Ok(()),
+        }
+    }
+
+    /// A request's failure: the grant's refusal where it refused a hop.
+    fn unreached(&self, e: shards_registry::Error) -> String {
+        match self.hops.as_ref().and_then(super::grant::Hops::refused) {
+            Some(r) => format!("unable to access '{}/': {r}", self.shown),
+            None => format!("unable to access '{}/': {e}", self.shown),
+        }
     }
 
     fn failed(&self, status: u16) -> String {
@@ -168,7 +214,8 @@ impl Transport for Http {
         let at = format!("{}/info/refs?service=git-upload-pack", self.base.borrow());
         let url = Url::parse(&at).map_err(|e| e.to_string())?;
         let first = Cell::new(true);
-        let authorize = |_: &Url| {
+        let authorize = |to: &Url| {
+            self.check(to)?;
             Ok(match &self.secret_auth {
                 Some(a) => Some(a.clone()),
                 None if first.replace(false) => self.authorization.clone(),
@@ -185,7 +232,7 @@ impl Transport for Http {
         let response = self
             .client
             .follow(&request, &authorize, Redirects::Anywhere)
-            .map_err(|e| format!("unable to access '{}/': {e}", self.shown))?;
+            .map_err(|e| self.unreached(e))?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
@@ -205,7 +252,10 @@ impl Transport for Http {
     fn command(&self, body: &[u8]) -> Result<Box<dyn Read + '_>, String> {
         let url =
             Url::parse(&format!("{}/git-upload-pack", self.base.borrow())).map_err(|e| e.to_string())?;
-        let authorize = |_: &Url| Ok(self.secret_auth.clone().or_else(|| self.authorization.clone()));
+        let authorize = |to: &Url| {
+            self.check(to)?;
+            Ok(self.secret_auth.clone().or_else(|| self.authorization.clone()))
+        };
         let request = Request {
             method: "POST",
             url: &url,
@@ -216,7 +266,7 @@ impl Transport for Http {
         let response = self
             .client
             .follow(&request, &authorize, Redirects::SameOrigin)
-            .map_err(|e| format!("unable to access '{}/': {e}", self.shown))?;
+            .map_err(|e| self.unreached(e))?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
@@ -330,9 +380,20 @@ pub struct SshAgents<'a> {
 /// The transport `url` names: smart HTTP(S), git's own, or SSH with the agent `ssh`
 /// names, as BuildKit v0.28.1's git source mounts it (`no SSH key "ID" forwarded from the
 /// client` where the build has none of that ID).
-fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> Result<Wire, String> {
+/// With `grant`, an Agentfile directive's source and its grant (D54), the remote is opened
+/// only at an origin it grants.
+fn wire(
+    url: &str,
+    cancel: &Cancel,
+    auth: Option<&Auth>,
+    ssh: SshAgents<'_>,
+    grant: Option<(&str, &super::grant::Redirects)>,
+) -> Result<Wire, String> {
+    if let Some((source, redirects)) = grant {
+        super::grant::remote(source, redirects, url).map_err(|r| r.to_string())?;
+    }
     if url.starts_with("https://") || url.starts_with("http://") {
-        return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone(), auth)?)));
+        return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone(), auth, grant)?)));
     }
     if url.starts_with("git://") {
         return Ok(Wire::Daemon(shards_git::daemon::Daemon::of_url(
@@ -381,8 +442,8 @@ pub fn commit_time(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote =
-        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
+    let remote = Remote::open(wire(&src.url, cancel, auth, ssh, src.granted())?, &agent())
+        .map_err(|e| format!("{wrap}: {e}"))?;
     let resolved = remote
         .resolve(&src.reference)
         .map_err(|e| format!("{wrap}: {e}"))?
@@ -418,8 +479,8 @@ pub fn metadata(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote =
-        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
+    let remote = Remote::open(wire(&src.url, cancel, auth, ssh, src.granted())?, &agent())
+        .map_err(|e| format!("{wrap}: {e}"))?;
     let resolved = remote
         .resolve(&src.reference)
         .map_err(|e| format!("{wrap}: {e}"))?
@@ -478,8 +539,11 @@ pub fn snapshot(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote = Remote::open(wire(&src.url, cancel, auth, ssh).map_err(key)?, &agent())
-        .map_err(|e| key(format!("{wrap}: {e}")))?;
+    let remote = Remote::open(
+        wire(&src.url, cancel, auth, ssh, src.granted()).map_err(key)?,
+        &agent(),
+    )
+    .map_err(|e| key(format!("{wrap}: {e}")))?;
     let resolved = remote
         .resolve(&src.reference)
         .map_err(|e| key(format!("{wrap}: {e}")))?
@@ -507,6 +571,7 @@ pub fn snapshot(
     let mut out = Checkout::new(
         stage.join(format!("git-{}", resolved.commit.hex())),
         auth.cloned(),
+        src.granted().map(|(u, g)| (u.to_string(), g.clone())),
     )
     .map_err(snap)?;
     let time = (commit.committed, 0);
@@ -741,10 +806,16 @@ struct Checkout {
     dirs: std::collections::HashSet<Vec<u8>>,
     /// The build's Authorization, for submodules within its scope.
     auth: Option<Auth>,
+    /// The source's grant, which its submodules are held to (D54).
+    grant: Option<(String, super::grant::Redirects)>,
 }
 
 impl Checkout {
-    fn new(path: PathBuf, auth: Option<Auth>) -> Result<Checkout, String> {
+    fn new(
+        path: PathBuf,
+        auth: Option<Auth>,
+        grant: Option<(String, super::grant::Redirects)>,
+    ) -> Result<Checkout, String> {
         let file = File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Checkout {
             path,
@@ -753,6 +824,7 @@ impl Checkout {
             entries: Vec::new(),
             dirs: std::collections::HashSet::new(),
             auth,
+            grant,
         })
     }
 
@@ -971,7 +1043,8 @@ impl Checkout {
                 "Submodule '{}' ({sub_url}) registered for path '{shown}'",
                 String::from_utf8_lossy(&name)
             ));
-            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref(), ssh)?, &agent())?;
+            let grant = self.grant.as_ref().map(|(u, g)| (u.as_str(), g));
+            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref(), ssh, grant)?, &agent())?;
             let (sub_pack, sub_shallow) = fetch_commits(&remote, &[commit], limits)?;
             let sub_commit = commit_of(&sub_pack, &commit)?;
             let time = (sub_commit.committed, 0);

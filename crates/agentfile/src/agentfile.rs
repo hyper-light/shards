@@ -39,6 +39,23 @@ pub struct Domain {
     /// `TO`'s path, or none for `/agents/<name>` or `/harness/<name>` (§12.1).
     pub to: Option<Vec<u8>>,
     pub processes: Processes,
+    /// How its source is pinned and reached, where it is fetched (D54).
+    pub fetch: Fetch,
+}
+
+/// How an `AGENT` or `HARNESS` source is pinned and reached (D54): `--checksum`, the
+/// origins `--redirect` grants beyond the source's own, and an `s3://` source's
+/// `--endpoint`, `--region`, `--path-style` and `--version-id`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Fetch {
+    /// `sha256:<hex>`, what an http(s) or s3 source's bytes hash to; empty where none.
+    pub checksum: Vec<u8>,
+    /// Each `host[:port]` a redirect may reach, in the source's own scheme.
+    pub redirects: Vec<Vec<u8>>,
+    pub endpoint: Vec<u8>,
+    pub region: Vec<u8>,
+    pub path_style: bool,
+    pub version_id: Vec<u8>,
 }
 
 /// Whom a grant is for: `FOR`'s names, of the kind `--target-kind` says or each name's
@@ -370,13 +387,37 @@ pub fn image_env(directives: &[Directive], env: &[impl AsRef<[u8]>]) -> Result<(
 pub enum Source {
     Git(crate::git::GitRef),
     Http(Vec<u8>),
+    /// `s3://BUCKET/KEY`, an object of an S3-compatible store (D54).
+    S3 {
+        bucket: Vec<u8>,
+        key: Vec<u8>,
+    },
     Path(Vec<u8>),
     Oci(Vec<u8>),
 }
 
+/// The source attribute that holds an Agentfile directive's fetch to its grant (D54): the
+/// origin its source names, and each `--redirect` origin, `,` apart. A source without it
+/// (an `ADD`'s) is fetched as BuildKit fetches it.
+pub const GRANT_ATTR: &[u8] = b"shards.grant";
+
 /// `src` told apart (§12.2). A path or URL takes no version: a final `:<tag>` on a path
 /// is refused, for it would read as an OCI reference's.
 pub fn source_of(src: &[u8]) -> Result<Source, Vec<u8>> {
+    if let Some(rest) = src.strip_prefix(b"s3://") {
+        // The key is the rest as written, as S3's own tools read `s3://BUCKET/KEY`: an
+        // object's key may hold any character.
+        return match rest.iter().position(|&b| b == b'/') {
+            Some(at) if at > 0 && at + 1 < rest.len() => Ok(Source::S3 {
+                bucket: rest.get(..at).unwrap_or_default().to_vec(),
+                key: rest.get(at + 1..).unwrap_or_default().to_vec(),
+            }),
+            _ => Err(errf(&[
+                go::quote(src).as_bytes(),
+                b" names no object: an S3 source is s3://BUCKET/KEY",
+            ])),
+        };
+    }
     match crate::git::parse_git_ref(src) {
         crate::git::Parsed::Git(g) if !g.indistinguishable_from_local => return Ok(Source::Git(g)),
         crate::git::Parsed::BadGit(e) => return Err(e),
@@ -474,7 +515,21 @@ fn for_names(after: Option<&[Vec<u8>]>, directive: &str) -> Result<Vec<Vec<u8>>,
 /// `AGENT [--processes=<n|none>] <name> FROM <source> [TO <path>]`, and `HARNESS`'s, alike.
 fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     req.flags.add("processes", FlagType::String, b"");
+    req.flags.add("checksum", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
+    req.flags.add("endpoint", FlagType::String, b"");
+    req.flags.add("region", FlagType::String, b"");
+    req.flags.add("path-style", FlagType::Bool, b"false");
+    req.flags.add("version-id", FlagType::String, b"");
     req.flags.parse()?;
+    let fetch = Fetch {
+        checksum: req.flags.value("checksum"),
+        redirects: req.flags.values("redirect"),
+        endpoint: req.flags.value("endpoint"),
+        region: req.flags.value("region"),
+        path_style: req.flags.is_true("path-style"),
+        version_id: req.flags.value("version-id"),
+    };
     let processes = match req.flags.value("processes").as_slice() {
         b"" => Processes::Unbounded,
         b"none" => Processes::None,
@@ -521,12 +576,126 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     } else {
         "a harness"
     };
+    fetch_checked(directive, source, &fetch)?;
     Ok(Domain {
         name: name(n, what)?,
         source: source.clone(),
         to,
         processes,
+        fetch,
     })
+}
+
+/// `fetch` held to what `source` is (D54): an http(s) source pinned by `--checksum`; an s3
+/// one by `--checksum` or `--version-id`; S3's own flags on an s3 source alone; a
+/// redirect granted only where a fetch can be redirected; each value well formed.
+fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Vec<u8>> {
+    let refuse = |why: &str| Err(format!("{directive} {why}").into_bytes());
+    let kind = source_of(source)?;
+    let s3 = matches!(kind, Source::S3 { .. });
+    let fetched = matches!(kind, Source::Http(_) | Source::S3 { .. });
+    let s3_flags = !fetch.endpoint.is_empty()
+        || !fetch.region.is_empty()
+        || fetch.path_style
+        || !fetch.version_id.is_empty();
+    if s3_flags && !s3 {
+        return refuse("--endpoint, --region, --path-style and --version-id are an s3:// source's");
+    }
+    if !fetch.endpoint.is_empty()
+        && !(fetch.endpoint.starts_with(b"https://") || fetch.endpoint.starts_with(b"http://"))
+    {
+        return Err(errf(&[
+            directive.as_bytes(),
+            b" --endpoint is an http(s) URL, not ",
+            go::quote(&fetch.endpoint).as_bytes(),
+        ]));
+    }
+    if !fetch.redirects.is_empty() && !matches!(kind, Source::Http(_) | Source::Git(_)) {
+        return refuse("--redirect grants where an http(s) or Git source is redirected; this source is not");
+    }
+    if !fetch.checksum.is_empty() {
+        if !fetched {
+            return refuse(
+                "--checksum pins an http(s) or s3:// source; a Git source is pinned by the commit its #REF names",
+            );
+        }
+        let hex = fetch.checksum.strip_prefix(b"sha256:").unwrap_or_default();
+        if hex.len() != 64 || !hex.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(errf(&[
+                directive.as_bytes(),
+                b" --checksum is sha256: and 64 lowercase hex digits, not ",
+                go::quote(&fetch.checksum).as_bytes(),
+            ]));
+        }
+    }
+    if matches!(kind, Source::Http(_)) && fetch.checksum.is_empty() {
+        return refuse("from an http(s) URL is pinned by --checksum=sha256:<hex> of what it serves");
+    }
+    if s3 && fetch.checksum.is_empty() && fetch.version_id.is_empty() {
+        return refuse("from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>");
+    }
+    for r in &fetch.redirects {
+        if redirect_origin(r).is_none() {
+            return Err(errf(&[
+                directive.as_bytes(),
+                b" --redirect is HOST or HOST:PORT, not ",
+                go::quote(r).as_bytes(),
+            ]));
+        }
+    }
+    Ok(())
+}
+
+/// A `--redirect` grant's host, lowercased, and its port if it names one: a DNS name or an
+/// IPv4 address, or an IPv6 address in brackets, and a port from 1 to 65535. No wildcard:
+/// a grant names one origin (D54).
+pub fn redirect_origin(grant: &[u8]) -> Option<(Vec<u8>, Option<u16>)> {
+    let (host, port) = match grant.strip_prefix(b"[") {
+        Some(v6) => {
+            let end = v6.iter().position(|&b| b == b']')?;
+            let host = v6.get(..end)?;
+            let after = v6.get(end + 1..)?;
+            if host.is_empty()
+                || !host
+                    .iter()
+                    .all(|c| c.is_ascii_hexdigit() || matches!(c, b':' | b'.'))
+            {
+                return None;
+            }
+            let port = match after {
+                [] => None,
+                [b':', p @ ..] => Some(p),
+                _ => return None,
+            };
+            ([b"[".as_slice(), host, b"]"].concat(), port)
+        }
+        None => {
+            let (host, port) = match grant.iter().position(|&b| b == b':') {
+                Some(at) => (grant.get(..at)?, Some(grant.get(at + 1..)?)),
+                None => (grant, None),
+            };
+            let label = |l: &[u8]| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && l.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+                    && !l.starts_with(b"-")
+                    && !l.ends_with(b"-")
+            };
+            if host.is_empty() || host.len() > 253 || !host.split(|&b| b == b'.').all(label) {
+                return None;
+            }
+            (go::to_lower(host), port)
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(p) => {
+            let n = std::str::from_utf8(p).ok()?.parse::<u16>().ok()?;
+            (n > 0 && p.first() != Some(&b'0')).then_some(n)?;
+            Some(n)
+        }
+    };
+    Some((host, port))
 }
 
 /// `SKILL [ADD's options] [--from=…] [--target-kind=…] <source> [<dest>] [FOR <name>…]`.
@@ -594,6 +763,9 @@ fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
         return Err(
             b"MCP requires a name and FROM <source>: MCP <name> FROM <source> [FOR <name> ...]".to_vec(),
         );
+    }
+    if let Source::S3 { .. } = source_of(source)? {
+        return Err(b"MCP takes no s3:// source: an agent's or harness's is pinned by AGENT's or HARNESS's --checksum or --version-id".to_vec());
     }
     Ok(Mcp {
         name: name(n, "an MCP server")?,
@@ -2949,6 +3121,7 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
                                         .ok_or("processes neither none nor a number")?,
                                 ),
                             },
+                            fetch: Fetch::default(),
                         };
                         if at == 0 {
                             Directive::Agent(domain)

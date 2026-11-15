@@ -5326,6 +5326,118 @@ metadata. `supplied_domains_read_their_local_startup_config` covers planner copi
 and `supplied_agents_and_harness_archives_start_their_declared_entrypoints` observes
 both a supplied directory agent and tar harness started in real confined domains.
 
+### Fetched sources: S3, pins, secret headers and grants (D54, continued)
+
+`AGENT` and `HARNESS` take a source from Git (https, ssh, `git://`, scp-like), an http(s)
+URL, and now an S3-compatible store: `s3://BUCKET/KEY` (AWS S3, Cloudflare R2, Mantle's
+object store). Every fetched source is pinned, and every one is held to the grant its
+directive makes.
+
+**Forms.** `AGENT|HARNESS [--checksum=sha256:<hex>] [--redirect=HOST[:PORT]]…
+[--endpoint=URL] [--region=R] [--path-style] [--version-id=V] <name> FROM <source>`.
+- An http(s) source needs `--checksum`: the content behind a URL changes without notice.
+- An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
+  S3; the bytes are hashed either way.
+- `--endpoint`, `--region`, `--path-style` and `--version-id` go only with `s3://`.
+  `--checksum` goes only with http(s) and s3, as a Git source is pinned by the commit its
+  `#REF` resolves to (recorded as before). `--redirect` goes only with http(s) and Git.
+- Each refusal names what to write instead (`fetched_sources_are_pinned_and_say_where_they_are`).
+- `MCP` takes no `s3://` source: it has no flags to pin one.
+- Dockerfile `ADD` keeps BuildKit's grammar and meaning. BuildKit's ADD reads `s3://…` as
+  a context path, so a Dockerfile's ADD of one means what it means to BuildKit. Nothing
+  deviates, and `testdata/deviations.json` needs no entry.
+
+**Plan.** The planner lowers an http(s) source with `http.checksum`. An s3 one becomes a
+source op `s3://BUCKET/KEY` with `s3.filename` (the key's last part), `s3.checksum`,
+`s3.versionid`, `s3.endpoint`, `s3.region` and `s3.pathstyle`, unpacked as an http(s)
+download is. Every http(s), Git and s3 source an `AGENT`, `HARNESS`, `SKILL` or `MCP`
+makes carries `shards.grant`: the `--redirect` origins, `,` apart (empty for none). The
+source a `COPY --from=<agent>` reads again carries the same pins and grant
+(`fetched_sources_carry_their_pins_and_grants_into_the_plan`).
+
+**S3: one client (D88).** `build::s3::Object` fetches through the cache's `Bucket`: its
+SigV4 signing, endpoint rules (virtual-hosted, or path-style with `--path-style` or a
+bucket that cannot be a host label), and the SDK's endpoint and region settings where the
+directive names none. Its errors say `s3 source` where the cache's say `s3 cache`.
+- One `GetObject`, with `versionId` where pinned. The body streams to disk, hashed, within
+  the limits an HTTP source's download holds to (audit A10).
+- A `--checksum` mismatch is refused (`digest mismatch GOT: WANT`).
+- Credentials are taken by reference: the build's secrets `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` (AWS's own variable names), each
+  `NAME.<bucket>` before `NAME`, as Git's `GIT_AUTH_TOKEN.<host>` comes before
+  `GIT_AUTH_TOKEN`. Else the SDK's default chain (crate::aws::credentials). The copies
+  the client is made from are zeroized once it holds its own.
+- The build records the object as `s3://BUCKET/KEY?versionId=V` (or `?etag=E` where S3
+  keeps no versions) with its SHA-256, among the provenance's materials.
+- An s3 source is fetched and keyed by its content, as an HTTP source is
+  (`cache::source_key`): a changed object changes the build's key.
+
+**Secret headers for http(s) (BuildKit parity).** BuildKit v0.28.1's http source sends an
+Authorization from the build's secrets (source/http/source.go newHTTPRequest; solver/pb
+attr.go `http.authheadersecret`): the secret `http.authheadersecret` names, which must be
+there; else `HTTP_AUTH_HEADER_<host>` (the whole header) and `HTTP_AUTH_TOKEN_<host>`
+(`Bearer` + it, which wins where both are), `<host>` the URL's hostname as written. shards
+sent only URL userinfo; now every http source (an `ADD`'s and an Agentfile's, its policy
+metadata and SOURCE_DATE_EPOCH fetches, and a remote context) sends what BuildKit sends.
+- The header replaces the userinfo's Basic credentials (net/http Client.send).
+- An Agentfile directive's fetch is refused with the server's status
+  (`invalid response status 401`) even when a checksum pins it. BuildKit fetches a pinned
+  source whatever the status, so a refusal would only show as a digest mismatch; `ADD`
+  keeps that.
+- On a redirect it goes only to the first host or a subdomain of it, by host alone
+  (client.go shouldCopyHeaderOnRedirect, isDomainOrSubdomain). Once dropped it stays
+  dropped (Go 1.23.5, CVE-2024-45336).
+- A secret is never written to a layer, the build record or a log. The provenance keeps the
+  URL with its userinfo redacted, as before.
+- Tests: `a_hosts_secrets_authorize_its_fetch_as_buildkits_do`,
+  `a_secrets_header_stays_within_its_hosts_domain`.
+
+**Default deny for directive fetches (ROOT's decision, 2026-11-14).** A microVM's network
+is default deny, but these fetches run on the host, in the build process. Their rule: an
+Agentfile directive's source is its own grant.
+- A fetch connects only to the origin (scheme, host, port) its source names: the URL's;
+  for s3 the host the client derives from the endpoint or AWS's region; for Git the remote.
+  It also reaches each origin a `--redirect=HOST[:PORT]` names, in the source's scheme, at
+  the port named or the scheme's own (RFC 9110 §4.2). No wildcards, no scheme change.
+- Each connection is checked before it is made (`build::grant::Hops`, through the HTTP
+  client's per-hop `authorize`), every redirect hop and both smart-HTTP requests of a Git
+  fetch included.
+- A redirect elsewhere is refused before anything is sent there: `redirected from FROM to
+  TO, which the source does not grant: name it with --redirect=HOST[:PORT]`
+  (`Refused::RedirectNotGranted`).
+- A Git submodule at another origin is refused too (`Refused::NotGranted`). git:// and SSH
+  remotes connect only to the host their URL names, and S3 requests follow no redirect.
+- An environment proxy stays the host's egress path; the grant is what it connects to.
+- `ADD` and remote contexts keep BuildKit v0.28.1's fetch (redirects anywhere, 10 hops
+  through Go's client). Docker's inputs stay BuildKit's byte for byte; a build policy
+  (D101) is how a build refuses an `ADD`'s hosts.
+- Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
+  `a_git_source_opens_only_the_remotes_it_grants`,
+  `a_granted_fetch_is_refused_a_redirect_it_does_not_name`.
+
+Rejected:
+- **Fetching inside the builder microVM under its network policy.** SSH keys and agents
+  never enter a VM (D51, D69), and a fetch there would need the credentials inside it and
+  a fetcher in the guest.
+- **A shipped default Rego policy.** It denies only by opt-out, and a policy sees a source,
+  not its redirect hops.
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| `sha256:` and 64 hex digits | the pin is a SHA-256 (FIPS 180-4), as `http.checksum` is |
+| `HTTP_AUTH_HEADER_`, `HTTP_AUTH_TOKEN_`, `Bearer ` | BuildKit v0.28.1 source/http/source.go |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | AWS's own variable names (SDK configuration) |
+| ports 80 and 443 | RFC 9110 §4.2 |
+| labels of 1-63 characters, names of at most 253 | RFC 1035 §2.3.4 |
+
+**Not yet.**
+- A build policy (D101) refuses an s3 source (`unsupported source scheme: s3`): buildx's
+  policy input has no S3 form.
+- Real-VM builds of each kind are owed to the coordinator (`crates/shards/tests/build.rs`).
+- SKILL and MCP take no `--redirect`: their sources reach their own origin only.
+
 ### Skills checked as the Agent Skills reference checks them (D54)
 
 `SKILL` takes skills in the Agent Skills format (AGENTFILE_ARCH.md §8 Q12): a directory
@@ -25647,6 +25759,10 @@ Tested:
   - a name that is not there no cache.
 - Mutation-checked: a wrong body hash fails the export; touching nothing fails the
   touch check.
+
+**One S3 client (D54).** An Agentfile's `s3://` source fetches through this backend's
+`Bucket`, which keeps its signing, endpoint, region and credential rules in one place.
+Only its error texts name what the bucket is for (`s3 cache`, `s3 source`).
 
 ### D87. `--cache-to` of several platforms
 
