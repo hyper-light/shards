@@ -978,7 +978,7 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
 /// The orchestrator's pools the measured warm starts come through: one construction, which
 /// changes as `ImagePools::new` does.
 fn warm_pools() -> ImagePools {
-    ImagePools::new(2, ImagePools::KEEP).unwrap()
+    ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap()
 }
 
 /// One measured start of an image's run: how it started, and its three spans from the boot's
@@ -1186,9 +1186,18 @@ impl CostRig {
             first.from
         );
         self.start(StartKind::Restored);
+        // A start through the pools makes its pool; a start is tried only once the pool says a
+        // host of it is warm, so no start races its pool's refill.
         let mut patience = Patience::started();
-        while timed_start(&self.pools, &self.home, &self.restored).from != StartedFrom::Warm {
+        timed_start(&self.pools, &self.home, &self.restored);
+        loop {
+            if self.pools.held().iter().any(|p| p.warm > 0)
+                && timed_start(&self.pools, &self.home, &self.restored).from == StartedFrom::Warm
+            {
+                break;
+            }
             assert!(patience.holds(), "no start took a warm host");
+            std::thread::yield_now();
         }
         patience.done();
     }
@@ -1327,6 +1336,8 @@ fn image_start_costs() {
     // One start of each kind, its VM's log at debug, which slows it: its steps, apart from
     // the measured starts.
     rig.traced();
+    // The room holds two warm hosts: the untraced pool's give theirs back for the traced one.
+    rig.pools.release(u64::MAX).unwrap();
     rig.warm_up();
     for &kind in kinds {
         let s = rig.start(kind);
