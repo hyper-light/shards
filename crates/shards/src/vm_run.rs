@@ -4336,6 +4336,53 @@ mod tests {
         }
     }
 
+    /// Every flag a run's microVM is booted with that takes a value (`run::boot_args`, the
+    /// daemon's and an orchestrator's run host's alike) is one `spec::RUN_VALUED` lists, and
+    /// the boot parses as given: D270's components' window, unlisted, refused every
+    /// orchestrator's image boot, "--component-window needs a value".
+    #[test]
+    fn a_runs_boot_arguments_are_the_ones_run_reads() {
+        let mut cfg = Config::new(PathBuf::from("/k"), Some(PathBuf::from("/init")));
+        cfg.cmdline = "console=hvc0".into();
+        (cfg.vcpus, cfg.memory_mib, cfg.hotplug_mib, cfg.swap_mib) = (2, 64, 1024, 1024);
+        cfg.reporting = true;
+        cfg.pmem = vec![PathBuf::from("/server")];
+        cfg.shares = (0..2).map(|_| Default::default()).collect();
+        cfg.share_window_mib = 64;
+        (cfg.pci_slots, cfg.pci_slots_iommu, cfg.component_window_mib) = (2, true, 8192);
+        let booted = crate::run::boot_args(
+            &cfg,
+            Path::new("/rootfs"),
+            Some(Path::new("/t")),
+            crate::launch::LINK,
+        );
+        let words: Vec<&str> = booted.iter().skip(1).map(|w| w.to_str().unwrap()).collect();
+        for pair in words.windows(2) {
+            if let [flag, value] = pair
+                && flag.starts_with("--")
+                && !value.starts_with("--")
+            {
+                assert!(
+                    crate::spec::RUN_VALUED.contains(flag),
+                    "{flag} {value}: not a valued flag"
+                );
+            }
+        }
+        let run = parse_run(booted.into_iter().skip(1)).unwrap();
+        assert_eq!(
+            (
+                run.cfg.memory_mib,
+                run.cfg.hotplug_mib,
+                run.cfg.swap_mib,
+                run.cfg.shares.len(),
+                run.cfg.share_window_mib,
+                run.cfg.pci_slots,
+                run.cfg.component_window_mib,
+            ),
+            (64, 1024, 1024, 2, 64, 2, 8192)
+        );
+    }
+
     /// What `restore` alone reads a value after, as `spec::RESTORE_VALUED` tells what reads
     /// its command line ahead of it (cli/mod.rs `vm_options`): each needs its value, which
     /// it takes whatever it reads as (D232).
