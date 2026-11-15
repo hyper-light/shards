@@ -34094,9 +34094,18 @@ that claims and gives balance once its pools drop):
   holds while it calls `release`, `reserve`, `held` and `boot`;
 - `a_run_asking_its_gpu_report_or_no_size_gets_a_host_of_its_own_and_no_pool`.
 
-**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
-(now with a room of two hosts) and `warm_hosts_end_with_the_process_holding_their_pools`
-(Unix: the holder SIGKILLed, every warm host's process group gone) on HVF and KVM. On Windows
+**Run on HVF** (adas-mac-studio.local, macOS arm64, 73109b048, each test alone):
+`warm_hosts_end_with_the_process_holding_their_pools` (Unix: the holder SIGKILLed, every warm
+host's process group gone) green, its wait's party every process of the hosts' own groups,
+wherever listed (`Patience::groups`, getpgid(2)): its first answer W* 34.6 ms from the
+holder's kill to every group gone, then green judged by it. Red with the wait it had,
+`Patience::started()` made once the holder was reaped, whose party, the test process's
+children, held none of the orphaned hosts: refused 218.9 µs in, "its party is gone", host
+89673 live, its parent 1 (ROOT's batch 32 at 8d732fb2d saw the same of host 75603, 322.5 µs
+in). `an_images_next_run_takes_a_warm_host_of_its_pool` (now with a room of two hosts) green
+twice, cold and judged; batch 32's refusal of its `shards guest use` was D215's rate floor
+taking a wait on its host's disk for its own rest (D215: a party waiting in its kernel).
+**Owed** (ROOT, real VMs): both on KVM. On Windows
 the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
 unverified. Also owed: `api_image.rs`'s `a_warm_hosts_footprint_is_its_vm_processs_reading`
 (`held().footprints` carries a real reading once asked) on HVF, KVM and WHP.
