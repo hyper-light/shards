@@ -25275,25 +25275,34 @@ microseconds since its `main` (`shards_vmm::log`): the VM's own steps (`VM creat
 mapped`, `GIC created`, `kernel and initrd copied` on a boot; the working set mapped ahead,
 each vCPU created and its state restored, `restored a N MiB guest`, layer and DAX heads mapped
 back on a restore; `N vCPU(s) ready to run after`, `the machine's start finished`; the
-snapshot written and made durable on a save) and the run host's untimed lines in order
-(`IMAGE-START-PHASES`), with the time the VM's clock does not see: `boot` less its ready line.
+snapshot written and made durable on a save), printed as below.
 
-What the existing outputs do not split, and the smallest instrument for each (not yet built;
-each behind `SHARDS_TIMING`, which already reaches the run host and its VM):
-- The run host's own steps before its VM's `main`: its spawn, `run::prepare` and `shape`
-  (image, volumes, network), the share and network processes' starts, the VM's spawn, exec and
-  App Sandbox entry. `api_run::say` writes no time. Instrument: with `SHARDS_TIMING`, `say`
-  prefixes microseconds since the run host's start and says its start's wall clock once; the
-  VM's first log line says its own, so both line up with the caller's clock.
-- The grants a macOS VM asks of its run host once running (D30): answered, not logged.
-  Instrument: the same timed `say` at each grant answered.
-- The guest's own steps: init's markers (`INIT_STARTED`, `RESUMED`, `CONNECTED`,
-  `WORKLOAD_STARTED`, `WORKLOAD_READY`) reach the VMM (`Control::markers`) but only its
-  timing line carries them, which a linked VM sends in `EXIT` only for `RUN_TIMING`, which
-  `api_run::run_request` never sets. Instrument: with `SHARDS_TIMING`, `run_request` sets
-  `RUN_TIMING` and the run host says the line it gets.
-- The way from the VM's `READY` to the client's `STARTED` and then the member's exec and its
-  first `OUTPUT`: the run host's serve, untimed. Instrument: the timed `say` at `READY`,
-  `TAKEN` and `STARTED`.
+What those outputs did not split, and the smallest instrument for each, built behind
+`SHARDS_TIMING` (which reaches the run host from its spec's environment and its VM through
+`netproc::child_env`); with it unset each is one `OnceLock` read and says nothing:
+- The run host's own steps before its VM's `main`: `api_run::say` prefixes `+US us`,
+  microseconds since the run host's `main` (`shards_vmm::log::uptime_us`), and its first line
+  says that clock's wall time (`its clock began at unix US us`, `log::began_unix_us`). Steps
+  said only when timed (`api_run::step`): its request read, its image prepared
+  (`run::prepare`), its microVM shaped, its run planned, its share process started,
+  launching its VM; and through `launch::say_steps`, which only the run host sets: its network
+  process started, spawning the VM, the VM spawned (Windows: made suspended, resumed). The VM
+  process's first log line (at debug) says its own clock's wall time (`its log began at unix US
+  us`), so its spawn, exec and App Sandbox entry are the way from `spawning the VM` to it.
+- The grants a macOS VM asks of its run host (D30): `the VM's grants: N of its asks answered`
+  as each is answered (`grant_answer::serve_waiting`'s hook, launch.rs `Grants::Answered`).
+- The guest's markers: the VMM already logs each at info (`guest marker N at US us`), on its
+  clock. `run_request` also sets `RUN_TIMING`, and the run host says the timing line its VM
+  sends in `EXIT` (`its VM's timing line: {...}`); a run stopped (the harness's `stop`) is
+  killed and sends none, so the measurement reads the markers from the VM's log.
+- `READY`, `TAKEN` and `STARTED`: `its VM said READY`, `its VM took the run`, `its start told
+  its orchestrator`, `its VM said STARTED`.
+The phase pass sets `SHARDS_TIMING` beside `SHARDS_LOG=debug` and prints every timed line,
+the run host's and each VM process's, on the caller's clock (each process's began wall clock
+plus its line's time, less the wall clock at the `boot_stoppable` call), in order, with the gap
+to the line before, beside the caller's own `the boot answered` and `its harness's first
+output read` (`IMAGE-START-PHASES KIND US +GAP WHO TEXT`). A warm host's lines from before the
+call are negative. Wall clocks line processes up to the host clock's resolution and its slew
+over one start; no number here is measured yet.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.

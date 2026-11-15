@@ -985,9 +985,11 @@ fn warm_pools() -> ImagePools {
 /// call: its answer (`boot`, as Hex's `hex.image.boot` is bounded: `boot_stoppable` to its
 /// answer, the run host's diagnostics kept), its harness's first output read (`usable`), and
 /// its stop, from its call to its answer (`stop`). `diagnostics` is where its run host's were
-/// kept.
+/// kept; `called_unix_us` is the wall clock as the boot was called, in microseconds since the
+/// Unix epoch, which its run host's and VM's timed lines are lined up with.
 struct Start {
     from: StartedFrom,
+    called_unix_us: u128,
     boot: Duration,
     usable: Duration,
     stop: Duration,
@@ -1002,16 +1004,20 @@ fn timed_start(images: &dyn shards_api::image::Images, home: &TempDir, s: &Image
     let path = diagnostics(home);
     let kept = std::fs::File::create(&path).unwrap();
     let stop = BootStop::new();
-    let (guest, t0, boot) = common::judged(
+    let (guest, t0, called_unix_us, boot) = common::judged(
         Party::started(None),
         "a measured boot",
         || stop.stop(),
         || {
             let t0 = Instant::now();
+            let called_unix_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros();
             let guest = images
                 .boot_stoppable(s, Duration::MAX, &stop)
                 .and_then(|g| g.keep_diagnostics(kept, u64::MAX).map(|()| g));
-            (guest, t0, t0.elapsed())
+            (guest, t0, called_unix_us, t0.elapsed())
         },
     )
     .unwrap_or_else(|refused| panic!("{refused}"));
@@ -1049,6 +1055,7 @@ fn timed_start(images: &dyn shards_api::image::Images, home: &TempDir, s: &Image
     stopped.unwrap();
     Start {
         from,
+        called_unix_us,
         boot,
         usable,
         stop,
@@ -1120,10 +1127,13 @@ impl CostRig {
     }
 
     /// Its run hosts and their VMs log at debug from now on (`SHARDS_LOG`), each step of a
-    /// VM's start said with its time; a warm host's pool is then another (its environment).
+    /// VM's start said with its time, and each run host's step with its own (`SHARDS_TIMING`),
+    /// each process's clock said on the wall's; a warm host's pool is then another (its
+    /// environment).
     fn traced(&mut self) {
         for s in [&mut self.booted, &mut self.saved, &mut self.restored] {
             s.env.push(("SHARDS_LOG".into(), "debug".into()));
+            s.env.push(("SHARDS_TIMING".into(), "1".into()));
         }
     }
 
@@ -1196,43 +1206,59 @@ fn os_release() -> String {
         .unwrap_or_else(|| std::env::consts::OS.to_string())
 }
 
-/// The lines of a VM process's log (`SHARDS_LOG=debug`, `[PID US LEVEL] TEXT`, its clock
-/// microseconds since its log began) that mark a step of its start, and its run host's
-/// (`shards api-run: TEXT`, untimed), in the order its diagnostics hold them.
-fn start_phases(diagnostics: &str) -> Vec<(Option<u64>, String)> {
-    const STEPS: [&str; 17] = [
-        "VM created and RAM mapped",
-        "GIC created",
-        "kernel and initrd copied",
-        "kernel entry",
-        "working-set pages ahead",
-        "vCPU ",
-        "vCPUs set up in",
-        "restored a ",
-        "ready to run after",
-        "the machine's start finished",
-        "snapshot written",
-        "snapshot made durable",
-        "saved for the host",
-        "writable layer's head mapped back",
-        "DAX windows' heads mapped back",
-        "dropped the restore's state",
-        "huge pages",
-    ];
-    diagnostics
-        .lines()
-        .filter_map(|line| {
-            if let Some(said) = line.strip_prefix("shards api-run: ") {
-                return Some((None, said.to_string()));
+/// Every timed line of a start's diagnostics on the caller's clock, in order: microseconds
+/// from the boot's call (`called_unix_us`, the wall clock then), its run host's lines
+/// (`shards api-run: +US us TEXT`, microseconds since its `main`) and each VM process's
+/// (`[PID US LEVEL] TEXT`, microseconds since its log began), each lined up by the wall clock
+/// its process said its clock began at (`... began at unix US us`, `SHARDS_TIMING`). A warm
+/// host's lines from before the call come first, negative. Lines of a process whose clock
+/// was not said are none of it.
+fn timeline(diagnostics: &str, called_unix_us: u128) -> Vec<(i128, String)> {
+    let began = |text: &str| -> Option<i128> {
+        text.split_once("began at unix ")?
+            .1
+            .strip_suffix(" us")?
+            .parse()
+            .ok()
+    };
+    let called = i128::try_from(called_unix_us).unwrap();
+    let mut host: Option<i128> = None;
+    let mut vms: std::collections::HashMap<u32, i128> = std::collections::HashMap::new();
+    let mut lines = Vec::new();
+    for line in diagnostics.lines() {
+        if let Some(said) = line.strip_prefix("shards api-run: +") {
+            let Some((us, text)) = said.split_once(" us ") else {
+                continue;
+            };
+            let Ok(us) = us.parse::<i128>() else { continue };
+            host = host.or_else(|| began(text));
+            if let Some(began) = host {
+                lines.push((began + us - called, format!("run host  {text}")));
             }
-            let (head, text) = line.strip_prefix('[')?.split_once("] ")?;
-            let us = head.split_whitespace().nth(1)?.strip_suffix("us")?.parse().ok()?;
-            STEPS
-                .iter()
-                .any(|step| text.contains(step))
-                .then(|| (Some(us), text.to_string()))
-        })
-        .collect()
+            continue;
+        }
+        let Some((head, text)) = line.strip_prefix('[').and_then(|l| l.split_once("] ")) else {
+            continue;
+        };
+        let mut fields = head.split_whitespace();
+        let (Some(Ok(pid)), Some(Some(Ok(us)))) = (
+            fields.next().map(str::parse::<u32>),
+            fields
+                .next()
+                .map(|us| us.strip_suffix("us").map(str::parse::<i128>)),
+        ) else {
+            continue;
+        };
+        if let Some(b) = began(text) {
+            vms.entry(pid).or_insert(b);
+        }
+        if let Some(began) = vms.get(&pid) {
+            lines.push((began + us - called, format!("vm {pid:<6} {text}")));
+        }
+    }
+    // Stable: lines of one instant keep their order in the diagnostics.
+    lines.sort_by_key(|(at, _)| *at);
+    lines
 }
 
 /// Where a shards-api image start's time goes, for each way it starts (D253): from the boot's
@@ -1240,9 +1266,11 @@ fn start_phases(diagnostics: &str) -> Vec<(Option<u64>, String)> {
 /// its harness's first output, and its stop, `SHARDS_IMAGE_COST_N` starts of each, the kinds
 /// taken round-robin, each round starting one kind later, so that the host's drift and a
 /// pool's refill after its warm start fall on every kind alike (PM M29). Each start's kind is
-/// held to the one asked. Then one start of each kind with its VM's log at debug, whose steps
-/// say where inside its VM process the start went, beside the time its VM's clock does not
-/// see (its run host, the processes' spawn, and the way from ready to started).
+/// held to the one asked. Then one start of each kind with its VM's log at debug and its run
+/// host's steps timed (`SHARDS_TIMING`), every timed line of both on the caller's clock, from
+/// the boot's call, in order: its run host's spawn, preparation and launches, its VM's spawn,
+/// exec and App Sandbox entry to its `main`, its VM's own steps and its guest's markers, its
+/// grants answered, and the way from `READY` through `TAKEN` and `STARTED` to its first output.
 #[test]
 #[ignore = "a measurement: SHARDS_IMAGE_COST_N starts of each kind; ROOT runs it"]
 fn image_start_costs() {
@@ -1303,34 +1331,32 @@ fn image_start_costs() {
     for &kind in kinds {
         let s = rig.start(kind);
         let said = std::fs::read_to_string(&s.diagnostics).unwrap();
-        let phases = start_phases(&said);
-        let vm_ready = phases
-            .iter()
-            .filter(|(_, text)| text.contains("ready to run after"))
-            .find_map(|(us, _)| *us);
         let _ = writeln!(
             std::io::stdout(),
-            "IMAGE-START-PHASES {kind:?} from {:?}: boot {} us, first output {} us, stop {} us; outside its VM's clock to ready: {}",
+            "IMAGE-START-PHASES {kind:?} from {:?}: boot {} us, first output {} us, stop {} us; every timed line in us from the boot's call:",
             s.from,
             s.boot.as_micros(),
             s.usable.as_micros(),
-            s.stop.as_micros(),
-            vm_ready.map_or("its VM said no ready line".to_string(), |us| format!(
-                "{} us",
-                u64::try_from(s.boot.as_micros())
-                    .unwrap_or(u64::MAX)
-                    .saturating_sub(us)
-            ))
+            s.stop.as_micros()
         );
-        let mut before = None;
-        for (us, text) in phases {
-            let step = match (us, before) {
-                (Some(us), Some(b)) => format!("vm {us:>9} us (+{:>7})", us.saturating_sub(b)),
-                (Some(us), None) => format!("vm {us:>9} us           "),
-                (None, _) => "run host (untimed)          ".to_string(),
-            };
-            before = us.or(before);
-            let _ = writeln!(std::io::stdout(), "IMAGE-START-PHASES {kind:?}   {step} {text}");
+        let mut lines = timeline(&said, s.called_unix_us);
+        let caller = |d: Duration, what: &str| {
+            (
+                i128::try_from(d.as_micros()).unwrap(),
+                format!("caller    {what}"),
+            )
+        };
+        lines.push(caller(s.boot, "the boot answered"));
+        lines.push(caller(s.usable, "its harness's first output read"));
+        lines.sort_by_key(|(at, _)| *at);
+        let mut before: Option<i128> = None;
+        for (at, text) in lines {
+            let gap = before.map_or(String::new(), |b| format!("+{}", at - b));
+            before = Some(at);
+            let _ = writeln!(
+                std::io::stdout(),
+                "IMAGE-START-PHASES {kind:?} {at:>9} {gap:>9}  {text}"
+            );
         }
     }
 }
