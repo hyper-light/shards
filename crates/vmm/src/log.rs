@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -51,6 +51,15 @@ pub fn enabled(level: Level) -> bool {
 /// Microseconds since `init`.
 pub fn uptime_us() -> u128 {
     START.get_or_init(Instant::now).elapsed().as_micros()
+}
+
+/// The wall clock as [`uptime_us`] read 0, in microseconds since the Unix epoch: what lines
+/// another process's lines up with this one's (`SHARDS_TIMING`). None where the clock reads
+/// before the epoch.
+pub fn began_unix_us() -> Option<u128> {
+    let up = uptime_us();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_micros();
+    now.checked_sub(up)
 }
 
 pub fn write(level: Level, args: std::fmt::Arguments<'_>) {

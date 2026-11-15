@@ -34,10 +34,10 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
-    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused,
-    PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
-    SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
-    decide,
+    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
+    NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret,
+    SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken,
+    VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -371,6 +371,8 @@ pub enum ImageRefusal {
     /// A pause or a resume its run's VM did not do (D267), in its words: its machine stopped
     /// before every vCPU was held.
     Pause(String),
+    /// A change of the running run's network its host refused (D269), by what refused it.
+    Net(NetRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -406,6 +408,7 @@ impl std::fmt::Display for ImageRefusal {
                 "{what}: the run is paused, and its guest answers nothing until it resumes"
             ),
             Self::Pause(why) => write!(f, "the pause: {why}"),
+            Self::Net(cause, why) => write!(f, "the run's network: {cause:?}: {why}"),
         }
     }
 }
@@ -530,8 +533,34 @@ impl BootStop {
 pub trait ImageGuest: Send + Sync {
     /// Every member the image declares, by its declared index.
     fn members(&self) -> &[MemberInfo];
-    /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
-    fn published(&self) -> &[Bound];
+    /// Each port the run publishes now, as bound, and the members it reaches ([`Bound::to`]):
+    /// its start's, and those [`publish`](Self::publish)ed since and not let go of, as its
+    /// host last said them.
+    fn published(&self) -> Vec<Bound>;
+    /// Guest port `publish` published on the host as the run goes (D269), in its running
+    /// microVM in place: no image built, no template saved, its guest neither restarted nor
+    /// rebooted. Bound as the run's start binds its [`ImageSpec::publish`]: at its host address,
+    /// or at every one (IPv4's, and IPv6's where IPv6 listens), its host port or one the host
+    /// picks; checked as the start checks them, so that a port the image's Agentfile declares
+    /// `AS egress`, or one it gives no member coming in on a run with no command of its own, is
+    /// refused as [`NetRefusal::Widening`]. Answers what it bound, each binding one of
+    /// [`published`](Self::published)'s from then on, waiting at most `patience`; refused as
+    /// [`ImageRefusal::Net`], by what refused it: [`NetRefusal::NoNetwork`] for a run its
+    /// microVM started with no network device (nothing published, kept or linked past it).
+    /// Answered while the run is paused too: its host's network process makes it, not its guest.
+    fn publish(&self, publish: Publish, patience: Duration) -> Result<Vec<Bound>, ImageRefusal>;
+    /// The port the run publishes at `host` for `proto` let go of, in place (D269): one of
+    /// [`published`](Self::published)'s, its start's among them; its host's socket closed, so
+    /// that nothing more comes in on it: a TCP connection it took before goes on to its end,
+    /// and its UDP peers' flows end with it. Waiting and refused as
+    /// [`publish`](Self::publish), [`NetRefusal::Unknown`] where the run publishes nothing
+    /// there.
+    fn unpublish(
+        &self,
+        proto: Proto,
+        host: std::net::SocketAddr,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its

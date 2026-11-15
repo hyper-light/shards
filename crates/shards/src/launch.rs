@@ -17,6 +17,23 @@ use std::os::fd::{AsFd as _, BorrowedFd, RawFd};
 use crate::daemon::ends::Ends;
 use crate::netproc::{NetProcess, VmSide};
 
+/// Where each launch's steps are said with their times (`SHARDS_TIMING`): the run host's
+/// timed say (api_run.rs), set once by that host, whose process is its one run's; none in the
+/// daemon's or a build's, whose launches say nothing of them.
+static STEPS: std::sync::OnceLock<fn(std::fmt::Arguments<'_>)> = std::sync::OnceLock::new();
+
+/// Says each launch's steps through `say` from now on ([`STEPS`]); once, later calls change
+/// nothing.
+pub fn say_steps(say: fn(std::fmt::Arguments<'_>)) {
+    let _ = STEPS.set(say);
+}
+
+fn step(what: std::fmt::Arguments<'_>) {
+    if let Some(say) = STEPS.get() {
+        say(what);
+    }
+}
+
 /// What a run's VM is told its link to its spawner is (`--warm`, `--resume`): the
 /// descriptor it is handed it at on Unix, the name it is handed it by on Windows.
 pub const LINK: &str = if cfg!(windows) { "daemon" } else { "3" };
@@ -422,6 +439,7 @@ fn launch_with(
         Some(n) => {
             let mac = n.mac;
             let (process, side) = network(n, group)?;
+            step(format_args!("its network process {} started", process.id()));
             Some((process, side, mac))
         }
         None => None,
@@ -436,6 +454,7 @@ fn launch_with(
     let args = absolute(args)?;
     let args: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
     let argv = after_command(&args, &words);
+    step(format_args!("spawning {who}"));
     let spawned = spawn(
         group,
         &binary.path(),
@@ -455,6 +474,7 @@ fn launch_with(
             return Err(format!("starting {who} ({}): {e}", binary.shown()));
         }
     };
+    step(format_args!("{who} spawned, its process {}", vm.id()));
     // The VM holds its ends now, its side of the ring among them: as it goes, its network
     // process hears its doorbell hang up and goes too.
     drop((kind, null, granted));
@@ -464,7 +484,10 @@ fn launch_with(
         Grants::Kept => Some(grants),
         Grants::Answered => {
             let answering = std::thread::Builder::new().name(answerer.into()).spawn(move || {
-                let _ = crate::grant_answer::serve(&grants, None);
+                let _ = crate::grant_answer::serve_waiting(&grants, None, &mut |asked| {
+                    step(format_args!("{who}'s grants: {asked} of its asks answered"));
+                    Ok(())
+                });
             });
             if let Err(e) = answering {
                 Launched {
@@ -633,12 +656,14 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
         graphics: gpu,
     })
     .map_err(|e| format!("starting {who} ({}): {e}", binary.shown()))?;
+    step(format_args!("{who} made suspended"));
     // Shared with it already, and its handles duplicated into it.
     drop((given, sockets));
     // Before the VM runs: ended with the suspended VM, where it cannot start.
     let net = match network {
         Some((ready, side, _)) => {
             let process = crate::netproc::start(ready, &suspended, group)?;
+            step(format_args!("its network process {} started", process.id()));
             let control = crate::netproc::Control {
                 socket: side.control,
                 pid: process.id(),
@@ -651,6 +676,7 @@ fn launch(plan: Plan<'_>, kind: Kind) -> Result<Launched, String> {
     let mut vm = suspended
         .resume()
         .map_err(|e| format!("starting {who} ({}): {e}", binary.shown()))?;
+    step(format_args!("{who} resumed, its process {}", vm.id()));
     // Its AppContainer's profile goes once it has, as its follower lets it go.
     vm.hold(container);
     // Its ends are its own now.

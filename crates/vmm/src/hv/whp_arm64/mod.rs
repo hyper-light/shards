@@ -1167,6 +1167,11 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): nothing to tell. Its guest
+    /// reads the arch timer, which ran on through the pause, and WHP's arm64 partitions offer
+    /// no paravirtual clock with a stopped flag a watchdog reads.
+    pub fn went_on(&self) {}
+
     /// Populates each `(gpa, len)` ahead of the guest, for reading or writing (making the
     /// private copies of snapshot pages). M414 exercised both kinds on arm64; the advice
     /// is the same WHvAdviseGpaRange operation as on x86_64.
