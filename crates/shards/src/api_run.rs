@@ -2571,9 +2571,9 @@ mod hosted {
         ready_by: Option<u64>,
         input: super::Input,
     ) -> Result<(), No> {
-        let checking = Checking::begin();
+        let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let shaped = shape(request, &home)?;
+        let shaped = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
         launch_and_serve(answers, input, &home, plan, checking)
@@ -2715,7 +2715,7 @@ mod hosted {
         Ok(Secured { filters, domains })
     }
 
-    fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
+    fn shape(request: &wire::Request, home: &Path, checking: &mut Checking) -> Result<Shaped, No> {
         let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
@@ -2761,6 +2761,7 @@ mod hosted {
             sign_ins.is_some(),
         )?;
         let bridge = if run.network == "bridge" {
+            checking.networked();
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
                     .ok_or_else(|| No(Cause::Boot, shards_net::bridge::NO_SUBNET.into()))?,
@@ -3190,28 +3191,65 @@ mod hosted {
     /// Its VM process's binary, checked on a thread of its own from the run host's first step,
     /// beside its run's making, which needs nothing of it: `helpers::vm` reads the binary whole
     /// and hashes it as a process first starts it (helpers.rs `checked`, runs-10), and a run
-    /// host is a process of one run, so every run's start paid it before its launch. Taken as
-    /// its VM is launched; checked there where no thread could be started for it.
-    struct Checking(Option<std::thread::JoinHandle<Result<PathBuf, String>>>);
+    /// host is a process of one run, so every run's start paid it before its launch. Its
+    /// network process's binary likewise, once its run is found to have a network
+    /// ([`networked`](Self::networked)): checked on the same thread after the VM's, and done
+    /// before its VM is launched, as `taken` waits for both, so that the network process's start
+    /// (`netproc::start`, before its VM's) finds it checked (helpers.rs `CHECKED`) and reads it
+    /// no more. Taken as its VM is launched; checked there where no thread could be started.
+    struct Checking {
+        thread: Option<std::thread::JoinHandle<Result<PathBuf, String>>>,
+        /// Tells its thread that its run has a network; untold as it is taken, none checked.
+        network: Option<std::sync::mpsc::Sender<()>>,
+        networked: bool,
+    }
 
     impl Checking {
         fn begin() -> Checking {
-            Checking(
-                std::thread::Builder::new()
-                    .name("api-run vm binary".into())
-                    .spawn(crate::helpers::vm)
-                    .ok(),
-            )
+            let (tell, told) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::Builder::new()
+                .name("api-run binaries".into())
+                .spawn(move || {
+                    let vm = crate::helpers::vm();
+                    // A network process's that cannot be checked is refused as its process
+                    // starts, which checks it again (`helpers::program`).
+                    if told.recv().is_ok() {
+                        let _ = crate::helpers::net();
+                    }
+                    vm
+                })
+                .ok();
+            Checking {
+                network: thread.as_ref().map(|_| tell),
+                thread,
+                networked: false,
+            }
         }
 
-        /// The binary checked, or why not.
-        fn taken(self) -> Result<PathBuf, String> {
-            match self.0 {
+        /// Its run has a network: its network process's binary is checked too.
+        fn networked(&mut self) {
+            self.networked = true;
+            if let Some(tell) = self.network.take() {
+                let _ = tell.send(());
+            }
+        }
+
+        /// The VM's binary checked, or why not; and whether its network process's was too,
+        /// done by now.
+        fn taken(self) -> (Result<PathBuf, String>, bool) {
+            let Checking {
+                thread,
+                network,
+                networked,
+            } = self;
+            drop(network);
+            let vm = match thread {
                 Some(checking) => checking
                     .join()
                     .unwrap_or_else(|_| Err("its VM's binary: its check ended unanswered".into())),
                 None => crate::helpers::vm(),
-            }
+            };
+            (vm, networked)
         }
     }
 
@@ -3249,8 +3287,15 @@ mod hosted {
         if let Some(shares) = &shares {
             super::step(format_args!("its share process {} started", shares.child.id()));
         }
-        let vm = checking.taken();
-        super::step(format_args!("its VM's binary checked"));
+        let (vm, networked) = checking.taken();
+        super::step(format_args!(
+            "its VM's binary checked{}",
+            if networked {
+                ", its network process's too"
+            } else {
+                ""
+            }
+        ));
         let started = vm.map_err(boot).and_then(|vm| {
             let mut host = Host {
                 home,
@@ -4419,9 +4464,9 @@ mod hosted {
         exemplar: &wire::Request,
         mut input: super::Input,
     ) -> Result<(), No> {
-        let checking = Checking::begin();
+        let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let mut shaped = shape(exemplar, &home)?;
+        let mut shaped = shape(exemplar, &home, &mut checking)?;
         let launched = match launch(&home, &shaped.launch(), checking, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
@@ -6637,11 +6682,22 @@ mod hosted {
         /// The VM binary checked beside a run's making is the one its launch would have checked
         /// itself: the same path, or the same refusal (this build's carries no VM process,
         /// `SHARDS_HELPERS=skip`, unless `SHARDS_VM_BINARY` names one); checked at once where
-        /// no thread was started for it.
+        /// no thread was started for it. Its network process's is checked once its run is said
+        /// to have a network, and its taking waits for that check, told or not, and never on it
+        /// where untold.
         #[test]
         fn a_vm_binary_checked_beside_its_runs_making_is_its_launchs_own() {
-            assert_eq!(Checking::begin().taken(), crate::helpers::vm());
-            assert_eq!(Checking(None).taken(), crate::helpers::vm());
+            // Untold of a network, its thread ends with the VM's check; told, after both.
+            assert_eq!(Checking::begin().taken(), (crate::helpers::vm(), false));
+            let mut told = Checking::begin();
+            told.networked();
+            assert_eq!(told.taken(), (crate::helpers::vm(), true));
+            let none = Checking {
+                thread: None,
+                network: None,
+                networked: false,
+            };
+            assert_eq!(none.taken(), (crate::helpers::vm(), false));
         }
 
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
