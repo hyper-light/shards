@@ -394,6 +394,14 @@ impl Watch {
         self.hold.stopped
     }
 
+    /// Whether a look of it that found `found`, its threads read `starved` meanwhile
+    /// ([`starved`](Self::starved)), vouches for its window as its own running or rest, its
+    /// host not the reason (D215's rate, [`Span::work`]): it ran or rested, and was neither
+    /// starved of a CPU, stopped, nor ending. One rule for every judge that rates a party.
+    pub fn vouched_by(&self, found: Found, starved: bool) -> bool {
+        matches!(found, Found::Progressed | Found::Still) && !starved && !self.stopped() && !self.ended()
+    }
+
     /// The CPU time its process's threads have had by now, the look before kept; none where
     /// it has gone or could not be read.
     fn cpu_now(&mut self) -> Option<Duration> {
@@ -401,11 +409,27 @@ impl Watch {
     }
 }
 
+/// What a wait on a VM process holds it to (D215), which every wait names, as what it waits
+/// for says: there is no default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    /// A reply of bounded work, a protocol's (a VM's READY, its next request for access, a
+    /// builtin the daemon asked, a held visit, the network process's start): refused where it
+    /// is still a whole W*, and where it ticks on past W* below R* having done more than C*
+    /// (b24's shape: a guest asleep on an event that never comes).
+    Rate,
+    /// An end that comes when its work does (a user's command, a build, a guest's first
+    /// listener after its own start): refused only where it is still a whole W*. A guest
+    /// asleep by design (`sleep 3600`) ticks on, its caller's to end.
+    Stillness,
+}
+
 /// A wait that follows a VM process, judged by the record of its kind of answer ([`Judge`])
-/// on what each look at the process finds ([`Watch`]).
+/// on what each look at the process finds ([`Watch`]), to its [`Bound`].
 #[derive(Debug)]
 pub struct Follow<'a> {
     judge: Judge<'a>,
+    bound: Bound,
     watch: Watch,
     /// Its VM process, for a refusal to name.
     pid: u32,
@@ -415,9 +439,13 @@ pub struct Follow<'a> {
 }
 
 impl<'a> Follow<'a> {
-    /// A wait beginning now that follows `followed`, learning into and judged by `record`:
-    /// none where its process has gone already, whose end is the wait's.
-    pub fn begin(record: &'a Record, followed: Followed) -> Result<Option<Follow<'a>>, Unfollowed> {
+    /// A wait beginning now that follows `followed`, learning into and judged by `record` to
+    /// `bound`: none where its process has gone already, whose end is the wait's.
+    pub fn begin(
+        record: &'a Record,
+        followed: Followed,
+        bound: Bound,
+    ) -> Result<Option<Follow<'a>>, Unfollowed> {
         let mut judge = Judge::begin(record);
         let (pid, started) = (followed.pid(), followed.started());
         let began = Instant::now();
@@ -443,6 +471,7 @@ impl<'a> Follow<'a> {
             .map_err(Unfollowed::Stalled)?;
         Ok(Some(Follow {
             judge,
+            bound,
             from: watch.cpu(),
             watch,
             pid,
@@ -473,20 +502,30 @@ impl<'a> Follow<'a> {
             expected_started,
             failure,
         })?;
+        // Its work since it began, for its rate, where its bound is one and this look vouches
+        // for its window; its threads read only then.
+        let work = (self.bound == Bound::Rate && {
+            let starved = self.watch.starved();
+            self.watch.vouched_by(found, starved)
+        })
+        .then(|| self.watch.cpu().saturating_sub(self.from));
         let span = Span {
             began,
             ended: Instant::now(),
             resolution: self.watch.resolution(),
             own: Duration::ZERO,
-            work: None,
+            work,
         };
         self.judge.found_over(found, span).map_err(Unfollowed::Stalled)
     }
 
-    /// Its party answered: its kind learns from the answer, its VM process read now.
+    /// Its party answered: its kind learns from the answer, its VM process read now; its
+    /// slowest alone where it could not be read (D215: only work read through an answer
+    /// teaches R* and C*).
     pub fn answered(&mut self) {
-        if let Some(cpu) = self.watch.cpu_now() {
-            self.judge.answered(cpu.saturating_sub(self.from));
+        match self.watch.cpu_now() {
+            Some(cpu) => self.judge.answered(cpu.saturating_sub(self.from)),
+            None => self.judge.answered_unrated(),
         }
     }
 
@@ -500,8 +539,9 @@ impl<'a> Follow<'a> {
         // On Windows the tree's handles read its processes after they have ended.
         #[cfg(windows)]
         let cpu = self.watch.cpu_now().or(cpu);
-        if let Some(cpu) = cpu {
-            self.judge.answered(cpu.saturating_sub(self.from));
+        match cpu {
+            Some(cpu) => self.judge.answered(cpu.saturating_sub(self.from)),
+            None => self.judge.answered_unrated(),
         }
     }
 }
@@ -1676,7 +1716,9 @@ mod tests {
             .spawn()
             .unwrap();
         let followed = Followed::of_pid(sleeper.id()).unwrap().unwrap();
-        let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
+        let mut follow = Follow::begin(&record, followed, Bound::Stillness)
+            .unwrap()
+            .unwrap();
         let refused = loop {
             until_due(&follow);
             if let Err(refused) = follow.look() {
@@ -1698,13 +1740,113 @@ mod tests {
                 }
             });
             let followed = Followed::of_pid(std::process::id()).unwrap().unwrap();
-            let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
+            let mut follow = Follow::begin(&record, followed, Bound::Stillness)
+                .unwrap()
+                .unwrap();
             for _ in 0..3 {
                 until_due(&follow);
                 assert_eq!(follow.look(), Ok(()));
             }
             busy.store(false, std::sync::atomic::Ordering::Relaxed);
         });
+    }
+
+    /// D215's rate bound on real processes, a kind taught W* 200 ms, R* 1/2 and C* 100 ms
+    /// (each burst of work 10 ms or more, so that a macOS CPU counter moving in ticks of
+    /// 10 ms shows it in every window, and stillness never decides): a process asleep for
+    /// good but ticking, 10 ms of work in each 100 ms, is refused for its rate under
+    /// `Bound::Rate` and goes on under `Bound::Stillness` (a user's command asleep by design);
+    /// a busy one goes on; and one doing its kind's work over more time than any answer took
+    /// (a peer it waits on, or a host that slows it: 60 ms of work over some 600 ms) goes on
+    /// to its end, its work within C*.
+    #[test]
+    fn a_rate_bound_refuses_only_a_ticking_sleeper() {
+        let ms = Duration::from_millis;
+        let record = Record::new();
+        record.teach(ms(200), ms(100));
+        let started = |mode: &str| {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", SPINNING, "--nocapture"])
+                .env(SPIN, mode)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            // Its harness's own lines first ("running 1 test"), then its word. Its stdout is
+            // kept open, read on, so that what it says after is no write to a closed pipe.
+            let mut lines = std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap()));
+            assert!(
+                lines
+                    .by_ref()
+                    .any(|line| line.is_ok_and(|line| line.starts_with("started"))),
+                "{mode} said nothing of its start"
+            );
+            std::thread::spawn(move || lines.for_each(drop));
+            child
+        };
+        let followed = |child: &std::process::Child| {
+            #[cfg(unix)]
+            return Followed::of_pid(child.id()).unwrap().unwrap();
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+                let created = crate::taken::created(child.as_raw_handle()).unwrap();
+                Followed::of(
+                    child.as_handle().try_clone_to_owned().unwrap(),
+                    child.id(),
+                    created,
+                )
+                .unwrap()
+            }
+        };
+        // Looked at as each look is due, until refused, its end, or `long` past its start.
+        let judged = |child: &mut std::process::Child, bound: Bound, long: Duration| {
+            let mut follow = Follow::begin(&record, followed(child), bound).unwrap().unwrap();
+            let start = Instant::now();
+            loop {
+                let due = follow.due().unwrap();
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+                if child.try_wait().unwrap().is_some() || start.elapsed() > long {
+                    return None;
+                }
+                if let Err(refused) = follow.look() {
+                    return Some((refused, start.elapsed()));
+                }
+            }
+        };
+        let end = |mut child: std::process::Child| {
+            drop(child.stdin.take());
+            let _ = child.kill();
+            child.wait().unwrap();
+        };
+        let mut ticker = started("tick");
+        let refused = judged(&mut ticker, Bound::Rate, Duration::from_secs(20));
+        end(ticker);
+        let Some((Unfollowed::Stalled(stall), at)) = refused else {
+            panic!("a ticking sleeper was not refused under its rate: {refused:?}");
+        };
+        let rate = stall
+            .rate()
+            .unwrap_or_else(|| panic!("refused for stillness, {at:?} in: {stall:?}"));
+        assert!(rate.cpu > ms(100), "{stall:?}");
+        let mut ticker = started("tick");
+        let kept = judged(&mut ticker, Bound::Stillness, Duration::from_secs(3));
+        end(ticker);
+        assert!(
+            kept.is_none(),
+            "a ticking sleeper refused under stillness: {kept:?}"
+        );
+        let mut spinner = this_binary("spin");
+        let kept = judged(&mut spinner, Bound::Rate, Duration::from_secs(3));
+        end(spinner);
+        assert!(kept.is_none(), "a busy process refused: {kept:?}");
+        let mut slow = started("pulse");
+        let kept = judged(&mut slow, Bound::Rate, Duration::from_secs(20));
+        end(slow);
+        assert!(
+            kept.is_none(),
+            "one doing its kind's work over more time refused: {kept:?}"
+        );
     }
 
     /// What a look finds of a VM process that ran no CPU since the look before is its host's
@@ -1796,7 +1938,9 @@ mod tests {
         let slowest = Duration::from_millis(20);
         let record = Record::new();
         record.teach(slowest, Duration::from_millis(1));
-        let mut follow = Follow::begin(&record, followed).unwrap().unwrap();
+        let mut follow = Follow::begin(&record, followed, Bound::Stillness)
+            .unwrap()
+            .unwrap();
         let refused = loop {
             let due = follow.due().unwrap();
             while Instant::now() < due {
@@ -2104,6 +2248,29 @@ mod tests {
                 loop {
                     std::hint::spin_loop();
                 }
+            }
+            // D215's rate bound's children, each saying it has started first: `tick`, 10 ms
+            // of work in each 100 ms until its stdin ends; `pulse`, 10 ms of work in each
+            // 100 ms six times, then its end.
+            Ok(mode @ ("tick" | "pulse")) => {
+                use std::io::Write as _;
+                if mode == "tick" {
+                    std::thread::spawn(|| {
+                        let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8; 1]);
+                        std::process::exit(0);
+                    });
+                }
+                let _ = writeln!(std::io::stdout(), "started");
+                let _ = std::io::stdout().flush();
+                let rounds = if mode == "tick" { u32::MAX } else { 6 };
+                for _ in 0..rounds {
+                    let until = Instant::now() + Duration::from_millis(10);
+                    while Instant::now() < until {
+                        std::hint::spin_loop();
+                    }
+                    std::thread::sleep(Duration::from_millis(90));
+                }
+                return;
             }
             Ok("parent") => {
                 let mut spinner = this_binary("spin");

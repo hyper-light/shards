@@ -3812,10 +3812,9 @@ impl Party {
             // (`shards_api::Watch::starved`), read at each look so its window is theirs.
             // Read under either CPU, as the rate's window needs it (D215).
             let starved = watch.starved();
-            looked.vouched &= !starved
-                && !watch.ended()
-                && !watch.stopped()
-                && matches!(found, Ok(Found::Progressed | Found::Still));
+            looked.vouched &= found
+                .as_ref()
+                .is_ok_and(|&found| watch.vouched_by(found, starved));
             match (found, self.cpu) {
                 (Ok(Found::Progressed | Found::Still), Cpu::Liveness)
                     if starved && looked.found == Found::Still =>

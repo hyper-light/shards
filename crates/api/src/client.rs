@@ -1185,7 +1185,9 @@ impl ShardsGuest {
             })?;
             Followed::of(root, identity.pid, identity.started).map_err(process)?
         };
-        Follow::begin(self.records.of(awaited), followed).map_err(Refusal::from)
+        // A guest's boot to its first listener, a connect and its end are its own work's,
+        // the user's: judged by stillness alone (D215's `Bound`).
+        Follow::begin(self.records.of(awaited), followed, crate::Bound::Stillness).map_err(Refusal::from)
     }
 }
 

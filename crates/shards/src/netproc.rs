@@ -135,7 +135,9 @@ impl NetLink {
     /// the wait's then.
     pub fn follow<'r>(&self, record: &'r shards_api::Record) -> Option<shards_api::Follow<'r>> {
         let followed = shards_api::Followed::of_pid(self.pid).ok().flatten()?;
-        shards_api::Follow::begin(record, followed).ok().flatten()
+        shards_api::Follow::begin(record, followed, shards_api::Bound::Rate)
+            .ok()
+            .flatten()
     }
 }
 

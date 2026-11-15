@@ -304,10 +304,11 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 }
             }
             let follow = follow.get_or_insert_with(|| {
-                shards_api::Followed::of_pid(pid)
-                    .ok()
-                    .flatten()
-                    .and_then(|f| shards_api::Follow::begin(&self.answers.held, f).ok().flatten())
+                shards_api::Followed::of_pid(pid).ok().flatten().and_then(|f| {
+                    shards_api::Follow::begin(&self.answers.held, f, shards_api::Bound::Rate)
+                        .ok()
+                        .flatten()
+                })
             });
             let wait = follow
                 .as_ref()

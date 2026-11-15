@@ -9675,7 +9675,11 @@ fn grant(
         let mut follow = shards_api::Followed::of_pid(pid)
             .ok()
             .flatten()
-            .and_then(|followed| shards_api::Follow::begin(grants, followed).ok().flatten());
+            .and_then(|followed| {
+                shards_api::Follow::begin(grants, followed, shards_api::Bound::Rate)
+                    .ok()
+                    .flatten()
+            });
         loop {
             let wait = follow
                 .as_ref()
@@ -9858,7 +9862,11 @@ fn ready(socket: &UnixStream, pid: u32, record: &shards_api::Record) -> Result<(
     let mut follow = (!readable_within(socket, Some(Duration::ZERO)))
         .then(|| shards_api::Followed::of_pid(pid).ok().flatten())
         .flatten()
-        .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+        .and_then(|followed| {
+            shards_api::Follow::begin(record, followed, shards_api::Bound::Rate)
+                .ok()
+                .flatten()
+        });
     // Whether the log has said it outlasted the slowest start seen: once, as it does.
     let mut said = false;
     loop {

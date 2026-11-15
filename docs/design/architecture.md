@@ -28025,11 +28025,26 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       (`Wait::read_through`, else `Record::teach_unrated`: W* alone). A kept record is
       `served W* [rated R*cpu R*wall C*]`. One without a whole rating, the older three
       numbers among them, is read as none: its kind cold until its next answer rewrites it.
-    - Where it applies: a caller that passes `Span::work`. Today that is the tests' `Wait`.
-      shards-api's `Follow`, the daemon's health waits and `parents.rs` pass none and judge
-      by stillness alone, as before (their refusals' texts now say a rate or "no answer of
-      its kind had its CPU read"). No literal: W*, R*, C* and every window are learned on the
-      host, a kind with no rated answer has no floor, and the rule only ever refuses past W*.
+    - *Where it applies* (ROOT's ruling, 2026-11-14). A caller passes `Span::work`, read
+      through one rule (`Watch::vouched_by`: the look ran or rested, and its process was
+      neither starved, stopped nor ending). The tests' `Wait` passes it everywhere. A wait on
+      a VM process names its bound, with no default (`shards_api::Bound`, `Follow::begin`):
+      - `Rate`, replies of bounded work: the daemon's wait for a VM's READY (daemon.rs
+        `ready`), for a VM's next request for access (daemon.rs `grant`), on its own asks of
+        a microVM (daemon/health.rs `following`: RECLAIM, ROOM, METRICS, each builtin), on a
+        held visit (daemon/visit.rs), and on the network process's start (netproc.rs
+        `NetLink::follow`). A VM asleep on an event that never comes is refused there, once it
+        passes C* below R*.
+      - `Stillness`, ends that come when their work does: shards-api's waits on a guest
+        (crates/api client.rs, `Awaited::Boot`, `Connect` and `End`, which hold the user's
+        own start to its first listener and the user's command) and a builder's waits
+        (build/builder.rs: a build waits on its sources as long as they take). A user's
+        `sleep 3600` is a guest asleep by design, its caller's to end.
+      - parents.rs' wait for a leaf to empty and the daemon's CHILDREN judge pass no work
+        and judge by stillness alone.
+      An answer whose VM process could not be read at it teaches W* alone
+      (`Follow::answered`, `Follow::ended`). No literal: W*, R*, C* and every window are
+      learned where they run, and a kind with no rated answer has no floor.
     - *Held by* crates/api judge.rs:
       - `a_wait_slower_than_any_answer_is_refused_though_it_progresses`: b24's shape, refused
         at the first look its work passes C* and not the look before;
@@ -28038,6 +28053,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       - `a_window_its_caller_cannot_vouch_for_is_out_of_the_rate`;
       - `an_unrated_answer_teaches_its_slowest_alone`;
       - `a_record_merged_in_keeps_each_bound_past_the_others`;
+      - crates/api progress.rs `a_rate_bound_refuses_only_a_ticking_sleeper`, real processes
+        against a kind of W* 200 ms, R* 1/2 and C* 100 ms. A ticker (10 ms of work in each
+        100 ms) is refused under `Rate` and goes on under `Stillness`. A spinner goes on. One
+        doing its kind's work over more time (60 ms over some 600 ms: a peer waited on, or a
+        host that slows it) goes on to its end. 5 of 5 green on adas-mac-studio-3.local (about
+        9.7 s each, over 1d9dd1f07); red with `Rate` taken for `Stillness`, "a ticking sleeper
+        was not refused under its rate";
       - and harness.rs `a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on`. Its
         kind starts from a kept unrated record of R* 0 ns, is taught by three stand-ins busy
         50 ms, and then refuses one that works 1 ms in each 11 ms. A busy 200 ms one past W* is

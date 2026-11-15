@@ -925,7 +925,7 @@ impl std::error::Error for Stalled {}
 /// already, whose end is the exec's; why not, where it cannot be read.
 fn following(vm: u32, record: &Record) -> Result<Option<Follow<'_>>, Cut> {
     match Followed::of_pid(vm).map_err(|failure| Cut::Unread { pid: vm, failure })? {
-        Some(followed) => Follow::begin(record, followed).map_err(Cut::from),
+        Some(followed) => Follow::begin(record, followed, shards_api::Bound::Rate).map_err(Cut::from),
         None => Ok(None),
     }
 }
