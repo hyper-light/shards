@@ -198,10 +198,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             log_files: kept.files,
             first: 0,
             // The most memory its guest may plug (D148): a run's, for a visit's built-ins.
-            plug: prepared
-                .memory_max
-                .saturating_sub(prepared.size.1)
-                .saturating_mul(1 << 20),
+            plug: prepared.plug_bytes(),
             // No log, so none queued.
             queue: None,
             // Its own built-ins' reads: no run's I/O to limit.

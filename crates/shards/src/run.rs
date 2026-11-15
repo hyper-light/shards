@@ -420,6 +420,19 @@ pub struct Prepared {
     pub layer: u64,
 }
 
+impl Prepared {
+    /// The most memory its guest may plug past what it boots with, in bytes (D148): its
+    /// [`memory_max`](Self::memory_max) less its boot's, none where it boots with all of it.
+    /// Every request that hands a microVM its run carries it (`RunHead::plug`), the daemon's,
+    /// a visit's and an orchestrator's alike: its VM sets it as its guest's most before the
+    /// guest hears of the run, and a VM told none has what it booted with.
+    pub fn plug_bytes(&self) -> u64 {
+        self.memory_max
+            .saturating_sub(self.size.1)
+            .saturating_mul(1 << 20)
+    }
+}
+
 /// What a run's writable layer holds unless it asks for another size (D190,
 /// `--storage-opt size`): Docker's device-mapper driver's default for a container's base
 /// device, a block device's writable layer as a microVM's is (dockerd's `dm.basesize`,
@@ -2119,7 +2132,10 @@ mod tests {
 
     /// A boot's words are its config's, in the order the daemon gave them before they were
     /// shared (D253): every one a run's microVM may have, then its join disk and share and its
-    /// link; a config of none of them has those alone.
+    /// link; a config of none of them has those alone. Every flag given a value is one `run`
+    /// reads a value after (`spec::RUN_VALUED`, which vm_run's `valued_flags_need_their_values`
+    /// holds to `run`): D270's components' window, unlisted, refused every orchestrator's
+    /// image boot, "--component-window needs a value".
     #[test]
     fn a_boots_words_are_its_configs() {
         let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
@@ -2187,6 +2203,17 @@ mod tests {
                 "3",
             ]
         );
+        for pair in words(&args).windows(2) {
+            if let [flag, value] = pair
+                && flag.starts_with("--")
+                && !value.starts_with("--")
+            {
+                assert!(
+                    crate::spec::RUN_VALUED.contains(flag),
+                    "{flag} {value}: not a flag run reads a value after"
+                );
+            }
+        }
         let plain = Config::new("/k/vmlinux".into(), None);
         let memory = shards_vmm::vm::MEMORY_MIB.to_string();
         assert_eq!(

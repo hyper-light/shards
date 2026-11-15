@@ -58,7 +58,7 @@ const IMDS_TOKEN_SECONDS: &str = "300";
 /// What IMDS is given: to connect, for an answer's head, and for each operation (imds
 /// defaultDialerTimeout, defaultResponseHeaderTimeout, defaultOperationTimeout).
 const IMDS_PATIENCE: Patience = Patience {
-    connect: Duration::from_millis(250),
+    connect: Some(Duration::from_millis(250)),
     head: Some(Duration::from_millis(500)),
     stall: Some(Duration::from_secs(5)),
 };

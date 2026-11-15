@@ -650,8 +650,9 @@ impl Registry {
         };
         Ok(Registry {
             auth,
-            // Its waits are what its paths show (D222).
-            http: http.learning(),
+            // Its downloads resume where a cut left them (fetch.rs), its other askings are
+            // ridden as troubles (D222): what a cut ends is asked again.
+            http: http.asking_again(),
             base,
             plain,
             scopes,
@@ -838,17 +839,15 @@ impl Registry {
                     plain.fallen.store(true, Ordering::Release);
                     continue;
                 }
-                // A timeout, a reset or a cut answer: ridden out while it lasts. A file's body
-                // is resumed by its upload instead, from what the registry has. An overdue
-                // answer, one past the slowest its path has shown, is asked again at once,
-                // that asking waited for as its connection lives (crate::patience). While the
+                // A timeout, a reset, a cut answer or a name not resolved: ridden out while it
+                // lasts. A file's body is resumed by its upload instead, from what the
+                // registry has. An overdue answer, one past the slowest its path has shown, is
+                // asked again at once by the client itself (http.rs `send_now`). While the
                 // trouble follows liveness, a re-ask its far end ends unanswered is its end.
                 Err(e) if trouble.gone(&self.http, url, &e) => return Err(e.gone()),
                 Err(e) if e.kind() == ErrorKind::Transient && file.is_none() => {
                     let wait = trouble.wait(&self.http, url, asked, None);
-                    if !e.is_overdue() {
-                        self.http.pause(wait)?;
-                    }
+                    self.http.pause(wait)?;
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -1780,8 +1779,18 @@ fn allowance_window(response: &Response, said: &[u8]) -> Option<Duration> {
 /// quick failures (a gateway's cut connections) is ridden out as one of a few slow ones (a
 /// timeout's), for as long.
 #[derive(Debug, Default)]
-pub(crate) struct Trouble {
+pub struct Trouble {
     phase: Phase,
+}
+
+/// What a trouble makes of an asking that failed, for a caller that asks its server again
+/// itself (a build's fetch, D276): asked again after a wait; ended, its far end gone; or no
+/// trouble's, the failure the asking's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Again(Duration),
+    Gone,
+    Fails,
 }
 
 /// Where a trouble is.
@@ -1802,7 +1811,7 @@ impl Trouble {
     /// The trouble is over, the asking of `url` answered: what fails next begins another.
     /// One under way passed, and teaches its path how long it lasted (D222), one that ran
     /// out past the longest the path had passed most of all.
-    pub(crate) fn over(&mut self, http: &Client, url: &Url) {
+    pub fn over(&mut self, http: &Client, url: &Url) {
         match std::mem::take(&mut self.phase) {
             Phase::Calm => {}
             Phase::Riding(began) | Phase::RanOut(began) => http.passed(url, began.elapsed()),
@@ -1810,7 +1819,7 @@ impl Trouble {
     }
 
     /// How long it has lasted.
-    pub(crate) fn lasted(&self) -> Duration {
+    pub fn lasted(&self) -> Duration {
         match self.phase {
             Phase::Calm => Duration::ZERO,
             Phase::Riding(began) | Phase::RanOut(began) => began.elapsed(),
@@ -1828,7 +1837,38 @@ impl Trouble {
             Phase::Riding(_) => http.budget(url).is_none(),
             Phase::RanOut(_) => true,
         };
-        following && (failed.is_refused() || failed.is_cut())
+        following && (failed.is_refused() || failed.is_cut() || failed.is_unresolved())
+    }
+
+    /// After `failed` ended an asking of `url`'s begun at `attempt`, by a caller that asks
+    /// again itself (D276): what the network drops (a name its resolver did not resolve, a
+    /// connection refused, reset or cut, a wait its own time ended) is asked again after
+    /// [`wait`](Self::wait)'s share of the trouble so far, until a re-ask while it follows
+    /// liveness says its far end is gone ([`gone`](Self::gone)); any other failure is the
+    /// asking's own.
+    pub fn failed(&mut self, http: &Client, url: &Url, attempt: Instant, failed: &Error) -> Verdict {
+        if self.gone(http, url, failed) {
+            return Verdict::Gone;
+        }
+        let drop = failed.kind() == ErrorKind::Transient || failed.is_refused() || failed.is_unresolved();
+        if !drop {
+            return Verdict::Fails;
+        }
+        Verdict::Again(self.wait(http, url, attempt, None))
+    }
+
+    /// After an answer that says it passes (a 408, 502, 503 or 504: RFC 9110 §15.5.9,
+    /// §15.6.3 to §15.6.5), or an answer's body cut short past its first bytes (its far end
+    /// answered, so no word of its end), to an asking of `url`'s begun at `attempt`: how long
+    /// to wait before asking again, at least `after`, what its `Retry-After` named.
+    pub fn passing(
+        &mut self,
+        http: &Client,
+        url: &Url,
+        attempt: Instant,
+        after: Option<Duration>,
+    ) -> Duration {
+        self.wait(http, url, attempt, after)
     }
 
     /// After an attempt of `url`'s begun at `attempt` failed: how long to wait before
@@ -1872,7 +1912,7 @@ impl Trouble {
 
 /// The wait a refusal names in `Retry-After`, in seconds (RFC 9110 §10.2.3); an HTTP date
 /// is not read, and names none.
-fn retry_after(response: &Response) -> Option<Duration> {
+pub fn retry_after(response: &Response) -> Option<Duration> {
     response
         .header("retry-after")
         .and_then(|v| v.trim().parse::<u64>().ok())
@@ -1973,6 +2013,41 @@ mod tests {
     /// A loopback registry on a port that names no scheme is asked in HTTPS first, then
     /// in plain HTTP once it answers the handshake in plain HTTP or never finishes it, as
     /// containerd's fallback finds (`isTLSError`); then in plain HTTP alone.
+    /// A caller that asks again itself (a build's fetch, D276) rides what the network drops:
+    /// a name not resolved, a connection refused, a reset; past its first failure, on a path
+    /// that has passed no trouble (its cold start), a re-ask its far end refuses, or whose
+    /// name does not resolve, says the far end is gone; a reset cut short no more; anything
+    /// else is the asking's own failure.
+    #[test]
+    fn a_callers_trouble_rides_what_the_network_drops_until_its_far_end_is_gone() {
+        let http = crate::testing::client();
+        let url = Url::parse("http://nowhere.test:5000/").unwrap();
+        let unresolved =
+            Error::of(ErrorKind::Transient, "nowhere.test: resolving: no such host").unresolved();
+        let refused = Error::of(ErrorKind::Gone, "connecting: refused").refused().gone();
+        let reset = Error::from(io::Error::from(io::ErrorKind::ConnectionReset));
+        for dropped in [&unresolved, &refused] {
+            let mut trouble = Trouble::default();
+            let first = trouble.failed(&http, &url, Instant::now(), dropped);
+            assert!(matches!(first, Verdict::Again(_)), "{dropped}: {first:?}");
+            assert_eq!(
+                trouble.failed(&http, &url, Instant::now(), dropped),
+                Verdict::Gone,
+                "{dropped}"
+            );
+        }
+        let mut trouble = Trouble::default();
+        assert!(matches!(
+            trouble.failed(&http, &url, Instant::now(), &reset),
+            Verdict::Again(_)
+        ));
+        let other = Error::new("a malformed response head");
+        assert_eq!(
+            trouble.failed(&http, &url, Instant::now(), &other),
+            Verdict::Fails
+        );
+    }
+
     #[test]
     fn a_loopback_registry_is_asked_in_https_then_plain_http() {
         use std::io::Write as _;

@@ -478,7 +478,7 @@ pub mod kind {
     /// The network process asks it as the injector meets a sign-in's token response or its
     /// CLI's refresh, of a run host that relays it to its orchestrator.
     pub const NET_SIGN_IN: u8 = 105;
-    /// Run host → network process, as its run goes (D272): the run's grants past the
+    /// Run host → network process, as its run goes (D273): the run's grants past the
     /// microVM now, a policy as `NET_POLICY` carries one (shards_net::encode_policy), each
     /// within its `NET_POLICY`'s, the most the run could ever be granted; taken in place of
     /// the grants before, every flow of its guest's they no longer reach ended. Answered with
