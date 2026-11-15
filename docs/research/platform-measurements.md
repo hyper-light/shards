@@ -25305,4 +25305,21 @@ output read` (`IMAGE-START-PHASES KIND US +GAP WHO TEXT`). A warm host's lines f
 call are negative. Wall clocks line processes up to the host clock's resolution and its slew
 over one start; no number here is measured yet.
 
+Steps timed since, for the stretches ROOT's first phase pass (8d732fb2d, HVF, a loaded M4
+Max) left untimed (D253's amendment, the start path's cuts):
+- Planning (stretches 1 and 4): `its security made: its guest's kernel read, its filters
+  compiled` after `its microVM shaped`, which a warm host says before its run asks; then
+  `its members staged, its ports bound`, `its setup's security composed` and `its run
+  planned`, which `plan` says on every kind, a warm run's too.
+- Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
+  from the run host's first step, api_run.rs `Checking`), `its network decided`, `its
+  writable layer cloned|made|none`, then `launching its VM`.
+- Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
+  then `its VM process … is ready`.
+- shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
+  diagnostics, its own wall clock's (session.rs `Shared::step`), said `caller` by the
+  timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
+  answer K read` (STARTED 16, WARMED 32), `its start taken`, `its members' outputs pumped`,
+  `its diagnostics' file named` and `kept`, beside the harness's own `the boot answered`.
+
 Numbers: owed (ROOT runs it), on HVF and on KVM.
