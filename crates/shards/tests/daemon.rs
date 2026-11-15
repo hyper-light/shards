@@ -2922,8 +2922,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     // Whether the pool comes to keep as `want` says, for as long as the daemon or its
     // microVMs go on ([`Patience`]), as a pool a slow host refills does; each look asserts
     // `always` of it.
-    let comes = |want: &dyn Fn(usize) -> bool, always: &dyn Fn(usize) -> bool| {
-        let mut patience = Patience::of(&home);
+    let comes = |mut patience: Patience, want: &dyn Fn(usize) -> bool, always: &dyn Fn(usize) -> bool| {
         loop {
             let n = warm();
             assert!(
@@ -2942,9 +2941,9 @@ fn pools_keep_what_their_runs_need_while_they_come() {
             std::thread::sleep(Duration::from_millis(20));
         }
     };
-    let settled = |what: &str, want: &dyn Fn(usize) -> bool| {
+    let settled = |patience: Patience, what: &str, want: &dyn Fn(usize) -> bool| {
         assert!(
-            comes(want, &|_| true),
+            comes(patience, want, &|_| true),
             "{what}: {} warm: {:#?}\n{}",
             warm(),
             commands_with(&templates.to_string_lossy()),
@@ -2970,7 +2969,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     let mut kept_one = 0;
     while kept_one < 4 {
         run();
-        settled("a refill", &|n| n >= 1);
+        settled(Patience::of(&home), "a refill", &|n| n >= 1);
         if warm() == 1 {
             kept_one += 1;
             std::thread::sleep(apart);
@@ -2983,7 +2982,7 @@ fn pools_keep_what_their_runs_need_while_they_come() {
         );
         kept_one = 0;
         // Past the keep-alive: waited for as the pool empties.
-        settled("past the keep-alive", &|n| n == 0);
+        settled(Patience::of(&home), "past the keep-alive", &|n| n == 0);
     }
     // Three at once: the pool keeps more for the next burst, never past its most. Each
     // run held under way until all three are served, for its VM to be learned: what the
@@ -3006,21 +3005,25 @@ fn pools_keep_what_their_runs_need_while_they_come() {
     for held in burst {
         assert_eq!(held.end(&home), Some(0), "a run of the burst");
     }
-    settled(&format!("a burst of three, served in {took:?}"), &|n| n >= 2);
+    settled(
+        Patience::of(&home),
+        &format!("a burst of three, served in {took:?}"),
+        &|n| n >= 2,
+    );
     // Never past its most: what the pool keeps it keeps until its keep-alive, so a pool past
     // its most stays so. Within it at every look until its keep-alive empties it, the later
     // event that ends what it keeps; unclaimed past its keep-alive, nothing, until the next
     // run.
-    settled("the pool within its most", &|n| n <= 3);
+    settled(Patience::of(&home), "the pool within its most", &|n| n <= 3);
     assert!(
-        comes(&|n| n == 0, &|n| n <= 3),
+        comes(Patience::of(&home), &|n| n == 0, &|n| n <= 3),
         "past the keep-alive: {} warm: {:#?}\n{}",
         warm(),
         commands_with(&templates.to_string_lossy()),
         std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
     );
     run();
-    settled("after the keep-alive", &|n| n >= 1);
+    settled(Patience::of(&home), "after the keep-alive", &|n| n >= 1);
     let stopped = run_shards_env(&["daemon"], &["stop"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }

@@ -3085,8 +3085,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         assert!(set.status.success(), "{}", String::from_utf8_lossy(&set.stderr));
     };
     // The daemon's first line past `at` in its log with `words` in it.
-    let first = |at: usize, words: &[&str]| -> String {
-        let mut patience = Patience::of(&home);
+    let first = |mut patience: Patience, at: usize, words: &[&str]| -> String {
         loop {
             let after = said().get(at..).unwrap_or_default().to_string();
             if let Some(line) = after.lines().find(|l| words.iter().any(|w| l.contains(w))) {
@@ -3175,7 +3174,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         patience.done();
         let counting = said().len();
         set(&(current() + (1 << 30)).to_string());
-        let counted = first(counting, &["held within its budget", "budget is short by"]);
+        let counted = first(
+            Patience::of(&home),
+            counting,
+            &["held within its budget", "budget is short by"],
+        );
         let held = mib_after(&counted, "MiB, holds ");
         // A budget set anew is said, room or not: its host's give-back between a budget's
         // word and the next left its microVM within the next with nothing to give back,
@@ -3183,7 +3186,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         let wider = ((current() >> 20) + 1536) << 20;
         let anew = said().len();
         set(&wider.to_string());
-        let word = first(anew, &["held within its budget", "budget is short by"]);
+        let word = first(
+            Patience::of(&home),
+            anew,
+            &["held within its budget", "budget is short by"],
+        );
         assert!(word.contains(&format!("budget, {} MiB", wider >> 20)), "{word}");
         // What its guest's kernel counts of the read as its budget comes, said if nothing is
         // given back: a give-back takes inactive file pages alone, and CI's x86_64 Linux at
@@ -3201,7 +3208,11 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         ]);
         let before = said().len();
         set(&(held.saturating_sub(256) << 20).to_string());
-        let word = first(before, &["held within its budget", "budget is short by"]);
+        let word = first(
+            Patience::of(&home),
+            before,
+            &["held within its budget", "budget is short by"],
+        );
         if word.contains("it gave back") && mib_after(&word, "warm VMs ended and ") > 0 {
             break word;
         }
@@ -3224,7 +3235,7 @@ fn a_microvm_held_to_a_budget_gives_back_what_it_holds_cold() {
         );
         let unset = said().len();
         set("infinity");
-        first(unset, &["held to no budget"]);
+        first(Patience::of(&home), unset, &["held to no budget"]);
     };
     // Short of its budget still past all it held cold, its host sleeps each page its guest
     // touches afresh (memory.high, no swap): where its host's own pressure had it give
@@ -3682,8 +3693,7 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
             .and_then(|t| t.trim().parse().ok())
             .unwrap_or(0)
     };
-    let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home);
+    let until = |mut patience: Patience, what: &str, check: &dyn Fn() -> bool| {
         while !check() {
             assert!(patience.holds(), "{what}:\n{}", said());
             std::thread::sleep(Duration::from_millis(50));
@@ -3695,20 +3705,26 @@ fn a_microvm_under_a_group_is_held_to_its_budget() {
     let read = shards(&read);
     assert_eq!(read.status, Some(0), "{read}");
     // Its guest holds what it read: past 512 MiB in its VM process's footprint.
-    until("its group's memory.current never held what it read", &|| {
-        current() > 512 << 20
-    });
+    until(
+        Patience::of(&home),
+        "its group's memory.current never held what it read",
+        &|| current() > 512 << 20,
+    );
     let holding = current();
     let high = holding - (256 << 20);
     std::fs::write(group.join("memory.high"), format!("{high}\n")).unwrap();
-    until("its group was not said short of its budget", &|| {
-        said().contains("group agents: its microVMs hold") && said().contains("past its budget")
-    });
+    until(
+        Patience::of(&home),
+        "its group was not said short of its budget",
+        &|| said().contains("group agents: its microVMs hold") && said().contains("past its budget"),
+    );
     // Its guest's own kernel takes back as much of its files as it is short as it is told its
     // room, before its give-back counts what it reclaims, which may then be nothing (D188).
-    until("its group was not within its budget again", &|| {
-        said().contains("within its budget of") && current() <= high
-    });
+    until(
+        Patience::of(&home),
+        "its group was not within its budget again",
+        &|| said().contains("within its budget of") && current() <= high,
+    );
     if cfg!(target_os = "macos") {
         // Past its memory.max, which a microVM whose guest uses 768 MiB and may swap none of
         // it (`--memory-swap` its memory, D159) takes it past, with nothing to give back. One
@@ -3822,8 +3838,7 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
             .and_then(|t| t.trim().parse().ok())
             .unwrap_or(0)
     };
-    let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home);
+    let until = |mut patience: Patience, what: &str, check: &dyn Fn() -> bool| {
         while !check() {
             assert!(
                 patience.holds(),
@@ -3836,7 +3851,11 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
         patience.done();
     };
     // What its VM process holds idle, as the daemon writes it each pressure window.
-    until("its group's memory.current never written", &|| current() > 0);
+    until(
+        Patience::of(&home),
+        "its group's memory.current never written",
+        &|| current() > 0,
+    );
     // Its microVM grown first, as a run's is as its workload touches memory (D148): its
     // grower plugs for what its runs touch, not for what they read, whose page cache its
     // kernel takes back at its hold first, so that a microVM booted small kept its joiner's
@@ -3847,9 +3866,11 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     let booted = current();
     let grown = shards(&["exec", "prov", "/bin/testguest", "alloc-free", "1024", "0"]);
     assert_eq!(grown.status, Some(0), "{grown}");
-    until("what its provider touched and freed was not given back", &|| {
-        current() < booted + (128 << 20)
-    });
+    until(
+        Patience::of(&home),
+        "what its provider touched and freed was not given back",
+        &|| current() < booted + (128 << 20),
+    );
     let idle = current();
     // What its guest has and holds of files, as its kernel counts them.
     let guest = || {
@@ -3892,15 +3913,19 @@ fn what_a_joiner_reads_of_its_image_is_given_back_at_its_groups_budget() {
     let holding = current();
     let high = holding - (256 << 20);
     std::fs::write(group.join("memory.high"), format!("{high}\n")).unwrap();
-    until("its group was not said short of its budget", &|| {
-        said().contains("group agents: its microVMs hold") && said().contains("past its budget")
-    });
+    until(
+        Patience::of(&home),
+        "its group was not said short of its budget",
+        &|| said().contains("group agents: its microVMs hold") && said().contains("past its budget"),
+    );
     // Its VM process holds the quarter GiB less, or more: its guest's own kernel takes back
     // as much of its files as it is short as it is told its room, before its give-back counts
     // what it reclaims, which may then be nothing (D188).
-    until("its group was not within its budget again", &|| {
-        said().contains("within its budget of") && current() <= high
-    });
+    until(
+        Patience::of(&home),
+        "its group was not within its budget again",
+        &|| said().contains("within its budget of") && current() <= high,
+    );
     let lines: Vec<String> = said()
         .lines()
         .filter(|l| l.contains("group agents"))
@@ -11974,9 +11999,8 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     // Its uploads, the config's and the layer's, let go: waited for while the daemon goes on
     // ([`Patience`]), as an upload waiting out its answer's time does not; how soon, told
     // (D209).
-    let let_go = |what: &str| {
+    let let_go = |mut patience: Patience, what: &str| {
         let t0 = Instant::now();
-        let mut patience = Patience::of(&home);
         while ended.load(Ordering::SeqCst) < begun.load(Ordering::SeqCst) {
             assert!(patience.holds(), "{what}");
             std::thread::sleep(patience.next_look());
@@ -11989,7 +12013,7 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     eventually(&home, "the uploads begun", || begun.load(Ordering::SeqCst) >= 1);
     client.kill().unwrap();
     let _ = client.wait();
-    let_go("the uploads went on without their client");
+    let_go(Patience::of(&home), "the uploads went on without their client");
     // The daemon stopped: it stops at once, and so does the push.
     let first = begun.load(Ordering::SeqCst);
     let mut client = push();
@@ -12002,7 +12026,7 @@ fn a_push_ends_with_its_client_and_the_daemon() {
     common::measured("a daemon's stop with a push under way", &[t0.elapsed()]);
     let status = client.wait().unwrap();
     assert!(!status.success(), "{status}");
-    let_go("the uploads went on past the daemon");
+    let_go(Patience::of(&home), "the uploads went on past the daemon");
 }
 
 /// A registry that takes uploads at `per` bytes a second on each connection, as a link
@@ -12978,8 +13002,7 @@ fn restart_policies_start_microvms_again() {
     let shards = |args: &[&str]| shards_in(&home, args);
     let inspect =
         |name: &str, format: &str| shards(&["inspect", "-f", format, name]).stdout.trim().to_string();
-    let until = |what: &str, check: &dyn Fn() -> bool| {
-        let mut patience = Patience::of(&home);
+    let until = |mut patience: Patience, what: &str, check: &dyn Fn() -> bool| {
         while !check() {
             assert!(patience.holds(), "{what}");
             std::thread::sleep(Duration::from_millis(20));
@@ -12993,9 +13016,11 @@ fn restart_policies_start_microvms_again() {
         &["exit", "3"],
     );
     assert_eq!(failing.status, Some(0), "{failing}");
-    until("on-failure:2 restarts twice, then stays exited", &|| {
-        inspect("failing", "{{.RestartCount}} {{.State.Status}}") == "2 exited"
-    });
+    until(
+        Patience::of(&home),
+        "on-failure:2 restarts twice, then stays exited",
+        &|| inspect("failing", "{{.RestartCount}} {{.State.Status}}") == "2 exited",
+    );
     assert_eq!(
         inspect(
             "failing",
@@ -13011,10 +13036,12 @@ fn restart_policies_start_microvms_again() {
         &["exit", "1"],
     );
     assert_eq!(always.status, Some(0), "{always}");
-    until("always restarts, and waits longer each time", &|| {
-        inspect("always", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) >= 3
-    });
-    until("it is seen waiting to restart", &|| {
+    until(
+        Patience::of(&home),
+        "always restarts, and waits longer each time",
+        &|| inspect("always", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) >= 3,
+    );
+    until(Patience::of(&home), "it is seen waiting to restart", &|| {
         inspect(
             "always",
             "{{.State.Status}} {{.State.Running}} {{.State.Restarting}}",
@@ -13037,9 +13064,11 @@ fn restart_policies_start_microvms_again() {
     );
     assert_eq!(clock.status, Some(0), "{clock}");
     let past: u64 = count.parse().unwrap();
-    until("the clock's restarts past the stopped one's", &|| {
-        inspect("clock", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) > past
-    });
+    until(
+        Patience::of(&home),
+        "the clock's restarts past the stopped one's",
+        &|| inspect("clock", "{{.RestartCount}}").parse::<u64>().unwrap_or(0) > past,
+    );
     assert_eq!(shards(&["rm", "-f", "clock"]).status, Some(0));
     assert_eq!(inspect("always", "{{.State.Status}}"), "exited");
     assert_eq!(
@@ -13066,7 +13095,7 @@ fn restart_policies_start_microvms_again() {
     assert!(matches!(exit(&mut held, &home), Some(137 | 143)));
     assert_eq!(shards(&["stop", "daemon"]).status, Some(0));
     let _ = exit(&mut kept, &home);
-    until("the daemon starts kept again", &|| {
+    until(Patience::of(&home), "the daemon starts kept again", &|| {
         inspect("kept", "{{.State.Status}}") == "running"
     });
     assert_eq!(inspect("held", "{{.State.Status}}"), "exited");

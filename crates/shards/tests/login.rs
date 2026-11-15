@@ -192,8 +192,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     // Each wait here is judged as the tests' waits are (`common::Wait`, `Patience`), its kind
     // its call site: a client held on a helper that never answers makes no progress, and is
     // refused past the slowest answer of its kind.
-    let ends = |asked: &[i32], what: &str| {
-        let mut patience = Patience::of(&home);
+    let ends = |mut patience: Patience, asked: &[i32], what: &str| {
         while !asked.iter().all(|&p| gone(p)) {
             assert!(patience.holds(), "{what}: {asked:?}");
             std::thread::sleep(patience.next_look());
@@ -237,7 +236,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     assert!(pulled.success(), "{err}");
     assert!(!err.contains("Waiting for"), "{err}");
     let asked = pids(&recorded);
-    ends(&asked, "ended with the pull");
+    ends(Patience::of(&home), &asked, "ended with the pull");
     // One that asks for Basic credentials: the pull says what it waits on, and its
     // client's going ends the helper.
     let (port, repos) = common::writable_registry_requiring(Some(format!(
@@ -317,7 +316,7 @@ fn a_credential_helper_that_never_answers_holds_only_what_needs_its_answer() {
     );
     client.kill().unwrap();
     let _ = client.wait();
-    ends(&waiting, "ended with its client");
+    ends(Patience::of(&home), &waiting, "ended with its client");
     let (status, _, err) = shards(&home, &config, &["stop", "daemon"], "");
     assert_eq!(status, Some(0), "{err}");
 }

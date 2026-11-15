@@ -114,10 +114,13 @@ struct Api {
 /// A connection's reads, each a wait on its home's daemon judged as `common::run_command`'s
 /// is (`common::Patience`, D209): an answer that waits on a microVM its host boots slowly
 /// comes when the daemon has it, and one from a daemon that makes no progress over a whole
-/// window past the slowest answer seen fails its test.
+/// window past the slowest answer seen fails its test. Its kind is the site of the call it
+/// reads the answer of (`site`, which each of [`Api`]'s calls sets as it sends): a `_ping`'s
+/// answer and a container's wait's are no one kind.
 struct Patient {
     conn: UnixStream,
     home: std::path::PathBuf,
+    site: &'static std::panic::Location<'static>,
 }
 
 impl Read for Patient {
@@ -132,7 +135,7 @@ impl Read for Patient {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             read => return read,
         }
-        let mut patience = common::Patience::of(&self.home);
+        let mut patience = common::Patience::at(&self.home, self.site);
         loop {
             let left = patience.next_look();
             if !left.is_zero() {
@@ -186,16 +189,20 @@ fn docker_host(home: &Path) -> String {
 }
 
 impl Api {
+    #[track_caller]
     fn new(home: &Path) -> Api {
         let conn = connect(home);
         let reader = BufReader::new(Patient {
             conn: conn.try_clone().unwrap(),
             home: home.to_path_buf(),
+            site: std::panic::Location::caller(),
         });
         Api { conn, reader }
     }
 
+    #[track_caller]
     fn send(&mut self, method: &str, path: &str, body: Option<&Value>, fields: &[(&str, &str)]) {
+        self.reader.get_mut().site = std::panic::Location::caller();
         let body = body.map(|b| b.to_string()).unwrap_or_default();
         let mut out = format!("{method} {path} HTTP/1.1\r\nHost: api\r\n");
         for (k, v) in fields {
@@ -258,13 +265,16 @@ impl Api {
         Answered { status, fields, body }
     }
 
+    #[track_caller]
     fn call(&mut self, method: &str, path: &str, body: Option<Value>) -> Answered {
         self.send(method, path, body.as_ref(), &[]);
         self.answer(method)
     }
 
     /// A call whose body is `bytes` of `kind`, and its answer.
+    #[track_caller]
     fn upload(&mut self, method: &str, path: &str, kind: &str, bytes: &[u8]) -> Answered {
+        self.reader.get_mut().site = std::panic::Location::caller();
         let head = format!(
             "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
             bytes.len()
@@ -276,6 +286,7 @@ impl Api {
 
     /// A call whose answer runs until the connection closes: its status, fields and all it
     /// sends.
+    #[track_caller]
     fn downloaded(mut self, path: &str) -> Answered {
         self.send("GET", path, None, &[]);
         let (status, fields) = self.head();
@@ -286,6 +297,7 @@ impl Api {
 
     /// Asks for the connection to be taken over for a stream (`Connection: Upgrade`): its
     /// status and its content's type, once the engine has written them.
+    #[track_caller]
     fn upgrade(&mut self, path: &str, body: Option<Value>) -> (u16, String) {
         self.send(
             "POST",
@@ -310,6 +322,7 @@ impl Api {
     }
 
     /// [`upgrade`](Self::upgrade), and all the stream sends.
+    #[track_caller]
     fn upgraded(mut self, path: &str, body: Option<Value>) -> (u16, String, Vec<u8>) {
         let (status, kind) = self.upgrade(path, body);
         (status, kind, self.rest())
