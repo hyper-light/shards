@@ -1896,13 +1896,11 @@ mod tests {
             hosted.until("pool 1's warm host being taken", |l| l.taking);
             let other = boot(&pools, &request(2, None));
             room.until("pool 2's claim", |l| l.claimed[before..].contains(&2));
-            assert_eq!(
-                room.log().claimed[before..],
-                [2],
-                "claimed while pool 1's take is held"
-            );
+            // Read, then let go before any assertion, so that a red one ends the test.
+            let while_held = room.log().claimed[before..].to_vec();
             hosted.tell(|l| l.hold_take = false);
             let taken = taking.join().unwrap();
+            assert_eq!(while_held, [2], "claimed while pool 1's take is held");
             assert_eq!(taken.started_from(), wire::StartedFrom::Warm);
             // Its refill claims as many as its burst says: one or two (its first run's and this).
             room.until("pool 1 refilled once its run has started", |l| {
