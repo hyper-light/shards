@@ -29377,6 +29377,15 @@ D215's spawn alone).
 
 ### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
+**Amended by D270 (2026-11-15).** An orchestrator's plug gives a host directory or a volume
+of its home's store into every member that runs or those named, each its own device, at the
+path asked; and its run's plug roots include those its spec grants at its start
+(`ImageSpec::plug_roots`), beside its host's own and its shares'. A domain's roots are fixed as
+it starts (Landlock only narrows), so **a volume added later is placed beneath a root by
+default**: kiln names a session's roots up front (its project's, the person's home volume's,
+and one for the session's volumes), and an "Add volume" beneath any of them needs no member
+restart. A path outside every root is refused, typed (`PlugRefusal::Outside`).
+
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 8: kiln reads a session's diffs,
 HEAD and checkpoints on the host at the session's own path, so a member (an agent or
 harness, D59) must see the project at that same absolute path, writable, its writes the
@@ -36100,6 +36109,63 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 **Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
+
+
+### D270. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
+volume to the microvm(s) for that session, grants the permissions specified, and adds it to the
+harness's/agent's allow directories and session's scope", live, with no rebuild or restart
+(ROOT's binding reading, as D269's). D235 plugged one host directory into one member, beneath
+the run's plug roots, which its host chose alone (its OS's own and its shares' top-level
+directories).
+
+**What constrains it.** A member's domain is given every right beneath its plug roots as it
+starts, by Landlock, and no rule is added to a running process's domain (landlock(7):
+`landlock_restrict_self` only narrows); so what is plugged in live lies beneath a root the
+domain started with, or the member's processes must start again under a widened ruleset. Each
+domain sees a share as its own user (init hotplug.rs `share`: `name_owner_as` for the member's
+ids on its mount), so a share is one member's.
+
+**Decided** (image channel version 35):
+- *Roots granted at the start.* `ImageSpec::plug_roots`: top-level directories of the members'
+  view (`/session`), each one `shards_abi::run::plug::root_name` takes (none of init's own:
+  `/proc`, `/sys`, `/dev`, `/tmp`, `/etc`, `/run`) and each once, refused by field otherwise;
+  added after the host's own (`api_run::granted_roots`). They are the run's setup alone, so a
+  warm pool's microVM is none of them (`Request::exemplar` takes them out) and runs of other
+  roots share its hosts. A volume added later is placed beneath one by default (D235's
+  amendment); a path outside every root is refused `Outside`. The explicit restart of a member
+  that a path outside every root would need is not built: refused typed until it is.
+- *The call.* `ImageGuest::plug(&Plug, patience)`, `Plug { source: PlugSource, to: PlugFor,
+  at, read_only }` in place of D235's one-member form; `PlugSource::Host(PathBuf)` (absolute) or
+  `PlugSource::Volume(name)`, a volume of the run's home's store, made where it is not there as
+  a run's `-v NAME:PATH` makes one (`Store::create`), refused `Volume` where the store would
+  refuse a run's own mount of it (a bad name, another microVM's engine's, D109's scoped volume
+  given elsewhere); `PlugFor::Every` (every member that runs) or `Members(names)`, each one the
+  image declares and that runs, named once (shards-api resolves them to their indices, and the
+  wire carries one at least, each once).
+- *One device for each member,* as D235's plug: its own share process and function on the
+  microVM's bus, mounted by init in that member at `at`, read-only where asked (its mount's
+  attribute; the server refuses the guest's writes too). A plug one member refuses is let go of
+  by those it was given to first.
+- *Unplug.* `unplug(at)` lets go of every member's plug at `at`: unmounted by init, then taken
+  off the bus. One a member holds busy is refused `Busy`, naming the members it stays plugged
+  into, while the others are let go of all the same, so that an unplug asked again finishes it.
+- *In place.* Nothing of the image, its template or its VM process changes: each plug is a
+  device added to the running microVM and a mount in its member.
+
+**Tests** (light): `wire::tests::plugs_round_trip_and_bad_ones_are_refused` (several members,
+a volume source, none or one twice refused, `Volume`);
+`image::tests::a_specs_plug_roots_are_top_level_directories_granted_once`;
+`session::tests::a_plug_is_for_the_members_that_run_and_rides_the_runs_channel`;
+`api_run::hosted::tests::a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots`.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays` (rw read and written
+back, ro refusing the member's write with EROFS, a home volume made by its plug, `Outside`,
+`Busy` and `Unknown`; the same `started_from`, the same VM process and unchanged templates
+across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
+`plugged-volumes` mode is new, so the test guests are rebuilt.
 
 ## 4. Start path (≤ 5 ms budget)
 
