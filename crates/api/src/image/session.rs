@@ -2680,6 +2680,7 @@ mod tests {
                     cpu_ns: 900,
                     resident_bytes: 1 << 20,
                     footprint_bytes: 2 << 20,
+                    charged: wire::Charged::ToThread,
                 }),
                 guest: Ok(wire::GuestTimes {
                     vcpus: vec![wire::VcpuTime {

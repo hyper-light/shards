@@ -1,7 +1,9 @@
 //! The host's hold on a machine's vCPUs (D191): together they use at most the CPU time
 //! their run's limit gives them each period, whatever their guest does with its own
 //! cgroups, as CFS bandwidth control holds a cgroup's threads
-//! (Documentation/scheduler/sched-bwc.rst). A governor reads each vCPU thread's CPU time;
+//! (Documentation/scheduler/sched-bwc.rst). A governor reads each vCPU's CPU time: its
+//! thread's, its guest time added where its hypervisor runs it apart from its thread
+//! (D265's charge: WHP under the classic and core schedulers);
 //! once a period's share is spent, every vCPU is held out of its guest until the period
 //! ends, and what a period overran comes off the next ones. A pause holds every vCPU out
 //! of its guest whatever its share, until the machine goes on. A machine of a group's
@@ -15,6 +17,7 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::group::GroupCpu;
+use super::guest_time::Charged;
 use super::{MILLI_PER_CPU, Rated};
 use crate::platform::{ThreadClock, granule};
 use crate::sync::{lock, wait, wait_timeout};
@@ -38,7 +41,38 @@ pub(super) struct Hold {
     /// each entry to its guest without the lock.
     held: AtomicBool,
     /// Each vCPU thread's clock, which it gives as it starts.
-    clocks: Box<[OnceLock<ThreadClock>]>,
+    clocks: Box<[OnceLock<VcpuClock>]>,
+}
+
+/// What reads a vCPU's guest time, in nanoseconds, from any thread: none where it could not.
+pub(super) type GuestRead = Box<dyn Fn() -> Option<u64> + Send + Sync>;
+
+/// A vCPU's clocks, as the governor reads them: its thread's CPU time and its guest time.
+struct VcpuClock {
+    thread: ThreadClock,
+    guest: Option<GuestRead>,
+}
+
+impl std::fmt::Debug for VcpuClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VcpuClock").finish_non_exhaustive()
+    }
+}
+
+impl VcpuClock {
+    /// The CPU time it has used, in ns: its thread's where that holds its guest time; its
+    /// guest time added where its hypervisor runs it apart from its thread; the larger of the
+    /// two while which is not known, the most either shows it used (D265). None where its
+    /// thread's clock does not read.
+    fn used(&self, charged: Charged) -> Option<u64> {
+        let thread = self.thread.read().ok()?;
+        let guest = || self.guest.as_ref().and_then(|read| read()).unwrap_or(0);
+        Some(match charged {
+            Charged::ToThread => thread,
+            Charged::Apart => thread.saturating_add(guest()),
+            Charged::Unknown => thread.max(guest()),
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -74,9 +108,13 @@ impl Hold {
         }
     }
 
-    /// On vCPU `index`'s thread: its clock, which the governor reads.
-    pub(super) fn register(&self, index: usize) -> std::io::Result<()> {
-        let clock = ThreadClock::current()?;
+    /// On vCPU `index`'s thread: its clocks, which the governor reads: the thread's own, and
+    /// its guest time, `guest`, where it has one.
+    pub(super) fn register(&self, index: usize, guest: Option<GuestRead>) -> std::io::Result<()> {
+        let clock = VcpuClock {
+            thread: ThreadClock::current()?,
+            guest,
+        };
         if let Some(slot) = self.clocks.get(index) {
             let _ = slot.set(clock);
         }
@@ -250,11 +288,12 @@ impl Hold {
         s.ended
     }
 
-    /// The CPU time the vCPU threads have used, in nanoseconds: those whose clocks read.
-    fn used(&self) -> u64 {
+    /// The CPU time the vCPUs have used, in nanoseconds, as `charged` says to count it
+    /// ([`VcpuClock::used`]): those whose threads' clocks read.
+    fn used(&self, charged: Charged) -> u64 {
         self.clocks
             .iter()
-            .filter_map(|c| c.get()?.read().ok())
+            .filter_map(|c| c.get()?.used(charged))
             .fold(0, u64::saturating_add)
     }
 
@@ -267,7 +306,9 @@ impl Hold {
     /// number's CPU time; while they are not, once a period, so that vCPUs gone from quiet
     /// to busy at once may run that period through before they are held. What a period
     /// overran comes off the next ones.
-    pub(super) fn govern(&self, kick: &dyn Fn()) {
+    /// `charged` says how a vCPU's time is counted (D265), read once a period, so that a
+    /// period's reads are all of one count.
+    pub(super) fn govern(&self, kick: &dyn Fn(), charged: &dyn Fn() -> Charged) {
         // It runs as it wakes, its waits ending on time, as a vCPU's timers do (PM M8,
         // M10, M294): one that runs late lets the vCPUs overrun, or holds them past their
         // period.
@@ -306,13 +347,14 @@ impl Hold {
                 start = now;
             }
             last = Some(generation);
-            let base = self.used();
+            let counted = charged();
+            let base = self.used(counted);
             let share = share_of(milli, u64::try_from(period.as_nanos()).unwrap_or(u64::MAX));
             let allowed = share.saturating_sub(debt);
             let mut holding = false;
             let mut changed = false;
             while let Some(left) = period.checked_sub(start.elapsed()).filter(|l| !l.is_zero()) {
-                let used = self.used().saturating_sub(base);
+                let used = self.used(counted).saturating_sub(base);
                 if !holding && used >= allowed {
                     holding = true;
                     self.set_held(Some(start + period));
@@ -342,7 +384,7 @@ impl Hold {
                     break;
                 }
             }
-            let used = self.used().saturating_sub(base);
+            let used = self.used(counted).saturating_sub(base);
             // A new limit begins anew; otherwise what is owed past this period's share
             // comes off the next ones.
             (debt, busy, before) = if changed {
@@ -372,7 +414,9 @@ impl Hold {
     /// quota (`cpu.max`'s `max`) it looks again each period of the group's own, as its
     /// `cpu.max` says it; a budget never written (the daemon writes one before any machine
     /// maps it, `Running::hold_group`) ends it.
-    pub(super) fn govern_group(&self, group: &GroupCpu, kick: &dyn Fn()) {
+    /// `charged` says how a vCPU's time is counted (D265); a read of another count charges
+    /// nothing, beginning the next from it.
+    pub(super) fn govern_group(&self, group: &GroupCpu, kick: &dyn Fn(), charged: &dyn Fn() -> Charged) {
         let _prioritized = match crate::platform::prioritize_governor_thread() {
             Ok(prioritized) => Some(prioritized),
             Err(e) => {
@@ -381,7 +425,8 @@ impl Hold {
             }
         };
         let vcpus = self.vcpus();
-        let mut last = self.used();
+        let mut counted = charged();
+        let mut last = self.used(counted);
         // The group's last read: when, and how far ahead of its budget's rate it ran.
         let mut seen: Option<(u64, u64)> = None;
         loop {
@@ -393,9 +438,15 @@ impl Hold {
             let next = match (budget.quota, crate::platform::monotonic_ns()) {
                 (Some(quota), Ok(now)) => {
                     let (quota, period) = (quota.get(), budget.period.get());
-                    let used = self.used();
-                    let ahead = group.charge(now, used.saturating_sub(last), quota, period);
-                    last = used;
+                    let now_counted = charged();
+                    let used = self.used(now_counted);
+                    let spent = if now_counted == counted {
+                        used.saturating_sub(last)
+                    } else {
+                        0
+                    };
+                    (counted, last) = (now_counted, used);
+                    let ahead = group.charge(now, spent, quota, period);
                     let before = seen.replace((now, ahead));
                     // A period of the budget's, in ns: how far ahead of its rate the
                     // group may run.
@@ -432,7 +483,8 @@ impl Hold {
                         crate::warn!("the group's governor: the host's clock: {e}");
                     }
                     self.set_group_held(false);
-                    last = self.used();
+                    counted = charged();
+                    last = self.used(counted);
                     seen = None;
                     Duration::from_micros(u64::from(budget.period.get()))
                 }
@@ -511,11 +563,11 @@ mod tests {
     fn spin(hold: &Hold, threads: usize, window: Duration) -> (u64, u64) {
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
-            let governor = s.spawn(|| hold.govern(&|| {}));
+            let governor = s.spawn(|| hold.govern(&|| {}, &|| Charged::ToThread));
             for index in 0..threads {
                 let stop = &stop;
                 s.spawn(move || {
-                    hold.register(index).unwrap();
+                    hold.register(index, None).unwrap();
                     while !stop.load(Ordering::Relaxed) {
                         hold.wait(&|| stop.load(Ordering::Relaxed));
                         let t = Instant::now();
@@ -528,15 +580,63 @@ mod tests {
             while hold.clocks.iter().any(|c| c.get().is_none()) {
                 std::thread::yield_now();
             }
-            let (t0, base) = (Instant::now(), hold.used());
+            let (t0, base) = (Instant::now(), hold.used(Charged::ToThread));
             std::thread::sleep(window);
-            let used = hold.used() - base;
+            let used = hold.used(Charged::ToThread) - base;
             let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
             stop.store(true, Ordering::Relaxed);
             hold.end();
             governor.join().unwrap();
             (used, wall)
         })
+    }
+
+    /// A vCPU its hypervisor runs apart from its thread (WHP's classic and core schedulers,
+    /// D265) is held by its guest time: its thread spends none of its CPU, its guest clock
+    /// a whole CPU's, and a quarter CPU's hold holds it within a few periods. Counted by its
+    /// thread alone, as the hold did before (hex-winvm: 88% of a quarter CPU's wall), it is
+    /// never held.
+    #[test]
+    fn a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time() {
+        for (charged, held) in [(Charged::Apart, true), (Charged::ToThread, false)] {
+            let hold = Hold::new(1);
+            let rated = hold.set(250).unwrap();
+            let periods = 8;
+            let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let (registered, done) = (AtomicBool::new(false), AtomicBool::new(false));
+            let mut seen = false;
+            std::thread::scope(|s| {
+                // The vCPU's thread, which waits as its hypervisor runs its guest.
+                let theirs = guest.clone();
+                let (hold, registered, done) = (&hold, &registered, &done);
+                s.spawn(move || {
+                    let read: GuestRead = Box::new(move || Some(theirs.load(Ordering::SeqCst)));
+                    hold.register(0, Some(read)).unwrap();
+                    registered.store(true, Ordering::SeqCst);
+                    while !done.load(Ordering::SeqCst) {
+                        std::thread::sleep(rated.period);
+                    }
+                });
+                while !registered.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                let governor = s.spawn(|| hold.govern(&|| {}, &|| charged));
+                let began = Instant::now();
+                while began.elapsed() < rated.period * periods && !seen {
+                    // The guest runs a whole CPU: its time the wall's.
+                    guest.store(
+                        u64::try_from(began.elapsed().as_nanos()).unwrap(),
+                        Ordering::SeqCst,
+                    );
+                    seen = hold.held.load(Ordering::Acquire);
+                    std::thread::sleep(SOONEST);
+                }
+                done.store(true, Ordering::SeqCst);
+                hold.end();
+                governor.join().unwrap();
+            });
+            assert_eq!(seen, held, "{charged:?}: held within {periods} periods");
+        }
     }
 
     /// A rate's share of a period is that many thousandths of it, exact to the nanosecond
@@ -632,9 +732,9 @@ mod tests {
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
             let ends = Ends(&hold, &stop);
-            let governor = s.spawn(|| hold.govern(&|| {}));
+            let governor = s.spawn(|| hold.govern(&|| {}, &|| Charged::ToThread));
             s.spawn(|| {
-                hold.register(0).unwrap();
+                hold.register(0, None).unwrap();
                 while !stop.load(Ordering::Relaxed) {
                     hold.wait(&|| stop.load(Ordering::Relaxed));
                     let t = Instant::now();
@@ -705,11 +805,11 @@ mod tests {
         std::thread::scope(|s| {
             let mut governors = Vec::new();
             for (hold, group) in holds.iter().zip(groups) {
-                governors.push(s.spawn(move || hold.govern_group(group, &|| {})));
+                governors.push(s.spawn(move || hold.govern_group(group, &|| {}, &|| Charged::ToThread)));
                 for index in 0..hold.clocks.len() {
                     let stop = &stop;
                     s.spawn(move || {
-                        hold.register(index).unwrap();
+                        hold.register(index, None).unwrap();
                         while !stop.load(Ordering::Relaxed) {
                             hold.wait(&|| stop.load(Ordering::Relaxed));
                             let t = Instant::now();
@@ -723,7 +823,7 @@ mod tests {
             while holds.iter().any(|h| h.clocks.iter().any(|c| c.get().is_none())) {
                 std::thread::yield_now();
             }
-            let all = || holds.iter().map(Hold::used).sum::<u64>();
+            let all = || holds.iter().map(|h| h.used(Charged::ToThread)).sum::<u64>();
             let (t0, base) = (Instant::now(), all());
             std::thread::sleep(window);
             let used = all() - base;
@@ -792,9 +892,9 @@ mod tests {
         let stop = AtomicBool::new(false);
         std::thread::scope(|s| {
             let ends = Ends(&hold, &stop);
-            let governor = s.spawn(|| hold.govern_group(&group, &|| {}));
+            let governor = s.spawn(|| hold.govern_group(&group, &|| {}, &|| Charged::ToThread));
             s.spawn(|| {
-                hold.register(0).unwrap();
+                hold.register(0, None).unwrap();
                 while !stop.load(Ordering::Relaxed) {
                     hold.wait(&|| stop.load(Ordering::Relaxed));
                     let t = Instant::now();
@@ -819,10 +919,10 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
             // Held no more: it runs.
-            let base = hold.used();
+            let base = hold.used(Charged::ToThread);
             std::thread::sleep(Duration::from_millis(200));
             assert!(!held());
-            assert!(hold.used() > base, "let go, it did not run");
+            assert!(hold.used(Charged::ToThread) > base, "let go, it did not run");
             drop(ends);
             governor.join().unwrap();
         });
@@ -859,7 +959,7 @@ mod tests {
             for index in 0..2 {
                 let (hold, stop) = (&hold, &stop);
                 s.spawn(move || {
-                    hold.register(index).unwrap();
+                    hold.register(index, None).unwrap();
                     while !stop.load(Ordering::Relaxed) {
                         hold.wait(&|| stop.load(Ordering::Relaxed));
                         let t = Instant::now();
@@ -876,14 +976,17 @@ mod tests {
             assert_eq!(lock(&hold.state).waiting, 2);
             // Held, each thread's clock moves no more than its way into its wait does: well
             // under the 400 ms the two would spin in the window.
-            let base = hold.used();
+            let base = hold.used(Charged::ToThread);
             std::thread::sleep(Duration::from_millis(200));
-            let used = hold.used() - base;
+            let used = hold.used(Charged::ToThread) - base;
             assert!(used < 10_000_000, "a paused vCPU ran: {used} ns of CPU in 200 ms");
             hold.resume();
-            let base = hold.used();
+            let base = hold.used(Charged::ToThread);
             std::thread::sleep(Duration::from_millis(200));
-            assert!(hold.used() > base, "the machine went on, its vCPUs did not");
+            assert!(
+                hold.used(Charged::ToThread) > base,
+                "the machine went on, its vCPUs did not"
+            );
         });
     }
 

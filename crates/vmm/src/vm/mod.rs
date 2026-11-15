@@ -202,7 +202,7 @@ pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
 mod barrier;
 pub mod group;
 mod guest_time;
-pub use guest_time::{GuestTimes, VcpuTime};
+pub use guest_time::{Charged, GuestTimes, VcpuTime};
 /// A CPU in the hold's unit, the milli-CPU: a rate is a whole CPU's time in thousandths, as
 /// Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers",
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A

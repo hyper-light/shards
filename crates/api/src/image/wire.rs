@@ -850,7 +850,7 @@ pub struct Microvm {
 /// What a VM process uses of its host, and what a microVM's vCPUs have run of its guest, each
 /// by index, with what those it no longer has ran (guest-cpu-time-v1): one form for the VM
 /// process, an image run's stats and a managed guest's use (D260).
-pub use shards_abi::guest_time::{GuestTimes, HostUse, VcpuTime};
+pub use shards_abi::guest_time::{Charged, GuestTimes, HostUse, VcpuTime};
 
 impl Microvm {
     /// Its VMM's own CPU time, in ns: its VM process's less what its vCPUs ran of its guest,
@@ -1400,6 +1400,7 @@ impl Writer {
                 self.u64(h.cpu_ns);
                 self.u64(h.resident_bytes);
                 self.u64(h.footprint_bytes);
+                self.u8(h.charged.tag());
             }
             Err(why) => {
                 self.u8(1);
@@ -1459,6 +1460,15 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
         self.take(N)?.try_into().map_err(|_| WireError::Short)
     }
+    /// A VM process's charge (`Charged::tag`).
+    fn charged(&mut self) -> Result<Charged, WireError> {
+        let tag = self.u8()?;
+        Charged::from_tag(tag).ok_or(WireError::Tag {
+            what: "a VM process's charge",
+            tag,
+        })
+    }
+
     pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
@@ -1577,6 +1587,7 @@ impl<'a> Reader<'a> {
                 cpu_ns: self.u64()?,
                 resident_bytes: self.u64()?,
                 footprint_bytes: self.u64()?,
+                charged: self.charged()?,
             }),
             1 => Err(self.text()?),
             tag => {
@@ -2758,6 +2769,7 @@ pub fn used(used: &Result<HostUse, String>) -> Result<Vec<u8>, WireError> {
             w.u64(h.cpu_ns);
             w.u64(h.resident_bytes);
             w.u64(h.footprint_bytes);
+            w.u8(h.charged.tag());
         }
         Err(why) => {
             w.u8(1);
@@ -2775,6 +2787,7 @@ pub fn read_used(payload: &[u8]) -> Result<Result<HostUse, String>, WireError> {
             cpu_ns: r.u64()?,
             resident_bytes: r.u64()?,
             footprint_bytes: r.u64()?,
+            charged: r.charged()?,
         }),
         1 => Err(r.text()?),
         tag => {
@@ -4748,6 +4761,7 @@ mod tests {
             cpu_ns: 7,
             resident_bytes: 300 << 20,
             footprint_bytes: 280 << 20,
+            charged: Charged::ToThread,
         };
         for used in [Ok(read), Err("its VM process: gone".to_string())] {
             let bytes = super::used(&used).unwrap();
@@ -4859,6 +4873,7 @@ mod tests {
                 cpu_ns: 90,
                 resident_bytes: 4096,
                 footprint_bytes: 8192,
+                charged: Charged::ToThread,
             }),
             guest: Ok(GuestTimes {
                 vcpus: vec![
@@ -4949,6 +4964,7 @@ mod tests {
             cpu_ns: 9_000,
             resident_bytes: 64 << 20,
             footprint_bytes: u64::MAX,
+            charged: Charged::ToThread,
         };
         let lines = b"cpu 10\nmemory 7\n";
         let gone = || Err::<HostUse, String>("its VM process: no such process".into());
@@ -4988,9 +5004,9 @@ mod tests {
         };
         let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both), None))).unwrap();
         // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its
-        // host's tag and three numbers, its guest's tag, departed time and count, and the
-        // first vCPU's index, time and flag: made the first's, out of order.
-        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 8 + 4 + 13;
+        // host's tag, three numbers and charge, its guest's tag, departed time and count, and
+        // the first vCPU's index, time and flag: made the first's, out of order.
+        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 1 + 8 + 4 + 13;
         let mut out_of_order = bytes.clone();
         out_of_order[second..second + 4].copy_from_slice(&0u32.to_be_bytes());
         assert_eq!(
@@ -5010,7 +5026,8 @@ mod tests {
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
             (microvm_tag + 1, 2, "a VM process's use"),
-            (microvm_tag + 1 + 1 + 24, 2, "a microVM's guest time"),
+            (microvm_tag + 1 + 1 + 24, 3, "a VM process's charge"),
+            (microvm_tag + 1 + 1 + 24 + 1, 2, "a microVM's guest time"),
             (second + 4 + 8, 2, "a vCPU's guest time"),
         ] {
             let mut bad = bytes.clone();
@@ -5021,7 +5038,7 @@ mod tests {
                 "{what}"
             );
         }
-        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 8].to_vec();
+        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 1 + 8].to_vec();
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(StatsAnswer::decode(&hostile), Err(WireError::Short));
     }

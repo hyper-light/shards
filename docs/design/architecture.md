@@ -35678,6 +35678,112 @@ closing, on HVF, KVM and WHP.
 end; an ended connection holding more than the window it had; slots or lent window freed while
 an ended connection still holds its bytes.
 
+### D265. Whether a VM process's CPU time holds its vCPUs' guest time, learned from its own clocks (built: the charge, the use and the hold it makes; a root-scheduler host's run owed)
+
+**Why.** On hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested WHP on KVM) D260's
+use broke its own invariant, its process's CPU time (609,375,000 ns) below its one vCPU's
+guest time (763,174,000 ns), and D255's quarter-CPU hold let a spinning vCPU run 88% of the
+wall (`boot.rs` `a_managed_guest_records_its_final_use_as_it_ends`,
+`a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`, at 39760e391, twice). A
+probe sampled a --host-managed guest's `USE` every 500 ms: while it spun its guest time
+(`WHvGetVirtualProcessorCounters`' TotalRuntime less HypervisorRuntime) grew 470 ms each,
+94% of the wall, and its process's CPU time (GetProcessTimes) none; halted, neither grew. Its
+hypervisor's scheduler is the classic one (System event 2, "Hypervisor scheduler type is
+0x1": "1 Classic scheduler, SMT disabled", learn.microsoft.com
+windows-server/virtualization/hyper-v/manage/manage-hyper-v-scheduler-types), which runs a
+guest's virtual processors itself, as the core scheduler does; the root scheduler, which
+gives the root partition's NT scheduler the work, "isn't supported on Hyper-V on Windows
+Server" and is "the only supported hypervisor scheduler configuration for client systems"
+(the same page). So on every Windows Server a WHP vCPU's guest time is charged to none of
+its process's threads, and on client Windows nothing documented says either way.
+
+**Decided.** The charge is learned per VM process from its own clocks, never from a
+scheduler's name or an OS edition (`shards_abi::guest_time::Charged`, R04: `Unknown`,
+`ToThread`, `Apart`). Each vCPU's span between two reads of its clocks (its thread's CPU time
+`t`, `platform::ThreadClock`; its guest time `g`; the wall `w`) tells `Apart` where
+`t + step < g`, which a thread that ran its guest's time cannot read, and `ToThread` where
+`t + g >= w + step`, which a thread waiting while its hypervisor runs its vCPU cannot (it
+waits inside the run call), `step` the thread clock's measured step
+(`granule::measure_clock`, 15.625 ms on Windows). A span that reads neither tells nothing.
+The first charge told stands: a host's scheduler is its boot's. A span begins as its vCPU
+joins, so one read only at the end (D260's final use) tells its whole life
+(`vm::guest_time::GuestClocks`). Where a backend's construction fixes it, it is known from the
+start (`hv::GUEST_TIME_CHARGED`): KVM charges guest time to the vCPU thread's user time
+(`account_guest_time`, kernel/sched/cputime.c: `p->utime += cputime; ... p->gtime +=
+cputime`), and Hypervisor.framework runs a vCPU on its owning thread, whose time XNU does not
+split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learned.
+- *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
+  (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
+  `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
+  read once a period, so a period's reads are of one count; the group's governor charges
+  nothing across a change of count. A backend known `ToThread` never reads a guest clock for
+  it, so Hypervisor.framework's vCPUs are never made to leave their guest to be read.
+- *Its use.* A use (`USE`'s `host` line, D260's final-use record, and the warm host's binary
+  `USED` and run stats, `shards_api::image::wire`) carries its charge, so a reader sees which
+  accounting it holds. `cpu_ns` is its OS's count, its vCPUs' guest time added where `Apart`
+  (`vm_run::use_answer`); `Apart` with no guest time read says `Unknown` with the count. A run
+  host's stats read another process's count with no vCPU clocks: `Unknown`.
+- *Cold start.* `Unknown` until a span tells, never a guess; a quiet guest leaves it so, its
+  count then its OS's.
+
+**Literals.** None: the step is measured, and the rule's bounds are the two clocks' own.
+
+**Built and tested** (unit): shards-abi `guest_time::tests::a_span_tells_a_charge_only_by_what_the_other_cannot_read`
+(hex-winvm's span apart, a charged thread, quiet spans, the boundaries a step either way) and
+`rate::tests` (the `host` line with its charge, one without refused); shards-vmm
+`guest_time::tests::a_processs_charge_is_told_by_its_vcpus_spans`; shards
+`vm_run::tests::a_uses_answer_reads_the_guest_then_its_process` (the guest added apart, the
+count standing unknown); shards-vmm `hold::tests::a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time`
+(a thread spending none while its guest clock runs a whole CPU: held within a quarter CPU's
+periods when `Apart`, and never when counted by its thread alone, as the hold did before). Results and hosts are in the landing commit and ROOT's record.
+
+**Evidence owed.** The two `boot.rs` tests green on hex-winvm; the probe on a client Windows
+host under the root scheduler (whether its thread holds its guest time: `ToThread` told); a
+run host's stats told the charge by its VM process.
+
+**What would falsify it.** A span on one host telling both charges; a use whose `cpu_ns` is
+below its guest time with its charge told; a charge told by a span that could read either.
+
+### D266. A host's request waits for its guest on no clock; one left unanswered gives its slot up, longest first (built; real-VM runs owed)
+
+**Why.** A host's dial (`CONNECT <port>`) became a connection that asked its guest (REQUEST)
+and was reset 2 s later if the guest had not answered (`REQUEST_TIMEOUT`, Firecracker's
+`CONN_REQUEST_TIMEOUT_MS`), an upstream default with no source of its own (R03). A live Linux
+guest answers a REQUEST at once: a RESPONSE, or a reset where nothing listens on its port or
+the listener's backlog is full (`virtio_transport_recv_listen`,
+net/vmw_vsock/virtio_transport_common.c). So the timer fired only where the guest was not
+running its queue, held to its rate (D255), paused, snapshotting or slow, and there it failed a
+request the guest would have answered.
+
+**What it guarded, and what bounds it instead.** A slot and a descriptor held by a request no
+guest answers. A pending handshake already holds its slot on no clock and gives it up, silent
+longest first, only to a newcomer (`Muxer::make_room`, `Handshake::heard`). A request now does
+the same: its REQUEST's time is kept to rank it (`Conn::asked`), never to end it, and where
+every slot is taken and no handshake is pending, the request its guest has left unanswered
+longest gives its slot up at once, its client seeing its socket close and its guest a reset
+(a stray RST, `Muxer::stray_rst`). One its guest answered is a connection and is never given
+up. The device's loop now waits on its events alone: none of its waits is on a clock (D264).
+
+**A client gone meanwhile.** While its request is unanswered the device does not read its
+client's socket (as before: what a client sends after its line is the connection's, read once
+it is established), so a client that closes is seen once its guest answers, or when its slot is
+given up. Telling a close from a half-close without reading would need a hang-up the poller
+does not carry, and Windows' AF_UNIX reports both alike (PM M199).
+
+**Literals.** None added; `REQUEST_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_hosts_request_its_guest_answers_late_is_connected` (red with the timer, the
+device's turn run after three seconds; green after) and
+`muxer::tests::an_unanswered_request_gives_its_slot_up_longest_first`;
+`conn::tests::host_initiated_connections_answer_ok_or_wait_for_their_guest`.
+
+**Evidence owed** (ROOT, real VMs): a dial to a guest held to a quarter CPU, and to a paused
+one, connected once it runs, on HVF, KVM and WHP.
+
+**What would falsify it.** A request its guest answered that is reset; a newcomer refused while
+a request its guest has not answered holds a slot.
+
 ### D267. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
 
 **Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step

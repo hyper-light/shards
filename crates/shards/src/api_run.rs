@@ -3930,6 +3930,8 @@ mod hosted {
                 cpu_ns: u.cpu_ns,
                 resident_bytes: u.resident,
                 footprint_bytes: u.footprint,
+                // Another process's count: its vCPUs' clocks are its own (D265).
+                charged: wire::Charged::Unknown,
             })
             .map_err(|e| format!("its VM process: {e}"))
     }
@@ -7035,6 +7037,7 @@ mod tests {
             cpu_ns: 100,
             resident_bytes: 1,
             footprint_bytes: 2,
+            charged: shards_abi::guest_time::Charged::ToThread,
         };
         let told = shards_abi::rate::used(Ok(&times), Ok(&host));
         assert_eq!(

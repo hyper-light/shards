@@ -377,7 +377,11 @@ impl Handle {
             let shared = sh.clone();
             let made = std::thread::Builder::new()
                 .name("hold".into())
-                .spawn(move || shared.hold.govern(&|| shared.kick_all()))
+                .spawn(move || {
+                    shared
+                        .hold
+                        .govern(&|| shared.kick_all(), &|| shared.guest.charged())
+                })
                 .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
             *governor = Some(made);
         }
@@ -402,7 +406,11 @@ impl Handle {
         let shared = sh.clone();
         let made = std::thread::Builder::new()
             .name("hold-group".into())
-            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .spawn(move || {
+                shared
+                    .hold
+                    .govern_group(&group, &|| shared.kick_all(), &|| shared.guest.charged())
+            })
             .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
         *governor = Some(made);
         Ok(())
@@ -898,6 +906,12 @@ impl Handle {
         self.shared.guest.sample()
     }
 
+    /// Whether this process's OS charges its vCPUs' guest time to their threads, as their
+    /// spans have told it ([`guest_time::Charged`], D265).
+    pub fn charged(&self) -> guest_time::Charged {
+        self.shared.guest.charged()
+    }
+
     /// What each of its vCPUs ran of its guest in all, by index, those gone among them at
     /// what they read as they left (D260's final use): read once the machine is down
     /// ([`Running::wait_then`]'s `free`), after its last guest instruction, it is the whole.
@@ -1076,7 +1090,7 @@ impl Shared {
             saving: Mutex::new(None),
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
-            guest: GuestClocks::default(),
+            guest: GuestClocks::known(crate::hv::GUEST_TIME_CHARGED),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
         }
@@ -1750,15 +1764,22 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
-    // Its clock, by which the host holds the vCPUs to their run's CPUs (D191).
-    if let Err(e) = sh.hold.register(index) {
+    // Its clocks, by which the host holds the vCPUs to their run's CPUs (D191): its thread's,
+    // and its guest time, counted as its OS charges it (D265).
+    let guest_read = vcpu.guest_clock();
+    if let Err(e) = sh
+        .hold
+        .register(index, Some(Box::new(move || guest_read.read().ok())))
+    {
         warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
     }
     // Its guest time among its machine's, before its machine is said to be started: read a
     // last time as this goes, on this thread, before the vCPU itself goes (dropped after).
-    let _guest = sh
-        .guest
-        .join(u32::try_from(index).unwrap_or(u32::MAX), guest_clock(&vcpu));
+    let _guest = sh.guest.join(
+        u32::try_from(index).unwrap_or(u32::MAX),
+        guest_clock(&vcpu),
+        thread_clock(index),
+    );
     let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
@@ -1780,6 +1801,19 @@ fn vcpu_thread(
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
+        }
+    }
+}
+
+/// How vCPU `index`'s thread's CPU time is read, from any thread: its own clock, the calling
+/// thread's, which beside its guest time tells whether its OS charges that to it (D265); none
+/// where it has none.
+fn thread_clock(index: usize) -> Option<guest_time::Ran> {
+    match crate::platform::ThreadClock::current() {
+        Ok(clock) => Some(Box::new(move || clock.read().ok())),
+        Err(e) => {
+            warn!("vCPU {index}: its thread's CPU time unread, so its guest time's charge is not told: {e}");
+            None
         }
     }
 }

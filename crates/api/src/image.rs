@@ -33,8 +33,8 @@ pub mod wire;
 pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
-    Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse, GuestTimes,
-    HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused,
+    Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
+    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, Paused,
     PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
     SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime,
     decide,
