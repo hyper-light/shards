@@ -5589,6 +5589,31 @@ revision before comparing a changed API/implementation.
   A VM the host has not let run is told apart (`platform::launched`) and counts against
   no template; a builder not started says so (D117). The incidents themselves were not
   captured; the daemon's log now attributes the next.
+- **Decision, 2026-11-14 (ROOT's batch 26, b27 at ff69e4736, HVF, Adas-Mac-Studio-3, 1 of
+  14 cores idle).** `tty.rs`'s `ctrl_c_interrupts_and_the_detach_keys_leave_it_running` was
+  refused by the daemon's judge of a VM's first request: "VM 73656 asked nothing after 0
+  messages: it ran nothing for 16.093834ms, past the slowest request seen (6.277584ms),
+  33.014625ms into its wait". VM 73656 had launched (not unstarted), ran no CPU, had no
+  thread runnable or in an uninterruptible wait, and was not stopped, so D215's look found
+  it still (a runnable thread is `Held` already, which `Watch::starved` adds nothing to
+  for a process that ran nothing); it said "asking for access: Broken pipe" as the daemon
+  let it go, so it was going on with its launch; its sample began 52 ms after its launch,
+  after the refusal, and holds no stack. A launch's own threads wait asleep on the host's
+  services (above), which no look at its process sees. `boot.rs`'s
+  `survives_back_to_back_boots` in the same batch was the tests' judge refusing a `run
+  --kernel` client's tree, still 74 ms past W* 47 ms, "its host not holding it", as a VM
+  process launched under it. So a launch is followed by its liveness alone: the daemon
+  (`daemon::launch`) waits for a VM's first request or its link's end, learns each launch
+  into a record of its own (`Answers::launches`, every request after the first judged on
+  `Answers::grants` as before), and once a launch outlasts the slowest seen says so once,
+  in its log and to a waiting run's client whose stderr is a terminal ("VM N: its launch waits on the host … past
+  the slowest seen (…): macOS launch services, M166"); a VM process names its main thread
+  as its own code begins (`platform::launch_over`), and the tests' judge takes a VM process
+  whose threads have no such name (`platform::in_launch`) for its host's hold, read only of
+  a look that would find its party still. `a_vms_launch_is_waited_for_by_its_liveness_and_a_later_request_judged`
+  holds both: a sleeping stand-in's launch waited for and said once, its later request
+  refused. Not caught: a launch its host never admits, which waits as long as its run is
+  wanted (its client's interrupt ends it).
 
 ### M145. A container's command as PID 1, and its signals, under Docker and under shards
 

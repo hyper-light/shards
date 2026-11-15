@@ -2721,6 +2721,72 @@ pub fn launched(pid: u32) -> Option<bool> {
     }
 }
 
+/// The name a VM process gives its main thread as its own code begins ([`launch_over`]).
+#[cfg(target_os = "macos")]
+const LAUNCHED: &std::ffi::CStr = c"shards-vm";
+
+/// Says this process's launch is over, as the first act of its own code: its main thread
+/// named [`LAUNCHED`]. A macOS launch is its host's work before that code runs (PM M166:
+/// amfid and syspolicyd assess its executable, secinitd sets up its App Sandbox in
+/// libsystem's initializers), through which its one thread waits asleep, running nothing,
+/// neither runnable nor stopped: its process alone tells no launch its host is slow to
+/// admit from a stall, and a judge of it reads this ([`in_launch`]). Call it on the main
+/// thread.
+#[cfg(target_os = "macos")]
+pub fn launch_over() -> io::Result<()> {
+    // SAFETY: pthread_setname_np(3) names the calling thread, from a NUL-terminated name
+    // shorter than MAXTHREADNAMESIZE (64).
+    let code = unsafe { libc::pthread_setname_np(LAUNCHED.as_ptr()) };
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(code))
+    }
+}
+
+/// Whether process `pid` is still in its launch: no thread of it named as [`launch_over`]
+/// names one (`PROC_PIDTHREADINFO`'s `pth_name`, sys/proc_info.h). None where its threads
+/// cannot be read, as of a process gone.
+#[cfg(target_os = "macos")]
+pub fn in_launch(pid: u32) -> Option<bool> {
+    // sys/proc_info.h: a process's threads' handles, a uint64_t each.
+    const PROC_PIDLISTTHREADS: libc::c_int = 6;
+    let id = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo fills up
+    // to its size.
+    let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).ok()?;
+    // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `task`.
+    if unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTASKINFO, 0, (&raw mut task).cast(), size) } != size {
+        return None;
+    }
+    // As many as its task counts now, and one more, as a thread may start meanwhile.
+    let count = usize::try_from(task.pti_threadnum).ok()?.checked_add(1)?;
+    let mut handles: Vec<u64> = Vec::new();
+    handles.try_reserve_exact(count).ok()?;
+    handles.resize(count, 0);
+    let bytes = libc::c_int::try_from(count.checked_mul(size_of::<u64>())?).ok()?;
+    // SAFETY: proc_pidinfo(3) writes at most `bytes` bytes, the handles' own, into them.
+    let got = unsafe { libc::proc_pidinfo(id, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), bytes) };
+    handles.truncate(usize::try_from(got).ok()? / size_of::<u64>());
+    let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
+    let named = handles.iter().any(|&handle| {
+        // SAFETY: a zeroed proc_threadinfo is a valid out-parameter, as above.
+        let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let read =
+            unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTHREADINFO, handle, (&raw mut info).cast(), size) };
+        read == size
+            && info
+                .pth_name
+                .iter()
+                .map(|&c| c as u8)
+                .take_while(|&b| b != 0)
+                .eq(LAUNCHED.to_bytes().iter().copied())
+    });
+    Some(!named)
+}
+
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase,
 /// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's CPU-time clock of the process
@@ -3466,6 +3532,38 @@ mod launched_tests {
         }
         assert_eq!(suspended, Some(false));
         assert_eq!(launched(std::process::id()), Some(true));
+    }
+
+    /// A process is in its launch until a thread of it says the launch is over
+    /// ([`launch_over`]), as a VM process's main thread does first (PM M166): a sleeper that
+    /// never says so is in it for ever; this process, once a thread of it has said so, is
+    /// not; a process gone is unread.
+    #[test]
+    fn a_process_is_in_its_launch_until_a_thread_of_it_says_it_is_over() {
+        let mut asleep = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let sleeper = in_launch(asleep.id());
+        let _ = asleep.kill();
+        let _ = asleep.wait();
+        assert_eq!(sleeper, Some(true));
+        assert_eq!(in_launch(asleep.id()), None, "gone");
+        // The thread that says so lives until it has been read.
+        let (named, read) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let now = std::thread::scope(|s| {
+            let (said, done) = (named.0, read.1);
+            s.spawn(move || {
+                launch_over().unwrap();
+                said.send(()).unwrap();
+                let _ = done.recv();
+            });
+            named.1.recv().unwrap();
+            let now = in_launch(std::process::id());
+            drop(read.0);
+            now
+        });
+        assert_eq!(now, Some(false));
     }
 }
 

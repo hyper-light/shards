@@ -3695,6 +3695,24 @@ impl Party {
             looked.found = Found::Held;
             looked.what = "its host held a serving thread of this process from running".into();
         }
+        // A VM process of it in its launch, the host's work before its own code (PM M166):
+        // its one thread waits on amfid's, syspolicyd's and secinitd's work asleep, so it is
+        // followed by its liveness alone until its launch is over, as the daemon follows one
+        // before its first request (daemon.rs `launch`). Read only of a look that would find
+        // it still.
+        #[cfg(target_os = "macos")]
+        if live
+            && looked.found == Found::Still
+            && let Some(pid) = processes().into_iter().find_map(|(pid, _, name)| {
+                (self.watched.contains_key(&pid)
+                    && name.starts_with(VM_PROCESS)
+                    && shards_vmm::platform::in_launch(pid) == Some(true))
+                .then_some(pid)
+            })
+        {
+            looked.found = Found::Held;
+            looked.what = format!("its VM process {pid} in its launch, the host's to admit (PM M166)");
+        }
         if live
             && looked.found == Found::Still
             && let Some((run, left)) = self.graced()

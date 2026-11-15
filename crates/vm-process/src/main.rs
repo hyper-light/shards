@@ -32,6 +32,11 @@ mod warm;
 mod workload;
 
 fn main() -> ExitCode {
+    // Its launch, the host's work before this (PM M166), is over: said first, for its judges.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = shards_vmm::platform::launch_over() {
+        let _ = writeln!(std::io::stderr(), "shards-vm: naming its main thread: {e}");
+    }
     shards_vmm::log::init();
     // Started through its descriptor, its name is that descriptor's number until it takes
     // its own; a VM runs without it, said once.

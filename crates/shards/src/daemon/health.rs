@@ -161,7 +161,12 @@ pub(super) struct Answers {
     pub run_send: Record,
     /// A VM's guest times, its `GUEST_TIMED` after its `GUEST_TIME` (`commands::guest_times_of`).
     pub guest_time: Record,
-    /// Each request for access a starting VM makes, from the answer before or its spawn
+    /// A starting VM's launch, its spawn to its first request for access (`daemon::launch`,
+    /// macOS): the host's to admit (PM M166), followed by its liveness alone, said once past
+    /// its slowest.
+    #[cfg(target_os = "macos")]
+    pub launches: Record,
+    /// Each request for access a starting VM makes after its first, from the answer before
     /// (`daemon::grant`, macOS).
     #[cfg(target_os = "macos")]
     pub grants: Record,
@@ -184,6 +189,8 @@ impl Default for Answers {
             held: Record::new(),
             run_send: Record::new(),
             guest_time: Record::new(),
+            #[cfg(target_os = "macos")]
+            launches: Record::new(),
             #[cfg(target_os = "macos")]
             grants: Record::new(),
             builtins: Box::new([const { Record::new() }; 256]),

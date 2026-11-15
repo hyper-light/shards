@@ -896,7 +896,16 @@ enum Spare {
 /// Who a starting VM is for.
 enum For {
     Pool(PoolKey),
-    Run(mpsc::Sender<Result<Ready, String>>),
+    Run(mpsc::Sender<Started>),
+}
+
+/// What a VM started for a run tells the run that waits for it ([`For::Run`]): a line for its
+/// client as its start goes on (its launch past the slowest seen, PM M166), then its end.
+enum Started {
+    /// Only macOS's launches say anything yet (`launch`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Said(String),
+    Ended(Result<Ready, String>),
 }
 
 /// A run, from its record's creation to its end (audit A06): what the commands on
@@ -1549,7 +1558,7 @@ struct Daemon<D: Disk = Real> {
     /// waits on them while they run are judged by ([`health::Wait::WhileRuns`]).
     answers: health::Answers,
     /// Runs waiting for a VM booted for them, by number: told as the daemon stops.
-    booting: Mutex<HashMap<u64, mpsc::Sender<Result<Ready, String>>>>,
+    booting: Mutex<HashMap<u64, mpsc::Sender<Started>>>,
     next_cold: AtomicU64,
     /// The cold boots under way, held to the vCPUs this host boots the most VMs a second
     /// with (PM M357).
@@ -3191,6 +3200,15 @@ impl<D: Disk> Daemon<D> {
         let say = |line: &str| {
             let _ = writeln!(&err, "{line}");
         };
+        // What its microVM's start says as it goes on (its launch past the slowest seen, PM
+        // M166): shards' own words, for a client whose stderr is a terminal alone, where a
+        // piped one gets Docker's text, which says nothing of a start.
+        let on_terminal = std::io::IsTerminal::is_terminal(&err);
+        let told = |line: &str| {
+            if on_terminal {
+                say(line);
+            }
+        };
         // As `docker run` reports what its daemon refused (spec::not_run).
         let refuse = |said: &str| {
             let (text, status) = crate::spec::not_run(said);
@@ -4572,8 +4590,9 @@ impl<D: Disk> Daemon<D> {
                         r,
                         run_mac.as_deref().and_then(|m| m.first_chunk::<6>().copied()),
                         &prepared.parent,
+                        &told,
                     ),
-                    None => self.warm_for(threads, &prepared, &start, &say),
+                    None => self.warm_for(threads, &prepared, &start, &say, &told),
                 },
             },
         );
@@ -7444,7 +7463,7 @@ impl<D: Disk> Daemon<D> {
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
         for (_, booting) in lock(&self.booting).drain() {
-            let _ = booting.send(Err("the daemon is shutting down".into()));
+            let _ = booting.send(Started::Ended(Err("the daemon is shutting down".into())));
         }
         // Runs waiting their turn to boot look at `stopping` again.
         self.boots.wake();
@@ -8197,13 +8216,15 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// A warm VM for `prepared`: from its template's pool, or booted for it, saving the
-    /// template on the way if there is none.
+    /// template on the way if there is none. Its client is told through `say`, and what a
+    /// VM booted for it says as its start goes on through `told`.
     fn warm_for<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         prepared: &Prepared,
         start: &network::Start,
         say: &dyn Fn(&str),
+        told: &dyn Fn(&str),
     ) -> Result<Ready, String> {
         // Docker's default bridge: the guest on a network of its own (D31), named on its
         // kernel command line, so that its templates are apart from those of guests on
@@ -8283,6 +8304,7 @@ impl<D: Disk> Daemon<D> {
                 None,
                 &prepared.parent,
                 prepared.layer,
+                told,
             );
         }
         let guest = match &prepared.boot {
@@ -8297,6 +8319,7 @@ impl<D: Disk> Daemon<D> {
                     None,
                     &prepared.parent,
                     prepared.layer,
+                    told,
                 );
             }
             Boot::Stored(guest) => guest,
@@ -8322,6 +8345,7 @@ impl<D: Disk> Daemon<D> {
                 None,
                 &prepared.parent,
                 prepared.layer,
+                told,
             );
         }
         // The file at the root filesystem's name now, which its template is keyed by.
@@ -8364,6 +8388,7 @@ impl<D: Disk> Daemon<D> {
             Some(&fresh),
             &prepared.parent,
             prepared.layer,
+            told,
         );
         // Its template only where its VM was ready, its record written beside it; a VM that
         // saved its snapshot and then failed makes none (run::settle_boot).
@@ -8737,6 +8762,7 @@ impl<D: Disk> Daemon<D> {
     /// the way, made under `parent` (D183), with a writable layer that holds `layer` bytes
     /// (D190).
     /// `save` is where it saves the template, and where the template goes once saved.
+    #[allow(clippy::too_many_arguments)]
     fn cold<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -8745,6 +8771,7 @@ impl<D: Disk> Daemon<D> {
         save: Option<&Path>,
         parent: &str,
         layer: u64,
+        told: &dyn Fn(&str),
     ) -> Result<Ready, String> {
         let args = crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK);
         // A guest on a network: a fresh MAC, which a template it saves keeps.
@@ -8760,11 +8787,12 @@ impl<D: Disk> Daemon<D> {
         let _turn = self
             .boots
             .turn(usize::try_from(cfg.vcpus).unwrap_or(usize::MAX), &self.stopping)?;
-        self.start_for_run(threads, &args, net, parent, Some(layer))
+        self.start_for_run(threads, &args, net, parent, Some(layer), told)
     }
 
     /// Starts shards-vm with `args` for one run, under `parent` (D183), and waits until it is
-    /// ready: a VM booted for it, or restoring a snapshot of its own (D176).
+    /// ready: a VM booted for it, or restoring a snapshot of its own (D176). What its start
+    /// says meanwhile goes to the run's client through `told`.
     fn start_for_run<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
@@ -8772,6 +8800,7 @@ impl<D: Disk> Daemon<D> {
         net: Option<[u8; 6]>,
         parent: &str,
         layer: Option<layers::LayerFile>,
+        told: &dyn Fn(&str),
     ) -> Result<Ready, String> {
         let (tx, rx) = mpsc::channel();
         // Told by a shutdown too: registered, then checked, so a shutdown either finds it
@@ -8785,8 +8814,13 @@ impl<D: Disk> Daemon<D> {
         let started = self.start(threads, args, net, For::Run(tx), parent, layer);
         // A VM given up on ends as its socket closes, the daemon's end dropped with it.
         let ready = started.and_then(|_| {
-            rx.recv()
-                .unwrap_or_else(|_| Err("the VM's watcher ended without a word".into()))
+            loop {
+                match rx.recv() {
+                    Ok(Started::Said(line)) => told(&line),
+                    Ok(Started::Ended(ready)) => break ready,
+                    Err(_) => break Err("the VM's watcher ended without a word".into()),
+                }
+            }
         });
         lock(&self.booting).remove(&waiting);
         ready
@@ -8986,7 +9020,13 @@ impl<D: Disk> Daemon<D> {
                     For::Pool(key) => Some(key.dir.as_path()),
                     For::Run(_) => None,
                 },
+                &self.answers.launches,
                 &self.answers.grants,
+                &|line: &str| {
+                    if let For::Run(tx) = &dest {
+                        let _ = tx.send(Started::Said(line.to_owned()));
+                    }
+                },
             ),
             _ => Ok::<(), GrantError>(()),
         };
@@ -9054,7 +9094,7 @@ impl<D: Disk> Daemon<D> {
             }
             For::Run(tx) => match ready {
                 Ok(()) => {
-                    let _ = tx.send(Ok(Ready {
+                    let _ = tx.send(Started::Ended(Ok(Ready {
                         vm: child.clone(),
                         socket,
                         net,
@@ -9064,11 +9104,11 @@ impl<D: Disk> Daemon<D> {
                         joined: None,
                         layer,
                         pooled: None,
-                    }));
+                    })));
                 }
                 Err(e) => {
                     let _ = child.kill(shards_ipc::signal::SIGKILL);
-                    let _ = tx.send(Err(e));
+                    let _ = tx.send(Started::Ended(Err(e)));
                 }
             },
         }
@@ -9577,37 +9617,47 @@ impl Drop for Unwatched<'_> {
     }
 }
 
-/// Answers what VM `pid` asks to reach until it has all it needs and closes the link, each
-/// request waited for by D215's judge on `record`, this daemon's record of requests for
-/// access (`Answers::grants`): before its first, the VM's liveness alone, the link's end;
-/// then past W*, the slowest request seen from the answer before it or the VM's spawn, looked
+/// Answers what VM `pid` asks to reach until it has all it needs and closes the link.
+///
+/// Its spawn to its first request is its launch ([`launch`]), the host's to admit (PM M166),
+/// followed by its liveness alone and learned into `launches`. Each request after it is
+/// waited for by D215's judge on `grants`, this daemon's record of requests for access
+/// (`Answers::grants`): past W*, the slowest request seen from the answer before it, looked
 /// at each W* and given up on where a whole W* shows it ran no CPU, its host not the reason.
 /// A request there as its wait begins teaches nothing (D222's wait of nothing), nor does the
-/// link's end, which is no request. A VM first quiet past W*, before its first request or
-/// between two, is sampled once (Apple's sample(1), 3 s of its threads' stacks) into the
-/// home, beside daemon.log, as it goes on being waited for; a wait that then fails says
-/// where. It was `GRANT_STALL`'s 10 s and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
+/// link's end, which is no request. A VM first quiet past W* between two requests is sampled
+/// once (Apple's sample(1), 3 s of its threads' stacks) into the home, beside daemon.log, as
+/// it goes on being waited for; a wait that then fails says where. It was `GRANT_STALL`'s
+/// 10 s and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
 #[cfg(target_os = "macos")]
 fn grant(
     link: &UnixStream,
     pid: u32,
     template: Option<&Path>,
-    record: &shards_api::Record,
+    launches: &shards_api::Record,
+    grants: &shards_api::Record,
+    tell: &dyn Fn(&str),
 ) -> Result<(), GrantError> {
     let started = |why: String| GrantError { why, started: true };
     shards_ipc::timeout_set(link.set_read_timeout(None)).map_err(|e| started(format!("VM {pid}: {e}")))?;
     // A VM the host has not let run yet: its stacks would hold nothing (PM M166).
     let unstarted = || shards_vmm::platform::launched(pid) == Some(false);
     let mut sampled: Option<String> = None;
-    let mut said_unstarted = false;
-    // Its spawn to its first request answered, its launch and the host's admission of it
-    // among it, for a run that waits for it (cold, D25): said at debug.
     let spawned = Instant::now();
+    // Its launch, its wall time and CPU, taught once its first request has come.
+    let mut launched: Option<(Duration, Duration)> = None;
     // The wait for the request before, which teaches once it is known to have been one: as
     // the next wait begins.
     let mut asked: Option<shards_api::Follow<'_>> = None;
     let served = crate::grant_answer::serve_waiting(link, template, &mut |sent| {
-        if sent == 1 {
+        if sent == 0 {
+            launched = Some(launch(link, pid, spawned, launches, tell));
+            return Ok(());
+        }
+        if let (1, Some((wall, cpu))) = (sent, launched.take()) {
+            launches.teach(wall, cpu);
+            // Its launch and its first request answered, for a run that waits for it (cold,
+            // D25): said at debug.
             shards_vmm::debug!(
                 "VM {pid}: its first request for access answered {} us after its spawn",
                 spawned.elapsed().as_micros()
@@ -9623,7 +9673,7 @@ fn grant(
         let mut follow = shards_api::Followed::of_pid(pid)
             .ok()
             .flatten()
-            .and_then(|followed| shards_api::Follow::begin(record, followed).ok().flatten());
+            .and_then(|followed| shards_api::Follow::begin(grants, followed).ok().flatten());
         loop {
             let wait = follow
                 .as_ref()
@@ -9646,20 +9696,9 @@ fn grant(
                     format!("VM {pid}: its process could not be read: {failure}")
                 }
             })?;
-            if sampled.is_some() || said_unstarted {
-                continue;
+            if sampled.is_none() {
+                sampled = Some(sample(pid, sent, began.elapsed()));
             }
-            if sent == 0 && unstarted() {
-                said_unstarted = true;
-                log(format!(
-                    "VM {pid}: not started by the host {:?} after its spawn, past the slowest \
-                     request seen: it has run nothing yet, as macOS admits each launch after it \
-                     has assessed the executables launched before it (PM M166)",
-                    spawned.elapsed()
-                ));
-                continue;
-            }
-            sampled = Some(sample(pid, sent, began.elapsed()));
         }
         asked = follow;
         Ok(())
@@ -9681,6 +9720,40 @@ fn grant(
             None => format!("VM {pid}: {e}"),
         })
     })
+}
+
+/// Waits out VM `pid`'s launch, from its spawn (`spawned`) to its first request for access
+/// or its link's end: its wall time and the CPU it ran, for `launches` to learn once that
+/// request has come. A launch is the host's to admit (PM M166): amfid and syspolicyd assess
+/// its executable and secinitd sets up its App Sandbox, while its own threads wait on them
+/// asleep, running nothing, neither runnable nor stopped, so that no look at its process
+/// tells a launch its host is slow to admit from a stall (ROOT's batch 26, HVF, 1 of 14
+/// cores idle: one refused 16 ms still, 33 ms into its wait, which then asked). It is
+/// followed by its liveness alone, its link's end; once it outlasts the slowest launch seen
+/// it is said, once, to the daemon's log and through `tell` (a waiting run's client, on a
+/// terminal).
+#[cfg(target_os = "macos")]
+fn launch(
+    link: &UnixStream,
+    pid: u32,
+    spawned: Instant,
+    launches: &shards_api::Record,
+    tell: &dyn Fn(&str),
+) -> (Duration, Duration) {
+    if let shards_api::Seen::Learned { slowest, .. } = launches.seen()
+        && !readable_within(link, Some(slowest.saturating_sub(spawned.elapsed())))
+    {
+        let said = format!(
+            "VM {pid}: its launch waits on the host {:?} after its spawn, past the slowest seen \
+             ({slowest:?}): macOS launch services, M166",
+            spawned.elapsed()
+        );
+        log(said.clone());
+        tell(&format!("shards: {said}"));
+    }
+    readable_within(link, None);
+    let cpu = shards_vmm::platform::process_usage(pid).map_or(0, |usage| usage.cpu_ns);
+    (spawned.elapsed(), Duration::from_nanos(cpu))
 }
 
 /// Samples VM `pid`'s stacks, quiet `quiet` after `sent` messages, into the home (Apple's
@@ -10233,6 +10306,62 @@ mod tests {
         shards_ipc::send(&theirs, kind::READY, &[], &[]).unwrap();
         ready(&ours, std::process::id(), &record).unwrap();
         assert_eq!(record.seen(), shards_api::Seen::Cold);
+    }
+
+    /// A VM's launch, its spawn to its first request for access, is the host's to admit (PM
+    /// M166): a stand-in that runs nothing through it, as a launch waiting asleep on secinitd
+    /// does, is waited for past the slowest launch seen, said so once to its run's client,
+    /// and its request answered, the record of launches taught by it (ROOT's batch 26, HVF:
+    /// one refused 16 ms still, 33 ms into its wait, which then asked). A request after the
+    /// first is still judged: the stand-in, running nothing past the slowest request seen, is
+    /// refused.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_vms_launch_is_waited_for_by_its_liveness_and_a_later_request_judged() {
+        let slowest = Duration::from_millis(200);
+        let (launches, grants) = (shards_api::Record::new(), shards_api::Record::new());
+        launches.teach(slowest, Duration::from_millis(1));
+        grants.teach(slowest, Duration::from_millis(1));
+        let asleep = sleeper(60);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (told, said) = mpsc::channel::<String>();
+        let refused = std::thread::scope(|s| {
+            let granting = s.spawn({
+                let (ours, launches, grants, pid) = (&ours, &launches, &grants, asleep.id());
+                move || {
+                    let tell = |line: &str| {
+                        let _ = told.send(line.to_owned());
+                    };
+                    grant(ours, pid, None, launches, grants, &tell)
+                }
+            });
+            let Ok(line) = said.recv() else {
+                let refused = granting.join().unwrap().err().map(|e| e.why);
+                panic!("its launch went unsaid: {refused:?}");
+            };
+            assert!(line.contains("its launch waits on the host"), "{line}");
+            // Its first request, asking nothing; then nothing more, the stand-in asleep.
+            shards_ipc::send(&theirs, kind::GRANT, &0u32.to_be_bytes(), &[]).unwrap();
+            let refused = granting
+                .join()
+                .unwrap()
+                .expect_err("a still VM past its first request");
+            assert!(said.try_recv().is_err(), "its launch said once");
+            refused
+        });
+        let _ = asleep.kill(shards_ipc::signal::SIGKILL);
+        let _ = asleep.wait();
+        assert!(refused.started);
+        assert!(
+            refused.why.contains("asked nothing after 1 messages"),
+            "{}",
+            refused.why
+        );
+        assert!(
+            matches!(launches.seen(), shards_api::Seen::Learned { slowest: learned, .. } if learned > slowest),
+            "{:?}",
+            launches.seen()
+        );
     }
 
     /// The basis as the daemon reads it of a VM's process, on this host: a process that

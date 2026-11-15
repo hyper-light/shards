@@ -243,7 +243,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 link_local: Vec::new(),
                 engine: None,
             },
-            || self.warm_for(threads, &prepared, &start, &|_| {}),
+            || self.warm_for(threads, &prepared, &start, &|_| {}, &|_| {}),
         );
         drop(prepared.lease.take());
         drop(fds);
