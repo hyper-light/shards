@@ -2754,7 +2754,7 @@ mod tests {
                         path.display()
                     );
                 }
-                let mut file = std::fs::File::create(&path).unwrap();
+                let file = std::fs::File::create(&path).unwrap();
                 let bytes = vec![1u8; chunk];
                 std::thread::scope(|scope| {
                     scope.spawn(|| {
