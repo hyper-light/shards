@@ -5072,7 +5072,8 @@ mod hosted {
                 .map_err(|e| format!("its microVM's key: {e}"))
         }
 
-        /// The SHA-256 its controller pins of it.
+        /// The SHA-256 its controller pins of it, which its endpoint says once bound.
+        #[cfg(test)]
         pub(super) fn fingerprint(&self) -> shards_remote::identity::Fingerprint {
             self.0.fingerprint()
         }
