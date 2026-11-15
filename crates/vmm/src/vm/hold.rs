@@ -629,7 +629,8 @@ mod tests {
     fn a_vcpu_run_apart_from_its_thread_is_held_by_its_guest_time() {
         for (charged, held) in [(Charged::Apart, true), (Charged::ToThread, false)] {
             let hold = Hold::new(1);
-            let rated = hold.set(250).unwrap();
+            // A g of the test's own: the process's is other tests' to learn.
+            let rated = hold.set_at(250, Duration::from_millis(4)).unwrap();
             let periods = 8;
             let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let (registered, done) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -678,7 +679,8 @@ mod tests {
     #[test]
     fn a_vcpu_seen_late_is_held_across_periods_by_what_it_overran() {
         let hold = Hold::new(1);
-        let rated = hold.set(250).unwrap();
+        // A g of the test's own: the process's is other tests' to learn.
+        let rated = hold.set_at(250, Duration::from_millis(4)).unwrap();
         let period = rated.period;
         let periods = 32;
         let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
