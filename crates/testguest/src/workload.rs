@@ -406,18 +406,6 @@ pub fn main() -> ! {
             std::thread::sleep(std::time::Duration::from_secs(arg(2).parse().unwrap_or(0)));
             0
         }
-        // Reads its stdin to its end, then runs as `MODE ARGS…` (its own program again, the
-        // same process): what waits for its host's word before it starts, as a harness is told
-        // its run's room before it grows (D275).
-        "on-input" => {
-            use std::os::unix::process::CommandExt as _;
-            let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
-            let e = std::process::Command::new("/proc/self/exe")
-                .args(args.get(1..).unwrap_or_default())
-                .exec();
-            let _ = writeln!(io::stderr(), "on-input: {e}");
-            1
-        }
         // N MiB in one allocation, every page touched, then says so: what the kernel's
         // overcommit heuristic refuses past the memory it counts (D149).
         "alloc-once" => {

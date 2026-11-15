@@ -191,15 +191,6 @@ fn told(args: &[Vec<u8>]) -> io::Result<Told> {
     Ok(run::room_now(room, at, now).map_or(Told::AsSaid(room), Told::Room))
 }
 
-/// The share of the run's `domains` written again, as its most or its budget's room moved
-/// (`domains::reshare`, D275): nothing where it started none.
-fn reshare(domains: &[crate::domains::Started]) -> io::Result<()> {
-    if domains.is_empty() {
-        return Ok(());
-    }
-    crate::domains::reshare().map_err(io::Error::other)
-}
-
 /// Reports at once the memory the guest holds free that waits to be reported to its
 /// microVM, which gives it back to the host (D151), and waits for it: a template is saved
 /// with none waiting, else each copy reports, two seconds into its life, what the
@@ -609,7 +600,7 @@ fn mount_root(device: &str) -> Result<(), Failure> {
         // The memory it may still plug, reported where its kernel reports it (D149):
         // opened before /proc/sys is masked, and written again as its run comes.
         crate::plug::open_pluggable();
-        crate::plug::report_pluggable(RUN_CGROUP)
+        crate::plug::report_pluggable()
             .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
         plug.hold_run(notes)
             .map_err(|e| setup_failed(format!("holding the microVM's memory: {e}")))?;
@@ -2964,7 +2955,7 @@ impl Standby {
             .map_err(|e| setup_failed(format!("the timer of its ready-by: {e}")))?;
         // What its microVM may still plug, its run's own, which its VM set before its run
         // came, where the kernel reports it (D149): before anything of the run's starts.
-        crate::plug::report_pluggable(RUN_CGROUP)
+        crate::plug::report_pluggable()
             .map_err(|e| setup_failed(format!("reporting the microVM's memory: {e}")))?;
         // Its own MAC, not its template's (D46): given, or made for it, as dockerd gives
         // each container's endpoint one; first, as libnetwork sets it before addresses.
@@ -3980,12 +3971,11 @@ fn builtin(
             },
             run::builtin::EXPORT => export(&mut out),
             // Its limits, then what its microVM may still plug, its VM told its run's new
-            // most before this came (`PLUG`, D148, D149), and its domains' share of it (D275).
+            // most before this came (`PLUG`, D148, D149).
             run::builtin::CGROUP => write_cgroup_in(&cgroup, args)
                 .map_err(io::Error::other)
-                .and_then(|()| crate::plug::report_pluggable(RUN_CGROUP))
-                .and_then(|()| crate::plug::rehold_run(RUN_CGROUP))
-                .and_then(|()| reshare(domains)),
+                .and_then(|()| crate::plug::report_pluggable())
+                .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => stats_cgroup(args, &cgroup, joiner.is_some(), |m| {
                 domains.iter().find(|d| d.member == m).map(|d| d.cgroup.clone())
             })
@@ -4003,14 +3993,9 @@ fn builtin(
             }),
             // Its engine's relay told first, which lets its idle ring slots go where the room
             // is short of what the run needs to go on (D230); with no slot made, nothing.
-            // Then what its kernel reports it may still plug, and its domains' share, within
-            // the room (D275).
             run::builtin::ROOM => told(args).and_then(|told| {
                 crate::ring::told(told.room());
-                let held = crate::plug::hold_within(RUN_CGROUP, told.room())?;
-                crate::plug::report_pluggable(RUN_CGROUP)?;
-                reshare(domains)?;
-                match (held, told) {
+                match (crate::plug::hold_within(RUN_CGROUP, told.room())?, told) {
                     (Some(held), Told::AsSaid(_)) => write!(out, "{held} {}", run::builtin::ROOM_UNREAD),
                     (Some(held), _) => write!(out, "{held}"),
                     (None, _) => Ok(()),

@@ -444,20 +444,16 @@ pub(super) struct Parent {
     page: u64,
 }
 
-/// This kernel's page size, as sysconf reports it on either guest arch.
-fn page_size() -> Result<u64, Refusal> {
-    // SAFETY: sysconf(_SC_PAGESIZE) has no pointer arguments.
-    u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
-        .ok()
-        .filter(|p| *p > 0)
-        .ok_or_else(|| Refusal::new(c"page size", Cause::PageSize))
-}
-
 impl Parent {
     pub(super) fn prepare(memory_high: u64) -> Result<Self, Refusal> {
         let run = run_group()?;
         enable(&run)?;
-        let page = page_size()?;
+        // sysconf reports this kernel's actual page size on either guest arch.
+        // SAFETY: sysconf(_SC_PAGESIZE) has no pointer arguments.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+            .ok()
+            .filter(|p| *p > 0)
+            .ok_or_else(|| Refusal::new(c"page size", Cause::PageSize))?;
         let group = Group::create(&run, "domains", true)?;
         let configured = (|| {
             enable(&group.directory)?;
@@ -558,34 +554,12 @@ pub(super) fn workload_headroom() -> Result<u64, Refusal> {
     })
 }
 
-/// The domains' share (D59's pressure policy, D148, D275): what they hold (`held`), what the
-/// microVM can give (`available`) and may still plug (`pluggable`), no more than a budget's
-/// `room` leaves them where one holds their run, less what the workload's own limit still
-/// promises it (`workload`). Overflow is unknown, not a larger budget.
-pub(super) fn share(
-    held: u64,
-    available: u64,
-    pluggable: u64,
-    room: Option<u64>,
-    workload: u64,
-) -> Result<u64, Refusal> {
-    held.checked_add(available)
-        .and_then(|n| n.checked_add(pluggable))
-        .map(|n| room.map_or(n, |room| n.min(room)).saturating_sub(workload))
+/// Existing D59 pressure policy only. Overflow is unknown, not a larger budget.
+pub(super) fn pressure_headroom(available: u64, pluggable: u64, workload: u64) -> Result<u64, Refusal> {
+    available
+        .checked_add(pluggable)
+        .map(|n| n.saturating_sub(workload))
         .ok_or_else(|| Refusal::new(c"domains memory.high", Cause::Overflow))
-}
-
-/// Sets the domains' `memory.high` to `memory_high` again, read back as the kernel keeps it
-/// (D275): their share as their run's room moves.
-pub(super) fn reshare(memory_high: u64) -> Result<(), Refusal> {
-    let run = run_group()?;
-    let domains = open_at(&run, c"domains", libc::O_RDONLY | libc::O_DIRECTORY)?;
-    set(
-        &domains,
-        c"memory.high",
-        memory_high,
-        memory_value(memory_high, page_size()?)?,
-    )
 }
 
 #[cfg(test)]
@@ -663,23 +637,12 @@ mod tests {
 
     #[test]
     fn pressure_arithmetic_does_not_invent_a_reservation() {
-        assert_eq!(share(0, 50, 25, None, 20), Ok(55));
-        assert_eq!(share(0, 50, 25, None, 100), Ok(0));
-        assert_eq!(share(0, u64::MAX, 1, None, 0).unwrap_err().cause, Cause::Overflow);
-        assert_eq!(share(1, u64::MAX, 0, None, 0).unwrap_err().cause, Cause::Overflow);
-    }
-
-    /// D275: what the domains hold counts with what the microVM can give, and a budget's
-    /// room bounds their share where it leaves them less, never more; the workload's
-    /// promise comes off either.
-    #[test]
-    fn a_rooms_share_is_what_it_leaves_and_never_more_than_the_microvm_gives() {
-        assert_eq!(share(30, 50, 25, None, 0), Ok(105));
-        assert_eq!(share(30, 50, 25, Some(60), 0), Ok(60));
-        assert_eq!(share(30, 50, 25, Some(60), 10), Ok(50));
-        assert_eq!(share(30, 50, 25, Some(200), 10), Ok(95));
-        assert_eq!(share(30, 50, 25, Some(0), 0), Ok(0));
-        assert_eq!(share(0, 0, 0, Some(u64::MAX), 0), Ok(0));
+        assert_eq!(pressure_headroom(50, 25, 20), Ok(55));
+        assert_eq!(pressure_headroom(50, 25, 100), Ok(0));
+        assert_eq!(
+            pressure_headroom(u64::MAX, 1, 0).unwrap_err().cause,
+            Cause::Overflow
+        );
     }
 
     #[test]

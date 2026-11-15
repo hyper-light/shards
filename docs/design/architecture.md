@@ -36664,7 +36664,7 @@ run.rs `a_boots_words_are_its_configs` holds every flag a run's boot gives a val
 vm_run's `valued_flags_need_their_values` holds it to `run`), and vm_run's
 `a_components_window_takes_its_value` reads the window's value.
 
-### D275. An orchestrator's run plugs as a daemon's does, and its members' share is re-derived within its budget's room (built; real-VM batch below)
+### D275. An orchestrator's run plugs as a daemon's does (built; its members' share within a room held back, below)
 
 **What failed.** kiln P1.4 (2026-11-14; Shards d993d83ee under Hex 414aa30d3) boots every
 harness at shards-api's least envelope (`envelope(ARCH, 0, 0)`: 1 vCPU, 64 MiB on arm64, 128
@@ -36676,52 +36676,37 @@ orchestrator's run told its VM it may plug nothing, its kernel reported what it 
 (D149), and its members' share (D148: `MemAvailable` and what may still be plugged, less the
 workload's promise) was what was free as their domains started. The daemon's runs and their
 visits each computed their own most (`memory_max` less the boot), so only orchestrators' runs
-lost it. Second, found by the same lane: an orchestrator bounds each box with
-`ImageGuest::room` (D241), whose cap held the run's cgroup and its grower's plugs, while the
-domains' share, set once as they started, still counted all the host's memory: a member past
-the room was throttled at the run's hold and never ended, and no words said why.
+lost it.
 
-**What.**
-- *The most to plug* (d4990fec8): `Prepared::plug_bytes` (`run.rs`), its `memory_max` less its
-  boot, none where it boots with all of it, is one function for the daemon's runs, its visits
-  and an orchestrator's (`api_run::hosted`, `run_request(spec, plug, …)`): every request that
-  hands a microVM its run carries it, and its VM sets it as its guest's most before the guest
-  hears of the run.
-- *The share* (4e0b82699): one rule, `domains::share` (`admission::share` its arithmetic),
-  at the domains' start and again at each `ROOM` and `CGROUP` built-in (`run.rs`, as a room is
-  told or `-m` moves the most): what the domains hold (`memory.current` of
-  `/sys/fs/cgroup/run/domains`), what the microVM can give (`MemAvailable`, the kernel's own
-  report of what may still be plugged taken off it, D149) and may still plug within the room
-  (`plug::still_pluggable` through `most_within`, D188, D241), no more than the room leaves
-  past what the rest of the run holds, less what the workload's own limit (`-m`) still
-  promises it. It is written as the domains' `memory.high` (`admission::reshare`, read back as
-  the kernel keeps it); the kernel's report of what may still be plugged follows the room
-  (`plug::report_pluggable(cgroup)`); and init's words for a domain ended past its share name
-  the room ("within the room its budget leaves the run, N bytes in all").
-- *No new literal* (R03): every term is the kernel's, the run's or the room's own report.
-- *Alternatives.* (a) The share fixed at the domains' start, as before: a room never reaches
-  the members, who are throttled at the run's hold with no end and no words. (b) The run's own
-  `memory.max` alone: the guest's OOM killer then chooses by resident memory
-  (mm/oom_kill.c, `oom_badness`), which a scratch tmpfs escapes, not the domain holding the
-  most, and says nothing to the run. (c) Re-deriving on a timer: a periodic probe (R05) where
-  the `ROOM` and `CGROUP` words are the events that move the share.
+**What** (d4990fec8). `Prepared::plug_bytes` (`run.rs`), its `memory_max` less its boot, none
+where it boots with all of it, is one function for the daemon's runs, its visits and an
+orchestrator's (`api_run::hosted`, `run_request(spec, plug, …)`): every request that hands a
+microVM its run carries it, and its VM sets it as its guest's most before the guest hears of
+the run. *No new literal* (R03).
 
-**Review notes** (coordinator, 2026-11-15). At a re-derivation the domains' `memory.current`
-includes their page cache, which `MemAvailable` also counts as reclaimable: with no room the
-share may exceed what the microVM can give by up to the domains' own reclaimable file pages,
-so near the most to plug a member could meet the guest's OOM killer before init's ordered end.
-Within a room, the room's term (the room less the rest of the run, one cgroup's counts) is
-exact and bounds it. Not reproduced (R09): owed, not changed.
+**Held back: the members' share within a room** (4e0b82699, p/member-share). An orchestrator
+bounds each box with `ImageGuest::room` (D241), whose cap holds the run's cgroup and its
+grower's plugs, while the domains' share, set once as they start, counts all the host's
+memory: a member past the room is throttled at the run's hold and never ended, and no words say
+why. 4e0b82699 re-derived the share at each `ROOM` and `CGROUP` built-in, within the room, and
+named the room in init's words. On KVM (adacachy2, PM M605) it made nesting.rs fail one test in
+each of five runs, a judged wait on the daemon (`shards stop daemon`, `shards build image`,
+`shards ps`) refused as making no progress past its record, where three runs without it, and
+three with only its re-derivation at `ROOM` taken out, passed 14 of 14: re-deriving the share
+at each `ROOM`, which a daemon's budget tells its runs at each window of its host's pressure,
+stalls what the daemon waits on. Its cause is not yet found (owed to its lane): candidates are
+the `memory.high` write, which reclaims in the writer's thread where the share is below what the
+domains hold, and the share's read of `MemAvailable` with the kernel's report taken off
+(`plug::unreported`). Also owed from its review (coordinator, 2026-11-15): at a re-derivation
+with no room the domains' `memory.current` counts their page cache, which `MemAvailable` counts
+as reclaimable too. Reverted from this revision; until it returns, a member past an
+orchestrator's room is throttled at the run's hold, as before.
 
 **Verified.** E2E (api_image.rs): `a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug`
 (4631b27d9: a harness at the least envelope holds four times its boot memory a page at a time,
 its kernel's `MemTotal` is the host's memory, and one allocation past all of it is refused at
-once) and `an_orchestrators_room_is_its_members_share` (a room of half what it grows to ends
-it, `Signaled(9)`, in init's words naming the room; a room of twice that lets it end 0); unit
-`a_rooms_share_is_what_it_leaves_and_never_more_than_the_microvm_gives` and
-`pressure_arithmetic_does_not_invent_a_reservation` (admission.rs), and api_run's
-`an_orchestrators_run_may_plug_its_most_less_its_boot`. Results by backend, with their red
-and mutation runs: the vendor point's evidence record (PM M605).
+once); unit (api_run.rs) `an_orchestrators_run_may_plug_its_most_less_its_boot`. Results by
+backend, with their red runs, and 4e0b82699's nesting runs: PM M605.
 
 ## 4. Start path (≤ 5 ms budget)
 

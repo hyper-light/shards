@@ -222,7 +222,7 @@ fn serve() -> io::Result<()> {
         // What it may still plug, reported where its kernel reports it (D149), as a
         // build on a host sees the host's memory: before its grower, which reads it.
         crate::plug::open_pluggable();
-        crate::plug::report_pluggable(crate::plug::BUILD)?;
+        crate::plug::report_pluggable()?;
     }
     // Every builder's build in its own cgroup, held at the memory it has where it plugs.
     let notes = crate::plug::hold_build(plug)?;
