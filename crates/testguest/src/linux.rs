@@ -3729,6 +3729,34 @@ fn bench_connection(mut conn: std::fs::File) -> Result<(), String> {
             }
             bench_serve(b'S', count, &mut conn)
         }
+        // A guest's own end of a stream while its host's way is open (D251, amended): `C`
+        // sends `count` bytes, each its offset modulo 251, then closes (close(2): one
+        // SHUTDOWN of RCV and SEND); `X` sends them, then cuts as shards-init's relay does
+        // (relay.rs `cut`: its reads' end, then both ways), then closes.
+        b'C' | b'X' => {
+            let mut buf = vec![0u8; 64 << 10];
+            let mut sent = 0u64;
+            while sent < count {
+                let n = usize::try_from(count - sent).unwrap_or(usize::MAX).min(buf.len());
+                let chunk = buf.get_mut(..n).ok_or("pattern slice")?;
+                for (i, b) in chunk.iter_mut().enumerate() {
+                    *b = ((sent + i as u64) % 251) as u8;
+                }
+                conn.write_all(chunk).map_err(|e| format!("{op} write: {e}"))?;
+                sent += n as u64;
+            }
+            if op == b'X' {
+                use std::os::fd::AsRawFd as _;
+                for how in [libc::SHUT_RD, libc::SHUT_RDWR] {
+                    // SAFETY: shutdown(2) of the connection this measurement owns.
+                    if unsafe { libc::shutdown(conn.as_raw_fd(), how) } != 0 {
+                        return Err(format!("X shutdown: {}", io::Error::last_os_error()));
+                    }
+                }
+            }
+            drop(conn);
+            Ok(())
+        }
         other => Err(format!("no measurement {other}")),
     }
 }

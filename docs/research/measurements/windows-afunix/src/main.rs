@@ -28,7 +28,13 @@
 //! - with `m358` (PM M358), what a peer reads of what a socket sent before it closed
 //!   holding some of the peer's data unread: shut down first or not, drained first, the
 //!   peer's data sent after the shutdown, the peer partly read, shut down both ways, with
-//!   SO_LINGER; and where the peer writes after the close. AF_UNIX and loopback TCP.
+//!   SO_LINGER; and where the peer writes after the close. AF_UNIX and loopback TCP;
+//! - with `ends` (D251, amended), whether an AF_UNIX socket that ended its writes learns
+//!   that its peer has read every byte (what WSAPoll reports of it as its peer reads its
+//!   bytes, then their end, a send buffer's worth or a few), and what the peer's sends meet
+//!   once it has closed after that; and the same ends over a named pipe: its server writes
+//!   and closes its handle (CloseHandle, no DisconnectNamedPipe), and its client reads, its
+//!   own bytes unread by the server or not, then writes.
 
 use std::time::{Duration, Instant};
 
@@ -464,7 +470,9 @@ fn probe() -> Result<(), String> {
     let eof = recv_some(b, &mut buf)?;
     send_all(b, b"back")?;
     let back = recv_some(a, &mut buf)?;
-    println!("half-close: shutdown={shut} peer read {first} then {eof} (0 is end-of-stream); the other way {back} bytes");
+    println!(
+        "half-close: shutdown={shut} peer read {first} then {eof} (0 is end-of-stream); the other way {back} bytes"
+    );
     close(a);
     close(b);
     // WSAPoll.
@@ -498,7 +506,11 @@ fn probe() -> Result<(), String> {
         }
     }
     // SAFETY: no arguments.
-    println!("poll write: send buffer full after {filled} bytes (last error {}): {}", unsafe { WSAGetLastError() }, polled(a));
+    println!(
+        "poll write: send buffer full after {filled} bytes (last error {}): {}",
+        unsafe { WSAGetLastError() },
+        polled(a)
+    );
     let mut sink = vec![0u8; 1 << 20];
     let mut drained = 0;
     while drained < filled {
@@ -527,14 +539,33 @@ fn probe() -> Result<(), String> {
     let r = unsafe { WSASend(a, bufs.as_ptr(), 3, &raw mut sent, 0, std::ptr::null_mut(), None) };
     let (mut x, mut y, mut z) = ([0u8; 6], [0u8; 7], [0u8; 5]);
     let rbufs = [
-        WSABUF { len: 6, buf: x.as_mut_ptr() },
-        WSABUF { len: 7, buf: y.as_mut_ptr() },
-        WSABUF { len: 5, buf: z.as_mut_ptr() },
+        WSABUF {
+            len: 6,
+            buf: x.as_mut_ptr(),
+        },
+        WSABUF {
+            len: 7,
+            buf: y.as_mut_ptr(),
+        },
+        WSABUF {
+            len: 5,
+            buf: z.as_mut_ptr(),
+        },
     ];
     let (mut got, mut flags) = (0u32, 0u32);
     std::thread::sleep(Duration::from_millis(20));
     // SAFETY: three buffers, synchronous.
-    let r2 = unsafe { WSARecv(b, rbufs.as_ptr(), 3, &raw mut got, &raw mut flags, std::ptr::null_mut(), None) };
+    let r2 = unsafe {
+        WSARecv(
+            b,
+            rbufs.as_ptr(),
+            3,
+            &raw mut got,
+            &raw mut flags,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
     println!(
         "scatter-gather: send={r} sent={sent} recv={r2} got={got} parts={:?} {:?} {:?}",
         String::from_utf8_lossy(&x),
@@ -576,7 +607,12 @@ fn listener_at(dir: &std::path::Path, name: &str, backlog: i32) -> Result<(SOCKE
     let l = socket(AF_UNIX)?;
     // SAFETY: an address of its own length; a bound socket.
     unsafe {
-        if bind(l, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) != 0 {
+        if bind(
+            l,
+            (&raw const addr).cast(),
+            std::mem::size_of::<SOCKADDR_UN>() as i32,
+        ) != 0
+        {
             let e = error(&format!("bind {path_s}"));
             close(l);
             return Err(e);
@@ -596,7 +632,13 @@ fn connect_nowait(path: &str) -> Result<(SOCKET, i32), String> {
     nonblocking(c)?;
     let addr = unix_addr(path);
     // SAFETY: an address of its own length.
-    let r = unsafe { connect(c, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) };
+    let r = unsafe {
+        connect(
+            c,
+            (&raw const addr).cast(),
+            std::mem::size_of::<SOCKADDR_UN>() as i32,
+        )
+    };
     // SAFETY: no arguments.
     Ok((c, if r == 0 { 0 } else { unsafe { WSAGetLastError() } }))
 }
@@ -636,7 +678,10 @@ fn connects(dir: &std::path::Path) -> Result<(), String> {
         }
         close(c);
     }
-    println!("M205 a listener with room: connect returned {codes:?} (0 or the WSA error); writable after {}; polls {polls:?}", summary(&mut writable));
+    println!(
+        "M205 a listener with room: connect returned {codes:?} (0 or the WSA error); writable after {}; polls {polls:?}",
+        summary(&mut writable)
+    );
     close(l);
     let (gone, gone_path) = listener_at(dir, "gone", 1)?;
     close(gone);
@@ -688,7 +733,13 @@ fn connects(dir: &std::path::Path) -> Result<(), String> {
     let blocking = socket(AF_UNIX)?;
     let addr = unix_addr(&b_path);
     // SAFETY: an address of its own length; a blocking socket.
-    let r = unsafe { connect(blocking, (&raw const addr).cast(), std::mem::size_of::<SOCKADDR_UN>() as i32) };
+    let r = unsafe {
+        connect(
+            blocking,
+            (&raw const addr).cast(),
+            std::mem::size_of::<SOCKADDR_UN>() as i32,
+        )
+    };
     // SAFETY: no arguments.
     let code = if r == 0 { 0 } else { unsafe { WSAGetLastError() } };
     println!(
@@ -736,7 +787,10 @@ fn pair_with(dir: &std::path::Path, n: usize, family: u16, flags: u32) -> Result
         sin_zero: [0; 8],
     };
     let (addr, mut len): (*mut SOCKADDR, i32) = if family == AF_UNIX {
-        ((&raw const unix).cast_mut().cast(), std::mem::size_of::<SOCKADDR_UN>() as i32)
+        (
+            (&raw const unix).cast_mut().cast(),
+            std::mem::size_of::<SOCKADDR_UN>() as i32,
+        )
     } else {
         ((&raw mut tcp).cast(), std::mem::size_of::<SOCKADDR_IN>() as i32)
     };
@@ -830,7 +884,9 @@ fn concurrent(dir: &std::path::Path) -> Result<(), String> {
                                 if wait == "recv-timeout" {
                                     let ms = WAITER_MS;
                                     // SAFETY: an option of its own size, on our socket.
-                                    unsafe { setsockopt(waiter, SOL_SOCKET, SO_RCVTIMEO, (&raw const ms).cast(), 4) };
+                                    unsafe {
+                                        setsockopt(waiter, SOL_SOCKET, SO_RCVTIMEO, (&raw const ms).cast(), 4)
+                                    };
                                 }
                                 let mut byte = [0u8; 1];
                                 format!("recv {:?}", recv_some(waiter, &mut byte))
@@ -906,7 +962,10 @@ fn closes(dir: &std::path::Path) -> Result<(), String> {
             let mut buf = [0u8; 4096];
             let mut read = 0;
             let mut late = String::new();
-            if !matches!(case, "clean" | "written-after-the-close" | "unread-after-shutdown") {
+            if !matches!(
+                case,
+                "clean" | "written-after-the-close" | "unread-after-shutdown"
+            ) {
                 send_all(peer, b"stdin")?;
             }
             send_all(closer, SENT)?;
@@ -957,7 +1016,10 @@ fn closes(dir: &std::path::Path) -> Result<(), String> {
             close(closer);
             if case == "written-after-the-close" {
                 std::thread::sleep(Duration::from_millis(50));
-                late = format!(" (the peer's send after the close: {:?})", send_all(peer, b"stdin"));
+                late = format!(
+                    " (the peer's send after the close: {:?})",
+                    send_all(peer, b"stdin")
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
             let end = loop {
@@ -977,8 +1039,219 @@ fn closes(dir: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// One AF_UNIX `ends` case: the closer sends a few bytes or a send buffer's worth, ends its
+/// writes, and WSAPoll is asked of it as its peer reads them, then their end; the closer
+/// then closes, holding the peer's 5 bytes unread, and the peer sends twice.
+fn unix_ends(dir: &std::path::Path) -> Result<(), String> {
+    for (n, case) in [(1usize, "few"), (2, "full")] {
+        let (closer, peer) = pair_with(dir, 100 + n, AF_UNIX, 0)?;
+        let timeout: u32 = 2000;
+        // SAFETY: an option of its own size, on our socket: a read waits no longer.
+        unsafe { setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, (&raw const timeout).cast(), 4) };
+        send_all(peer, b"stdin")?;
+        nonblocking(closer)?;
+        let sent = if case == "few" {
+            send_all(closer, SENT)?;
+            SENT.len()
+        } else {
+            fill(closer)
+        };
+        // SAFETY: our socket.
+        unsafe { shutdown(closer, SD_SEND) };
+        println!(
+            "ends unix {case}: sent {sent}; the peer has read none: closer {}",
+            polled(closer)
+        );
+        let mut buf = vec![0u8; 1 << 20];
+        let mut read = 0usize;
+        while read + 1 < sent {
+            read += recv_some(peer, &mut buf[..(sent - 1 - read).min(1 << 20)])?;
+        }
+        println!(
+            "ends unix {case}: the peer has read all but one: closer {}",
+            polled(closer)
+        );
+        read += recv_some(peer, &mut buf[..1])?;
+        println!(
+            "ends unix {case}: the peer has read all {read}: closer {}",
+            polled(closer)
+        );
+        let end = recv_some(peer, &mut buf);
+        println!(
+            "ends unix {case}: the peer read its end ({end:?}): closer {}",
+            polled(closer)
+        );
+        close(closer);
+        std::thread::sleep(Duration::from_millis(50));
+        let first = send_all(peer, b"late");
+        std::thread::sleep(Duration::from_millis(50));
+        let second = send_all(peer, b"late");
+        println!("ends unix {case}: closed after the peer's end; its sends then: {first:?}, {second:?}");
+        close(peer);
+    }
+    Ok(())
+}
+
+/// The named pipe `ends` cases: a server instance in byte mode, a client opened on it.
+fn pipe_ends() -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    };
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+    fn last(what: &str) -> String {
+        // SAFETY: reads this thread's last error.
+        format!("{what}: error {}", unsafe { GetLastError() })
+    }
+    fn write(h: HANDLE, mut buf: &[u8]) -> Result<(), String> {
+        while !buf.is_empty() {
+            let mut n = 0u32;
+            // SAFETY: `buf.len()` bytes of `buf`, written by a handle of ours.
+            if unsafe {
+                WriteFile(
+                    h,
+                    buf.as_ptr(),
+                    buf.len().min(1 << 20) as u32,
+                    &raw mut n,
+                    std::ptr::null_mut(),
+                )
+            } == 0
+            {
+                return Err(last("WriteFile"));
+            }
+            buf = &buf[n as usize..];
+        }
+        Ok(())
+    }
+    fn read(h: HANDLE, buf: &mut [u8]) -> Result<usize, String> {
+        let mut n = 0u32;
+        // SAFETY: `buf.len()` bytes of `buf`, read by a handle of ours.
+        if unsafe {
+            ReadFile(
+                h,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
+                &raw mut n,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(last("ReadFile"));
+        }
+        Ok(n as usize)
+    }
+    for (i, (case, bytes)) in [
+        ("clean", 63usize),
+        ("unread", 63),
+        ("clean", 4 << 20),
+        ("unread", 4 << 20),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = wide(&format!(r"\\.\pipe\ends-{}-{i}", std::process::id()));
+        // SAFETY: a fresh instance named `name`, 64 KiB each way, no security attributes.
+        let server = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                64 << 10,
+                64 << 10,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if server == INVALID_HANDLE_VALUE {
+            return Err(last("CreateNamedPipeW"));
+        }
+        // SAFETY: opens the instance just made, both ways.
+        let client = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if client == INVALID_HANDLE_VALUE {
+            return Err(last("CreateFileW"));
+        }
+        // SAFETY: the server's instance; its client has opened it already.
+        if unsafe { ConnectNamedPipe(server, std::ptr::null_mut()) } == 0
+            && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED
+        {
+            return Err(last("ConnectNamedPipe"));
+        }
+        if case == "unread" {
+            write(client, b"stdin")?;
+        }
+        let data: Vec<u8> = (0..bytes).map(|i| (i % 251) as u8).collect();
+        let (server_u, data_c) = (server as usize, data.clone());
+        // The server writes from a thread of its own, as a write past the pipe's buffer waits
+        // for its reader; then it closes its handle.
+        let writer = std::thread::spawn(move || {
+            let h = server_u as HANDLE;
+            let r = write(h, &data_c);
+            // SAFETY: the server's handle, closed once.
+            unsafe { CloseHandle(h) };
+            r
+        });
+        let mut got = Vec::with_capacity(bytes);
+        let mut buf = vec![0u8; 1 << 16];
+        let end = loop {
+            match read(client, &mut buf) {
+                Ok(0) => break "a read of 0".to_string(),
+                Ok(k) => got.extend_from_slice(&buf[..k]),
+                Err(e) => break e,
+            }
+        };
+        let wrote = writer.join().map_err(|_| "the writer panicked".to_string())?;
+        let first = write(client, b"late");
+        let second = write(client, b"late");
+        println!(
+            "ends pipe {case} {bytes}: the server's write {wrote:?}; the client read {} bytes{}, then {end}; its writes then: {first:?}, {second:?}",
+            got.len(),
+            if got == data {
+                ", all in order"
+            } else {
+                ", NOT the server's"
+            },
+        );
+        // SAFETY: the client's handle, closed once.
+        unsafe { CloseHandle(client) };
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("ends") {
+        let dir = std::env::temp_dir().join(format!("ends-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        if startup().is_ok() {
+            if let Err(e) = unix_ends(&dir) {
+                println!("ends unix failed: {e}");
+            }
+            if let Err(e) = pipe_ends() {
+                println!("ends pipe failed: {e}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("m358") {
         let dir = std::env::temp_dir().join(format!("m358-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);

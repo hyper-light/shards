@@ -33479,6 +33479,58 @@ Hex's acceptance (its INTERFACE.md and red tests, step11-a-socket-lane) is held 
     that fails (WSAECONNRESET from a cut socket) ends the other side both ways, the owner's
     pipe ended (`shards_ipc::end`, whose reader then finds it hung up: ERROR_BROKEN_PIPE) or
     the guest's socket shut down both ways; a read's end still half-closes it.
+- *Amended (2026-11-15, the WHP lane): a guest's own end keeps its bytes the host's.* This
+  replaces the relay's one `shutdown(SHUT_RDWR)` and the muxer's reading of RCV and SEND at
+  once as a cut, above, and the Windows cut's reset (`close_resets`, now removed).
+  - *Why.* Linux's close(2) of a vsock stream sends one SHUTDOWN of RCV and SEND
+    (`virtio_transport_close`, net/vmw_vsock/virtio_transport_common.c, Linux 7.2-rc4
+    lines 1281-1282), the same packet the relay's cut sent. So every guest program that
+    wrote and closed while its host's way was open was read as a cut, and on Windows its
+    host socket was closed resetting: Hex's stamps port, a stream its guest writes and
+    closes, reached the host's `read_to_string` as WSAECONNRESET (10054) instead of
+    end-of-stream, 3.1 s into a boot on hex-winvm (Hex 414aa30d3 over shards d993d83ee,
+    hex-cli `tests/guest_boot_record.rs:90`), and a reset loses its peer every byte it had
+    not read (PM M358). On Unix the same close read every byte, then an end.
+  - *The wire.* `shutdown(SHUT_RD)` sends a SHUTDOWN of RCV alone (`vsock_shutdown`,
+    af_vsock.c lines 1205-1216; `virtio_transport_shutdown`, virtio_transport_common.c
+    lines 1071-1083). The relay's cut is now its reads' end, then both ways (`relay.rs`
+    `cut`): RCV alone, then RCV and SEND. The muxer reads a SHUTDOWN of RCV without SEND,
+    while SEND has not come and the host's way is open, as the cut (`HostWrites::Cut`); RCV
+    and SEND in one packet is the guest's writes' end, its host socket shut for writing once
+    its bytes are flushed (`HostWrites::Shut`), as SEND alone always was. The contract is
+    `shards_abi::run::socket`'s (*Its cut*).
+  - *No guest byte lost, on every OS.* Every byte the guest sent before its end, its close
+    or its cut, is its host's before any end. On Unix a cut socket still closes with no
+    `shutdown(Write)` first, after its bytes are flushed, so its host reads them, then an
+    end hung up (PM M559). On Windows a cut ends as an end in order does (`Conn::linger`:
+    flushed, `shutdown(SD_SEND)`, held until the host ends its side, PM M358's hold), as no
+    WinSock AF_UNIX close keeps the bytes its peer has not read while telling it apart from
+    an end in order (M358: a close resets wherever the closer holds any of its peer's bytes
+    unread or its peer sends after it). So on Windows a cut reaches the VM process's `pass`
+    as end-of-stream, which it carries on as a half-close, and the controller reads `Ok(0)`
+    where Unix reads `ConnectionReset`: *What would falsify it*'s "a socket cut short read as
+    `Ok(0)`" holds on Unix and not on Windows, an open limit until the measurement below.
+  - *No black hole.* After the guest's close or cut a host's write fails at once on Unix
+    (its connection gone on the guest's RST, the socket closed: EPIPE). On Windows it does
+    not: the held end reads and drops what the host writes until the host ends its side, and
+    a send to an AF_UNIX socket already closed succeeds (M358's last row), so no close there
+    fails a write without losing the host the guest's bytes it had not read. An open,
+    measured platform limit, not a guarantee. Owed: whether WSAPoll's WRNORM, or the send
+    buffer's draining (M199), tells the muxer its host has read every byte, so that it could
+    reset only then; and, as evidence for the transport's choice alone, whether a Windows
+    named pipe closed by its server (CloseHandle, no DisconnectNamedPipe) gives its client
+    every byte, then ERROR_BROKEN_PIPE, and fails its client's write at once (ERROR_NO_DATA).
+  - *An older shards-init.* One whose relay cuts in one SHUTDOWN of RCV and SEND would now
+    be read as ending in order: its host reads every byte, then end-of-stream, never the cut.
+    No such init runs against this VMM: its contract text in `shards_abi` changed, so
+    `shards_abi::IDENTITY` (crates/abi/build.rs, the FNV-1a of the crate's sources) is
+    another, and a saved microVM whose init announced the old one is refused before its guest
+    runs (`snapshot::ResumeRefused::OlderInit`, D36); a template is keyed by its init's digest
+    (`run.rs`), so none made with the old init is restored; and a fresh boot runs the init
+    this `shards` carries.
+  - *Literals.* None added. The shutdown flags are virtio's (1.3 §5.10.6.4).
+  - *On no clock* (D264): a guest's end holds what its host has not taken past it, within the
+    window it had, instead of the 2 s `SHUTDOWN_TIMEOUT` after which it was dropped.
 - *The controller* (`control::drive`). `Subscriptions::sockets` and `Dialed::sockets`;
   `Sockets::connect(name)` sends its ask at once and gives a `PendingSocket`, whose
   `wait(patience)` answers `Ok(None)` while it is unanswered, then a `Socket` or a typed
@@ -33684,13 +33736,9 @@ function"), no time chosen.
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
 - Windows: `pass`'s test (`warm::tests::a_read_that_fails_ends_the_other_side_both_ways`)
   was compiled (cargo xwin clippy) but not run.
-- Windows: the cut's reset with nothing of the host's unread, unit tested but not run there:
-  shards-vmm `muxer::tests::a_guest_gone_both_ways_with_nothing_of_its_hosts_unread_is_a_cut`
-  (red before `close_resets`, as the WHP nesting run was) and shards-afunix
-  `a_close_made_to_reset_reads_as_a_reset_where_a_plain_one_ends_in_order` (a plain close
-  with nothing unread an end; one made to reset a reset). Whether afunix.sys honours
-  SO_LINGER {on, 0} is known from these alone: M358 set {on, 5} unchecked, and Microsoft's
-  documents name no AF_UNIX case.
+- Windows: the cut's reset was removed by the amendment above (a reset loses its host the
+  guest's bytes); its tests went with it. The amended ends' tests, and what ran where, are
+  listed under the amendment's evidence below.
 - Windows: `hung_up` on a pipe whose other end has closed, unrun (its peek is `readable`'s).
 - Windows: the controller's wake (its auto-reset event, `control::drive::tests`), compiled by
   CI's Windows legs and run by CI's Windows unit tests; its transport tests are Unix's (their
@@ -35576,6 +35624,59 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
   - A build with RUN steps through the API on HVF, KVM and WHP: its builder microVM booted by
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
+
+### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
+
+**Why.** The vsock device gave a connection whose guest had ended both ways 2 s to hand its
+host what the host had not taken (`SHUTDOWN_TIMEOUT`, Firecracker's
+`CONN_SHUTDOWN_TIMEOUT_MS`), then reset it and dropped the rest. A host slower than that, a
+busy orchestrator or a paused reader, lost guest bytes, against D251's amended rule that every
+byte a guest sent before its end is its host's. And a guest's own reset dropped them at once
+(the muxer's `remove`), which Linux sends when its close finds no reset from the host within
+`VSOCK_CLOSE_TIMEOUT` (`virtio_transport_close_timeout`, net/vmw_vsock/
+virtio_transport_common.c). The constant is an upstream default with no source of its own
+(R03).
+
+**What the timer guarded, and what bounds it instead.** A host that never reads holding the
+device's memory and a slot. Neither needs a clock:
+- *Memory.* After the guest's end nothing more comes, so all an ended connection may hold is
+  what it holds: at most the window it had granted (`send_host` refuses a byte past its
+  credit). Its grant ends with it (`Conn::end`: `granted_until` brought to what it holds), so
+  its share of the device's lent window (`WINDOW_LENT`) is what it holds past `WINDOW_LEAST`,
+  counted as an open connection's is (`Muxer::check`), and it falls as the host takes its
+  bytes. A guest's other connections are offered less window while it holds more.
+- *Descriptors.* An ended connection still held takes a slot (`Muxer::open`), as an open one
+  does: slots are what this process's descriptors leave (`slots`). Windows' held sockets
+  (M358's hold) took none before, which this mends.
+- *The guest.* Its connection ends at once: its reset goes as both its ways are over
+  (`Conn::flush`), whatever its host has not taken, so its key and port are free. A ringed
+  connection's ring is the guest's memory, drained while its connection lasts, as before.
+
+**Decided.** An ended connection is one of two held states (`conn::Ended`, R04): `Owing`
+(guest bytes its host has not taken, handed over as its socket turns writable) and, on Windows,
+`Lingering` (every byte the host's, its socket held until the host ends its side, D140's
+M358 hold). `Owing` settles once all is the host's (`Conn::settled`): its writes shut down
+where the guest's ended in order, then on Unix its socket closes and on Windows it lingers.
+It goes where its host has gone (a failed write) and with the muxer's reset. No deadline and
+no learned wait: what a host does not read it holds in its own socket, as it would any peer's,
+and a closed connection costs the device no more than an open one. `REQUEST_TIMEOUT`, a host
+dial's wait for the guest's answer, is untouched (its own R03 review is owed).
+
+**Literals.** None added; `SHUTDOWN_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_host_that_reads_long_after_its_guests_close_reads_every_byte_then_its_end` (a
+guest sends all its window lets it past every socket buffer, the host reading none, closes,
+three seconds pass, the host reads: every byte in order, then their end; its slot held until
+then) and `conn::tests::an_ended_connection_keeps_what_its_host_has_not_taken`. Results and
+hosts are in the commit that lands them and in ROOT's record.
+
+**Evidence owed** (ROOT, real VMs): a guest writing past a slow host's socket buffer and
+closing, on HVF, KVM and WHP.
+
+**What would falsify it.** A guest byte its host never read where the host read on to its
+end; an ended connection holding more than the window it had; slots or lent window freed while
+an ended connection still holds its bytes.
 
 ### D265. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
 

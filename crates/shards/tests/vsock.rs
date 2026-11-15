@@ -255,6 +255,48 @@ fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
     });
 }
 
+/// A guest's bytes before its end are its host's, whatever the end (D251, amended): a guest
+/// that sends a stream and closes it while its host's way is open (close(2), one SHUTDOWN of
+/// RCV and SEND: the test guest's `C`), or cuts it as shards-init's relay does (its reads'
+/// end, then both ways: `X`), has its host read every byte, in order, then end-of-stream,
+/// never a reset. On Unix a host's write after it then fails, and is never taken for a guest
+/// that has gone; on Windows the VM process holds its end until the host ends its own, as a
+/// close there loses its peer what it had not read (PM M358), and the host's writes go
+/// nowhere meanwhile, an open limit of Windows' AF_UNIX.
+#[test]
+fn a_guest_that_ends_its_stream_gives_its_host_every_byte_first() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = TempDir::new("vsock-end");
+    let sock = dir.join("v.sock");
+    let mut vm = Vm::spawn(&os(&guest_args("vsock_bench", &sock)));
+    vm.wait_for("SHARDS-TEST READY");
+    within("a guest's ends of its streams", &vm, move || {
+        // Past every credit window and socket buffer, so that the end comes while the
+        // host still has bytes to read.
+        let bytes = 8u64 << 20;
+        for op in *b"CX" {
+            let s = bench_open(&sock, op, bytes);
+            let mut got = Vec::new();
+            let read = Following::of(&s, None).read_to_end(&mut got);
+            assert_eq!(
+                read.map_err(|e| e.kind()),
+                Ok(usize::try_from(bytes).unwrap()),
+                "{}: {} bytes read",
+                op as char,
+                got.len()
+            );
+            let first_wrong = got.iter().enumerate().find(|&(i, &v)| v != (i % 251) as u8);
+            assert_eq!(first_wrong, None, "{}", op as char);
+            // Its connection goes once the guest's end is the host's: a write then fails,
+            // bounded by `within`, never filling a socket nobody reads.
+            #[cfg(unix)]
+            while (&s).write(b"x").is_ok() {}
+        }
+    });
+}
+
 /// A connection to the test guest's `vsock_bench`, asking for `op` of `bytes` bytes.
 fn bench_open(sock: &Path, op: u8, bytes: u64) -> UnixStream {
     let mut s = vsock_connect(sock, BENCH_PORT).unwrap();

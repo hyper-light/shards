@@ -14,6 +14,12 @@
 //! - **Its connection.** Otherwise init dials the exec port, says the token in its HELLO, then
 //!   the lane's status: 0, connected, or the errno its connect failed with ([`STATUS`]); once
 //!   connected, the bytes each way, and each way's end as that way's half-close.
+//! - **Its cut.** A command's socket gone while the host's way is open (hung up, PM M559)
+//!   reaches the VMM as a vsock SHUTDOWN of RCV alone, then one of RCV and SEND: init ends
+//!   its reads first, then both ways (relay.rs `cut`). The VMM reads RCV alone first as the
+//!   command gone, and RCV and SEND in one SHUTDOWN, which Linux's close(2) sends, as the
+//!   guest's writes' end; every byte the guest sent before either is the host's first
+//!   (devices/virtio/vsock/conn.rs `HostWrites`, D251).
 //!
 //! A lane's failures are Linux's errnos, typed as the controller reads them
 //! (`Fault::Unreached`): init's own refusals are said as the errno that names each, EACCES

@@ -710,14 +710,20 @@ fn hung_up(client: BorrowedFd<'_>) -> bool {
     }
 }
 
-/// Ends `backend` both ways at once: over vsock one SHUTDOWN of RCV and SEND
-/// (`virtio_transport_shutdown`, net/vmw_vsock/virtio_transport_common.c), which its host
-/// reads as the connection gone, never the client's writes' end alone first.
+/// Ends `backend` as a cut: its reads first, then both ways. Over vsock that is a SHUTDOWN
+/// of RCV alone, then one of RCV and SEND (`vsock_shutdown`, net/vmw_vsock/af_vsock.c;
+/// `virtio_transport_shutdown`, virtio_transport_common.c), which its host's VMM reads as
+/// the connection gone, never the client's writes' end alone. A plain close(2) sends RCV
+/// and SEND in one SHUTDOWN (`virtio_transport_close`), which the VMM reads as the
+/// guest's writes' end, every byte of it the host's first (D251, amended).
 fn cut(backend: BorrowedFd<'_>) -> Result<(), Fault> {
-    // SAFETY: shutdown of this owned flow's borrowed socket; shutdown(2) does not wait.
-    count(unsafe { libc::shutdown(backend.as_raw_fd(), libc::SHUT_RDWR) } as isize)
-        .map(drop)
-        .map_err(|e| native(Leg::Backend, Operation::Shutdown, e))
+    for how in [libc::SHUT_RD, libc::SHUT_RDWR] {
+        // SAFETY: shutdown of this owned flow's borrowed socket; shutdown(2) does not wait.
+        count(unsafe { libc::shutdown(backend.as_raw_fd(), how) } as isize)
+            .map(drop)
+            .map_err(|e| native(Leg::Backend, Operation::Shutdown, e))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn pump(
