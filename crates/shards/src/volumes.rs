@@ -525,7 +525,7 @@ pub const SCOPED: &str = "vnd.osi.agentfile.scoped";
 /// Refuses a run's own mount of volume `v` at `dest` where an image's Agentfile scoped
 /// it ([`SCOPED`]), unless the run's own image's Agentfile names it there: a stand-in
 /// for its own volume (D109). An orchestrator's plug of it into a running run is a mount of
-/// the run's own, refused alike (D270).
+/// the run's own, refused alike (D271).
 pub(crate) fn scoped_to(
     v: &Volume,
     dest: &str,

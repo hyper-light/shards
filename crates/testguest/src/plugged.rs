@@ -7,7 +7,7 @@
 //! it runs.
 //!
 //! `plugged-volumes DEST...`: what an orchestrator plugs into a running member at each DEST,
-//! in order (D270): once DEST's `from-host` appears, `DEST from-host TEXT` and then
+//! in order (D271): once DEST's `from-host` appears, `DEST from-host TEXT` and then
 //! `DEST from-member ok` (or the errno that refused its write, a read-only plug's EROFS) on
 //! stdout; then it holds the first DEST busy, its working directory there, says `holding
 //! DEST`, and waits to be stopped.

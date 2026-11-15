@@ -28188,13 +28188,41 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       that raises the rate. Stillness is judged as before: a look that ran nothing finds
       macOS's uninterruptible wait `Held` (since 2026-11-13) and Linux's `D` still. A ticker
       asleep on an event waits interruptibly (`TH_STATE_WAITING`, `S`) and is refused as
-      before. Each look samples its threads at one instant, so a look made once each W*
-      (`Follow::look`) can miss a wait between looks, where the tests' looks come every few
-      ms. Windows reads no wait reason of a flush here: unverified there. Held by progress.rs
-      `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the batch's
-      numbers through `Judge`: refused vouching, going on in its kernel) and, on macOS,
-      `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel` (a child looping
-      F_FULLFSYNC, seen so).
+      before. Windows reads no wait reason of a flush here: unverified there. Held by
+      progress.rs `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the
+      batch's numbers through `Judge`: refused vouching, going on in its kernel or held
+      between its looks) and `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel`
+      (a child flushing a file, seen so on macOS and, `D`, on Linux).
+      - *A hold between looks* (ROOT's ruling, 2026-11-14). A sample at one instant misses a
+        wait that ends before the look; a look made once each W* (`Follow::look`) missed
+        most. Where an OS accumulates its host's work for a process, that count's growth
+        since the look before is held time between looks (`Io`, `Hold::held_since`,
+        `progress::vouches`): the window vouches for nothing, and a look that ran nothing is
+        `Held`. What each OS keeps (PM M601):
+        - Linux keeps waited time only as its tasks' block I/O delays (`/proc/<pid>/task/
+          <tid>/stat` field 42), and only while `kernel.task_delayacct` is 1, off by default
+          since 5.14 (Documentation/accounting/delay-accounting.rst; off on adacachy2); and as
+          a cgroup's `io.pressure` `some` total, read where that cgroup holds the process
+          alone, as a daemon's VM process its slice. Both are `Io::waited`. Its storage's
+          work, read always: `majflt` (stat field 12) and `/proc/<pid>/io`'s `read_bytes` and
+          `write_bytes`, the process's whole (`Io::done`). Of 391 waits in `D` of 1 ms or
+          more by fdatasync loops on adacachy2's NVMe, those counts grew across 368, 95% of
+          their time.
+        - macOS keeps no waited time. Its storage's work: proc_pid_rusage(2) RUSAGE_INFO_V4's
+          `ri_pageins`, `ri_diskio_bytesread`, `ri_diskio_byteswritten` and
+          `ri_logical_writes`, the last alone moved by a directory's flush. Of 55
+          uninterruptible waits of 1 ms or more by F_FULLFSYNC loops on
+          adas-mac-studio.local-2, 54 grew them (1,912 of 1,915 ms).
+        - Windows: unread here, unverified.
+        Where an OS keeps no waited time for a process (macOS; Linux with delay accounting
+        off and its cgroup shared), a wait bound by its rate also looks between its due
+        looks while its process is not runnable, each its judge's least window apart
+        (`Judge::resolved`: its counters' tick, 10 ms on macOS, Linux's 1/HZ, or a look's own
+        length where longer), the finest its window's evidence is read at, never a rate of
+        ours. A look there that finds a thread in its kernel holds that window
+        (`Follow::schedule`, `Follow::sampled`). A runnable process, and a wait bound by
+        stillness, are looked at only when due. Held by progress.rs
+        `a_rate_wait_samples_a_blocked_process_between_its_looks`.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
@@ -29377,7 +29405,7 @@ D215's spawn alone).
 
 ### D235. A project plugged into a running member at its host path (built: the daemon's plugs and the orchestrator's, names that differ in case alone on case-insensitive hosts, host edits' notices to the guest's inotify; real-VM validation owed on WHP and arm64 KVM)
 
-**Amended by D270 (2026-11-15).** An orchestrator's plug gives a host directory or a volume
+**Amended by D271 (2026-11-15).** An orchestrator's plug gives a host directory or a volume
 of its home's store into every member that runs or those named, each its own device, at the
 path asked; and its run's plug roots include those its spec grants at its start
 (`ImageSpec::plug_roots`), beside its host's own and its shares'. A domain's roots are fixed as
@@ -34165,6 +34193,37 @@ and exits. Each expects the host's gone and another pid's kept. `a_layers_name_s
 `a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
 `layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
 
+**Amended: a run's security is its microVM's, made as it is shaped** (2026-11-14, the start
+path's first cut; PM M593's phase pass). ROOT's timed pass at 8d732fb2d (HVF, a loaded M4 Max)
+put 27.4 ms between a warm host's `its run's request read` and `its VM process … is ready
+(Warm)`, and 10.8–24 ms between `its microVM shaped` and `its run planned` on every kind. All
+of it was `plan`, and its costly part was its microVM's alone: the guest kernel's version
+(`guest::version_of`: the whole image read, then a 14-byte window compared at every byte up to
+the banner, past the kernel's text) and the filters its security setup installs (Docker's
+seccomp profile, the mount filter, the host network's binds filter, and the domains' two),
+each compiled for that kernel.
+- *Decided.* `shape` makes them (`Secured`: `setup::filters` and `setup::domain_seccomp` of
+  `guest::version_of`), since the kernel is the microVM's and whether the command has the
+  nesting grant is too (`agentfile::nesting`: asked and declared; a deadline changes only the
+  grant's entries). A warm host shapes before its run asks, so none of it is on a warm run's
+  way; `plan` composes the run's setup with them (`setup::security_setup_with`), the grant's
+  entries its own. `security_setup` is the two, so the daemon's runs compose as before, and
+  filters made for another grant than the command's are refused. Their refusals are said where
+  `plan` said them, after the run's own (its stages, its grant, its ports), with the same
+  causes.
+- *The banner* is found by `memchr::memmem` (a rare byte of it looked for a vector at a time),
+  for every kind's start, the daemon's runs and builds too.
+- *Literals:* none.
+- *Tested* (unit): `a_microvms_filters_made_once_compose_each_of_its_runs` (one set of filters
+  composes runs of two grants' deadlines as each run's own made them; another grant's filters
+  refused), `a_kernels_release_is_read_after_its_banner_wherever_it_lies`; the setup's
+  existing composition tests, now through the split.
+- *Timed* (`SHARDS_TIMING`): `its security made: its guest's kernel read, its filters
+  compiled` after `its microVM shaped`; then in `plan` `its members staged, its ports bound`,
+  `its setup's security composed` and `its run planned` (said by `plan` itself, so a warm run
+  says it too). *Owed* (ROOT): the A/B of the warm run's request-to-ready and every kind's
+  shape-to-planned, interleaved on one host.
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
@@ -35908,9 +35967,21 @@ is the long-pause follow-up below, not the pause.
   clock to its host's (`builtin::CLOCK`, init's `sync_clock`, as a restored VM sets its own): after
   resume's answer, holding up nothing, a failure said in the run host's diagnostics. Tested on real
   VMs: after a 3 s pause the first line its member prints holds a time within the host's reads
-  around its resume and its receipt (the bound `run.rs` holds a restore to). **Owed:** on KVM x86-64,
-  `KVM_KVMCLOCK_CTRL` on each vCPU as it goes on (QEMU does), so that its guest's soft-lockup
-  watchdog does not take a long pause for a lockup (its warning, never its panic, is the cost now).
+  around its resume and its receipt (the bound `run.rs` holds a restore to).
+- *A guest's watchdogs across a pause* (slice 2). On KVM x86-64 each vCPU held through a pause
+  (`Hold::wait`'s word) tells its guest's kvmclock it was stopped as it goes on, on its own thread
+  before it enters its guest (`KVM_KVMCLOCK_CTRL`, api.rst 4.70, already in the VM process's
+  seccomp allowlist, `IOCTLS`, as a restore calls it), which sets `PVCLOCK_GUEST_STOPPED`, so that
+  its soft-lockup and RCU-stall watchdogs take the pause for its host's
+  (`kvm_check_and_clear_guest_paused`), as QEMU tells a stopped VM going on
+  (`kvmclock_vm_state_change`). arm64 KVM, Hypervisor.framework and WHP have nothing to tell
+  (`Vcpu::went_on` is empty, each saying why): arm64 has no kvmclock, its arch timer's counter runs
+  on, and KVM's paravirtual time (`KVM_ARM_VCPU_PVTIME`) carries stolen time alone; WHP's guests
+  keep time by Hyper-V's reference TSC, which runs on (its partition's time is held for a snapshot
+  alone) with no stopped flag. Their guests may say a soft lockup after a long pause, a warning
+  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. **Owed**
+  (ROOT): a long pause on KVM x86-64 with the guest's `dmesg` read for `soft lockup` and
+  `rcu_sched self-detected stall`, red with `went_on` empty.
 - *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
   (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
   an end.
@@ -35928,9 +35999,13 @@ is the long-pause follow-up below, not the pause.
   `a_runs_pause_moves_by_its_vms_word_and_counts_its_time`,
   `a_pause_holds_its_vm_at_once_and_its_resume_sets_its_guests_clock` (a stand-in VM: `PAUSE` 1
   first, nothing of its guest asked; a second pause and resume unasked; init's `CLOCK` once it goes
-  on), `asks_of_a_paused_runs_guest_are_refused_at_once`; `progress`
-  `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held while its
-  `Held` lives and refused `Stalled` once it goes: the red with the hold's check removed). Real VM:
+  on), `asks_of_a_paused_runs_guest_are_refused_at_once`, `a_pause_is_an_ask_of_a_run_and_refused_before_one`;
+  `progress` `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held
+  while its `Held` lives and refused `Stalled` once it goes); `vmm` `hold`
+  `a_vcpu_held_through_a_pause_says_so` (a vCPU held through a pause says so once as it goes on, one
+  held by its share alone never: what `Vcpu::went_on` is called on). Mutations, each red: the
+  owner's hold unread in `Watch::look`; guest asks let through while paused; a pause of a paused run
+  asking its VM again; the paused time dropped from a run's end. Real VM:
   `api_image` `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped` (guest time flat across a 3
   s pause, the room and a member's stats refused `Paused`, the rate answered, a judged read of the
   member's stdout through the pause not refused, its count going on from the last before the pause
@@ -35947,7 +36022,7 @@ is the long-pause follow-up below, not the pause.
      Cold, with no save or restore measured on that host, a pause stays a pause until one is.
 - **Owed** (ROOT): the real-VM test on KVM and WHP (`cargo test -p shards --profile test-release
   --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
-  KVM x86-64's `KVM_KVMCLOCK_CTRL` at resume.
+  the watchdogs' run below on KVM x86-64.
 
 ### D268. An x86-64 guest resets through its FADT's reset register, the ACPI power device's; the i8042 is gone (built; real-VM runs on KVM and WHP owed)
 
@@ -36110,8 +36185,86 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slice 1 built: the component build; the attach, member restart, swap and saves following)
 
-### D270. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
+**Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
+agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
+builds sans microvm re-build." Binding: no rebuild of the Agentfile's image or the microVM,
+no restart of the VM. Plan steps P6c.0 (fleet scale: "Imagine a fleet of millions of agents
+and us needing to hot-swap") and P6c.1; P6c.5 (a harness switch "with just a click").
+
+**Decided, the shape** (ROOT's yes, 2026-11-15):
+1. *The artifact is the OSI artifact Shards already has* (D57, AGENTFILE_ARCH.md §12.17): an
+   OCI 1.1 manifest of `artifactType` `application/vnd.osi.{agent,harness,mcp}.v1`, its
+   config the normalized startup and asks, one content tar rooted at its directory. Its
+   identity is its manifest's digest, kept, pushed, pulled and signed (D126) as agents are,
+   fetched by digest. Alternatives: a new media type of EROFS content (weighed and not
+   taken: an OSI artifact is already what `AGENT`/`HARNESS`/`MCP` take `FROM` an OCI
+   reference, and what kiln and Hex read; the EROFS form is derived from it per digest,
+   slice 2); a directory in the home keyed by a hash of the request (not taken: no
+   signature, no registry, nothing a fleet fetches by digest).
+2. *Built once, as its directive is in a whole build* (slice 1, below).
+3. *Attached as an immutable EROFS layer through virtio-pmem DAX*, every VM of a host that
+   runs one version mapping the same page-cache pages; per-generation mount namespaces;
+   swapped at the member's next start by default, at once where asked; a member restart; the
+   run's desired and held components recorded; saves carry them (slices 2 to 5).
+
+**Slice 1: a component built alone** (`shards_api::Builds::component`, `ComponentSpec`).
+- *The build is a whole build's.* `shards api-build` takes a `COMPONENT` frame (the builds
+  channel's second request kind, appended; its payload's first byte the channel's version)
+  and builds an Agentfile of that one directive over `scratch`, `FROM scratch` then
+  `HARNESS [--checksum=…] [--redirect=…]… [S3 flags] NAME FROM SOURCE`, written to a context
+  of its own in the home's `tmp`, its files to a local output there (D52), no image kept. So
+  the fetch, its pins (a Git ref's commit; `--checksum`; an object's version), its grants
+  (D54: its source's origin and what `--redirect` names, every hop checked) and the build's
+  policies (D101) are the directive's own in any build. A source the build refuses unpinned
+  (an http(s) source without `--checksum`, an s3 one without `--checksum` or
+  `--version-id`) is refused in the build's words (`BuildRefusal::Failed`).
+- *What it is of.* A Git, http(s) or s3 source (`agentfile::source_of`): a context path is no
+  source a component is built of (`shards build agent DIR` makes an artifact of a
+  directory), and an OCI reference names an artifact already, which a run is swapped to by
+  its digest. Each refused, saying so.
+- *The artifact* (`agent::component`): the content the directive laid at its directory
+  (`/agents/NAME`, `/harness/NAME`, `/mcp/NAME`), as a whole build lays it (its descriptor
+  among its files), and the startup the build normalized beside it (`NAME.d/osi.json`),
+  else a config of its name alone (files alone, as such a domain is); its platform the
+  build's, a config naming another refused. Packed as every OSI artifact is (names in order,
+  owned by root, times kept, §9.2's refusals) and kept in the store as its tag, which the
+  spec requires as `shards build agent -t` does: the store keeps what a name holds.
+- *The same pin, the same digest, where the source carries every entry's time.* A Git
+  source's entries are its commit's time (D54's git.rs), an archive's its own; a directory an
+  archive lacks an entry of is made at the build's clock, as BuildKit makes it, so two
+  builds differ there. A component is built once and fetched by digest (P6c.0), never
+  rebuilt per runner.
+- *No index of its own* (R05). The build's cache, keyed by its sources' pins (D62), answers a
+  repeat's fetch and steps; the click path of a swap names a digest and builds nothing. An
+  index of requests to digests would be a second cache with no measured benefit on any path
+  that waits on it.
+- *Both sides check its words* (`ComponentRequest::check`): its name an Agentfile's
+  (`^[a-z][a-z0-9-_.]*$`, D35); each word of the directive one word of the line, refusing
+  whitespace and control characters (a newline would add an instruction), `\` (continues a
+  line), quotes, and `$` (the directive expands it, D56); one platform; a tag. Whether its
+  flags go with its source is the parser's to say.
+
+| Literal | Source |
+|---|---|
+| `scratch` | the empty base (BuildKit's), so nothing but the directive is built |
+| `/agents`, `/harness`, `/mcp` | AGENTFILE_ARCH.md §12.1, the directives' own directories |
+| `COMPONENT` = 2 | the builds channel's next frame kind after `REQUEST` = 1 (append-only) |
+
+**Tests** (light, the change's own): shards-api `builds::tests`
+`a_component_is_its_directives_one_line`, `a_component_whose_words_would_be_more_than_its_directive_is_refused`,
+`a_component_request_reads_back_as_it_was_sent`, `a_component_is_built_by_its_own_request_and_gives_back_its_artifact`
+(a stand-in `shards`); shards `api_build::tests`
+`a_component_is_built_as_an_agentfile_of_its_one_directive_to_a_local_output` (the directive as
+the build's own parser reads it), `an_unpinned_source_is_refused_in_the_builds_words`,
+`a_component_is_built_of_a_fetched_source_alone`.
+
+**Owed to ROOT:** `SHARDS_API_BUILD=1 SHARDS_BIN=… cargo test -p shards-api --test build_real
+a_component_builds_alone_from_its_directives_pinned_source` (no VM boots: `scratch` and a
+fetch) on HVF, KVM and WHP.
+
+### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
 volume to the microvm(s) for that session, grants the permissions specified, and adds it to the

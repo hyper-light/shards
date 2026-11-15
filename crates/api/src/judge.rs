@@ -409,6 +409,12 @@ impl<'a> Judge<'a> {
         Some(self.due()?.max(self.last))
     }
 
+    /// The least time its looks resolve, its window's least: its counters' coarsest
+    /// resolution, or the longest one of its looks took, whichever is longer.
+    pub fn resolved(&self) -> Duration {
+        self.floor
+    }
+
     /// When its next look is due, its window ([`window`](Self::window)) after the look before
     /// was meant: none while it is not judged.
     pub fn due(&self) -> Option<Instant> {

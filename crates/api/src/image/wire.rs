@@ -87,7 +87,7 @@ pub use shards_abi::run::nesting::Ready;
 /// before any pause is; 34, the running run's network changed by its owner in place (`NET`,
 /// answered `NET_CHANGED`; D269): a port published and let go of as the run goes, so that a
 /// side that changes none refuses the run as it is asked, before any change is; 35, the plug
-/// roots its orchestrator grants the run at its start ([`Request::plug_roots`], D270), and a
+/// roots its orchestrator grants the run at its start ([`Request::plug_roots`], D271), and a
 /// plug of a host directory or a volume of the home's into several members at once
 /// ([`PlugAsk::members`], [`PlugFrom`]), so that a side that knows neither refuses the run as
 /// it is asked, before any plug is.
@@ -241,7 +241,7 @@ pub enum WireError {
     Gpu,
     /// A member's end by a signal no Linux has, out of `1..=run::NSIG` (version 27).
     Signal(u32),
-    /// A plug into no member, or into one twice (version 35, D270).
+    /// A plug into no member, or into one twice (version 35, D271).
     PlugMembers,
 }
 
@@ -586,7 +586,7 @@ pub struct Request {
     /// with it, which its host relays ([`to_client::GPU_REPORT`]); none, no report. Nonzero,
     /// and only with [`gpu_devices`](Self::gpu_devices). Appended in version 29.
     pub gpu_report: Option<[u8; 16]>,
-    /// The plug roots its orchestrator grants the run beside its host's own (D235, D270): each
+    /// The plug roots its orchestrator grants the run beside its host's own (D235, D271): each
     /// a top-level directory of its members' view (`/session`), as
     /// `shards_abi::run::plug::root_name` takes one, beneath which what is plugged into them
     /// as it runs lies. Appended in version 35.
@@ -986,7 +986,7 @@ pub struct Rated {
 pub struct PlugAsk {
     pub id: u32,
     /// The members it is plugged into, by their declared indices, in order, each once and
-    /// one at least (version 35, D270): each its own device, as one member's plug is (D235).
+    /// one at least (version 35, D271): each its own device, as one member's plug is (D235).
     pub members: Vec<u32>,
     pub from: PlugFrom,
     /// Absolute: where its members see it.
@@ -994,7 +994,7 @@ pub struct PlugAsk {
     pub read_only: bool,
 }
 
-/// What a plug gives its members (version 35, D270).
+/// What a plug gives its members (version 35, D271).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlugFrom {
     /// A host directory: absolute, UTF-8.
@@ -2036,7 +2036,7 @@ impl Request {
                 w.0.extend_from_slice(scope);
             }
         }
-        // Its plug roots, appended in version 35 (D270).
+        // Its plug roots, appended in version 35 (D271).
         w.count(self.plug_roots.len())?;
         for root in &self.plug_roots {
             w.text(root)?;
@@ -2256,7 +2256,7 @@ impl Request {
         if gpu_report.is_some_and(|scope| scope == [0; 16] || gpu_devices.is_empty()) {
             return Err(WireError::Gpu);
         }
-        // Its plug roots, appended in version 35 (D270): each at least its length's four bytes.
+        // Its plug roots, appended in version 35 (D271): each at least its length's four bytes.
         let n = r.count(4)?;
         let mut plug_roots = Vec::with_capacity(n);
         for _ in 0..n {
@@ -2986,7 +2986,7 @@ impl Started {
 impl Request {
     /// What a warm run host is started with and holds each run it is handed to (D253's
     /// pools): this request with its members' stages, its deadline, its control ask, its GPU
-    /// report's scope (D233) and its plug roots (D270, its members' domains' setup alone) taken
+    /// report's scope (D233) and its plug roots (D271, its members' domains' setup alone) taken
     /// out, what alone may differ between the runs of one microVM; none of a run's secrets is
     /// in it. Everything else is the microVM's: its image, size, command, ports, network,
     /// shares, nesting, credential grants and GPUs.
@@ -3640,7 +3640,7 @@ mod tests {
 
     /// A plug's ask, an unplug's and their answer come back as they went, each refusal by
     /// its tag; a truncated, trailing or unknown-tagged one is refused, never a default. A plug
-    /// of a host directory and of a volume into one member and into two (version 35, D270);
+    /// of a host directory and of a volume into one member and into two (version 35, D271);
     /// one into no member, or into one twice, refused as the run host would.
     #[test]
     fn plugs_round_trip_and_bad_ones_are_refused() {

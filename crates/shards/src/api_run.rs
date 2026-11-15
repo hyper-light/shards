@@ -65,10 +65,34 @@ impl Answers {
     }
 }
 
+/// Whether this process's lines say their times (`SHARDS_TIMING`), read once.
+fn timed() -> bool {
+    static TIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TIMED.get_or_init(|| std::env::var_os("SHARDS_TIMING").is_some())
+}
+
 /// One line of the run's progress on this process's stderr, its diagnostics, which a
-/// refusal quotes the last of.
+/// refusal quotes the last of; with `SHARDS_TIMING`, its time: microseconds since this
+/// process's `main` (`shards_vmm::log::uptime_us`), whose wall clock it says once as it
+/// starts ([`command`]). Written in one write, so that its VM's lines on the same stderr
+/// come between lines, never in one.
 fn say(what: std::fmt::Arguments<'_>) {
-    let _ = writeln!(io::stderr(), "shards api-run: {what}");
+    let _ = io::stderr().write_all(said(timed().then(shards_vmm::log::uptime_us), what).as_bytes());
+}
+
+/// [`say`]'s line, timed `at` where its lines are timed.
+fn said(at: Option<u128>, what: std::fmt::Arguments<'_>) -> String {
+    match at {
+        Some(us) => format!("shards api-run: +{us} us {what}\n"),
+        None => format!("shards api-run: {what}\n"),
+    }
+}
+
+/// A step of the run's start, said only where its lines are timed (`SHARDS_TIMING`).
+fn step(what: std::fmt::Arguments<'_>) {
+    if timed() {
+        say(what);
+    }
 }
 
 /// The run's channel from its orchestrator, this process's stdin (D231), read a frame at a
@@ -176,6 +200,14 @@ fn stdout() -> io::Result<std::fs::File> {
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
+    // Its clock on the wall's, said first, for lining its lines up with its caller's and its
+    // VM's (api_image's `image_start_costs`); and its launches' steps said with it.
+    if timed() {
+        crate::launch::say_steps(say);
+        if let Some(at) = shards_vmm::log::began_unix_us() {
+            say(format_args!("its clock began at unix {at} us"));
+        }
+    }
     let answers = match stdout() {
         Ok(out) => Answers(Mutex::new(Box::new(out))),
         // No channel to say anything on: its owner reads its end, and this, on its stderr.
@@ -208,6 +240,7 @@ fn host(answers: &Answers) -> Result<(), No> {
         Ok(None) => return Err(No(Cause::Request, "the channel closed before its request".into())),
         Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
     };
+    step(format_args!("its request read"));
     input.shed();
     // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
     if kind == wire::to_host::WARM {
@@ -986,13 +1019,20 @@ fn published(
 }
 
 /// The run's request (`kind::RUN`) as a warm VM takes one (warm.rs `head`): its head, then
-/// `spec`. It writes no log, yet its head keeps a run's default retention, as a daemon
-/// run's with no log does (`--log-driver none`, daemon.rs `DEFAULT_LOGS`): a warm VM
-/// refuses a request whose log keeps nothing.
-fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
+/// `spec`; `timing` asks for its VM's timing line. It writes no log, yet its head keeps a
+/// run's default retention, as a daemon run's with no log does (`--log-driver none`,
+/// daemon.rs `DEFAULT_LOGS`): a warm VM refuses a request whose log keeps nothing.
+fn run_request(spec: &shards_abi::run::Spec, published: bool, timing: bool) -> Vec<u8> {
     let mut payload = Vec::new();
+    let flags = if published { shards_ipc::RUN_PUBLISHED } else { 0 };
     shards_ipc::RunHead {
-        flags: if published { shards_ipc::RUN_PUBLISHED } else { 0 },
+        // Its VM's timing line in its `EXIT`, its guest's markers in it, where its lines are
+        // timed (`SHARDS_TIMING`).
+        flags: if timing {
+            flags | shards_ipc::RUN_TIMING
+        } else {
+            flags
+        },
         log_size: crate::daemon::DEFAULT_LOGS.size,
         log_files: crate::daemon::DEFAULT_LOGS.files,
         ..Default::default()
@@ -2531,11 +2571,12 @@ mod hosted {
         ready_by: Option<u64>,
         input: super::Input,
     ) -> Result<(), No> {
+        let checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let shaped = shape(request, &home)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
-        launch_and_serve(answers, input, &home, plan)
+        launch_and_serve(answers, input, &home, plan, checking)
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
@@ -2636,6 +2677,42 @@ mod hosted {
         made: Vec<String>,
         server: Option<PathBuf>,
         microvm: super::Microvm,
+        /// Its security's costly parts ([`secure`]), or why not, which its plan says where it
+        /// would have made them, after its run's own refusals.
+        secured: Result<Secured, No>,
+    }
+
+    /// What of a run's security its microVM alone decides (D253), made once of its exemplar:
+    /// the filters its setup installs, compiled for its guest's kernel (`setup::filters`), and
+    /// its domains' filters where its image is an Agentfile's. All a run's plan made of them
+    /// before, each run's own grant entries apart (its deadline), which its plan composes.
+    struct Secured {
+        filters: crate::setup::Filters,
+        domains: Option<[Vec<u8>; 2]>,
+    }
+
+    /// [`Secured`] of the microVM `microvm` that `run` runs in, its Agentfile `agentfile`;
+    /// refused as its plan refused them: its kernel unread `Boot`, its options or a filter
+    /// `Request`, its domains' filters `Boot`. Whether its command has the nesting grant is
+    /// its microVM's: the grant asks its run's asking and its image's declaring alone (D234,
+    /// `agentfile::nesting`), a run's deadline only its entries; a run refused the grant is
+    /// refused by its plan before anything made here is taken.
+    fn secure(
+        agentfile: Option<&crate::agentfile::Agentfile>,
+        run: &shards_ipc::Run,
+        microvm: &super::Microvm,
+    ) -> Result<Secured, No> {
+        let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
+        let granted = matches!(
+            crate::agentfile::nesting(agentfile, run),
+            Ok(crate::agentfile::Nesting::Granted(_))
+        );
+        let filters = crate::setup::filters(run, version, granted).map_err(no(Cause::Request))?;
+        let domains = agentfile
+            .map(|_| crate::setup::domain_seccomp(version))
+            .transpose()
+            .map_err(no(Cause::Boot))?;
+        Ok(Secured { filters, domains })
     }
 
     fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
@@ -2653,6 +2730,7 @@ mod hosted {
         }
         let cancel = shards_registry::http::Cancel::new();
         let mut prepared = crate::run::prepare(&run, home, &say, &cancel).map_err(no(Cause::Image))?;
+        super::step(format_args!("its image prepared"));
         if request.vcpus > 0 {
             prepared.size.0 = request.vcpus;
         }
@@ -2757,6 +2835,12 @@ mod hosted {
             Ok((opened, server, microvm))
         };
         let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
+        super::step(format_args!("its microVM shaped"));
+        // Before its run asks, where its host is warm (D253): never on a warm run's way.
+        let secured = secure(agentfile.as_ref(), &run, &microvm);
+        super::step(format_args!(
+            "its security made: its guest's kernel read, its filters compiled"
+        ));
         Ok(Shaped {
             run,
             prepared,
@@ -2773,11 +2857,13 @@ mod hosted {
             made,
             server,
             microvm,
+            secured,
         })
     }
 
     /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
-    /// stages, its published ports bound, its nesting grant decided, its setup and spec.
+    /// stages, its published ports bound, its nesting grant decided, its setup and spec, its
+    /// security's filters its microVM's own (`Shaped::secured`).
     fn plan(request: &wire::Request, ready_by: Option<u64>, shaped: Shaped) -> Result<Plan, No> {
         let Shaped {
             mut run,
@@ -2795,6 +2881,7 @@ mod hosted {
             made,
             server,
             microvm,
+            secured,
         } = shaped;
         run.ready_by = ready_by;
         let say = |line: &str| {
@@ -2820,6 +2907,7 @@ mod hosted {
             publish::InUse::Host
         })
         .map_err(no(Cause::Boot))?;
+        super::step(format_args!("its members staged, its ports bound"));
         // Its setup, as the daemon composes a run's (daemon.rs `start`): its mounts, its
         // capabilities beside its domains, its security, its domains' filter, its managed
         // output, what it stages, its members' ends asked for, and its own command or
@@ -2831,13 +2919,14 @@ mod hosted {
             setup.retain(|e| !e.starts_with(b"caps="));
             setup.push(format!("caps={}", a.caps(&run)).into_bytes());
         }
-        let version = crate::guest::version_of(&microvm.cfg.kernel).map_err(no(Cause::Boot))?;
-        crate::setup::security_setup(&mut setup, &run, version, None, &[], nesting.grant())
+        let Secured { filters, domains } = secured?;
+        crate::setup::security_setup_with(&mut setup, &run, &filters, None, &[], nesting.grant())
             .map_err(no(Cause::Request))?;
         if let Some(a) = &agentfile {
-            setup.extend(crate::setup::domain_seccomp(version).map_err(no(Cause::Boot))?);
+            setup.extend(domains.into_iter().flatten());
             setup.extend(a.image_env.iter().cloned());
         }
+        super::step(format_args!("its setup's security composed"));
         // Its domains' plug roots (D235), as a daemon's run names them: this host's own and
         // each share's top-level directory, beneath which a plug asked of it lies.
         let roots = match &agentfile {
@@ -2923,6 +3012,14 @@ mod hosted {
             prepared.spec.builtin = protocol::builtin::ATTEND;
         }
         crate::spec::fits(&prepared.spec).map_err(no(Cause::Request))?;
+        // Each share's host directory as its guest reaches it, which no save is made in
+        // (D259); one that is not there now is none it reaches.
+        let reached = request
+            .shares
+            .iter()
+            .filter_map(|s| std::fs::canonicalize(&s.host).ok())
+            .collect();
+        super::step(format_args!("its run planned"));
         Ok(Plan {
             prepared,
             members,
@@ -2947,19 +3044,13 @@ mod hosted {
             mcps,
             roots,
             control: request.control.clone(),
-            // Each share's host directory as its guest reaches it, which no save is made in
-            // (D259); one that is not there now is none it reaches.
-            reached: request
-                .shares
-                .iter()
-                .filter_map(|s| std::fs::canonicalize(&s.host).ok())
-                .collect(),
+            reached,
             gpu_report: request.gpu_report,
             command: request.command.is_some(),
         })
     }
 
-    /// The setup entries of the run's plug roots (D235, D270): its host's own and its shares'
+    /// The setup entries of the run's plug roots (D235, D271): its host's own and its shares'
     /// top-level directories (`setup::plug_roots`), then each its orchestrator grants that is
     /// none of those, each checked again as its guest takes one (`plug::root_name`).
     fn granted_roots(mut roots: Vec<Vec<u8>>, granted: &[String]) -> Result<Vec<Vec<u8>>, No> {
@@ -3096,14 +3187,48 @@ mod hosted {
         }
     }
 
+    /// Its VM process's binary, checked on a thread of its own from the run host's first step,
+    /// beside its run's making, which needs nothing of it: `helpers::vm` reads the binary whole
+    /// and hashes it as a process first starts it (helpers.rs `checked`, runs-10), and a run
+    /// host is a process of one run, so every run's start paid it before its launch. Taken as
+    /// its VM is launched; checked there where no thread could be started for it.
+    struct Checking(Option<std::thread::JoinHandle<Result<PathBuf, String>>>);
+
+    impl Checking {
+        fn begin() -> Checking {
+            Checking(
+                std::thread::Builder::new()
+                    .name("api-run vm binary".into())
+                    .spawn(crate::helpers::vm)
+                    .ok(),
+            )
+        }
+
+        /// The binary checked, or why not.
+        fn taken(self) -> Result<PathBuf, String> {
+            match self.0 {
+                Some(checking) => checking
+                    .join()
+                    .unwrap_or_else(|_| Err("its VM's binary: its check ended unanswered".into())),
+                None => crate::helpers::vm(),
+            }
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
     /// restoring it, or booting and saving it, one that does not restore replaced. On Windows
     /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
     /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
-    /// ready one's, or the one's whose start failed last.
-    fn launch(home: &Path, plan: &Launch<'_>, reported: &mut Option<Vec<u8>>) -> Result<Launched, No> {
+    /// ready one's, or the one's whose start failed last. Its VM process's binary is
+    /// `checking`'s, checked beside its run's making.
+    fn launch(
+        home: &Path,
+        plan: &Launch<'_>,
+        checking: Checking,
+        reported: &mut Option<Vec<u8>>,
+    ) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
         // Made before any process of the run's, and held until each is reaped.
         #[cfg(windows)]
@@ -3121,7 +3246,12 @@ mod hosted {
             .then(|| start_shares(home, plan.dirs, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
-        let started = crate::helpers::vm().map_err(boot).and_then(|vm| {
+        if let Some(shares) = &shares {
+            super::step(format_args!("its share process {} started", shares.child.id()));
+        }
+        let vm = checking.taken();
+        super::step(format_args!("its VM's binary checked"));
+        let started = vm.map_err(boot).and_then(|vm| {
             let mut host = Host {
                 home,
                 plan,
@@ -3134,6 +3264,7 @@ mod hosted {
             let template = plan.microvm.template.as_ref().map(|t| t.dir.as_path());
             let started = super::started(&mut host, super::way_of(template, shards_vmm::snapshot::exists));
             *reported = host.reported.take();
+            super::step(format_args!("its VM's start settled"));
             started
         });
         let ((launched, link, _, _), from, held) = match started {
@@ -3224,6 +3355,7 @@ mod hosted {
                 }),
                 _ => None,
             };
+            super::step(format_args!("its network decided"));
             // Its writable layer (D190): made empty of the run's size for a boot, a clone of its
             // template's for a restore where its template keeps one.
             let (mut args, layer) = match way {
@@ -3267,6 +3399,14 @@ mod hosted {
                     )
                 }
             };
+            super::step(format_args!(
+                "its writable layer {}",
+                match (way, &layer) {
+                    (super::Way::Restore { .. }, Some(l)) if l.cloned_of().is_some() => "cloned",
+                    (_, Some(_)) => "made",
+                    (_, None) => "none",
+                }
+            ));
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
             // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
@@ -3277,6 +3417,7 @@ mod hosted {
                 }
                 None => (None, None),
             };
+            super::step(format_args!("launching its VM"));
             let (launched, link) = crate::launch::run_reported(
                 crate::launch::Plan {
                     args: &argv,
@@ -3297,13 +3438,17 @@ mod hosted {
 
         fn ready(&mut self, vm: &mut Self::Vm) -> Result<(), String> {
             let said = match shards_ipc::recv(&vm.1) {
-                Ok(Some(m)) if m.kind == kind::READY => Ok(()),
+                Ok(Some(m)) if m.kind == kind::READY => {
+                    super::step(format_args!("its VM said READY"));
+                    Ok(())
+                }
                 Ok(Some(m)) => Err(format!("the VM said message kind {} before it was ready", m.kind)),
                 Ok(None) => Err("the VM ended before it was ready".into()),
                 Err(e) => Err(format!("the VM was not ready: {e}")),
             };
             // Its writable layer's file is its VM's once it is ready or has failed (D190).
             vm.2 = None;
+            super::step(format_args!("its writable layer's name let go of"));
             // A ready VM's GPU report was written, and its writer closed, before its guest ran
             // (D233): read now, at once. One not ready is read once it has ended (`end`).
             if said.is_ok()
@@ -4168,12 +4313,12 @@ mod hosted {
         let null = std::fs::File::open(crate::os::NULL).map_err(|e| format!("{}: {e}", crate::os::NULL))?;
         let err = io::stderr();
         let payload = if trust.is_empty() {
-            super::run_request(&plan.prepared.spec, networked)
+            super::run_request(&plan.prepared.spec, networked, super::timed())
         } else {
             let mut spec = plan.prepared.spec.clone();
             spec.setup.extend_from_slice(trust);
             crate::spec::fits(&spec)?;
-            super::run_request(&spec, networked)
+            super::run_request(&spec, networked, super::timed())
         };
         // A stream's end as a message hands it on: borrowed on Unix, a handle of its own on
         // Windows (`shards_ipc::handed`).
@@ -4222,13 +4367,19 @@ mod hosted {
         Stream::plain_pair()
     }
 
-    fn launch_and_serve(answers: &Answers, input: super::Input, home: &Path, plan: Plan) -> Result<(), No> {
+    fn launch_and_serve(
+        answers: &Answers,
+        input: super::Input,
+        home: &Path,
+        plan: Plan,
+        checking: Checking,
+    ) -> Result<(), No> {
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
         let mut reported = None;
-        let launched = launch(home, &plan.launch(), &mut reported);
+        let launched = launch(home, &plan.launch(), checking, &mut reported);
         // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
         // VM did not start.
         if let Some(frame) = reported
@@ -4268,9 +4419,10 @@ mod hosted {
         exemplar: &wire::Request,
         mut input: super::Input,
     ) -> Result<(), No> {
+        let checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let mut shaped = shape(exemplar, &home)?;
-        let launched = match launch(&home, &shaped.launch(), &mut None) {
+        let launched = match launch(&home, &shaped.launch(), checking, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -4310,6 +4462,7 @@ mod hosted {
                     Err(e) => return Err(No(Cause::Request, format!("the request: {e}"))),
                 }
             };
+            super::step(format_args!("its run's request read"));
             input.shed();
             if request.exemplar() != *exemplar {
                 return Err(No(
@@ -4544,6 +4697,7 @@ mod hosted {
             answers
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
+            super::step(format_args!("its start told its orchestrator"));
             serve(&live, input, &launched, client, control);
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).
@@ -4572,6 +4726,9 @@ mod hosted {
         client: Stream,
         control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
     ) {
+        if super::timed() {
+            timing_line(&client);
+        }
         std::thread::scope(|scope| {
             // Its agent-control endpoint's driver, and its socket lanes, each opened through the
             // VM (D251, D252); revoked as the run's asks end, which ends both.
@@ -4687,6 +4844,32 @@ mod hosted {
             lock(&live.lanes).take();
         });
         drop(client);
+    }
+
+    /// Says its VM's timing line (`RUN_TIMING`), which comes in its `EXIT` on the run's client
+    /// as its command ends, its guest's markers in it: read on a thread of its own, not the
+    /// run's scope's, as no `EXIT` comes of a VM killed (a `STOP`) and this process holds the
+    /// VM's end of the client until its run is over; it goes as this process does.
+    fn timing_line(client: &Stream) {
+        let reading = client.try_clone().and_then(|client| {
+            std::thread::Builder::new()
+                .name("api-run timing".into())
+                .spawn(move || {
+                    if let Ok(Some(m)) = shards_ipc::recv(&client)
+                        && m.kind == kind::EXIT
+                        && let Some((_, line)) = m.payload.split_first()
+                        && !line.is_empty()
+                    {
+                        super::say(format_args!(
+                            "its VM's timing line: {}",
+                            String::from_utf8_lossy(line)
+                        ));
+                    }
+                })
+        });
+        if let Err(e) = reading {
+            super::say(format_args!("its VM's timing line is not read: {e}"));
+        }
     }
 
     /// Its VM gone and its end said, a run's network process, whose control is read for the
@@ -5042,6 +5225,7 @@ mod hosted {
             } else if m.kind == kind::UNSERVED {
                 told.unserved = Some(String::from_utf8_lossy(&m.payload).into_owned());
             } else if m.kind == kind::STARTED {
+                super::step(format_args!("its VM said STARTED"));
                 told.started = true;
                 if let Some(agent) = &live.agent {
                     agent.stands(Begun::Started);
@@ -6098,7 +6282,7 @@ mod hosted {
         }
     }
 
-    /// `ask`'s source plugged into each of its members (D235, D270), as `shards plug volume
+    /// `ask`'s source plugged into each of its members (D235, D271), as `shards plug volume
     /// --for` plugs one into a daemon's run (daemon/devices.rs): checked here, and by its
     /// guest's init again; each member's its own device, served by a share process of its own,
     /// plugged into the microVM's bus and mounted in the member at its path by init, the host's
@@ -6156,7 +6340,7 @@ mod hosted {
         Ok(())
     }
 
-    /// The host directory a plug gives (D270): the one named, absolute; or the data of the
+    /// The host directory a plug gives (D271): the one named, absolute; or the data of the
     /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
     /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
     /// volumes, another microVM's engine's).
@@ -6282,7 +6466,7 @@ mod hosted {
     }
 
     /// What is plugged in at `ask`'s path let go of in each member it was plugged into (D235,
-    /// D270): unmounted there by init, refused while anything there uses it, then taken off the
+    /// D271): unmounted there by init, refused while anything there uses it, then taken off the
     /// microVM's bus; each member's share process given back, to be reaped once its stream has
     /// closed. Those a member refused stay plugged, the refusal naming them.
     fn unplug(
@@ -6321,7 +6505,7 @@ mod hosted {
     /// A plug's refusal, by what refused it (D235).
     type PlugRefused = (wire::PlugRefusal, String);
 
-    /// Each of `plugged` at `at` let go of (D270): those a member refused, kept, and the first
+    /// Each of `plugged` at `at` let go of (D271): those a member refused, kept, and the first
     /// refusal; and the share processes of those let go of.
     fn unplug_each(
         live: &Live<'_>,
@@ -6449,6 +6633,16 @@ mod hosted {
     #[allow(clippy::unwrap_used)]
     mod tests {
         use super::*;
+
+        /// The VM binary checked beside a run's making is the one its launch would have checked
+        /// itself: the same path, or the same refusal (this build's carries no VM process,
+        /// `SHARDS_HELPERS=skip`, unless `SHARDS_VM_BINARY` names one); checked at once where
+        /// no thread was started for it.
+        #[test]
+        fn a_vm_binary_checked_beside_its_runs_making_is_its_launchs_own() {
+            assert_eq!(Checking::begin().taken(), crate::helpers::vm());
+            assert_eq!(Checking(None).taken(), crate::helpers::vm());
+        }
 
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
         /// with no bound of its own waits: what it answered, or why not.
@@ -6632,7 +6826,7 @@ mod hosted {
             assert!(lock(&unnetworked.ports).held.is_empty());
         }
 
-        /// D270. Do: ask a plug's source of a host directory, of a relative one, of a volume of
+        /// D271. Do: ask a plug's source of a host directory, of a relative one, of a volume of
         /// the run's home its store has not got, of that volume again, of a name no volume takes,
         /// and of a volume an image's Agentfile gives its members elsewhere; and grant a run plug
         /// roots beside its host's own, one of them its host's already. Expect: the host
@@ -8510,14 +8704,28 @@ mod tests {
     /// publishes ports.
     #[test]
     fn its_request_is_one_a_warm_vm_takes() {
-        for published in [false, true] {
-            let payload = run_request(&shards_abi::run::Spec::default(), published);
+        for (published, timing) in [(false, false), (true, false), (false, true), (true, true)] {
+            let payload = run_request(&shards_abi::run::Spec::default(), published, timing);
             let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
             assert!(head.keeps_its_log(), "{head:?}");
             assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
+            assert_eq!(head.flags & shards_ipc::RUN_TIMING != 0, timing);
             assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
             assert!(shards_abi::run::Spec::decode(spec).is_some());
         }
+    }
+
+    /// A line says its time only where its lines are timed, as `+US us` after the host's name.
+    #[test]
+    fn a_line_says_its_time_only_where_its_lines_are_timed() {
+        assert_eq!(
+            said(None, format_args!("its VM said READY")),
+            "shards api-run: its VM said READY\n"
+        );
+        assert_eq!(
+            said(Some(1234), format_args!("its VM said READY")),
+            "shards api-run: +1234 us its VM said READY\n"
+        );
     }
 
     /// With no command of its own, a run publishes only ports the image gives a member

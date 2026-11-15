@@ -280,7 +280,7 @@ pub struct ImageSpec {
     /// warm one ([`ImagePools`]), as a warm host's VM starts before its run names the scope.
     pub gpu_report: Option<[u8; 16]>,
     /// The plug roots the orchestrator grants the run at its start, beside its host's own and
-    /// each share's top-level directory (D235, D270): each a top-level directory of its members'
+    /// each share's top-level directory (D235, D271): each a top-level directory of its members'
     /// view (`/session`), not one of init's own (`/proc`, `/sys`, `/dev`, `/tmp`, `/etc`,
     /// `/run`), as `shards_abi::run::plug::root_name` takes one. A member's domain is given
     /// every right beneath its roots as it starts and no right is added to it later (Landlock
@@ -300,7 +300,7 @@ pub enum UpstreamRoot {
     Pem(String),
 }
 
-/// What [`ImageGuest::plug`] gives the members it plugs into (D235, D270).
+/// What [`ImageGuest::plug`] gives the members it plugs into (D235, D271).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlugSource {
     /// A host directory, absolute: the host's files there are its members'.
@@ -310,7 +310,7 @@ pub enum PlugSource {
     Volume(String),
 }
 
-/// Whom [`ImageGuest::plug`] plugs into (D270): every member of the run that runs, or those
+/// Whom [`ImageGuest::plug`] plugs into (D271): every member of the run that runs, or those
 /// named, each one that runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlugFor {
@@ -318,7 +318,7 @@ pub enum PlugFor {
     Members(Vec<MemberName>),
 }
 
-/// A plug into the running run's members (D235, D270): what, into whom, where they see it,
+/// A plug into the running run's members (D235, D271): what, into whom, where they see it,
 /// and whether read-only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plug {
@@ -692,7 +692,7 @@ pub trait ImageGuest: Send + Sync {
     /// run has ended with nothing newer ([`ImageRefusal::Ended`]).
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
     /// `plug.source` plugged into the running run's members `plug.to` as the run goes (D235,
-    /// D270), in its running microVM in place (no image built, no template saved, no guest
+    /// D271), in its running microVM in place (no image built, no template saved, no guest
     /// restarted): a host directory, or a volume of its home's store. Each member is given it
     /// at `plug.at`, absolute and strictly beneath one of the run's plug roots, which its host
     /// names as it starts (its OS's own, the top-level directory of each of its shares, and
@@ -1027,7 +1027,7 @@ fn upstream_roots(roots: &[UpstreamRoot]) -> Result<Vec<Vec<u8>>, ImageRefusal> 
     Ok(ders)
 }
 
-/// The plug roots a spec grants (D270), each a root its guest takes (`plug::root_name`: one
+/// The plug roots a spec grants (D271), each a root its guest takes (`plug::root_name`: one
 /// top-level directory, none of init's own) and each once; refused by field otherwise.
 fn plug_roots(roots: &[String]) -> Result<Vec<String>, ImageRefusal> {
     let mut granted: Vec<String> = Vec::with_capacity(roots.len());
@@ -1760,7 +1760,7 @@ mod tests {
         assert!(!request(&spec()).unwrap().members[0].input);
     }
 
-    /// D270: the plug roots a spec grants ride its request as granted, each a top-level
+    /// D271: the plug roots a spec grants ride its request as granted, each a top-level
     /// directory of the members' view; one that is relative, nested, one of init's own or
     /// granted twice is refused by field before any run host starts, as the guest would refuse
     /// it; and they are none of a warm pool's microVM, which runs of other roots share.
