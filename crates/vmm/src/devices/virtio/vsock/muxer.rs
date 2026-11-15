@@ -632,7 +632,7 @@ impl Muxer {
             self.accept();
         }
         // Highest index first: a swap_remove moves only one handled already into a place.
-        ready_ended.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        ready_ended.sort_unstable_by_key(|&(i, _, _)| std::cmp::Reverse(i));
         for (i, read, write) in ready_ended {
             if i >= self.ended.len() {
                 continue;
