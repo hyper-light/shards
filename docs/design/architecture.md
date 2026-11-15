@@ -35784,6 +35784,224 @@ one, connected once it runs, on HVF, KVM and WHP.
 **What would falsify it.** A request its guest answered that is reset; a newcomer refused while
 a request its guest has not answered holds a slot.
 
+### D267. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
+
+**Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step
+P5.5, kiln plan 01a1dd2e8618733a87f2793aab1322a8): a paused session runs no CPU and its host's
+use of it stops growing, with its memory, devices and connections kept, and goes on where it
+stopped. D231's runs had `save` (D259) and `stop`, and no pause.
+
+**What existed, and what this builds on.** The daemon's `pause vm`/`unpause` (Docker's
+`pause`) holds every vCPU out of its guest with the VMM's own hold (`shards_vmm::vm::Handle::pause`,
+D191's `Hold`, `paused` beside the rate's and the group's holds), asked on the run's link
+(`PAUSE`: 1 to hold or 0 to go on, then its number; answered `PAUSED`: its number, then nothing
+or why not; warm.rs `pauses`, an ordered thread, as a pause waits for every vCPU to be out of its
+guest). The run host plays the daemon's side of that link (D231), so the orchestrator's pause is
+that ask, sent by `api-run`. Alternatives refused: SIGSTOP of the VM process (or a cgroup freezer
+of it) freezes its device threads and its link mid-flight, so no stats, rate or stop could be
+answered, and D215's readers would rightly find it stopped (`Found::Still`, a stall); a snapshot
+and restore per pause (D259's save) frees memory but costs a save and a restore each time, which
+is the long-pause follow-up below, not the pause.
+
+**Decided** (`shards_api::image::ImageGuest::{pause, resume}`, image channel version 32):
+- *The calls.* `pause(patience)` and `resume(patience)`, required of every `ImageGuest`, each
+  answering the run's `Paused { total, now }`: the time it has been paused by its owner, every
+  pause that ended and the one under way so far, on its run host's clock (from its VM's word that
+  every vCPU is held to its word that they go on), and whether it is paused as read. `patience`
+  bounds the caller's wait alone, as `room`'s and `rate`'s do (`Duration::MAX`: until it is done or
+  the run ends); past it, `Unsupported { "a pause" | "a resume" }`, the run host's state moved by
+  its VM's word all the same. Refused `Pause(why)` where its VM held nothing (its machine stopped
+  first), in its VM's words, and `Ended` once the run has ended, as every ask of an ended run is.
+- *Idempotent* (ROOT's ruling for Hex, 2026-11-14, replacing a refusal of a pause of a paused run
+  first planned): a pause of a paused run, and a resume of a running one, are done already and
+  answer the run's paused time, asking its VM nothing. An owner that lost an answer (its patience,
+  a channel's hiccup) asks again and is answered the same, never refused for having succeeded.
+- *Order.* The run host applies pauses and resumes in the order its channel brought them, one at
+  a time, by one worker thread made as one is asked with none at work and ending once none is
+  left (`api_run::Pauses::queue`), so that a pause then a resume sent without waiting ends running.
+- *Its states* (`api_run::Pause`, R04): running → pausing (its owner's pause) → paused (its VM
+  held every vCPU) → resuming (its owner's resume) → running (its VM let them go); pausing back to
+  running where its VM held none, resuming back to paused where it did not go on; any to gone as
+  its VM's link closes, a pause under way then ending in its total.
+- *A pause is immediate* (ROOT, 2026-11-14: a guest that is slow or hung must never stall it).
+  Nothing of it asks or waits on its guest: the run host refuses asks of its guest from its start
+  and asks its VM to hold at once. While it is pausing, paused or going on, an ask its guest would
+  answer is refused at once, `ImageRefusal::Paused { what }` (`room`, `resize`, `plug`, `unplug`,
+  `stats` of its command or a member), on the wire `ASK_PAUSED` by its ask's id; none of it is
+  applied, nothing is queued for its resume (init's room from before the pause stands through it;
+  its orchestrator tells the room again once resumed). An ask of its guest already under way as
+  the pause lands is answered once its guest goes on, its exec waiting in its guest: never
+  answered for it, as one may be applied after (a room, a plug). Answered without its guest:
+  `stats(Run)` (below), `rate` and `rate_period` (D191's hold is its VM's own, set while held and
+  in force as it goes on), `save` (D259's park of the vCPUs and devices is its VM's own: the
+  snapshot is of the paused machine), `stop`, every wait and take, its diagnostics.
+- *Its connections* (members' stdio, managed output, its agent-control endpoint's lanes, MCP
+  lanes) stay open, each buffered within its own flow control (credits, vsock's, the engine ring);
+  a lane opened while paused is accepted by its guest once it goes on.
+- *Usage while paused* (Hex's P5.5b and D241's host use): `Stats::paused`, the run's alone (as
+  `microvm` is), with every `stats(Run)`; while paused its init's lines are what its init last
+  said of the run before the pause (its last answered `stats(Run)`; none where none was asked),
+  and its microVM part (its VM process's use, each vCPU's guest time, read without its guest) as
+  it stands, so its guest time is flat and its host CPU grows by its VMM's own alone. Its host's
+  use is what is resident as it is read: free page reporting runs throughout in an image run's
+  guest (its microVM is the daemon's runs' shape, `run::Shape`, which gives it the reporting
+  balloon, D151), so what its guest freed before the pause was given back as it freed it. `RunEnded::paused`
+  carries the total however the run ended (a paused run ends only stopped or failed, with no final
+  use read; an end its host never told carries the total it last told). An orchestrator's window of
+  a run's life (D241's `host_use`) subtracts it.
+- *The judged waits* (D215, D222's slice c2). No wait of Shards' follows an image run's VM process
+  (the run host's asks of its VM wait on their answers; D215's judged waits follow managed guests'
+  and the daemon's runs'); the waits that do are its owner's: Hex's, and the tests'
+  (`common::judged`, `Party::started`), which follow every process the test started. A paused VM
+  runs nothing and no OS shows it held (its vCPU threads sleep as an idle VM's do), so D215's
+  readers would find it still and refuse it. A pause is its host's own hold: the process that
+  paused a run holds its VM process as held (`shards_api::progress::Held`, by pid and start, told
+  with the pause's answer, `PauseAnswer::held`) for as long as it is paused, and a look of D215's
+  readers (`Watch::look`) that finds a held process still finds it `Found::Held`: live, never a
+  stall. A stopped (SIGSTOPped) one stays still. Its record is this process's: only its owner's
+  waits know of its pause, and only they need to.
+- *The guest's clock.* A pause takes no snapshot: the guest's counters run on through it (HVF's
+  `CNTVCT_EL0` is the host's counter less a constant `vtimer_offset`; KVM's kvmclock and arm64's
+  arch timer, and WHP's partition reference time, likewise), so its `CLOCK_REALTIME` goes on from
+  where its host's was. A step its host's clock took meanwhile (NTP, a person) is not its guest's,
+  so as it goes on its init is asked, on a thread of its own once its VM has let it go, to set its
+  clock to its host's (`builtin::CLOCK`, init's `sync_clock`, as a restored VM sets its own): after
+  resume's answer, holding up nothing, a failure said in the run host's diagnostics. Tested on real
+  VMs: after a 3 s pause the first line its member prints holds a time within the host's reads
+  around its resume and its receipt (the bound `run.rs` holds a restore to). **Owed:** on KVM x86-64,
+  `KVM_KVMCLOCK_CTRL` on each vCPU as it goes on (QEMU does), so that its guest's soft-lockup
+  watchdog does not take a long pause for a lockup (its warning, never its panic, is the cost now).
+- *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
+  (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
+  an end.
+- *Wait and cache review* (R05). New waits: the worker's for its VM's `PAUSED` (an answer, or its
+  link's close), its VM's own, never its guest's. Kept: init's last lines of the run's stats
+  (`Pauses::last`), one per run, replaced by each `stats(Run)` its init answers, said only while
+  the run is pausing, paused or going on. Its source is its init; it is stale by whatever its guest
+  ran between that answer and the hold, which the first answer after its resume shows (counters
+  only grow), and nothing of its guest moves while every vCPU is held. Without it no `stats(Run)`
+  could answer while paused without asking its guest (Hex's usage refuses a run with no memory or
+  CPU line); a sample taken at the pause would make the pause wait on its guest.
+- **Tests.** Unit and stand-in: `wire` `pauses_round_trip_and_bad_ones_are_refused`;
+  `session` `a_pause_rides_the_runs_channel_and_asks_of_its_guest_come_back_paused`,
+  `a_pauses_answer_and_a_paused_refusal_are_held_for_their_asks`; `api_run`
+  `a_runs_pause_moves_by_its_vms_word_and_counts_its_time`,
+  `a_pause_holds_its_vm_at_once_and_its_resume_sets_its_guests_clock` (a stand-in VM: `PAUSE` 1
+  first, nothing of its guest asked; a second pause and resume unasked; init's `CLOCK` once it goes
+  on), `asks_of_a_paused_runs_guest_are_refused_at_once`; `progress`
+  `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held while its
+  `Held` lives and refused `Stalled` once it goes: the red with the hold's check removed). Real VM:
+  `api_image` `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped` (guest time flat across a 3
+  s pause, the room and a member's stats refused `Paused`, the rate answered, a judged read of the
+  member's stdout through the pause not refused, its count going on from the last before the pause
+  with none lost, its clock the host's, the paused time in its stats and its end).
+- **Follow-ups, designed** (ROOT's review, 2026-11-14):
+  1. *No give-back in a pause's path* (ROOT's correction, 2026-11-14): a guest round trip (a
+     reclaim, a balloon request) there would let a slow or hung guest stall it, and free page
+     reporting gives back what the guest frees throughout (above). A pause holds at once; usage
+     says what is resident then.
+  2. *A long pause becomes a save.* A pause that outlasts a learned break-even, the measured cost
+     of a save and a restore of that VM's size (D259's save and D253's restore, each timed as it
+     runs on that host, in its home's record) against the memory-time it holds paused, becomes a
+     save that frees everything (its VM ended, its snapshot its owner's), and its resume a restore.
+     Cold, with no save or restore measured on that host, a pause stays a pause until one is.
+- **Owed** (ROOT): the real-VM test on KVM and WHP (`cargo test -p shards --profile test-release
+  --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
+  KVM x86-64's `KVM_KVMCLOCK_CTRL` at resume.
+
+### D268. An x86-64 guest resets through its FADT's reset register, the ACPI power device's; the i8042 is gone (built; real-VM runs on KVM and WHP owed)
+
+**Asked.** ROOT, 2026-11-14: the x86-64 machine emulated a fragment of the i8042 keyboard
+controller (`devices/i8042.rs`) only so that a guest's restart, emergency restart and panic
+reset reach the VMM (`reboot=k`, `OUT 0x64 ← 0xFE`). That is Firecracker's choice: its FADT
+populates neither a reset register nor sleep registers (fc:src/vmm/src/acpi/mod.rs:102-115) and
+its default command line carries `reboot=k` (fc:src/vmm/src/vmm_config/boot_source.rs:10-20;
+docs/research/kvm-x86_64-ground-truth.md §4.5). shards builds its own HW-reduced FADT and
+decodes its sleep registers already (`arch/x86_64/acpi.rs`), so Firecracker's reason does not
+apply here.
+
+**Decision.**
+- **The FADT advertises its reset register** (ACPI 6.5 §4.8.3.6; §5.2.9 Tables 5.9, 5.10):
+  flag RESET_REG_SUP (bit 10), RESET_REG at offset 116 a SystemIO Generic Address Structure,
+  8 bits wide at offset 0 (§4.8.3.6 requires both), and RESET_VALUE at 128.
+  - HW_REDUCED_ACPI permits it: with that flag set, OSPM ignores the fields at offsets 46-108
+    and 148-232 and flag bits 1, 2, 3, 7, 8, 13, 14, 16 and 17 (§5.2.9). RESET_REG (116),
+    RESET_VALUE (128) and RESET_REG_SUP (bit 10) are not among them. §4.1's list of what a
+    HW-reduced platform does not support (the Global Lock, SMI_CMD, ACPI enable and disable,
+    bus master reload and arbiter disable, GPE block devices) does not name it either.
+  - Cloud Hypervisor's FADT is the same at d5cfeffb8759: HW_REDUCED_ACPI | RESET_REG_SUP, with
+    RESET_REG on its I/O power device at 0x600 and RESET_VALUE 1 (vmm/src/acpi.rs
+    `create_facp_table`; devices/src/acpi.rs `AcpiShutdownDevice::write`;
+    vmm/src/device_manager.rs:2090-2108).
+- **Its register is the power device's own** (`devices/acpi_power.rs`, which was
+  `acpi_sleep.rs`): the device's third port, `layout::ACPI_POWER + acpi::RESET`. The ports run
+  SLEEP_CONTROL_REG, SLEEP_STATUS_REG, then RESET_REG (`acpi::POWER_PORTS` = 3).
+  - Cloud Hypervisor puts all three on one port and tells them apart by value. shards keeps
+    the reset register apart, so that no write to it is also a sleep request. ACPICA writes
+    SLEEP_CONTROL_REG with SLP_EN in every write it makes, the wake path's S0 type among them
+    (drivers/acpi/acpica/hwesleep.c:102-103, 158-162).
+- **RESET_VALUE** is `acpi::SLP_EN` (0x20). §4.8.3.6 leaves the value to the platform, and no
+  bit of it has a meaning there. It is the power device's existing "act now" bit, not a new
+  literal. A write of RESET_VALUE to RESET_REG is `PowerEvent::Reset`, as the i8042's 0xFE
+  was. Any other value, and RESET_VALUE at either sleep register, does nothing: §4.8.3.6 gives
+  RESET_VALUE alone a meaning. The tables are static, so there is no cold start and no failure
+  to type.
+- **The guest.** Linux's `acpi_reboot` returns unless the FADT is revision 2 or later and has
+  RESET_REG_SUP. For a SystemIO register it calls ACPICA's `acpi_reset`, which writes
+  RESET_VALUE in one byte straight to the port (Linux 7.2-rc4 1590cf032971:
+  drivers/acpi/reboot.c:36-82; drivers/acpi/acpica/hwxface.c:32-62). The machine's required
+  option is `reboot=a`, where it was `reboot=k`. It selects `BOOT_ACPI` first in
+  `native_machine_emergency_restart` (arch/x86/kernel/reboot.c:608-610), which a restart and
+  `panic=-1` both reach (§4.1 of the ground-truth doc). Any `reboot=` also turns off the DMI
+  quirks that could pick another type (kernel/reboot.c:1097-1176), and the machine's option
+  follows the user's (`vm/cmdline.rs`).
+  - `acpi_reboot` waits 15 ms after its write (reboot.c:81). The VMM ends the run at the
+    write, as the i8042's first 0xFE did, so the run's end does not wait for that delay.
+- **Deleted, no dual path:** `devices/i8042.rs`, `layout::I8042` (ports 0x60-0x64) and its
+  slot on the port bus. The FADT's IAPC_BOOT_ARCH 8042 bit stays clear: the machine has none.
+- **Snapshots.** The snapshot format is 34. A state of format 33 holds an i8042 among its port
+  devices and a guest whose FADT has no reset register and whose command line says
+  `reboot=k`. It is refused `ResumeRefused::OlderMachine`, never read, as D261 refuses 30.
+  There is one format for both architectures, so arm64's templates are remade too, keyed by
+  the format (D25).
+- **The backstop.** A triple fault is still a reset: KVM's `KVM_EXIT_SHUTDOWN`
+  (`hv/kvm/mod.rs`) and WHP's `WHvRunVpExitReasonUnrecoverableException` (`hv/whp/mod.rs`).
+  - A guest that falls back to the keyboard controller is harmless. A port no device claims
+    reads as zero and drops its writes, with a debug line (`vm/x86_64.rs` `Bus::pio_read`,
+    `pio_write`; `devices::MmioBus::read`). That holds on KVM (`RunExit::IoIn`, `IoOut`) and on
+    WHP (`pio`, whose 1-byte `OUT` is not the string or odd-width access it refuses). So
+    `kb_wait`'s read of 0x64 finds IBF clear and returns at once, and the ten `OUT 0x64, 0xFE`
+    each end as a debug line, not an error.
+  - The chain does not reach the triple fault promptly, though. After ACPI, KBD, ACPI again
+    and KBD again, Linux tries EFI (none here) and then BIOS before TRIPLE (reboot.c:608-666).
+    BIOS is `machine_real_restart`, a jump to F000:FFF0 in real mode
+    (arch/x86/realmode/rm/reboot.S:119-127), and a machine with no firmware there need not
+    fault. A guest whose reset write never reached the device would therefore not reliably
+    end.
+  - That path needs a kernel that never read the FADT. Such a kernel finds neither its CPUs
+    nor its virtio devices on this machine (`arch/x86_64/acpi.rs`), so it does not boot here
+    at all. With an i8042 the same chain ended at KBD.
+
+**Evidence.**
+- Unit tests (vmm):
+  - `arch::x86_64::acpi::tests::the_fadt_names_the_power_devices_reset_register`: revision,
+    RESET_REG_SUP and HW_REDUCED_ACPI, and RESET_REG a SystemIO 8-bit byte-access register at
+    the power device's reset port, apart from its sleep registers, with RESET_VALUE.
+    `every_table_checksums_and_links` pins the flags word (0x0010_0430).
+  - `devices::acpi_power::tests::reset_value_at_the_reset_register_alone_resets`: each of the
+    255 other values at RESET_REG, RESET_VALUE at either sleep register and an empty write
+    are nothing, and RESET_VALUE at RESET_REG is one `Reset`. `only_s5_with_slp_en_powers_off`
+    still holds.
+  - `snapshot::tests::a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver`:
+    format 33 is refused `OlderMachine`.
+  - `vm::cmdline::tests`: `reboot=a`, after the user's `reboot=b`, with the tests' structure
+    unchanged.
+- **Owed** (ROOT; KVM and WHP were offline at landing). These pass on a triple fault too, so
+  each run's log should show "the guest reset its machine through the ACPI reset register" and
+  no "triple-faulted":
+  - `crates/shards/tests/boot.rs` `two_vcpus_boot_to_their_end_in_this_process` and
+    `a_reset_with_no_console_says_its_guests_panic` on an x86-64 KVM host and on WHP.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
