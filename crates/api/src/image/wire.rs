@@ -84,8 +84,10 @@ pub use shards_abi::run::nesting::Ready;
 /// D267), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
 /// time it has been paused told with the run's stats ([`Stats::paused`]) and with its end
 /// ([`RunEnded::paused`]), so that a side that pauses nothing refuses the run as it is asked,
-/// before any pause is.
-pub const VERSION: u8 = 33;
+/// before any pause is; 34, the running run's network changed by its owner in place (`NET`,
+/// answered `NET_CHANGED`; D269): a port published and let go of as the run goes, so that a
+/// side that changes none refuses the run as it is asked, before any change is.
+pub const VERSION: u8 = 34;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -137,6 +139,8 @@ pub mod to_host {
     /// A [`PauseAsk`](super::PauseAsk): the run's microVM paused where it is, or let go on
     /// (D267).
     pub const PAUSE: u8 = 42;
+    /// A [`NetAsk`](super::NetAsk): the running run's network changed in place (D269).
+    pub const NET: u8 = 45;
 }
 
 /// What the run host sends.
@@ -206,6 +210,8 @@ pub mod to_client {
     /// its run is paused or pausing, by its ask's id (D267): its guest runs nothing to answer
     /// it until the run goes on.
     pub const ASK_PAUSED: u8 = 44;
+    /// [`NetAnswer`](super::NetAnswer): a network change's outcome, by its ask's id (D269).
+    pub const NET_CHANGED: u8 = 46;
 }
 
 /// Why a payload could not be read or written.
@@ -1104,6 +1110,79 @@ pub struct AskPaused {
     pub id: u32,
 }
 
+/// A change of the running run's network, asked by its owner and made in its running microVM
+/// in place (D269): no image built, no template saved, its guest neither restarted nor
+/// rebooted. Each is explicit, and checked as the run's start checks its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetChange {
+    /// A guest port published on the host, bound as the run's start binds those its
+    /// [`Request::publish`] names.
+    Publish(Publish),
+    /// The port bound at `host` for `proto` let go of: one of the run's published ports
+    /// ([`NetChanged::published`]), the start's among them.
+    Unpublish { proto: Proto, host: SocketAddr },
+}
+
+/// A network change asked (D269), its answer named by `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetAsk {
+    pub id: u32,
+    pub change: NetChange,
+}
+
+/// Why a network change was refused, by what refused it (D269).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetRefusal {
+    /// The run has no network: it started with nothing published, kept or linked past its
+    /// microVM, which so has no network device to change.
+    NoNetwork = 0,
+    /// Past what the image grants, as its start refuses it: a port its Agentfile declares `AS
+    /// egress`, or, for a run with no command of its own, one it gives no member coming in.
+    Widening = 1,
+    /// The host's port could not be bound: taken, or refused by the host.
+    Bind = 2,
+    /// Nothing of it is published to let go of.
+    Unknown = 3,
+    /// Its network process did not take it, or has ended.
+    Network = 4,
+    /// The image's own declaration of it: a port it gives a member that is none of the run's.
+    Image = 5,
+}
+
+fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
+    Ok(match tag {
+        0 => NetRefusal::NoNetwork,
+        1 => NetRefusal::Widening,
+        2 => NetRefusal::Bind,
+        3 => NetRefusal::Unknown,
+        4 => NetRefusal::Network,
+        5 => NetRefusal::Image,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a network change's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A network change made (D269): what it bound or let go of, and every port the run
+/// publishes once it was made, as its host holds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetChanged {
+    pub changed: Vec<Bound>,
+    pub published: Vec<Bound>,
+}
+
+/// A network change's outcome, by its ask's id: made, or refused and why. Its host makes one
+/// change at a time and answers each before the next, so that each answer's
+/// [`NetChanged::published`] is the run's as it stands once that change is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetAnswer {
+    pub id: u32,
+    pub result: Result<NetChanged, (NetRefusal, String)>,
+}
+
 /// How the run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -1353,6 +1432,30 @@ impl Writer {
         }
         Ok(())
     }
+    /// A port to publish: its guest port, protocol, host address (or none) and host port.
+    fn publish(&mut self, p: &Publish) {
+        self.u16(p.guest_port);
+        self.u8(p.proto as u8);
+        self.ip(p.host);
+        self.u16(p.host_port);
+    }
+    /// A list of ports bound, each its guest port, protocol, host address and port, and the
+    /// members it reaches.
+    fn bounds(&mut self, bounds: &[Bound]) -> Result<(), WireError> {
+        self.count(bounds.len())?;
+        for b in bounds {
+            self.u16(b.guest_port);
+            self.u8(b.proto as u8);
+            self.ip(Some(b.host.ip()));
+            self.u16(b.host.port());
+            self.count(b.to.len())?;
+            for r in &b.to {
+                self.u32(r.member);
+                self.u16(r.port);
+            }
+        }
+        Ok(())
+    }
     fn ip(&mut self, ip: Option<IpAddr>) {
         match ip {
             None => self.u8(0),
@@ -1522,6 +1625,44 @@ impl<'a> Reader<'a> {
             total: self.duration()?,
             now: self.flag()?,
         }))
+    }
+    /// What [`Writer::publish`] wrote.
+    fn publish(&mut self) -> Result<Publish, WireError> {
+        Ok(Publish {
+            guest_port: self.u16()?,
+            proto: proto(self.u8()?)?,
+            host: self.ip()?,
+            host_port: self.u16()?,
+        })
+    }
+    /// What [`Writer::bounds`] wrote: each bound address an address, never none.
+    fn bounds(&mut self) -> Result<Vec<Bound>, WireError> {
+        let n = self.count(2 + 1 + 1 + 2 + 4)?;
+        let mut bounds = Vec::with_capacity(n);
+        for _ in 0..n {
+            let guest_port = self.u16()?;
+            let proto = proto(self.u8()?)?;
+            let ip = self.ip()?.ok_or(WireError::Tag {
+                what: "a bound address",
+                tag: 0,
+            })?;
+            let port = self.u16()?;
+            let receivers = self.count(4 + 2)?;
+            let mut to = Vec::with_capacity(receivers);
+            for _ in 0..receivers {
+                to.push(Receiving {
+                    member: self.u32()?,
+                    port: self.u16()?,
+                });
+            }
+            bounds.push(Bound {
+                guest_port,
+                proto,
+                host: SocketAddr::new(ip, port),
+                to,
+            });
+        }
+        Ok(bounds)
     }
     fn ip(&mut self) -> Result<Option<IpAddr>, WireError> {
         match self.u8()? {
@@ -1731,10 +1872,7 @@ impl Request {
         }
         w.count(self.publish.len())?;
         for p in &self.publish {
-            w.u16(p.guest_port);
-            w.u8(p.proto as u8);
-            w.ip(p.host);
-            w.u16(p.host_port);
+            w.publish(p);
         }
         w.keep(&self.egress.egress)?;
         w.keep(&self.egress.mcp)?;
@@ -1930,16 +2068,7 @@ impl Request {
         let n = r.count(2 + 1 + 1 + 2)?;
         let mut publish = Vec::with_capacity(n);
         for _ in 0..n {
-            let guest_port = r.u16()?;
-            let proto = proto(r.u8()?)?;
-            let host = r.ip()?;
-            let host_port = r.u16()?;
-            publish.push(Publish {
-                guest_port,
-                proto,
-                host,
-                host_port,
-            });
+            publish.push(r.publish()?);
         }
         // Its destinations come last, appended in version 3.
         let (egress, mcp, dns) = (r.keep()?, r.keep()?, r.flag()?);
@@ -2576,6 +2705,97 @@ impl AskPaused {
     }
 }
 
+impl NetAsk {
+    /// Its id, then its change: 0 and the port to publish; or 1, the protocol, the bound
+    /// address and its port to let go of.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.change {
+            NetChange::Publish(p) => {
+                w.u8(0);
+                w.publish(p);
+            }
+            NetChange::Unpublish { proto, host } => {
+                w.u8(1);
+                w.u8(*proto as u8);
+                w.ip(Some(host.ip()));
+                w.u16(host.port());
+            }
+        }
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<NetAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let change = match r.u8()? {
+            0 => NetChange::Publish(r.publish()?),
+            1 => {
+                let proto = proto(r.u8()?)?;
+                let ip = r.ip()?.ok_or(WireError::Tag {
+                    what: "a bound address",
+                    tag: 0,
+                })?;
+                NetChange::Unpublish {
+                    proto,
+                    host: SocketAddr::new(ip, r.u16()?),
+                }
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a network change",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(NetAsk { id, change })
+    }
+}
+
+impl NetAnswer {
+    /// Its id, then 0, what the change bound or let go of and every port published; or 1,
+    /// its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(changed) => {
+                w.u8(0);
+                w.bounds(&changed.changed)?;
+                w.bounds(&changed.published)?;
+            }
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<NetAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(NetChanged {
+                changed: r.bounds()?,
+                published: r.bounds()?,
+            }),
+            1 => Err((net_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a network change's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(NetAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -2620,18 +2840,7 @@ impl Started {
             w.text(&m.name)?;
             w.u8(u8::from(m.runs));
         }
-        w.count(self.published.len())?;
-        for b in &self.published {
-            w.u16(b.guest_port);
-            w.u8(b.proto as u8);
-            w.ip(Some(b.host.ip()));
-            w.u16(b.host.port());
-            w.count(b.to.len())?;
-            for r in &b.to {
-                w.u32(r.member);
-                w.u16(r.port);
-            }
-        }
+        w.bounds(&self.published)?;
         // Where the run's endpoint is bound and its microVM's key, appended in version 15.
         match &self.control {
             None => w.u8(0),
@@ -2664,31 +2873,7 @@ impl Started {
                 runs: r.flag()?,
             });
         }
-        let n = r.count(2 + 1 + 1 + 2 + 4)?;
-        let mut published = Vec::with_capacity(n);
-        for _ in 0..n {
-            let guest_port = r.u16()?;
-            let proto = proto(r.u8()?)?;
-            let ip = r.ip()?.ok_or(WireError::Tag {
-                what: "a bound address",
-                tag: 0,
-            })?;
-            let port = r.u16()?;
-            let receivers = r.count(4 + 2)?;
-            let mut to = Vec::with_capacity(receivers);
-            for _ in 0..receivers {
-                to.push(Receiving {
-                    member: r.u32()?,
-                    port: r.u16()?,
-                });
-            }
-            published.push(Bound {
-                guest_port,
-                proto,
-                host: SocketAddr::new(ip, port),
-                to,
-            });
-        }
+        let published = r.bounds()?;
         let control = if r.flag()? {
             let ip = r.ip()?.ok_or(WireError::Tag {
                 what: "an endpoint's address",
@@ -3422,6 +3607,115 @@ mod tests {
             PlugAnswer::decode(&[0, 0, 0, 9, 2]),
             Err(WireError::Tag { .. })
         ));
+    }
+
+    /// Version 34 (D269). Do: carry a publish to an address and to none, an unpublish of an
+    /// IPv4 and an IPv6 binding, an answer with bindings and their receivers, an empty one, and
+    /// each refusal; cut each, trail a byte, and give a change, a refusal or an answer a tag no
+    /// version has, and an unpublish no address. Expect: each read back exactly; each cut,
+    /// trailing byte and unknown tag refused, never a default.
+    #[test]
+    fn network_changes_and_their_answers_cross_the_channel() {
+        const { assert!(VERSION >= 34, "the channel's version 34 carries network changes") };
+        let publish = |host: Option<IpAddr>| Publish {
+            guest_port: 7100,
+            proto: Proto::Tcp,
+            host,
+            host_port: 0,
+        };
+        let asks = [
+            NetChange::Publish(publish(Some("127.0.0.1".parse().unwrap()))),
+            NetChange::Publish(publish(None)),
+            NetChange::Unpublish {
+                proto: Proto::Udp,
+                host: "127.0.0.1:53".parse().unwrap(),
+            },
+            NetChange::Unpublish {
+                proto: Proto::Tcp,
+                host: "[::1]:8080".parse().unwrap(),
+            },
+        ];
+        for change in asks {
+            let ask = NetAsk { id: 7, change };
+            let bytes = ask.encode();
+            assert_eq!(NetAsk::decode(&bytes), Ok(ask));
+            for cut in 1..bytes.len() {
+                assert!(NetAsk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                NetAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            NetAsk::decode(&[0, 0, 0, 7, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        // An unpublish names the address it lets go of: none is no binding.
+        assert!(matches!(
+            NetAsk::decode(&[0, 0, 0, 7, 1, 6, 0, 0, 80]),
+            Err(WireError::Tag { .. })
+        ));
+        let bound = Bound {
+            guest_port: 7100,
+            proto: Proto::Tcp,
+            host: "127.0.0.1:41000".parse().unwrap(),
+            to: vec![Receiving {
+                member: 1,
+                port: 7101,
+            }],
+        };
+        let alone = Bound {
+            guest_port: 53,
+            proto: Proto::Udp,
+            host: "[::]:5353".parse().unwrap(),
+            to: Vec::new(),
+        };
+        let mut results = vec![
+            Ok(NetChanged {
+                changed: vec![bound.clone()],
+                published: vec![alone.clone(), bound],
+            }),
+            Ok(NetChanged {
+                changed: Vec::new(),
+                published: Vec::new(),
+            }),
+        ];
+        for cause in [
+            NetRefusal::NoNetwork,
+            NetRefusal::Widening,
+            NetRefusal::Bind,
+            NetRefusal::Unknown,
+            NetRefusal::Network,
+            NetRefusal::Image,
+        ] {
+            results.push(Err((cause, "why".to_string())));
+        }
+        for result in results {
+            let answer = NetAnswer { id: 9, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(NetAnswer::decode(&bytes), Ok(answer));
+            for cut in 1..bytes.len() {
+                assert!(NetAnswer::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                NetAnswer::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            NetAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            NetAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        // A count of bindings past the bytes left is refused, allocating nothing.
+        assert_eq!(
+            NetAnswer::decode(&[0, 0, 0, 9, 0, 255, 255, 255, 255]),
+            Err(WireError::Short)
+        );
     }
 
     /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a

@@ -807,6 +807,12 @@ impl Vcpu {
         self.kicker.clone()
     }
 
+    /// It goes on from a pause its host held it through (D267): nothing to tell. Its guest
+    /// reads the arch timer, `CNTVCT_EL0` the host's counter less a constant `vtimer_offset`,
+    /// which ran on through the pause, and Hypervisor.framework offers its guests no
+    /// paravirtual clock with a stopped flag a watchdog reads.
+    pub fn went_on(&self) {}
+
     /// Its guest's run time, for any thread to read.
     pub fn guest_clock(&self) -> GuestClock {
         GuestClock {
