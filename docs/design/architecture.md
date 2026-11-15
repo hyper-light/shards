@@ -13031,6 +13031,20 @@ batch 26 brief)
   `SHARDS_REQUIRE_VMS=1`. Logs are in adas-mac-studio.local:~/g121-tmp/gitssh/logs, removed
   at the lane's end. The next one ends refused, its account naming the asleep process and
   its daemon's log. Its cause is what that says.
+- *A wait whose own polls outlast W* was not refused* (harness.rs
+  `a_wait_is_refused_though_its_own_polls_outlast_w_star`, ROOT's HVF runs; 2 of 20 on bare
+  main 14e037fb0 and 8 of 20 at f749bf9fb on adas-mac-studio-3.local). Its account's judge
+  figures (new: "still X of its W window, H of its looks' lateness out") said "still 10.2 to
+  27.7 ms of its 10 ms window" against a W* of 1.2 to 1.4 ms. The window was the floor, the
+  macOS CPU counter's 10 ms tick (`Judge::floor`, b26), over which alone the judge refuses.
+  The test's polls were W* and 1 ms, so a look found a whole window only where a poll's
+  process start happened to outlast the tick. The judge was right. The test's premise is
+  fixed: each poll outlasts the window its judge's looks say (`Patience::window`). The one
+  other miss in 40 ("its last progress its daemon ran") was its daemon finishing what the
+  test's own `ps` gave it. An idle daemon runs nothing: 0.01 s of CPU before and after 10 s,
+  none of its threads' CPU moving over another 10 s, each thread parked in poll(2) or a
+  condition wait (`sample`, adas-mac-studio-3.local, f749bf9fb's build). So no housekeeping
+  of the daemon's is counted as a wait's progress.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 

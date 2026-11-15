@@ -2488,6 +2488,13 @@ impl Patience {
     pub fn account(&self) -> String {
         self.wait.account()
     }
+
+    /// The window a stillness of its party is refused over as its looks so far say it: W*, or
+    /// what its looks resolve where that is longer (a counter's tick, a look's own time). None
+    /// while it is not judged.
+    pub fn window(&self) -> Option<Duration> {
+        self.wait.judge.stillness().map(|(_, _, window)| window)
+    }
 }
 
 /// A give-back followed (ROOT's ruling, D209 Part 4): a VM process's own resident memory

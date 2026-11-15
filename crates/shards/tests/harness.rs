@@ -1194,8 +1194,10 @@ fn a_wait_is_refused_though_its_own_polls_keep_its_daemon_busy() {
 /// its party's window saw only the looks' own durations. Red so: a look that saw a whole
 /// W* of its own polling past its first goes on. Do: start a daemon that runs no microVM;
 /// teach a wait's kind its W* by a state found at its first look; then wait for a state that
-/// never comes, polling between looks with a stand-in of this test's own busy a whole W*.
-/// Expect: refused at the look after the first poll, which says so at the next.
+/// never comes, polling between looks with a stand-in of this test's own busy a whole window
+/// (W*, or its CPU counter's tick where that is longer: the judge refuses over no less than
+/// its looks resolve). Expect: refused at the look after the first poll, which says so at the
+/// next.
 #[test]
 fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
     let home = TempDir::new("outlast");
@@ -1223,26 +1225,31 @@ fn a_wait_is_refused_though_its_own_polls_outlast_w_star() {
     let shards_api::Seen::Learned { slowest, .. } = outlasted(&home).seen() else {
         panic!("its kind learned nothing of an answer");
     };
-    let busy = format!("busy {}", slowest.as_millis().saturating_add(1));
-    let poll = || {
+    // Each poll outlasts the window its judge refuses over, as its looks so far say it: W*,
+    // or a CPU counter's tick where that is longer (macOS' 10 ms against a W* of 1.4 ms on
+    // HVF, where polls of W* and 1 ms were refused only as a poll's start happened to outlast
+    // the tick, 12 of 20).
+    let poll = |patience: &Patience| {
+        let window = patience.window().unwrap_or(slowest).max(slowest);
+        let busy = format!("busy {}", window.as_millis().saturating_add(1));
         let run = common::run_command(stand_in_doing(&busy), &["stand-in".to_string(), busy.clone()]);
         assert_eq!(run.status, Some(0), "{run}");
         assert!(
-            run.elapsed > slowest,
-            "a poll of {:?} within W* {slowest:?}",
+            run.elapsed > window,
+            "a poll of {:?} within its window {window:?}",
             run.elapsed
         );
     };
     let mut patience = outlasted(&home);
     assert!(patience.holds(), "refused at its start");
-    poll();
+    poll(&patience);
     // Its first look past W*: a refusal there is said at the next.
     let _ = patience.holds();
-    poll();
+    poll(&patience);
     assert!(
         !patience.holds(),
-        "a wait for a state that never comes, each poll its waiter's own and longer than W* \
-         {slowest:?}, not refused at its look past its first poll: {}",
+        "a wait for a state that never comes, each poll its waiter's own and longer than its \
+         window, not refused at its look past its first poll: {}",
         patience.account()
     );
 }
