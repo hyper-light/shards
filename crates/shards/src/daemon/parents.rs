@@ -353,6 +353,7 @@ fn emptied(events: &Path, procs: &Path, record: &shards_api::Record) -> std::io:
                 ended: std::time::Instant::now(),
                 resolution,
                 own: std::time::Duration::ZERO,
+                work: None,
             };
             judge.found_over(found, span).map_err(|stall| {
                 std::io::Error::other(format!(

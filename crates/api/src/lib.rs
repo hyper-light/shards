@@ -53,7 +53,7 @@ pub use client::{
     boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
     prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
 };
-pub use judge::{Found, Judge, Rate, Record, Seen, Span, Stall};
+pub use judge::{Found, Judge, Rate, Rated, Record, Seen, Span, Stall};
 pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
 };
@@ -722,16 +722,36 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
+            Refusal::Stalled(stall) if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) => {
+                write!(
+                    f,
+                    "the guest's VM process ran too slowly to be answering: {:?} into the wait, {:?} \
+                 of CPU in the {:?} it was seen to run, below the least a VM process ran here and \
+                 still answered ({:?} in {:?}) and more than any answer took ({:?}), past the \
+                 slowest answer seen ({:?})",
+                    stall.waited(),
+                    rate.cpu,
+                    rate.over,
+                    least.cpu,
+                    least.over,
+                    stall.most().unwrap_or_default(),
+                    stall.slowest()
+                )
+            }
             Refusal::Stalled(stall) => write!(
                 f,
                 "the guest's VM process stalled: {:?} into the wait it ran no CPU in {:?}, past the \
-                 slowest answer seen ({:?}); the least a VM process ran here and still answered was \
-                 {:?} in {:?}",
+                 slowest answer seen ({:?}); {}",
                 stall.waited(),
                 stall.over(),
                 stall.slowest(),
-                stall.least().cpu,
-                stall.least().over
+                stall.least().map_or_else(
+                    || "no answer of its kind had its CPU read".to_string(),
+                    |least| format!(
+                        "the least a VM process ran here and still answered was {:?} in {:?}",
+                        least.cpu, least.over
+                    )
+                )
             ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
             Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),

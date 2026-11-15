@@ -2571,7 +2571,12 @@ impl Falling {
             if ended {
                 if let Some(fell) = self.fell {
                     let took = fell.saturating_duration_since(self.wait.began);
-                    self.wait.kind.record().teach(took, self.wait.work);
+                    self.wait.read_through();
+                    if self.wait.read == Some(true) {
+                        self.wait.kind.record().teach(took, self.wait.work);
+                    } else {
+                        self.wait.kind.record().teach_unrated(took);
+                    }
                     self.wait.kind.keep();
                 }
                 return now;
@@ -2765,6 +2770,32 @@ pub fn run_command(cmd: Command, asked: &[String]) -> Run {
     }
 }
 
+/// Whether child `pid` has ended, left unreaped for a look to read its CPU through its end:
+/// waitid(2) with WNOWAIT (POSIX.1-2024, XSH waitid), which leaves it waitable.
+#[cfg(unix)]
+fn ended_unreaped(pid: u32) -> bool {
+    let id = libc::id_t::from(pid);
+    // SAFETY: siginfo_t is plain C data, for which all zeroes is a value.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid(2) of this process's own child into a siginfo_t of ours; WNOWAIT leaves
+    // it to be reaped by its `Child`.
+    let waited = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            id,
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    // With WNOHANG and no child ended, waitid(2) leaves si_pid 0.
+    #[cfg(target_os = "linux")]
+    // SAFETY: the si_pid of a siginfo_t waitid(2) filled for a child's end.
+    let ended = unsafe { info.si_pid() } != 0;
+    #[cfg(not(target_os = "linux"))]
+    let ended = info.si_pid != 0;
+    waited == 0 && ended
+}
+
 /// What a run ended at its end or its stall leaves of the processes under it ([`end_run`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Leftovers {
@@ -2851,9 +2882,17 @@ fn run_ending(
     wait.absent();
     let mut status = None;
     loop {
+        // Its client read as it ends, before it is reaped, for its work through its answer:
+        // on Unix while it is a zombie, on Windows through the handle its watch holds.
+        #[cfg(unix)]
+        if status.is_none() && ended_unreaped(child.id()) {
+            wait.read_through();
+        }
         if status.is_none()
             && let Some(st) = child.try_wait().unwrap()
         {
+            #[cfg(windows)]
+            wait.read_through();
             // Its client's own end: its kind's answer, taught where it served.
             if st.success() {
                 wait.answered();
@@ -3219,22 +3258,34 @@ impl WaitKind {
         &self.record
     }
 
-    /// Teaches its record what this host kept of it: R*'s own answer, then W*'s with work no
-    /// rate is below, so that each comes back as it was kept. Nothing where nothing whole is
-    /// kept, and, for a command's kind, nothing that does not say it is of served answers
-    /// alone ([`SERVED`]).
+    /// Teaches its record what this host kept of it, W*, and R* and C* where they were
+    /// rated ([`RATED`]), each as it was kept (`shards_api::Record::merge`). Nothing where
+    /// nothing whole is kept (one kept before answers were rated, W* and R* alone, leaves its
+    /// kind cold until its next answer rewrites it: its R* may be of none read, 0 ns), and,
+    /// for a command's kind, nothing that does not say it is of served answers alone
+    /// ([`SERVED`]).
     fn learn_kept(&self) {
         let kept = std::fs::read_to_string(&self.file).unwrap_or_default();
         let mut words = kept.split_whitespace();
         if self.served_only() && words.next() != Some(SERVED) {
             return;
         }
-        let ns: Option<Vec<u64>> = words.map(|n| n.parse().ok()).collect();
-        if let Some(&[slowest, cpu, over]) = ns.as_deref() {
-            self.record
-                .teach(Duration::from_nanos(over), Duration::from_nanos(cpu));
-            self.record.teach(Duration::from_nanos(slowest), Duration::MAX);
-        }
+        let ns = |word: Option<&str>| word.and_then(|n| n.parse().ok()).map(Duration::from_nanos);
+        let Some(slowest) = ns(words.next()) else {
+            return;
+        };
+        let rated = match words.next() {
+            None => None,
+            Some(RATED) => match (ns(words.next()), ns(words.next()), ns(words.next()), words.next()) {
+                (Some(cpu), Some(over), Some(most), None) => Some(shards_api::Rated {
+                    least: shards_api::Rate { cpu, over },
+                    most,
+                }),
+                _ => return,
+            },
+            Some(_) => return,
+        };
+        self.record.merge(shards_api::Seen::Learned { slowest, rated });
     }
 
     /// Whether it is a command's kind, taught by its served answers alone ([`Wait::unserved`]).
@@ -3308,7 +3359,7 @@ impl WaitKind {
     ) -> std::io::Result<()> {
         static KEEPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         self.learn_kept();
-        let shards_api::Seen::Learned { slowest, least } = self.record.seen() else {
+        let shards_api::Seen::Learned { slowest, rated } = self.record.seen() else {
             return Ok(());
         };
         between();
@@ -3328,18 +3379,31 @@ impl WaitKind {
         };
         std::fs::write(
             &temporary,
-            format!("{tag}{} {} {}\n", ns(slowest), ns(least.cpu), ns(least.over)),
+            match rated {
+                Some(rated) => format!(
+                    "{tag}{} {RATED} {} {} {}\n",
+                    ns(slowest),
+                    ns(rated.least.cpu),
+                    ns(rated.least.over),
+                    ns(rated.most)
+                ),
+                None => format!("{tag}{}\n", ns(slowest)),
+            },
         )?;
         std::fs::rename(&temporary, &self.file)
     }
 }
 
-/// The first word of a command's kept record ([`WaitKind::keep`]): its W* and R* are of
+/// The first word of a command's kept record ([`WaitKind::keep`]): its W*, R* and C* are of
 /// served answers alone ([`Wait::unserved`]). A record kept without it, before a refusal
 /// taught nothing, may hold a refusal's answer (adacachy2's `shards run` record of
 /// containers.rs' `a_logs_history_is_what_its_user_set`, W* 5.4 ms), and is read as none:
 /// its kind cold until its next served answer rewrites it.
 const SERVED: &str = "served";
+
+/// The word before a kept record's R* and C* ([`WaitKind::keep`]): of answers whose work was
+/// read through their end alone (`shards_api::Rated`). A record kept without it has none.
+const RATED: &str = "rated";
 
 /// Which answers teach a [`WaitKind`].
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -3386,6 +3450,10 @@ pub struct Party {
     beside: Option<Beside>,
     /// What this process's serving threads had run at the look before ([`Server`]).
     served: Option<u64>,
+    /// Each member's parent and name as its last look's listing gave them ([`processes`]),
+    /// for its account: which of them a refusal's last progress was (b24: a run's VM
+    /// process, its daemon's spawner's child, told from the client's by its name alone).
+    kin: std::collections::BTreeMap<u32, (u32, String)>,
 }
 
 /// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
@@ -3498,6 +3566,16 @@ pub struct Looked {
     /// Its home's daemon ran ([`Cpu::Progress`]), said apart from `found`: the work of its
     /// waiter's own clients where its waiter asked the daemon meanwhile ([`Wait::look`]).
     pub daemon_ran: Option<String>,
+    /// Whether it saw its party's own processes run or rest unheld: none of them held from
+    /// running, stopped, starved of a CPU (`shards_api::Watch::starved`), ending or found
+    /// anew, no run of its home in its stop grace, its daemon saying nothing (words are
+    /// progress its CPU does not show), and no progress of this process's servers', which it
+    /// may be waiting on. Only such looks' windows are its judge's rate's
+    /// (`shards_api::Span::work`, D215).
+    pub vouched: bool,
+    /// Whether a process of it had gone, or could not be read, before this look read its
+    /// last CPU: what it ran since the look before is lost to its work.
+    pub lost: bool,
 }
 
 impl Party {
@@ -3535,6 +3613,7 @@ impl Party {
             looked: false,
             beside: None,
             served: None,
+            kin: std::collections::BTreeMap::new(),
         }
     }
 
@@ -3555,7 +3634,7 @@ impl Party {
     /// daemon, and on Unix what descends from them, from one listing of the system's
     /// ([`processes`]); on Windows each is followed with what descends from it (shards-api's
     /// tree of a process, Toolhelp32). None for a machine of this process's.
-    fn members(&self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
+    fn members(&mut self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
         let listed = match self.members {
             Members::Machine => Vec::new(),
             Members::Client(_) if cfg!(windows) => Vec::new(),
@@ -3595,6 +3674,11 @@ impl Party {
                 .filter(|(_, helps)| *helps)
                 .map(|(pid, _)| *pid)
                 .collect();
+            self.kin = listed
+                .into_iter()
+                .filter(|(pid, ..)| tree.iter().any(|(member, _)| member == pid))
+                .map(|(pid, ppid, name)| (pid, (ppid, name)))
+                .collect();
             (tree.into_iter().map(|(pid, _)| pid).collect(), helpers)
         }
     }
@@ -3629,9 +3713,12 @@ impl Party {
             cpu: Duration::ZERO,
             resolution: Duration::ZERO,
             daemon_ran: None,
+            vouched: true,
+            lost: false,
         };
         let mut based = !std::mem::replace(&mut self.looked, true);
         if self.said.as_mut().is_some_and(Said::said) {
+            looked.vouched = false;
             looked.found = Found::Progressed;
             looked.what = "its daemon said something".into();
         }
@@ -3642,6 +3729,7 @@ impl Party {
                 Ran::Based => based = true,
                 Ran::Still => {}
                 Ran::Held => {
+                    looked.vouched = false;
                     if looked.found == Found::Still {
                         looked.found = Found::Held;
                         looked.what =
@@ -3668,6 +3756,7 @@ impl Party {
                 looked.what = "this process's serving threads ran".into();
             }
             server_held = served == before && serving;
+            looked.vouched &= served == before && !server_held;
         }
         // Whether a process of it was found live: one found anew, or one still to be read.
         let mut live = false;
@@ -3704,14 +3793,22 @@ impl Party {
             let found = watch.look();
             if matches!(found, Ok(Found::Gone)) || (was_ended && watch.ended()) {
                 gone.push(pid);
+                looked.vouched = false;
+                looked.lost |= matches!(found, Ok(Found::Gone));
                 continue;
             }
+            looked.lost |= found.is_err();
             looked.cpu = looked.cpu.saturating_add(watch.cpu().saturating_sub(before));
             live |= matches!(found, Ok(Found::Progressed | Found::Held | Found::Still));
             // A party whose CPU is its liveness alone ran, some threads of it, while the one
             // its answer waits on may have sat runnable on no CPU: its host's hold
             // (`shards_api::Watch::starved`), read at each look so its window is theirs.
-            let starved = self.cpu == Cpu::Liveness && watch.starved();
+            // Read under either CPU, as the rate's window needs it (D215).
+            let starved = watch.starved();
+            looked.vouched &= !starved
+                && !watch.ended()
+                && !watch.stopped()
+                && matches!(found, Ok(Found::Progressed | Found::Still));
             match (found, self.cpu) {
                 (Ok(Found::Progressed | Found::Still), Cpu::Liveness)
                     if starved && looked.found == Found::Still =>
@@ -3745,16 +3842,19 @@ impl Party {
         for pid in gone {
             self.watched.remove(&pid);
         }
+        if !found_anew.is_empty() {
+            looked.vouched = false;
+        }
         if server_held && looked.found == Found::Still {
             looked.found = Found::Held;
             looked.what = "its host held a serving thread of this process from running".into();
         }
-        if live
-            && looked.found == Found::Still
-            && let Some((run, left)) = self.graced()
-        {
-            looked.found = Found::Held;
-            looked.what = format!("its daemon in run {run}'s stop grace, {left:?} more");
+        if live && let Some((run, left)) = self.graced() {
+            looked.vouched = false;
+            if looked.found == Found::Still {
+                looked.found = Found::Held;
+                looked.what = format!("its daemon in run {run}'s stop grace, {left:?} more");
+            }
         }
         if !live && looked.found == Found::Still && !matches!(self.members, Members::Machine) {
             looked.found = Found::Gone;
@@ -3795,7 +3895,14 @@ impl Party {
             .watched
             .iter()
             .map(|(&pid, watch)| {
-                let mut said = format!("{pid} {}", process_status(pid).unwrap_or_else(|| "unread".into()));
+                let kin = self
+                    .kin
+                    .get(&pid)
+                    .map_or_else(String::new, |(parent, name)| format!(" {name} (parent {parent})"));
+                let mut said = format!(
+                    "{pid}{kin} {}",
+                    process_status(pid).unwrap_or_else(|| "unread".into())
+                );
                 if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
                     said.push_str(&format!(", {runnable} of {threads} threads runnable"));
                 }
@@ -4398,6 +4505,12 @@ pub struct Wait {
     gone: bool,
     /// Its party's CPU since it began.
     work: Duration,
+    /// Whether every look since its judge's look before saw its party run or rest unheld
+    /// ([`Looked::vouched`]): only then is its work its judge's rate's (D215).
+    vouched: bool,
+    /// Whether its work was read through its answer ([`read_through`](Wait::read_through)):
+    /// none until a read at its answer, which only then teaches its kind R* and C*.
+    read: Option<bool>,
     /// The clients this thread had begun against its party's home as its judge's window
     /// began ([`asked_of`]), and whether its daemon ran in the window: its daemon's progress
     /// only where none began since, as its own clients' work is no progress of its party's.
@@ -4501,6 +4614,8 @@ impl Wait {
             holding: None,
             gone: false,
             work: Duration::ZERO,
+            vouched: false,
+            read: None,
             polls,
             daemon_ran: None,
             live: Live::new(),
@@ -4529,16 +4644,33 @@ impl Wait {
         self.ended(false);
     }
 
-    /// Its answer came, taught to its kind where `teaches` and it was found missing first.
+    /// Reads its party's CPU now, at its answer, for its work through it: read through where
+    /// none of its processes was lost before its last CPU was read (its command's client
+    /// read as it ended, before it was reaped). Once.
+    pub fn read_through(&mut self) {
+        if self.read.is_none() {
+            let looked = self.party.look();
+            self.work = self.work.saturating_add(looked.cpu);
+            self.read = Some(!looked.lost);
+        }
+    }
+
+    /// Its answer came, taught to its kind where `teaches` and it was found missing first:
+    /// its R* and C* too where its work was read through it ([`read_through`](Self::read_through)).
     fn ended(&mut self, teaches: bool) {
         if teaches && self.stage == Stage::Awaited {
-            self.judge.answered(self.work);
+            self.read_through();
+            if self.read == Some(true) {
+                self.judge.answered(self.work);
+            } else {
+                self.judge.answered_unrated();
+            }
             self.kind.keep();
         }
         if self.stage != Stage::Answered {
             self.stage = Stage::Answered;
             self.judge = shards_api::Judge::begin(&self.kind.record);
-            (self.progressed, self.held) = (None, None);
+            (self.progressed, self.held, self.vouched) = (None, None, false);
         }
     }
 
@@ -4546,10 +4678,13 @@ impl Wait {
     /// it ran, its host's hold where it ran nothing yet was runnable.
     fn call_looked(&mut self, ran: bool, runnable: bool) {
         if ran {
+            // Its CPU is no part of its party's work: no window of its rate (D215).
+            self.vouched = false;
             self.last = (Instant::now(), "its call's own thread ran".into());
             self.progressed
                 .get_or_insert_with(|| "its call's own thread ran".into());
         } else if runnable {
+            self.vouched = false;
             self.held
                 .get_or_insert_with(|| "its host held its call's own thread from running".into());
         }
@@ -4582,6 +4717,8 @@ impl Wait {
         use shards_api::Found;
         let now = Instant::now();
         if output {
+            // Words are progress its CPU does not show: no window of its rate (D215).
+            self.vouched = false;
             self.last = (now, "its output".into());
             self.progressed.get_or_insert_with(|| "its output".into());
         }
@@ -4597,13 +4734,15 @@ impl Wait {
         if self.stage == Stage::Answered && looked.found == Found::Gone {
             looked.found = Found::Still;
         }
+        self.work = self.work.saturating_add(looked.cpu);
+        self.vouched &= looked.vouched && matches!(looked.found, Found::Progressed | Found::Still);
         let span = shards_api::Span {
             began: now,
             ended: Instant::now(),
             resolution: looked.resolution,
             own,
+            work: None,
         };
-        self.work = self.work.saturating_add(looked.cpu);
         if self.daemon_ran.is_none() {
             self.daemon_ran = looked.daemon_ran;
         }
@@ -4644,12 +4783,15 @@ impl Wait {
             } else {
                 Found::Still
             };
-            judged = self.judge.found_over(found, span);
+            // Its rate's window is this one where every look in it vouched, and the next
+            // begins vouched.
+            let work = std::mem::replace(&mut self.vouched, true).then_some(self.work);
+            judged = self.judge.found_over(found, shards_api::Span { work, ..span });
         } else if looked.found == Found::Based {
             // Its evidence begins at this look's end, due or not: a based look refuses nothing.
             judged = self.judge.found_over(Found::Based, span);
         }
-        self.live.set(self.account());
+        self.live.set(self.account(), self.party.home.as_deref());
         let left = self
             .judge
             .due()
@@ -4663,9 +4805,16 @@ impl Wait {
     pub fn account(&self) -> String {
         let record = match self.kind.record.seen() {
             shards_api::Seen::Cold => "none yet on this host: its party's liveness alone".to_string(),
-            shards_api::Seen::Learned { slowest, least } => {
-                format!("W* {slowest:?}, R* {:?} of CPU in {:?}", least.cpu, least.over)
+            shards_api::Seen::Learned { slowest, rated: None } => {
+                format!("W* {slowest:?}, no answer's work read through its end")
             }
+            shards_api::Seen::Learned {
+                slowest,
+                rated: Some(rated),
+            } => format!(
+                "W* {slowest:?}, R* {:?} of CPU in {:?}, C* {:?} of CPU",
+                rated.least.cpu, rated.least.over, rated.most
+            ),
         };
         let kind = if self.kind.line.is_empty() {
             self.kind.site.to_string()
@@ -4673,7 +4822,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}; its members now: {}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}{}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -4683,6 +4832,9 @@ impl Wait {
                 || "its host not holding it".to_string(),
                 |held| format!("held: {held}")
             ),
+            self.judge.stillness().map_or_else(String::new, |(still, held, window)| format!(
+                "; still {still:?} of its {window:?} window as its last look saw, {held:?} of its looks' lateness out"
+            )),
             self.party.states(),
         )
     }
@@ -4707,6 +4859,20 @@ impl Wait {
 
     /// What a refusal says of it.
     pub fn refused(&self, stall: &shards_api::Stall) -> String {
+        if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) {
+            return format!(
+                "{} ran too slowly to be answering: {:?} of CPU in the {:?} it was seen to run unheld, below the least rate any answer of its kind came at on this host (R* {:?} in {:?}) and more than any such answer took (C* {:?}), past the slowest such answer ({:?}), {:?} into its wait\n--- its wait\n{}",
+                self.asked,
+                rate.cpu,
+                rate.over,
+                least.cpu,
+                least.over,
+                stall.most().unwrap_or_default(),
+                stall.slowest(),
+                stall.waited(),
+                self.account()
+            );
+        }
         format!(
             "{} made no progress for {:?}, past the slowest answer of its kind seen on this host ({:?}), {:?} into its wait\n--- its wait\n{}",
             self.asked,
@@ -4735,10 +4901,11 @@ impl Drop for Wait {
 
 /// Each live wait's account as its last look gave it, by a number of its own: what
 /// [`dump_live_waits`] says as the test process is ended.
-static LIVE: std::sync::Mutex<std::collections::BTreeMap<u64, String>> =
+static LIVE: std::sync::Mutex<std::collections::BTreeMap<u64, (String, Option<PathBuf>)>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-fn live_waits() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, String>> {
+fn live_waits() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<u64, (String, Option<PathBuf>)>>
+{
     LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -4752,8 +4919,8 @@ impl Live {
         Live(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 
-    fn set(&self, account: String) {
-        live_waits().insert(self.0, account);
+    fn set(&self, account: String, home: Option<&Path>) {
+        live_waits().insert(self.0, (account, home.map(Path::to_path_buf)));
     }
 }
 
@@ -4765,15 +4932,24 @@ impl Drop for Live {
 
 /// Says each live wait's account on stderr: as the test process is ended by SIGINT or
 /// SIGTERM (CI's job limit, a person's ^C), or by Windows' console control event, so that a
-/// wait that never ends, cold or not, leaves what it knew (ROOT, 2026-11-13).
+/// wait that never ends, cold or not, leaves what it knew (ROOT, 2026-11-13): its members,
+/// each by its name, parent and state at its last look, and what each home its waits were
+/// on wrote ([`show_why`]: its runs' stderr, its daemon's samples, its daemon's log's tail),
+/// which go with the home as the process ends (b24's 62-minute wait was ended with its home
+/// and no word of which process its last progress was, nor what its daemon said).
 fn dump_live_waits(why: &str) {
     let live = live_waits();
     let mut said = format!("shards tests: ended by {why}, {} wait(s) under way", live.len());
-    for account in live.values() {
+    for (account, _) in live.values() {
         said.push_str("\n  ");
         said.push_str(account);
     }
     let _ = writeln!(io::stderr(), "{said}");
+    let homes: std::collections::BTreeSet<&PathBuf> =
+        live.values().filter_map(|(_, home)| home.as_ref()).collect();
+    for home in homes {
+        show_why(home);
+    }
 }
 
 /// The write end of the pipe on which [`ended_by`] tells [`dump_at_the_end`]'s thread a

@@ -4927,7 +4927,7 @@ mod tests {
         ] {
             match refused {
                 Some(Refusal::Stalled(stall)) => {
-                    assert_eq!((stall.least(), stall.slowest()), (least, slowest), "{what}");
+                    assert_eq!((stall.least(), stall.slowest()), (Some(least), slowest), "{what}");
                     let (over, waited) = (stall.over(), stall.waited());
                     assert!(over >= slowest && waited >= over, "{what}: {over:?} {waited:?}");
                 }

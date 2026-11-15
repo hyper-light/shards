@@ -436,6 +436,7 @@ impl<'a> Follow<'a> {
             ended: Instant::now(),
             resolution: watch.resolution(),
             own: Duration::ZERO,
+            work: None,
         };
         judge
             .found_over(Found::Based, span)
@@ -477,6 +478,7 @@ impl<'a> Follow<'a> {
             ended: Instant::now(),
             resolution: self.watch.resolution(),
             own: Duration::ZERO,
+            work: None,
         };
         self.judge.found_over(found, span).map_err(Unfollowed::Stalled)
     }
@@ -2055,7 +2057,10 @@ mod tests {
         records.teach(Awaited::Boot, ms(2), ms(1));
         let learned = |slowest, cpu, over| Seen::Learned {
             slowest,
-            least: Rate { cpu, over },
+            rated: Some(crate::Rated {
+                least: Rate { cpu, over },
+                most: ms(1),
+            }),
         };
         assert_eq!(records.seen(Awaited::Boot), learned(ms(2), ms(1), ms(2)));
         records.teach(Awaited::Boot, ms(1), ms(1));

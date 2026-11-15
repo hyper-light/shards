@@ -118,12 +118,17 @@ impl std::fmt::Display for Cut {
             Cut::Stalled(stall) => write!(
                 f,
                 "its microVM ran no CPU in {:?} past the slowest answer seen ({:?}), {:?} into the \
-                 wait (the least a microVM ran and still answered: {:?} in {:?})",
+                 wait ({})",
                 stall.over(),
                 stall.slowest(),
                 stall.waited(),
-                stall.least().cpu,
-                stall.least().over
+                stall.least().map_or_else(
+                    || "no answer of its kind had its CPU read".to_string(),
+                    |least| format!(
+                        "the least a microVM ran and still answered: {:?} in {:?}",
+                        least.cpu, least.over
+                    )
+                )
             ),
             Cut::Unread { pid, failure } => {
                 write!(f, "its microVM's process {pid} could not be read: {failure}")
@@ -1118,7 +1123,7 @@ mod tests {
         assert_eq!(stall.slowest(), slowest);
         assert!(stall.over() >= slowest, "{stall:?}");
         assert!(stall.waited() >= stall.over(), "{stall:?}");
-        assert_eq!(stall.least().over, slowest);
+        assert_eq!(stall.least().map(|least| least.over), Some(slowest));
         assert_eq!(
             record.seen(),
             learned(slowest).seen(),

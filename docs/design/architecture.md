@@ -11828,7 +11828,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   `shards_in` and `run_in`, which their `_within` twins fold into), takes no timeout:
   - *Its kind* is its call site (`#[track_caller]` through the wrappers), whose record,
     D215's (`shards_api::Record`: W*, the slowest answer, from the wait's start to its
-    client's own end; R*, a refusal's diagnosis, never its bound), the test process keeps in
+    client's own end; R* and C*, a bound on a party past W* that ticks but never answers, D215), the test process keeps in
     memory and under `target/judge-records/<os>-<arch>-<logical CPUs>/<call site>`, read
     back by the next run on the host (ROOT: a record learned on the host is data, not a
     seed; every runner of one CI image shares its key, so a cached target keeps CI warm).
@@ -12182,7 +12182,7 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
     caller (a channel, a socket read) blocks until its next look (`Wait::next_look`,
     `Patience::next_look`: D215's `sqrt(2 c w)` pace, or its judge's due).
   - `Said` reads whole lines alone, each one progress: `Floor`, `HEARTBEAT` and `Ran` are
-    gone (R* is a refusal's diagnosis, never a bound). engine.rs' API reads, daemon.rs'
+    gone (R* bounds a ticking party only past W* and past C*, D215). engine.rs' API reads, daemon.rs'
     unread-volume and followers' waits are each a `Patience`. budget.rs' start counts its
     slice's PSI total grown since the look before as its host's hold.
   - R03, the literals: none of the waits' bounds is left. The old `TIMEOUT`, `STREAMING` and
@@ -12988,6 +12988,41 @@ harness test).
   20.331ms". That kind's party is its words alone (`Cpu::Liveness`), so a restored guest's
   first answer slower than the slowest seen of it is refused while its VM process faults its
   memory back: open, ROOT's.
+
+**Part 9: a run that never ends, and what a hang leaves** (the gitssh lane, 2026-11-14; ROOT's
+batch 26 brief)
+- *The hang.* HVF batch 24 (main 1f71dea19, Adas-Mac-Studio-3, `--test build --
+  --test-threads=1`) held build.rs `add_fetches_git_over_ssh` for over an hour, and ROOT ended
+  it. It was not the ssh fetch. The build and the first `run -u root sshed:1 stat …` had
+  passed, and the three sshd listeners sat at "0 of 10-100 startups" because their fetches
+  were long done. The wait was build.rs:5947, the image's next run, `shards run --rm sshed:1
+  stat /s1/noise.bin` (client 59937, daemon 59933), "3722.43s in: its last progress process
+  59939 ran 751.541µs ago; its host not holding it; its record W* 117.29ms, R* 148.60ms of CPU
+  in 117.29ms".
+  - A run's VM and network processes are its daemon's spawner's children, the network first
+    (launch.rs `launch_with`). The client starts none (only a build's builder is the client's
+    child, builder.rs `launch::builder`). So 59939, the client's pid plus 2, was most likely
+    the run's shards-vm. The ps was lost with its home.
+  - An idle guest's VM process ticks (D215: 10 to 30 ms per 10 s at 14 vCPUs), so the
+    judge's "any CPU" saw progress at every look. That was a false negative of D215's look,
+    not a livelock: a spin runs a core. It is closed by D215's rate rule (R*, C*, rated
+    answers), whose harness test is this hang's shape.
+  - Nothing in production bounds a run's command once its VM has said TAKEN, by design (a
+    command may run for ever; cli/client.rs `ran_on`), so the test's judge is its only end.
+- *What a hang leaves* (ROOT's ruling). A wait ended by SIGINT or SIGTERM (`dump_live_waits`)
+  now says, beside each live wait's account, what its home wrote (`show_why`: its runs'
+  stderr, its daemon's samples, its daemon log's last lines), which go with the home as the
+  process ends. Each account's members (judgecli's member states, ed09f0570) now name each
+  process and its parent from the look's own listing (`Party::kin`, no second reader), so
+  "process 59939" reads as its name and parent: a VM process (`shards-vm`, the spawner's
+  child), the network process, the daemon or the client.
+- *Open: the wedge itself, not reproduced.* The guest asleep on the second `run --rm` of a
+  built image (its first run, `-u root`, had answered). It was not reproduced in 64 runs on
+  Adas-Mac-Studio-3 at ff69e4736: 15 and 40 runs of the test alone, about 4 s each, and 9 of
+  build.rs from its start through this test at `--test-threads=1` with
+  `SHARDS_REQUIRE_VMS=1`. Logs are in adas-mac-studio.local:~/g121-tmp/gitssh/logs, removed
+  at the lane's end. The next one ends refused, its account naming the asleep process and
+  its daemon's log. Its cause is what that says.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -27929,9 +27964,67 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       wall; `sleep 5`, 0 and 0; a shell starting `sleep 0.01` in a loop, 5.8 ms CPU and
       6.2 ms runnable. A thread that is runnable as a look samples it already read as held
       (`TH_STATE_RUNNING` is running or waiting for a CPU, mach/thread_info.h).
-    - R* is in the refusal for diagnosis only, never a bound. ROOT's first design refused a
-      look below R*, which would refuse a boot merely slowed by its host's load: the very
+    - R* was in the refusal for diagnosis only, never a bound: ROOT's first design refused a
+      look below R*, which would refuse a boot merely slowed by its host's load, the very
       failure R03 ends (ROOT, 2026-11-13, at this lane's report).
+    - *R* and C* bound a party that ticks but never answers* (ROOT's ruling, 2026-11-14, the
+      gitssh lane). "Any CPU at all is progress" was a structural false negative: HVF batch 24
+      at 1f71dea19 waited 3,722 s on build.rs's `shards run --rm sshed:1 stat /s1/noise.bin`,
+      "its last progress process 59939 ran 751µs ago" at every 117 ms look, its guest asleep
+      for good. An idle guest's VM process still ticks: `shards run --kernel … --cpus 14`
+      of the test guest's `idle` mode on adas-mac-studio-3.local (macOS arm64, 14 cores,
+      ff69e4736) ran 10 to 30 ms of CPU in each of three 10 s spans over 18 threads, so it runs
+      within any W* of more than a few ms. A spinning one runs a core or more. The judge now
+      also refuses a party that progressed (`Judge::found_over`, `Stall::rate`) where all of
+      these hold:
+      - it has been seen to run unheld a whole window or more. Its wall is only the windows
+        between due looks that its caller vouched for (`Span::work`): none of its processes
+        held from running, stopped, starved of a CPU (`Watch::starved`, read under either CPU
+        reading), ending or found anew, no run of its home in its stop grace, no progress
+        that was this process's servers'. The judge's own lateness is out too;
+      - its work since its start over that wall is below R*;
+      - that work is more than C*, the most work any answer of its kind took (new in
+        `Seen::Learned`). Without C*, a kind whose answers wait on a peer (a registry, a git
+        server), their work alike and their wall not, would be refused at its first answer
+        slower than all before, its rate then below all before. With C*, a party is refused
+        only once it has done more work than any answer needed while running slower than any
+        answer ran. A boot slowed by its host does its usual work and is never refused; its
+        held windows are out of its wall besides. From one answer, R* times W* is C*, so a
+        party can be under R* and over C* only well past W*: b24's ticks would have passed
+        its C* within about a minute.
+    - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
+      before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
+      paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
+      Option<Rated> }`. `Record::teach(wall, work)` is for work read through the answer
+      (shards-api's `Follow` and the daemon's waits read their VM process at it). A test's
+      `Wait` reads its party once more at its answer, a command's client while it is a zombie
+      (waitid(2) `WNOWAIT`, POSIX.1-2024) or, on Windows, through its watch's handle, and
+      teaches R* and C* only where no process of it was lost before that read
+      (`Wait::read_through`, else `Record::teach_unrated`: W* alone). A kept record is
+      `served W* [rated R*cpu R*wall C*]`. One without a whole rating, the older three
+      numbers among them, is read as none: its kind cold until its next answer rewrites it.
+    - Where it applies: a caller that passes `Span::work`. Today that is the tests' `Wait`.
+      shards-api's `Follow`, the daemon's health waits and `parents.rs` pass none and judge
+      by stillness alone, as before (their refusals' texts now say a rate or "no answer of
+      its kind had its CPU read"). No literal: W*, R*, C* and every window are learned on the
+      host, a kind with no rated answer has no floor, and the rule only ever refuses past W*.
+    - *Held by* crates/api judge.rs:
+      - `a_wait_slower_than_any_answer_is_refused_though_it_progresses`: b24's shape, refused
+        at the first look its work passes C* and not the look before;
+      - `a_busy_wait_past_w_star_goes_on`;
+      - `a_wait_on_a_peer_past_w_star_goes_on_within_its_kinds_work`;
+      - `a_window_its_caller_cannot_vouch_for_is_out_of_the_rate`;
+      - `an_unrated_answer_teaches_its_slowest_alone`;
+      - `a_record_merged_in_keeps_each_bound_past_the_others`;
+      - and harness.rs `a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on`. Its
+        kind starts from a kept unrated record of R* 0 ns, is taught by three stand-ins busy
+        50 ms, and then refuses one that works 1 ms in each 11 ms. A busy 200 ms one past W* is
+        served. Green on adas-mac-studio-3.local (macOS arm64, 14e037fb0 and this change,
+        test-release, kiln r1003), with the focused harness tests 9 of 9 and shards-api 81 of
+        81. Red there with the rule removed (judge.rs's b24 and vouch tests failed, and the
+        sleeper was served at its own end 95.2 s in, its kind `served 95238910958 rated
+        1999931084 95238910958 1999931084`), and red with the old unrated record read as rated
+        (R* 0 ns kept: served 103.4 s in).
     - A look at a process whose exit is under way (a zombie; on Windows, a process of its
       tree that exited since) judges nothing. Its end is the wait's answer, and wins over a
       refusal it races.

@@ -402,6 +402,73 @@ fn a_commands_refusal_teaches_its_kind_nothing() {
     assert!(kept.starts_with("served "), "kept as {kept:?}");
 }
 
+/// A command asleep for good but ticking, as b24's guest's VM process ran a little in every
+/// window, is refused once it has run past W* below R* and done more than any answer took
+/// (C*), and a busy one past W* goes on (D215): HVF batch 24 at 1f71dea19, build.rs's
+/// `shards run --rm sshed:1 stat /s1/noise.bin` waited 62 minutes, "its last progress process
+/// 59939 ran 751µs ago" at every look, as any CPU at all was progress. Red so: the sleeper
+/// served at its own end, 95 s in on HVF. Many kept records then held R* 0 ns, taught by answers
+/// reaped before any look read their CPU, a floor that refuses nothing: such a record is read
+/// as none, and only answers read through their end teach R* and C*. Do: from one call site,
+/// its kind's kept record one of R* 0 ns without a rating, teach it three stand-ins busy
+/// 50 ms; then one that works 1 ms in each 11 ms 2,000 times, within every W*; then one busy
+/// 200 ms. Expect: the second refused, its account its rate against R* and C*; the third
+/// served.
+#[test]
+fn a_command_asleep_but_ticking_is_refused_and_a_busy_one_goes_on() {
+    #[track_caller]
+    fn judged(
+        cmd: std::process::Command,
+        unrated: bool,
+    ) -> (Result<common::Run, common::Ended>, std::path::PathBuf) {
+        let (words, line) = (common::command_words(&cmd), common::keyed_line(&cmd));
+        let kept = common::WaitKind::kept_at(std::panic::Location::caller(), &words, &line);
+        if unrated {
+            std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+            std::fs::write(&kept, "served 50000000 0 50000000\n").unwrap();
+        }
+        (
+            common::run_until(cmd, &["stand-in".to_string()], Duration::from_secs(120)),
+            kept,
+        )
+    }
+    // One call site, one command line: one kind, whatever each stand-in does.
+    let run = |doing: &str, unrated: bool| {
+        let mut cmd = stand_in_doing("pulse 1 1");
+        cmd.env("SHARDS_STAND_IN", doing);
+        judged(cmd, unrated)
+    };
+    let mut unrated = true;
+    for _ in 0..3 {
+        let (taught, _) = run("busy 50", std::mem::take(&mut unrated));
+        assert!(
+            taught.as_ref().is_ok_and(|run| run.status == Some(0)),
+            "teaching: {:?}",
+            taught.err().map(|e| e.said)
+        );
+    }
+    let start = Instant::now();
+    let (asleep, kept) = run("pulse 2000 10", false);
+    let said = match asleep {
+        Ok(run) => panic!(
+            "a ticking sleeper was not refused, {:?} in, its kind kept as {:?}: {run}",
+            start.elapsed(),
+            std::fs::read_to_string(&kept).unwrap_or_default()
+        ),
+        Err(ended) => ended.said,
+    };
+    assert!(
+        said.contains("ran too slowly to be answering") && said.contains("C* "),
+        "{said}"
+    );
+    let (busy, _) = run("busy 200", false);
+    assert!(
+        busy.as_ref().is_ok_and(|run| run.status == Some(0)),
+        "the busy one: {:?}",
+        busy.err().map(|e| e.said)
+    );
+}
+
 /// A command is waited on while it works: its caller gives its wait no bound, as a wait
 /// follows its party's liveness and progress (the person's ruling of 2026-11-13).
 /// api_image's and build.rs's builds on jupiter were cut at their tests' 120 s while they
