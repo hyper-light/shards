@@ -30,9 +30,9 @@ use common::{
 use shards_api::image::{
     BootStop, Captured, Channel, Cli, CredentialGrant, FinalUse, ImageGuest, ImagePools, ImageRefusal,
     ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor, MemberEnd,
-    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, PlugRefusal, Proto, Publish,
-    RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom,
-    StatsScope, Unused, UpstreamRoot,
+    MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, PlugRefusal, Proto,
+    Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
+    StartedFrom, StatsScope, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -2799,11 +2799,18 @@ fn warm_hosts_end_with_the_process_holding_their_pools() {
         let sent = unsafe { libc::kill(-pid, 0) };
         sent == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     };
-    let mut patience = Patience::started();
+    // Its party is those groups' own processes, the holder's orphans now, none of them this
+    // process's: a wait on the processes this process started followed none of them, and was
+    // refused 322.5 µs in with host 75603 live (ROOT's batch 32, HVF).
+    let groups: Vec<u32> = hosts.iter().filter_map(|&pid| u32::try_from(pid).ok()).collect();
+    let mut patience = Patience::groups(&groups);
     while !hosts.iter().all(|&pid| gone(pid)) {
         assert!(
             patience.holds(),
-            "warm hosts {hosts:?} outlived their pools' holder"
+            "warm hosts {hosts:?} outlived their pools' holder, their groups' processes now {:?}",
+            common::grouped(&common::processes(), &groups)
+                .cloned()
+                .collect::<Vec<_>>()
         );
         std::thread::sleep(patience.next_look());
     }
@@ -2838,4 +2845,129 @@ fn a_warm_hosts_footprint_is_its_vm_processs_reading() {
     };
     patience.done();
     assert!(footprints.iter().all(|&f| f > 0), "{footprints:?}");
+}
+
+/// The Agentfile lines of an image whose harness takes port 7100 coming in (D122), which links
+/// it past its microVM, so that its run has a network with no port published at its start.
+const INGRESS: &str = "NETWORK --ingress=7100 front\n\
+     EXPOSE --harnesses=codex 7100 AS ingress FOR front\n\
+     CONNECT --target-kind=harness codex WITH codex ON front\n";
+
+/// The VM processes of `home`'s runs: those whose command line names the home (their image's
+/// root, or their template's directory) and the VM process's own binary.
+fn vm_processes(home: &TempDir) -> Vec<u32> {
+    let home = home.to_string_lossy().into_owned();
+    let mut vms: Vec<u32> = common::commands_with(&home)
+        .into_iter()
+        .filter(|(_, args)| args.contains("shards-vm"))
+        .map(|(pid, _)| pid)
+        .collect();
+    vms.sort_unstable();
+    vms
+}
+
+/// Every file beneath `home`'s templates, with its length: a save, or a template made or
+/// replaced, changes it (D253).
+fn templates_of(home: &TempDir) -> Vec<(std::path::PathBuf, u64)> {
+    let mut files = Vec::new();
+    let mut dirs = vec![home.join("templates")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            if meta.is_dir() {
+                dirs.push(entry.path());
+            } else {
+                files.push((entry.path(), meta.len()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// D269, P6b.1 AC1: a port published as the run runs answers from the host, reaching the member
+/// its image gives it coming in, and once let go of answers no more; all of it in the running
+/// microVM in place: its start (`started_from`) and its one VM process the same throughout, its
+/// template's files untouched, and its image's next run restoring that template where this host
+/// restores. Refused typed: a port let go of twice (`Unknown`), and one the image gives no member
+/// on a run with no command of its own (`Widening`).
+#[test]
+fn a_port_published_live_answers_and_is_gone_after_unpublish() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-live-port-home");
+    build(&home, "api-live-port:1", &["confined", "listen", "7100"], INGRESS);
+    let mut s = spec(&home, "api-live-port:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let guest = boot(&home, &s);
+    let from = guest.started_from();
+    let vms = vm_processes(&home);
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    let templates = templates_of(&home);
+    assert!(guest.published().is_empty(), "{:?}", guest.published());
+    let asked = |guest_port| Publish {
+        guest_port,
+        proto: Proto::Tcp,
+        host: Some("127.0.0.1".parse().unwrap()),
+        host_port: 0,
+    };
+    let bound = ask(&*guest, |g| g.publish(asked(7100), Duration::MAX)).unwrap();
+    let [bound] = bound.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let [to] = bound.to.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let member = guest.members().iter().find(|m| m.index == to.member).unwrap();
+    assert_eq!(
+        (member.kind, member.name.as_str(), to.port),
+        (MemberKind::Harness, "codex", 7100)
+    );
+    assert_eq!(guest.published(), vec![bound.clone()]);
+    let mut patience = Patience::started();
+    loop {
+        if let Ok(mut c) = std::net::TcpStream::connect(bound.host) {
+            let _ = c.write_all(b"hello\n");
+            let mut got = Vec::new();
+            let _ = common::Following::of(&c, None).read_to_end(&mut got);
+            if !got.is_empty() {
+                break;
+            }
+        }
+        assert!(patience.holds(), "no answer on {}", bound.host);
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
+    ask(&*guest, |g| g.unpublish(Proto::Tcp, bound.host, Duration::MAX)).unwrap();
+    assert!(guest.published().is_empty(), "{:?}", guest.published());
+    assert!(
+        std::net::TcpStream::connect(bound.host).is_err(),
+        "{} answered once let go of",
+        bound.host
+    );
+    assert!(matches!(
+        ask(&*guest, |g| g.unpublish(Proto::Tcp, bound.host, Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Unknown, _))
+    ));
+    assert!(matches!(
+        ask(&*guest, |g| g.publish(asked(7200), Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Widening, _))
+    ));
+    // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+    if shards_vmm::vm::restores_here() {
+        assert_eq!(from, StartedFrom::Saved);
+        let next = boot(&home, &s);
+        assert_eq!(next.started_from(), StartedFrom::Restored);
+        next.stop().unwrap();
+    }
 }

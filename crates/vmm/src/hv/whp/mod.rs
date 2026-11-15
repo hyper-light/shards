@@ -1512,6 +1512,12 @@ mod emulate {
 }
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): nothing to tell. Its guest
+    /// keeps time by Hyper-V's reference TSC, which ran on through the pause (its partition's
+    /// time is held only for a snapshot, `suspend_time`), and Hyper-V's clocks carry no stopped
+    /// flag a Linux guest's watchdog reads.
+    pub fn went_on(&self) {}
+
     /// Maps each of `runs`, `(gpa, len)`, of guest memory into stage 2 ahead of the guest's
     /// first touch of them, all in one call (WHvAdviseGpaRange,
     /// WHvAdviseGpaRangeCodePopulate): each page the guest would take into stage 2 one exit
