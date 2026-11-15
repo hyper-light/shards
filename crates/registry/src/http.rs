@@ -1574,7 +1574,11 @@ enum Replied<T> {
 }
 
 /// `deadline`, none: until its answer, its worker's end or the cancel.
-fn wait_reply<T>(receiver: &mpsc::Receiver<T>, cancel: Option<&Cancel>, deadline: Option<Instant>) -> Replied<T> {
+fn wait_reply<T>(
+    receiver: &mpsc::Receiver<T>,
+    cancel: Option<&Cancel>,
+    deadline: Option<Instant>,
+) -> Replied<T> {
     let left = |deadline: Instant| {
         deadline
             .checked_duration_since(Instant::now())
@@ -2874,10 +2878,10 @@ mod tests {
             let (one, first) = mpsc::channel::<usize>();
             let (two, second) = mpsc::channel();
             let cancellation = &cancel;
-            let a =
-                scope.spawn(move || wait_reply(&first, Some(cancellation), Some(after(Duration::from_secs(2)))));
-            let b =
-                scope.spawn(move || wait_reply(&second, Some(cancellation), Some(after(Duration::from_secs(2)))));
+            let a = scope
+                .spawn(move || wait_reply(&first, Some(cancellation), Some(after(Duration::from_secs(2)))));
+            let b = scope
+                .spawn(move || wait_reply(&second, Some(cancellation), Some(after(Duration::from_secs(2)))));
             Reply::new(two, Some(&cancel)).send(2);
             assert!(matches!(b.join().unwrap(), Replied::Answer(2)));
             cancel.cancel();
@@ -3074,8 +3078,16 @@ mod tests {
             Err(io::Error::other("no such host"))
         })
         .unwrap_err();
-        assert!(failed.is_unresolved() && failed.kind() == ErrorKind::Transient, "{failed}");
-        assert!(failed.to_string().contains("nowhere.test: resolving: no such host"), "{failed}");
+        assert!(
+            failed.is_unresolved() && failed.kind() == ErrorKind::Transient,
+            "{failed}"
+        );
+        assert!(
+            failed
+                .to_string()
+                .contains("nowhere.test: resolving: no such host"),
+            "{failed}"
+        );
         let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
         let server = serve(None, vec![(ok, After::Close)]);
         static PORT: AtomicU64 = AtomicU64::new(0);

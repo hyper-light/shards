@@ -178,7 +178,11 @@ impl Asking {
 /// the build is cancelled, or a re-ask while the trouble follows its far end's liveness
 /// says the far end is gone (refused, unresolved or cut before any answer), which fails the
 /// asking naming it. Anything else fails at once, as before.
-fn ridden<R>(asking: &Asking, say: &dyn Fn(&str), mut op: impl FnMut() -> Result<R, Failure>) -> Result<R, Failure> {
+fn ridden<R>(
+    asking: &Asking,
+    say: &dyn Fn(&str),
+    mut op: impl FnMut() -> Result<R, Failure>,
+) -> Result<R, Failure> {
     let mut trouble = Trouble::default();
     let mut troubled: Option<Url> = None;
     loop {
@@ -336,8 +340,7 @@ impl<'a> Http<'a> {
         match answered {
             Ok(response) => {
                 if matches!(response.status, 408 | 502 | 503 | 504) {
-                    self.asking
-                        .drop_of(url, Dropped::Passing(retry_after(&response)));
+                    self.asking.drop_of(url, Dropped::Passing(retry_after(&response)));
                 }
                 Ok(response)
             }
@@ -384,7 +387,10 @@ impl Transport for Http<'_> {
             file: None,
         };
         let asking = self.asking;
-        let response = self.asked(&url, asking.client.follow(&request, &authorize, Redirects::Anywhere))?;
+        let response = self.asked(
+            &url,
+            asking.client.follow(&request, &authorize, Redirects::Anywhere),
+        )?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
@@ -420,7 +426,10 @@ impl Transport for Http<'_> {
             file: None,
         };
         let asking = self.asking;
-        let response = self.asked(&url, asking.client.follow(&request, &authorize, Redirects::SameOrigin))?;
+        let response = self.asked(
+            &url,
+            asking.client.follow(&request, &authorize, Redirects::SameOrigin),
+        )?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
@@ -1453,12 +1462,12 @@ mod tests {
         .unwrap_err();
         assert_eq!(asked.get(), 2);
         assert_eq!(said.into_inner().len(), 1);
-        let Failure::CacheKey(e) = e else {
-            panic!("{e:?}")
-        };
+        let Failure::CacheKey(e) = e else { panic!("{e:?}") };
         assert!(
             e.starts_with(&format!("unable to access 'http://127.0.0.1:{port}/repo.git/': "))
-                && e.contains(&format!("(127.0.0.1:{port} is gone: it refused the connection again, after ")),
+                && e.contains(&format!(
+                    "(127.0.0.1:{port} is gone: it refused the connection again, after "
+                )),
             "{e}"
         );
     }

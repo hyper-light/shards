@@ -1859,7 +1859,13 @@ impl Trouble {
     /// §15.6.3 to §15.6.5), or an answer's body cut short past its first bytes (its far end
     /// answered, so no word of its end), to an asking of `url`'s begun at `attempt`: how long
     /// to wait before asking again, at least `after`, what its `Retry-After` named.
-    pub fn passing(&mut self, http: &Client, url: &Url, attempt: Instant, after: Option<Duration>) -> Duration {
+    pub fn passing(
+        &mut self,
+        http: &Client,
+        url: &Url,
+        attempt: Instant,
+        after: Option<Duration>,
+    ) -> Duration {
         self.wait(http, url, attempt, after)
     }
 
@@ -2014,19 +2020,30 @@ mod tests {
     fn a_callers_trouble_rides_what_the_network_drops_until_its_far_end_is_gone() {
         let http = crate::testing::client();
         let url = Url::parse("http://nowhere.test:5000/").unwrap();
-        let unresolved = Error::of(ErrorKind::Transient, "nowhere.test: resolving: no such host").unresolved();
+        let unresolved =
+            Error::of(ErrorKind::Transient, "nowhere.test: resolving: no such host").unresolved();
         let refused = Error::of(ErrorKind::Gone, "connecting: refused").refused().gone();
         let reset = Error::from(io::Error::from(io::ErrorKind::ConnectionReset));
         for dropped in [&unresolved, &refused] {
             let mut trouble = Trouble::default();
             let first = trouble.failed(&http, &url, Instant::now(), dropped);
             assert!(matches!(first, Verdict::Again(_)), "{dropped}: {first:?}");
-            assert_eq!(trouble.failed(&http, &url, Instant::now(), dropped), Verdict::Gone, "{dropped}");
+            assert_eq!(
+                trouble.failed(&http, &url, Instant::now(), dropped),
+                Verdict::Gone,
+                "{dropped}"
+            );
         }
         let mut trouble = Trouble::default();
-        assert!(matches!(trouble.failed(&http, &url, Instant::now(), &reset), Verdict::Again(_)));
+        assert!(matches!(
+            trouble.failed(&http, &url, Instant::now(), &reset),
+            Verdict::Again(_)
+        ));
         let other = Error::new("a malformed response head");
-        assert_eq!(trouble.failed(&http, &url, Instant::now(), &other), Verdict::Fails);
+        assert_eq!(
+            trouble.failed(&http, &url, Instant::now(), &other),
+            Verdict::Fails
+        );
     }
 
     #[test]
