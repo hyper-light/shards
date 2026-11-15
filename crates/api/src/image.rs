@@ -301,7 +301,7 @@ pub enum UpstreamRoot {
 }
 
 /// One of a run's grants past its microVM, as its image's Agentfile writes it (D59, D236, D246),
-/// added or taken out as the run goes ([`ImageGuest::grant_egress`], D272).
+/// added or taken out as the run goes ([`ImageGuest::grant_egress`], D273).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressGrant {
     /// Egress ports, as the Agentfile writes them: `443/tcp`, `8000-8010/udp`.
@@ -615,11 +615,11 @@ pub trait ImageGuest: Send + Sync {
         host: std::net::SocketAddr,
         patience: Duration,
     ) -> Result<(), ImageRefusal>;
-    /// The run's grants past its microVM now (D272), as its host last said them: what of its
+    /// The run's grants past its microVM now (D273), as its host last said them: what of its
     /// image's grants each list keeps, written out whole (`Keep::Only`), whether names are
     /// asked, and each member's reach where the run holds its members apart.
     fn egress(&self) -> Narrowing;
-    /// `grant` added to the run's grants past its microVM as it runs (D272), in its running
+    /// `grant` added to the run's grants past its microVM as it runs (D273), in its running
     /// microVM in place: its network process holds every flow to its grants from then on, no
     /// image built, no template saved, its guest neither restarted nor rebooted. Checked as the
     /// start's grants are: a grant its image does not give (its Agentfile's grants are the most
@@ -629,7 +629,7 @@ pub trait ImageGuest: Send + Sync {
     /// waiting at most `patience`; refused as [`ImageRefusal::Net`]: [`NetRefusal::NoNetwork`]
     /// for a run with no network device. Made while the run is paused too.
     fn grant_egress(&self, grant: &EgressGrant, patience: Duration) -> Result<Narrowing, ImageRefusal>;
-    /// `grant` taken out of the run's grants past its microVM as it runs (D272), in place: its
+    /// `grant` taken out of the run's grants past its microVM as it runs (D273), in place: its
     /// network process refuses the next flow to it, and ends at once each flow its grants no
     /// longer reach (a TCP connection its guest opened is reset, a UDP flow closed). Answers
     /// and is refused as [`grant_egress`](Self::grant_egress).

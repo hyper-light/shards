@@ -286,6 +286,11 @@ pub mod device {
     /// [`FUNCTION`]'s flag of a function taken by its own VFIO device node, through
     /// iommufd, not its group's.
     pub const BY_NODE: u8 = 1;
+    /// A component's EROFS file plugged in (D270): a read-only virtio-pmem function whose
+    /// region its microVM maps in its components' window; its file a descriptor, opened to
+    /// read. Answers as [`DISK`] does, then a space and the region's guest address and
+    /// length, each decimal.
+    pub const PMEM: u8 = 6;
 }
 
 mod device_reply;
@@ -473,7 +478,7 @@ pub mod kind {
     /// The network process asks it as the injector meets a sign-in's token response or its
     /// CLI's refresh, of a run host that relays it to its orchestrator.
     pub const NET_SIGN_IN: u8 = 105;
-    /// Run host → network process, as its run goes (D272): the run's grants past the
+    /// Run host → network process, as its run goes (D273): the run's grants past the
     /// microVM now, a policy as `NET_POLICY` carries one (shards_net::encode_policy), each
     /// within its `NET_POLICY`'s, the most the run could ever be granted; taken in place of
     /// the grants before, every flow of its guest's they no longer reach ended. Answered with

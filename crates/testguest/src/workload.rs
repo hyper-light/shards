@@ -1647,7 +1647,7 @@ fn tcp(addr: &str) -> i32 {
 
 /// `reach-each HOST:PORT`: connects to it again and again, a connection at a time, each given
 /// a second, and says how each went as it goes, `reach ok` or `reach errno N`, until it is
-/// ended: what a run's grants let it reach as they change (D272).
+/// ended: what a run's grants let it reach as they change (D273).
 fn reach_each(addr: &str) -> i32 {
     use std::net::ToSocketAddrs as _;
     let wait = std::time::Duration::from_secs(1);

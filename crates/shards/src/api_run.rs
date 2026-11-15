@@ -650,7 +650,7 @@ fn egress(
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
 }
 
-/// `narrowing` as its run holds it (D272): what of its image's grants each list keeps, written
+/// `narrowing` as its run holds it (D273): what of its image's grants each list keeps, written
 /// out whole as the image writes them (`Keep::Only`), names asked where both grant them, and
 /// its members' reach as asked; any other is a widening, refused by name, as [`egress`]
 /// refuses it.
@@ -2553,9 +2553,9 @@ mod hosted {
         listeners: Vec<publish::Listener>,
         egress: Option<Vec<u8>>,
         /// The most it could ever be granted past its microVM, its image's grants as its network
-        /// process takes them (`NET_POLICY`, D272), where its image grants any.
+        /// process takes them (`NET_POLICY`, D273), where its image grants any.
         ceiling: Option<Vec<u8>>,
-        /// Its grants past its microVM as its request keeps them, written out whole (D272).
+        /// Its grants past its microVM as its request keeps them, written out whole (D273).
         narrowing: wire::Narrowing,
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
         /// it has any, or sign-ins.
@@ -3683,7 +3683,7 @@ mod hosted {
             )
             .map_err(|e| format!("published ports: {e}"))?;
         }
-        // The most the run could ever be granted past its microVM, its image's grants (D272),
+        // The most the run could ever be granted past its microVM, its image's grants (D273),
         // which its network process is held to (Landlock's layer on Linux), its grants as the
         // run goes within them.
         if let Some(policy) = ceiling {
@@ -3698,7 +3698,7 @@ mod hosted {
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
             }
         }
-        // Its grants as its request keeps them (D272), where they are less than its ceiling:
+        // Its grants as its request keeps them (D273), where they are less than its ceiling:
         // nothing past it where it keeps nothing. Before its sign-ins and credential grants,
         // whose hosts its network process checks its grants reach.
         if let Some(ceiling) = ceiling
@@ -3905,7 +3905,7 @@ mod hosted {
         Ok(ports.held.iter().skip(first).map(|p| p.bound.clone()).collect())
     }
 
-    /// The run's grants past its microVM made `asked` as it goes (D272), within its image's:
+    /// The run's grants past its microVM made `asked` as it goes (D273), within its image's:
     /// checked as its start's are (`super::egress`, `super::held_apart`: a grant its image does
     /// not give, or a member's reach other than its image lets it have, is a widening), told its
     /// network process (`NET_GRANTS`), which holds every flow to them from then on and ends
@@ -4089,11 +4089,11 @@ mod hosted {
         net: Option<&'a super::NetControl<'a>>,
         /// The ports it publishes (D269).
         ports: Mutex<Ports>,
-        /// Its grants past its microVM as they stand, written out whole (D272): held under its
+        /// Its grants past its microVM as they stand, written out whole (D273): held under its
         /// ports' lock's turn, as every change of its network is.
         egress: Mutex<wire::Narrowing>,
         /// Whether its network process was told a ceiling (`NET_POLICY`): its image grants
-        /// something past its microVM (D272).
+        /// something past its microVM (D273).
         ceiled: bool,
         /// Its image's Agentfile, which a port published is checked against and reaches its
         /// members by (D122).
@@ -6946,7 +6946,7 @@ mod hosted {
             assert!(lock(&unnetworked.ports).held.is_empty());
         }
 
-        /// D272. Do, on a run whose image grants 443/tcp and a destination, its stand-in
+        /// D273. Do, on a run whose image grants 443/tcp and a destination, its stand-in
         /// network process taking or refusing what it is told: keep 443/tcp alone; keep a port
         /// its image grants not; have its network process refuse; keep nothing on a run whose
         /// image grants nothing past its microVM, and something there; and change one with no

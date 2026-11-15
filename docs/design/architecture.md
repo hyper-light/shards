@@ -19881,7 +19881,8 @@ network process (D142) and its builder (D143) follow.
   split in two (VirtualAlloc2, MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER). A view may not
   run past its section's end, the file's size, so it holds the file's whole pages, and the
   file's last partial page is copied into the read-only zeros after it.
-- **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
+- **vsock on Windows** (its connections' host side superseded by D272, named pipes,
+  decided and being built): AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
   throughput (M199), made overlapped, as std makes its sockets: Windows serializes the I/O
   of a socket made otherwise, so that a send waits out another thread's read of the same
   connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
@@ -34223,6 +34224,18 @@ each compiled for that kernel.
   `its setup's security composed` and `its run planned` (said by `plan` itself, so a warm run
   says it too). *Owed* (ROOT): the A/B of the warm run's request-to-ready and every kind's
   shape-to-planned, interleaved on one host.
+- *A taken pool is refilled once its run has started* (`Pooling::boot`; ROOT's go,
+  2026-11-15). It asked its pool's refill as it took the warm host, so the replacement run
+  host (its spawn, its image prepared, its microVM shaped and secured, its VM spawned and
+  restored) ran over the very start it replaced, on the host's CPUs that start runs on. The
+  refill is now asked once that run has started, or failed to: still once per take, its room
+  given first as before, its demand rule unchanged. A burst's second take may now find the
+  pool emptier: its replacement starts later by the first start's span. A reservation's refill
+  (`ImagePools::reserve`) is asked as it is reserved, as before. Tested:
+  `a_taken_pool_is_refilled_once_its_run_has_started` (a take held in its host while another
+  pool's first run claims: the room sees that claim alone, the taken pool's after the take is
+  let go; red with the refill asked at the take). *Owed* (ROOT): the A/B of warm starts, and
+  of a burst's second, with and without it.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
@@ -36213,7 +36226,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slice 1 built: the component build; the attach, member restart, swap and saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 and 2 built: the component build, and its image plugged in and mapped DAX; member restart, swap and saves following)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36292,6 +36305,70 @@ the build's own parser reads it), `an_unpinned_source_is_refused_in_the_builds_w
 a_component_builds_alone_from_its_directives_pinned_source` (no VM boots: `scratch` and a
 fetch) on HVF, KVM and WHP.
 
+**Slice 2: a component's image plugged into a running microVM, mapped DAX** (ROOT's pick of
+pmem per component over one virtio-fs DAX share, 2026-11-15, on main's records: a window maps
+a file only past the size its device learned, PM M338's 256 KiB on the Mac and 1 MiB on
+Fedora, where working trees are 99.8-99.9% files under 2 MiB, so most of a component would be
+FUSE's copy in each VM's page cache; a 4 KiB file mapped through a window costs its VM 23.6 to
+28.5 KiB more than FUSE's copy (M338); HVF maps no read-only share's file through its window
+(D189's `SHARED_NEEDS_WRITE`); and one share of the machine's store would need a per-run
+allowlist, or a guest's kernel reads every tenant's components. EROFS on pmem maps every file
+from one region, its cost the guest's page structures, 64 bytes a 4 KiB page.)
+- *The components' window* (`MachineConfig::component_window_mib`, snapshot format 35, a guest
+  saved in 34 refused `OlderMachine`): guest addresses past the DAX windows, at a GiB
+  boundary, within the guest's reach and fitted to it where shorter (said), its fitted length
+  kept so that a restore lays the guest out as its save did, refused where this host's reach
+  would shorten it (`window_kept`). A run's microVM has one where it has PCI slots, as long as
+  its host's memory (run.rs `Shape::give`), as its swap window is (D159): the most of the
+  components' files its page cache holds at once. Nothing of it is mapped until a function is
+  plugged, so a run that plugs none pays its addresses alone (`--component-window MIB`).
+- *A component's function* (`vm::Handle::plug_pmem`, the VM process's `device::PMEM` step):
+  its EROFS image's file, opened by its run's host (a confined VM process opens none), mapped
+  read-only into this process (`pmem::Region::of_file`), at the window's first free range
+  that holds it, whole 2 MiB, through a memory slot of its own (`pmem::Components`: KVM's
+  memslots, one for each of the bus's slots; HVF and WHP map by address); a read-only
+  virtio-pmem function on a D214 slot, its config's start and size that range (virtio 1.3
+  §5.19, which every kernel's virtio_pmem reads); its pages given the machine's other devices
+  as a boot's pmem files are (`GuestMemory::give_plugged`, D189's device DMA). Answered
+  `DEVFN ADDRESS GPA LEN`. Its unplug (`device::UNPLUG`, once its guest let it go) takes its
+  pages from its devices, then unmaps it from the guest and this process. Refused typed:
+  `NoBus`, `NoSlots`, and `NoRoom { asked, free }` (the window's longest free range), the
+  device channel's cause 12, its retry `AfterRelease`.
+- *Its guest* (init's `DEVICE` built-in, `pmem ADDR GPA KEY`): the bus rescanned (D214),
+  libnvdimm's drivers binding the region and its namespace of themselves, with page
+  structures (not raw, as the swap window is, D159), so that its files are DAX; its disk found
+  by its region's address as each uevent comes; EROFS mounted read-only, `nosuid`, `nodev`,
+  `dax=always`, attached nowhere, then put beside the run's writable layer at
+  `components/KEY`, where no path from the run's root reaches, as the in-VM server's binary
+  is (domains.rs); KEY the component's digest's 64 lowercase hex digits, refused otherwise.
+  `unpmem ADDR KEY` unmounts it, refused while it is held (`DEVICE_BUSY`), and writes the
+  function's `remove`.
+- *Capacity*: a microVM attaches as many components as its free slots, each within the
+  window's free ranges. Image runs' slots are derived in slice 4 (2 × the image's declared
+  agents, harnesses and stdio MCP servers, for a swap's old and new, plus its plug roots);
+  until then a run has D214's.
+- *What it costs*: a rescan and first read p50 2.4 and 3.1 ms on HVF, 6.6 and 7.6 ms on KVM
+  x86-64 (PM M430, a disk's); the probe and mount, and the page structures (size/64, made
+  as the namespace binds), are ROOT's to measure (slice 4's timing lines), and with them the
+  choice between an altmap head (D190's) and a lazy memmap, scheduled after slice 4.
+
+| Literal | Source |
+|---|---|
+| `PMEM` = 6 | the device channel's next step after `FUNCTION` = 5 (append-only) |
+| `NO_ROOM` = 12 | the device refusal's next cause after `INVALID_REPLY` = 11 |
+| 64 hex digits | a SHA-256 digest's (FIPS 180-4), the component's identity |
+| `components` | the directory beside the writable layer, as `server-binary` is beside it |
+| `dax=always` | EROFS's mount option for DAX (Documentation/filesystems/erofs.rst) |
+| format 35 | the snapshot format's next after D268's 34 |
+
+**Tests** (light): vmm `pmem::tests::a_components_window_maps_each_file_at_a_free_range_through_a_slot_of_its_own`,
+`memory::tests::plugged_device_memory_is_reached_until_it_is_taken_back`, the snapshot tests at
+format 35; ipc `device_refusals_keep_identity_and_retry_across_the_wire` (`NoRoom`); shards
+`run::tests` (the window as long as the host's memory where the run has slots, none
+without; `--component-window` among a boot's words); init
+`hotplug::tests::a_components_key_is_its_digest_alone` (Linux). The guest's probe and mount
+run on real VMs alone: slice 4's E2E tests, ROOT's.
+
 ### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
@@ -36348,8 +36425,71 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
+### D272. A vsock connection's Windows host side is a named pipe (decided 2026-11-15; S0 measured, S1-S5 owed)
 
-### D272. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
+**Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
+and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
+AF_UNIX cannot hold both: a close made while the closer holds any of its peer's bytes unread,
+or before its peer's later send, resets and loses the peer what it had not read (M358), a
+send to a closed socket succeeds, and nothing tells the closer when its peer has read every
+byte (WSAPoll's WRNORM tracks room: windows-afunix `ends`, D251 amended). A named pipe holds
+both on Windows Server 2025 and Windows 11 alike (`ends`): its server writes and closes its
+handle, its client reads every byte, then ERROR_BROKEN_PIPE, its own bytes unread by the
+server or not, and its writes after fail at once, ERROR_NO_DATA. Named pipes are Windows'
+own IPC (Docker's engine listens on `\\.\pipe\docker_engine`), and shards' daemon already
+speaks over them (D195).
+
+**Decided** (ROOT, on the `ends` evidence).
+- *A connection's host side* on Windows is a byte-mode named pipe instance; its VM's
+  listener a pipe of a per-VM name no one guesses (`random_hex`, as `shards_ipc`'s pipes),
+  each instance granted its owning user alone (pipe.rs `attributes`) and refusing remote
+  clients, the first made with FILE_FLAG_FIRST_PIPE_INSTANCE, so that no other process holds
+  the name before it.
+- *Found by path* (the filesystem rule): the home keeps a file at today's socket path that
+  names the pipe; a client reads it, then opens the pipe by that name.
+- *Made by the spawner* (M603). A VM process confined as D141 confines it can make no pipe
+  its user can open (`\\.\pipe\` refused, error 5; its `\\.\pipe\LOCAL\` its own namespace)
+  and open none of its user's (error 5): its spawner makes each instance and hands it in, as
+  it binds the VM's listener and dials its ports today (M203). An instance made and handed in
+  costs p50 3-7 us, p99 31-43 (M603), beside the grants round trip a dial already takes.
+  The VM asks its spawner for the next instance as each client connects to the last.
+  - *Guest connections to host ports*: a port's listener is a pipe of its own; the spawner
+    opens its client end and hands it in, as `dial_for` does a socket today.
+- *Writes* (M549: a pipe says nothing of its outbound room). A connection writes through
+  one overlapped WriteFile at a time, its bytes owned by the connection until it completes,
+  which it does once they are all in the pipe (M603: with 1 MiB written to a 64 KiB pipe,
+  once its reader has taken all but 64 KiB); the guest's credit bounds what it holds. A
+  write is never cancelled while its connection lives: a cancelled one reported 0 bytes
+  transferred where its reader had taken 196,608 (M603).
+- *Reads*: overlapped reads into the connection's own buffer, their completions through an
+  I/O completion port (as `shards_ipc::Poller`), which waits on any number of them.
+- *Ends*: the guest's end closes the instance's handle once its bytes are all in the pipe;
+  its client reads them, then ERROR_BROKEN_PIPE, and its writes fail at once.
+
+**Owed before S1** (R02): a byte-mode client's half-close. The guest's SHUTDOWN(SEND) is its
+host's end-of-stream with the host's own writes still open (D251); a pipe has no half-close,
+and `shards_ipc`'s pipes send a zero-byte message in message mode for one (pipe.rs). Whether a
+client reading in byte mode (a host program's `std::fs::File`, Hex's) reads that message as
+its end-of-stream, and writes on after it, is to be measured (windows-pipes-s0, next).
+
+**Slices** (each red first where it changes behaviour): S1, a Windows vsock connection type
+in vmm (an instance, its pended read and write and the buffers they own) beside Unix's; S2,
+the device's poller on a completion port, and the muxer on it; S3, the grants: the spawner's
+instances and dials; S4, `shards_api`'s client (it opens the named pipe; its Windows `Handle`
+and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock tests ported,
+first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
+guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
+
+**A client's change** (Hex's on Windows): read the file at the VM's socket path for its
+pipe's name and open it (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION), in
+place of an AF_UNIX connect; the line protocol over it (`CONNECT <port>`, `RATE`, `USE`) is
+unchanged. A client that dials through `shards_api` takes it with its pin.
+
+**What would falsify it.** A guest byte its host never read where it read on to its end; a
+host's write after the guest's end taken without an error; a process other than its user's
+opening its pipe; an instance's name taken before its VM's first.
+
+### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC2): grant and revoke egress
 (destinations, DNS names, MCP endpoints) while a session runs, without a rebuild or a restart

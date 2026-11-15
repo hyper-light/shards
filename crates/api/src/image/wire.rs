@@ -91,7 +91,7 @@ pub use shards_abi::run::nesting::Ready;
 /// plug of a host directory or a volume of the home's into several members at once
 /// ([`PlugAsk::members`], [`PlugFrom`]), so that a side that knows neither refuses the run as
 /// it is asked, before any plug is; 36, the run's grants past its microVM changed as it goes
-/// ([`NetChange::Egress`], D272), the run's grants as its host holds them told with its start
+/// ([`NetChange::Egress`], D273), the run's grants as its host holds them told with its start
 /// ([`Started::egress`]) and with each change ([`NetChanged::egress`]), so that a side that
 /// changes none refuses the run as it is asked, before any change is.
 pub const VERSION: u8 = 36;
@@ -710,7 +710,7 @@ pub struct Started {
     pub control: Option<ControlAt>,
     /// How its microVM started (D253); appended in version 19.
     pub from: StartedFrom,
-    /// The run's grants past its microVM as its host holds them (D272): what of its image's
+    /// The run's grants past its microVM as its host holds them (D273): what of its image's
     /// each list keeps, written out whole (`Keep::Only`), so that its owner changes them by
     /// what they are; appended in version 36.
     pub egress: Narrowing,
@@ -1157,7 +1157,7 @@ pub enum NetChange {
     /// ([`NetChanged::published`]), the start's among them.
     Unpublish { proto: Proto, host: SocketAddr },
     /// The run's grants past its microVM, whole, as its owner asks them to be from now on
-    /// (version 36, D272): checked as its start's are, its image's grants their ceiling.
+    /// (version 36, D273): checked as its start's are, its image's grants their ceiling.
     Egress(Narrowing),
 }
 
@@ -1205,7 +1205,7 @@ fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
 }
 
 /// A network change made (D269): what it bound or let go of, and every port the run
-/// publishes and its grants past its microVM (version 36, D272) once it was made, as its host
+/// publishes and its grants past its microVM (version 36, D273) once it was made, as its host
 /// holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetChanged {
@@ -1491,7 +1491,7 @@ impl Writer {
         }
         Ok(())
     }
-    /// A run's grants past its microVM whole (D272): its ports', remote MCP servers' and
+    /// A run's grants past its microVM whole (D273): its ports', remote MCP servers' and
     /// destinations' lists, whether names are asked, and its members' reach.
     fn narrowing(&mut self, n: &Narrowing) -> Result<(), WireError> {
         self.keep(&n.egress)?;
@@ -2981,7 +2981,7 @@ impl Started {
         }
         // How its microVM started, appended in version 19 (D253).
         w.u8(self.from as u8);
-        // Its grants past its microVM as its host holds them, appended in version 36 (D272).
+        // Its grants past its microVM as its host holds them, appended in version 36 (D273).
         w.narrowing(&self.egress)?;
         w.done()
     }

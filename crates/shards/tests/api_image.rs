@@ -3679,7 +3679,7 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
     guest.stop().unwrap();
 }
 
-/// D272, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
+/// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
 /// as the run runs refuses the next connection to it, and every one after; granted back, it is
 /// reached again. All of it in the running microVM in place: its start (`started_from`) and its
 /// one VM process the same throughout, its template's files untouched. A grant its image does

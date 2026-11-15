@@ -123,7 +123,7 @@ struct State {
     /// that order, whether or not its asker still waits for it.
     published: Vec<wire::Bound>,
     /// The run's grants past its microVM, as its host last said them (its start's, then each
-    /// network change's answer's, D272), held as [`published`](Self::published) is.
+    /// network change's answer's, D273), held as [`published`](Self::published) is.
     egress: wire::Narrowing,
     /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D267),
     /// by its id, until its asker takes it.
@@ -1351,7 +1351,7 @@ impl Drop for Begun {
     }
 }
 
-/// The run's grants `current` with `grant` added (`add`) or taken out (D272), as its owner
+/// The run's grants `current` with `grant` added (`add`) or taken out (D273), as its owner
 /// asks them of its host, which checks them as its start's: a port range, a remote MCP server or
 /// a destination to its list (and, where the run holds its members apart, to the reach of each
 /// member named, every member's where taken out), or names asked. Refused where `current`'s
@@ -3943,7 +3943,7 @@ mod tests {
         h.reader.join().unwrap();
     }
 
-    /// D272: a grant is added to, or taken out of, the run's grants as its host last wrote them
+    /// D273: a grant is added to, or taken out of, the run's grants as its host last wrote them
     /// out: a port range, a remote MCP server or a destination to its list, and to the reach of
     /// each member named where the run holds them apart (taken out of every member's), or
     /// names asked; added once however often. Refused, typed, where its list is its image's
