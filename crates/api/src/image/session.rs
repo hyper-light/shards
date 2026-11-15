@@ -1086,6 +1086,30 @@ impl super::pool::Hosts for ShardsHosts {
         self::kill(kill);
     }
 
+    /// None yet: a warm host's channel carries no reading of its VM process before its run.
+    fn footprint(&self, _: &Begun) -> Option<u64> {
+        None
+    }
+
+    fn end(&self, mut warm: Begun) -> Result<(), ImageRefusal> {
+        warm.end();
+        warm.armed = false;
+        // Followed to its end, never timed (D215, D217), as a stopped run's host is
+        // (`Session::stop`): the host exited, every process of its group ended and followed to
+        // its end by its watcher (`watch`), the host reaped, and its answers and diagnostics
+        // read to what they held.
+        let unfollowed = warm.shared.wait(Duration::MAX, |s| {
+            (s.gone() && s.said_all).then_some(s.unfollowed)
+        });
+        match unfollowed {
+            Some(Some(kind)) => Err(ImageRefusal::Os {
+                what: "the ended warm host's processes",
+                kind,
+            }),
+            _ => Ok(()),
+        }
+    }
+
     fn take(
         &self,
         warm: Begun,

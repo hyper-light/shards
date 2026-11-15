@@ -33917,8 +33917,8 @@ microVM's life (D231), so its pools live in its process, with shards-api:
 - *Its size* is D26's, by the one rule (`shards_api::demand`, moved from the daemon). That is
   the largest burst of its runs within one refill window, an RFC 6298 retransmission timeout
   of its warm hosts' starts as timed from spawn to `WARMED`, at least one while in use, and
-  none once idle past the keep-alive. All pools together hold at most the orchestrator's
-  bound (`ImagePools::new(most, keep)`), its number, never ours.
+  none once idle past the keep-alive. Each host is charged to the orchestrator's room before
+  it starts (*Amended: the room*, below); no count of hosts bounds the pools.
 - *The keep-alive* is the orchestrator's, `ImagePools::KEEP` D26's cited one (moved to
   `shards_api::demand::KEEP`, the daemon's `DEFAULT_KEEP` too).
 - *Cold start:* nothing is warm until a pool's first run, which starts a host of its own while
@@ -33931,7 +33931,7 @@ microVM's life (D231), so its pools live in its process, with shards-api:
 
 **Tested** (unit, a simulated run host): `a_pools_first_run_starts_its_own_host_and_the_next_takes_a_warm_one`,
 `a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own`,
-`a_pool_keeps_its_burst_within_the_bound_and_its_owner_ends_them_all`,
+`a_pool_keeps_its_burst_within_its_room_and_its_owner_ends_them_all`,
 `a_pools_warm_hosts_end_past_its_keep_alive`; the channel's warm words
 (`a_warm_hosts_exemplar_keeps_all_but_a_runs_own`); the daemon's pools by the moved rule, their
 tests unchanged.
@@ -33939,6 +33939,89 @@ tests unchanged.
 **Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
 resident memory, and its start's time from `WARMED`.
+
+**Amended: the room** (2026-11-14, with Hex's lead; `ImagePools::new(room, keep)` replaces
+`new(most, keep)`, which is deleted with no legacy path). Hex serves image boxes from these
+pools, so its node must charge every warm host to the room it admits boxes from, and make
+warm hosts yield before it refuses or evicts a real box.
+- *Why a count was wrong.* `most` counted hosts. But a host's cost is its microVM's size, and
+  sizes differ from pool to pool: two hosts of 8 GiB and two of 512 MiB were the same "2". A
+  count also lives apart from the node's admission, so the pools' refill raced the node's own
+  starts. The node's room could be taken between its check and the warm host's start, and a
+  snapshot of the count was stale as it was read. Now the room is the node's own, and every
+  host is claimed of it before it starts.
+- *The contract* (`shards_api::image::{WarmRoom, WarmHost, Gave, Released, PoolHeld, PoolId}`):
+  - every warm host start (refill, a first run's follow-up, a reserved host put back) first
+    calls `WarmRoom::claim` with its spec's memory (bytes) and vCPUs. A refusal starts nothing:
+    the pool's target is unmet, and nothing errs;
+  - each successful claim is given back exactly once: `Taken` as a run takes the host or a
+    box reserves it (its room is the box's; the guest gives nothing as it drops), `Ended` once
+    its processes have ended (past its target or keep-alive, released, or with the pools),
+    `Failed` where its start fails;
+  - the room decides alone. A claim should be refused only where the host does not fit the room
+    free now, with no headroom rule: a box wins its room back through `release`.
+- *A run that is no pool's* is one whose spec names no size (`vcpus` or `memory_mib` 0, which
+  only its host resolves), or one that asks its GPU report (D233). No claim can name its room
+  before its host starts, so it gets a host of its own.
+- *`release(memory)`* ends the coldest hosts until at least `memory` bytes are freed, or none
+  is left. Warm hosts go first: those of the pools whose demand target is lowest, then the
+  longest idle. Starting hosts go after them. It returns once every one's processes have
+  ended, each followed to its end and never timed, as a stopped run's are (D215, D217:
+  `Hosts::end`, the watcher's word that the host and its process group have ended). Each
+  room is given before it returns, with exact bytes. An end that could not be followed is
+  refused typed (`ImageRefusal::Os`), every room given all the same.
+- *`reserve(spec)` / `WarmTicket::boot`*: one warm host held for one box, at once, gives
+  `Taken` within `reserve`, so the node moves the charge to the box in the same step. A
+  second reserve of the same host is impossible, and `release` never ends a reserved host,
+  since it is out of its pool. A ticket dropped unused goes back under a claim of its own,
+  or ends where that claim is refused, never giving for its first claim again. A ticket
+  booted with another pool's spec is refused, typed: `ImageRefusal::OtherPool`. A
+  ticketless `Images::boot` still takes a warm host itself, also giving `Taken` once.
+- *`held()`* is each pool's claimed room (warm and starting hosts, at their spec's whole size)
+  and `footprints`, one reading per warm host whose VM-process reading is in. Today every
+  host's list is empty: a warm host's channel carries no reading of its VM process yet
+  (owed, below).
+- *No deadlock, by construction.* The pools' thread, their state's one owner, never calls the
+  room. Claims, and the `Failed` gives, go in order on a room thread of their own, which
+  answers each claim back to the pools. `release`, `reserve`, `held` and a boot's take are
+  answered without waiting on it. A `Taken` give, and the refill after it, which is asked
+  only once the give has returned so that its claims see the room given back, run on the
+  caller's thread. So do `release`'s `Ended` gives. The rule both ways: `claim` and `give`
+  must not block on a lock that their owner holds across a call of the pools, dropping them
+  included. An atomic room counter meets it. A node that holds its room lock across
+  `release` while the room thread waits in `claim` for that lock does not hang: its release
+  is answered, and the claim goes on once the lock is let go.
+- *Orphans.* A warm host ends with its holder by any death. `api-run`'s `warm` reads its
+  orchestrator's channel for `CREATE`, and the channel's end (the holder gone) ends its
+  microVM (`Ok(None)` → `end`). A host still starting meets that end as it says `WARMED`.
+  It is the same tie as D231's run hosts; no parent-death signal is added.
+- *Literals.* None. A pool's demand target takes no count of ours (`UNCOUNTED`, `usize::MAX`:
+  no bound but the room's), and its demand's held claims are those of one refill window.
+  `PoolId` is the SHA-256 of the pool's key (its run host's program and environment, its
+  runs' exemplar), length-prefixed per field: the same while the pool lives.
+
+**Tested** (unit, `pool.rs`, a simulated run host and a counting `WarmRoom`; every test checks
+that claims and gives balance once its pools drop):
+- `a_room_that_refuses_starts_no_host`;
+- `release_ends_the_coldest_first_and_says_what_it_freed`: the lowest target before the
+  longest idle, exact bytes, starting hosts after warm ones, each ended and given before it
+  returns;
+- `a_taken_host_gives_taken_once_and_its_guest_nothing_more`: ticketless and reserved;
+- `a_warm_host_that_does_not_fit_or_start_leaves_its_run_a_host_of_its_own`: `Failed`;
+- `held_is_its_claims_less_its_gives_with_each_warm_hosts_footprint`;
+- `a_reserved_host_is_one_boxs_and_release_leaves_it`;
+- `a_dropped_ticket_returns_under_a_new_claim_or_ends`: including another pool's spec refused;
+- `a_room_waiting_on_its_owners_lock_holds_up_no_answer`: a claim blocked on a mutex the test
+  holds while it calls `release`, `reserve`, `held` and `boot`;
+- `a_run_asking_its_gpu_report_or_no_size_gets_a_host_of_its_own_and_no_pool`.
+
+**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
+(now with a room of two hosts) and `warm_hosts_end_with_the_process_holding_their_pools`
+(Unix: the holder SIGKILLed, every warm host's process group gone) on HVF and KVM. On Windows
+the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
+unverified. Also owed: the warm host's footprint reading, the next slice. `WARMED` carries the
+VM process's pid, and shards-api reads it as `platform::process_usage` does, or the warm loop
+answers a use ask, whichever matches a running run's `HostUse` on all three OSes.
 
 **Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
 microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as
