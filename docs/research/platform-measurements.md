@@ -25434,3 +25434,33 @@ it. Neither host's counts are a bound; n is one loop each.
   2,002,645,300 ns at a quarter CPU, 38.8%). A test's bound takes the step measured from its
   own guest (`tests/common::guest_time_step`), never a unit.
 
+### M603. Named pipes for a confined VM process's vsock connections: who can make and open them, an instance's cost, and a pended write's end (D272)
+
+- **Question.** Before D272 builds a vsock connection's Windows host side on named pipes: can
+  a VM process confined as D141 confines one make a pipe's server, or open its user's pipe;
+  what does one instance its unconfined spawner makes and hands in cost; and when does an
+  overlapped write to a pipe complete while its reader is slow?
+- **Method.** `docs/research/measurements/windows-pipes-s0` at shards 540f2d75c, its child in
+  `shards_ipc`'s AppContainer (its mitigations and Job, `in_app_container` true), 2026-11-15,
+  on hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested) and jupiter (Windows 11 Pro
+  10.0.26200). Pipes in byte mode, 64 KiB each way, `PIPE_REJECT_REMOTE_CLIENTS`; DACLs in SDDL.
+- **Found** (both hosts alike):
+  - The confined child opens a pipe granted its user alone: error 5 (access denied); one
+    granted ALL APPLICATION PACKAGES as well (`AC`): opened. It makes a server under
+    `\\.\pipe\`: error 5; under `\\.\pipe\LOCAL\`: made, which its user cannot open by
+    that name (error 2): an AppContainer's LOCAL is its own namespace.
+  - A server instance its spawner made (granted the user alone) and handed in
+    (DuplicateHandle, `Suspended::give`) serves: the child connected it, read the spawner's
+    "hello" and answered "reply".
+  - An instance made, n 1,000: hex-winvm p50 4 us, p90 30, p99 56, max 91; jupiter p50 8,
+    p90 10, p99 59, max 179. Made and handed in: hex-winvm p50 3, p90 24, p99 43, max 88;
+    jupiter p50 7, p90 8, p99 31, max 72.
+  - An overlapped WriteFile of 1 MiB to a 64 KiB pipe returns ERROR_IO_PENDING; its reader
+    taking 64 KiB every 10 ms, it completes once the reader has taken 983,040 bytes (1 MiB
+    less the pipe's buffer; hex-winvm at 165 ms, jupiter at 154), 1,048,576 transferred.
+    CancelIoEx once the reader had taken 196,608: ERROR_OPERATION_ABORTED, **0 transferred**,
+    and nothing more for the reader: a cancelled write's count is not what its reader got.
+- **Consequence (D272).** The spawner makes each instance and hands it in, as it binds the
+  VM's listener and dials its ports today (D141, M203); a connection's write pends until its
+  bytes are all in the pipe, and is never cancelled while the connection lives.
+

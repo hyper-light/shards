@@ -19881,7 +19881,8 @@ network process (D142) and its builder (D143) follow.
   split in two (VirtualAlloc2, MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER). A view may not
   run past its section's end, the file's size, so it holds the file's whole pages, and the
   file's last partial page is copied into the read-only zeros after it.
-- **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
+- **vsock on Windows** (its connections' host side superseded by D272, named pipes,
+  decided and being built): AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
   throughput (M199), made overlapped, as std makes its sockets: Windows serializes the I/O
   of a socket made otherwise, so that a send waits out another thread's read of the same
   connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
@@ -36423,6 +36424,70 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 `Busy` and `Unknown`; the same `started_from`, the same VM process and unchanged templates
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
+
+### D272. A vsock connection's Windows host side is a named pipe (decided 2026-11-15; S0 measured, S1-S5 owed)
+
+**Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
+and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
+AF_UNIX cannot hold both: a close made while the closer holds any of its peer's bytes unread,
+or before its peer's later send, resets and loses the peer what it had not read (M358), a
+send to a closed socket succeeds, and nothing tells the closer when its peer has read every
+byte (WSAPoll's WRNORM tracks room: windows-afunix `ends`, D251 amended). A named pipe holds
+both on Windows Server 2025 and Windows 11 alike (`ends`): its server writes and closes its
+handle, its client reads every byte, then ERROR_BROKEN_PIPE, its own bytes unread by the
+server or not, and its writes after fail at once, ERROR_NO_DATA. Named pipes are Windows'
+own IPC (Docker's engine listens on `\\.\pipe\docker_engine`), and shards' daemon already
+speaks over them (D195).
+
+**Decided** (ROOT, on the `ends` evidence).
+- *A connection's host side* on Windows is a byte-mode named pipe instance; its VM's
+  listener a pipe of a per-VM name no one guesses (`random_hex`, as `shards_ipc`'s pipes),
+  each instance granted its owning user alone (pipe.rs `attributes`) and refusing remote
+  clients, the first made with FILE_FLAG_FIRST_PIPE_INSTANCE, so that no other process holds
+  the name before it.
+- *Found by path* (the filesystem rule): the home keeps a file at today's socket path that
+  names the pipe; a client reads it, then opens the pipe by that name.
+- *Made by the spawner* (M603). A VM process confined as D141 confines it can make no pipe
+  its user can open (`\\.\pipe\` refused, error 5; its `\\.\pipe\LOCAL\` its own namespace)
+  and open none of its user's (error 5): its spawner makes each instance and hands it in, as
+  it binds the VM's listener and dials its ports today (M203). An instance made and handed in
+  costs p50 3-7 us, p99 31-43 (M603), beside the grants round trip a dial already takes.
+  The VM asks its spawner for the next instance as each client connects to the last.
+  - *Guest connections to host ports*: a port's listener is a pipe of its own; the spawner
+    opens its client end and hands it in, as `dial_for` does a socket today.
+- *Writes* (M549: a pipe says nothing of its outbound room). A connection writes through
+  one overlapped WriteFile at a time, its bytes owned by the connection until it completes,
+  which it does once they are all in the pipe (M603: with 1 MiB written to a 64 KiB pipe,
+  once its reader has taken all but 64 KiB); the guest's credit bounds what it holds. A
+  write is never cancelled while its connection lives: a cancelled one reported 0 bytes
+  transferred where its reader had taken 196,608 (M603).
+- *Reads*: overlapped reads into the connection's own buffer, their completions through an
+  I/O completion port (as `shards_ipc::Poller`), which waits on any number of them.
+- *Ends*: the guest's end closes the instance's handle once its bytes are all in the pipe;
+  its client reads them, then ERROR_BROKEN_PIPE, and its writes fail at once.
+
+**Owed before S1** (R02): a byte-mode client's half-close. The guest's SHUTDOWN(SEND) is its
+host's end-of-stream with the host's own writes still open (D251); a pipe has no half-close,
+and `shards_ipc`'s pipes send a zero-byte message in message mode for one (pipe.rs). Whether a
+client reading in byte mode (a host program's `std::fs::File`, Hex's) reads that message as
+its end-of-stream, and writes on after it, is to be measured (windows-pipes-s0, next).
+
+**Slices** (each red first where it changes behaviour): S1, a Windows vsock connection type
+in vmm (an instance, its pended read and write and the buffers they own) beside Unix's; S2,
+the device's poller on a completion port, and the muxer on it; S3, the grants: the spawner's
+instances and dials; S4, `shards_api`'s client (it opens the named pipe; its Windows `Handle`
+and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock tests ported,
+first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
+guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
+
+**A client's change** (Hex's on Windows): read the file at the VM's socket path for its
+pipe's name and open it (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION), in
+place of an AF_UNIX connect; the line protocol over it (`CONNECT <port>`, `RATE`, `USE`) is
+unchanged. A client that dials through `shards_api` takes it with its pin.
+
+**What would falsify it.** A guest byte its host never read where it read on to its end; a
+host's write after the guest's end taken without an error; a process other than its user's
+opening its pipe; an instance's name taken before its VM's first.
 
 ## 4. Start path (≤ 5 ms budget)
 
