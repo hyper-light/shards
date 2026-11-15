@@ -812,7 +812,7 @@ impl<'p> Session<'p> {
         let tls = proxy.tls.clone();
         // As the client wrote it: its own User-Agent or none; its answers and silences
         // waited for as long as the step does, as Go's transport has no bound, the step's own
-        // client their judge (D110, D275); never to the host itself.
+        // client their judge (D110, D276); never to the host itself.
         let client = Client::new(Box::new(move |_| Ok(tls.clone())), "")
             .following_liveness()
             .reaching(proxy.reach)

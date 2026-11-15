@@ -52,7 +52,7 @@ pub struct Error {
     /// which its path then counts as timed out, crate::patience).
     timed_out: bool,
     /// Whether the system's resolver failed its name's lookup, after its own retries: a
-    /// trouble's, which a re-ask that fails so while it follows liveness ends (D275).
+    /// trouble's, which a re-ask that fails so while it follows liveness ends (D276).
     unresolved: bool,
 }
 

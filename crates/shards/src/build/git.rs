@@ -125,14 +125,14 @@ fn clean_subdir(s: &str) -> String {
     parts.join("/")
 }
 
-/// A remote's askings over HTTP(S), kept across its askings again (D275): its client, whose
+/// A remote's askings over HTTP(S), kept across its askings again (D276): its client, whose
 /// paths learn what each shows (D222), and what last dropped an asking, where one may pass.
 struct Asking {
     client: Client,
     dropped: RefCell<Option<(Url, Dropped)>>,
 }
 
-/// What ended an asking that may pass (D275).
+/// What ended an asking that may pass (D276).
 #[derive(Debug)]
 enum Dropped {
     /// Its request failed before any answer: a name its resolver did not resolve, a
@@ -170,7 +170,7 @@ impl Asking {
     }
 }
 
-/// Runs `op`, askings of a remote, asking again what the network drops (D275): a name its
+/// Runs `op`, askings of a remote, asking again what the network drops (D276): a name its
 /// resolver did not resolve, a connection refused, reset or cut, a wait its own time ended,
 /// a server's answer that it passes, an answer's body cut short. Each is a trouble of its
 /// path's, ridden out as a registry's is (D222, `Trouble`): asked again after a random share
@@ -236,7 +236,7 @@ fn ridden<R>(
     }
 }
 
-/// An answer's body, its cut recorded where the network dropped it (D275).
+/// An answer's body, its cut recorded where the network dropped it (D276).
 struct Heard<'a> {
     body: Response<'a>,
     asking: &'a Asking,
@@ -332,7 +332,7 @@ impl<'a> Http<'a> {
     }
 
     /// `answered`, an asking of `url`: an answer that it passes, or a failure, recorded
-    /// where it may pass (D275); a hop its grant refused never is.
+    /// where it may pass (D276); a hop its grant refused never is.
     fn asked(
         &self,
         url: &Url,
@@ -1407,7 +1407,7 @@ mod tests {
     }
 
     /// An advertisement's body the network cut short, 10 of its 32 bytes come, is fetched
-    /// again, the asking said in the step's log, and read whole (D275).
+    /// again, the asking said in the step's log, and read whole (D276).
     #[test]
     fn a_fetch_cut_mid_body_is_asked_again_and_completes() {
         const WHOLE: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
@@ -1445,7 +1445,7 @@ mod tests {
 
     /// A remote that is gone, nothing listening where it is, is asked again once, said, and
     /// refused on the re-ask its far end refused while the trouble followed its liveness (a
-    /// path that has passed none): in words naming it (D275).
+    /// path that has passed none): in words naming it (D276).
     #[test]
     fn a_remote_that_is_gone_is_refused_naming_it() {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

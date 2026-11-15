@@ -11,7 +11,7 @@
 //!   stall is a gap with no progress, never an answer's whole length: an answer's first
 //!   byte, then each silence, a read's own wait for bytes. A run-out learns nothing;
 //! - how long a connection takes to make (its name's lookup apart, which is waited for while
-//!   the system's resolver works on it, D275) and its TLS handshake: each the path's own pace, estimated as TCP estimates a retransmission
+//!   the system's resolver works on it, D276) and its TLS handshake: each the path's own pace, estimated as TCP estimates a retransmission
 //!   timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and Control", SIGCOMM
 //!   1988): the smoothed wait and four times its smoothed deviation, at least a second, a
 //!   second before any wait is measured, and doubled for each timeout in a row (§5.5)
@@ -160,7 +160,7 @@ pub(crate) struct Shown {
     /// The slowest silence of a download's body it has shown, in µs: the time between a
     /// body's reads that brought bytes. None before any.
     pub slowest_silence_us: Option<u64>,
-    /// Its connections' waits: a TCP connection's (records before D275 held its name's
+    /// Its connections' waits: a TCP connection's (records before D276 held its name's
     /// lookup too, which later samples smooth away, §2.3), and its TLS handshake's.
     pub connect: Pace,
     pub handshake: Pace,

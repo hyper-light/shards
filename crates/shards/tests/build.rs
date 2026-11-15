@@ -4571,7 +4571,7 @@ fn add_fetches_urls() {
     );
     let took = started.elapsed();
     eprintln!(
-        "build-add-url-hung: its end with the hang held, n=1: p50=p90=p99=max={took:?} (the hang's answer waited for as its connection lives, D275)"
+        "build-add-url-hung: its end with the hang held, n=1: p50=p90=p99=max={took:?} (the hang's answer waited for as its connection lives, D276)"
     );
     let _ = release.send(());
     // Downloads count against what ADD may write, as unpacked archives do: one past it
