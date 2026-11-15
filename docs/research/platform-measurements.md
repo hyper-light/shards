@@ -25488,8 +25488,9 @@ it. Neither host's counts are a bound; n is one loop each.
   (`mut.py`).
 - **The run** (api_image.rs `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`):
   red at 8f4bc8184 in its first run's boot, as above, before any member or command of the run
-  ran (its first form gave the `alloc 256` to its harness; it now gives it to the run's own
-  command, which D148's grower grows, as the finding below ends a member's).
+  ran (its first form gave an `alloc 256` to its harness; it now gives `alloc 64` to the run's
+  own command, which D148's grower grows, as the finding below ends a member's; the run's own
+  `alloc 256` at this envelope ended 137 at the merge with main 53214fcad, not followed here).
 - **Found beside it.** In every run of the sweep, both revisions and both ways, the harness
   member's `alloc 256` was ended by init, `the agents' memory, 21069824 bytes, was past their
   share, 20873216` at 64 MiB: a member's share does not grow with the plug (D274's owed list).

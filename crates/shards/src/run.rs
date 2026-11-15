@@ -2119,7 +2119,10 @@ mod tests {
 
     /// A boot's words are its config's, in the order the daemon gave them before they were
     /// shared (D253): every one a run's microVM may have, then its join disk and share and its
-    /// link; a config of none of them has those alone.
+    /// link; a config of none of them has those alone. Every flag given a value is one `run`
+    /// reads a value after (`spec::RUN_VALUED`, which vm_run's `valued_flags_need_their_values`
+    /// holds to `run`): D270's components' window, unlisted, refused every orchestrator's
+    /// image boot, "--component-window needs a value".
     #[test]
     fn a_boots_words_are_its_configs() {
         let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
@@ -2187,6 +2190,17 @@ mod tests {
                 "3",
             ]
         );
+        for pair in words(&args).windows(2) {
+            if let [flag, value] = pair
+                && flag.starts_with("--")
+                && !value.starts_with("--")
+            {
+                assert!(
+                    crate::spec::RUN_VALUED.contains(flag),
+                    "{flag} {value}: not a flag run reads a value after"
+                );
+            }
+        }
         let plain = Config::new("/k/vmlinux".into(), None);
         let memory = shards_vmm::vm::MEMORY_MIB.to_string();
         assert_eq!(

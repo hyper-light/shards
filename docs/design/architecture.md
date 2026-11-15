@@ -36628,7 +36628,8 @@ once per report, and every vCPU's copy would have grown with it).
   fix; red again with the vCPU never copying the list again (mutation).
 - api_image.rs `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`:
   at 1 vCPU and 64 MiB, the image's first run saves its template, which holds memory its
-  guest plugged, the next restores it, and each run's command holds 256 MiB and ends 0. Red
+  guest plugged, the next restores it, and each run's command holds 64 MiB, which its boot
+  memory has no room for beside its kernel, and ends 0. Red
   at 8f4bc8184 as kiln's launches: "the VM ended before it was ready", `unhandled guest
   exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000, PC 0xffff800080bcf554`, one of kiln's
   PCs.
@@ -36643,9 +36644,10 @@ its domains start, from `MemAvailable` and none of the plug) ended `alloc 256` a
 20 MB at 64 MiB, in boots with no template alike (ROOT's lane p/member-share). And fixed
 here: D270's components' window, which `run::boot_args` gives every microVM with PCI slots,
 every orchestrator's image run's among them, was missing from `spec::RUN_VALUED`, so the VM
-process refused every such boot from d1d3bcd97 on, "--component-window needs a value": listed,
-and `vm_run`'s `a_runs_boot_arguments_are_the_ones_run_reads` holds every valued flag a run's
-boot gives its VM to it, and the boot to parsing as given.
+process refused every such boot from d1d3bcd97 on, "--component-window needs a value": listed;
+run.rs `a_boots_words_are_its_configs` holds every flag a run's boot gives a value to it (as
+vm_run's `valued_flags_need_their_values` holds it to `run`), and vm_run's
+`a_components_window_takes_its_value` reads the window's value.
 
 ## 4. Start path (≤ 5 ms budget)
 

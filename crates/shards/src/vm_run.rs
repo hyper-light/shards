@@ -4336,51 +4336,22 @@ mod tests {
         }
     }
 
-    /// Every flag a run's microVM is booted with that takes a value (`run::boot_args`, the
-    /// daemon's and an orchestrator's run host's alike) is one `spec::RUN_VALUED` lists, and
-    /// the boot parses as given: D270's components' window, unlisted, refused every
-    /// orchestrator's image boot, "--component-window needs a value".
+    /// A boot's components' window (D270) takes its value, as a run's boot gives it beside its
+    /// slots (run.rs `boot_args`): unlisted among the flags `run` reads a value after
+    /// (`spec::RUN_VALUED`), every orchestrator's image boot was refused, "--component-window
+    /// needs a value".
     #[test]
-    fn a_runs_boot_arguments_are_the_ones_run_reads() {
-        let mut cfg = Config::new(PathBuf::from("/k"), Some(PathBuf::from("/init")));
-        cfg.cmdline = "console=hvc0".into();
-        (cfg.vcpus, cfg.memory_mib, cfg.hotplug_mib, cfg.swap_mib) = (2, 64, 1024, 1024);
-        cfg.reporting = true;
-        cfg.pmem = vec![PathBuf::from("/server")];
-        cfg.shares = (0..2).map(|_| Default::default()).collect();
-        cfg.share_window_mib = 64;
-        (cfg.pci_slots, cfg.pci_slots_iommu, cfg.component_window_mib) = (2, true, 8192);
-        let booted = crate::run::boot_args(
-            &cfg,
-            Path::new("/rootfs"),
-            Some(Path::new("/t")),
-            crate::launch::LINK,
-        );
-        let words: Vec<&str> = booted.iter().skip(1).map(|w| w.to_str().unwrap()).collect();
-        for pair in words.windows(2) {
-            if let [flag, value] = pair
-                && flag.starts_with("--")
-                && !value.starts_with("--")
-            {
-                assert!(
-                    crate::spec::RUN_VALUED.contains(flag),
-                    "{flag} {value}: not a valued flag"
-                );
-            }
-        }
-        let run = parse_run(booted.into_iter().skip(1)).unwrap();
-        assert_eq!(
-            (
-                run.cfg.memory_mib,
-                run.cfg.hotplug_mib,
-                run.cfg.swap_mib,
-                run.cfg.shares.len(),
-                run.cfg.share_window_mib,
-                run.cfg.pci_slots,
-                run.cfg.component_window_mib,
-            ),
-            (64, 1024, 1024, 2, 64, 2, 8192)
-        );
+    fn a_components_window_takes_its_value() {
+        let run = parse_run(args(&[
+            b"--kernel",
+            b"/k",
+            b"--pci-slots",
+            b"2",
+            b"--component-window",
+            b"8192",
+        ]))
+        .unwrap();
+        assert_eq!((run.cfg.pci_slots, run.cfg.component_window_mib), (2, 8192));
     }
 
     /// What `restore` alone reads a value after, as `spec::RESTORE_VALUED` tells what reads
