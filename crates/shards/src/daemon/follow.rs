@@ -49,12 +49,13 @@ enum Process {
     /// from its VM's word that it waits on it to close the run's ports (`UNPUBLISHING`) to
     /// its answer (`PORTS_FREE`), what it does since (`unpublishing`). `due` is when its
     /// look is next: a deadline before it, or with none, one left from a follow since ended.
+    /// Each `Followed` is boxed: a look's state (shards-api's `Watch`) is many times a `Vm`'s.
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
         ended_vm: Option<Arc<shards_ipc::Child>>,
-        following: Option<(Instant, super::ends::Followed)>,
+        following: Option<(Instant, Box<super::ends::Followed>)>,
         unpublishing: Option<Box<super::ends::Followed>>,
         due: Option<Instant>,
         watch: Option<ExitWatch>,
@@ -486,7 +487,7 @@ impl<D: Disk> Daemon<D> {
                     *vm_running = false;
                     *ended_vm = Some(vm);
                     let now = Instant::now();
-                    *following = Some((now, super::ends::Followed::of(Some(child.id()))));
+                    *following = Some((now, Box::new(super::ends::Followed::of(Some(child.id())))));
                     *unpublishing = None;
                     // A slice past what a clock holds, or none heard yet: its end alone,
                     // which reaps it.

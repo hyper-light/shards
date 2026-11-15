@@ -90,6 +90,10 @@ impl Handle {
         match self.0 {}
     }
 
+    pub fn plug_pmem(&self, _file: std::fs::File) -> Result<super::Plugged, shards_ipc::device::Refusal> {
+        match self.0 {}
+    }
+
     pub fn unplug(&self, _devfn: u8) -> Result<(), shards_ipc::device::Refusal> {
         match self.0 {}
     }

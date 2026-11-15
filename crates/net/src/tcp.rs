@@ -197,6 +197,9 @@ pub struct Conn {
     retries: u32,
     probes: u32,
     pub closed: bool,
+    /// A published port took it (`accept`): no flow of its guest's own, which its grants hold
+    /// (D272).
+    pub accepted: bool,
     /// The guest reset the connection: nothing more goes to it, nor is read from the host;
     /// what it sent before, which this side acknowledged, still goes to the host, whose
     /// write side is then shut, as Linux hands a reader its queued bytes before a reset's
@@ -358,6 +361,7 @@ impl Conn {
             retries: 0,
             probes: 0,
             closed: false,
+            accepted: false,
             guest_reset: false,
             blocked: false,
             resend: false,
@@ -397,6 +401,7 @@ impl Conn {
             retries: 0,
             probes: 0,
             closed: false,
+            accepted: true,
             guest_reset: false,
             blocked: false,
             resend: false,
