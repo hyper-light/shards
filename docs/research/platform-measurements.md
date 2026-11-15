@@ -25672,3 +25672,33 @@ the counts are a process's, not a thread's. n is one run of each child.
 - **Unrun or owed.** Linux and Windows: CI's. A run-out stays its path's (`host:port`): a quick body of another
   kind on the path ends one a slow body began, so a big pack over a jittery link can still be cut between its
   bytes past a broken record and fetched whole again; owed to D276's next look.
+
+### M608. An `ARG`-named Agentfile source refused before its stage expanded it, and checked once expanded (D56, D54)
+
+- **Where.** adas-mac-studio.local-2 (Apple M3 Ultra, macOS 26.4), kiln runs of the Hex lead's, one source tree
+  per tip from a `git archive` tarball with the change as a patch, its own target
+  (`docs/research/measurements/vendor-point-1115/svp.sh`), test-release, `SHARDS_REQUIRE_VMS=1`. Logs:
+  `~/.cache/hex-lead/svp/logs/af-{red,green,mut}/` on that Studio.
+- **Found.** Main's CI after a9f17f701 (P4.1 to P4.3): `build.rs`'s `agents_expand_their_words_and_are_copied_from`
+  red on every backend, and on HVF at 4dfa731b1.
+- **Reproduced** (R09): `a_sources_variables_expand_before_it_is_checked` at 4dfa731b1 (9975d1f55's agentfile crate
+  is the same): `dockerfile parse error on line 2: "$SRC" is no path (./, ../ or /), Git or http(s) URL, or OCI
+  reference`, the error the build test shows.
+- **Cause.** The sources lane moved `AGENT`'s and `HARNESS`'s source checks (D54) to parse, before D56's expansion,
+  as `MCP`'s and `SKILL`'s were: a source named by a variable was judged by its name, not by what it names.
+- **After** (b9ad1d0fb on 4dfa731b1): the unit test passes, and `cargo test -p shards --test build --
+  agents_expand_their_words_and_are_copied_from` on HVF passes (1 of 1, 53 s with its build). Mutation (the plan's
+  check once expanded removed): the unit test fails, an unpinned `https://` `AGENT` source planned.
+- **Tests at the branch** (from 9975d1f55): `cargo test -p shards-agentfile`, every suite passed (43, 44, 1, 3, 12);
+  `cargo clippy -p shards-agentfile --all-targets` and `cargo fmt --check`: clean (macOS arm64).
+- **R01 to R16.** R01: no new panic path (a byte search; errors returned as before), clippy's panic lints clean.
+  R02: D56's contract restored (BuildKit's `dispatch` expands a command's words before it runs it); checking every
+  source only once expanded was rejected because it loses a written-out source's refusal at parse; refusing
+  variables in sources was rejected because it breaks D56. R03: no literal. R04: where a source is checked follows
+  from its text alone; refusals keep their words. R05/R06/R12/R13: the same three check functions shared by parse
+  and plan, one closure for `AGENT` and `HARNESS` in place of two copies; no wait or cache touched. R07: doc comments
+  say where each source is checked. R08/R14: not applicable, no hot path (a parse-time byte check). R09/R10: above.
+  R11: platform-independent parser code; macOS arm64 unit and HVF build run here. R15: the coordinator's own change,
+  merged on its light checks and the HVF build; pending checks below. R16: not applicable.
+- **Unrun or owed.** Linux (glibc, musl) and Windows: CI's at the merge. The build test on KVM and WHP: CI's
+  backends.
