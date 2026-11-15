@@ -25311,8 +25311,9 @@ Max) left untimed (D253's amendment, the start path's cuts):
   `its members staged, its ports bound`, `its setup's security composed` and `its run
   planned`, which `plan` says on every kind, a warm run's too.
 - Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
-  from the run host's first step, api_run.rs `Checking`), `its network decided`, `its
-  writable layer cloned|made|none`, then `launching its VM`.
+  from the run host's first step, api_run.rs `Checking`; `, its network process's too` where
+  its run has a network, whose binary that thread checks once `shape` elects its bridge),
+  `its network decided`, `its writable layer cloned|made|none`, then `launching its VM`.
 - Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
   then `its VM process … is ready`.
 - shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
@@ -25320,6 +25321,12 @@ Max) left untimed (D253's amendment, the start path's cuts):
   timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
   answer K read` (STARTED 16, WARMED 32), `its start taken`, `its members' outputs pumped`,
   `its diagnostics' file named` and `kept`, beside the harness's own `the boot answered`.
+- The phase pass runs twice, its lines labelled: `IMAGE-START-PHASES timed …` with
+  `SHARDS_TIMING` alone (the run host's and shards-api's lines), then `IMAGE-START-PHASES
+  debug …` with `SHARDS_LOG=debug` too (the VM's own steps). The VM's debug lines share one
+  pipe with the run host's, which only the caller's diagnostics reader drains, and a run
+  host's line takes its time before its write: where the reader lags, the line after a wait
+  shows it as its gap, so `timed`'s gaps are the run host's own.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.
 
@@ -25426,4 +25433,34 @@ it. Neither host's counts are a bound; n is one loop each.
   and ran again before its governor woke (hex-winvm at ba6ed94b8: 776,742,300 ns of guest in
   2,002,645,300 ns at a quarter CPU, 38.8%). A test's bound takes the step measured from its
   own guest (`tests/common::guest_time_step`), never a unit.
+
+### M603. Named pipes for a confined VM process's vsock connections: who can make and open them, an instance's cost, and a pended write's end (D272)
+
+- **Question.** Before D272 builds a vsock connection's Windows host side on named pipes: can
+  a VM process confined as D141 confines one make a pipe's server, or open its user's pipe;
+  what does one instance its unconfined spawner makes and hands in cost; and when does an
+  overlapped write to a pipe complete while its reader is slow?
+- **Method.** `docs/research/measurements/windows-pipes-s0` at shards 540f2d75c, its child in
+  `shards_ipc`'s AppContainer (its mitigations and Job, `in_app_container` true), 2026-11-15,
+  on hex-winvm (Windows Server 2025 24H2 build 26100.32230, nested) and jupiter (Windows 11 Pro
+  10.0.26200). Pipes in byte mode, 64 KiB each way, `PIPE_REJECT_REMOTE_CLIENTS`; DACLs in SDDL.
+- **Found** (both hosts alike):
+  - The confined child opens a pipe granted its user alone: error 5 (access denied); one
+    granted ALL APPLICATION PACKAGES as well (`AC`): opened. It makes a server under
+    `\\.\pipe\`: error 5; under `\\.\pipe\LOCAL\`: made, which its user cannot open by
+    that name (error 2): an AppContainer's LOCAL is its own namespace.
+  - A server instance its spawner made (granted the user alone) and handed in
+    (DuplicateHandle, `Suspended::give`) serves: the child connected it, read the spawner's
+    "hello" and answered "reply".
+  - An instance made, n 1,000: hex-winvm p50 4 us, p90 30, p99 56, max 91; jupiter p50 8,
+    p90 10, p99 59, max 179. Made and handed in: hex-winvm p50 3, p90 24, p99 43, max 88;
+    jupiter p50 7, p90 8, p99 31, max 72.
+  - An overlapped WriteFile of 1 MiB to a 64 KiB pipe returns ERROR_IO_PENDING; its reader
+    taking 64 KiB every 10 ms, it completes once the reader has taken 983,040 bytes (1 MiB
+    less the pipe's buffer; hex-winvm at 165 ms, jupiter at 154), 1,048,576 transferred.
+    CancelIoEx once the reader had taken 196,608: ERROR_OPERATION_ABORTED, **0 transferred**,
+    and nothing more for the reader: a cancelled write's count is not what its reader got.
+- **Consequence (D272).** The spawner makes each instance and hands it in, as it binds the
+  VM's listener and dials its ports today (D141, M203); a connection's write pends until its
+  bytes are all in the pipe, and is never cancelled while the connection lives.
 

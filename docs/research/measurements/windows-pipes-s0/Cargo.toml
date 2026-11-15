@@ -1,0 +1,24 @@
+# Named pipes for the Windows host side of vsock connections, before any of it is built (S0 of
+# ROOT's plan; to supersede D140's Windows half): whether a VM process confined as D141
+# confines one (shards_ipc's AppContainer) can create or open a named pipe; what one pipe
+# instance made by its unconfined spawner and handed in costs; and when a pended overlapped
+# write completes while its reader is slow.
+[package]
+name = "windows-pipes-s0"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[target.'cfg(windows)'.dependencies]
+shards-ipc = { path = "../../../../crates/ipc" }
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
