@@ -1311,4 +1311,51 @@ mod tests {
         });
         assert_eq!(added.unwrap().size, 7);
     }
+
+    /// A SKILL's source and an MCP server's from Git (D54) take `--redirect` as AGENT's
+    /// and HARNESS's do: a SKILL from a URL that redirects to another origin is refused in
+    /// the grant's words, nothing sent there, and fetched once `--redirect` names that
+    /// origin; the planner gives an MCP server's Git source the same grant.
+    #[test]
+    fn a_skill_from_a_redirecting_source_is_fetched_once_granted() {
+        let (elsewhere, elsewhere_seen) = serve(|_| ("HTTP/1.1 200 OK".into(), b"skill".to_vec()));
+        let (first, _) = serve(move |_| {
+            (
+                format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere}/s.md"),
+                Vec::new(),
+            )
+        });
+        let skill = |redirect: &str| {
+            let (id, attrs) = crate::build::planned_sources(&format!(
+                "SKILL {redirect}http://127.0.0.1:{first}/s.md /skills/s/SKILL.md"
+            ))
+            .into_iter()
+            .next()
+            .unwrap();
+            let url = String::from_utf8(id).unwrap();
+            Source::Url {
+                reach: Reach::of(&url, &attrs, &secrets(&[])).unwrap(),
+                url,
+                checksum: None,
+            }
+        };
+        let (refused, _d1) = fetched(skill(""));
+        assert_eq!(
+            refused.unwrap_err(),
+            format!(
+                "redirected from http://127.0.0.1:{first} to http://127.0.0.1:{elsewhere}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+            )
+        );
+        assert!(elsewhere_seen.lock().unwrap().is_empty());
+        let (granted, _d2) = fetched(skill(&format!("--redirect=127.0.0.1:{elsewhere} ")));
+        assert_eq!(granted.unwrap().size, 5);
+        let mcp = crate::build::planned_sources(
+            "MCP --redirect=mirror.example:8443 files FROM https://git.example/o/files.git#main",
+        );
+        let grants: Vec<&[u8]> = mcp
+            .iter()
+            .filter_map(|(_, a)| a.get(shards_agentfile::agentfile::GRANT_ATTR).map(Vec::as_slice))
+            .collect();
+        assert_eq!(grants, [b"mirror.example:8443".as_slice()]);
+    }
 }

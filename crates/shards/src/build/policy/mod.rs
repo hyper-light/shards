@@ -2436,45 +2436,15 @@ mod tests {
 
     /// The `s3://` source an Agentfile's AGENT makes, as the planner makes it (D54).
     fn planned_s3_source(line: &str) -> Source {
-        use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
-        struct Bases;
-        impl Resolver for Bases {
-            fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
-                Ok(Resolved {
-                    reference: name.to_vec(),
-                    digest: None,
-                    config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec(),
-                })
-            }
-
-            fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
-                Ok(None)
-            }
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (identifier, attrs) = crate::build::planned_sources(line)
+            .into_iter()
+            .find(|(id, _)| id.starts_with(b"s3://"))
+            .unwrap();
+        Source {
+            identifier: text(&identifier),
+            attrs: attrs.iter().map(|(k, v)| (text(k), text(v))).collect(),
         }
-        let opts = Options {
-            target_platform: Platform::new("linux", "amd64"),
-            build_platforms: vec![Platform::new("linux", "amd64")],
-            dialect: shards_agentfile::parser::Dialect::Agentfile,
-            ..Default::default()
-        };
-        let built = plan::plan(format!("FROM alpine\n{line}\n").as_bytes(), &opts, &Bases).unwrap();
-        built
-            .graph
-            .vertices
-            .iter()
-            .find_map(|v| match &v.kind {
-                shards_agentfile::llb::Kind::Source { identifier, attrs }
-                    if identifier.starts_with(b"s3://") =>
-                {
-                    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-                    Some(Source {
-                        identifier: text(identifier),
-                        attrs: attrs.iter().map(|(k, v)| (text(k), text(v))).collect(),
-                    })
-                }
-                _ => None,
-            })
-            .unwrap()
     }
 
     /// An `s3://` source is asked of a build's policies in a form of its own, `input.s3`

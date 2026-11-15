@@ -5341,6 +5341,11 @@ directive makes.
 - `--endpoint`, `--region`, `--path-style` and `--version-id` go only with `s3://`.
   `--checksum` goes only with http(s) and s3, as a Git source is pinned by the commit its
   `#REF` resolves to (recorded as before). `--redirect` goes only with http(s) and Git.
+- `SKILL` and `MCP` take `--redirect=HOST[:PORT]`, repeated, exactly as `AGENT` and
+  `HARNESS` do, where their source is fetched from http(s) or Git. It is refused for a
+  context path, a skill `--from` another stage or agent (copied, not fetched), and a
+  remote MCP server's URL, which its agents reach at run under the network's grants
+  rather than the build fetching it (`skills_and_mcp_servers_grant_their_redirects`).
 - Each refusal names what to write instead (`fetched_sources_are_pinned_and_say_where_they_are`).
 - `MCP` takes no `s3://` source: it has no flags to pin one.
 - Dockerfile `ADD` keeps BuildKit's grammar and meaning. BuildKit's ADD reads `s3://…` as
@@ -5413,7 +5418,9 @@ Agentfile directive's source is its own grant.
   (D101) is how a build refuses an `ADD`'s hosts.
 - Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
   `a_git_source_opens_only_the_remotes_it_grants`,
-  `a_granted_fetch_is_refused_a_redirect_it_does_not_name`.
+  `a_granted_fetch_is_refused_a_redirect_it_does_not_name`,
+  `a_skill_from_a_redirecting_source_is_fetched_once_granted`; real VMs:
+  `a_skill_from_a_redirecting_source_builds_once_granted`.
 
 Rejected:
 - **Fetching inside the builder microVM under its network policy.** SSH keys and agents
@@ -5440,7 +5447,6 @@ s3 source and a policy was refused (`unsupported source scheme: s3`).
 
 **Not yet.**
 - Real-VM builds of each kind are owed to the coordinator (`crates/shards/tests/build.rs`).
-- SKILL and MCP take no `--redirect`: their sources reach their own origin only.
 
 ### Skills checked as the Agent Skills reference checks them (D54)
 

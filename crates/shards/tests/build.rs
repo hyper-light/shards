@@ -18102,3 +18102,95 @@ fn an_s3_source_builds_as_its_policy_decides() {
         stat.stderr
     );
 }
+
+/// A server on loopback that answers `/SKILL.md` with `skill`, and `/r/SKILL.md` with a
+/// redirect to `away`'s `/SKILL.md`; its port.
+fn skill_server(skill: &'static str, away: Option<u16>) -> u16 {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = common::minted_port(listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(conn.try_clone().unwrap());
+                let mut out = conn;
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
+                        break;
+                    }
+                }
+                let (status, extra, body) = match (line.starts_with("GET /r/SKILL.md "), away) {
+                    (true, Some(to)) => (
+                        "302 Found",
+                        format!("Location: http://127.0.0.1:{to}/SKILL.md\r\n"),
+                        "",
+                    ),
+                    _ if line.starts_with("GET /SKILL.md ") => ("200 OK", String::new(), skill),
+                    _ => ("404 Not Found", String::new(), ""),
+                };
+                let _ = write!(
+                    out,
+                    "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            });
+        }
+    });
+    port
+}
+
+/// A SKILL from a URL that redirects to another origin (D54): refused, in the grant's words,
+/// until `--redirect` names that origin; then built, laid out by its name.
+#[test]
+fn a_skill_from_a_redirecting_source_builds_once_granted() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let away = skill_server(
+        "---\nname: review\ndescription: Reviews code.\n---\nReview it.\n",
+        None,
+    );
+    let port = skill_server("", Some(away));
+    let home = TempDir::new("src-skill-redirect-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
+    let build = |name: &str, redirect: &str| {
+        let ctx = TempDir::new(name);
+        std::fs::write(
+            ctx.join("Agentfile"),
+            format!("FROM {image}\nSKILL {redirect}http://127.0.0.1:{port}/r/SKILL.md\n"),
+        )
+        .unwrap();
+        let out = TempDir::new(&format!("{name}-out"));
+        let r = shards(&[
+            "build",
+            "-o",
+            out.join("root").to_str().unwrap(),
+            ctx.to_str().unwrap(),
+        ]);
+        (r, out)
+    };
+    let (refused, _) = build("src-skill-redirect-0", "");
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains(&format!(
+            "redirected from http://127.0.0.1:{port} to http://127.0.0.1:{away}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+        )),
+        "{}",
+        refused.stderr
+    );
+    let (built, out) = build("src-skill-redirect-1", &format!("--redirect=127.0.0.1:{away} "));
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let laid = std::fs::read_to_string(out.join("root/skills/review/SKILL.md")).unwrap();
+    assert!(laid.contains("name: review"), "{laid}");
+}

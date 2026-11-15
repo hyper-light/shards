@@ -6299,6 +6299,53 @@ fn frontend_attrs(
     Ok(a)
 }
 
+/// A source the planner made: its identifier and attributes.
+#[cfg(test)]
+pub(crate) type PlannedSource = (Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>);
+
+/// The fetched sources (http(s), Git, s3) of the Agentfile `FROM alpine` and `lines`, as the
+/// planner makes them: each identifier and its attributes, in the graph's order.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) fn planned_sources(lines: &str) -> Vec<PlannedSource> {
+    struct Alpine;
+    impl Resolver for Alpine {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: shards_agentfile::parser::Dialect::Agentfile,
+        ..Default::default()
+    };
+    let built = plan::plan(format!("FROM alpine\n{lines}\n").as_bytes(), &opts, &Alpine).unwrap();
+    built
+        .graph
+        .vertices
+        .iter()
+        .filter_map(|v| match &v.kind {
+            shards_agentfile::llb::Kind::Source { identifier, attrs }
+                if [b"http://".as_slice(), b"https://", b"git://", b"s3://"]
+                    .iter()
+                    .any(|s| identifier.starts_with(s)) =>
+            {
+                Some((identifier.clone(), attrs.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// [`frontend_attrs`] of a build given `flags` alone: a named context's directory taken
 /// as one, by its name, wherever it is.
 #[cfg(test)]
