@@ -1238,8 +1238,21 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.members()
     }
 
-    fn published(&self) -> &[wire::Bound] {
+    fn published(&self) -> Vec<wire::Bound> {
         self.guest.published()
+    }
+
+    fn publish(&self, publish: wire::Publish, patience: Duration) -> Result<Vec<wire::Bound>, ImageRefusal> {
+        self.guest.publish(publish, patience)
+    }
+
+    fn unpublish(
+        &self,
+        proto: wire::Proto,
+        host: std::net::SocketAddr,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal> {
+        self.guest.unpublish(proto, host, patience)
     }
 
     fn control(&self) -> Option<&wire::ControlAt> {
@@ -1463,8 +1476,19 @@ mod tests {
         fn members(&self) -> &[wire::MemberInfo] {
             &[]
         }
-        fn published(&self) -> &[wire::Bound] {
-            &[]
+        fn published(&self) -> Vec<wire::Bound> {
+            Vec::new()
+        }
+        fn publish(&self, _: wire::Publish, _: Duration) -> Result<Vec<wire::Bound>, ImageRefusal> {
+            none()
+        }
+        fn unpublish(
+            &self,
+            _: wire::Proto,
+            _: std::net::SocketAddr,
+            _: Duration,
+        ) -> Result<(), ImageRefusal> {
+            none()
         }
         fn control(&self) -> Option<&wire::ControlAt> {
             None
