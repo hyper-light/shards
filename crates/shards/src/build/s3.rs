@@ -11,6 +11,7 @@
 //! signed whole: its digest is its SHA-256, so S3 checks every byte it keeps, for nothing
 //! more read here.
 
+use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -95,9 +96,14 @@ impl Bucket {
     /// The bucket of `e`'s attributes, as s3.go's `getConfig` reads them, and the
     /// credentials it is signed for.
     pub fn of(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>) -> Result<Bucket, String> {
+        Bucket::named(e, env, "s3 cache")
+    }
+
+    /// [`of`](Self::of), its errors naming what the bucket is for, `what`.
+    fn named(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>, what: &str) -> Result<Bucket, String> {
         let bucket = match attr(e, "bucket") {
             Some(b) => b.to_string(),
-            None => env("AWS_BUCKET").ok_or("bucket ($AWS_BUCKET) not set for s3 cache")?,
+            None => env("AWS_BUCKET").ok_or_else(|| format!("bucket ($AWS_BUCKET) not set for {what}"))?,
         };
         // BuildKit's, else those the SDK's configuration names, where BuildKit takes none.
         let region = match attr(e, "region") {
@@ -106,7 +112,7 @@ impl Bucket {
                 Some(r) => r,
                 None => Chain::new(env)
                     .configured_region(Chain::new(env).profile()?.as_ref())
-                    .ok_or("region ($AWS_REGION) not set for s3 cache")?,
+                    .ok_or_else(|| format!("region ($AWS_REGION) not set for {what}"))?,
             },
         };
         let names = match attr(e, "name") {
@@ -148,7 +154,7 @@ impl Bucket {
             &format!("shards/{}", env!("CARGO_PKG_VERSION")),
         )
         .with_proxies(shards_registry::proxy::Proxies::from_env(env));
-        let (found, chain) = credentials(e, env, &region)?;
+        let (found, chain) = credentials(e, env, &region, what)?;
         Ok(Bucket {
             http,
             bucket,
@@ -308,7 +314,14 @@ impl Bucket {
 
     /// `key`'s object, or `None` where there is none.
     pub fn get(&self, key: &str) -> Result<Option<Response<'_>>, String> {
-        let r = self.send("GetObject", key, "", &[], Body::Bytes(&[]), EMPTY_SHA256)?;
+        self.get_version(key, None)
+    }
+
+    /// `key`'s object, its version `version` where one is named, or `None` where there is
+    /// none.
+    fn get_version(&self, key: &str, version: Option<&str>) -> Result<Option<Response<'_>>, String> {
+        let query = version.map_or(String::new(), |v| format!("versionId={}", uri_encode(v)));
+        let r = self.send("GetObject", key, &query, &[], Body::Bytes(&[]), EMPTY_SHA256)?;
         match r.status {
             200 => Ok(Some(r)),
             404 => Ok(None),
@@ -459,6 +472,138 @@ impl Bucket {
     }
 }
 
+/// An object an Agentfile's `AGENT` or `HARNESS` names as its source (D54): `s3://BUCKET/KEY`,
+/// reached through the one S3 client the cache uses ([`Bucket`]), at `--endpoint` (else the
+/// SDK's own endpoint settings, else AWS's), in `--region` (else the SDK's), path-style
+/// with `--path-style`; pinned by `--checksum`, `--version-id`, or both.
+#[derive(Clone)]
+pub struct Object {
+    pub bucket: String,
+    pub key: String,
+    pub version_id: Option<String>,
+    /// `sha256:<hex>`, what its bytes hash to.
+    pub checksum: Option<String>,
+    /// The cache's attributes the source's flags and the build's secrets give: `endpoint_url`,
+    /// `region`, `use_path_style`, and `access_key_id`, `secret_access_key` and
+    /// `session_token`.
+    attrs: BTreeMap<String, Zeroizing<String>>,
+}
+
+/// The build's secrets an S3 source signs with, in place of the SDK's default chain: each
+/// AWS's own variable name, the bucket's (`NAME.<bucket>`) before the build's, as Git's
+/// `GIT_AUTH_TOKEN.<host>` comes before `GIT_AUTH_TOKEN`.
+const KEY_SECRETS: [(&str, &str); 3] = [
+    ("AWS_ACCESS_KEY_ID", "access_key_id"),
+    ("AWS_SECRET_ACCESS_KEY", "secret_access_key"),
+    ("AWS_SESSION_TOKEN", "session_token"),
+];
+
+impl Object {
+    /// The object source `identifier` with `attrs` names, signed for by the build's
+    /// `secrets` where they hold a key.
+    pub fn of(
+        identifier: &[u8],
+        attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
+        secrets: &BTreeMap<String, shards_cmdline::buildflags::SecretBytes>,
+    ) -> Result<Object, String> {
+        let text =
+            |b: &[u8]| String::from_utf8(b.to_vec()).map_err(|_| "an s3 source not in UTF-8".to_string());
+        let rest = identifier.strip_prefix(b"s3://").ok_or("not an s3 source")?;
+        let (bucket, key) = text(rest)?
+            .split_once('/')
+            .map(|(b, k)| (b.to_string(), k.to_string()))
+            .filter(|(b, k)| !b.is_empty() && !k.is_empty())
+            .ok_or("an s3 source names no object: s3://BUCKET/KEY")?;
+        let attr = |k: &[u8]| attrs.get(k).map(|v| text(v)).transpose();
+        let mut given = BTreeMap::new();
+        for (from, to) in [
+            (b"s3.endpoint".as_slice(), "endpoint_url"),
+            (b"s3.region", "region"),
+            (b"s3.pathstyle", "use_path_style"),
+        ] {
+            if let Some(v) = attr(from)? {
+                given.insert(to.to_string(), Zeroizing::new(v));
+            }
+        }
+        for (name, to) in KEY_SECRETS {
+            let secret = secrets
+                .get(&format!("{name}.{bucket}"))
+                .or_else(|| secrets.get(name));
+            if let Some(v) = secret {
+                let v =
+                    String::from_utf8(v.bytes().to_vec()).map_err(|_| format!("secret {name}: not UTF-8"))?;
+                given.insert(to.to_string(), Zeroizing::new(v));
+            }
+        }
+        Ok(Object {
+            bucket,
+            key,
+            version_id: attr(b"s3.versionid")?,
+            checksum: attr(b"s3.checksum")?,
+            attrs: given,
+        })
+    }
+
+    /// Fetches the object into `path`, within `limits`, its SHA-256 held to the checksum
+    /// where there is one. It is fetched while its key is worked out where nothing but a
+    /// version pins it, as an HTTP source without a checksum is.
+    pub fn fetch(
+        &self,
+        cancel: shards_registry::http::Cancel,
+        path: std::path::PathBuf,
+        limits: &shards_image::store::Limits,
+    ) -> Result<super::http::Download, super::http::Failure> {
+        let fail = |e: String| match self.checksum {
+            Some(_) => super::http::Failure::Snapshot(e),
+            None => super::http::Failure::CacheKey(e),
+        };
+        let shown = format!("s3://{}/{}", self.bucket, self.key);
+        let mut attrs: BTreeMap<String, String> = self
+            .attrs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().to_string()))
+            .collect();
+        attrs.insert("bucket".into(), self.bucket.clone());
+        let mut e = CacheEntry {
+            kind: "s3".into(),
+            attrs,
+        };
+        let env = |k: &str| std::env::var(k).ok();
+        let made = Bucket::named(&e, &env, "s3 source");
+        // The key's copies go as the client holds its own.
+        for v in e.attrs.values_mut() {
+            zeroize::Zeroize::zeroize(v);
+        }
+        let mut bucket = made.map_err(|err| fail(format!("{shown}: {err}")))?;
+        bucket.http = bucket.http.cancelled_by(cancel);
+        let mut r = bucket
+            .get_version(&self.key, self.version_id.as_deref())
+            .map_err(|err| fail(format!("{shown}: {err}")))?
+            .ok_or_else(|| fail(format!("{shown}: operation error S3: GetObject, NoSuchKey")))?;
+        let served_as = match (r.header("x-amz-version-id"), r.header("etag")) {
+            (Some(v), _) if v != "null" => Some(format!("versionId={v}")),
+            (_, Some(etag)) => Some(format!("etag={}", etag.trim_matches('"'))),
+            _ => None,
+        };
+        let (size, digest) =
+            super::http::save_file(&mut r, &path, limits).map_err(|err| fail(format!("{shown}: {err}")))?;
+        if let Some(want) = &self.checksum
+            && digest.to_string() != *want
+        {
+            return Err(super::http::Failure::Snapshot(format!(
+                "digest mismatch {digest}: {want}"
+            )));
+        }
+        Ok(super::http::Download {
+            path,
+            size,
+            digest,
+            last_modified: None,
+            served_as,
+        })
+    }
+}
+
 /// A response's body if it succeeded, else the error it carries. S3 can answer a copy or
 /// a completed upload with 200 and an error in the body: that is an error too.
 fn ok(op: &str, mut r: Response<'_>) -> Result<String, String> {
@@ -522,6 +667,7 @@ fn credentials(
     e: &CacheEntry,
     env: &dyn Fn(&str) -> Option<String>,
     region: &str,
+    what: &str,
 ) -> Result<(Signing, Option<Vec<String>>), String> {
     let given = |k: &str| attr(e, k).filter(|v| !v.is_empty()).map(str::to_string);
     if let (Some(id), Some(secret)) = (given("access_key_id"), given("secret_access_key")) {
@@ -537,7 +683,7 @@ fn credentials(
     let found = Chain::new(&kept)
         .in_region(region)
         .resolve()
-        .map_err(|err| format!("no AWS credentials for the s3 cache: {err}; give it access_key_id and secret_access_key, or credentials where AWS's own tools find them"))?;
+        .map_err(|err| format!("no AWS credentials for the {what}: {err}; give it access_key_id and secret_access_key, or credentials where AWS's own tools find them"))?;
     Ok((found, Some(vars)))
 }
 
@@ -623,5 +769,86 @@ mod tests {
         b.put(&m, Body::Bytes(b"{}"), super::super::sha256(b"{}").hex())
             .unwrap();
         assert_eq!(read(&m), b"{}");
+    }
+
+    /// An `s3://` source (D54) is fetched from its endpoint, path-style, at the version it
+    /// names, signed with the bucket's own key from the build's secrets before the build's;
+    /// what it holds is pinned by its checksum and recorded with the version S3 served,
+    /// and no key is in either. A changed object is refused by its checksum.
+    #[test]
+    fn an_s3_source_is_the_pinned_object_signed_by_reference() {
+        let body = std::sync::Arc::new(std::sync::Mutex::new(b"agent v1".to_vec()));
+        let served = body.clone();
+        let (port, seen) = super::super::http::serve(move |line| {
+            if line.starts_with("GET /agents/a/v1.tgz?versionId=v%2B7 ") {
+                (
+                    "HTTP/1.1 200 OK\r\nx-amz-version-id: v+7\r\nETag: \"e1\"".into(),
+                    served.lock().unwrap().clone(),
+                )
+            } else {
+                (
+                    "HTTP/1.1 404 Not Found".into(),
+                    b"<Error><Code>NoSuchKey</Code></Error>".to_vec(),
+                )
+            }
+        });
+        let digest = |b: &[u8]| format!("sha256:{}", super::super::sha256(b).hex());
+        let attrs = |sum: &str| {
+            BTreeMap::from([
+                (
+                    b"s3.endpoint".to_vec(),
+                    format!("http://127.0.0.1:{port}").into_bytes(),
+                ),
+                (b"s3.region".to_vec(), b"us-east-1".to_vec()),
+                (b"s3.pathstyle".to_vec(), b"true".to_vec()),
+                (b"s3.versionid".to_vec(), b"v+7".to_vec()),
+                (b"s3.checksum".to_vec(), sum.as_bytes().to_vec()),
+            ])
+        };
+        let secrets: BTreeMap<String, shards_cmdline::buildflags::SecretBytes> = [
+            ("AWS_ACCESS_KEY_ID", "AKIDBUILD"),
+            ("AWS_ACCESS_KEY_ID.agents", "AKIDBUCKET"),
+            ("AWS_SECRET_ACCESS_KEY", "s3cr3tk3y"),
+        ]
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string(),
+                shards_cmdline::buildflags::SecretBytes::new(v.as_bytes().to_vec()),
+            )
+        })
+        .collect();
+        let dir = shards_testdir::TempDir::new("s3-source").unwrap();
+        let limits = shards_image::store::Limits::none();
+        let object = Object::of(b"s3://agents/a/v1.tgz", &attrs(&digest(b"agent v1")), &secrets).unwrap();
+        let got = object
+            .fetch(shards_registry::http::Cancel::new(), dir.join("one"), &limits)
+            .unwrap();
+        assert_eq!(std::fs::read(&got.path).unwrap(), b"agent v1");
+        assert_eq!(got.digest.to_string(), digest(b"agent v1"));
+        assert_eq!(got.served_as.as_deref(), Some("versionId=v+7"));
+        let heads = seen.lock().unwrap().concat();
+        assert!(heads.contains("Credential=AKIDBUCKET/"), "{heads}");
+        for key in ["s3cr3tk3y", "AKIDBUILD"] {
+            assert!(!heads.contains(key), "{heads}");
+        }
+        // Changed under the same version: refused by what it hashes to.
+        *body.lock().unwrap() = b"agent v2".to_vec();
+        let refused = object
+            .fetch(shards_registry::http::Cancel::new(), dir.join("two"), &limits)
+            .unwrap_err();
+        let super::super::http::Failure::Snapshot(why) = refused else {
+            panic!("{refused:?}")
+        };
+        assert_eq!(
+            why,
+            format!("digest mismatch {}: {}", digest(b"agent v2"), digest(b"agent v1"))
+        );
+        // An object not there is S3's NoSuchKey.
+        let absent = Object::of(b"s3://agents/a/none.tgz", &attrs(&digest(b"x")), &secrets).unwrap();
+        let missing = absent
+            .fetch(shards_registry::http::Cancel::new(), dir.join("three"), &limits)
+            .unwrap_err();
+        assert!(format!("{missing:?}").contains("NoSuchKey"), "{missing:?}");
     }
 }
