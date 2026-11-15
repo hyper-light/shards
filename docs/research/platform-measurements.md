@@ -25391,7 +25391,44 @@ most such waits between looks, but not every one, and Linux keeps the time waite
 delay accounting on or, through a cgroup's own `io.pressure`, where the process is alone in
 it. Neither host's counts are a bound; n is one loop each.
 
-### M602. Memory a guest plugged before its template's save, taken away by HVF's working-set recording, served as a device (D270)
+### M602. A WHP vCPU's guest time: charged to its thread under the root scheduler, apart under the classic, and seen in ~10 ms steps (D265)
+
+- **Question.** On hex-winvm a managed guest's final use read its VM process's CPU time below
+  its vCPU's guest time, and a quarter CPU's hold let its vCPU run 88% of the wall (D265's
+  why). Does Windows charge a WHP vCPU's guest time to the thread that runs it, and how often
+  does the runtime counter (`WHvGetVirtualProcessorCounters`, TotalRuntime less
+  HypervisorRuntime) move?
+- **Method.** `docs/research/measurements/whp-guest-time-cadence` (`whp_probe.rs`,
+  `whp_cadence.rs`), at shards 39760e391 and ba6ed94b8, on hex-winvm (Windows Server 2025
+  24H2 build 26100.32230, nested WHP on KVM, AMD Ryzen 9 9950X3D2, 12 vCPUs; the classic
+  scheduler with SMT off, System event 2 "Hypervisor scheduler type is 0x1") and jupiter
+  (Windows 11 Pro 10.0.26200, AMD Ryzen AI Max+ 395, 32 CPUs; the root scheduler, event 2
+  0x4), 2026-11-15.
+- **Found.**
+  - Charge (whp_probe, 500 ms samples while the guest spins): hex-winvm's guest time grew
+    470-471 ms a sample (93.8-94.1% of the wall) and its process's CPU time none at 39760e391;
+    jupiter's guest grew 95.1-98.5% of the wall and its process's CPU 96.6-102.9% with it.
+    Halted, neither grew on either. At ba6ed94b8 each process told its charge from its own
+    clocks: hex-winvm `Apart` from its second answer, its use's CPU then its guest's added;
+    jupiter `ToThread` from its first.
+  - Cadence (whp_cadence, hex-winvm, ba6ed94b8): asks back to back, n 8,213, latency p50 234
+    us, p90 279, p99 378, max 1,196; the guest time moved n 200 times, p50 10,013 us apart,
+    p90 10,139, p99 10,318, max 10,511, by p50 9,404 us of guest each (p90 9,479, p99 9,598,
+    max 9,887). On jupiter (bare metal, the root scheduler), asks n 9,884, p50 191 us, p90
+    289, p99 387, max 1,156; moves n 1,216, p50 1,895 us apart, p90 2,121, p99 2,280, max
+    2,395, by p50 1,971 us of guest each (p90 1,989, p99 2,001, max 2,204). Its unit is
+    100 ns on both; its step, what a read may lag what ran, is a move's, five times coarser in
+    the nested guest.
+- **Consequence (D265).** The charge is learned per process (`Charged`), and the governor
+  counts a vCPU's time as it says. A vCPU seen a move late overruns each hold by up to a move
+  and a kick's landing, which its debt owes the periods after: the hold lasts across their
+  ends for the whole shares owed (`Hold::govern`), where it was let go at each period's end
+  and ran again before its governor woke (hex-winvm at ba6ed94b8: 776,742,300 ns of guest in
+  2,002,645,300 ns at a quarter CPU, 38.8%). A test's bound takes the step measured from its
+  own guest (`tests/common::guest_time_step`), never a unit.
+
+
+### M603. Memory a guest plugged before its template's save, taken away by HVF's working-set recording, served as a device (D272)
 
 - **Where.** adas-mac-studio-3.local (Apple M4 Max, macOS 26.2), kiln run r99, the
   test-release profile; Shards 8f4bc8184 (main 6bfdcb1a9 and the tests) for red, d02f9fdcf
@@ -25425,4 +25462,4 @@ it. Neither host's counts are a bound; n is one loop each.
   command, which D148's grower grows, as the finding below ends a member's).
 - **Found beside it.** In every run of the sweep, both revisions and both ways, the harness
   member's `alloc 256` was ended by init, `the agents' memory, 21069824 bytes, was past their
-  share, 20873216` at 64 MiB: a member's share does not grow with the plug (D270's owed list).
+  share, 20873216` at 64 MiB: a member's share does not grow with the plug (D272's owed list).

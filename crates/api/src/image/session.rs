@@ -1343,6 +1343,47 @@ impl Drop for Begun {
     }
 }
 
+/// The members a plug is for (D271), by their declared indices, in order: every one that
+/// runs, or each one named, which must be one of `members` that runs, named once. Refused
+/// where none is left to plug into.
+fn plugged_into(members: &[MemberInfo], to: &super::PlugFor) -> Result<Vec<u32>, ImageRefusal> {
+    let indices = match to {
+        super::PlugFor::Every => members.iter().filter(|m| m.runs).map(|m| m.index).collect(),
+        super::PlugFor::Members(named) => {
+            let mut indices = Vec::with_capacity(named.len());
+            for member in named {
+                let info = members
+                    .iter()
+                    .find(|m| m.kind == member.kind && m.name == member.name)
+                    .ok_or_else(|| {
+                        ImageRefusal::Image(format!("{member:?}: the image declares no such member"))
+                    })?;
+                if !info.runs {
+                    return Err(ImageRefusal::Plug(
+                        wire::PlugRefusal::Member,
+                        format!("{member:?} is files alone, and runs nothing"),
+                    ));
+                }
+                if indices.contains(&info.index) {
+                    return Err(ImageRefusal::Spec {
+                        what: "a plug's members",
+                        why: format!("{member:?}: named twice"),
+                    });
+                }
+                indices.push(info.index);
+            }
+            indices
+        }
+    };
+    if indices.is_empty() {
+        return Err(ImageRefusal::Plug(
+            wire::PlugRefusal::Member,
+            "none of the members it is for runs anything".into(),
+        ));
+    }
+    Ok(indices)
+}
+
 impl Session {
     pub(super) fn start(
         spec: &ImageSpec,
@@ -2587,32 +2628,26 @@ impl ImageGuest for Session {
         self.shared.resize(index, rows, cols, patience)
     }
 
-    fn plug(
-        &self,
-        member: &MemberName,
-        host: &std::path::Path,
-        at: &str,
-        read_only: bool,
-        patience: Duration,
-    ) -> Result<(), ImageRefusal> {
-        let info = self.index(member)?;
-        if !info.runs {
-            return Err(ImageRefusal::Plug(
-                wire::PlugRefusal::Member,
-                format!("{member:?} is files alone, and runs nothing"),
-            ));
-        }
-        let host = host.to_str().ok_or_else(|| ImageRefusal::Spec {
-            what: "a plug's host directory",
-            why: format!("{}: not UTF-8", host.display()),
-        })?;
-        let member = info.index;
-        self.plug_ask(wire::to_host::PLUG, patience, |id| {
+    fn plug(&self, plug: &super::Plug, patience: Duration) -> Result<(), ImageRefusal> {
+        let members = plugged_into(&self.members, &plug.to)?;
+        let from = match &plug.source {
+            super::PlugSource::Host(host) => wire::PlugFrom::Host(
+                host.to_str()
+                    .ok_or_else(|| ImageRefusal::Spec {
+                        what: "a plug's host directory",
+                        why: format!("{}: not UTF-8", host.display()),
+                    })?
+                    .into(),
+            ),
+            super::PlugSource::Volume(name) => wire::PlugFrom::Volume(name.clone()),
+        };
+        let (at, read_only) = (plug.at.clone(), plug.read_only);
+        self.plug_ask(wire::to_host::PLUG, patience, move |id| {
             wire::PlugAsk {
                 id,
-                member,
-                host: host.into(),
-                at: at.into(),
+                members,
+                from,
+                at,
                 read_only,
             }
             .encode()
@@ -3802,6 +3837,60 @@ mod tests {
         h.reader.join().unwrap();
     }
 
+    /// D271: a plug is for every member that runs, or for each one named that runs, by its
+    /// declared index in order; a member the image declares not, one of files alone, one named
+    /// twice and a plug for none are refused, typed, before anything is asked of its host. A
+    /// plug rides its run's channel as those members and its source, its answer the host's.
+    #[test]
+    fn a_plug_is_for_the_members_that_run_and_rides_the_runs_channel() {
+        let info = |index, kind, name: &str, runs| MemberInfo {
+            index,
+            kind,
+            name: name.into(),
+            runs,
+        };
+        let members = [
+            info(0, wire::MemberKind::Agent, "helper", false),
+            info(1, wire::MemberKind::Agent, "writer", true),
+            info(2, wire::MemberKind::Harness, "codex", true),
+        ];
+        use super::super::{MemberName, PlugFor};
+        assert_eq!(plugged_into(&members, &PlugFor::Every), Ok(vec![1, 2]));
+        assert_eq!(
+            plugged_into(
+                &members,
+                &PlugFor::Members(vec![MemberName::harness("codex"), MemberName::agent("writer")])
+            ),
+            Ok(vec![2, 1])
+        );
+        assert!(matches!(
+            plugged_into(&members, &PlugFor::Members(vec![MemberName::agent("nobody")])),
+            Err(ImageRefusal::Image(_))
+        ));
+        assert!(matches!(
+            plugged_into(&members, &PlugFor::Members(vec![MemberName::agent("helper")])),
+            Err(ImageRefusal::Plug(wire::PlugRefusal::Member, _))
+        ));
+        assert!(matches!(
+            plugged_into(
+                &members,
+                &PlugFor::Members(vec![MemberName::harness("codex"), MemberName::harness("codex")])
+            ),
+            Err(ImageRefusal::Spec {
+                what: "a plug's members",
+                ..
+            })
+        ));
+        assert!(matches!(
+            plugged_into(&members, &PlugFor::Members(Vec::new())),
+            Err(ImageRefusal::Plug(wire::PlugRefusal::Member, _))
+        ));
+        assert!(matches!(
+            plugged_into(&members[..1], &PlugFor::Every),
+            Err(ImageRefusal::Plug(wire::PlugRefusal::Member, _))
+        ));
+    }
+
     /// A network change's answer (D269) is kept for the ask awaiting it alone, as a save's is,
     /// while the run's published ports follow every answer its host made, awaited or not: its
     /// host makes one change at a time and answers each in that order. A refusal leaves them as
@@ -4793,6 +4882,7 @@ mod tests {
             lessor: None,
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
             gpu_report: None,
             shares: Vec::new(),
             nesting: false,

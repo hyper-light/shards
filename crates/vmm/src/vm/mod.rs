@@ -685,6 +685,84 @@ fn swap_layout(
     Ok((Some((at, len)), end))
 }
 
+/// A components' window's place, `(guest address, length)` where it has one, the address past
+/// it, and its length in MiB (D270).
+#[cfg(hv)]
+type ComponentsAt = (Option<(u64, u64)>, u64, u64);
+
+/// Where its components' window goes (D270), if it has one: at the first GiB boundary at or
+/// past `top`, whole [`pmem::ALIGN`]s within the guest's addresses `limit`, fitted where they
+/// leave less than asked (said); and the address past it, or `top` where it has none. Its
+/// fitted length in MiB, which the machine's config keeps, so that a restore lays its
+/// guest's addresses out as its save had them.
+#[cfg(hv)]
+fn component_layout(
+    config: &crate::snapshot::MachineConfig,
+    top: u64,
+    limit: u64,
+) -> Result<ComponentsAt, String> {
+    const GIB: u64 = 1 << 30;
+    if config.component_window_mib == 0 {
+        return Ok((None, top, 0));
+    }
+    let overflow = || {
+        format!(
+            "a components' window of {} MiB overflows the address space",
+            config.component_window_mib
+        )
+    };
+    let asked = config
+        .component_window_mib
+        .checked_mul(1 << 20)
+        .ok_or_else(overflow)?;
+    let at = top.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+    let room = limit.saturating_sub(at) / pmem::ALIGN * pmem::ALIGN;
+    let len = asked.min(room);
+    if len < asked {
+        crate::warn!(
+            "a components' window of {} MiB where the guest's addresses leave {} MiB",
+            asked >> 20,
+            room >> 20
+        );
+    }
+    if len < pmem::ALIGN {
+        return Ok((None, top, 0));
+    }
+    let end = at.checked_add(len).ok_or_else(overflow)?;
+    Ok((Some((at, len)), end, len >> 20))
+}
+
+/// A restore's components' window laid out as its save's was (D270), `fitted` MiB of it:
+/// where this host's guest addresses leave it shorter, its guest's would end elsewhere than
+/// the snapshot's did, and the restore is refused.
+#[cfg(hv)]
+fn window_kept(fitted: u64, saved: &crate::snapshot::MachineConfig) -> Result<(), String> {
+    if fitted == saved.component_window_mib {
+        return Ok(());
+    }
+    Err(format!(
+        "its components' window of {} MiB: this host's guest addresses leave it {fitted} MiB",
+        saved.component_window_mib
+    ))
+}
+
+/// The components' window of `layout` (D270), its files mapped through a slot of its own for
+/// each of the machine's PCI slots, as many functions as its bus holds at once; none where
+/// it has none.
+#[cfg(hv)]
+fn components(
+    vm: &crate::hv::Vm,
+    layout: Option<(u64, u64)>,
+    pci_slots: u8,
+) -> Result<Option<Arc<pmem::Components>>, String> {
+    let Some((gpa, len)) = layout else {
+        return Ok(None);
+    };
+    let count = u32::from(pci_slots);
+    let slots = Box::new(vm.device_slots(count));
+    Ok(Some(Arc::new(pmem::Components::new(gpa, len, slots, count)?)))
+}
+
 /// Whether `config`'s machine has DAX windows (D189): a length for them, and a shared
 /// directory or a join share to give one.
 #[cfg(hv)]
@@ -1318,6 +1396,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         // Its file system's length, once its layer is open (`boot_layer`).
         layer_mib: 0,
         pci_slots: cfg.pci_slots,
+        component_window_mib: cfg.component_window_mib,
     })
 }
 
@@ -1432,6 +1511,10 @@ pub struct Config {
     /// shared directories and, on Linux, host functions, each found by its guest as its
     /// init rescans the bus. 0 for none; with any, the machine has a PCI bus.
     pub pci_slots: u8,
+    /// A components' window of this many MiB (D270): guest addresses past its DAX windows
+    /// where each read-only pmem function plugged into one of its slots maps a component's
+    /// image; 0 for none, as with no slots. Nothing of it is mapped until one is plugged.
+    pub component_window_mib: u64,
     /// Its slots behind its own IOMMU (virtio-iommu, D214), each slot's requester ID one
     /// its firmware names from boot and the IOMMU translates while a function is plugged
     /// there: what a host's function plugged in as it runs needs for its guest's VFIO to
@@ -1450,13 +1533,16 @@ pub struct Config {
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
 /// 3 | function), its guest's name for it there, which its init rescans the bus to find and
 /// writes `remove` of to let it go, and, for a disk, what grows it; for a host's function,
-/// how long each step of its plug took, in their order (PM M430), none for the others.
+/// how long each step of its plug took, in their order (PM M430), none for the others; for
+/// a component's pmem function (D270), its region's guest address and length, which its
+/// guest's libnvdimm names it by.
 #[derive(Debug, Clone)]
 pub struct Plugged {
     pub devfn: u8,
     pub address: String,
     pub size: Option<crate::devices::virtio::block::DiskSize>,
     pub steps: Vec<(&'static str, std::time::Duration)>,
+    pub region: Option<(u64, u64)>,
 }
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
@@ -2592,6 +2678,7 @@ impl Config {
             pci_test: Vec::new(),
             vfio: Vec::new(),
             pci_slots: 0,
+            component_window_mib: 0,
             pci_slots_iommu: false,
             cpu_baseline: Vec::new(),
         }
@@ -3075,6 +3162,7 @@ mod tests {
             share_window_mib: 0,
             layer_mib: 0,
             pci_slots: 0,
+            component_window_mib: 0,
         }
     }
 
