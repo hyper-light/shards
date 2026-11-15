@@ -1409,7 +1409,9 @@ mod tests {
         // A guest that reads a page of its own and writes another, powers off (PSCI
         // SYSTEM_OFF), writes the next page, powers off, and writes the next: mov x1, x0;
         // add x3, x1, #2 * PAGE; ldr x2, [x3]; str x1, [x1]; mov w0, #SYSTEM_OFF; hvc #0;
-        // then twice add x1, x1, #PAGE; str x1, [x1]; hvc #0.
+        // then twice add x1, x1, #PAGE; str x1, [x1]; hvc #0; then stores x5 past x4 and
+        // loads it back, and powers off: str x5, [x4, #16]; ldr x6, [x4, #16]; hvc #0; then
+        // stores x4 twice at x4, a store pair, and powers off: stp x4, x4, [x4]; hvc #0.
         const CODE: u64 = 0x9000_0000;
         let code_len = 4 * PAGE as usize;
         let code = crate::platform::reserve(code_len).unwrap().as_ptr();
@@ -1428,6 +1430,11 @@ mod tests {
             0xd400_0002,
             next,
             0xf900_0021,
+            0xd400_0002,
+            0xf900_0885,
+            0xf940_0886,
+            0xd400_0002,
+            0xa900_1084,
             0xd400_0002u32,
         ];
         for (i, word) in program.iter().enumerate() {
@@ -1463,6 +1470,13 @@ mod tests {
         assert_eq!(regs(), [0; 4]);
         vm.restore_gic(&saved).unwrap();
         assert_eq!(regs(), before);
+
+        // A page that vCPU 0 is made before, mapped as a plug maps memory (`Stage2::map`) at
+        // the first byte of what arm64's 64 MiB guest plugs (`vm::aarch64::plug_at`).
+        const PLUGGED: u64 = 0xc000_0000;
+        const STORED: u64 = 0x5eed_0000_0000_0016;
+        let plugged = crate::platform::reserve(PAGE as usize).unwrap().as_ptr();
+        let plugged_at = plugged.expose_provenance();
 
         // vCPU 0 gets distinctive state and is captured; vCPU 1 (the next redistributor
         // frame, so vCPU 0 stays alive meanwhile) restores it and must capture the same.
@@ -1571,6 +1585,48 @@ mod tests {
                     "the write after a recording within the watch ended"
                 );
                 watch.unwatch_writes();
+
+                // Memory mapped once this vCPU was made, as plugged memory is, is the watch's
+                // as RAM is: taken away as a recording starts, and given back to the vCPU that
+                // faults on it, never taken for a device. Taken for one, an access the
+                // framework says in full (ISV 1) went to no device, the store dropped and the
+                // load zero, and a store pair, which it says with no syndrome to emulate (ISV
+                // 0), ended the VM: "unhandled guest exception: EC 0x24", as kiln's harnesses'
+                // VMs ended at the least envelope, at the first byte their guests plugged.
+                #[derive(Default)]
+                struct Devices(Mutex<Vec<u64>>);
+                impl Io for Devices {
+                    fn mmio_read(&self, addr: u64, data: &mut [u8]) {
+                        lock(&self.0).push(addr);
+                        data.fill(0);
+                    }
+                    fn mmio_write(&self, addr: u64, _data: &[u8]) {
+                        lock(&self.0).push(addr);
+                    }
+                }
+                let devices = Devices::default();
+                let host = std::ptr::with_exposed_provenance_mut::<u8>(plugged_at);
+                // SAFETY: the reservation is never unmapped.
+                unsafe { vm.stage2().map(host, PLUGGED, PAGE as usize) }.unwrap();
+                a.sys.set_x(4, PLUGGED).unwrap();
+                a.sys.set_x(5, STORED).unwrap();
+                watch.start().unwrap();
+                let whole = a.run(&devices).map_err(|e| e.to_string());
+                let loaded = a.sys.x(6).unwrap();
+                let touched = watch.stop();
+                watch.start().unwrap();
+                let paired = a.run(&devices).map_err(|e| e.to_string());
+                watch.stop();
+                assert_eq!(
+                    (whole, loaded, paired, lock(&devices.0).clone()),
+                    (Ok(Exit::Shutdown), STORED, Ok(Exit::Shutdown), Vec::new()),
+                    "memory mapped since this vCPU was made: (its store and load, the value \
+                     loaded, its store pair, the device accesses made of them)"
+                );
+                assert!(
+                    touched.iter().any(|t| t.gpa == PLUGGED && t.written),
+                    "the write to memory mapped since, recorded: {touched:?}"
+                );
                 done_rx.recv().unwrap();
             });
             s.spawn(move || {
@@ -1581,6 +1637,9 @@ mod tests {
                 done_tx.send(()).unwrap();
             });
         });
+        // SAFETY: within the reservation; no vCPU runs any more.
+        let landed = unsafe { plugged.cast::<[u64; 3]>().read() };
+        assert_eq!(landed, [PLUGGED, PLUGGED, STORED]);
         for i in 0..ram_len {
             // SAFETY: within the reservation; no vCPU runs any more.
             assert_eq!(unsafe { ram.add(i).read() }, pattern(i), "byte {i}");

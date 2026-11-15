@@ -998,6 +998,35 @@ fn an_images_next_run_restores_the_template_its_first_saved() {
     assert_eq!(run(&given), StartedFrom::Booted);
 }
 
+/// kiln boots every harness at shards-api's least envelope (`envelope(ARCH, 0, 0)`: 1 vCPU and,
+/// on arm64, 64 MiB) and leaves its workload's memory to D148's plug. At that envelope the
+/// image's first run saves its template and the next restores it, and each run's harness holds
+/// 256 MiB, four times what its microVM booted with, to its end.
+#[test]
+fn the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-least-home");
+    build(&home, "api-least:1", &["alloc", "256"], "");
+    let (vcpus, memory_mib) = shards_api::envelope(std::env::consts::ARCH, 0, 0).unwrap();
+    let mut s = spec(&home, "api-least:1");
+    (s.vcpus, s.memory_mib) = (vcpus, memory_mib);
+    // The guest its home recorded, as kiln's runs boot Shards' own: a guest its caller gives
+    // saves no template.
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let restores = shards_vmm::vm::restores_here();
+    for from in [StartedFrom::Saved, StartedFrom::Restored] {
+        let guest = boot(&home, &s);
+        let expected = if restores { from } else { StartedFrom::Booted };
+        assert_eq!(guest.started_from(), expected);
+        assert_eq!(read_all(&*guest, Channel::Stdout), b"allocated 256\n");
+        assert_ended(&*guest, MemberEnd::Exited(0));
+        guest.stop().unwrap();
+    }
+}
+
 /// D233 (Hex goal 39): a GPU run's renderer report, its VM process's own, reaches its
 /// orchestrator as a managed launch's does. Given a host GPU by its identity in D232's grammar
 /// (`SHARDS_TEST_GPU`: `pci:DOMAIN:BUS:DEVICE.FUNCTION`, `metal:HEX` or `luid:HEX`; skipped
