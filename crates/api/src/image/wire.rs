@@ -77,12 +77,15 @@ pub use shards_abi::run::nesting::Ready;
 /// host's table shows no socket's peer (Windows); 31, each rate's period with its answer
 /// ([`Rated::period`], D191), which the run's governor derives for that rate from what it has
 /// learned of its step, in place of the one period version 17 told as the run started, so that
-/// a host of an earlier version, which tells a period no rate is held over, starts no run;
-/// 32, the run paused and resumed by its owner (`PAUSE`, answered `PAUSED`; D264), an ask that
-/// needs its guest refused at once while it is paused (`ASK_PAUSED`), and the time it has been
-/// paused told with the run's stats ([`Stats::paused`]) and with its end ([`RunEnded::paused`]),
-/// so that a side that pauses nothing refuses the run as it is asked, before any pause is.
-pub const VERSION: u8 = 32;
+/// a host of an earlier version, which tells a period no rate is held over, starts no run; 32,
+/// a warm host's use asked while it waits for its run ([`to_host::USE`], answered
+/// [`to_client::USED`]; D253's pools), so that an orchestrator charges a warm host what its VM
+/// process holds, and a host that answers none is never asked, as it would end at the frame; 33, the run paused and resumed by its owner (`PAUSE`, answered `PAUSED`;
+/// D264), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
+/// time it has been paused told with the run's stats ([`Stats::paused`]) and with its end
+/// ([`RunEnded::paused`]), so that a side that pauses nothing refuses the run as it is asked,
+/// before any pause is.
+pub const VERSION: u8 = 33;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -128,9 +131,12 @@ pub mod to_host {
     /// A [`RefreshAnswer`](super::RefreshAnswer): the token response a sign-in's CLI is to
     /// have, refreshed outside, or why not, by its ask's id.
     pub const REFRESHED: u8 = 35;
+    /// A warm host's use, asked while it waits for its run (D253's pools), its payload empty:
+    /// answered [`USED`](super::to_client::USED), before `CREATE` alone.
+    pub const USE: u8 = 40;
     /// A [`PauseAsk`](super::PauseAsk): the run's microVM paused where it is, or let go on
     /// (D264).
-    pub const PAUSE: u8 = 40;
+    pub const PAUSE: u8 = 42;
 }
 
 /// What the run host sends.
@@ -190,13 +196,16 @@ pub mod to_client {
     /// was refused its selection. Its orchestrator reads it as a managed launch's client reads
     /// its own (`GpuReport::parse` against its scope and selection).
     pub const GPU_REPORT: u8 = 39;
+    /// A warm host's VM process's use ([`used`](super::used)), each answering one
+    /// [`USE`](super::to_host::USE) in order.
+    pub const USED: u8 = 41;
     /// [`PauseAnswer`](super::PauseAnswer): a pause's or a resume's outcome, by its ask's id
     /// (D264).
-    pub const PAUSED: u8 = 41;
+    pub const PAUSED: u8 = 43;
     /// [`AskPaused`](super::AskPaused): an ask that needs the run's guest, refused at once as
     /// its run is paused or pausing, by its ask's id (D264): its guest runs nothing to answer
     /// it until the run goes on.
-    pub const ASK_PAUSED: u8 = 42;
+    pub const ASK_PAUSED: u8 = 44;
 }
 
 /// Why a payload could not be read or written.
@@ -2734,6 +2743,51 @@ pub fn read_warmed(payload: &[u8]) -> Result<StartedFrom, WireError> {
     }
 }
 
+/// [`to_host::USE`]'s payload: none.
+pub fn read_use(payload: &[u8]) -> Result<(), WireError> {
+    Reader(payload).end()
+}
+
+/// [`to_client::USED`]'s payload: what a warm host's VM process costs its host, as a run's
+/// stats carry it ([`Microvm::host`]), or why it could not be read.
+pub fn used(used: &Result<HostUse, String>) -> Result<Vec<u8>, WireError> {
+    let mut w = Writer(Vec::new());
+    match used {
+        Ok(h) => {
+            w.u8(0);
+            w.u64(h.cpu_ns);
+            w.u64(h.resident_bytes);
+            w.u64(h.footprint_bytes);
+        }
+        Err(why) => {
+            w.u8(1);
+            w.text(why)?;
+        }
+    }
+    w.done()
+}
+
+/// What [`used`] wrote.
+pub fn read_used(payload: &[u8]) -> Result<Result<HostUse, String>, WireError> {
+    let mut r = Reader(payload);
+    let used = match r.u8()? {
+        0 => Ok(HostUse {
+            cpu_ns: r.u64()?,
+            resident_bytes: r.u64()?,
+            footprint_bytes: r.u64()?,
+        }),
+        1 => Err(r.text()?),
+        tag => {
+            return Err(WireError::Tag {
+                what: "a warm host's use",
+                tag,
+            });
+        }
+    };
+    r.end()?;
+    Ok(used)
+}
+
 impl Refused {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -4678,6 +4732,41 @@ mod tests {
                 })
             );
         }
+    }
+
+    /// D253's pools: a warm host's use reads back as written, its error too; its ask carries
+    /// nothing, and either with bytes past its fields is refused.
+    #[test]
+    fn a_warm_hosts_use_reads_back_as_written() {
+        const {
+            assert!(
+                VERSION >= 32,
+                "the channel's version 32 carries a warm host's use"
+            )
+        };
+        let read = HostUse {
+            cpu_ns: 7,
+            resident_bytes: 300 << 20,
+            footprint_bytes: 280 << 20,
+        };
+        for used in [Ok(read), Err("its VM process: gone".to_string())] {
+            let bytes = super::used(&used).unwrap();
+            assert_eq!(read_used(&bytes).unwrap(), used);
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert_eq!(read_used(&longer), Err(WireError::Trailing));
+        }
+        assert_eq!(
+            read_used(&[2]),
+            Err(WireError::Tag {
+                what: "a warm host's use",
+                tag: 2
+            })
+        );
+        assert_eq!(read_use(&[]), Ok(()));
+        assert_eq!(read_use(&[0]), Err(WireError::Trailing));
+        assert_ne!(to_host::USE, to_host::CREATE);
+        assert_ne!(to_client::USED, to_client::WARMED);
     }
 
     /// D253's pools: a warm run host's exemplar is its request with its members' stages, its
