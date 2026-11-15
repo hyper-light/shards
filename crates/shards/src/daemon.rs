@@ -9014,6 +9014,7 @@ impl<D: Disk> Daemon<D> {
         let granted = match &grants {
             #[cfg(target_os = "macos")]
             Some(link) => grant(
+                &self.home,
                 link,
                 pid,
                 match &dest {
@@ -9626,11 +9627,12 @@ impl Drop for Unwatched<'_> {
 /// at each W* and given up on where a whole W* shows it ran no CPU, its host not the reason.
 /// A request there as its wait begins teaches nothing (D222's wait of nothing), nor does the
 /// link's end, which is no request. A VM first quiet past W* between two requests is sampled
-/// once (Apple's sample(1), 3 s of its threads' stacks) into the home, beside daemon.log, as
+/// once (Apple's sample(1), 3 s of its threads' stacks) into `home`, beside daemon.log, as
 /// it goes on being waited for; a wait that then fails says where. It was `GRANT_STALL`'s
 /// 10 s and `READY_TIMEOUT`'s 60 s, picked (ROOT's (3)).
 #[cfg(target_os = "macos")]
 fn grant(
+    home: &Path,
     link: &UnixStream,
     pid: u32,
     template: Option<&Path>,
@@ -9697,7 +9699,7 @@ fn grant(
                 }
             })?;
             if sampled.is_none() {
-                sampled = Some(sample(pid, sent, began.elapsed()));
+                sampled = Some(sample(home, pid, sent, began.elapsed()));
             }
         }
         asked = follow;
@@ -9756,11 +9758,12 @@ fn launch(
     (spawned.elapsed(), Duration::from_nanos(cpu))
 }
 
-/// Samples VM `pid`'s stacks, quiet `quiet` after `sent` messages, into the home (Apple's
+/// Samples VM `pid`'s stacks, quiet `quiet` after `sent` messages, into `home` (Apple's
 /// sample(1), 3 s of its threads), beside daemon.log: the file's name.
 #[cfg(target_os = "macos")]
-fn sample(pid: u32, sent: usize, quiet: Duration) -> String {
+fn sample(home: &Path, pid: u32, sent: usize, quiet: Duration) -> String {
     let file = format!("vm-{pid}.sample");
+    let into = home.join(&file);
     log(format!(
         "VM {pid}: nothing said in {quiet:?} after {sent} messages, past the slowest request \
          seen; sampling its stacks to {file}"
@@ -9768,7 +9771,13 @@ fn sample(pid: u32, sent: usize, quiet: Duration) -> String {
     // Made as every child of the daemon is, by its spawner (PM M158).
     let spawned = File::open("/dev/null").and_then(|null| {
         let pid = pid.to_string();
-        let args = [pid.as_str(), "3", "-mayDie", "-file", file.as_str()].map(OsStr::new);
+        let args = [
+            OsStr::new(pid.as_str()),
+            "3".as_ref(),
+            "-mayDie".as_ref(),
+            "-file".as_ref(),
+            into.as_os_str(),
+        ];
         let stdio = [0, 1, 2].map(|n| (null.as_fd(), n));
         shards_ipc::spawn(Path::new("/usr/bin/sample"), &args, &stdio, false)
     });
@@ -10323,16 +10332,18 @@ mod tests {
         launches.teach(slowest, Duration::from_millis(1));
         grants.teach(slowest, Duration::from_millis(1));
         let asleep = sleeper(60);
+        // Its home, which a VM quiet past the slowest request is sampled into.
+        let home = shards_testdir::TempDir::new("launch").unwrap();
         let (ours, theirs) = UnixStream::pair().unwrap();
         let (told, said) = mpsc::channel::<String>();
         let refused = std::thread::scope(|s| {
             let granting = s.spawn({
-                let (ours, launches, grants, pid) = (&ours, &launches, &grants, asleep.id());
+                let (home, ours, launches, grants, pid) = (&home, &ours, &launches, &grants, asleep.id());
                 move || {
                     let tell = |line: &str| {
                         let _ = told.send(line.to_owned());
                     };
-                    grant(ours, pid, None, launches, grants, &tell)
+                    grant(home.path(), ours, pid, None, launches, grants, &tell)
                 }
             });
             let Ok(line) = said.recv() else {
