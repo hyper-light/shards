@@ -13,7 +13,7 @@
 //! Connections race their addresses as RFC 8305 has them, and at most 10 are kept idle, as
 //! containerd's transport keeps them (`core/remotes/docker/registry.go`).
 //!
-//! Every client learns each wait of its paths (D222, D273, crate::patience): a name's lookup
+//! Every client learns each wait of its paths (D222, D275, crate::patience): a name's lookup
 //! is waited for while the system's resolver works on it; a connect goes as fast as the
 //! path's own, and one its own time ended is made again. Where its caller asks again what a
 //! cut ends ([`Client::asking_again`]: a registry's, a build's git fetch's), its handshakes
@@ -92,7 +92,7 @@ pub struct Client {
     /// body's silence, a head's past its first byte and a handshake are cut where its path
     /// has shown how long they take (D222), a cut lookup asked again by the client itself;
     /// else each follows its connection's liveness, its caller's patience where it names
-    /// one, still teaching its path (D273). A connect its pace ended is made again either way.
+    /// one, still teaching its path (D275). A connect its pace ended is made again either way.
     asks_again: bool,
     /// What each path it asked has shown.
     paths: Paths,
@@ -164,7 +164,7 @@ impl Told {
 
 /// The most a request's caller gives its waits on its server, where its own protocol
 /// names less than its path's waits and its connection's liveness give it: none by
-/// default (D273). Every client waits as its paths have shown (D222): a name's lookup
+/// default (D275). Every client waits as its paths have shown (D222): a name's lookup
 /// while the system's resolver works on it; a connect at its path's pace; where its caller
 /// asks again ([`Client::asking_again`]), a handshake at its path's pace, and a lookup's
 /// answer and a body's silences no longer than the slowest its path has shown; anything
@@ -525,7 +525,7 @@ impl Client {
 
     /// This client, its caller asking again, or resuming, what a cut ends: a registry's,
     /// whose troubles are ridden and downloads resume where they were (fetch.rs), and a
-    /// build's git fetch, which asks its remote again (D273). Its answers, silences and
+    /// build's git fetch, which asks its remote again (D275). Its answers, silences and
     /// handshakes are cut where its paths have shown how long they take.
     pub fn asking_again(mut self) -> Client {
         self.asks_again = true;
@@ -885,7 +885,7 @@ impl Client {
         // of its head waits as a silence does.
         let lookup = matches!(req.method, "GET" | "HEAD") && req.file.is_none() && req.body.is_empty();
         // Its answer teaches its path; its path's waits cut it only where what a cut ends is
-        // asked again (D273), a lookup's by the client itself, anything else by its caller.
+        // asked again (D275), a lookup's by the client itself, anything else by its caller.
         let cut = lookup && self.asks_again;
         let gaps = self.patience.stall.or(self
             .asks_again
@@ -1086,7 +1086,7 @@ impl Client {
     /// how long it took, and no longer than its caller's patience where it names one. A
     /// connect its path's time ended is made again at once, its time doubled (RFC 6298
     /// §5.5), as TCP sends its SYN again past its retransmission timeout: until one is
-    /// answered, its far end refuses or is unreachable, or the client is cancelled (D273).
+    /// answered, its far end refuses or is unreachable, or the client is cancelled (D275).
     fn dial(
         &self,
         url: &Url,
@@ -1130,7 +1130,7 @@ impl Client {
     /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`], D222), which
     /// learns from how long it took.
     fn handshake<T: Wire>(&self, url: &Url, io: T, path: &str) -> Result<Tls<T>, Error> {
-        // Cut at its path's pace only where what the cut ends is asked again (D273): a
+        // Cut at its path's pace only where what the cut ends is asked again (D275): a
         // client's whose caller does not ask again follows its connection's liveness, and
         // its time still teaches its path.
         let within = self.asks_again.then(|| self.paths.timeout(path, Wait::Handshake));
@@ -1666,7 +1666,7 @@ fn wait_reply<T>(
 
 /// The addresses `url`'s host names: at once for an address, and for a name looked up by
 /// `lookup` on a worker (the system's resolver, [`system_lookup`]), waited for as long as
-/// the resolver works on it, its answer or its own failure the lookup's end (D273), or
+/// the resolver works on it, its answer or its own failure the lookup's end (D275), or
 /// until the cancel. getaddrinfo takes no deadline, and retries its servers as its host
 /// configures it; an abandoned lookup retains its worker until libc returns, not a
 /// client/connection owner or a cancellation listener (D222). A lookup the resolver failed
@@ -1725,7 +1725,7 @@ fn unreachable(url: &Url) -> Error {
 /// §5). Cancellation ends the caller; pending attempts end themselves. A dial its time
 /// ends is said so ([`Error::timed_out`]): an attempt's connect stopped at what was left of
 /// it, or attempts still pending as it passed. Its name's lookup is the caller's, before
-/// it, and none of its time: a lookup is waited for while the resolver works on it (D273).
+/// it, and none of its time: a lookup is waited for while the resolver works on it (D275).
 fn dial(
     url: &Url,
     mut addrs: Vec<SocketAddr>,
@@ -3107,7 +3107,7 @@ mod tests {
     }
 
     /// A name's lookup is waited for while the system's resolver works on it, whose answer
-    /// ends it (D273), and an address needs none: a stand-in resolver that answers past
+    /// ends it (D275), and an address needs none: a stand-in resolver that answers past
     /// the 30 s a lookup was given within its dial before (Go's dialer's, containerd's),
     /// at once on the clock of a fresh client, the build's git fetch's kind, still
     /// resolves, and the connection is made and answered. A resolver's failure is a
@@ -3156,7 +3156,7 @@ mod tests {
         assert!(connect.srtt_us < 1_000_000, "{connect:?}");
     }
 
-    /// An answer whose bytes keep coming is never cut by a clock (D273): a POST's, the
+    /// An answer whose bytes keep coming is never cut by a clock (D275): a POST's, the
     /// build's git fetch's kind, its head trickled a line each 5 s and its body after, 40 s
     /// in all, past the 30 s a fresh client's answer had in all before (Go's
     /// `ResponseHeaderTimeout`, containerd's), is read whole on a path that has shown no
@@ -3205,7 +3205,7 @@ mod tests {
     /// A body's silence past the slowest its path has shown is cut only where its caller
     /// asks again or resumes what the cut ends (a registry's, a build's git fetch's): for
     /// any other client a cut would fail its caller, so it follows its connection's
-    /// liveness, and teaches its path the silence (D273).
+    /// liveness, and teaches its path the silence (D275).
     #[test]
     fn a_bodys_silence_is_cut_only_where_its_caller_asks_again() {
         use std::net::TcpListener;
@@ -3244,7 +3244,7 @@ mod tests {
 
     /// A fresh connection's reads and writes wait as long as it lives where its caller names
     /// no patience: its request's writes are its connection's liveness's, which no picked
-    /// figure bounds (D273); a caller's patience bounds both.
+    /// figure bounds (D275); a caller's patience bounds both.
     #[test]
     fn fresh_connections_bound_their_writes_as_their_caller_says() {
         let server = serve(None, vec![]);
@@ -3670,7 +3670,7 @@ mod tests {
     }
 
     /// An answer its path's wait cut, past the slowest its path has shown, is overdue and
-    /// asked again at once by the client itself, as any client's is (D273): that asking
+    /// asked again at once by the client itself, as any client's is (D275): that asking
     /// follows its connection's liveness (crate::patience `Bounded::RanOut`) and is
     /// answered, the request answered whole. On a path that has shown none it is waited for
     /// as its connection lives, and answered; a caller's own patience is no path's wait,

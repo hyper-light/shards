@@ -1784,7 +1784,7 @@ pub struct Trouble {
 }
 
 /// What a trouble makes of an asking that failed, for a caller that asks its server again
-/// itself (a build's fetch, D273): asked again after a wait; ended, its far end gone; or no
+/// itself (a build's fetch, D275): asked again after a wait; ended, its far end gone; or no
 /// trouble's, the failure the asking's own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -1841,7 +1841,7 @@ impl Trouble {
     }
 
     /// After `failed` ended an asking of `url`'s begun at `attempt`, by a caller that asks
-    /// again itself (D273): what the network drops (a name its resolver did not resolve, a
+    /// again itself (D275): what the network drops (a name its resolver did not resolve, a
     /// connection refused, reset or cut, a wait its own time ended) is asked again after
     /// [`wait`](Self::wait)'s share of the trouble so far, until a re-ask while it follows
     /// liveness says its far end is gone ([`gone`](Self::gone)); any other failure is the
@@ -2013,7 +2013,7 @@ mod tests {
     /// A loopback registry on a port that names no scheme is asked in HTTPS first, then
     /// in plain HTTP once it answers the handshake in plain HTTP or never finishes it, as
     /// containerd's fallback finds (`isTLSError`); then in plain HTTP alone.
-    /// A caller that asks again itself (a build's fetch, D273) rides what the network drops:
+    /// A caller that asks again itself (a build's fetch, D275) rides what the network drops:
     /// a name not resolved, a connection refused, a reset; past its first failure, on a path
     /// that has passed no trouble (its cold start), a re-ask its far end refuses, or whose
     /// name does not resolve, says the far end is gone; a reset cut short no more; anything

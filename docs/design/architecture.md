@@ -36412,7 +36412,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D273. Every client's waits are its paths' own: a lookup waited for while its resolver works, bytes that keep coming never cut, a build's fetch asked again through what the network drops (built; real-VM runs owed)
+### D275. Every client's waits are its paths' own: a lookup waited for while its resolver works, bytes that keep coming never cut, a build's fetch asked again through what the network drops (built; real-VM runs owed)
 
 **Found** (kiln's real-VM E2E, 2026-11-14): a build of goose's harness, whose `HARNESS` came
 from git, failed `github.com: resolving: timed out` on a LAN whose resolver failed on and
