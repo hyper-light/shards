@@ -1013,7 +1013,7 @@ fn the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_me
     let (vcpus, memory_mib) = shards_api::envelope(std::env::consts::ARCH, 0, 0).unwrap();
     let mut s = spec(&home, "api-least:1");
     (s.vcpus, s.memory_mib) = (vcpus, memory_mib);
-    s.command = Some(["alloc", "256"].map(String::from).to_vec());
+    s.command = Some(["/bin/testguest", "alloc", "256"].map(String::from).to_vec());
     // The guest its home recorded, as kiln's runs boot Shards' own: a guest its caller gives
     // saves no template.
     s.env
