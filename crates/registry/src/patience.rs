@@ -10,8 +10,8 @@
 //!   alone; so does its wait of that kind after one ran out, until one ends ([`Bounded`]). A
 //!   stall is a gap with no progress, never an answer's whole length: an answer's first
 //!   byte, then each silence, a read's own wait for bytes. A run-out learns nothing;
-//! - how long a connection takes to make (its name's lookup included) and its TLS
-//!   handshake: each the path's own pace, estimated as TCP estimates a retransmission
+//! - how long a connection takes to make (its name's lookup apart, which is waited for while
+//!   the system's resolver works on it, D273) and its TLS handshake: each the path's own pace, estimated as TCP estimates a retransmission
 //!   timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and Control", SIGCOMM
 //!   1988): the smoothed wait and four times its smoothed deviation, at least a second, a
 //!   second before any wait is measured, and doubled for each timeout in a row (§5.5)
@@ -160,8 +160,8 @@ pub(crate) struct Shown {
     /// The slowest silence of a download's body it has shown, in µs: the time between a
     /// body's reads that brought bytes. None before any.
     pub slowest_silence_us: Option<u64>,
-    /// Its connections' waits: a TCP connection's, its name's lookup included, and its
-    /// TLS handshake's.
+    /// Its connections' waits: a TCP connection's (records before D273 held its name's
+    /// lookup too, which later samples smooth away, §2.3), and its TLS handshake's.
     pub connect: Pace,
     pub handshake: Pace,
     /// The longest trouble it passed, in µs, and how many it passed.
@@ -192,7 +192,7 @@ impl Shown {
 /// Which of a path's waits RFC 6298's estimator paces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
-    /// A connection's, its name's lookup included.
+    /// A connection's, its name's lookup apart.
     Connect,
     /// A TLS handshake's.
     Handshake,
@@ -314,9 +314,8 @@ pub(crate) struct Paths {
     paths: Mutex<HashMap<String, Path>>,
     routes: Mutex<HashMap<String, std::net::IpAddr>>,
     kept: OnceLock<PathBuf>,
-    /// Whether every wait of its paths follows its connection's liveness alone, where a test
-    /// says ([`Paths::follow_liveness`]).
-    #[cfg(test)]
+    /// Whether every answer and silence of its paths follows its connection's liveness
+    /// alone ([`Paths::follow_liveness`]): a build's proxy's, and a scripted test's.
     unbounded: bool,
 }
 
@@ -400,9 +399,9 @@ impl Paths {
         self.with(key, |p| p.shown.clone())
     }
 
-    /// Every wait of its paths from now on follows its connection's liveness alone, as a
-    /// path's that has shown nothing does ([`Bounded::Cold`]), whatever they show.
-    #[cfg(test)]
+    /// Every answer and silence of its paths from now on follows its connection's liveness
+    /// alone, as a path's that has shown nothing does ([`Bounded::Cold`]), whatever they
+    /// show.
     pub(crate) fn follow_liveness(&mut self) {
         self.unbounded = true;
     }
@@ -410,7 +409,6 @@ impl Paths {
     /// What a wait of a kind begins with, its path having shown `slowest` and its last of
     /// the kind having ran out or not.
     fn bounded(&self, slowest: Option<u64>, out: Out) -> Bounded {
-        #[cfg(test)]
         if self.unbounded {
             return Bounded::Cold;
         }
