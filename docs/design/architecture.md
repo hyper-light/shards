@@ -35744,6 +35744,46 @@ run host's stats told the charge by its VM process.
 **What would falsify it.** A span on one host telling both charges; a use whose `cpu_ns` is
 below its guest time with its charge told; a charge told by a span that could read either.
 
+### D266. A host's request waits for its guest on no clock; one left unanswered gives its slot up, longest first (built; real-VM runs owed)
+
+**Why.** A host's dial (`CONNECT <port>`) became a connection that asked its guest (REQUEST)
+and was reset 2 s later if the guest had not answered (`REQUEST_TIMEOUT`, Firecracker's
+`CONN_REQUEST_TIMEOUT_MS`), an upstream default with no source of its own (R03). A live Linux
+guest answers a REQUEST at once: a RESPONSE, or a reset where nothing listens on its port or
+the listener's backlog is full (`virtio_transport_recv_listen`,
+net/vmw_vsock/virtio_transport_common.c). So the timer fired only where the guest was not
+running its queue, held to its rate (D255), paused, snapshotting or slow, and there it failed a
+request the guest would have answered.
+
+**What it guarded, and what bounds it instead.** A slot and a descriptor held by a request no
+guest answers. A pending handshake already holds its slot on no clock and gives it up, silent
+longest first, only to a newcomer (`Muxer::make_room`, `Handshake::heard`). A request now does
+the same: its REQUEST's time is kept to rank it (`Conn::asked`), never to end it, and where
+every slot is taken and no handshake is pending, the request its guest has left unanswered
+longest gives its slot up at once, its client seeing its socket close and its guest a reset
+(a stray RST, `Muxer::stray_rst`). One its guest answered is a connection and is never given
+up. The device's loop now waits on its events alone: none of its waits is on a clock (D264).
+
+**A client gone meanwhile.** While its request is unanswered the device does not read its
+client's socket (as before: what a client sends after its line is the connection's, read once
+it is established), so a client that closes is seen once its guest answers, or when its slot is
+given up. Telling a close from a half-close without reading would need a hang-up the poller
+does not carry, and Windows' AF_UNIX reports both alike (PM M199).
+
+**Literals.** None added; `REQUEST_TIMEOUT` removed.
+
+**Built and tested** (unit, focused): shards-vmm
+`muxer::tests::a_hosts_request_its_guest_answers_late_is_connected` (red with the timer, the
+device's turn run after three seconds; green after) and
+`muxer::tests::an_unanswered_request_gives_its_slot_up_longest_first`;
+`conn::tests::host_initiated_connections_answer_ok_or_wait_for_their_guest`.
+
+**Evidence owed** (ROOT, real VMs): a dial to a guest held to a quarter CPU, and to a paused
+one, connected once it runs, on HVF, KVM and WHP.
+
+**What would falsify it.** A request its guest answered that is reset; a newcomer refused while
+a request its guest has not answered holds a slot.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

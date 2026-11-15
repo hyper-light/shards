@@ -359,7 +359,8 @@ impl Muxer {
     }
 
     /// Where every slot is taken, frees one for a newcomer: the pending handshake silent
-    /// longest gives its slot up (the client sees its socket close).
+    /// longest gives its slot up (the client sees its socket close); with none pending, the
+    /// host's request its guest has left unanswered longest (D266), its guest reset.
     fn make_room(&mut self) {
         self.make_room_within(self.slots);
     }
@@ -378,6 +379,26 @@ impl Muxer {
         if let Some(i) = silent {
             debug!("vsock: every slot taken; a host connection silent longest gives its own up");
             self.handshakes.swap_remove(i);
+            return;
+        }
+        let unanswered = self
+            .conns
+            .iter()
+            .filter_map(|(key, c)| Some((c.asked()?, *key)))
+            .min();
+        if let Some((_, key)) = unanswered
+            && let Some(c) = self.conns.remove(&key)
+        {
+            debug!(
+                "vsock: every slot taken; a host's request its guest left unanswered longest gives its own up"
+            );
+            self.lent = self.lent.saturating_sub(u64::from(c.lent()));
+            if c.allocated_port {
+                self.local_ports.remove(&key.local_port);
+            }
+            // Its client sees its socket close; its guest, which may answer yet, a reset.
+            drop(c);
+            self.stray_rst(key.local_port, key.peer_port);
         }
     }
 
@@ -781,23 +802,6 @@ impl Muxer {
             ));
         }
         self.conns.values().try_for_each(Conn::check)
-    }
-
-    /// The earliest deadline of any connection. Handshakes have none ([`Handshake::heard`]).
-    pub fn next_deadline(&self) -> Option<Instant> {
-        self.conns.values().filter_map(Conn::expiry).min()
-    }
-
-    /// Resets late connections.
-    pub fn expire(&mut self, now: Instant) {
-        let late: Vec<Key> = self
-            .conns
-            .iter_mut()
-            .filter_map(|(k, c)| c.expire(now).then_some(*k))
-            .collect();
-        for key in late {
-            self.enqueue(key);
-        }
     }
 }
 
@@ -1415,9 +1419,6 @@ mod tests {
             }]);
         }
         assert_eq!(m.handshakes.len(), 3);
-        assert_eq!(m.next_deadline(), None, "no clock on a handshake");
-        m.expire(Instant::now() + Duration::from_secs(3600));
-        assert_eq!(m.handshakes.len(), 3, "kept past any deadline");
         // The first two clients, accepted first, write part of their lines: the third is
         // silent longest.
         for (client, h) in clients.iter_mut().zip(&mut m.handshakes).take(2) {
@@ -1434,6 +1435,104 @@ mod tests {
         );
         let mut buf = [0u8; 1];
         assert_eq!(clients[2].read(&mut buf).unwrap(), 0, "its client sees its end");
+    }
+
+    /// A host's dial asking port `peer` of [`VsockHost::at`]'s muxer: its client, once the
+    /// muxer has read its line and asked the guest (REQUEST), and the connection's key.
+    fn dial(m: &mut Muxer, dir: &std::path::Path, peer: u32) -> (UnixStream, Key) {
+        let mut client = UnixStream::connect(dir).unwrap();
+        m.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        client.write_all(format!("CONNECT {peer}\n").as_bytes()).unwrap();
+        let i = m.handshakes.len() - 1;
+        m.on_events(&[Ready {
+            token: Some(Token::Handshake(i)),
+            read: true,
+            write: false,
+        }]);
+        let asked = std::iter::from_fn(|| m.next_rx(&[]))
+            .find(|h| h.op == op::REQUEST && h.dst_port == peer)
+            .expect("its REQUEST");
+        let key = Key {
+            local_port: asked.src_port,
+            peer_port: peer,
+        };
+        (client, key)
+    }
+
+    /// A host's request waits for its guest on no clock (D266, in place of Firecracker's
+    /// CONN_REQUEST_TIMEOUT_MS): a guest that answers three seconds late, as one held to a
+    /// rate, paused or slow does, has its connection, its client reading its `OK`.
+    #[test]
+    fn a_hosts_request_its_guest_answers_late_is_connected() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-late").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        let (mut client, key) = dial(&mut m, &dir, 1234);
+        std::thread::sleep(Duration::from_secs(3));
+        // (the device's turn)
+        let answered = Header {
+            op: op::RESPONSE,
+            ..request(key.local_port, 1234)
+        };
+        m.on_guest_packet(&answered, &[], &mem);
+        client.set_nonblocking(true).unwrap();
+        let mut line = [0u8; 64];
+        let n = client.read(&mut line).unwrap();
+        assert_eq!(
+            &line[..n],
+            format!("OK {}\n", key.local_port).as_bytes(),
+            "a request answered late"
+        );
+        assert!(m.conns.contains_key(&key));
+    }
+
+    /// Where every slot is taken and no handshake is pending, the host's request its guest
+    /// has left unanswered longest gives its slot up (D266): its client sees its socket close
+    /// and its guest a reset; one its guest answered never does.
+    #[test]
+    fn an_unanswered_request_gives_its_slot_up_longest_first() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-ask").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        let (_answered_client, answered) = dial(&mut m, &dir, 1234);
+        m.on_guest_packet(
+            &Header {
+                op: op::RESPONSE,
+                ..request(answered.local_port, 1234)
+            },
+            &[],
+            &mem,
+        );
+        let (mut first, first_key) = dial(&mut m, &dir, 1235);
+        let (_second, second_key) = dial(&mut m, &dir, 1236);
+        m.make_room_within(4);
+        assert_eq!(m.conns.len(), 3, "a slot free: none gives its own up");
+        m.make_room_within(3);
+        assert!(!m.conns.contains_key(&first_key), "unanswered longest");
+        assert!(m.conns.contains_key(&second_key) && m.conns.contains_key(&answered));
+        let mut buf = [0u8; 1];
+        let end = first.read(&mut buf);
+        assert!(
+            matches!(&end, Ok(0)) || end.is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            "its client sees its socket close"
+        );
+        let reset = m.next_rx(&[]).unwrap();
+        assert_eq!(
+            (reset.op, reset.src_port, reset.dst_port),
+            (op::RST, first_key.local_port, 1235)
+        );
+        m.make_room_within(2);
+        assert_eq!(
+            m.conns.keys().collect::<Vec<_>>(),
+            [&answered],
+            "an answered one stays"
+        );
     }
 
     /// RSTs owed for packets that matched nothing are bounded by the guest's rings: one
@@ -2181,7 +2280,6 @@ mod tests {
         m.on_guest_packet(&closed, &[], &mem);
         // Past any clock a host's reader might be held by: three seconds of none of it read.
         std::thread::sleep(Duration::from_secs(3));
-        m.expire(Instant::now());
         hear(&mut m, std::slice::from_mut(&mut p));
         assert!(p.reset, "the guest's connection is over");
         m.check().unwrap();

@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::io::{self, Write as _};
 use std::net::Shutdown;
 use std::num::Wrapping;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
 use super::{Span, readv, writev};
@@ -37,10 +37,6 @@ pub const WINDOW_MOST: u32 = shards_abi::VSOCK_WINDOW;
 /// stream's whole window at the measured knee. Several streams share one device worker's
 /// bandwidth, and so its window, between them.
 pub const WINDOW_LENT: u32 = WINDOW_MOST - WINDOW_LEAST;
-/// How long the guest has to answer a host's request: Firecracker's
-/// CONN_REQUEST_TIMEOUT_MS. A guest's shutdown has no deadline: what its host has not taken
-/// is held past its end, within the window it had ([`Conn::end`], D264).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -111,7 +107,9 @@ pub struct Conn {
     granted_until: Wrapping<u32>,
     /// Guest→host bytes the host socket has not taken yet: within what was granted.
     tx_buf: TxBuf,
-    expiry: Option<Instant>,
+    /// When its REQUEST went to the guest, while the guest has not answered a host's
+    /// request: which of those waited longest ([`Conn::asked`]), never a deadline (D266).
+    asked: Option<Instant>,
     /// Whether the multiplexer has this connection in its RX queue.
     pub queued: bool,
     /// Whether `local_port` was allocated for a host-initiated connection.
@@ -238,7 +236,7 @@ impl Conn {
             guest_fwd_cnt: Wrapping(0),
             rx_cnt: Wrapping(0),
             tx_buf: TxBuf::default(),
-            expiry: None,
+            asked: None,
             queued: false,
             allocated_port: false,
             ringing: Ringing::Plain,
@@ -284,8 +282,15 @@ impl Conn {
             || self.ring_owes()
     }
 
-    pub fn expiry(&self) -> Option<Instant> {
-        self.expiry
+    /// When its REQUEST went to the guest, where the guest has not answered it: a host's
+    /// request waits for its guest on no clock, as a pending handshake does, and gives its
+    /// slot up, unanswered longest first, only to a newcomer (the muxer's `make_room`,
+    /// D266). A live Linux guest answers at once, a RESPONSE or, with no listener or its
+    /// backlog full, a reset (`virtio_transport_recv_listen`): one that has not is held,
+    /// paused or slow, and answers as it runs.
+    pub fn asked(&self) -> Option<Instant> {
+        self.asked
+            .filter(|_| self.phase == Phase::LocalInit && !self.killed)
     }
 
     /// An ended connection, its reset sent or the guest's taken (the muxer's `remove`): held
@@ -298,7 +303,6 @@ impl Conn {
     pub fn end(mut self) -> Option<Ended> {
         self.ringing = Ringing::Plain;
         self.pending = Pending::default();
-        self.expiry = None;
         if self.killed {
             self.tx_buf = TxBuf::default();
         }
@@ -375,7 +379,6 @@ impl Conn {
             rst: true,
             ..Pending::default()
         };
-        self.expiry = None;
     }
 
     /// Which host-socket events the connection waits for: (readable, writable).
@@ -407,18 +410,6 @@ impl Conn {
         if let Err(e) = self.flush() {
             debug!("vsock: host socket for port {}: {e}", self.local_port);
             self.kill();
-        }
-    }
-
-    /// Kills a connection whose deadline passed. Returns whether it did.
-    pub fn expire(&mut self, now: Instant) -> bool {
-        match self.expiry {
-            Some(t) if t <= now => {
-                debug!("vsock: port {} timed out in {:?}", self.local_port, self.phase);
-                self.kill();
-                true
-            }
-            _ => false,
         }
     }
 
@@ -536,7 +527,7 @@ impl Conn {
         }
         if self.pending.request {
             self.pending.request = false;
-            self.expiry = Some(Instant::now() + REQUEST_TIMEOUT);
+            self.asked = Some(Instant::now());
             return Some(self.header(op::REQUEST, spare));
         }
         if self.pending.shutdown != 0 {
@@ -626,7 +617,7 @@ impl Conn {
             }
             (op::RESPONSE, Phase::LocalInit) => {
                 self.phase = Phase::Established;
-                self.expiry = None;
+                self.asked = None;
                 // A fresh socket's buffer takes this line whole.
                 let line = format!("OK {}\n", self.local_port);
                 if self.stream.write(line.as_bytes()).ok() != Some(line.len()) {
@@ -717,7 +708,6 @@ impl Conn {
                     rst: true,
                     ..Pending::default()
                 };
-                self.expiry = None;
             }
             return Ok(());
         }
@@ -732,7 +722,6 @@ impl Conn {
                 rst: true,
                 ..Pending::default()
             };
-            self.expiry = None;
         } else if n > 0 && self.guest_needs_credit() {
             self.pending.credit_update = true;
         }
@@ -1361,7 +1350,7 @@ mod tests {
     }
 
     #[test]
-    fn host_initiated_connections_answer_ok_or_time_out() {
+    fn host_initiated_connections_answer_ok_or_wait_for_their_guest() {
         let g = Guest::new();
         let (ours, mut host) = UnixStream::pair().unwrap();
         let mut c = Conn::host_initiated(ours, GUEST_CID, 1 << 30, 1234);
@@ -1377,11 +1366,20 @@ mod tests {
         host.read_exact(&mut line).unwrap();
         assert_eq!(&line, b"OK 1073741824\n");
 
+        // Unanswered, it waits for its guest, its REQUEST's time kept to rank it, never to
+        // end it (D266); once answered, it is asked no longer.
         let (ours, _host) = UnixStream::pair().unwrap();
         let mut c = Conn::host_initiated(ours, GUEST_CID, (1 << 30) + 1, 1234);
+        assert_eq!(c.asked(), None, "its REQUEST not yet sent");
         c.next_rx(&[g.span(BASE, 4096)], 0).unwrap();
-        assert!(!c.expire(Instant::now()));
-        assert!(c.expire(Instant::now() + REQUEST_TIMEOUT));
-        assert_eq!(c.next_rx(&[g.span(BASE, 4096)], 0).unwrap().op, op::RST);
+        assert!(c.asked().is_some());
+        assert!(!c.has_pending_rx(), "nothing owed the guest while it waits");
+        let resp = Header {
+            src_port: 1234,
+            dst_port: (1 << 30) + 1,
+            ..Guest::guest_header(op::RESPONSE, 0, 4096, 0)
+        };
+        c.on_guest_packet(&resp, &[], &g.mem);
+        assert_eq!(c.asked(), None, "answered");
     }
 }

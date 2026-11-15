@@ -18,7 +18,6 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
 
 use super::queue::{Chain, Queue, QueueError, with};
 use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
@@ -532,14 +531,9 @@ fn run(
         });
         s.muxer.interests(&mut interests);
         // With packets left for the next round, the sockets are only looked at: they get
-        // their turn, and so does stopping, between rounds.
-        let timeout = if more {
-            Some(std::time::Duration::ZERO)
-        } else {
-            s.muxer
-                .next_deadline()
-                .map(|t| t.saturating_duration_since(Instant::now()))
-        };
+        // their turn, and so does stopping, between rounds. Otherwise it waits for an event
+        // alone: nothing of the device's waits on a clock (D264, D266).
+        let timeout = more.then_some(std::time::Duration::ZERO);
         ready.clear();
         let waited = match &mut poller {
             Some(p) => p.wait(&interests, timeout, &mut ready),
@@ -557,7 +551,6 @@ fn run(
         }
         waker.drain();
         s.muxer.on_events(&ready);
-        s.muxer.expire(Instant::now());
     }
     s
 }
@@ -729,7 +722,7 @@ fn write_span(chain: &Chain, mem: &Access<'_>, bytes: &[u8]) -> u32 {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::packet::{HOST_CID, TYPE_STREAM, op};
     use super::*;
