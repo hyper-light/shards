@@ -638,7 +638,7 @@ pub fn main() -> ! {
         // saved microVM keeps, and a restore of it goes on from (D176).
         // `ready`, then each `arg(1)` ms (100 if none) a line of its count and its clock's
         // time, CLOCK_REALTIME in ns: a member whose run is paused goes on from its count, its
-        // clock the host's (D265).
+        // clock the host's (D267).
         "ticks" => {
             let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
             let _ = writeln!(io::stdout(), "ready");

@@ -35678,7 +35678,7 @@ closing, on HVF, KVM and WHP.
 end; an ended connection holding more than the window it had; slots or lent window freed while
 an ended connection still holds its bytes.
 
-### D265. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
+### D267. An orchestrator's run paused and resumed: `ImageGuest::pause` and `resume`, the VMM's own hold of every vCPU (built; real-VM runs owed)
 
 **Why.** kiln's Agents page pauses and resumes a running agent session through Hex (plan step
 P5.5, kiln plan 01a1dd2e8618733a87f2793aab1322a8): a paused session runs no CPU and its host's

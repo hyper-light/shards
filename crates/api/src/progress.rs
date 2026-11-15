@@ -220,7 +220,7 @@ fn found(ran: bool, ending: bool, before: &Hold, now: &Hold) -> Found {
     }
 }
 
-/// The processes their owner holds from running on purpose (D265), each by its pid and start
+/// The processes their owner holds from running on purpose (D267), each by its pid and start
 /// as [`Followed`] reads them: a run its owner paused (`ImageGuest::pause`), its vCPUs held out
 /// of its guest by its VMM, which no OS shows as held (its threads sleep as an idle VM's do).
 /// Each is held so as long as a [`Held`] of it lives, in this process alone: the process that
@@ -231,7 +231,7 @@ fn held() -> std::sync::MutexGuard<'static, Vec<(u32, u64)>> {
     HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Processes held by their owner on purpose while this lives (D265): a look of D215's readers
+/// Processes held by their owner on purpose while this lives (D267): a look of D215's readers
 /// that finds one ran nothing finds it [`Found::Held`], not still.
 #[derive(Debug)]
 pub(crate) struct Held(Vec<(u32, u64)>);
@@ -415,7 +415,7 @@ impl Watch {
             self.followed.trace(&look);
         }
         let found = found(ran, look.ending, &hold, &self.hold);
-        // Still of its own, unless its owner holds it on purpose (D265): a pause is its host's
+        // Still of its own, unless its owner holds it on purpose (D267): a pause is its host's
         // hold, as a starved thread is, never a stall. A stopped one stays still.
         if found == Found::Still && !self.hold.stopped && Held::holds(&self.followed) {
             return Ok(Found::Held);
@@ -1805,7 +1805,7 @@ mod tests {
         });
     }
 
-    /// A process its owner holds on purpose (D265's pause, [`Held`]) is its host's hold to a
+    /// A process its owner holds on purpose (D267's pause, [`Held`]) is its host's hold to a
     /// wait that follows it, never a stall: do follow a sleeper whose kind has an answer (W* 20
     /// ms) while a `Held` of it lives, looking past W* again and again; then let it go and look
     /// on. Expect: every look while held goes on (`Found::Held`); once let go, it is held no

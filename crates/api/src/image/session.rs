@@ -113,16 +113,16 @@ struct State {
     /// held as [`rooms`](Self::rooms) is.
     saves: HashMap<u32, Option<Saved>>,
     /// Each pause or resume asked and still awaited, by its ask's id, and its answer once it
-    /// came (D265), held as [`rooms`](Self::rooms) is.
+    /// came (D267), held as [`rooms`](Self::rooms) is.
     pauses: HashMap<u32, Option<Result<wire::Paused, String>>>,
-    /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D265),
+    /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D267),
     /// by its id, until its asker takes it.
     asks_paused: std::collections::HashSet<u32>,
     /// The run's paused time as its host last told it (a pause's or a resume's answer, the
-    /// run's stats), which an end its host never told carries (D265).
+    /// run's stats), which an end its host never told carries (D267).
     paused: wire::Paused,
     /// The run's processes its pause holds, held for this process's waits on them while it is
-    /// paused (`crate::progress::Held`, D265): none while it runs and once it has ended.
+    /// paused (`crate::progress::Held`, D267): none while it runs and once it has ended.
     held: Option<crate::progress::Held>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
@@ -221,7 +221,7 @@ type Saved = Result<(), (wire::SaveRefusal, String)>;
 struct Asked<T> {
     kind: u8,
     what: &'static str,
-    /// What its refusal as its run is paused names it (D265's `ImageRefusal::Paused`).
+    /// What its refusal as its run is paused names it (D267's `ImageRefusal::Paused`).
     paused: &'static str,
     sending: &'static str,
     awaited: fn(&mut State) -> &mut Awaited<T>,
@@ -230,7 +230,7 @@ struct Asked<T> {
 
 impl State {
     /// Ask `id`'s refusal as its run was paused or pausing, where its host refused it so
-    /// (`ASK_PAUSED`, D265), named `what`: taken once.
+    /// (`ASK_PAUSED`, D267), named `what`: taken once.
     fn refused_paused(&mut self, id: u32, what: &'static str) -> Option<ImageRefusal> {
         self.asks_paused
             .remove(&id)
@@ -617,7 +617,7 @@ impl Shared {
         answer
     }
 
-    /// Asks the run's microVM paused (`pause`) or let go on (D265) and waits at most `patience`
+    /// Asks the run's microVM paused (`pause`) or let go on (D267) and waits at most `patience`
     /// for its host's answer, its ask awaited from before it is sent until it is answered or
     /// given up, as [`room`](Self::room)'s is.
     fn pause(&self, pause: bool, patience: Duration) -> Result<wire::Paused, ImageRefusal> {
@@ -3628,7 +3628,7 @@ mod tests {
     }
 
     /// A pause and a resume ride the run's channel and come back as its host said them
-    /// (D265): each answers the run's paused time, a pause of a paused run done already as its
+    /// (D267): each answers the run's paused time, a pause of a paused run done already as its
     /// host says; while paused, an ask its guest would answer is refused typed at once
     /// (`ASK_PAUSED`), naming what it was, and no ask is left awaited. A refusal of its VM's comes
     /// back as `Pause` in its words.
@@ -3712,7 +3712,7 @@ mod tests {
     }
 
     /// A pause's answer and an ask's refusal as the run is paused are held for the asks that
-    /// await them (D265); one that is no answer breaks the channel.
+    /// await them (D267); one that is no answer breaks the channel.
     #[test]
     fn a_pauses_answer_and_a_paused_refusal_are_held_for_their_asks() {
         let s = shared();

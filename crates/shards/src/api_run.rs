@@ -2136,7 +2136,7 @@ impl Saving {
     }
 }
 
-/// The run's pause, as its host holds it (D265, R04). Running to pausing as its owner asks a
+/// The run's pause, as its host holds it (D267, R04). Running to pausing as its owner asks a
 /// pause, which refuses every ask of its guest from then on; pausing to paused as its VM says
 /// every vCPU is held, or back to running where its VM held none; paused to resuming as its
 /// owner asks it to go on, and resuming to running once its VM says they go on, or back to
@@ -2158,7 +2158,7 @@ enum Pause {
     Gone,
 }
 
-/// The run's pause (D265): its state; the time every pause that has ended took; what its init
+/// The run's pause (D267): its state; the time every pause that has ended took; what its init
 /// last said of the run's stats, which its stats say while it is paused; and the pauses and
 /// resumes asked, applied in their order by one worker at a time.
 #[derive(Debug)]
@@ -3516,7 +3516,7 @@ mod hosted {
         leasing: Option<super::Leasing<'a>>,
         /// Its save, as its VM is asked for one (D259).
         saving: Mutex<super::Saving>,
-        /// Its pause (D265).
+        /// Its pause (D267).
         pauses: Mutex<super::Pauses>,
         /// Each pause or resume asked of the VM and not yet answered (`PAUSED`), as devices.
         pause_asks: Mutex<Option<Vec<Asked<Unheld>>>>,
@@ -3648,7 +3648,7 @@ mod hosted {
         }
     }
 
-    /// Why its VM did not pause or let go on its vCPUs (`PAUSED`, D265), in its words.
+    /// Why its VM did not pause or let go on its vCPUs (`PAUSED`, D267), in its words.
     #[derive(Debug)]
     struct Unheld(String);
 
@@ -4883,7 +4883,7 @@ mod hosted {
             }
             // On a thread of its own: an exec its guest is slow to answer holds up no
             // credit and no stop. Its command's or a member's, an ask of its guest, refused at
-            // once while it is paused (D265); the run's answered then from what it said as it
+            // once while it is paused (D267); the run's answered then from what it said as it
             // paused.
             Ask::Stats(ask) => {
                 let vm = vm.id();
@@ -4994,7 +4994,7 @@ mod hosted {
         Ok(())
     }
 
-    /// Ask `id` refused at once, its run paused or pausing (`ASK_PAUSED`, D265).
+    /// Ask `id` refused at once, its run paused or pausing (`ASK_PAUSED`, D267).
     fn refused_paused(live: &Live<'_>, id: u32) -> Result<(), super::AsksEnd> {
         let _ = live
             .answers
@@ -5002,7 +5002,7 @@ mod hosted {
         Ok(())
     }
 
-    /// A pause or a resume asked (D265), queued behind those before it and applied in their
+    /// A pause or a resume asked (D267), queued behind those before it and applied in their
     /// order by one worker on a thread of its own, made as one is asked with none at work and
     /// ending once none is left: a pause waits on its guest's asks and its VM, which hold up no
     /// other ask.
@@ -5074,7 +5074,7 @@ mod hosted {
         }
     }
 
-    /// The run paused (D265): asks of its guest refused from now, its VM asked to hold every
+    /// The run paused (D267): asks of its guest refused from now, its VM asked to hold every
     /// vCPU at once (`PAUSE`, as the daemon's `pause` asks it), its paused time counted from its
     /// word. Nothing of it waits on its guest, which may be slow or hung: an ask of it already
     /// under way is answered as it goes on. Done already where it is paused.
@@ -5099,7 +5099,7 @@ mod hosted {
         paused
     }
 
-    /// The paused run goes on where it stopped (D265): its VM asked to let its vCPUs go
+    /// The paused run goes on where it stopped (D267): its VM asked to let its vCPUs go
     /// (`PAUSE`), the pause's time ended at its word; then its init asked, on a thread of its
     /// own, to set its clock to its host's (`builtin::CLOCK`, as a restored VM sets its own), so
     /// that a step its host's clock took meanwhile is its too, holding up nothing. Done already
@@ -5467,7 +5467,7 @@ mod hosted {
     /// vCPUs' guest time, then its VM process `vm`'s use, which holds that time, so that the
     /// later read is never the less.
     ///
-    /// The run's, while it is paused (D265), with what its init last said of it before the pause,
+    /// The run's, while it is paused (D267), with what its init last said of it before the pause,
     /// its guest running nothing since, its microVM read as it stands; its command's and a
     /// member's are refused before this where it is paused. Each run's init answers is kept as
     /// its last.
@@ -6054,7 +6054,7 @@ mod hosted {
 
         /// Do pause a run whose init last said its stats, its stand-in VM answering each `PAUSE`
         /// and init's `CLOCK`; ask its guest while it is paused, pause it again, read its stats,
-        /// resume it twice, and pause it once its VM's link has closed (D265). Expect: its VM
+        /// resume it twice, and pause it once its VM's link has closed (D267). Expect: its VM
         /// asked to hold at once (`PAUSE` 1, its number), nothing of its guest asked first; an
         /// ask of its guest refused while it is paused; the second pause and resume done already,
         /// unasked; its stats what its init last said; its paused time counting from its VM's word
@@ -6119,7 +6119,7 @@ mod hosted {
         }
 
         /// Do ask a paused run's guest for a room, a resize, a member's stats, a plug and an
-        /// unplug (D265). Expect: each refused at once, `ASK_PAUSED` by its id, none of them
+        /// unplug (D267). Expect: each refused at once, `ASK_PAUSED` by its id, none of them
         /// sent to its VM; and its pause's own ask answered the run's paused time.
         #[test]
         fn asks_of_a_paused_runs_guest_are_refused_at_once() {
@@ -6747,7 +6747,7 @@ mod tests {
         );
     }
 
-    /// D265: a `PAUSE` is its owner's ask once its run runs, a malformed one breaking the
+    /// D267: a `PAUSE` is its owner's ask once its run runs, a malformed one breaking the
     /// channel; before the run's request (a warm host waiting for its `CREATE`) it is refused,
     /// typed, as every ask before a run is.
     #[test]
@@ -6777,7 +6777,7 @@ mod tests {
     /// link with one asked. Expect: the second refused `State`; each answer told its own save
     /// alone, saved or in its VM's words; an answer none asked changing nothing; the save asked
     /// as the link closes hearing its microVM stopped; and every save after refused `State`.
-    /// Do walk the run's pause through its states (D265): a pause, a second pause, a resume, a
+    /// Do walk the run's pause through its states (D267): a pause, a second pause, a resume, a
     /// second resume, a pause its VM refused, a resume its VM refused, and the VM gone while
     /// paused. Expect: its guest asked nothing from the pause's start to its resume's end; a
     /// pause or resume of a run already so done, unasked; paused time counting from the VM's
