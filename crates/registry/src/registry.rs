@@ -650,7 +650,9 @@ impl Registry {
         };
         Ok(Registry {
             auth,
-            http,
+            // Its downloads resume where a cut left them (fetch.rs), its other askings are
+            // ridden as troubles (D222): what a cut ends is asked again.
+            http: http.asking_again(),
             base,
             plain,
             scopes,

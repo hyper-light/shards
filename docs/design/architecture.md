@@ -36428,11 +36428,20 @@ left listed them). And nothing asked the build's fetch again: one drop failed th
 **Decided** (crates/registry `http.rs`, `patience.rs`, `registry.rs` `Trouble`, `lib.rs`;
 crates/shards `build/git.rs`):
 - **Every client learns** (`Client::learning` and the four constants deleted, no other
-  path). Each waits as its paths have shown, D222's waits: a connect and a handshake at their
-  path's RFC 6298 pace; a lookup's answer, and every body's silences, no longer than the
-  slowest its path has shown, its cold start and a run-out following liveness; anything else
-  as long as its connection lives. A client kept in an image store's `links/` starts from
-  what this host learned there (the build's git fetch keeps its paths in its build's store).
+  path): every client's connects, handshakes, lookups' answers and bodies' silences teach
+  its paths, and its connects are paced by what they showed (RFC 6298). A client kept in an
+  image store's `links/` starts from what this host learned there (the build's git fetch
+  keeps its paths in its build's store).
+- **A cut belongs to what asks again** (`Client::asking_again`). A connect its pace ended is
+  made again by the client itself (below). A lookup's answer, a body's silence, a head's past
+  its first byte and a handshake are cut where its path has shown how long they take, D222's
+  bounds, only where its caller resumes or asks again what the cut ends: a registry's (its
+  troubles ridden, fetch.rs resuming a download where it was) and the build's git fetch's
+  (below); a cut lookup is asked again at once by the client itself. Any other client's
+  follow their connection's liveness, and their caller's own patience where it names one:
+  there a cut would fail the caller, and a path's k-th wait of a kind breaks its slowest with
+  chance 1/k where its times are alike (Glick 1978, D222), about ln n of n, so a cache
+  backend's many downloads, or a scripted server's tests, would fail now and then.
 - **A name's lookup has no deadline**: it is waited for while the system's resolver works on
   it, the resolver's own answer or failure its end (`resolve`, getaddrinfo(3), GetAddrInfoW,
   which retry their servers as the host configures them: resolv.conf(5)'s `timeout` and
@@ -36442,14 +36451,14 @@ crates/shards `build/git.rs`):
 - **A connect its pace ended is made again at once, its time doubled** (RFC 6298 §5.5, as TCP
   sends its SYN again past its retransmission timeout), until one is answered, its far end
   refuses or is unreachable, or the cancel. A caller's own bound (EC2's metadata, 250 ms,
-  D168) ends it as before. A handshake its pace ends fails as a passing failure, as D222 has
-  it, since a loopback registry's fallback to plain HTTP reads that end.
+  D168) ends it as before. A handshake its pace ends, where its caller asks again, fails as a
+  passing failure, as D222 has it, since a loopback registry's fallback to plain HTTP reads
+  that end.
 - **Bytes that keep coming are never cut by a clock**: an answer's wait is the gap before its
   first byte alone, for every request; once it has begun, each read of its head waits as a
   body's silence does, the path's slowest (`read_head`). Before, a fresh client's whole head
   had 30 s.
-- **A lookup its path's wait cut is asked again at once, by the client itself** (`send_now`):
-  every client's lookups are now bounded by what their paths have shown, so each must be.
+- **A lookup its path's wait cut is asked again at once, by the client itself** (`send_now`).
   Its path's next wait of that kind follows liveness until one ends (`Bounded::RanOut`), so
   each kind cuts it once at most while none ends. The registry's and the token server's own
   re-asks of an overdue answer are deleted with it (`registry.rs` `send_here`, `auth.rs`).
@@ -36484,6 +36493,7 @@ crates/shards `build/git.rs`):
 | a connect: its path's pace, doubled at each of its own timeouts, made again | `Client::dial` | RFC 6298 §2, §5.5 (D222's `Pace`) |
 | an answer: its first byte's gap alone; past it, silences | `read_head`, `HeadWait` | a stall is a gap with no progress (the person, 2026-11-13; D222) |
 | a lookup cut: asked again at once, each kind once while none ends | `Client::send_now` | RFC 9110 §9.2.1 (a safe method); D222's run-out clause |
+| an answer, a silence, a handshake cut by its path's only where its caller asks again | `Client::asking_again`, `Paced`, `Client::handshake` | a cut fails a caller that does not; records break with chance 1/k (Glick 1978) |
 | a caller's bound: none by default | `Patience` | the caller's protocol (D168's AWS SDK figures stay theirs) |
 | a fetch's re-ask: a random share of the trouble so far, at least `Retry-After`, no count | `ridden`, `Trouble` | D222's rule for a trouble; RFC 9110 §10.2.3 |
 | its end: a re-ask refused, unresolved or cut while it follows liveness | `Trouble::gone`, `Verdict::Gone` | the far end's own word (D222) |
@@ -36508,15 +36518,17 @@ first re-ask its far end refuses, does not resolve, or cuts. Failures typed: `Er
 - `registry::tests::a_callers_trouble_rides_what_the_network_drops_until_its_far_end_is_gone`;
   `http::tests::an_answer_cut_by_its_wait_is_asked_again_at_once` (the client's own re-ask, no
   pause; a caller's patience no path's wait, not asked again);
+  `http::tests::a_bodys_silence_is_cut_only_where_its_caller_asks_again`;
   `fresh_connections_bound_their_writes_as_their_caller_says`.
 
 **Owed:** a write's silence is learned nowhere yet: a request's writes follow their
 connection's liveness (TCP's own end of a dead peer, RFC 1122 §4.2.3.5, and the cancel) where
 their caller names no bound; D222's table has its design (a send-side silence, learned like a
-read's). A handshake its pace ends is not made again inside the client (the registry's
-plain-HTTP fallback reads it), so a caller that does not ride troubles fails one. The build's
-HTTP(S), S3, Azure and GitHub Actions cache sources learn their waits now, but do not yet ask
-again what the network drops, as the git fetch does. ROOT's real-VM runs: a build whose
+read's). The build's HTTP(S), S3, Azure and GitHub Actions cache sources, a policy's
+signatures, the log shippers and clouds' metadata learn their waits now but do not ask again
+what the network drops, as the git fetch does, so their answers and silences follow liveness
+alone, which TCP ends only where it has something to send (no keepalive is set): their riding,
+then `asking_again`, is the next slice. ROOT's real-VM runs: a build whose
 `HARNESS` comes from git over a resolver that fails on and off (goose's), and
 `cargo test -p shards --profile test-release --test build` on HVF.
 

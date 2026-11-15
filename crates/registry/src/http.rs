@@ -13,13 +13,14 @@
 //! Connections race their addresses as RFC 8305 has them, and at most 10 are kept idle, as
 //! containerd's transport keeps them (`core/remotes/docker/registry.go`).
 //!
-//! Every client waits as each wait of its path has shown (D222, D273, crate::patience): a
-//! name's lookup while the system's resolver works on it; to connect and for its handshake,
-//! as fast as the path's own, a connect its own time ended made again; for a lookup's
-//! answer and through a body's silence, while its connection lives and no longer than the
-//! slowest of its kind the path has shown, by its connection alone where it has shown none,
-//! a lookup cut so asked again at once; any other request's answer as its connection lives.
-//! Bytes that keep coming are never cut by a clock. An idle connection is kept until its
+//! Every client learns each wait of its paths (D222, D273, crate::patience): a name's lookup
+//! is waited for while the system's resolver works on it; a connect goes as fast as the
+//! path's own, and one its own time ended is made again. Where its caller asks again what a
+//! cut ends ([`Client::asking_again`]: a registry's, a build's git fetch's), its handshakes
+//! go as fast as its path's, and a lookup's answer and a body's silence wait while its
+//! connection lives and no longer than the slowest of its kind the path has shown, by its
+//! connection alone where it has shown none, a lookup cut so asked again at once; any other
+//! wait follows its connection's liveness. Bytes that keep coming are never cut by a clock. An idle connection is kept until its
 //! server closes it, which is seen as it is taken ([`Conn::quiet`]), or until RFC 5382's
 //! least idle time a NAT keeps it for.
 //!
@@ -87,6 +88,12 @@ pub struct Client {
     registries: Registries,
     /// How it looks a name up: the system's resolver ([`system_lookup`]), or a test's.
     lookup: Lookup,
+    /// Whether its caller asks again, or resumes, what a cut ends: then a lookup's answer, a
+    /// body's silence, a head's past its first byte and a handshake are cut where its path
+    /// has shown how long they take (D222), a cut lookup asked again by the client itself;
+    /// else each follows its connection's liveness, its caller's patience where it names
+    /// one, still teaching its path (D273). A connect its pace ended is made again either way.
+    asks_again: bool,
     /// What each path it asked has shown.
     paths: Paths,
     /// How long a trouble is ridden out before it runs out, where a test says, in place of
@@ -158,9 +165,10 @@ impl Told {
 /// The most a request's caller gives its waits on its server, where its own protocol
 /// names less than its path's waits and its connection's liveness give it: none by
 /// default (D273). Every client waits as its paths have shown (D222): a name's lookup
-/// while the system's resolver works on it; a connect and a handshake at their path's
-/// pace; a lookup's answer and a body's silences no longer than the slowest its path has
-/// shown; anything else as long as its connection lives, until the request is cancelled.
+/// while the system's resolver works on it; a connect at its path's pace; where its caller
+/// asks again ([`Client::asking_again`]), a handshake at its path's pace, and a lookup's
+/// answer and a body's silences no longer than the slowest its path has shown; anything
+/// else as long as its connection lives, until the request is cancelled.
 /// EC2's instance metadata is given 250 ms to connect, 500 ms for an answer and 5 s of
 /// silence, as the AWS SDK gives it (D168).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -482,6 +490,7 @@ impl Client {
             server_name: None,
             registries: Registries::default(),
             lookup: system_lookup,
+            asks_again: false,
             paths: Paths::default(),
             moment: None,
             told: Told::default(),
@@ -511,6 +520,15 @@ impl Client {
     /// take out of turn.
     pub fn following_liveness(mut self) -> Client {
         self.paths.follow_liveness();
+        self
+    }
+
+    /// This client, its caller asking again, or resuming, what a cut ends: a registry's,
+    /// whose troubles are ridden and downloads resume where they were (fetch.rs), and a
+    /// build's git fetch, which asks its remote again (D273). Its answers, silences and
+    /// handshakes are cut where its paths have shown how long they take.
+    pub fn asking_again(mut self) -> Client {
+        self.asks_again = true;
         self
     }
 
@@ -866,16 +884,22 @@ impl Client {
         // or its caller's patience where it names one. Once an answer has begun, each read
         // of its head waits as a silence does.
         let lookup = matches!(req.method, "GET" | "HEAD") && req.file.is_none() && req.body.is_empty();
-        let gaps = self.patience.stall.or(self.paths.silence(&path).bound());
+        // Its answer teaches its path; its path's waits cut it only where what a cut ends is
+        // asked again (D273), a lookup's by the client itself, anything else by its caller.
+        let cut = lookup && self.asks_again;
+        let gaps = self.patience.stall.or(self
+            .asks_again
+            .then(|| self.paths.silence(&path).bound())
+            .flatten());
         // The person's rule (D222): "The cold start, and every wait after a run-out, follows
         // the party's liveness and progress. After that the bound is the slowest answer seen."
-        let waited = match (self.patience.head, lookup) {
-            (Some(most), _) => HeadWait {
+        let waited = match self.patience.head {
+            Some(most) => HeadWait {
                 answer: Some(most),
                 silence: gaps,
                 cut: false,
             },
-            (None, cut) => HeadWait {
+            None => HeadWait {
                 answer: cut.then(|| self.paths.answer(&path).bound()).flatten(),
                 silence: gaps,
                 cut,
@@ -892,7 +916,7 @@ impl Client {
         // kind following liveness alone (crate::patience `Bounded::RanOut`). One that comes
         // teaches its path the time to its first byte.
         let learned = |read: Result<Head, Failure>| {
-            if !cut {
+            if !lookup {
                 return read;
             }
             match read {
@@ -967,7 +991,13 @@ impl Client {
         let paced = match self.patience.stall {
             None => Some(Paced {
                 paths: &self.paths,
-                wait: self.paths.silence(&path),
+                // Where its caller does not ask again, a cut would fail it, its silence
+                // longer than any its path has shown a record any of its bodies may break
+                // (Glick 1978, crate::patience): it follows liveness, as a cold path's does.
+                wait: match self.asks_again {
+                    true => self.paths.silence(&path),
+                    false => Bounded::Cold,
+                },
                 path,
                 body: Silenced {
                     slowest: silence,
@@ -1101,7 +1131,10 @@ impl Client {
     /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`], D222), which
     /// learns from how long it took.
     fn handshake<T: Wire>(&self, url: &Url, io: T, path: &str) -> Result<Tls<T>, Error> {
-        let within = self.paths.timeout(path, Wait::Handshake);
+        // Cut at its path's pace only where what the cut ends is asked again (D273): a
+        // client's whose caller does not ask again follows its connection's liveness, and
+        // its time still teaches its path.
+        let within = self.asks_again.then(|| self.paths.timeout(path, Wait::Handshake));
         let began = Instant::now();
         let shaken = self.shake(url, io, within);
         self.learned(path, Wait::Handshake, began, shaken.as_ref().map(drop));
@@ -1110,7 +1143,7 @@ impl Client {
 
     /// A TLS session with `url`'s host over `io`, its handshake done `within`: one its time
     /// ends is said so ([`Error::timed_out`]).
-    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Duration) -> Result<Tls<T>, Error> {
+    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Option<Duration>) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
         let host = match &self.server_name {
             Some(name) => name.as_str(),
@@ -1118,22 +1151,27 @@ impl Client {
         };
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
-        let deadline = after(within);
+        let deadline = within.map(after);
         let mut heard = Heard::default();
         while tls.is_handshaking() {
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or_else(|| {
-                    Error::of(
-                        ErrorKind::Transient,
-                        format!("{url}: the TLS handshake timed out"),
-                    )
-                    .not_tls()
-                    .timed_out()
-                })?;
-            shards_ipc::timeout_set(io.tcp().set_read_timeout(Some(left)))?;
-            shards_ipc::timeout_set(io.tcp().set_write_timeout(Some(left)))?;
+            let left = match deadline {
+                None => None,
+                Some(deadline) => Some(
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|d| !d.is_zero())
+                        .ok_or_else(|| {
+                            Error::of(
+                                ErrorKind::Transient,
+                                format!("{url}: the TLS handshake timed out"),
+                            )
+                            .not_tls()
+                            .timed_out()
+                        })?,
+                ),
+            };
+            shards_ipc::timeout_set(io.tcp().set_read_timeout(left))?;
+            shards_ipc::timeout_set(io.tcp().set_write_timeout(left))?;
             tls.complete_io(&mut Hearing {
                 io: &mut io,
                 heard: &mut heard,
@@ -2644,7 +2682,15 @@ mod tests {
     use crate::testing::{After, registry, route, serve};
     use crate::tls::client_config;
 
+    /// A client of a scripted server's: its answers and silences follow liveness alone, so
+    /// that no asking again past a run-out takes a scripted answer out of turn (D222,
+    /// `testing::client`).
     fn plain() -> Client {
+        learner().following_liveness()
+    }
+
+    /// A client whose waits are its paths', as every client's are: the waits' own tests'.
+    fn learner() -> Client {
         Client::new(
             Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
@@ -3100,7 +3146,7 @@ mod tests {
             assert_eq!(port, real);
             Ok(vec![SocketAddr::from(([127, 0, 0, 1], real))])
         };
-        let client = plain().looking_up(slow);
+        let client = learner().looking_up(slow);
         let t0 = Instant::now();
         let url = Url::parse(&format!("http://slow.test:{}/v2/", server.port)).unwrap();
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
@@ -3135,7 +3181,7 @@ mod tests {
             tcp.write_all(b"k").unwrap();
             let _ = tcp.shutdown(Shutdown::Write);
         });
-        let client = plain();
+        let client = learner();
         let url = at("http", "127.0.0.1", port);
         let t0 = Instant::now();
         let mut response = client
@@ -3155,6 +3201,46 @@ mod tests {
         served.join().unwrap();
         let slowest = client.shown("127.0.0.1", port).slowest_silence_us.unwrap();
         assert!(slowest >= 4_000_000, "{slowest}");
+    }
+
+    /// A body's silence past the slowest its path has shown is cut only where its caller
+    /// asks again or resumes what the cut ends (a registry's, a build's git fetch's): for
+    /// any other client a cut would fail its caller, so it follows its connection's
+    /// liveness, and teaches its path the silence (D273).
+    #[test]
+    fn a_bodys_silence_is_cut_only_where_its_caller_asks_again() {
+        use std::net::TcpListener;
+        let body = |client: Client| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let served = std::thread::spawn(move || {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = tcp.read(&mut request).unwrap();
+                tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\no")
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+                let _ = tcp.write_all(b"k");
+                let _ = tcp.shutdown(Shutdown::Write);
+            });
+            let shown = crate::patience::Shown {
+                slowest_silence_us: Some(100_000),
+                ..crate::patience::Shown::default()
+            };
+            let client = client.showing("127.0.0.1", port, shown);
+            let url = at("http", "127.0.0.1", port);
+            let read = fetch(&client, "GET", &url);
+            let slowest = client.shown("127.0.0.1", port).slowest_silence_us;
+            drop(client);
+            served.join().unwrap();
+            (read, slowest)
+        };
+        let (read, slowest) = body(learner());
+        assert_eq!(read.unwrap(), (200, b"ok".to_vec()));
+        assert!(slowest.is_some_and(|us| us >= 300_000), "{slowest:?}");
+        let (read, slowest) = body(learner().asking_again());
+        assert!(read.is_err(), "{read:?}");
+        assert_eq!(slowest, Some(100_000), "a run-out learns nothing");
     }
 
     /// A fresh connection's reads and writes wait as long as it lives where its caller names
@@ -3604,16 +3690,16 @@ mod tests {
             slowest_answer_us: Some(200_000),
             ..crate::patience::Shown::default()
         };
-        let client = plain().showing("127.0.0.1", server.port, shown);
+        let client = learner().asking_again().showing("127.0.0.1", server.port, shown);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, Vec::new()));
         assert_eq!(server.requests().len(), 2, "cut once, asked again once");
         assert_eq!(client.paused(), Duration::ZERO, "asked again at once");
-        let cold = plain();
+        let cold = learner();
         assert_eq!(fetch(&cold, "GET", &url).unwrap(), (200, Vec::new()));
         assert_eq!(server.requests().len(), 3);
         let learned = cold.shown("127.0.0.1", server.port).slowest_answer_us.unwrap();
         assert!(learned >= 1_300_000, "{learned}");
-        let impatient = plain().with_patience(Patience {
+        let impatient = learner().with_patience(Patience {
             head: Some(Duration::from_millis(500)),
             ..Patience::default()
         });
@@ -3661,7 +3747,7 @@ mod tests {
             slowest_answer_us: Some(300_000),
             ..crate::patience::Shown::default()
         };
-        let client = plain().showing("127.0.0.1", port, shown.clone());
+        let client = learner().asking_again().showing("127.0.0.1", port, shown.clone());
         let url = at("http", "127.0.0.1", port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         drop(client);
@@ -3673,7 +3759,7 @@ mod tests {
             slowest_silence_us: Some(100_000),
             ..shown
         };
-        let client = plain().showing("127.0.0.1", port, silences);
+        let client = learner().asking_again().showing("127.0.0.1", port, silences);
         let url = at("http", "127.0.0.1", port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert!(
@@ -3690,7 +3776,7 @@ mod tests {
         );
         drop(client);
         served.join().unwrap();
-        let client = plain();
+        let client = learner().asking_again();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let served = std::thread::spawn(move || {
@@ -3724,7 +3810,7 @@ mod tests {
         // again.
         let server = serve(None, vec![(ok.clone(), After::Keep); 4]);
         let url = at("http", "127.0.0.1", server.port);
-        let client = plain();
+        let client = learner().asking_again();
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         let shown = client.shown("127.0.0.1", server.port);
@@ -3737,7 +3823,7 @@ mod tests {
         };
         let server = serve(None, vec![(ok, After::Keep)]);
         let url = at("http", "127.0.0.1", server.port);
-        let kept = plain().showing("127.0.0.1", server.port, zero);
+        let kept = learner().asking_again().showing("127.0.0.1", server.port, zero);
         assert_eq!(kept.silence("127.0.0.1", server.port), Bounded::Cold);
         assert_eq!(fetch(&kept, "GET", &url).unwrap(), (200, b"ok".to_vec()));
     }
@@ -3752,7 +3838,7 @@ mod tests {
         let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
         answer.extend_from_slice(&body);
         let server = serve(None, vec![(answer, After::Keep)]);
-        let client = plain();
+        let client = learner();
         let url = at("http", "127.0.0.1", server.port);
         let mut response = client
             .send(&Request {
@@ -3818,7 +3904,7 @@ mod tests {
             assert_eq!(got, body.len());
         };
         let server = serve(None, vec![(answer.clone(), After::Keep)]);
-        let client = plain();
+        let client = learner();
         read(&client, server.port);
         let shown = client.shown("127.0.0.1", server.port);
         assert_eq!(shown.slowest_silence_us, None, "{shown:?}");
@@ -3828,7 +3914,7 @@ mod tests {
             slowest_silence_us: Some(1),
             ..crate::patience::Shown::default()
         };
-        let client = plain().showing("127.0.0.1", server.port, one);
+        let client = learner().asking_again().showing("127.0.0.1", server.port, one);
         client
             .paths
             .silence_ran_out(&format!("127.0.0.1:{}", server.port));
@@ -3848,7 +3934,7 @@ mod tests {
     /// failure its time did not end is none (D222).
     #[test]
     fn a_wait_its_own_time_ended_counts_as_its_timeout() {
-        let client = plain();
+        let client = learner();
         let path = "r.example:443";
         let first = client.paths.timeout(path, Wait::Handshake);
         // Ended at once by the clock, by its own time all the same.
@@ -3883,7 +3969,7 @@ mod tests {
             let (held, _) = listener.accept().unwrap();
             let _held = (!ends).then_some(held);
             plain()
-                .shake(&url, Hop::Tcp(Sock::of(tcp)), Duration::from_millis(50))
+                .shake(&url, Hop::Tcp(Sock::of(tcp)), Some(Duration::from_millis(50)))
                 .err()
                 .unwrap()
         };

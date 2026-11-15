@@ -151,6 +151,7 @@ impl Asking {
     fn new(cancel: &Cancel, kept: Option<&std::path::Path>) -> Result<Asking, String> {
         let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
         let client = Client::new(Box::new(move |_| Ok(config.clone())), &agent())
+            .asking_again()
             .cancelled_by(cancel.clone())
             .with_proxies(shards_registry::proxy::Proxies::from_env(&|k| {
                 std::env::var(k).ok()
