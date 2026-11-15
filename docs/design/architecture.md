@@ -28213,7 +28213,13 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
           `ri_logical_writes`, the last alone moved by a directory's flush. Of 55
           uninterruptible waits of 1 ms or more by F_FULLFSYNC loops on
           adas-mac-studio.local-2, 54 grew them (1,912 of 1,915 ms).
-        - Windows: unread here, unverified.
+        - Windows keeps no waited time, and a thread's wait reason cannot tell its host's
+          disk from a peer: one in FlushFileBuffers waits `Executive`, as one in a pipe's read
+          that no one answers does (PM M602), so that reason is no hold. Its I/O counts
+          (GetProcessIoCounters: operations and bytes, its pipes' and sockets' with its
+          files') grew across 79% of a flusher's reads and none of a pipe reader's or a
+          sleeper's: `Io::done`, summed over the followed tree's processes. Its windows of any
+          I/O vouch for nothing, so its rate is judged over its quiet ones alone.
         Where an OS keeps no waited time for a process (macOS; Linux with delay accounting
         off and its cgroup shared), a wait bound by its rate also looks between its due
         looks while its process is not runnable, each its judge's least window apart
@@ -28221,8 +28227,10 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         length where longer), the finest its window's evidence is read at, never a rate of
         ours. A look there that finds a thread in its kernel holds that window
         (`Follow::schedule`, `Follow::sampled`). A runnable process, and a wait bound by
-        stillness, are looked at only when due. Held by progress.rs
-        `a_rate_wait_samples_a_blocked_process_between_its_looks`.
+        stillness, are looked at only when due; on Windows none is sampled, as no reason it
+        reads shows its host's disk, and one read of the system's records took 13 ms on
+        jupiter. Held by progress.rs `a_rate_wait_samples_a_blocked_process_between_its_looks`
+        and, on Windows, `a_process_flushing_to_its_disk_shows_its_storages_work`.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
