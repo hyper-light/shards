@@ -1,6 +1,6 @@
 
 /// Appended to crates/shards/tests/api_image.rs for a run of `run.sh` alone, never committed
-/// there (D272, PM M603): each memory size's first run, saving its
+/// there (D274, PM M604): each memory size's first run, saving its
 /// template with its working set recorded, and a run booted alone (a guest its caller gives),
 /// each holding 256 MiB to its end.
 #[test]

@@ -19881,7 +19881,8 @@ network process (D142) and its builder (D143) follow.
   split in two (VirtualAlloc2, MapViewOfFile3 with MEM_REPLACE_PLACEHOLDER). A view may not
   run past its section's end, the file's size, so it holds the file's whole pages, and the
   file's last partial page is copied into the read-only zeros after it.
-- **vsock on Windows**: AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
+- **vsock on Windows** (its connections' host side superseded by D272, named pipes,
+  decided and being built): AF_UNIX sockets (afunix.sys), 3.4-3.7 times loopback TCP's
   throughput (M199), made overlapped, as std makes its sockets: Windows serializes the I/O
   of a socket made otherwise, so that a send waits out another thread's read of the same
   connection (M207); its worker sleeps on WSAEventSelect's events and reads each socket's
@@ -36424,7 +36425,143 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. An HVF vCPU takes memory mapped after it was made as memory: plugged blocks a template's recording takes away are given back, never served as a device (built; kiln's real-VM E2E rerun owed)
+### D272. A vsock connection's Windows host side is a named pipe (decided 2026-11-15; S0 measured, S1-S5 owed)
+
+**Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
+and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
+AF_UNIX cannot hold both: a close made while the closer holds any of its peer's bytes unread,
+or before its peer's later send, resets and loses the peer what it had not read (M358), a
+send to a closed socket succeeds, and nothing tells the closer when its peer has read every
+byte (WSAPoll's WRNORM tracks room: windows-afunix `ends`, D251 amended). A named pipe holds
+both on Windows Server 2025 and Windows 11 alike (`ends`): its server writes and closes its
+handle, its client reads every byte, then ERROR_BROKEN_PIPE, its own bytes unread by the
+server or not, and its writes after fail at once, ERROR_NO_DATA. Named pipes are Windows'
+own IPC (Docker's engine listens on `\\.\pipe\docker_engine`), and shards' daemon already
+speaks over them (D195).
+
+**Decided** (ROOT, on the `ends` evidence).
+- *A connection's host side* on Windows is a byte-mode named pipe instance; its VM's
+  listener a pipe of a per-VM name no one guesses (`random_hex`, as `shards_ipc`'s pipes),
+  each instance granted its owning user alone (pipe.rs `attributes`) and refusing remote
+  clients, the first made with FILE_FLAG_FIRST_PIPE_INSTANCE, so that no other process holds
+  the name before it.
+- *Found by path* (the filesystem rule): the home keeps a file at today's socket path that
+  names the pipe; a client reads it, then opens the pipe by that name.
+- *Made by the spawner* (M603). A VM process confined as D141 confines it can make no pipe
+  its user can open (`\\.\pipe\` refused, error 5; its `\\.\pipe\LOCAL\` its own namespace)
+  and open none of its user's (error 5): its spawner makes each instance and hands it in, as
+  it binds the VM's listener and dials its ports today (M203). An instance made and handed in
+  costs p50 3-7 us, p99 31-43 (M603), beside the grants round trip a dial already takes.
+  The VM asks its spawner for the next instance as each client connects to the last.
+  - *Guest connections to host ports*: a port's listener is a pipe of its own; the spawner
+    opens its client end and hands it in, as `dial_for` does a socket today.
+- *Writes* (M549: a pipe says nothing of its outbound room). A connection writes through
+  one overlapped WriteFile at a time, its bytes owned by the connection until it completes,
+  which it does once they are all in the pipe (M603: with 1 MiB written to a 64 KiB pipe,
+  once its reader has taken all but 64 KiB); the guest's credit bounds what it holds. A
+  write is never cancelled while its connection lives: a cancelled one reported 0 bytes
+  transferred where its reader had taken 196,608 (M603).
+- *Reads*: overlapped reads into the connection's own buffer, their completions through an
+  I/O completion port (as `shards_ipc::Poller`), which waits on any number of them.
+- *Ends*: the guest's end closes the instance's handle once its bytes are all in the pipe;
+  its client reads them, then ERROR_BROKEN_PIPE, and its writes fail at once.
+
+**Owed before S1** (R02): a byte-mode client's half-close. The guest's SHUTDOWN(SEND) is its
+host's end-of-stream with the host's own writes still open (D251); a pipe has no half-close,
+and `shards_ipc`'s pipes send a zero-byte message in message mode for one (pipe.rs). Whether a
+client reading in byte mode (a host program's `std::fs::File`, Hex's) reads that message as
+its end-of-stream, and writes on after it, is to be measured (windows-pipes-s0, next).
+
+**Slices** (each red first where it changes behaviour): S1, a Windows vsock connection type
+in vmm (an instance, its pended read and write and the buffers they own) beside Unix's; S2,
+the device's poller on a completion port, and the muxer on it; S3, the grants: the spawner's
+instances and dials; S4, `shards_api`'s client (it opens the named pipe; its Windows `Handle`
+and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock tests ported,
+first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
+guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
+
+**A client's change** (Hex's on Windows): read the file at the VM's socket path for its
+pipe's name and open it (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION), in
+place of an AF_UNIX connect; the line protocol over it (`CONNECT <port>`, `RATE`, `USE`) is
+unchanged. A client that dials through `shards_api` takes it with its pin.
+
+**What would falsify it.** A guest byte its host never read where it read on to its end; a
+host's write after the guest's end taken without an error; a process other than its user's
+opening its pipe; an instance's name taken before its VM's first.
+
+### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC2): grant and revoke egress
+(destinations, DNS names, MCP endpoints) while a session runs, without a rebuild or a restart
+(ROOT's binding reading, as D269's). D231's runs took their grants at start alone
+(`ImageSpec::egress`, D250), and the network process took one policy, ever: on Linux its
+Landlock layer (D31, net/src/confine.rs `to_ports`) holds its TCP connections to that policy's
+ports, and Landlock only narrows (landlock(7)), so a second policy was refused.
+
+**What holds a run's egress, layer by layer.** The guest: each member's domain is linked to
+the switch by its gate, whose nftables hold its flows to the image's grants for it (D59, D61;
+init links.rs), which no request's narrowing reaches. The network process: its own rule table
+(net/src/lib.rs `Config`: `Policy::Ports`, the named destinations and their learned addresses,
+whether names are asked), consulted for every new flow (`Config::allows`); on Linux beside it
+Landlock's TCP-connect layer and a seccomp filter; on macOS App Sandbox with network.client and
+network.server (resources/net.entitlements) and on Windows its AppContainer, neither of which
+holds ports. Landlock has no UDP rule in any ABI shards takes (4 to 7 handle TCP bind and
+connect alone), so UDP was the rule table's alone everywhere already.
+
+**Decided (ROOT's ruling, 2026-11-15: Landlock never the policy).**
+- *The ceiling and the grants.* `NET_POLICY` names the most the run could ever be granted:
+  its image's grants (`api_run::egress` of `Narrowing::default()`), which the network process
+  records and, on Linux, holds its TCP connections to as before. Its grants as they stand are
+  the process's own rule table within it: told by `NET_GRANTS` (shards_ipc kind 107, a policy as
+  `NET_POLICY` encodes one), at the start where the request keeps less than its image grants,
+  and at each change; answered 0 once taken, or 1 and why not (past the ceiling, or no ceiling at
+  all), nothing taken and the control kept. *Kept:* Landlock's layer (now the image's grants,
+  not the request's), seccomp, the rule table. *Lost:* on Linux the kernel's layer is the
+  image's grants rather than the request's narrower keep: a network process taken over could
+  reach the image's other granted ports. A grant past the image (the person's own policy,
+  `ImageSpec::egress_ceiling`) is the next slice's, with the guest's side below; until then it
+  is refused `Widening`, never skipped.
+- *A revoke ends flows.* Taking new grants, the network process ends at once each flow of the
+  guest's own they no longer reach (`Stack::cut_ungranted`): a TCP connection its guest opened
+  reset to it, its host socket closed; a UDP flow past the gateway closed. What a published
+  port took (`Conn::accepted`), the gateway's own flows (its names' relay) and peers' frames are
+  none of its grants'. Answers learned of names still granted are kept, so a guest that resolved
+  one goes on reaching it while its answer lives. On Windows a dial answered after a change is
+  held to the grants as they stand.
+- *The calls* (image channel version 36). `ImageGuest::egress() -> Narrowing`, the run's grants
+  as its host last said them, written out whole (`Keep::Only` of its image's, told with its
+  start, `Started::egress`, and with each change, `NetChanged::egress`);
+  `grant_egress(&EgressGrant, patience)` and `revoke_egress(&EgressGrant, patience)`, each
+  answering the run's grants once its network process holds them. `EgressGrant::{Ports,
+  Mcp { at, members }, Destination { at, members }, Dns}`, `members` the reach of each member
+  named where the run holds its members apart (D246). shards-api makes the whole narrowing of
+  the run's grants and the one asked (`session::regranted`); the run host checks it as the
+  start's (`api_run::egress`, `held_apart`: a grant its image gives not, or a member's reach
+  other than its image lets it have, `Widening`), tells it, and holds it under the same turn as
+  every change of its network (D269). Refused typed (`ImageRefusal::Net`): `NoNetwork`,
+  `Widening`, `Network` (its network process's words), `Image`.
+- *In place.* Only the run's network process takes the change; nothing of the image, its
+  template, its VM process or its guest changes.
+
+**Tests** (light, red first): `shards-net`
+`tests::grants_told_as_the_run_goes_hold_its_flows_within_its_ceiling` (taken within the
+ceiling and held at once, the revoked connection reset and its host socket closed, the kept one
+and the published port's kept, the UDP flow ended, past the ceiling and with no ceiling
+refused in words); `wire::tests::network_changes_and_their_answers_cross_the_channel` (an
+egress change and the grants in every answer) and the `Started` round trips with its grants;
+`session::tests::a_grant_goes_in_and_out_of_the_runs_grants_as_written_out`;
+`api_run::hosted::tests::a_runs_grants_change_within_its_images_as_it_goes`; the tell_net tests
+with the ceiling.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`an_egress_destination_revoked_refuses_the_next_connection_and_granted_back_reaches_again`
+(the same `started_from`, the same VM process and unchanged templates across it; the test
+guest's `reach-each` mode is new, so the test guests are rebuilt). Next (slice 3c): the
+person's ceiling (`ImageSpec::egress_ceiling`) and the guest's side, init re-programming a
+member's gate and agentdns live with domains' Landlock TCP rights unhandled, an older domain
+refused typed with the member-restart option (D270's).
+
+### D274. An HVF vCPU takes memory mapped after it was made as memory: plugged blocks a template's recording takes away are given back, never served as a device (built; kiln's real-VM E2E rerun owed)
 
 **What failed.** kiln P1.4 (2026-11-14; Shards d993d83ee under Hex 414aa30d3) boots every
 harness at shards-api's least envelope, 1 vCPU and 64 MiB on arm64 (`envelope(ARCH, 0, 0)`),
@@ -36435,7 +36572,7 @@ each quoting `vCPU 0: unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0x
 emulate (ISV 0), a stage-2 translation fault at level 2, at the first bytes of arm64's
 memory to plug, which starts at the first GiB boundary past RAM (`vm::aarch64::plug_at`:
 0xc000_0000 for 64 MiB). The guest's memory map was sound: its device tree names RAM alone,
-and everything else is placed past the region (`aarch64::assemble`). Reproduced (PM M603).
+and everything else is placed past the region (`aarch64::assemble`). Reproduced (PM M604).
 
 **Why** (at 6bfdcb1a9):
 - An image's first run boots `--warm` (`run::boot_args`), which records the working set its
@@ -36446,7 +36583,7 @@ and everything else is placed past the region (`aarch64::assemble`). Reproduced 
   plugged blocks and a run's swap (`Watch::mapped`), so that a live move watches their writes;
   and part 1 has a snapshot keep memory plugged. D148's and D176's premise that templates are
   saved before their guests plug anything does not hold at small envelopes: a 64 MiB guest of
-  the test image plugged 128 MiB 0.89 s into its boot, before its template point (PM M603).
+  the test image plugged 128 MiB 0.89 s into its boot, before its template point (PM M604).
 - The vCPU's exit decided whether a fault was memory the watch took away or a device access
   from a copy of the watch's list made as the vCPU was made (`Vm::create_vcpu`), in which
   memory plugged since is not; `give_back`'s own look at the watch was never reached. So a
@@ -36481,7 +36618,7 @@ once per report, and every vCPU's copy would have grown with it).
   first GiB boundary past high RAM, above 4 GiB (`vm::x86_64::plug_at`), and is in no e820
   entry.
 
-**Verified** (adas-mac-studio-3.local, M4 Max, macOS 26.2; PM M603):
+**Verified** (adas-mac-studio-3.local, M4 Max, macOS 26.2; PM M604):
 - `hv::hvf::tests::vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`: a page mapped through
   `Stage2::map` at 0xc000_0000 once vCPU 0 was made, taken away by a recording; the guest's
   `str` and `ldr` (ISV 1) and its `stp` (ISV 0) there, under an `Io` that records device
@@ -36503,7 +36640,12 @@ regions wholly within what is unmapped, so a block unplugged from within a large
 range leaves that range listed, and `Watch::rest` then protects a range with a hole in it
 (not reproduced); and a harness member's memory (`domains.rs`, its `memory.high` set once as
 its domains start, from `MemAvailable` and none of the plug) ended `alloc 256` at about
-20 MB at 64 MiB, in boots with no template alike (ROOT's lane p/member-share).
+20 MB at 64 MiB, in boots with no template alike (ROOT's lane p/member-share). And fixed
+here: D270's components' window, which `run::boot_args` gives every microVM with PCI slots,
+every orchestrator's image run's among them, was missing from `spec::RUN_VALUED`, so the VM
+process refused every such boot from d1d3bcd97 on, "--component-window needs a value": listed,
+and `vm_run`'s `a_runs_boot_arguments_are_the_ones_run_reads` holds every valued flag a run's
+boot gives its VM to it, and the boot to parsing as given.
 
 ## 4. Start path (≤ 5 ms budget)
 
