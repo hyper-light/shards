@@ -53,10 +53,14 @@ pub struct Bucket {
     endpoint: Option<Url>,
     path_style: bool,
     pub parallelism: usize,
-    /// The credentials it is signed with, found again before they expire.
-    creds: Mutex<Signing>,
+    /// The credentials it is signed with, found again before they expire; none where its
+    /// requests go unsigned (an s3 source's that names no credentials, D54).
+    creds: Option<Mutex<Signing>>,
     /// The environment the chain found them with, where the cache does not give its own.
     chain: Option<Vec<String>>,
+    /// What the chain reached as it found them: each endpoint's origin, and
+    /// `credential_process` where it ran one.
+    reached: Vec<String>,
     /// The most sent at once: [`MOST_AT_ONCE`], less in tests.
     part: u64,
 }
@@ -87,6 +91,15 @@ pub struct Found {
     pub size: u64,
 }
 
+/// Who signs a bucket's requests where its attributes give no key: the SDK's default chain,
+/// as BuildKit's cache client has it; or no one, for an s3 source that names neither the
+/// build's secrets nor the chain (D54).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unkeyed {
+    Chain,
+    Unsigned,
+}
+
 /// An attribute as BuildKit's s3.go `getConfig` reads it: there, even empty, or not.
 fn attr<'a>(e: &'a CacheEntry, k: &str) -> Option<&'a str> {
     e.attrs.get(k).map(String::as_str)
@@ -96,11 +109,17 @@ impl Bucket {
     /// The bucket of `e`'s attributes, as s3.go's `getConfig` reads them, and the
     /// credentials it is signed for.
     pub fn of(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>) -> Result<Bucket, String> {
-        Bucket::named(e, env, "s3 cache")
+        Bucket::named(e, env, "s3 cache", Unkeyed::Chain)
     }
 
-    /// [`of`](Self::of), its errors naming what the bucket is for, `what`.
-    fn named(e: &CacheEntry, env: &dyn Fn(&str) -> Option<String>, what: &str) -> Result<Bucket, String> {
+    /// [`of`](Self::of), its errors naming what the bucket is for, `what`, signed as
+    /// `unkeyed` says where `e` gives no key.
+    fn named(
+        e: &CacheEntry,
+        env: &dyn Fn(&str) -> Option<String>,
+        what: &str,
+        unkeyed: Unkeyed,
+    ) -> Result<Bucket, String> {
         let bucket = match attr(e, "bucket") {
             Some(b) => b.to_string(),
             None => env("AWS_BUCKET").ok_or_else(|| format!("bucket ($AWS_BUCKET) not set for {what}"))?,
@@ -154,7 +173,7 @@ impl Bucket {
             &format!("shards/{}", env!("CARGO_PKG_VERSION")),
         )
         .with_proxies(shards_registry::proxy::Proxies::from_env(env));
-        let (found, chain) = credentials(e, env, &region, what)?;
+        let (found, chain, reached) = credentials(e, env, &region, what, unkeyed)?;
         Ok(Bucket {
             http,
             bucket,
@@ -167,8 +186,9 @@ impl Bucket {
             endpoint,
             path_style,
             parallelism,
-            creds: Mutex::new(found),
+            creds: found.map(Mutex::new),
             chain,
+            reached,
             part: MOST_AT_ONCE,
         })
     }
@@ -183,15 +203,19 @@ impl Bucket {
 
     /// The credentials to sign with now: the chain's found again where they expire within
     /// [`RENEW`].
-    fn signer(&self) -> Result<MutexGuard<'_, Signing>, String> {
-        let mut found = self.creds.lock().unwrap_or_else(PoisonError::into_inner);
+    /// None where its requests go unsigned.
+    fn signer(&self) -> Result<Option<MutexGuard<'_, Signing>>, String> {
+        let Some(creds) = &self.creds else {
+            return Ok(None);
+        };
+        let mut found = creds.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(vars) = &self.chain
             && found.expiring(RENEW)
         {
             let env = |k: &str| shards_ipc::env_value(vars, k);
             *found = Chain::new(&env).in_region(&self.region).resolve()?;
         }
-        Ok(found)
+        Ok(Some(found))
     }
 
     /// Whether a layer last written at `modified` is to be touched.
@@ -277,24 +301,28 @@ impl Bucket {
         let target = url.target();
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         let when = amz_date(std::time::SystemTime::now());
-        let added = sigv4::sign(
-            &Request {
-                method,
-                authority: &authority,
-                path,
-                query,
-                headers,
-                length: body.len(),
-                payload_hash,
-            },
-            &self.signer()?.creds,
-            &Scope {
-                region: &self.region,
-                service: "s3",
-                rule: Rule::Required,
-            },
-            &when,
-        );
+        let added = match self.signer()? {
+            Some(found) => sigv4::sign(
+                &Request {
+                    method,
+                    authority: &authority,
+                    path,
+                    query,
+                    headers,
+                    length: body.len(),
+                    payload_hash,
+                },
+                &found.creds,
+                &Scope {
+                    region: &self.region,
+                    service: "s3",
+                    rule: Rule::Required,
+                },
+                &when,
+            ),
+            // An anonymous request, as the SDK's AnonymousCredentials sends one: unsigned.
+            None => Vec::new(),
+        };
         let mut all: Vec<(&str, &str)> = headers.to_vec();
         all.extend(added.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         let (bytes, file) = match body {
@@ -487,6 +515,55 @@ pub struct Object {
     /// `region`, `use_path_style`, and `access_key_id`, `secret_access_key` and
     /// `session_token`.
     attrs: BTreeMap<String, Zeroizing<String>>,
+    pub signer: Signer,
+}
+
+/// Who signs an s3 source's request (D54): only what the build names, nothing implicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signer {
+    /// The build's secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and
+    /// `AWS_SESSION_TOKEN`), each `NAME.<bucket>` first.
+    Secrets,
+    /// The host's AWS default credential chain, which `--credentials=aws-default` opts into.
+    HostChain,
+    /// No one: neither is named, so the request is anonymous, as a public object's is.
+    Unsigned,
+}
+
+/// How an s3 source's request was signed, for the build to say (D54).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Signed {
+    Secrets,
+    /// Through the host's chain: each endpoint's origin it reached, and
+    /// `credential_process` where it ran one.
+    HostChain(Vec<String>),
+    Unsigned,
+}
+
+impl std::fmt::Display for Signed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Signed::Secrets => {
+                write!(
+                    f,
+                    "signed with the build's secrets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+                )
+            }
+            Signed::HostChain(reached) if reached.is_empty() => write!(
+                f,
+                "signed through the host's AWS default credential chain (--credentials=aws-default), which reached no endpoint"
+            ),
+            Signed::HostChain(reached) => write!(
+                f,
+                "signed through the host's AWS default credential chain (--credentials=aws-default), which reached {}",
+                reached.join(", ")
+            ),
+            Signed::Unsigned => write!(
+                f,
+                "sent unsigned: neither the build's secrets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY nor --credentials=aws-default name its credentials"
+            ),
+        }
+    }
 }
 
 /// The build's secrets an S3 source signs with, in place of the SDK's default chain: each
@@ -499,8 +576,9 @@ const KEY_SECRETS: [(&str, &str); 3] = [
 ];
 
 impl Object {
-    /// The object source `identifier` with `attrs` names, signed for by the build's
-    /// `secrets` where they hold a key.
+    /// The object source `identifier` with `attrs` names: signed through the host's chain
+    /// where its directive opts in (`s3.credentials`), else by the build's `secrets` where
+    /// they hold a key, else not at all.
     pub fn of(
         identifier: &[u8],
         attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
@@ -525,22 +603,41 @@ impl Object {
                 given.insert(to.to_string(), Zeroizing::new(v));
             }
         }
-        for (name, to) in KEY_SECRETS {
+        let host_chain = match attr(b"s3.credentials")? {
+            None => false,
+            Some(c) if c.as_bytes() == shards_agentfile::agentfile::AWS_DEFAULT => true,
+            Some(c) => return Err(format!("an s3 source's credentials are aws-default, not {c:?}")),
+        };
+        let mut keys = 0;
+        for (name, to) in KEY_SECRETS.iter().filter(|_| !host_chain) {
             let secret = secrets
                 .get(&format!("{name}.{bucket}"))
-                .or_else(|| secrets.get(name));
+                .or_else(|| secrets.get(*name));
             if let Some(v) = secret {
                 let v =
                     String::from_utf8(v.bytes().to_vec()).map_err(|_| format!("secret {name}: not UTF-8"))?;
                 given.insert(to.to_string(), Zeroizing::new(v));
+                keys += 1;
             }
         }
+        let keyed = given.contains_key("access_key_id") && given.contains_key("secret_access_key");
+        let signer = match (host_chain, keyed, keys) {
+            (true, _, _) => Signer::HostChain,
+            (false, true, _) => Signer::Secrets,
+            (false, false, 0) => Signer::Unsigned,
+            (false, false, _) => {
+                return Err(format!(
+                    "s3://{bucket}/{key}: the build's secrets name half a key: give both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+                ));
+            }
+        };
         Ok(Object {
             bucket,
             key,
             version_id: attr(b"s3.versionid")?,
             checksum: attr(b"s3.checksum")?,
             attrs: given,
+            signer,
         })
     }
 
@@ -553,9 +650,25 @@ impl Object {
         path: std::path::PathBuf,
         limits: &shards_image::store::Limits,
     ) -> Result<super::http::Download, super::http::Failure> {
+        self.fetch_in(cancel, path, limits, &|k| std::env::var(k).ok())
+    }
+
+    /// [`fetch`](Self::fetch), the SDK's settings and the host's chain read from `env`.
+    fn fetch_in(
+        &self,
+        cancel: shards_registry::http::Cancel,
+        path: std::path::PathBuf,
+        limits: &shards_image::store::Limits,
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<super::http::Download, super::http::Failure> {
+        // An unsigned request's refusal says why it went unsigned.
+        let unsigned = match self.signer {
+            Signer::Unsigned => format!(" ({})", Signed::Unsigned),
+            _ => String::new(),
+        };
         let fail = |e: String| match self.checksum {
-            Some(_) => super::http::Failure::Snapshot(e),
-            None => super::http::Failure::CacheKey(e),
+            Some(_) => super::http::Failure::Snapshot(format!("{e}{unsigned}")),
+            None => super::http::Failure::CacheKey(format!("{e}{unsigned}")),
         };
         let shown = format!("s3://{}/{}", self.bucket, self.key);
         let mut attrs: BTreeMap<String, String> = self
@@ -568,8 +681,11 @@ impl Object {
             kind: "s3".into(),
             attrs,
         };
-        let env = |k: &str| std::env::var(k).ok();
-        let made = Bucket::named(&e, &env, "s3 source");
+        let unkeyed = match self.signer {
+            Signer::HostChain => Unkeyed::Chain,
+            Signer::Secrets | Signer::Unsigned => Unkeyed::Unsigned,
+        };
+        let made = Bucket::named(&e, env, "s3 source", unkeyed);
         // The key's copies go as the client holds its own.
         for v in e.attrs.values_mut() {
             zeroize::Zeroize::zeroize(v);
@@ -594,12 +710,18 @@ impl Object {
                 "digest mismatch {digest}: {want}"
             )));
         }
+        let signed = match self.signer {
+            Signer::Secrets => Signed::Secrets,
+            Signer::HostChain => Signed::HostChain(bucket.reached.clone()),
+            Signer::Unsigned => Signed::Unsigned,
+        };
         Ok(super::http::Download {
             path,
             size,
             digest,
             last_modified: None,
             served_as,
+            signed: Some(signed),
         })
     }
 }
@@ -662,13 +784,16 @@ fn escape_path(s: &str) -> String {
 
 /// The credentials a cache is signed with, as BuildKit's s3.go client finds them: the
 /// cache's `access_key_id` and `secret_access_key` (with `session_token`), else the SDK's
-/// default chain's in its region, and with them the environment they are found again by.
+/// default chain's in its region, and with them the environment they are found again by
+/// and what the chain reached; else none, where `unkeyed` says so.
+#[allow(clippy::type_complexity)]
 fn credentials(
     e: &CacheEntry,
     env: &dyn Fn(&str) -> Option<String>,
     region: &str,
     what: &str,
-) -> Result<(Signing, Option<Vec<String>>), String> {
+    unkeyed: Unkeyed,
+) -> Result<(Option<Signing>, Option<Vec<String>>, Vec<String>), String> {
     let given = |k: &str| attr(e, k).filter(|v| !v.is_empty()).map(str::to_string);
     if let (Some(id), Some(secret)) = (given("access_key_id"), given("secret_access_key")) {
         let creds = Credentials {
@@ -676,15 +801,19 @@ fn credentials(
             secret: Zeroizing::new(secret),
             token: given("session_token").map(Zeroizing::new),
         };
-        return Ok((Signing { creds, expires: None }, None));
+        return Ok((Some(Signing { creds, expires: None }), None, Vec::new()));
+    }
+    if unkeyed == Unkeyed::Unsigned {
+        return Ok((None, None, Vec::new()));
     }
     let vars = crate::aws::snapshot(env);
     let kept = |k: &str| shards_ipc::env_value(&vars, k);
-    let found = Chain::new(&kept)
-        .in_region(region)
+    let chain = Chain::new(&kept).in_region(region);
+    let found = chain
         .resolve()
         .map_err(|err| format!("no AWS credentials for the {what}: {err}; give it access_key_id and secret_access_key, or credentials where AWS's own tools find them"))?;
-    Ok((found, Some(vars)))
+    let reached = chain.reached();
+    Ok((Some(found), Some(vars), reached))
 }
 
 #[cfg(test)]
@@ -850,5 +979,146 @@ mod tests {
             .fetch(shards_registry::http::Cancel::new(), dir.join("three"), &limits)
             .unwrap_err();
         assert!(format!("{missing:?}").contains("NoSuchKey"), "{missing:?}");
+    }
+
+    /// An s3 source is signed only by what the build names (D54). With no secret and no
+    /// opt-in it goes unsigned, the host's credential chain (here, a container's endpoint)
+    /// never asked, and a store that requires signing refuses it with its status, the build
+    /// saying it went unsigned; `--credentials=aws-default` signs it through the chain, which
+    /// the build names by the endpoints it reached; the build's named secrets sign it with
+    /// their key, the chain not asked.
+    #[test]
+    fn an_s3_source_is_signed_only_by_what_the_build_names() {
+        let (store, store_seen) = super::super::http::serve(|head| {
+            if head
+                .to_ascii_lowercase()
+                .contains("\r\nauthorization: aws4-hmac-sha256 ")
+            {
+                ("HTTP/1.1 200 OK".into(), b"agent".to_vec())
+            } else {
+                (
+                    "HTTP/1.1 403 Forbidden".into(),
+                    b"<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>".to_vec(),
+                )
+            }
+        });
+        let (chain, chain_seen) = super::super::http::serve(|_| {
+            (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json".into(),
+                br#"{"AccessKeyId":"AKIDCHAIN","SecretAccessKey":"chain-secret","Token":"t","Expiration":"2099-01-01T00:00:00Z"}"#.to_vec(),
+            )
+        });
+        let home = shards_testdir::TempDir::new("s3-signers").unwrap();
+        let home_path = home.to_str().unwrap().to_string();
+        let container = format!("http://127.0.0.1:{chain}/creds");
+        let env = move |k: &str| match k {
+            "HOME" => Some(home_path.clone()),
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI" => Some(container.clone()),
+            _ => None,
+        };
+        let line = |credentials: &str| {
+            format!(
+                "AGENT --endpoint=http://127.0.0.1:{store} --region=us-east-1 --path-style --version-id=v1 {credentials}a FROM s3://agents/a/v1.tgz"
+            )
+        };
+        let object = |credentials: &str, pairs: &[(&str, &str)]| {
+            let (id, attrs) = crate::build::planned_sources(&line(credentials))
+                .into_iter()
+                .next()
+                .unwrap();
+            let secrets = pairs
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.to_string(),
+                        shards_cmdline::buildflags::SecretBytes::new(v.as_bytes().to_vec()),
+                    )
+                })
+                .collect();
+            Object::of(&id, &attrs, &secrets).unwrap()
+        };
+        let limits = shards_image::store::Limits::none();
+        let fetch = |o: &Object, name: &str| {
+            o.fetch_in(
+                shards_registry::http::Cancel::new(),
+                home.join(name),
+                &limits,
+                &env,
+            )
+        };
+        let signed_by = || {
+            let heads = store_seen.lock().unwrap();
+            let last = heads.last().unwrap().clone();
+            last.split("Credential=")
+                .nth(1)
+                .map(|c| c.split('/').next().unwrap().to_string())
+        };
+
+        // Neither: unsigned, refused by the store with its status, and saying why.
+        let unsigned = object("", &[]);
+        assert_eq!(unsigned.signer, Signer::Unsigned);
+        let refused = fetch(&unsigned, "one").unwrap_err();
+        let super::super::http::Failure::CacheKey(why) = refused else {
+            panic!("{refused:?}")
+        };
+        assert!(why.contains("StatusCode: 403"), "{why}");
+        assert!(why.contains("api error AccessDenied: Access Denied"), "{why}");
+        assert!(why.ends_with(&format!(" ({})", Signed::Unsigned)), "{why}");
+        assert_eq!(signed_by(), None);
+        assert!(
+            chain_seen.lock().unwrap().is_empty(),
+            "the host's chain was asked"
+        );
+
+        // The opt-in: signed through the chain, which names what it reached.
+        let chained = object(
+            "--credentials=aws-default ",
+            &[("AWS_ACCESS_KEY_ID", "AKIDNOTUSED")],
+        );
+        assert_eq!(chained.signer, Signer::HostChain);
+        let got = fetch(&chained, "two").unwrap();
+        assert_eq!(std::fs::read(&got.path).unwrap(), b"agent");
+        assert_eq!(signed_by().as_deref(), Some("AKIDCHAIN"));
+        let reached = format!("http://127.0.0.1:{chain}");
+        assert_eq!(got.signed, Some(Signed::HostChain(vec![reached.clone()])));
+        assert_eq!(
+            got.signed.unwrap().to_string(),
+            format!(
+                "signed through the host's AWS default credential chain (--credentials=aws-default), which reached {reached}"
+            )
+        );
+        assert_eq!(chain_seen.lock().unwrap().len(), 1);
+
+        // The build's named secrets: signed with their key, the chain not asked.
+        let keyed = object(
+            "",
+            &[
+                ("AWS_ACCESS_KEY_ID", "AKIDSECRET"),
+                ("AWS_SECRET_ACCESS_KEY", "secret"),
+            ],
+        );
+        assert_eq!(keyed.signer, Signer::Secrets);
+        let got = fetch(&keyed, "three").unwrap();
+        assert_eq!(signed_by().as_deref(), Some("AKIDSECRET"));
+        assert_eq!(got.signed, Some(Signed::Secrets));
+        assert_eq!(chain_seen.lock().unwrap().len(), 1);
+
+        // Half a key is refused, not filled in from elsewhere.
+        let (id, attrs) = crate::build::planned_sources(&line(""))
+            .into_iter()
+            .next()
+            .unwrap();
+        let half = [(
+            "AWS_ACCESS_KEY_ID".to_string(),
+            shards_cmdline::buildflags::SecretBytes::new(b"AKIDHALF".to_vec()),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            Object::of(&id, &attrs, &half).err().as_deref(),
+            Some(
+                "s3://agents/a/v1.tgz: the build's secrets name half a key: give both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+            )
+        );
     }
 }

@@ -44,6 +44,8 @@ pub struct Download {
     /// What an S3 object was served as, for the build's record: `versionId=ID`, else
     /// `etag=ETAG`.
     pub served_as: Option<String>,
+    /// How an S3 object's request was signed, which the build says (D54).
+    pub signed: Option<super::s3::Signed>,
 }
 
 /// What a source's fetch sends and where it may go, beyond what any URL's fetch does: the
@@ -403,6 +405,7 @@ pub fn fetch(
         digest: got,
         last_modified,
         served_as: None,
+        signed: None,
     })
 }
 

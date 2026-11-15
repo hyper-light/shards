@@ -455,6 +455,8 @@ pub struct S3 {
     pub path_style: bool,
     pub version_id: String,
     pub checksum: String,
+    /// `aws-default` where its directive opts into the host's AWS default credential chain.
+    pub credentials: String,
 }
 
 impl S3 {
@@ -468,6 +470,7 @@ impl S3 {
             .flag("pathStyle", self.path_style)
             .str("versionId", &self.version_id)
             .str("checksum", &self.checksum)
+            .str("credentials", &self.credentials)
             .done()
     }
 }
@@ -674,6 +677,7 @@ pub fn of_source(
                 path_style: attr("s3.pathstyle") == "true",
                 version_id: attr("s3.versionid"),
                 checksum: attr("s3.checksum"),
+                credentials: attr("s3.credentials"),
             });
         }
         // An OSI artifact (D116): to a policy, an object of a registry as an image is,

@@ -81,6 +81,9 @@ pub struct Chain<'a> {
     listed: Option<&'a [String]>,
     files: Files,
     region: String,
+    /// What it has reached, in order, each once: each endpoint's origin, and
+    /// `credential_process` where it ran one.
+    reached: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> Chain<'a> {
@@ -90,6 +93,22 @@ impl<'a> Chain<'a> {
             listed: None,
             files: Files::of(env),
             region: String::new(),
+            reached: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// What it has reached so far: each endpoint's origin, and `credential_process` where
+    /// it ran one, in order.
+    pub fn reached(&self) -> Vec<String> {
+        self.reached.borrow().clone()
+    }
+
+    /// Notes that `url` (or a credential process) is reached.
+    fn reach(&self, url: &str) {
+        let origin = Url::parse(url).map_or_else(|_| url.to_string(), |u| u.origin());
+        let mut reached = self.reached.borrow_mut();
+        if !reached.contains(&origin) {
+            reached.push(origin);
         }
     }
 
@@ -320,6 +339,7 @@ impl<'a> Chain<'a> {
         let body = super::form(&pairs);
         let url =
             Url::parse(&self.service(Some(top), "STS", "sts", &self.region)?).map_err(|e| e.to_string())?;
+        self.reach(&url.origin());
         let (status, answer) = super::post_signed(
             &self.client(Some(top))?,
             &url,
@@ -364,6 +384,7 @@ impl<'a> Chain<'a> {
             ("WebIdentityToken", token.trim()),
         ]);
         let url = self.service(top, "STS", "sts", &self.region)?;
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(top)?,
             "POST",
@@ -420,6 +441,7 @@ impl<'a> Chain<'a> {
         // is given.
         let env = |k: &str| if k == "AWS_CA_BUNDLE" { None } else { (self.env)(k) };
         let client = super::client(&env, None, Patience::default())?;
+        self.reach(url);
         let mut fields = vec![("Accept", "application/json")];
         if let Some(t) = token.filter(|t| !t.is_empty()) {
             fields.push(("Authorization", t));
@@ -502,6 +524,7 @@ impl<'a> Chain<'a> {
                 }
             }
         };
+        self.reach(&base);
         let v1 = !env_bool(self.env, "AWS_EC2_METADATA_V1_DISABLED")?
             .or_else(|| top.and_then(|p| p.ec2_metadata_v1_disabled))
             .unwrap_or(false);
@@ -596,6 +619,7 @@ impl<'a> Chain<'a> {
             super::query_escape(&p.sso_account_id),
             super::query_escape(&p.sso_role_name)
         );
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(Some(top))?,
             "GET",
@@ -661,6 +685,7 @@ impl<'a> Chain<'a> {
         })
         .to_string();
         let url = format!("{}/token", self.service(Some(top), "SSO OIDC", "oidc", region)?);
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(Some(top))?,
             "POST",
@@ -734,6 +759,7 @@ impl<'a> Chain<'a> {
                 "{}/v1/token",
                 self.service(Some(top), "Signin", "signin", &self.region)?
             );
+            self.reach(&url);
             let proof = dpop(&text(&token, "dpopKey").unwrap_or_default(), &url)?;
             let body = serde_json::json!({
                 "clientId": text(&token, "clientId"),
@@ -804,6 +830,7 @@ impl<'a> Chain<'a> {
     /// minute at most; its output `{"Version": 1, "AccessKeyId", "SecretAccessKey",
     /// "SessionToken", "Expiration"}`.
     fn process(&self, command: &str) -> Result<Found, String> {
+        self.reach("credential_process");
         let out = run_process(command, &self.process_env())?;
         let v: Value =
             serde_json::from_slice(&out).map_err(|e| format!("credential_process: its output: {e}"))?;

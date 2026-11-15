@@ -5334,11 +5334,13 @@ object store). Every fetched source is pinned, and every one is held to the gran
 directive makes.
 
 **Forms.** `AGENT|HARNESS [--checksum=sha256:<hex>] [--redirect=HOST[:PORT]]…
-[--endpoint=URL] [--region=R] [--path-style] [--version-id=V] <name> FROM <source>`.
+[--endpoint=URL] [--region=R] [--path-style] [--version-id=V] [--credentials=aws-default]
+<name> FROM <source>`.
 - An http(s) source needs `--checksum`: the content behind a URL changes without notice.
 - An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
   S3; the bytes are hashed either way.
-- `--endpoint`, `--region`, `--path-style` and `--version-id` go only with `s3://`.
+- `--endpoint`, `--region`, `--path-style`, `--version-id` and `--credentials` go only with
+  `s3://`; `--credentials` takes `aws-default` alone.
   `--checksum` goes only with http(s) and s3, as a Git source is pinned by the commit its
   `#REF` resolves to (recorded as before). `--redirect` goes only with http(s) and Git.
 - `SKILL` and `MCP` take `--redirect=HOST[:PORT]`, repeated, exactly as `AGENT` and
@@ -5367,11 +5369,32 @@ directive names none. Its errors say `s3 source` where the cache's say `s3 cache
 - One `GetObject`, with `versionId` where pinned. The body streams to disk, hashed, within
   the limits an HTTP source's download holds to (audit A10).
 - A `--checksum` mismatch is refused (`digest mismatch GOT: WANT`).
-- Credentials are taken by reference: the build's secrets `AWS_ACCESS_KEY_ID`,
-  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` (AWS's own variable names), each
-  `NAME.<bucket>` before `NAME`, as Git's `GIT_AUTH_TOKEN.<host>` comes before
-  `GIT_AUTH_TOKEN`. Else the SDK's default chain (crate::aws::credentials). The copies
-  the client is made from are zeroized once it holds its own.
+- Credentials are taken only by explicit reference, never implicitly (`build::s3::Signer`):
+  - the build's secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`
+    (AWS's own variable names), each `NAME.<bucket>` before `NAME`, as Git's
+    `GIT_AUTH_TOKEN.<host>` comes before `GIT_AUTH_TOKEN`. A key ID without its secret, or
+    the reverse, is refused (`the build's secrets name half a key`), not completed from
+    elsewhere;
+  - or `--credentials=aws-default`, which opts into the host's AWS default chain
+    (crate::aws::credentials: the environment, profiles, SSO, sign-in, web identity, a
+    container's endpoint, EC2's instance metadata, a credential process). The opt-in is
+    the grant to the chain's own endpoints, as its configuration names them; the chain
+    records each origin it reached (`Chain::reached`, and `credential_process` where it ran
+    one) and the build names them on the source's step: `s3://B/K: signed through the
+    host's AWS default credential chain (--credentials=aws-default), which reached
+    http://169.254.169.254:80` (or `no endpoint` for the environment's keys). The build's
+    secrets are not read for such a source;
+  - with neither, the GET goes unsigned, as the SDK's anonymous credentials send it: a
+    public object's. The step says `sent unsigned: …`, and a store that requires
+    signing refuses it with its status, the refusal ending with why it went unsigned.
+  Before, a source with no secrets fell back to the host's chain, which reached IMDS,
+  SSO or STS without the Agentfile naming any of them. The S3 cache keeps BuildKit's
+  rule (its attributes' keys, else the chain): `Unkeyed::Chain` for it,
+  `Unkeyed::Unsigned` for a source. A policy sees the opt-in as `input.s3.credentials`.
+  The copies the client is made from are zeroized once it holds its own.
+  Tests: `an_s3_source_is_signed_only_by_what_the_build_names` (unit, against a stand-in
+  that refuses unsigned requests with 403 and a container endpoint as the chain; and on
+  real VMs).
 - The build records the object as `s3://BUCKET/KEY?versionId=V` (or `?etag=E` where S3
   keeps no versions) with its SHA-256, among the provenance's materials.
 - An s3 source is fetched and keyed by its content, as an HTTP source is
@@ -5436,6 +5459,7 @@ Rejected:
 | `sha256:` and 64 hex digits | the pin is a SHA-256 (FIPS 180-4), as `http.checksum` is |
 | `HTTP_AUTH_HEADER_`, `HTTP_AUTH_TOKEN_`, `Bearer ` | BuildKit v0.28.1 source/http/source.go |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | AWS's own variable names (SDK configuration) |
+| `aws-default` | shards' name for the SDK's default credential chain (aws-sdk-go-v2 config.LoadDefaultConfig), the one value `--credentials` takes |
 | ports 80 and 443 | RFC 9110 §4.2 |
 | labels of 1-63 characters, names of at most 253 | RFC 1035 §2.3.4 |
 

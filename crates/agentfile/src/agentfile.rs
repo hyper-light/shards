@@ -56,7 +56,14 @@ pub struct Fetch {
     pub region: Vec<u8>,
     pub path_style: bool,
     pub version_id: Vec<u8>,
+    /// `--credentials=aws-default`: an s3 source signed through the host's AWS default
+    /// credential chain, which it opts into by name; else only the build's named secrets
+    /// sign it, or nothing does.
+    pub aws_default: bool,
 }
+
+/// `--credentials`'s one value: the host's AWS default credential chain (D54).
+pub const AWS_DEFAULT: &[u8] = b"aws-default";
 
 /// Whom a grant is for: `FOR`'s names, of the kind `--target-kind` says or each name's
 /// own. None named is every one.
@@ -525,7 +532,16 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     req.flags.add("region", FlagType::String, b"");
     req.flags.add("path-style", FlagType::Bool, b"false");
     req.flags.add("version-id", FlagType::String, b"");
+    req.flags.add("credentials", FlagType::String, b"");
     req.flags.parse()?;
+    let credentials = req.flags.value("credentials");
+    if !credentials.is_empty() && credentials != AWS_DEFAULT {
+        return Err(errf(&[
+            directive.as_bytes(),
+            b" --credentials is aws-default, the host's AWS default credential chain, not ",
+            go::quote(&credentials).as_bytes(),
+        ]));
+    }
     let fetch = Fetch {
         checksum: req.flags.value("checksum"),
         redirects: req.flags.values("redirect"),
@@ -533,6 +549,7 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
         region: req.flags.value("region"),
         path_style: req.flags.is_true("path-style"),
         version_id: req.flags.value("version-id"),
+        aws_default: !credentials.is_empty(),
     };
     let processes = match req.flags.value("processes").as_slice() {
         b"" => Processes::Unbounded,
@@ -601,9 +618,12 @@ fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Ve
     let s3_flags = !fetch.endpoint.is_empty()
         || !fetch.region.is_empty()
         || fetch.path_style
-        || !fetch.version_id.is_empty();
+        || !fetch.version_id.is_empty()
+        || fetch.aws_default;
     if s3_flags && !s3 {
-        return refuse("--endpoint, --region, --path-style and --version-id are an s3:// source's");
+        return refuse(
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        );
     }
     if !fetch.endpoint.is_empty()
         && !(fetch.endpoint.starts_with(b"https://") || fetch.endpoint.starts_with(b"http://"))

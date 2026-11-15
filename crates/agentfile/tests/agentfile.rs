@@ -1967,7 +1967,15 @@ fn fetched_sources_are_pinned_and_say_where_they_are() {
         ("AGENT a FROM s3:///key", "names no object"),
         (
             "AGENT --region=us-east-1 a FROM ./a",
-            "--endpoint, --region, --path-style and --version-id are an s3:// source's",
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=aws-default a FROM https://h/a.tgz",
+            "--credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=env --version-id=1 a FROM s3://b/k",
+            "AGENT --credentials is aws-default, the host's AWS default credential chain, not \"env\"",
         ),
         ("AGENT --version-id=1 a FROM https://h/a.tgz", "an s3:// source's"),
         (
@@ -2133,6 +2141,8 @@ fn fetched_sources_carry_their_pins_and_grants_into_the_plan() {
     ] {
         assert_eq!(s3.get(k).map(String::as_str), Some(v), "{k}");
     }
+    // Signed only by what the build names: no opt-in to the host's chain unless written.
+    assert!(!s3.contains_key("s3.credentials"), "{s3:?}");
     let g = sources
         .iter()
         .find(|(i, _)| i.starts_with("git://git.example/o/r.git"))

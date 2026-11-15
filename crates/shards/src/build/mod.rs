@@ -4042,6 +4042,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     .get(b"http.filename".as_slice())
                     .or_else(|| attrs.get(b"s3.filename".as_slice()))
                     .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
+                if let Some(signed) = &download.signed {
+                    progress
+                        .borrow()
+                        .line(&v, &format!("{}: {signed}", show(identifier)));
+                }
                 let pin = download.digest.to_string();
                 let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
                 let uri = match &download.served_as {
@@ -7255,6 +7260,7 @@ fn solve_context(
                             digest: stdin.digest.clone(),
                             last_modified: None,
                             served_as: None,
+                            signed: None,
                         },
                         None,
                     ),

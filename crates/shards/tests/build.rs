@@ -18194,3 +18194,99 @@ fn a_skill_from_a_redirecting_source_builds_once_granted() {
     let laid = std::fs::read_to_string(out.join("root/skills/review/SKILL.md")).unwrap();
     assert!(laid.contains("name: review"), "{laid}");
 }
+
+/// An s3 source is signed only by what the build names (D54): with no secret and no
+/// `--credentials=aws-default` it goes unsigned, though the host's environment holds a key,
+/// and a store that requires signing refuses it with its status, the build saying it went
+/// unsigned; the opt-in signs it through the host's chain (here the environment's key),
+/// the build saying so; the build's named secrets sign it with theirs.
+#[test]
+fn an_s3_source_is_signed_only_by_what_the_build_names() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let (port, buckets) = common::fake_s3();
+    let tarball = common::tar(&[("agent.txt", 0o644, 0, Some(b"agent v1\n"))]);
+    buckets
+        .lock()
+        .unwrap()
+        .objects
+        .insert("/agents/a/v1.tar".into(), (tarball, std::time::SystemTime::now()));
+    let home = TempDir::new("src-s3-signers-home");
+    let aws = TempDir::new("src-s3-signers-aws");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+        ("AK", std::ffi::OsStr::new("AKIDSECRET")),
+        ("SK", std::ffi::OsStr::new("sk-named")),
+        // The host's own chain: a key in the environment, no profile files.
+        ("AWS_ACCESS_KEY_ID", std::ffi::OsStr::new("AKIDHOSTENV")),
+        ("AWS_SECRET_ACCESS_KEY", std::ffi::OsStr::new("sk-host")),
+        ("AWS_CONFIG_FILE", aws.join("config").into_os_string().leak()),
+        (
+            "AWS_SHARED_CREDENTIALS_FILE",
+            aws.join("credentials").into_os_string().leak(),
+        ),
+        ("AWS_PROFILE", std::ffi::OsStr::new("")),
+        ("AWS_ENDPOINT_URL", std::ffi::OsStr::new("")),
+        ("AWS_ENDPOINT_URL_S3", std::ffi::OsStr::new("")),
+    ];
+    let shards = |args: &[&str]| run_shards_env(&[], args, &env);
+    let build = |name: &str, credentials: &str, secrets: bool| {
+        let ctx = TempDir::new(name);
+        std::fs::write(
+            ctx.join("Agentfile"),
+            format!(
+                "FROM {image}\nAGENT --endpoint=http://127.0.0.1:{port} --region=us-east-1 --path-style --version-id=v1 {credentials}a FROM s3://agents/a/v1.tar\n"
+            ),
+        )
+        .unwrap();
+        let mut args = vec!["build", "--progress=plain"];
+        if secrets {
+            args.extend([
+                "--secret",
+                "id=AWS_ACCESS_KEY_ID,env=AK",
+                "--secret",
+                "id=AWS_SECRET_ACCESS_KEY,env=SK",
+            ]);
+        }
+        let ctx = ctx.to_str().unwrap().to_string();
+        args.extend(["-t", "src-s3-signers:1", &ctx]);
+        let r = shards(&args);
+        let last = buckets.lock().unwrap().log.last().cloned().unwrap_or_default();
+        (r, last)
+    };
+    let (refused, last) = build("src-s3-signers-0", "", false);
+    assert_ne!(refused.status, Some(0));
+    assert!(
+        refused.stderr.contains("StatusCode: 403")
+            && refused.stderr.contains(
+                "sent unsigned: neither the build's secrets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY nor --credentials=aws-default name its credentials"
+            ),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(last, "GET /agents/a/v1.tar ");
+    let (chained, last) = build("src-s3-signers-1", "--credentials=aws-default ", false);
+    assert_eq!(chained.status, Some(0), "{}", chained.stderr);
+    assert_eq!(last, "GET /agents/a/v1.tar AKIDHOSTENV");
+    assert!(
+        chained.stderr.contains(
+            "s3://agents/a/v1.tar: signed through the host's AWS default credential chain (--credentials=aws-default), which reached no endpoint"
+        ),
+        "{}",
+        chained.stderr
+    );
+    let (named, last) = build("src-s3-signers-2", "", true);
+    assert_eq!(named.status, Some(0), "{}", named.stderr);
+    assert_eq!(last, "GET /agents/a/v1.tar AKIDSECRET");
+    assert!(
+        named.stderr.contains(
+            "s3://agents/a/v1.tar: signed with the build's secrets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+        ),
+        "{}",
+        named.stderr
+    );
+}

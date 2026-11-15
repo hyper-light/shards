@@ -4619,6 +4619,9 @@ impl Planner<'_> {
                 if fetch.path_style {
                     attrs.insert(b"s3.pathstyle".to_vec(), b"true".to_vec());
                 }
+                if fetch.aws_default {
+                    attrs.insert(b"s3.credentials".to_vec(), crate::agentfile::AWS_DEFAULT.to_vec());
+                }
                 let st = self
                     .graph
                     .source(source.to_vec(), attrs, None, custom_name(shown.clone()));
