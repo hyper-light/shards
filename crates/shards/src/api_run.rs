@@ -650,6 +650,33 @@ fn egress(
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
 }
 
+/// `narrowing` as its run holds it (D272): what of its image's grants each list keeps, written
+/// out whole as the image writes them (`Keep::Only`), names asked where both grant them, and
+/// its members' reach as asked; any other is a widening, refused by name, as [`egress`]
+/// refuses it.
+fn resolved(
+    grants: Option<&shards_agentfile::agentfile::Grants>,
+    narrowing: &wire::Narrowing,
+) -> Result<wire::Narrowing, No> {
+    let none = shards_agentfile::agentfile::Grants::default();
+    let g = grants.unwrap_or(&none);
+    let only = |what: &str, granted: &[Vec<u8>], keep: &wire::Keep| -> Result<wire::Keep, No> {
+        Ok(wire::Keep::Only(
+            kept(what, granted, keep)?
+                .iter()
+                .map(|item| String::from_utf8_lossy(item).into_owned())
+                .collect(),
+        ))
+    };
+    Ok(wire::Narrowing {
+        egress: only("egress", &g.egress, &narrowing.egress)?,
+        mcp: only("remote MCP server", &g.mcp, &narrowing.mcp)?,
+        destinations: only("destination", &g.destinations, &narrowing.destinations)?,
+        dns: g.dns && narrowing.dns,
+        members: narrowing.members.clone(),
+    })
+}
+
 /// The run's credential grants for its network process (D242), by reference and never a
 /// value: each toward one host at least, and each host one its egress grants reach (D236),
 /// as a grant that could never be filled is refused, not kept silently; each placeholder a
@@ -1598,8 +1625,8 @@ struct NetControl<'a> {
 }
 
 /// Each ask of a run host's of its network process sent and not yet answered, in the order
-/// sent: its kind, and who waits for its answer ([`NetControl::ask`]).
-type NetAsks = std::collections::VecDeque<(u8, std::sync::mpsc::Sender<()>)>;
+/// sent: its kind, and who waits for its answer's payload ([`NetControl::ask`]).
+type NetAsks = std::collections::VecDeque<(u8, std::sync::mpsc::Sender<Vec<u8>>)>;
 
 impl<'a> NetControl<'a> {
     fn new(control: &'a crate::netproc::Control) -> NetControl<'a> {
@@ -1618,9 +1645,9 @@ impl<'a> NetControl<'a> {
     }
 
     /// Sends `kind` with `payload`, and waits for its network process's answer of that kind,
-    /// which the relay hands back in the order asked: refused where it could not be sent, or
-    /// where the control is read no more before it is answered.
-    fn ask(&self, kind: u8, payload: &[u8]) -> Result<(), String> {
+    /// which the relay hands back in the order asked: its payload; refused where it could not
+    /// be sent, or where the control is read no more before it is answered.
+    fn ask(&self, kind: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
         let (answered, answer) = std::sync::mpsc::channel();
         {
             let _one = lock(&self.sending);
@@ -1641,14 +1668,14 @@ impl<'a> NetControl<'a> {
             .map_err(|_| "its network process ended before it answered".to_string())
     }
 
-    /// The answer of `kind` its network process sent, handed to the oldest ask, which it must
-    /// be of: whether it was.
-    fn answered(&self, kind: u8) -> bool {
+    /// The answer of `kind` its network process sent, `payload`, handed to the oldest ask,
+    /// which it must be of: whether it was.
+    fn answered(&self, kind: u8, payload: Vec<u8>) -> bool {
         let mut asked = lock(&self.asked);
         match asked.as_mut().and_then(|a| a.front().map(|(k, _)| *k)) {
             Some(oldest) if oldest == kind => {
                 if let Some((_, waiter)) = asked.as_mut().and_then(std::collections::VecDeque::pop_front) {
-                    let _ = waiter.send(());
+                    let _ = waiter.send(payload);
                 }
                 true
             }
@@ -1731,9 +1758,11 @@ fn read_control(net: &NetControl<'_>, leasing: Option<&Leasing<'_>>, answers: &A
             Ok(None) | Err(_) => return,
         };
         let asks = m.kind == kind::NET_SIGN_IN || m.kind == kind::NET_LEASE;
+        if !asks && net.answered(m.kind, std::mem::take(&mut m.payload)) {
+            continue;
+        }
         let leasing = match leasing {
             Some(leasing) if asks => leasing,
-            _ if !asks && net.answered(m.kind) => continue,
             _ => {
                 zeroize::Zeroize::zeroize(&mut m.payload);
                 say(format_args!(
@@ -2523,6 +2552,11 @@ mod hosted {
         members: Vec<wire::MemberInfo>,
         listeners: Vec<publish::Listener>,
         egress: Option<Vec<u8>>,
+        /// The most it could ever be granted past its microVM, its image's grants as its network
+        /// process takes them (`NET_POLICY`, D272), where its image grants any.
+        ceiling: Option<Vec<u8>>,
+        /// Its grants past its microVM as its request keeps them, written out whole (D272).
+        narrowing: wire::Narrowing,
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
         /// it has any, or sign-ins.
         credentials: Option<Vec<u8>>,
@@ -2667,6 +2701,7 @@ mod hosted {
         labels: Vec<String>,
         active: Vec<u32>,
         egress: Option<Vec<u8>>,
+        ceiling: Option<Vec<u8>>,
         credentials: Option<Vec<u8>>,
         sign_ins: Option<Vec<u8>>,
         bridge: Option<shards_net::bridge::Bridge>,
@@ -2753,6 +2788,7 @@ mod hosted {
         }
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
+        let ceiling = super::egress(agentfile.as_ref().map(|a| &a.grants), &wire::Narrowing::default())?;
         let sign_ins = super::sign_ins(&request.sign_ins, &request.credentials, egress.as_deref())?;
         let credentials = super::credentials(
             &request.credentials,
@@ -2848,6 +2884,7 @@ mod hosted {
             labels,
             active,
             egress,
+            ceiling,
             credentials,
             sign_ins,
             bridge,
@@ -2872,6 +2909,7 @@ mod hosted {
             labels,
             active,
             egress,
+            ceiling,
             credentials,
             sign_ins,
             bridge,
@@ -3020,11 +3058,14 @@ mod hosted {
             .filter_map(|s| std::fs::canonicalize(&s.host).ok())
             .collect();
         super::step(format_args!("its run planned"));
+        let narrowing = super::resolved(agentfile.as_ref().map(|a| &a.grants), &request.egress)?;
         Ok(Plan {
             prepared,
             members,
             listeners: bound.listeners,
             egress,
+            ceiling,
+            narrowing,
             credentials,
             sign_ins,
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
@@ -3620,7 +3661,8 @@ mod hosted {
         net: &crate::netproc::Control,
         address: Option<&[u8]>,
         ports: &[Port],
-        egress: Option<&[u8]>,
+        ceiling: Option<&[u8]>,
+        granted: Option<&[u8]>,
         sign_ins: Option<&[u8]>,
         credentials: Option<&[u8]>,
     ) -> Result<Option<Vec<u8>>, String> {
@@ -3641,7 +3683,10 @@ mod hosted {
             )
             .map_err(|e| format!("published ports: {e}"))?;
         }
-        if let Some(policy) = egress {
+        // The most the run could ever be granted past its microVM, its image's grants (D272),
+        // which its network process is held to (Landlock's layer on Linux), its grants as the
+        // run goes within them.
+        if let Some(policy) = ceiling {
             crate::netproc::send(net, kind::NET_POLICY, policy, &[])
                 .map_err(|e| format!("egress grants: {e}"))?;
             asked.push((kind::NET_POLICY, "egress grants"));
@@ -3651,6 +3696,26 @@ mod hosted {
                 Ok(Some(m)) if m.kind == which => {}
                 Ok(_) => return Err(format!("{what}: the network process did not take them")),
                 Err(e) => return Err(format!("{what}: the network process: {e}")),
+            }
+        }
+        // Its grants as its request keeps them (D272), where they are less than its ceiling:
+        // nothing past it where it keeps nothing. Before its sign-ins and credential grants,
+        // whose hosts its network process checks its grants reach.
+        if let Some(ceiling) = ceiling
+            && granted != Some(ceiling)
+        {
+            crate::netproc::send(net, kind::NET_GRANTS, granted.unwrap_or_default(), &[])
+                .map_err(|e| format!("its grants: {e}"))?;
+            match crate::netproc::recv(net) {
+                Ok(Some(m)) if m.kind == kind::NET_GRANTS && m.payload == [0] => {}
+                Ok(Some(m)) if m.kind == kind::NET_GRANTS => {
+                    return Err(format!(
+                        "its grants: {}",
+                        String::from_utf8_lossy(m.payload.get(1..).unwrap_or_default())
+                    ));
+                }
+                Ok(_) => return Err("its grants: the network process did not take them".into()),
+                Err(e) => return Err(format!("its grants: the network process: {e}")),
             }
         }
         // The run's sign-in grants (D242, step 8), once its policy is taken, which the network
@@ -3758,10 +3823,12 @@ mod hosted {
         let result = match ask.change {
             wire::NetChange::Publish(p) => publish_live(live, &mut ports, &p),
             wire::NetChange::Unpublish { proto, host } => unpublish_live(live, &mut ports, proto, host),
+            wire::NetChange::Egress(asked) => egress_live(live, &asked).map(|()| Vec::new()),
         }
         .map(|changed| wire::NetChanged {
             changed,
             published: ports.published(),
+            egress: lock(&live.egress).clone(),
         });
         net_answered(live, ask.id, result);
         drop(ports);
@@ -3836,6 +3903,47 @@ mod hosted {
             return Err((R::Network, format!("its network process: {e}")));
         }
         Ok(ports.held.iter().skip(first).map(|p| p.bound.clone()).collect())
+    }
+
+    /// The run's grants past its microVM made `asked` as it goes (D272), within its image's:
+    /// checked as its start's are (`super::egress`, `super::held_apart`: a grant its image does
+    /// not give, or a member's reach other than its image lets it have, is a widening), told its
+    /// network process (`NET_GRANTS`), which holds every flow to them from then on and ends
+    /// those they no longer reach, and held here once it took them.
+    fn egress_live(live: &Live<'_>, asked: &wire::Narrowing) -> Result<(), (wire::NetRefusal, String)> {
+        use wire::NetRefusal as R;
+        let net = live.net.ok_or_else(no_network)?;
+        let refused = |super::No(cause, why)| match cause {
+            Cause::Widening => (R::Widening, why),
+            _ => (R::Image, why),
+        };
+        let grants = live.agentfile.map(|a| &a.grants);
+        let policy = super::egress(grants, asked).map_err(refused)?;
+        super::held_apart(live.agentfile, asked).map_err(refused)?;
+        let resolved = super::resolved(grants, asked).map_err(refused)?;
+        if !live.ceiled {
+            // Its image grants nothing past its microVM, which its network process was told
+            // as no policy: nothing can be granted, and nothing is what it holds.
+            if policy.is_some() {
+                return Err((R::Widening, "its image grants nothing past its microVM".into()));
+            }
+            *lock(&live.egress) = resolved;
+            return Ok(());
+        }
+        let said = net
+            .ask(kind::NET_GRANTS, policy.as_deref().unwrap_or_default())
+            .map_err(|why| (R::Network, why))?;
+        if said != [0] {
+            return Err((
+                R::Network,
+                format!(
+                    "its network process: {}",
+                    String::from_utf8_lossy(said.get(1..).unwrap_or_default())
+                ),
+            ));
+        }
+        *lock(&live.egress) = resolved;
+        Ok(())
     }
 
     /// The port the run publishes at `host` for `proto` let go of (D269): its network process
@@ -3981,6 +4089,12 @@ mod hosted {
         net: Option<&'a super::NetControl<'a>>,
         /// The ports it publishes (D269).
         ports: Mutex<Ports>,
+        /// Its grants past its microVM as they stand, written out whole (D272): held under its
+        /// ports' lock's turn, as every change of its network is.
+        egress: Mutex<wire::Narrowing>,
+        /// Whether its network process was told a ceiling (`NET_POLICY`): its image grants
+        /// something past its microVM (D272).
+        ceiled: bool,
         /// Its image's Agentfile, which a port published is checked against and reaches its
         /// members by (D122).
         agentfile: Option<&'a crate::agentfile::Agentfile>,
@@ -4590,6 +4704,7 @@ mod hosted {
                     control,
                     plan.address.as_deref(),
                     &ports.held,
+                    plan.ceiling.as_deref(),
                     plan.egress.as_deref(),
                     plan.sign_ins.as_deref(),
                     plan.credentials.as_deref(),
@@ -4638,6 +4753,7 @@ mod hosted {
                 published: ports.published(),
                 control: control.as_ref().map(|(endpoint, _)| control_at(endpoint)),
                 from: launched.from,
+                egress: plan.narrowing.clone(),
             }
             .encode()
             .map_err(|e| boot(e.to_string()))?;
@@ -4689,6 +4805,8 @@ mod hosted {
                 agent,
                 net: net.as_ref(),
                 ports: Mutex::new(ports),
+                egress: Mutex::new(plan.narrowing.clone()),
+                ceiled: plan.ceiling.is_some(),
                 agentfile: plan.prepared.agentfile.as_ref(),
                 command: plan.command,
                 #[cfg(windows)]
@@ -6692,6 +6810,8 @@ mod hosted {
                 agent: None,
                 net: None,
                 ports: Mutex::new(Ports::default()),
+                egress: Mutex::new(wire::Narrowing::default()),
+                ceiled: false,
                 agentfile: None,
                 command: false,
             }
@@ -6824,6 +6944,101 @@ mod hosted {
             );
             assert!(matches!(answered(5), Err((wire::NetRefusal::NoNetwork, _))));
             assert!(lock(&unnetworked.ports).held.is_empty());
+        }
+
+        /// D272. Do, on a run whose image grants 443/tcp and a destination, its stand-in
+        /// network process taking or refusing what it is told: keep 443/tcp alone; keep a port
+        /// its image grants not; have its network process refuse; keep nothing on a run whose
+        /// image grants nothing past its microVM, and something there; and change one with no
+        /// network. Expect: `NET_GRANTS` told the policy kept, taken, and the run's grants
+        /// written out whole; `Widening` for the port, nothing told; `Network` in its network
+        /// process's words, the grants before kept; nothing told and nothing held of the run
+        /// with no ceiling, its widening refused; `NoNetwork`.
+        #[test]
+        fn a_runs_grants_change_within_its_images_as_it_goes() {
+            use wire::NetRefusal as R;
+            let dir = shards_testdir::TempDir::new("api-egress").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, _vm) = Stream::pair().unwrap();
+            let (netproc, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
+            netproc
+                .set_read_timeout(Some(std::time::Duration::from_secs(120)))
+                .unwrap();
+            let control = super::super::NetControl::new(&run_host);
+            let agentfile = crate::agentfile::Agentfile {
+                grants: shards_agentfile::agentfile::Grants {
+                    egress: vec![b"443/tcp".to_vec()],
+                    destinations: vec![b"api.example.com:443".to_vec()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let only = |items: &[&str]| wire::Keep::Only(items.iter().map(|i| i.to_string()).collect());
+            let asked = |egress: &[&str]| wire::Narrowing {
+                egress: only(egress),
+                mcp: only(&[]),
+                destinations: only(&[]),
+                dns: false,
+                members: None,
+            };
+            let live = Live {
+                net: Some(&control),
+                ceiled: true,
+                agentfile: Some(&agentfile),
+                ..live(&answers, dir.path(), link, None)
+            };
+            std::thread::scope(|s| {
+                let reading = s.spawn(|| super::super::relay(&control, None, &answers));
+                let changing = s.spawn(|| egress_live(&live, &asked(&["443/tcp"])));
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!(told.kind, kind::NET_GRANTS);
+                assert_eq!(
+                    shards_net::decode_policy(&told.payload),
+                    Some((
+                        shards_net::Ports(vec![(shards_net::Proto::Tcp, 443, 443)]),
+                        Vec::new(),
+                        false
+                    ))
+                );
+                shards_ipc::send(&netproc, kind::NET_GRANTS, &[0], &[]).unwrap();
+                assert_eq!(changing.join().unwrap(), Ok(()));
+                assert_eq!(*lock(&live.egress), asked(&["443/tcp"]));
+                assert!(matches!(
+                    egress_live(&live, &asked(&["22/tcp"])),
+                    Err((R::Widening, _))
+                ));
+                let changing = s.spawn(|| egress_live(&live, &asked(&[])));
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!((told.kind, told.payload.len()), (kind::NET_GRANTS, 0));
+                shards_ipc::send(&netproc, kind::NET_GRANTS, b"\x01past its ceiling", &[]).unwrap();
+                match changing.join().unwrap() {
+                    Err((R::Network, why)) => assert!(why.contains("past its ceiling"), "{why}"),
+                    other => panic!("{other:?}"),
+                }
+                assert_eq!(*lock(&live.egress), asked(&["443/tcp"]), "the grants before kept");
+                drop(netproc);
+                reading.join().unwrap();
+            });
+            let bare = crate::agentfile::Agentfile::default();
+            let unceiled = Live {
+                ceiled: false,
+                agentfile: Some(&bare),
+                ..live
+            };
+            assert_eq!(egress_live(&unceiled, &asked(&[])), Ok(()));
+            assert_eq!(*lock(&unceiled.egress), asked(&[]));
+            assert!(matches!(
+                egress_live(&unceiled, &asked(&["443/tcp"])),
+                Err((R::Widening, _))
+            ));
+            let unnetworked = Live {
+                net: None,
+                ..unceiled
+            };
+            assert!(matches!(
+                egress_live(&unnetworked, &asked(&[])),
+                Err((R::NoNetwork, _))
+            ));
         }
 
         /// D271. Do: ask a plug's source of a host directory, of a relative one, of a volume of
@@ -9287,9 +9502,9 @@ mod tests {
             let m = shards_ipc::recv(&net).unwrap().unwrap();
             assert_eq!(m.kind, kind::NET_NAMES);
             shards_ipc::send(&net, kind::NET_UNPUBLISHED, &[], &[]).unwrap();
-            assert_eq!(first.join().unwrap(), Ok(()));
-            shards_ipc::send(&net, kind::NET_NAMES, &[], &[]).unwrap();
-            assert_eq!(second.join().unwrap(), Ok(()));
+            assert_eq!(first.join().unwrap(), Ok(Vec::new()));
+            shards_ipc::send(&net, kind::NET_NAMES, &[7], &[]).unwrap();
+            assert_eq!(second.join().unwrap(), Ok(vec![7]));
             // An answer no ask awaits, and no lease a run with no grants could ask: nothing
             // more is read, and an ask is refused at once.
             shards_ipc::send(&net, kind::NET_LEASE, &[], &[]).unwrap();
@@ -9433,6 +9648,7 @@ mod tests {
             published: Vec::new(),
             control: Some(hosted::control_at(&endpoint)),
             from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
         };
         let told = wire::Started::decode(&started.encode().unwrap())
             .unwrap()
@@ -9910,7 +10126,15 @@ mod tests {
                 }
                 told
             });
-            let ca = hosted::tell_net(&run_host, Some(&address), &[], Some(&policy), None, None);
+            let ca = hosted::tell_net(
+                &run_host,
+                Some(&address),
+                &[],
+                Some(&policy),
+                Some(&policy),
+                None,
+                None,
+            );
             assert_eq!(ca, Ok(None));
             drop(run_host);
             network.join().unwrap()
@@ -9977,6 +10201,7 @@ mod tests {
                     &run_host,
                     None,
                     &[],
+                    Some(&policy),
                     Some(&policy),
                     sign_ins.as_deref(),
                     grants.as_deref(),

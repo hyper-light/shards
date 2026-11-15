@@ -122,6 +122,9 @@ struct State {
     /// network change's answer's (D269), which its host makes one at a time and answers in
     /// that order, whether or not its asker still waits for it.
     published: Vec<wire::Bound>,
+    /// The run's grants past its microVM, as its host last said them (its start's, then each
+    /// network change's answer's, D272), held as [`published`](Self::published) is.
+    egress: wire::Narrowing,
     /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D267),
     /// by its id, until its asker takes it.
     asks_paused: std::collections::HashSet<u32>,
@@ -677,12 +680,17 @@ impl Shared {
             state.nets.insert(id, None);
             id
         };
-        let ask = wire::NetAsk { id, change }.encode();
-        let answer = self
-            .send(wire::to_host::NET, &ask)
-            .map_err(|e| ImageRefusal::Os {
-                what: "the run host's network change",
-                kind: e.kind(),
+        let answer = wire::NetAsk { id, change }
+            .encode()
+            .map_err(|e| ImageRefusal::Spec {
+                what: "a network change",
+                why: e.to_string(),
+            })
+            .and_then(|ask| {
+                self.send(wire::to_host::NET, &ask).map_err(|e| ImageRefusal::Os {
+                    what: "the run host's network change",
+                    kind: e.kind(),
+                })
             })
             .and_then(|()| {
                 self.wait(patience, |s| {
@@ -1343,6 +1351,75 @@ impl Drop for Begun {
     }
 }
 
+/// The run's grants `current` with `grant` added (`add`) or taken out (D272), as its owner
+/// asks them of its host, which checks them as its start's: a port range, a remote MCP server or
+/// a destination to its list (and, where the run holds its members apart, to the reach of each
+/// member named, every member's where taken out), or names asked. Refused where `current`'s
+/// list is not written out whole (every grant of its image's, which its host writes out as the
+/// run starts), or where members are named of a run that holds none apart.
+fn regranted(
+    current: &wire::Narrowing,
+    grant: &super::EgressGrant,
+    add: bool,
+) -> Result<wire::Narrowing, ImageRefusal> {
+    use super::EgressGrant as G;
+    let mut next = current.clone();
+    let listed = |keep: &mut wire::Keep, item: &str| -> Result<(), ImageRefusal> {
+        let wire::Keep::Only(items) = keep else {
+            return Err(ImageRefusal::Spec {
+                what: "an egress grant",
+                why: "the run's grants are its image's whole, not written out to change".into(),
+            });
+        };
+        items.retain(|i| i != item);
+        if add {
+            items.push(item.to_string());
+        }
+        Ok(())
+    };
+    let reach =
+        |next: &mut wire::Narrowing, at: &str, members: &[super::MemberName]| -> Result<(), ImageRefusal> {
+            let Some(reach) = next.members.as_mut() else {
+                if members.is_empty() {
+                    return Ok(());
+                }
+                return Err(ImageRefusal::Spec {
+                    what: "an egress grant",
+                    why: "it names members of a run that holds none apart".into(),
+                });
+            };
+            for r in reach.iter_mut() {
+                r.destinations.retain(|d| d != at);
+            }
+            if add {
+                for m in members {
+                    match reach.iter_mut().find(|r| r.kind == m.kind && r.name == m.name) {
+                        Some(r) => r.destinations.push(at.to_string()),
+                        None => reach.push(wire::MemberReach {
+                            kind: m.kind,
+                            name: m.name.clone(),
+                            destinations: vec![at.to_string()],
+                        }),
+                    }
+                }
+            }
+            Ok(())
+        };
+    match grant {
+        G::Ports(ports) => listed(&mut next.egress, ports)?,
+        G::Mcp { at, members } => {
+            listed(&mut next.mcp, at)?;
+            reach(&mut next, at, members)?;
+        }
+        G::Destination { at, members } => {
+            listed(&mut next.destinations, at)?;
+            reach(&mut next, at, members)?;
+        }
+        G::Dns => next.dns = add,
+    }
+    Ok(next)
+}
+
 /// The members a plug is for (D271), by their declared indices, in order: every one that
 /// runs, or each one named, which must be one of `members` that runs, named once. Refused
 /// where none is left to plug into.
@@ -1714,6 +1791,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                 }
             }
             state.published = started.published.clone();
+            state.egress = started.egress.clone();
             state.started = Some(started);
         }
         k::WARMED => {
@@ -1816,6 +1894,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             let answer = wire::NetAnswer::decode(payload).map_err(bad)?;
             if let Ok(changed) = &answer.result {
                 state.published = changed.published.clone();
+                state.egress = changed.egress.clone();
             }
             if let Some(awaited) = state.nets.get_mut(&answer.id) {
                 *awaited = Some(answer.result);
@@ -2464,6 +2543,32 @@ impl ImageGuest for Session {
         self.shared
             .net(wire::NetChange::Unpublish { proto, host }, patience)
             .map(|_| ())
+    }
+
+    fn egress(&self) -> wire::Narrowing {
+        lock(&self.shared.state).egress.clone()
+    }
+
+    fn grant_egress(
+        &self,
+        grant: &super::EgressGrant,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        let asked = regranted(&self.egress(), grant, true)?;
+        self.shared
+            .net(wire::NetChange::Egress(asked), patience)
+            .map(|changed| changed.egress)
+    }
+
+    fn revoke_egress(
+        &self,
+        grant: &super::EgressGrant,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        let asked = regranted(&self.egress(), grant, false)?;
+        self.shared
+            .net(wire::NetChange::Egress(asked), patience)
+            .map(|changed| changed.egress)
     }
 
     fn control(&self) -> Option<&wire::ControlAt> {
@@ -3195,6 +3300,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
         }
         .encode()
         .unwrap();
@@ -3837,6 +3943,106 @@ mod tests {
         h.reader.join().unwrap();
     }
 
+    /// D272: a grant is added to, or taken out of, the run's grants as its host last wrote them
+    /// out: a port range, a remote MCP server or a destination to its list, and to the reach of
+    /// each member named where the run holds them apart (taken out of every member's), or
+    /// names asked; added once however often. Refused, typed, where its list is its image's
+    /// whole and not written out, and where members are named of a run that holds none apart.
+    #[test]
+    fn a_grant_goes_in_and_out_of_the_runs_grants_as_written_out() {
+        use super::super::{EgressGrant as G, MemberName};
+        let only = |items: &[&str]| wire::Keep::Only(items.iter().map(|i| i.to_string()).collect());
+        let current = wire::Narrowing {
+            egress: only(&["443/tcp"]),
+            mcp: only(&[]),
+            destinations: only(&["api.openai.com:443"]),
+            dns: false,
+            members: Some(vec![wire::MemberReach {
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                destinations: vec!["api.openai.com:443".into()],
+            }]),
+        };
+        let added = regranted(&current, &G::Ports("8000-8010/udp".into()), true).unwrap();
+        assert_eq!(added.egress, only(&["443/tcp", "8000-8010/udp"]));
+        assert_eq!(
+            regranted(&added, &G::Ports("8000-8010/udp".into()), true).unwrap(),
+            added
+        );
+        assert_eq!(
+            regranted(&added, &G::Ports("443/tcp".into()), false)
+                .unwrap()
+                .egress,
+            only(&["8000-8010/udp"])
+        );
+        let mcp = G::Mcp {
+            at: "mcp.example.com:443".into(),
+            members: vec![MemberName::harness("codex"), MemberName::agent("helper")],
+        };
+        let with = regranted(&current, &mcp, true).unwrap();
+        assert_eq!(with.mcp, only(&["mcp.example.com:443"]));
+        let reach = with.members.clone().unwrap();
+        assert_eq!(
+            reach[0].destinations,
+            ["api.openai.com:443", "mcp.example.com:443"]
+        );
+        assert_eq!(
+            (reach[1].name.as_str(), reach[1].destinations.as_slice()),
+            ("helper", &["mcp.example.com:443".to_string()][..])
+        );
+        let without = regranted(
+            &with,
+            &G::Destination {
+                at: "api.openai.com:443".into(),
+                members: Vec::new(),
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(without.destinations, only(&[]));
+        assert!(
+            without
+                .members
+                .unwrap()
+                .iter()
+                .all(|r| !r.destinations.contains(&"api.openai.com:443".to_string())),
+            "taken out of every member's reach"
+        );
+        assert!(regranted(&current, &G::Dns, true).unwrap().dns);
+        let whole = wire::Narrowing::default();
+        assert!(matches!(
+            regranted(&whole, &G::Ports("443/tcp".into()), false),
+            Err(ImageRefusal::Spec {
+                what: "an egress grant",
+                ..
+            })
+        ));
+        let apart = wire::Narrowing {
+            members: None,
+            ..current.clone()
+        };
+        assert!(matches!(
+            regranted(&apart, &mcp, true),
+            Err(ImageRefusal::Spec { .. })
+        ));
+        // An answer's grants are the run's from then on, awaited or not.
+        let s = shared();
+        let changed = wire::NetChanged {
+            changed: Vec::new(),
+            published: Vec::new(),
+            egress: added.clone(),
+        };
+        let answer = wire::NetAnswer {
+            id: 3,
+            result: Ok(changed),
+        };
+        assert_eq!(
+            take(&s, wire::to_client::NET_CHANGED, &answer.encode().unwrap()),
+            Ok(false)
+        );
+        assert_eq!(lock(&s.state).egress, added);
+    }
+
     /// D271: a plug is for every member that runs, or for each one named that runs, by its
     /// declared index in order; a member the image declares not, one of files alone, one named
     /// twice and a plug for none are refused, typed, before anything is asked of its host. A
@@ -3911,6 +4117,7 @@ mod tests {
         let made = wire::NetChanged {
             changed: vec![bound(41001)],
             published: vec![bound(41000), bound(41001)],
+            egress: wire::Narrowing::default(),
         };
         assert_eq!(
             take(&s, wire::to_client::NET_CHANGED, &answer(4, Ok(made.clone()))),
@@ -3922,6 +4129,7 @@ mod tests {
         let after = wire::NetChanged {
             changed: vec![bound(41000)],
             published: vec![bound(41001)],
+            egress: wire::Narrowing::default(),
         };
         assert_eq!(
             take(&s, wire::to_client::NET_CHANGED, &answer(5, Ok(after.clone()))),
@@ -3989,6 +4197,7 @@ mod tests {
                 Ok(wire::NetChanged {
                     changed: vec![bound.clone()],
                     published: vec![bound.clone()],
+                    egress: wire::Narrowing::default(),
                 }),
             ),
             (
@@ -3999,6 +4208,7 @@ mod tests {
                 Ok(wire::NetChanged {
                     changed: vec![bound.clone()],
                     published: Vec::new(),
+                    egress: wire::Narrowing::default(),
                 }),
             ),
         ] {
@@ -4614,6 +4824,7 @@ mod tests {
                     wake: "127.0.0.1:4435".parse().unwrap(),
                 }),
                 from: wire::StartedFrom::Booted,
+                egress: wire::Narrowing::default(),
             };
             says(&mut h.host, wire::to_client::STARTED, &started.encode().unwrap());
             ask(&mut h.host, 1, CLAUDE);
@@ -4950,6 +5161,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
         }
         .encode()
         .unwrap();
@@ -5368,6 +5580,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
         }
         .encode()
         .unwrap();
@@ -5802,6 +6015,7 @@ mod tests {
             published: Vec::new(),
             control: None,
             from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
         }
         .encode()
         .unwrap();

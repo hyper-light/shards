@@ -300,6 +300,21 @@ pub enum UpstreamRoot {
     Pem(String),
 }
 
+/// One of a run's grants past its microVM, as its image's Agentfile writes it (D59, D236, D246),
+/// added or taken out as the run goes ([`ImageGuest::grant_egress`], D272).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressGrant {
+    /// Egress ports, as the Agentfile writes them: `443/tcp`, `8000-8010/udp`.
+    Ports(String),
+    /// A remote MCP server, `host:port`: added to the reach of each member named, where the run
+    /// holds its members apart ([`Narrowing::members`]), and taken out of every member's.
+    Mcp { at: String, members: Vec<MemberName> },
+    /// A destination, `host:port` (D236), as a remote MCP server's.
+    Destination { at: String, members: Vec<MemberName> },
+    /// Names asked past the microVM (`NETWORK --dns`).
+    Dns,
+}
+
 /// What [`ImageGuest::plug`] gives the members it plugs into (D235, D271).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlugSource {
@@ -600,6 +615,25 @@ pub trait ImageGuest: Send + Sync {
         host: std::net::SocketAddr,
         patience: Duration,
     ) -> Result<(), ImageRefusal>;
+    /// The run's grants past its microVM now (D272), as its host last said them: what of its
+    /// image's grants each list keeps, written out whole (`Keep::Only`), whether names are
+    /// asked, and each member's reach where the run holds its members apart.
+    fn egress(&self) -> Narrowing;
+    /// `grant` added to the run's grants past its microVM as it runs (D272), in its running
+    /// microVM in place: its network process holds every flow to its grants from then on, no
+    /// image built, no template saved, its guest neither restarted nor rebooted. Checked as the
+    /// start's grants are: a grant its image does not give (its Agentfile's grants are the most
+    /// a run may have, the ceiling its network process is held to), or a member's reach other
+    /// than its image lets it have where the run holds its members apart (D246), is refused
+    /// [`NetRefusal::Widening`]. Answers the run's grants once its network process holds them,
+    /// waiting at most `patience`; refused as [`ImageRefusal::Net`]: [`NetRefusal::NoNetwork`]
+    /// for a run with no network device. Made while the run is paused too.
+    fn grant_egress(&self, grant: &EgressGrant, patience: Duration) -> Result<Narrowing, ImageRefusal>;
+    /// `grant` taken out of the run's grants past its microVM as it runs (D272), in place: its
+    /// network process refuses the next flow to it, and ends at once each flow its grants no
+    /// longer reach (a TCP connection its guest opened is reset, a UDP flow closed). Answers
+    /// and is refused as [`grant_egress`](Self::grant_egress).
+    fn revoke_egress(&self, grant: &EgressGrant, patience: Duration) -> Result<Narrowing, ImageRefusal>;
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its

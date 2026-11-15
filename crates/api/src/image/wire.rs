@@ -90,8 +90,11 @@ pub use shards_abi::run::nesting::Ready;
 /// roots its orchestrator grants the run at its start ([`Request::plug_roots`], D271), and a
 /// plug of a host directory or a volume of the home's into several members at once
 /// ([`PlugAsk::members`], [`PlugFrom`]), so that a side that knows neither refuses the run as
-/// it is asked, before any plug is.
-pub const VERSION: u8 = 35;
+/// it is asked, before any plug is; 36, the run's grants past its microVM changed as it goes
+/// ([`NetChange::Egress`], D272), the run's grants as its host holds them told with its start
+/// ([`Started::egress`]) and with each change ([`NetChanged::egress`]), so that a side that
+/// changes none refuses the run as it is asked, before any change is.
+pub const VERSION: u8 = 36;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -707,6 +710,10 @@ pub struct Started {
     pub control: Option<ControlAt>,
     /// How its microVM started (D253); appended in version 19.
     pub from: StartedFrom,
+    /// The run's grants past its microVM as its host holds them (D272): what of its image's
+    /// each list keeps, written out whole (`Keep::Only`), so that its owner changes them by
+    /// what they are; appended in version 36.
+    pub egress: Narrowing,
 }
 
 /// How a run's microVM came to be ready (D253), as its run host started it.
@@ -1149,6 +1156,9 @@ pub enum NetChange {
     /// The port bound at `host` for `proto` let go of: one of the run's published ports
     /// ([`NetChanged::published`]), the start's among them.
     Unpublish { proto: Proto, host: SocketAddr },
+    /// The run's grants past its microVM, whole, as its owner asks them to be from now on
+    /// (version 36, D272): checked as its start's are, its image's grants their ceiling.
+    Egress(Narrowing),
 }
 
 /// A network change asked (D269), its answer named by `id`.
@@ -1195,11 +1205,13 @@ fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
 }
 
 /// A network change made (D269): what it bound or let go of, and every port the run
-/// publishes once it was made, as its host holds them.
+/// publishes and its grants past its microVM (version 36, D272) once it was made, as its host
+/// holds them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetChanged {
     pub changed: Vec<Bound>,
     pub published: Vec<Bound>,
+    pub egress: Narrowing,
 }
 
 /// A network change's outcome, by its ask's id: made, or refused and why. Its host makes one
@@ -1460,6 +1472,34 @@ impl Writer {
         }
         Ok(())
     }
+    /// Whether the members are held apart, then each member's kind, name and names (D246).
+    fn reach(&mut self, members: Option<&[MemberReach]>) -> Result<(), WireError> {
+        match members {
+            None => self.u8(0),
+            Some(members) => {
+                self.u8(1);
+                self.count(members.len())?;
+                for m in members {
+                    self.u8(m.kind as u8);
+                    self.text(&m.name)?;
+                    self.count(m.destinations.len())?;
+                    for d in &m.destinations {
+                        self.text(d)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// A run's grants past its microVM whole (D272): its ports', remote MCP servers' and
+    /// destinations' lists, whether names are asked, and its members' reach.
+    fn narrowing(&mut self, n: &Narrowing) -> Result<(), WireError> {
+        self.keep(&n.egress)?;
+        self.keep(&n.mcp)?;
+        self.keep(&n.destinations)?;
+        self.u8(u8::from(n.dns));
+        self.reach(n.members.as_deref())
+    }
     /// A port to publish: its guest port, protocol, host address (or none) and host port.
     fn publish(&mut self, p: &Publish) {
         self.u16(p.guest_port);
@@ -1653,6 +1693,40 @@ impl<'a> Reader<'a> {
             total: self.duration()?,
             now: self.flag()?,
         }))
+    }
+    /// What [`Writer::reach`] wrote: each member at least its kind (one byte), its name's
+    /// length (four) and its names' count (four), and each name at least its length (four).
+    fn reach(&mut self) -> Result<Option<Vec<MemberReach>>, WireError> {
+        if !self.flag()? {
+            return Ok(None);
+        }
+        let n = self.count(1 + 4 + 4)?;
+        let mut reach = Vec::with_capacity(n);
+        for _ in 0..n {
+            let kind = member_kind(self.u8()?)?;
+            let name = self.text()?;
+            let k = self.count(4)?;
+            let mut destinations = Vec::with_capacity(k);
+            for _ in 0..k {
+                destinations.push(self.text()?);
+            }
+            reach.push(MemberReach {
+                kind,
+                name,
+                destinations,
+            });
+        }
+        Ok(Some(reach))
+    }
+    /// What [`Writer::narrowing`] wrote.
+    fn narrowing(&mut self) -> Result<Narrowing, WireError> {
+        Ok(Narrowing {
+            egress: self.keep()?,
+            mcp: self.keep()?,
+            destinations: self.keep()?,
+            dns: self.flag()?,
+            members: self.reach()?,
+        })
     }
     /// What [`Writer::publish`] wrote.
     fn publish(&mut self) -> Result<Publish, WireError> {
@@ -1950,21 +2024,7 @@ impl Request {
         }
         // Each member's reach of the names kept, appended in version 12 (D246): whether the
         // members are held apart, then each member's kind, name and names.
-        match &self.egress.members {
-            None => w.u8(0),
-            Some(members) => {
-                w.u8(1);
-                w.count(members.len())?;
-                for m in members {
-                    w.u8(m.kind as u8);
-                    w.text(&m.name)?;
-                    w.count(m.destinations.len())?;
-                    for d in &m.destinations {
-                        w.text(d)?;
-                    }
-                }
-            }
-        }
+        w.reach(self.egress.members.as_deref())?;
         // The run's agent-control endpoint, appended in version 15 (D252): whether it asks one,
         // its controller's key, then whether it grants sockets, their directory and admission.
         match &self.control {
@@ -2152,30 +2212,8 @@ impl Request {
         for m in &mut members {
             m.terminal = r.flag()?;
         }
-        // Each member's reach of the names kept, appended in version 12 (D246): each member
-        // is at least its kind (one byte), its name's length (four) and its names' count
-        // (four), and each name at least its length (four).
-        egress.members = if r.flag()? {
-            let n = r.count(1 + 4 + 4)?;
-            let mut reach = Vec::with_capacity(n);
-            for _ in 0..n {
-                let kind = member_kind(r.u8()?)?;
-                let name = r.text()?;
-                let k = r.count(4)?;
-                let mut destinations = Vec::with_capacity(k);
-                for _ in 0..k {
-                    destinations.push(r.text()?);
-                }
-                reach.push(MemberReach {
-                    kind,
-                    name,
-                    destinations,
-                });
-            }
-            Some(reach)
-        } else {
-            None
-        };
+        // Each member's reach of the names kept, appended in version 12 (D246).
+        egress.members = r.reach()?;
         // The run's agent-control endpoint, appended in version 15 (D252).
         let control = if r.flag()? {
             let controller = r.array::<32>()?;
@@ -2784,9 +2822,9 @@ impl AskPaused {
 }
 
 impl NetAsk {
-    /// Its id, then its change: 0 and the port to publish; or 1, the protocol, the bound
-    /// address and its port to let go of.
-    pub fn encode(&self) -> Vec<u8> {
+    /// Its id, then its change: 0 and the port to publish; 1, the protocol, the bound address
+    /// and its port to let go of; or 2 and the run's grants past its microVM whole.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
         match &self.change {
@@ -2800,8 +2838,12 @@ impl NetAsk {
                 w.ip(Some(host.ip()));
                 w.u16(host.port());
             }
+            NetChange::Egress(n) => {
+                w.u8(2);
+                w.narrowing(n)?;
+            }
         }
-        w.0
+        w.done()
     }
 
     pub fn decode(payload: &[u8]) -> Result<NetAsk, WireError> {
@@ -2820,6 +2862,7 @@ impl NetAsk {
                     host: SocketAddr::new(ip, r.u16()?),
                 }
             }
+            2 => NetChange::Egress(r.narrowing()?),
             tag => {
                 return Err(WireError::Tag {
                     what: "a network change",
@@ -2843,6 +2886,7 @@ impl NetAnswer {
                 w.u8(0);
                 w.bounds(&changed.changed)?;
                 w.bounds(&changed.published)?;
+                w.narrowing(&changed.egress)?;
             }
             Err((cause, why)) => {
                 w.u8(1);
@@ -2860,6 +2904,7 @@ impl NetAnswer {
             0 => Ok(NetChanged {
                 changed: r.bounds()?,
                 published: r.bounds()?,
+                egress: r.narrowing()?,
             }),
             1 => Err((net_refusal(r.u8()?)?, r.text()?)),
             tag => {
@@ -2936,6 +2981,8 @@ impl Started {
         }
         // How its microVM started, appended in version 19 (D253).
         w.u8(self.from as u8);
+        // Its grants past its microVM as its host holds them, appended in version 36 (D272).
+        w.narrowing(&self.egress)?;
         w.done()
     }
 
@@ -2973,12 +3020,14 @@ impl Started {
             None
         };
         let from = started_from(r.u8()?)?;
+        let egress = r.narrowing()?;
         r.end()?;
         Ok(Started {
             members,
             published,
             control,
             from,
+            egress,
         })
     }
 }
@@ -3724,7 +3773,25 @@ mod tests {
     /// trailing byte and unknown tag refused, never a default.
     #[test]
     fn network_changes_and_their_answers_cross_the_channel() {
-        const { assert!(VERSION >= 34, "the channel's version 34 carries network changes") };
+        const { assert!(VERSION >= 36, "the channel's version 36 carries the run's grants") };
+        let granted = Narrowing {
+            egress: Keep::Only(vec!["443/tcp".into(), "8000-8010/udp".into()]),
+            mcp: Keep::Only(vec!["mcp.example.com:443".into()]),
+            destinations: Keep::Only(Vec::new()),
+            dns: false,
+            members: Some(vec![
+                MemberReach {
+                    kind: MemberKind::Harness,
+                    name: "codex".into(),
+                    destinations: vec!["mcp.example.com:443".into()],
+                },
+                MemberReach {
+                    kind: MemberKind::Agent,
+                    name: "helper".into(),
+                    destinations: Vec::new(),
+                },
+            ]),
+        };
         let publish = |host: Option<IpAddr>| Publish {
             guest_port: 7100,
             proto: Proto::Tcp,
@@ -3742,10 +3809,12 @@ mod tests {
                 proto: Proto::Tcp,
                 host: "[::1]:8080".parse().unwrap(),
             },
+            NetChange::Egress(granted.clone()),
+            NetChange::Egress(Narrowing::default()),
         ];
         for change in asks {
             let ask = NetAsk { id: 7, change };
-            let bytes = ask.encode();
+            let bytes = ask.encode().unwrap();
             assert_eq!(NetAsk::decode(&bytes), Ok(ask));
             for cut in 1..bytes.len() {
                 assert!(NetAsk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
@@ -3756,7 +3825,7 @@ mod tests {
             );
         }
         assert!(matches!(
-            NetAsk::decode(&[0, 0, 0, 7, 2]),
+            NetAsk::decode(&[0, 0, 0, 7, 3]),
             Err(WireError::Tag { .. })
         ));
         // An unpublish names the address it lets go of: none is no binding.
@@ -3783,10 +3852,12 @@ mod tests {
             Ok(NetChanged {
                 changed: vec![bound.clone()],
                 published: vec![alone.clone(), bound],
+                egress: granted,
             }),
             Ok(NetChanged {
                 changed: Vec::new(),
                 published: Vec::new(),
+                egress: Narrowing::default(),
             }),
         ];
         for cause in [
@@ -4316,6 +4387,17 @@ mod tests {
             ],
             control: None,
             from: StartedFrom::Saved,
+            egress: Narrowing {
+                egress: Keep::Only(vec!["443/tcp".into()]),
+                mcp: Keep::Only(Vec::new()),
+                destinations: Keep::Only(vec!["api.openai.com:443".into()]),
+                dns: false,
+                members: Some(vec![MemberReach {
+                    kind: MemberKind::Agent,
+                    name: "main".into(),
+                    destinations: vec!["api.openai.com:443".into()],
+                }]),
+            },
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -5135,13 +5217,15 @@ mod tests {
                 published: Vec::new(),
                 control: None,
                 from,
+                egress: Narrowing::default(),
             };
             let mut bytes = said.encode().unwrap();
-            assert_eq!(bytes.last(), Some(&(from as u8)));
+            // How it started, before its grants (version 36): two lists of All, then
+            // destinations' All, the names' flag and the reach's.
+            let at = bytes.len() - 1 - 1 - 1 - 1 - 1 - 1;
+            assert_eq!(bytes[at], from as u8);
             assert_eq!(Started::decode(&bytes).unwrap(), said);
-            if let Some(last) = bytes.last_mut() {
-                *last = 5;
-            }
+            bytes[at] = 5;
             assert_eq!(
                 Started::decode(&bytes),
                 Err(WireError::Tag {
@@ -5549,6 +5633,7 @@ mod tests {
                 published: Vec::new(),
                 control,
                 from: StartedFrom::Restored,
+                egress: Narrowing::default(),
             };
             let read = Started::decode(&started.encode().unwrap()).unwrap();
             assert_eq!(read, started);
@@ -5568,11 +5653,13 @@ mod tests {
                 wake: "127.0.0.1:50002".parse().unwrap(),
             }),
             from: StartedFrom::Restored,
+            egress: Narrowing::default(),
         };
         let bytes = started.encode().unwrap();
-        // The wake's address (a tag, four octets and a port), then how it started (1), last:
+        // The wake's address (a tag, four octets and a port), then how it started (1) and its
+        // grants (version 36: All's three lists, the names' flag and the reach's, 5) last:
         // since v31 the hold's period rides each rate's answer (`Rated`), not `Started`.
-        let wake = bytes.len() - 1 - (1 + 4 + 2);
+        let wake = bytes.len() - 5 - 1 - (1 + 4 + 2);
         let waker = wake - (1 + 4 + 2);
         assert_eq!(bytes[waker], 4);
         assert_eq!(bytes[waker + 1..waker + 5], [127, 0, 0, 1]);

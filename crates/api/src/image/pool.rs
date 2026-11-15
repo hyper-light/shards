@@ -1255,6 +1255,26 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.unpublish(proto, host, patience)
     }
 
+    fn egress(&self) -> wire::Narrowing {
+        self.guest.egress()
+    }
+
+    fn grant_egress(
+        &self,
+        grant: &super::EgressGrant,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        self.guest.grant_egress(grant, patience)
+    }
+
+    fn revoke_egress(
+        &self,
+        grant: &super::EgressGrant,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        self.guest.revoke_egress(grant, patience)
+    }
+
     fn control(&self) -> Option<&wire::ControlAt> {
         self.guest.control()
     }
@@ -1481,6 +1501,23 @@ mod tests {
             _: std::net::SocketAddr,
             _: Duration,
         ) -> Result<(), ImageRefusal> {
+            none()
+        }
+        fn egress(&self) -> wire::Narrowing {
+            wire::Narrowing::default()
+        }
+        fn grant_egress(
+            &self,
+            _: &super::super::EgressGrant,
+            _: Duration,
+        ) -> Result<wire::Narrowing, ImageRefusal> {
+            none()
+        }
+        fn revoke_egress(
+            &self,
+            _: &super::super::EgressGrant,
+            _: Duration,
+        ) -> Result<wire::Narrowing, ImageRefusal> {
             none()
         }
         fn control(&self) -> Option<&wire::ControlAt> {
