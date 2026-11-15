@@ -28188,13 +28188,41 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       that raises the rate. Stillness is judged as before: a look that ran nothing finds
       macOS's uninterruptible wait `Held` (since 2026-11-13) and Linux's `D` still. A ticker
       asleep on an event waits interruptibly (`TH_STATE_WAITING`, `S`) and is refused as
-      before. Each look samples its threads at one instant, so a look made once each W*
-      (`Follow::look`) can miss a wait between looks, where the tests' looks come every few
-      ms. Windows reads no wait reason of a flush here: unverified there. Held by progress.rs
-      `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the batch's
-      numbers through `Judge`: refused vouching, going on in its kernel) and, on macOS,
-      `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel` (a child looping
-      F_FULLFSYNC, seen so).
+      before. Windows reads no wait reason of a flush here: unverified there. Held by
+      progress.rs `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the
+      batch's numbers through `Judge`: refused vouching, going on in its kernel or held
+      between its looks) and `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel`
+      (a child flushing a file, seen so on macOS and, `D`, on Linux).
+      - *A hold between looks* (ROOT's ruling, 2026-11-14). A sample at one instant misses a
+        wait that ends before the look; a look made once each W* (`Follow::look`) missed
+        most. Where an OS accumulates its host's work for a process, that count's growth
+        since the look before is held time between looks (`Io`, `Hold::held_since`,
+        `progress::vouches`): the window vouches for nothing, and a look that ran nothing is
+        `Held`. What each OS keeps (PM M601):
+        - Linux keeps waited time only as its tasks' block I/O delays (`/proc/<pid>/task/
+          <tid>/stat` field 42), and only while `kernel.task_delayacct` is 1, off by default
+          since 5.14 (Documentation/accounting/delay-accounting.rst; off on adacachy2); and as
+          a cgroup's `io.pressure` `some` total, read where that cgroup holds the process
+          alone, as a daemon's VM process its slice. Both are `Io::waited`. Its storage's
+          work, read always: `majflt` (stat field 12) and `/proc/<pid>/io`'s `read_bytes` and
+          `write_bytes`, the process's whole (`Io::done`). Of 391 waits in `D` of 1 ms or
+          more by fdatasync loops on adacachy2's NVMe, those counts grew across 368, 95% of
+          their time.
+        - macOS keeps no waited time. Its storage's work: proc_pid_rusage(2) RUSAGE_INFO_V4's
+          `ri_pageins`, `ri_diskio_bytesread`, `ri_diskio_byteswritten` and
+          `ri_logical_writes`, the last alone moved by a directory's flush. Of 55
+          uninterruptible waits of 1 ms or more by F_FULLFSYNC loops on
+          adas-mac-studio.local-2, 54 grew them (1,912 of 1,915 ms).
+        - Windows: unread here, unverified.
+        Where an OS keeps no waited time for a process (macOS; Linux with delay accounting
+        off and its cgroup shared), a wait bound by its rate also looks between its due
+        looks while its process is not runnable, each its judge's least window apart
+        (`Judge::resolved`: its counters' tick, 10 ms on macOS, Linux's 1/HZ, or a look's own
+        length where longer), the finest its window's evidence is read at, never a rate of
+        ours. A look there that finds a thread in its kernel holds that window
+        (`Follow::schedule`, `Follow::sampled`). A runnable process, and a wait bound by
+        stillness, are looked at only when due. Held by progress.rs
+        `a_rate_wait_samples_a_blocked_process_between_its_looks`.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
