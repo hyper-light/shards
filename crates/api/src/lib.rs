@@ -358,6 +358,11 @@ pub struct Share {
 
 /// What boots guests on a host.
 pub use shards_abi::host::Backend;
+/// The console shards' guests have (D261), and the kernel argument that names it
+/// (`console=hvc0`), the first of every default command line of shards': an orchestrator's
+/// own command line takes [`CONSOLE`] rather than a console of its own (a UART, which no
+/// shards guest has).
+pub use shards_abi::{CONSOLE, GUEST_CONSOLE};
 
 /// How a guest ended: shards-vmm's `ExitReason`, but `Snapshotted`, which no guest booted
 /// here asks for.

@@ -762,7 +762,8 @@ impl Builder {
             // Its CPUs past the first brought online by shards-init where its backend's
             // boots wait on them (PM M379).
             format!(
-                "console=hvc0 panic=-1 shards_build=1 memhp_default_state=online_kernel rt_group_sched=0 shards_shm={} {}{}",
+                "{} panic=-1 shards_build=1 memhp_default_state=online_kernel rt_group_sched=0 shards_shm={} {}{}",
+                shards_abi::CONSOLE,
                 crate::run::shm_bytes(boot.memory_mib),
                 bridge.cmdline(),
                 shards_vmm::vm::late_cpus_cmdline(boot.cpus),

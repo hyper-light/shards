@@ -35109,6 +35109,20 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
     `capture-ring.py`, KVM boots to a snapshot): the unpatched kernel's console is given every
     record from "Linux version" to "console [hvc0] enabled"; the patched one's, none.
   - Owed: HVF and WHP runs.
+- **The console's name, one constant, told to orchestrators** (2026-11-14, ROOT's ask after
+  Hex's break: Hex's own command line said `console=ttyS0`, and its guests panicked once the
+  UART was gone). `shards_abi::GUEST_CONSOLE` (`hvc0`) and `shards_abi::CONSOLE` (the whole
+  kernel argument, `console=hvc0`, the shape Hex asked for), both `&'static str` made of one
+  literal, are the one source: the VMM's default command line (`Config::new`, every `run vm
+  --kernel` boot that gives no `--cmdline`) and the builder's begin with `CONSOLE`, and
+  shards-api re-exports both (`shards_api::CONSOLE`, `shards_api::GUEST_CONSOLE`), so that an
+  orchestrator's command line names the console shards' guests have, never one of its own.
+  `vm_run.rs`'s `the_console_shards_api_exports_is_a_default_boots` (run in the VM process's
+  crate, which compiles `vm_run.rs`) holds it to a default boot's first argument, which is what
+  that boot's `/proc/cmdline` begins with (kernel options are added after it,
+  `with_kernel_options`).
+  Red with the default command line set back to a literal other console. Owed (ROOT): a real
+  default boot's `/proc/cmdline` against it.
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9

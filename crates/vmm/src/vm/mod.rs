@@ -2568,7 +2568,7 @@ impl Config {
             kernel,
             initrd: None,
             init,
-            cmdline: "console=hvc0 panic=-1".into(),
+            cmdline: format!("{} panic=-1", shards_abi::CONSOLE),
             vcpus: 1,
             memory_mib: MEMORY_MIB,
             console: Console::Stdout,
