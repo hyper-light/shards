@@ -28173,6 +28173,28 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         held windows are out of its wall besides. From one answer, R* times W* is C*, so a
         party can be under R* and over C* only well past W*: b24's ticks would have passed
         its C* within about a minute.
+    - *A party waiting in its kernel is held, not slow* (ROOT's ruling, 2026-11-14, its batch
+      32 at 8d732fb2d, HVF, 2 of 14 cores idle). api_image.rs's `shards guest use`, its kind
+      W* 55.1 ms, R* 11.87 ms of CPU in 55.1 ms and C* 12.58 ms, was refused 224.7 ms in for
+      13.23 ms of CPU over 143.0 ms taken for unheld, its one thread not runnable. That time
+      was its host's: guest.rs `record` flushes each file it keeps to its disk's media
+      (F_FULLFSYNC), and on that loaded host it spent 52 to 172 ms of its 69 to 192 ms in
+      `TH_STATE_UNINTERRUPTIBLE`, at 14.1 to 16.2 ms of CPU, past that C* in every run (PM
+      M600). A look that found it so vouched for its window wherever it had also run a
+      moment in it, as `Watch::vouched_by` read starvation, stops and ends alone. Now a look
+      that finds a thread of its party waiting uninterruptibly in its kernel (macOS
+      `TH_STATE_UNINTERRUPTIBLE`, Linux `D`: `Hold::uninterruptible`) vouches for no window
+      (`progress::vouches`): its time leaves the rate's wall and its work stays in, a doubt
+      that raises the rate. Stillness is judged as before: a look that ran nothing finds
+      macOS's uninterruptible wait `Held` (since 2026-11-13) and Linux's `D` still. A ticker
+      asleep on an event waits interruptibly (`TH_STATE_WAITING`, `S`) and is refused as
+      before. Each look samples its threads at one instant, so a look made once each W*
+      (`Follow::look`) can miss a wait between looks, where the tests' looks come every few
+      ms. Windows reads no wait reason of a flush here: unverified there. Held by progress.rs
+      `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the batch's
+      numbers through `Judge`: refused vouching, going on in its kernel) and, on macOS,
+      `a_process_flushing_to_its_disk_is_seen_waiting_in_its_kernel` (a child looping
+      F_FULLFSYNC, seen so).
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
@@ -34072,9 +34094,18 @@ that claims and gives balance once its pools drop):
   holds while it calls `release`, `reserve`, `held` and `boot`;
 - `a_run_asking_its_gpu_report_or_no_size_gets_a_host_of_its_own_and_no_pool`.
 
-**Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
-(now with a room of two hosts) and `warm_hosts_end_with_the_process_holding_their_pools`
-(Unix: the holder SIGKILLed, every warm host's process group gone) on HVF and KVM. On Windows
+**Run on HVF** (adas-mac-studio.local, macOS arm64, 73109b048, each test alone):
+`warm_hosts_end_with_the_process_holding_their_pools` (Unix: the holder SIGKILLed, every warm
+host's process group gone) green, its wait's party every process of the hosts' own groups,
+wherever listed (`Patience::groups`, getpgid(2)): its first answer W* 34.6 ms from the
+holder's kill to every group gone, then green judged by it. Red with the wait it had,
+`Patience::started()` made once the holder was reaped, whose party, the test process's
+children, held none of the orphaned hosts: refused 218.9 µs in, "its party is gone", host
+89673 live, its parent 1 (ROOT's batch 32 at 8d732fb2d saw the same of host 75603, 322.5 µs
+in). `an_images_next_run_takes_a_warm_host_of_its_pool` (now with a room of two hosts) green
+twice, cold and judged; batch 32's refusal of its `shards guest use` was D215's rate floor
+taking a wait on its host's disk for its own rest (D215: a party waiting in its kernel).
+**Owed** (ROOT, real VMs): both on KVM. On Windows
 the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
 unverified. Also owed: `api_image.rs`'s `a_warm_hosts_footprint_is_its_vm_processs_reading`
 (`held().footprints` carries a real reading once asked) on HVF, KVM and WHP.
@@ -36032,6 +36063,74 @@ apply here.
   no "triple-faulted":
   - `crates/shards/tests/boot.rs` `two_vcpus_boot_to_their_end_in_this_process` and
     `a_reset_with_no_console_says_its_guests_panic` on an x86-64 KVM host and on WHP.
+
+### D269. An orchestrator's run publishes a port and lets one go as it runs, in its running microVM in place: `ImageGuest::publish` and `unpublish` (built; real-VM runs owed)
+
+**Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC1): a kiln session in a Shards microVM
+exposes and closes ports while it runs, "*without* having to force the user to re-build the
+agentfile or MicroVM" (ROOT's binding reading: no image build, no template, no restart, no
+reboot; the run's `started_from` and its VM process unchanged across the change). D231's runs
+took their ports at start alone (`ImageSpec::publish`), and nothing changed a running run's
+network.
+
+**What existed.** A run's ports are host sockets its run host binds (`daemon::publish::bind`,
+dockerd's allocator, D31) and hands its network process, which opens each connection they take
+to the guest; the guest routes a port to the member its Agentfile gives it coming in (`EXPOSE …
+AS ingress`, D122's receivers, init's chooser) or to the run's own command. The network process
+already took sockets as the run went for the daemon's `--network host` (D124): `NET_PUBLISHED`,
+a number then a port and its socket, and `NET_UNPUBLISHED` by that number, answered once its
+copies are closed (net/src/lib.rs `Stack::publish`, `unpublish`, its `hosted` map). Nothing of
+it is the host network's alone, so that mechanism is the live one: no second implementation
+(R12).
+
+**Decided** (image channel version 34, `to_host::NET`, answered `to_client::NET_CHANGED`):
+- *The calls.* `ImageGuest::publish(Publish, patience) -> Vec<Bound>` and
+  `unpublish(Proto, SocketAddr, patience)`; `published()` is now the run's live set
+  (`Vec<Bound>`, as its host last answered it), its start's ports and those published since. A
+  publish is bound as the start's (`publish::bind`: its host address, or every one, IPv6's
+  where it listens, its host port or one the host picks) and checked as the start's
+  (`ports_granted`): a port the Agentfile declares `AS egress`, or one it gives no member coming
+  in on a run with no command of its own, is a widening. Each binding is told its network
+  process under a number of its own (`NET_PUBLISHED`), its socket held by the run host until
+  it is let go of (M24); an unpublish asks `NET_UNPUBLISHED` by that number and closes the run
+  host's copy once that process has closed its own, so the port is free when the call returns.
+  The start's ports are told by number too, so any port is let go of the same way; the VM of
+  every run with a network asks its network process to close them all as the run ends
+  (`RUN_PUBLISHED`), before its end is told.
+- *In place.* Only the run's network process takes the change: the image, its template, the
+  VM process and the guest are untouched (the guest already routes every port its image gives a
+  member), so a warm pool's hosts and templates stay valid. A change is made while the run is
+  paused too: the pause holds its vCPUs (D267), not its network process.
+- *Refusals, typed* (`ImageRefusal::Net(NetRefusal, why)`): `NoNetwork` (a run that started with
+  nothing published, kept or linked past its microVM has no network device, and no device is
+  hot-plugged), `Widening`, `Bind`, `Unknown` (nothing published there), `Network` (its network
+  process did not take it or has ended), `Image` (the image gives the port a member that is none
+  of the run's).
+- *Order and state* (R04, R05). The run host makes one change at a time, under its ports'
+  lock, and answers each before the next, each answer carrying every port published once it is
+  made; shards-api's session takes every answer into the run's set, awaited or not (an asker
+  whose patience ran out still sees the port). The run host reads its network process's control
+  on one thread for the run's whole life (`NetControl`, `relay`): that process's lease and
+  sign-in asks (D242) as before, and the answers to the host's own asks handed to their askers in
+  the order asked; once that control is read no more, an ask waiting and every ask after are
+  refused, never left waiting. No new literal: a port's number is the wire's u32, refused once
+  spent.
+- *What an unpublish leaves.* Its host socket is closed, so nothing more comes in on it: a TCP
+  connection it took before goes on to its end, and its UDP peers' flows end with it
+  (`Stack::unpublish`).
+
+**Tests** (light, red first where behaviour changed): `wire::tests::network_changes_and_their_answers_cross_the_channel`;
+`session::tests::{a_network_changes_answer_moves_the_runs_ports_whoever_waits,
+a_publish_rides_the_runs_channel_and_comes_back_typed}`;
+`api_run::tests::the_network_processs_answers_reach_their_askers_in_the_order_asked` and
+`api_run::hosted::tests::a_port_published_live_is_told_by_its_number_and_let_go_by_it` (a stand-in
+network process: told by number with its socket, a connection taken, let go by number, free to
+bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tests, now over
+`NetControl`.
+
+**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+`a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
+process pid unchanged, no build and no save across it).
 
 ## 4. Start path (≤ 5 ms budget)
 

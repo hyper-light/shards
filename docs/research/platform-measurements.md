@@ -25238,7 +25238,6 @@ microseconds with no growth is no evidence that a process ran nothing: D215's re
 the kernel's tick as their resolution (`Watch::resolution`). The wake mode's n is small:
 its 1 ms sleeps between pokes ran about 8 ms under the session's QoS clamp.
 
-
 ### M593. Where a shards-api image start's time goes, by the way it starts (D231, D253; api_image's `image_start_costs`)
 
 Why: Hex's `hex.image.boot` measured 122–719 ms on HVF and 167–235 ms on KVM (n=6), and the
@@ -25306,3 +25305,35 @@ call are negative. Wall clocks line processes up to the host clock's resolution 
 over one start; no number here is measured yet.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.
+
+### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)
+
+Method: `docs/research/measurements/judge-blocked/states.c` (`cc -O2 -o states states.c &&
+./states COMMAND...`) spawns a command and samples its threads' run states every 100 µs
+(PROC_PIDTHREADINFO `pth_run_state`, as D215's `os::hold` reads them) with its CPU
+(proc_pid_rusage(2) RUSAGE_INFO_V0), crediting each interval to the state seen at its start:
+running (or waiting for a CPU), uninterruptible (a wait in the kernel) or waiting
+(interruptible). The command: `shards guest use --kernel K --init I` in a new home each
+run, K the pinned 19 MB arm64 kernel and I shards-init (2.3 MB), the `shards` of ROOT's
+build 8d732fb2d (test-release) copied once. Host: adas-mac-studio.local (macOS arm64, 14
+cores, load averages 10.7 to 14.8 from other work), 2026-11-14.
+
+| run | wall | CPU | running | uninterruptible | waiting |
+|---|---|---|---|---|---|
+| 1 | 843.0 ms | 16.25 ms | 17.5 ms | 117.1 ms | 705.6 ms |
+| 2 | 108.1 ms | 15.10 ms | 16.3 ms | 89.9 ms | |
+| 3 | 191.7 ms | 15.29 ms | 18.1 ms | 172.2 ms | |
+| 4 | 92.0 ms | 14.30 ms | 15.2 ms | 76.3 ms | |
+| 5 | 71.7 ms | 14.82 ms | 16.4 ms | 54.2 ms | |
+| 6 | 178.6 ms | 14.53 ms | 15.1 ms | 162.0 ms | |
+| 7 | 99.4 ms | 14.09 ms | 13.5 ms | 84.5 ms | |
+| 8 | 69.1 ms | 15.68 ms | 15.3 ms | 52.2 ms | |
+
+Past its launch, 75% to 91% of each run's wall was uninterruptible, in waits of 1 to 55 ms
+between runs of 1 to 13 ms (guest.rs `record`: each file copied and hashed, then flushed to
+the disk's media, F_FULLFSYNC, the record too, and the directory synced twice). Run 1's 705.6 ms of
+interruptible waiting, at no CPU, came first: the first launch of a new copy of the
+binary, its security daemons' work (M166). The CPU, 14.1 to 16.3 ms, was above the C* of
+12.58 ms that the batch's kind had learned in every run: the same work runs to more CPU on
+a loaded host, so C* alone did not keep the rate floor off a party waiting on its host's
+disk. n is 8 on one host: the shares are its, not a bound.
