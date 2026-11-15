@@ -420,6 +420,19 @@ pub struct Prepared {
     pub layer: u64,
 }
 
+impl Prepared {
+    /// The most memory its guest may plug past what it boots with, in bytes (D148): its
+    /// [`memory_max`](Self::memory_max) less its boot's, none where it boots with all of it.
+    /// Every request that hands a microVM its run carries it (`RunHead::plug`), the daemon's,
+    /// a visit's and an orchestrator's alike: its VM sets it as its guest's most before the
+    /// guest hears of the run, and a VM told none has what it booted with.
+    pub fn plug_bytes(&self) -> u64 {
+        self.memory_max
+            .saturating_sub(self.size.1)
+            .saturating_mul(1 << 20)
+    }
+}
+
 /// What a run's writable layer holds unless it asks for another size (D190,
 /// `--storage-opt size`): Docker's device-mapper driver's default for a container's base
 /// device, a block device's writable layer as a microVM's is (dockerd's `dm.basesize`,
