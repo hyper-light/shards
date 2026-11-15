@@ -943,7 +943,7 @@ fn a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug() {
 }
 
 /// The room an orchestrator's budget leaves its run (D241), told after it starts, is its
-/// members' share of it too (D272): at the least envelope, a harness that waits for its input
+/// members' share of it too (D275): at the least envelope, a harness that waits for its input
 /// and then holds four times what its microVM booted with, a page at a time, is ended past a
 /// room of half that, in init's words naming the room, and grows within one of twice that,
 /// ending 0.

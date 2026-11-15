@@ -1359,7 +1359,7 @@ impl Memory {
         };
         let (anon, file, shmem, kernel) = (of("anon"), of("file"), of("shmem"), of("kernel"));
         d.lifecycle.stop()?;
-        // The room their run's budget holds it within, which their share is of (D272).
+        // The room their run's budget holds it within, which their share is of (D275).
         let room = match crate::plug::cap() {
             u64::MAX => String::new(),
             cap => format!(", within the room its budget leaves the run, {cap} bytes in all"),
@@ -1373,7 +1373,7 @@ impl Memory {
     }
 }
 
-/// What the domains together may take, in bytes (D148, D272), where they hold `held`: that,
+/// What the domains together may take, in bytes (D148, D275), where they hold `held`: that,
 /// what the microVM can give now (`MemAvailable`, Documentation/filesystems/proc.rst, the
 /// kernel's own report of what may still be plugged taken off it, D149) and what it may
 /// still have plugged within its budget's room (`plug::still_pluggable`, D188, D241); where a
@@ -1407,7 +1407,7 @@ fn share(held: u64) -> Result<u64, String> {
     admission::share(held, available, pluggable, room, promised).map_err(|e| e.message("domains"))
 }
 
-/// Writes the domains' share again as their `memory.high` ([`share`], D272), as their run's
+/// Writes the domains' share again as their `memory.high` ([`share`], D275), as their run's
 /// budget tells it its room (`builtin::ROOM`, D241, D188): within a room, a domain past it
 /// is ended in words naming it ([`Memory`]); with none, their share is all the microVM may
 /// give them again.

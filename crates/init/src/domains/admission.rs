@@ -558,7 +558,7 @@ pub(super) fn workload_headroom() -> Result<u64, Refusal> {
     })
 }
 
-/// The domains' share (D59's pressure policy, D148, D272): what they hold (`held`), what the
+/// The domains' share (D59's pressure policy, D148, D275): what they hold (`held`), what the
 /// microVM can give (`available`) and may still plug (`pluggable`), no more than a budget's
 /// `room` leaves them where one holds their run, less what the workload's own limit still
 /// promises it (`workload`). Overflow is unknown, not a larger budget.
@@ -576,7 +576,7 @@ pub(super) fn share(
 }
 
 /// Sets the domains' `memory.high` to `memory_high` again, read back as the kernel keeps it
-/// (D272): their share as their run's room moves.
+/// (D275): their share as their run's room moves.
 pub(super) fn reshare(memory_high: u64) -> Result<(), Refusal> {
     let run = run_group()?;
     let domains = open_at(&run, c"domains", libc::O_RDONLY | libc::O_DIRECTORY)?;
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(share(1, u64::MAX, 0, None, 0).unwrap_err().cause, Cause::Overflow);
     }
 
-    /// D272: what the domains hold counts with what the microVM can give, and a budget's
+    /// D275: what the domains hold counts with what the microVM can give, and a budget's
     /// room bounds their share where it leaves them less, never more; the workload's
     /// promise comes off either.
     #[test]

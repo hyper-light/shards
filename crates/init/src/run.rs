@@ -192,7 +192,7 @@ fn told(args: &[Vec<u8>]) -> io::Result<Told> {
 }
 
 /// The share of the run's `domains` written again, as its most or its budget's room moved
-/// (`domains::reshare`, D272): nothing where it started none.
+/// (`domains::reshare`, D275): nothing where it started none.
 fn reshare(domains: &[crate::domains::Started]) -> io::Result<()> {
     if domains.is_empty() {
         return Ok(());
@@ -3980,7 +3980,7 @@ fn builtin(
             },
             run::builtin::EXPORT => export(&mut out),
             // Its limits, then what its microVM may still plug, its VM told its run's new
-            // most before this came (`PLUG`, D148, D149), and its domains' share of it (D272).
+            // most before this came (`PLUG`, D148, D149), and its domains' share of it (D275).
             run::builtin::CGROUP => write_cgroup_in(&cgroup, args)
                 .map_err(io::Error::other)
                 .and_then(|()| crate::plug::report_pluggable(RUN_CGROUP))
@@ -4004,7 +4004,7 @@ fn builtin(
             // Its engine's relay told first, which lets its idle ring slots go where the room
             // is short of what the run needs to go on (D230); with no slot made, nothing.
             // Then what its kernel reports it may still plug, and its domains' share, within
-            // the room (D272).
+            // the room (D275).
             run::builtin::ROOM => told(args).and_then(|told| {
                 crate::ring::told(told.room());
                 let held = crate::plug::hold_within(RUN_CGROUP, told.room())?;

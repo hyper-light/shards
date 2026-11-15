@@ -333,7 +333,7 @@ static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 
 /// The memory the VM may still have plugged, in bytes: a builder's most, or a run's own
 /// (D148), within what its host's budget leaves `cgroup`, the processes it holds
-/// ([`most_within`], D188, D241, D272), less what is plugged already; none where it plugs
+/// ([`most_within`], D188, D241, D275), less what is plugged already; none where it plugs
 /// none.
 pub fn still_pluggable(cgroup: &str) -> u64 {
     let Some(&boot) = BOOT.get() else {

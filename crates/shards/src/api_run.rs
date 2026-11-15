@@ -9038,7 +9038,7 @@ mod tests {
     /// most, all its host's memory where it names no limit, less what it boots with, the
     /// least envelope's 64 MiB or any other; none where it boots with all of it. The
     /// orchestrator's run had none: kiln's harnesses at 64 MiB were ended at what was free as
-    /// their members started (D272).
+    /// their members started (D275).
     #[test]
     fn an_orchestrators_run_may_plug_its_most_less_its_boot() {
         let home = shards_testdir::TempDir::new("plug-most").unwrap();

@@ -408,7 +408,7 @@ pub fn main() -> ! {
         }
         // Reads its stdin to its end, then runs as `MODE ARGS…` (its own program again, the
         // same process): what waits for its host's word before it starts, as a harness is told
-        // its run's room before it grows (D272).
+        // its run's room before it grows (D275).
         "on-input" => {
             use std::os::unix::process::CommandExt as _;
             let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
