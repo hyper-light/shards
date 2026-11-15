@@ -1186,10 +1186,8 @@ mod tests {
         // SAFETY: a timespec, plain data, for clock_getres(2) to fill.
         let mut at: libc::timespec = unsafe { std::mem::zeroed() };
         // SAFETY: clock_getres(2) into a local timespec.
-        assert_eq!(
-            unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC_COARSE, &raw mut at) },
-            0
-        );
+        let code = unsafe { libc::clock_getres(libc::CLOCK_MONOTONIC_COARSE, &raw mut at) };
+        assert_eq!(code, 0);
         Duration::new(
             u64::try_from(at.tv_sec).unwrap(),
             u32::try_from(at.tv_nsec).unwrap(),

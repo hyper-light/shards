@@ -1083,8 +1083,8 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
     // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
     // SHARDS_L1_LOG their SHARDS_LOG, SHARDS_TEST_LOG_SHOWN how much of a failing
-    // test's logs they show, and SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
-    // plug.
+    // test's logs they show, SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
+    // plug, and SHARDS_STORM_CPUS the vCPUs of snapshot.rs' storms.
     let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
         Ok(chosen) => chosen
             .split(',')
@@ -1197,6 +1197,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     }
     if let Ok(rounds) = std::env::var("SHARDS_PLUG_ROUNDS") {
         env.push_str(&format!("SHARDS_PLUG_ROUNDS={rounds}\n"));
+    }
+    if let Ok(cpus) = std::env::var("SHARDS_STORM_CPUS") {
+        env.push_str(&format!("SHARDS_STORM_CPUS={cpus}\n"));
     }
     if let Some(k) = functions_kernel {
         env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));

@@ -530,10 +530,12 @@ mod storm {
         stop: Arc<AtomicBool>,
         carried: Arc<AtomicU64>,
         start: Instant,
+        vm: u32,
     ) -> std::thread::JoinHandle<Rounds> {
         std::thread::spawn(move || {
             let mut rounds = Vec::new();
             let mut salt = 0;
+            let mut slowest = Duration::ZERO;
             while !stop.load(Ordering::Relaxed) {
                 if !sock.exists() {
                     std::thread::sleep(Duration::from_millis(1));
@@ -541,8 +543,20 @@ mod storm {
                 }
                 salt += 1;
                 let began = start.elapsed();
+                let before = costs::read(vm);
                 let round = echo_of(&sock, ECHO_PORT, salt, 4 << 20, Some(&carried), &size)
                     .map_err(|e| format!("{e} (its round {began:?} to {:?} in)", start.elapsed()));
+                let took = start.elapsed().saturating_sub(began);
+                if round.as_ref().is_err_and(|e| !e.contains("refused")) || took > slowest {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "{size}: round {salt}, {began:?} to {:?} in, {}: {}",
+                        start.elapsed(),
+                        round.as_ref().map_or_else(|e| e.as_str(), |_| "whole"),
+                        costs::since(&before, &costs::read(vm))
+                    );
+                }
+                slowest = slowest.max(took);
                 if round.is_err() {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -550,6 +564,118 @@ mod storm {
             }
             rounds
         })
+    }
+
+    /// What a storm's round cost the threads that carry it: this test's (its stream's reader
+    /// and writer) and its VM process's and their descendants', each thread's CPU and its wait
+    /// on a run queue (`/proc/PID/task/TID/schedstat`, Documentation/scheduler/sched-stats.rst)
+    /// and its minor and major faults (`stat` fields 10 and 12, proc(5)), its vCPUs summed: to
+    /// tell a stream starved of a CPU from one waiting on its guest's faults (ROOT's batch 26,
+    /// L1: a restored storm's stream still across its guest's clock check). Linux alone; empty
+    /// elsewhere.
+    mod costs {
+        /// Each thread's counters, by process and thread: its process's part (`test` or `vm`),
+        /// its name, and its CPU ns, run-queue wait ns, minor and major faults.
+        pub type Costs = std::collections::BTreeMap<(u32, u32), (&'static str, String, [u64; 4])>;
+
+        #[cfg(target_os = "linux")]
+        pub fn read(vm: u32) -> Costs {
+            let listed: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                .filter_map(|pid| {
+                    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+                    let ppid = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()?;
+                    Some((pid, ppid))
+                })
+                .collect();
+            let mut tree = vec![vm];
+            let mut i = 0;
+            while let Some(&parent) = tree.get(i) {
+                tree.extend(
+                    listed
+                        .iter()
+                        .filter(|(_, ppid)| *ppid == parent)
+                        .map(|(pid, _)| *pid),
+                );
+                i += 1;
+            }
+            let mut costs = Costs::new();
+            for (part, pid) in
+                std::iter::once(("test", std::process::id())).chain(tree.into_iter().map(|pid| ("vm", pid)))
+            {
+                for task in std::fs::read_dir(format!("/proc/{pid}/task"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    let Some(tid) = task.file_name().to_str().and_then(|t| t.parse::<u32>().ok()) else {
+                        continue;
+                    };
+                    let (Ok(stat), Ok(sched)) = (
+                        std::fs::read_to_string(task.path().join("stat")),
+                        std::fs::read_to_string(task.path().join("schedstat")),
+                    ) else {
+                        continue;
+                    };
+                    let Some((head, rest)) = stat.rsplit_once(')') else {
+                        continue;
+                    };
+                    let name = head.split_once('(').map_or("", |(_, n)| n).to_string();
+                    // Fields from the state on: minflt is field 10, majflt 12.
+                    let fields: Vec<u64> = rest.split_whitespace().map(|f| f.parse().unwrap_or(0)).collect();
+                    let sched: Vec<u64> = sched.split_whitespace().map(|f| f.parse().unwrap_or(0)).collect();
+                    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+                    costs.insert(
+                        (pid, tid),
+                        (
+                            part,
+                            name,
+                            [at(&sched, 0), at(&sched, 1), at(&fields, 7), at(&fields, 9)],
+                        ),
+                    );
+                }
+            }
+            costs
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        pub fn read(_vm: u32) -> Costs {
+            Costs::new()
+        }
+
+        /// What each thread spent from `before` to `now`, those that spent nothing left out,
+        /// a process's vCPUs summed: `part name: cpu C ms, queued Q ms, faults MIN+MAJ`.
+        pub fn since(before: &Costs, now: &Costs) -> String {
+            let mut by: std::collections::BTreeMap<String, [u64; 4]> = std::collections::BTreeMap::new();
+            for (key, (part, name, n)) in now {
+                let was = before.get(key).map_or([0; 4], |(_, _, b)| *b);
+                let d: Vec<u64> = n.iter().zip(was).map(|(n, b)| n.saturating_sub(b)).collect();
+                if d.iter().all(|&x| x == 0) {
+                    continue;
+                }
+                let label = match name.strip_prefix("vcpu") {
+                    Some(_) => format!("{part} {} vcpus", key.0),
+                    None => format!("{part} {} {name}", key.0),
+                };
+                let sum = by.entry(label).or_default();
+                for (s, d) in sum.iter_mut().zip(d) {
+                    *s = s.saturating_add(d);
+                }
+            }
+            by.iter()
+                .map(|(label, [cpu, queued, minor, major])| {
+                    format!(
+                        "{label}: cpu {} ms, queued {} ms, faults {minor}+{major}",
+                        cpu / 1_000_000,
+                        queued / 1_000_000
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        }
     }
 
     /// Lets a storm that has done its checks (`storm checked`) give its verdict once the host
@@ -649,7 +775,14 @@ mod storm {
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
             let mut original = Vm::spawn(&storm_args(&s, cpus, &sock, "stop")).sized(size(cpus));
-            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
+            let streamer = stream(
+                sock.clone(),
+                size(cpus),
+                stop.clone(),
+                carried.clone(),
+                start,
+                original.id(),
+            );
             let code = original.wait_exit_streamed(Some(&carried));
             // Its stream breaks where it stopped, at the snapshot.
             stop.store(true, Ordering::Relaxed);
@@ -673,7 +806,14 @@ mod storm {
                     sock.as_os_str(),
                 ])
                 .sized(size(cpus));
-                let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
+                let streamer = stream(
+                    sock.clone(),
+                    size(cpus),
+                    stop.clone(),
+                    carried.clone(),
+                    start,
+                    copy.id(),
+                );
                 let (rounds, checked) = storm_done(&mut copy, &sock, &stop, streamer, &carried, start);
                 let code = copy.wait_exit_following();
                 let what = format!("{cpus} vCPUs, restore {i} (storm checked {checked:?} in)");
@@ -703,7 +843,14 @@ mod storm {
             let carried = Arc::new(AtomicU64::new(0));
             let start = Instant::now();
             let mut vm = Vm::spawn(&storm_args(&s, cpus, &sock, "resume")).sized(size(cpus));
-            let streamer = stream(sock.clone(), size(cpus), stop.clone(), carried.clone(), start);
+            let streamer = stream(
+                sock.clone(),
+                size(cpus),
+                stop.clone(),
+                carried.clone(),
+                start,
+                vm.id(),
+            );
             let (rounds, checked) = storm_done(&mut vm, &sock, &stop, streamer, &carried, start);
             let code = vm.wait_exit_following();
             let said = vm.seen.join("\n");
