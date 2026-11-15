@@ -30,6 +30,8 @@ mod pool;
 pub(crate) mod session;
 pub mod wire;
 
+pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
+
 pub use wire::{
     Bound, Captured, Channel, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse, GuestTimes,
     HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing, PlugRefusal, Proto,
@@ -358,6 +360,9 @@ pub enum ImageRefusal {
     /// A bound for the run host's diagnostics ([`ImageGuest::keep_diagnostics`]) short of
     /// `tail`, the bytes of them kept to quote, which a cut leaves the file holding.
     DiagnosticsBound { bound: u64, tail: u64 },
+    /// A [`WarmTicket`] booted with the spec of another pool than the one it reserved; `asked`
+    /// none for a spec that is no pool's.
+    OtherPool { reserved: PoolId, asked: Option<PoolId> },
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -377,6 +382,13 @@ impl std::fmt::Display for ImageRefusal {
             Self::Terminal(why) => write!(f, "a member's terminal: {why}"),
             Self::Save(cause, why) => write!(f, "the save: {cause:?}: {why}"),
             Self::GpuProbe(why) => write!(f, "the run's GPU report: {why}"),
+            Self::OtherPool { reserved, asked } => match asked {
+                Some(asked) => write!(f, "a host reserved of pool {reserved}, asked for pool {asked}"),
+                None => write!(
+                    f,
+                    "a host reserved of pool {reserved}, asked for a run that is no pool's"
+                ),
+            },
             Self::DiagnosticsBound { bound, tail } => write!(
                 f,
                 "the run host's diagnostics: a bound of {bound} bytes, short of the {tail} kept to quote"
@@ -709,9 +721,11 @@ impl Images for ImageShards {
 /// the daemon's warm VMs wait for theirs. A pool is the runs of one microVM, alike in all but
 /// their members' stages, deadline and control ask ([`wire::Request::exemplar`]); each keeps
 /// the largest burst of its runs within one refill window while in use, at least one, and
-/// none once idle past its keep-alive (`shards_api::demand`, the daemon's own rule). Nothing
-/// is warm until a pool's first run, which starts a host of its own, as [`ImageShards`]
-/// would. Dropping it ends every warm host.
+/// none once idle past its keep-alive (`shards_api::demand`, the daemon's own rule), each of
+/// its hosts charged to the orchestrator's [`WarmRoom`] before it starts. A run whose spec
+/// names no size of its own, or asks its GPU report, is no pool's. Nothing is warm until a
+/// pool's first run, which starts a host of its own, as [`ImageShards`] would. Dropping it
+/// ends every warm host, each followed to its end and its room given back, before it returns.
 #[derive(Debug)]
 pub struct ImagePools(pool::Pooling<session::ShardsHosts>);
 
@@ -720,10 +734,60 @@ impl ImagePools {
     /// minutes (Shahrad et al., "Serverless in the Wild", USENIX ATC 2020, §1).
     pub const KEEP: Duration = crate::demand::KEEP;
 
-    /// Pools that all together keep at most `most` warm run hosts, the orchestrator's bound,
-    /// each pool keeping its hosts `keep` once idle ([`KEEP`](Self::KEEP) is D26's).
-    pub fn new(most: usize, keep: Duration) -> Result<ImagePools, ImageRefusal> {
-        Ok(ImagePools(pool::Pooling::new(session::ShardsHosts, most, keep)?))
+    /// Pools whose every warm host is charged to `room` before it starts and given back to it
+    /// once ([`WarmRoom`]), each pool keeping its hosts `keep` once idle ([`KEEP`](Self::KEEP)
+    /// is D26's).
+    pub fn new(room: impl WarmRoom, keep: Duration) -> Result<ImagePools, ImageRefusal> {
+        Ok(ImagePools(pool::Pooling::new(session::ShardsHosts, room, keep)?))
+    }
+
+    /// Ends the coldest warm hosts (of the pools wanting fewest, then the longest idle), then
+    /// those starting, until at least `memory` bytes of them are freed or none is left; never
+    /// a reserved one. Returns once their processes have ended, each one's room given
+    /// ([`Gave::Ended`]), with what was freed.
+    pub fn release(&self, memory: u64) -> Result<Released, ImageRefusal> {
+        self.0.release(memory)
+    }
+
+    /// What each pool holds of its room now.
+    pub fn held(&self) -> Vec<PoolHeld> {
+        self.0.held()
+    }
+
+    /// Holds one warm host of `spec`'s pool for one box, at once and without waiting; None if
+    /// none is warm (or `spec` is no pool's, or is refused, as its boot will say). Its room is
+    /// given here ([`Gave::Taken`]), so its owner moves the charge to the box in the same step.
+    pub fn reserve(&self, spec: &ImageSpec) -> Option<WarmTicket> {
+        let request = request(spec).ok()?;
+        self.0.reserve(spec, &request).map(WarmTicket)
+    }
+}
+
+/// One warm host held for one box ([`ImagePools::reserve`]), its room the box's. Dropped
+/// unused, it goes back to its pool under a claim of its own, or ends where that is refused,
+/// with no give for its first claim, whose room went to its box.
+pub struct WarmTicket(pool::Ticket<session::ShardsHosts>);
+
+impl std::fmt::Debug for WarmTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WarmTicket").finish_non_exhaustive()
+    }
+}
+
+impl WarmTicket {
+    /// Boots on the reserved host, as [`Images::boot_stoppable`] does. A spec of another pool
+    /// is refused, typed ([`ImageRefusal::OtherPool`]).
+    pub fn boot(
+        self,
+        spec: &ImageSpec,
+        patience: Duration,
+        stop: &BootStop,
+    ) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+        if stop.is_stopped() {
+            return Err(ImageRefusal::Ended(not_started()));
+        }
+        let request = request(spec)?;
+        self.0.boot(spec, &request, patience, stop)
     }
 }
 
