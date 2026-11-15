@@ -669,64 +669,54 @@ mod tests {
         }
     }
 
-    /// A vCPU its governor sees only in steps past its share, half its period at a time, as
-    /// on hex-winvm each release ran past a quarter CPU's share before it was held again (its
-    /// guest time seen in ~10 ms steps and its governor waking late, PM M601), overruns its
-    /// share each time it is let go: what it overran holds it through the periods after,
-    /// across their ends, so that over many periods it runs its share. Let go at each
-    /// period's end whatever it owed, it ran a step every period (hex-winvm: 38.8% of the
-    /// wall at a quarter CPU).
+    /// A vCPU seen to have overrun its share by many at once, as a run its governor sees late
+    /// is (WHP's guest time moves ~10 ms apart on hex-winvm, PM M601), is held through the
+    /// periods its debt owes, across their ends, never let go at the end of the first: a hold
+    /// let go at each period's end let its vCPU run again until its governor woke and kicked
+    /// it, every period (hex-winvm: 38.8% of the wall at a quarter CPU, D255's bound 31%).
     #[test]
-    fn a_vcpu_seen_late_is_held_across_periods_by_what_it_overran() {
+    fn a_vcpu_that_overran_is_held_through_the_periods_it_owes() {
         let hold = Hold::new(1);
         // A g of the test's own: the process's is other tests' to learn.
         let rated = hold.set_at(250, Duration::from_millis(4)).unwrap();
         let period = rated.period;
-        let periods = 32;
+        // Twelve of a quarter CPU's shares overrun at once: eleven owed past its first.
+        let overrun = u64::try_from((period / 4 * 12).as_nanos()).unwrap();
         let guest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let (registered, done) = (AtomicBool::new(false), AtomicBool::new(false));
-        let (ran, wall) = std::thread::scope(|s| {
-            let theirs = guest.clone();
-            let (hold, registered, done) = (&hold, &registered, &done);
-            // The vCPU: a run of half a period at a time, its guest time told once it is over.
-            s.spawn(move || {
-                let told = theirs.clone();
-                let read: GuestRead = Box::new(move || Some(told.load(Ordering::SeqCst)));
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let done = AtomicBool::new(false);
+        let blocked = std::thread::scope(|s| {
+            let (told, counted) = (guest.clone(), reads.clone());
+            let (hold, done) = (&hold, &done);
+            let vcpu = s.spawn(move || {
+                let (theirs, read_count) = (told.clone(), counted.clone());
+                let read: GuestRead = Box::new(move || {
+                    read_count.fetch_add(1, Ordering::SeqCst);
+                    Some(theirs.load(Ordering::SeqCst))
+                });
                 hold.register(0, Some(read)).unwrap();
-                registered.store(true, Ordering::SeqCst);
-                while !done.load(Ordering::SeqCst) {
-                    hold.wait(&|| done.load(Ordering::SeqCst));
-                    let run = Instant::now();
-                    std::thread::sleep(period / 2);
-                    let ns = u64::try_from(run.elapsed().as_nanos()).unwrap();
-                    theirs.fetch_add(ns, Ordering::SeqCst);
+                // Its governor's first reading taken, its overrun told at once.
+                while counted.load(Ordering::SeqCst) == 0 {
+                    std::thread::yield_now();
                 }
+                told.fetch_add(overrun, Ordering::SeqCst);
+                while !hold.held.load(Ordering::Acquire) {
+                    std::thread::yield_now();
+                }
+                let held = Instant::now();
+                hold.wait(&|| done.load(Ordering::SeqCst));
+                held.elapsed()
             });
-            while !registered.load(Ordering::SeqCst) {
-                std::thread::yield_now();
-            }
             let governor = s.spawn(|| hold.govern(&|| {}, &|| Charged::Apart));
-            let (t0, g0) = (Instant::now(), guest.load(Ordering::SeqCst));
-            std::thread::sleep(period * periods);
-            let ran = guest.load(Ordering::SeqCst) - g0;
-            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
+            let blocked = vcpu.join().unwrap();
             done.store(true, Ordering::SeqCst);
             hold.end();
             governor.join().unwrap();
-            (ran, wall)
+            blocked
         });
-        let period_ns = u64::try_from(period.as_nanos()).unwrap();
-        // A quarter of the wall, two of its periods where the window and the periods do not
-        // line up, and one run, the step its guest time is seen in.
-        let most = wall / 4 + 2 * period_ns + period_ns / 2;
-        assert!(
-            ran <= most,
-            "{ran} ns run in {wall} ns at a quarter CPU, over {period_ns} ns periods"
-        );
-        assert!(
-            ran >= wall / 20,
-            "{ran} ns run in {wall} ns: held, and never let go"
-        );
+        // Through the shares it owes past its first period's, but for what of that period
+        // passed before its governor saw the overrun: ten periods at the least, of eleven.
+        assert!(blocked >= period * 10, "held {blocked:?} over {period:?} periods");
     }
 
     /// A rate's share of a period is that many thousandths of it, exact to the nanosecond

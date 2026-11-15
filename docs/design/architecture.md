@@ -35721,9 +35721,11 @@ split (docs/research/measurements/guest-cpu-time-v1): `ToThread`. WHP's is learn
   a quarter CPU on hex-winvm, D255's bound 31%). A test's bound takes the step its own guest's
   time is read in, measured as its vCPU spins unheld (`tests/common::guest_time_step`), never
   a count's unit (WHP's 100 ns). Tested: shards-vmm
-  `hold::tests::a_vcpu_seen_late_is_held_across_periods_by_what_it_overran` (a vCPU seen in
-  steps of half its period, past a quarter CPU's share, as each release on hex-winvm ran past
-  it: a quarter of the wall held across periods, half of it let go at each period's end).
+  `hold::tests::a_vcpu_that_overran_is_held_through_the_periods_it_owes` (twelve shares overrun
+  at once, told late: held through the eleven periods owed, where it was let go at the end of
+  the first); live, `boot.rs` `a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket`
+  on hex-winvm, red at ba6ed94b8 (776,742,300 ns of guest in 2,002,645,300 ns) and green with
+  this hold (the measured step alone moves its bound by a move, 9.4 ms).
 - *Its hold* (D191, D255). The governor counts a vCPU's CPU time as its charge says
   (`hold::VcpuClock::used`): its thread's where `ToThread`, its guest time added where
   `Apart`, the larger of the two while `Unknown` (the most either shows it used). The charge is
