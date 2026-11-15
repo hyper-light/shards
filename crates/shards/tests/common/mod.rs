@@ -3388,6 +3388,60 @@ pub struct Party {
     served: Option<u64>,
 }
 
+/// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
+/// proc(5)), macOS its `pbsi_status` (`PROC_PIDT_SHORTBSDINFO`, sys/proc.h's `SIDL` to
+/// `SZOMB`; `SRUN` for any live process, sleeping or not: HVF's accounts said "running
+/// (status 2), 0 of 12 threads runnable" of an idle daemon), each said with its letter or
+/// number; none where it cannot be read (Windows,
+/// whose process has no such state).
+#[cfg(target_os = "linux")]
+fn process_status(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let state = stat.rsplit_once(')')?.1.split_whitespace().next()?.to_string();
+    let word = match state.as_str() {
+        "R" => "running or runnable",
+        "S" => "sleeping",
+        "D" => "in an uninterruptible wait",
+        "Z" => "a zombie",
+        "T" => "stopped",
+        "t" => "traced",
+        "X" => "dead",
+        "I" => "idle",
+        _ => "in a state proc(5) does not name",
+    };
+    Some(format!("{word} ({state})"))
+}
+
+#[cfg(target_os = "macos")]
+fn process_status(pid: u32) -> Option<String> {
+    let id = libc::c_int::try_from(pid).ok()?;
+    let size = libc::c_int::try_from(size_of::<libc::proc_bsdshortinfo>()).ok()?;
+    // SAFETY: proc_bsdshortinfo is plain C data, for which all zeroes is a value.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: a buffer of `size` bytes for the call to fill.
+    let filled =
+        unsafe { libc::proc_pidinfo(id, libc::PROC_PIDT_SHORTBSDINFO, 0, (&raw mut info).cast(), size) };
+    if filled != size {
+        return None;
+    }
+    let word = match info.pbsi_status {
+        libc::SIDL => "being created",
+        // XNU keeps SRUN for every live process, a sleeping one too: its threads' run
+        // states, said beside it, tell whether one runs.
+        libc::SRUN => "live",
+        libc::SSLEEP => "sleeping",
+        libc::SSTOP => "stopped",
+        libc::SZOMB => "a zombie",
+        _ => "in a status sys/proc.h does not name",
+    };
+    Some(format!("{word} (status {})", info.pbsi_status))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_status(_: u32) -> Option<String> {
+    None
+}
+
 /// The name a VM process runs as (`shards-vm`, `shards-vm-gpu`): a daemon's descendant of
 /// another name is its helper (its spawner, its network process), whose run for a waiter's
 /// own clients is the daemon's ([`Looked::daemon_ran`]; ROOT's batch, KVM: the polled test's
@@ -3726,6 +3780,35 @@ impl Party {
                 Some((run.file_name().to_string_lossy().into_owned(), left))
             })
             .max_by_key(|(_, left)| *left)
+    }
+
+    /// What each process it follows is doing now, as its OS gives it, for a wait's account of
+    /// itself, so that a refusal names its own premise (ROOT, 2026-11-14: api_image.rs:1379's
+    /// refusal named no member's state, whether one was ending among them): its status
+    /// ([`process_status`]), how many of its threads are runnable (`shards_api::
+    /// runnable_threads`), and its end under way or its stop, as its look found them.
+    fn states(&self) -> String {
+        if self.watched.is_empty() {
+            return "none followed".into();
+        }
+        let states: Vec<String> = self
+            .watched
+            .iter()
+            .map(|(&pid, watch)| {
+                let mut said = format!("{pid} {}", process_status(pid).unwrap_or_else(|| "unread".into()));
+                if let Some((runnable, threads)) = shards_api::runnable_threads(pid) {
+                    said.push_str(&format!(", {runnable} of {threads} threads runnable"));
+                }
+                if watch.ended() {
+                    said.push_str(", its end under way");
+                }
+                if watch.stopped() {
+                    said.push_str(", stopped");
+                }
+                said
+            })
+            .collect();
+        states.join("; ")
     }
 
     /// Who it is, for a wait's account of itself.
@@ -4590,7 +4673,7 @@ impl Wait {
             format!("{} {}", self.kind.site, self.kind.line)
         };
         format!(
-            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}",
+            "{kind}: {} ({}), {:?} in: its last progress {} {:?} ago; {}; its record {record}; its members now: {}",
             self.asked,
             self.party.named(),
             self.began.elapsed(),
@@ -4600,6 +4683,7 @@ impl Wait {
                 || "its host not holding it".to_string(),
                 |held| format!("held: {held}")
             ),
+            self.party.states(),
         )
     }
 

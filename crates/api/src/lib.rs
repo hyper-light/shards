@@ -58,7 +58,7 @@ pub use native::{
     ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
 };
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
-pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
+pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch, runnable_threads};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]

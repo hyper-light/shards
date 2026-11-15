@@ -271,6 +271,26 @@ pub struct Watch {
 /// in nanoseconds, and whether it was runnable on no CPU or running ([`Watch::starved`]).
 pub(crate) type Threads = std::collections::BTreeMap<u64, (u64, bool)>;
 
+/// How many of process `pid`'s threads are runnable (running, or waiting for a CPU), of how
+/// many, as [`Watch::starved`] reads them: for a waiter's account of its party, so that a
+/// refusal names what its members were doing. None where they cannot be read (Windows reads
+/// none outside the system's whole listing).
+pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
+    #[cfg(target_os = "linux")]
+    let threads = os::threads(pid)?;
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let threads = os::threads_cpu(pid)?;
+    #[cfg(windows)]
+    let threads: Threads = {
+        let _ = pid;
+        return None;
+    };
+    Some((
+        threads.values().filter(|(_, runnable)| *runnable).count(),
+        threads.len(),
+    ))
+}
+
 /// Whether a thread runnable in `now` had no CPU at all since `before`: its host kept it
 /// from a CPU through the whole time between the two reads (or it ran less than its OS's
 /// counter shows). A thread that ran any CPU, or that `before` did not see, shows nothing:

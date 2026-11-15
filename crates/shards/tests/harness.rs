@@ -878,7 +878,16 @@ fn a_judged_calls_own_work_is_its_progress() {
     idle.wait().unwrap();
     assert!(quick.is_ok(), "{quick:?}");
     assert!(busy.is_ok(), "{busy:?}");
-    assert!(idle_call.is_err(), "a call idle on its own thread not refused");
+    // Refused, and its account names what its member was doing.
+    let Err(said) = idle_call else {
+        panic!("a call idle on its own thread not refused");
+    };
+    // Its member listed, none of its threads runnable: Linux says it sleeping (S), macOS live
+    // (SRUN, which XNU keeps for every live process), both by its threads.
+    let member = said
+        .split_once(&format!("its members now: {party} "))
+        .map(|(_, member)| member.split(';').next().unwrap_or_default());
+    assert!(member.is_some_and(|member| member.contains(", 0 of ")), "{said}");
 }
 
 /// What an `answer` stand-in writes.
