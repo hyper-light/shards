@@ -2605,9 +2605,9 @@ mod hosted {
         ready_by: Option<u64>,
         input: super::Input,
     ) -> Result<(), No> {
-        let checking = Checking::begin();
+        let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let shaped = shape(request, &home)?;
+        let shaped = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
         launch_and_serve(answers, input, &home, plan, checking)
@@ -2750,7 +2750,7 @@ mod hosted {
         Ok(Secured { filters, domains })
     }
 
-    fn shape(request: &wire::Request, home: &Path) -> Result<Shaped, No> {
+    fn shape(request: &wire::Request, home: &Path, checking: &mut Checking) -> Result<Shaped, No> {
         let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
@@ -2797,6 +2797,7 @@ mod hosted {
             sign_ins.is_some(),
         )?;
         let bridge = if run.network == "bridge" {
+            checking.networked();
             Some(
                 shards_net::bridge::elected_here(&mut |note| say(&note))
                     .ok_or_else(|| No(Cause::Boot, shards_net::bridge::NO_SUBNET.into()))?,
@@ -3231,28 +3232,65 @@ mod hosted {
     /// Its VM process's binary, checked on a thread of its own from the run host's first step,
     /// beside its run's making, which needs nothing of it: `helpers::vm` reads the binary whole
     /// and hashes it as a process first starts it (helpers.rs `checked`, runs-10), and a run
-    /// host is a process of one run, so every run's start paid it before its launch. Taken as
-    /// its VM is launched; checked there where no thread could be started for it.
-    struct Checking(Option<std::thread::JoinHandle<Result<PathBuf, String>>>);
+    /// host is a process of one run, so every run's start paid it before its launch. Its
+    /// network process's binary likewise, once its run is found to have a network
+    /// ([`networked`](Self::networked)): checked on the same thread after the VM's, and done
+    /// before its VM is launched, as `taken` waits for both, so that the network process's start
+    /// (`netproc::start`, before its VM's) finds it checked (helpers.rs `CHECKED`) and reads it
+    /// no more. Taken as its VM is launched; checked there where no thread could be started.
+    struct Checking {
+        thread: Option<std::thread::JoinHandle<Result<PathBuf, String>>>,
+        /// Tells its thread that its run has a network; untold as it is taken, none checked.
+        network: Option<std::sync::mpsc::Sender<()>>,
+        networked: bool,
+    }
 
     impl Checking {
         fn begin() -> Checking {
-            Checking(
-                std::thread::Builder::new()
-                    .name("api-run vm binary".into())
-                    .spawn(crate::helpers::vm)
-                    .ok(),
-            )
+            let (tell, told) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::Builder::new()
+                .name("api-run binaries".into())
+                .spawn(move || {
+                    let vm = crate::helpers::vm();
+                    // A network process's that cannot be checked is refused as its process
+                    // starts, which checks it again (`helpers::program`).
+                    if told.recv().is_ok() {
+                        let _ = crate::helpers::net();
+                    }
+                    vm
+                })
+                .ok();
+            Checking {
+                network: thread.as_ref().map(|_| tell),
+                thread,
+                networked: false,
+            }
         }
 
-        /// The binary checked, or why not.
-        fn taken(self) -> Result<PathBuf, String> {
-            match self.0 {
+        /// Its run has a network: its network process's binary is checked too.
+        fn networked(&mut self) {
+            self.networked = true;
+            if let Some(tell) = self.network.take() {
+                let _ = tell.send(());
+            }
+        }
+
+        /// The VM's binary checked, or why not; and whether its network process's was too,
+        /// done by now.
+        fn taken(self) -> (Result<PathBuf, String>, bool) {
+            let Checking {
+                thread,
+                network,
+                networked,
+            } = self;
+            drop(network);
+            let vm = match thread {
                 Some(checking) => checking
                     .join()
                     .unwrap_or_else(|_| Err("its VM's binary: its check ended unanswered".into())),
                 None => crate::helpers::vm(),
-            }
+            };
+            (vm, networked)
         }
     }
 
@@ -3290,8 +3328,15 @@ mod hosted {
         if let Some(shares) = &shares {
             super::step(format_args!("its share process {} started", shares.child.id()));
         }
-        let vm = checking.taken();
-        super::step(format_args!("its VM's binary checked"));
+        let (vm, networked) = checking.taken();
+        super::step(format_args!(
+            "its VM's binary checked{}",
+            if networked {
+                ", its network process's too"
+            } else {
+                ""
+            }
+        ));
         let started = vm.map_err(boot).and_then(|vm| {
             let mut host = Host {
                 home,
@@ -4504,7 +4549,7 @@ mod hosted {
             }
             return Err(No(Cause::Boot, format!("its orchestrator: {e}")));
         }
-        serve_launched(answers, input, home, plan, launched?)
+        serve_launched(answers, input, home, plan, launched?, None)
     }
 
     /// What VM process `vm` costs its host (D241's `HostUse`): read at once, as the run's
@@ -4533,9 +4578,9 @@ mod hosted {
         exemplar: &wire::Request,
         mut input: super::Input,
     ) -> Result<(), No> {
-        let checking = Checking::begin();
+        let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let mut shaped = shape(exemplar, &home)?;
+        let mut shaped = shape(exemplar, &home, &mut checking)?;
         let launched = match launch(&home, &shaped.launch(), checking, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
@@ -4546,6 +4591,10 @@ mod hosted {
         // The ready VM holds its rootfs and settled template files itself (D26).
         // An idle spare must not keep unrelated collection waiting for its CREATE.
         drop(shaped.prepared.lease.take());
+        // Its endpoint's key, its VM started, made as it waits for a run that may ask for one
+        // (D252); none made here is made again as its endpoint binds, refused there as before.
+        let premade = ControlKey::made().ok();
+        super::step(format_args!("its agent-control key made"));
         super::say(format_args!(
             "warm, its VM process {} ready ({:?})",
             launched.vm.id(),
@@ -4616,7 +4665,7 @@ mod hosted {
         };
         let mut launched = launched;
         launched.from = wire::StartedFrom::Warm;
-        serve_launched(answers, input, &home, plan, launched)
+        serve_launched(answers, input, &home, plan, launched, premade)
     }
 
     /// Ends what of a run was made: its processes, `launched` (its VM killed, then each reaped
@@ -4671,6 +4720,7 @@ mod hosted {
         home: &Path,
         mut plan: Plan,
         mut launched: Launched,
+        mut premade: Option<ControlKey>,
     ) -> Result<(), No> {
         // Readiness and template settlement ended the preparation lease's work.
         drop(plan.prepared.lease.take());
@@ -4735,9 +4785,9 @@ mod hosted {
                 capture.as_ref().map(|(_, theirs)| theirs),
             )
             .map_err(boot)?;
-            // Its agent-control endpoint (D252), its key made now, past its VM's start, held by
-            // the endpoint alone: no template, and no other run, has it; and what its own lanes
-            // are served with.
+            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
+            // held by the endpoint alone once bound: no template, and no other run, has it; and
+            // what its own lanes are served with.
             let agent = plan
                 .control
                 .as_ref()
@@ -4745,7 +4795,12 @@ mod hosted {
                 .transpose()
                 .map_err(boot)?;
             let control = match (plan.control.as_ref(), agent.as_ref()) {
-                (Some(ask), Some(agent)) => Some(bind_control(ask, agent.admissions).map_err(boot)?),
+                (Some(ask), Some(agent)) => {
+                    let key = control_key(premade.take()).map_err(boot)?;
+                    let bound = bind_control(key, ask, agent.admissions).map_err(boot)?;
+                    super::step(format_args!("its agent-control endpoint bound"));
+                    Some(bound)
+                }
                 _ => None,
             };
             let started = wire::Started {
@@ -5002,16 +5057,45 @@ mod hosted {
         }
     }
 
+    /// The microVM's own key for its run's agent-control endpoint (D252): made once its VM has
+    /// started, never in its guest's memory nor a template's, held by its run host until its
+    /// endpoint takes it as it binds ([`bind_control`]), then by the endpoint alone. A warm
+    /// host makes its one as it waits for its run, which may ask for an endpoint: a host
+    /// serves one run, so no two runs share one, and a warm run binds without making one on
+    /// its way.
+    pub(super) struct ControlKey(shards_remote::identity::Identity);
+
+    impl ControlKey {
+        pub(super) fn made() -> Result<ControlKey, String> {
+            shards_remote::identity::Identity::generate()
+                .map(ControlKey)
+                .map_err(|e| format!("its microVM's key: {e}"))
+        }
+
+        /// The SHA-256 its controller pins of it, which its endpoint says once bound.
+        #[cfg(test)]
+        pub(super) fn fingerprint(&self) -> shards_remote::identity::Fingerprint {
+            self.0.fingerprint()
+        }
+    }
+
+    /// The key a run's endpoint takes: the one its warm host made as it waited, else one made
+    /// now, its VM started; refused where none can be made.
+    pub(super) fn control_key(premade: Option<ControlKey>) -> Result<ControlKey, String> {
+        premade.map_or_else(ControlKey::made, Ok)
+    }
+
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
-    /// its microVM's own key, made now, and the controller's key the one it takes; serving the
-    /// run's socket lanes where its ask grants them (D251), and its execs, its members' MCP
-    /// connections (D254) and its members' own lanes, their streams admitted as `execs` says.
+    /// its microVM's own key `key`, which it takes, and the controller's key the one it admits;
+    /// serving the run's socket lanes where its ask grants them (D251), and its execs, its
+    /// members' MCP connections (D254) and its members' own lanes, their streams admitted as
+    /// `execs` says.
     pub(super) fn bind_control(
+        key: ControlKey,
         ask: &wire::ControlAsk,
         execs: shards_remote::control::exec::Admissions,
     ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
-        let vm =
-            shards_remote::identity::Identity::generate().map_err(|e| format!("its microVM's key: {e}"))?;
+        let ControlKey(vm) = key;
         let sockets = ask
             .sockets
             .as_ref()
@@ -6755,11 +6839,22 @@ mod hosted {
         /// The VM binary checked beside a run's making is the one its launch would have checked
         /// itself: the same path, or the same refusal (this build's carries no VM process,
         /// `SHARDS_HELPERS=skip`, unless `SHARDS_VM_BINARY` names one); checked at once where
-        /// no thread was started for it.
+        /// no thread was started for it. Its network process's is checked once its run is said
+        /// to have a network, and its taking waits for that check, told or not, and never on it
+        /// where untold.
         #[test]
         fn a_vm_binary_checked_beside_its_runs_making_is_its_launchs_own() {
-            assert_eq!(Checking::begin().taken(), crate::helpers::vm());
-            assert_eq!(Checking(None).taken(), crate::helpers::vm());
+            // Untold of a network, its thread ends with the VM's check; told, after both.
+            assert_eq!(Checking::begin().taken(), (crate::helpers::vm(), false));
+            let mut told = Checking::begin();
+            told.networked();
+            assert_eq!(told.taken(), (crate::helpers::vm(), true));
+            let none = Checking {
+                thread: None,
+                network: None,
+                networked: false,
+            };
+            assert_eq!(none.taken(), (crate::helpers::vm(), false));
         }
 
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
@@ -7471,7 +7566,7 @@ mod hosted {
                 controller: kiln.fingerprint(),
                 sockets: None,
             };
-            let (endpoint, served) = bind_control(&ask, admissions).unwrap();
+            let (endpoint, served) = bind_control(ControlKey::made().unwrap(), &ask, admissions).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             std::thread::scope(|scope| {
@@ -9604,8 +9699,8 @@ mod tests {
         }
     }
 
-    /// D252: a run's endpoint is bound on loopback under a key of its own, made as it is bound,
-    /// which no two runs share; it hands its host the socket lanes its grant admits.
+    /// D252: a run's endpoint is bound on loopback under a key of its own, made past its VM's
+    /// start, which no two runs share; it hands its host the socket lanes its grant admits.
     #[test]
     fn a_runs_endpoint_is_bound_on_loopback_under_a_key_of_its_own() {
         let ask = wire::ControlAsk {
@@ -9617,13 +9712,43 @@ mod tests {
             }),
         };
         let execs = shards_api::control::exec_admissions();
-        let (first, served) = hosted::bind_control(&ask, execs).unwrap();
+        let (first, served) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
         // Its execs, its members' MCP connections and its members' own lanes (D254, D238).
         assert!(served.execs.is_some() && served.members.is_some());
-        let (second, _) = hosted::bind_control(&ask, execs).unwrap();
+        let (second, _) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
+    }
+
+    /// D252, a warm host: its run's endpoint takes the key its host made as it waited for the
+    /// run, its VM started, rather than making one on the run's way; two warm hosts' keys are
+    /// never one, each host serving one run; and a run whose host made none makes its own as it
+    /// binds.
+    #[test]
+    fn a_warm_runs_endpoint_takes_the_key_its_host_made_as_it_waited() {
+        let ask = wire::ControlAsk {
+            controller: [7; 32],
+            sockets: None,
+        };
+        let execs = shards_api::control::exec_admissions();
+        let (one, other) = (
+            hosted::ControlKey::made().unwrap(),
+            hosted::ControlKey::made().unwrap(),
+        );
+        let (made, made_other) = (one.fingerprint(), other.fingerprint());
+        assert_ne!(made, made_other, "two warm hosts share one key");
+        let (endpoint, _) =
+            hosted::bind_control(hosted::control_key(Some(one)).unwrap(), &ask, execs).unwrap();
+        assert_eq!(
+            endpoint.fingerprint, made,
+            "its endpoint took another key than its host made"
+        );
+        let (own, _) = hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs).unwrap();
+        assert!(
+            own.fingerprint != made && own.fingerprint != made_other,
+            "a run whose host made none bound with another's"
+        );
     }
 
     /// D252, version 30 (Hex's ask): what the orchestrator reads of a run's endpoint names
@@ -9642,7 +9767,12 @@ mod tests {
                 window: 4096,
             }),
         };
-        let (endpoint, served) = hosted::bind_control(&ask, shards_api::control::exec_admissions()).unwrap();
+        let (endpoint, served) = hosted::bind_control(
+            hosted::ControlKey::made().unwrap(),
+            &ask,
+            shards_api::control::exec_admissions(),
+        )
+        .unwrap();
         let started = wire::Started {
             members: Vec::new(),
             published: Vec::new(),

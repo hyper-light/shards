@@ -25311,8 +25311,9 @@ Max) left untimed (D253's amendment, the start path's cuts):
   `its members staged, its ports bound`, `its setup's security composed` and `its run
   planned`, which `plan` says on every kind, a warm run's too.
 - Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
-  from the run host's first step, api_run.rs `Checking`), `its network decided`, `its
-  writable layer cloned|made|none`, then `launching its VM`.
+  from the run host's first step, api_run.rs `Checking`; `, its network process's too` where
+  its run has a network, whose binary that thread checks once `shape` elects its bridge),
+  `its network decided`, `its writable layer cloned|made|none`, then `launching its VM`.
 - Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
   then `its VM process … is ready`.
 - shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
@@ -25320,6 +25321,12 @@ Max) left untimed (D253's amendment, the start path's cuts):
   timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
   answer K read` (STARTED 16, WARMED 32), `its start taken`, `its members' outputs pumped`,
   `its diagnostics' file named` and `kept`, beside the harness's own `the boot answered`.
+- The phase pass runs twice, its lines labelled: `IMAGE-START-PHASES timed …` with
+  `SHARDS_TIMING` alone (the run host's and shards-api's lines), then `IMAGE-START-PHASES
+  debug …` with `SHARDS_LOG=debug` too (the VM's own steps). The VM's debug lines share one
+  pipe with the run host's, which only the caller's diagnostics reader drains, and a run
+  host's line takes its time before its write: where the reader lags, the line after a wait
+  shows it as its gap, so `timed`'s gaps are the run host's own.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.
 
