@@ -281,10 +281,11 @@ pub fn runnable_threads(pid: u32) -> Option<(usize, usize)> {
     #[cfg(all(unix, not(target_os = "linux")))]
     let threads = os::threads_cpu(pid)?;
     #[cfg(windows)]
-    let threads: Threads = {
+    {
         let _ = pid;
-        return None;
-    };
+        None
+    }
+    #[cfg(not(windows))]
     Some((
         threads.values().filter(|(_, runnable)| *runnable).count(),
         threads.len(),
