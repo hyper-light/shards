@@ -4756,9 +4756,9 @@ mod tests {
         };
         let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both)))).unwrap();
         // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its
-        // host's tag and three numbers, its guest's tag, departed time and count, and the
-        // first vCPU's index, time and flag: made the first's, out of order.
-        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 8 + 4 + 13;
+        // host's tag, three numbers and charge, its guest's tag, departed time and count, and
+        // the first vCPU's index, time and flag: made the first's, out of order.
+        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 1 + 8 + 4 + 13;
         let mut out_of_order = bytes.clone();
         out_of_order[second..second + 4].copy_from_slice(&0u32.to_be_bytes());
         assert_eq!(

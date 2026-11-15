@@ -528,7 +528,7 @@ mod tests {
         assert!(read.guest.is_err() && read.host.is_err());
         assert_eq!(
             HOST_MOST,
-            "host 18446744073709551615 18446744073709551615 18446744073709551615\n".len()
+            "host 18446744073709551615 18446744073709551615 18446744073709551615 unknown\n".len()
         );
     }
 
