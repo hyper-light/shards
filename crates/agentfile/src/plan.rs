@@ -2929,6 +2929,17 @@ impl Planner<'_> {
         };
         // Single words expand before the step; ARG expands its own.
         let ex = |w: &[u8]| self.expand(d, &loc, &lint, &shlex, w);
+        let domain = |a: &mut crate::agentfile::Domain, directive: &str| -> Result<(), Fail> {
+            let named = crate::agentfile::unexpanded(&a.source);
+            a.source = ex(&a.source)?;
+            if named {
+                crate::agentfile::fetch_checked(directive, &a.source, &a.fetch).map_err(Fail::new)?;
+            }
+            if let Some(to) = &mut a.to {
+                *to = ex(to)?;
+            }
+            Ok(())
+        };
         match &mut step.command.kind {
             Kind::Env(kvs) | Kind::Label(kvs) => {
                 for kv in kvs.iter_mut() {
@@ -2966,21 +2977,25 @@ impl Planner<'_> {
                 v.chown = ex(&v.chown)?;
                 v.chmod = ex(&v.chmod)?;
             }
-            // Their sources and paths as ADD's: names stay as written, as a stage's do.
-            Kind::Agentfile(
-                crate::agentfile::Directive::Agent(a) | crate::agentfile::Directive::Harness(a),
-            ) => {
-                a.source = ex(&a.source)?;
-                if let Some(to) = &mut a.to {
-                    *to = ex(to)?;
-                }
-            }
+            // Their sources expand as ADD's (D56), names staying as written, as a stage's do; one that named a variable is held to its
+            // directive's checks once expanded, as one that named none was as parsed (D54).
+            Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => domain(a, "AGENT")?,
+            Kind::Agentfile(crate::agentfile::Directive::Harness(a)) => domain(a, "HARNESS")?,
             Kind::Agentfile(crate::agentfile::Directive::Mcp(m)) => {
+                let named = crate::agentfile::unexpanded(&m.source);
                 m.source = ex(&m.source)?;
+                if named {
+                    crate::agentfile::mcp_checked(&m.source, &m.redirects).map_err(Fail::new)?;
+                }
             }
             Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => {
                 if let crate::agentfile::SkillSource::Path(p) = &mut sk.source {
+                    let named = crate::agentfile::unexpanded(p);
                     *p = ex(p)?;
+                    if named {
+                        crate::agentfile::skill_checked(&sk.source, &sk.from, &sk.redirects)
+                            .map_err(Fail::new)?;
+                    }
                 }
                 if let Some(dest) = &mut sk.dest {
                     *dest = ex(dest)?;
