@@ -943,7 +943,7 @@ fn an_images_next_run_takes_a_warm_host_of_its_pool() {
     };
     s.env
         .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
-    let pools = ImagePools::new(2, ImagePools::KEEP).unwrap();
+    let pools = ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap();
     let run = |s: &ImageSpec| {
         let guest = booted(&pools, s).unwrap();
         let from = guest.started_from();
@@ -2513,4 +2513,180 @@ fn an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outs
             "{token}"
         );
     }
+}
+
+/// A room of two warm hosts of the pool tests' size (D253's `WarmRoom`), counted atomically,
+/// as a node's room may be: it waits on no lock of its owner's.
+#[derive(Debug, Default)]
+struct RoomOfTwo(std::sync::atomic::AtomicUsize);
+
+impl shards_api::image::WarmRoom for RoomOfTwo {
+    fn claim(&self, _: &shards_api::image::WarmHost) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.0
+            .fetch_update(SeqCst, SeqCst, |n| (n < 2).then_some(n + 1))
+            .is_ok()
+    }
+
+    fn give(&self, _: &shards_api::image::WarmHost, _: shards_api::image::Gave) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let _ = self.0.fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1));
+    }
+}
+
+/// The pool test's spec in `home`, its run host `binary`: a command that exits 3, granted
+/// nothing past its microVM, booting this build's pinned guest.
+fn pooled_spec(home: &std::path::Path, image: &str, binary: &std::path::Path) -> ImageSpec {
+    ImageSpec {
+        image: image.into(),
+        vcpus: 1,
+        memory_mib: 512,
+        command: Some(["/bin/sh", "-c", "exit 3"].map(String::from).to_vec()),
+        members: Vec::new(),
+        publish: Vec::new(),
+        egress: Narrowing {
+            egress: Keep::Only(Vec::new()),
+            mcp: Keep::Only(Vec::new()),
+            destinations: Keep::Only(Vec::new()),
+            dns: false,
+            members: Some(Vec::new()),
+        },
+        credentials: Vec::new(),
+        lessor: None,
+        shares: Vec::new(),
+        nesting: false,
+        ready_by: None,
+        binary: Some(binary.to_path_buf()),
+        env: vec![
+            ("SHARDS_HOME".into(), home.as_os_str().into()),
+            ("SHARDS_LOCAL_STORE".into(), "none".into()),
+            ("DOCKER_CONFIG".into(), common::docker_config().as_os_str().into()),
+        ],
+        control: None,
+        gpu_devices: Vec::new(),
+        sign_ins: Vec::new(),
+        upstream_roots: Vec::new(),
+        gpu_report: None,
+    }
+}
+
+/// D253's pools end with their holder, by whatever death: a warm run host reads its
+/// orchestrator's channel for its run (`CREATE`), and its end, as the holder's process goes,
+/// ends it and its microVM (api_run.rs `warm`: none read, `end`). The holder, this test run
+/// again (`SHARDS_TEST_POOL_HOLDER`), keeps a pool with a warm host, its run host a copy of
+/// `shards` of its own, which names its hosts; SIGKILLed, every host's process group is gone.
+#[cfg(unix)]
+#[test]
+fn warm_hosts_end_with_the_process_holding_their_pools() {
+    if let Some(home) = std::env::var_os("SHARDS_TEST_POOL_HOLDER") {
+        let binary = std::env::var_os("SHARDS_TEST_POOL_BINARY").unwrap();
+        let s = pooled_spec(home.as_ref(), "api-orphan:1", binary.as_ref());
+        let pools = ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap();
+        let guest = booted(&pools, &s).unwrap();
+        ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap();
+        drop(guest);
+        let mut patience = Patience::started();
+        while pools.held().iter().map(|h| h.warm).sum::<usize>() == 0 {
+            assert!(patience.holds(), "no host warm");
+            std::thread::sleep(patience.next_look());
+        }
+        patience.done();
+        let _ = writeln!(std::io::stdout(), "warm");
+        let _ = std::io::stdout().flush();
+        // Held until killed.
+        let _ = std::io::stdin().read(&mut [0]);
+        std::process::abort();
+    }
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-orphan-home");
+    build_example(&home, "api-orphan:1");
+    let named = TempDir::new("orphan");
+    let binary = named.join("shards-pool-holder");
+    std::fs::copy(common::shards(), &binary).unwrap();
+    let mut holder = std::process::Command::new(std::env::current_exe().unwrap());
+    holder
+        .args([
+            "warm_hosts_end_with_the_process_holding_their_pools",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("SHARDS_TEST_POOL_HOLDER", home.as_os_str())
+        .env("SHARDS_TEST_POOL_BINARY", &binary)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    common::as_tests_run(&mut holder);
+    let mut holder = holder.spawn().unwrap();
+    let mut out = holder.stdout.take().unwrap();
+    let mut said = Vec::new();
+    let mut byte = [0];
+    while !said.ends_with(b"warm\n") {
+        assert_eq!(
+            out.read(&mut byte).unwrap(),
+            1,
+            "the holder ended: {}",
+            String::from_utf8_lossy(&said)
+        );
+        said.push(byte[0]);
+    }
+    let listed = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,command="])
+        .output()
+        .unwrap();
+    let named = binary.to_string_lossy().into_owned();
+    let hosts: Vec<i32> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter(|l| l.contains(&named) && l.contains("api-run"))
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect();
+    assert!(!hosts.is_empty(), "the holder's warm hosts are listed");
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    // Each host led a process group of its own, its VM's among it (`start_host`): gone whole.
+    let gone = |pid: i32| {
+        // SAFETY: kill(2) with signal 0 sends none; it only says whether the group exists.
+        let sent = unsafe { libc::kill(-pid, 0) };
+        sent == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    };
+    let mut patience = Patience::started();
+    while !hosts.iter().all(|&pid| gone(pid)) {
+        assert!(
+            patience.holds(),
+            "warm hosts {hosts:?} outlived their pools' holder"
+        );
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
+}
+
+/// D253's pools: a warm host's footprint is its VM process's, as a running run's stats read it
+/// (`USE`, answered `USED`): asked as `held()` looks, and listed by a later look, never waited
+/// for.
+#[test]
+fn a_warm_hosts_footprint_is_its_vm_processs_reading() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-footprint-home");
+    build_example(&home, "api-footprint:1");
+    let s = pooled_spec(&home, "api-footprint:1", common::shards());
+    let pools = ImagePools::new(RoomOfTwo::default(), ImagePools::KEEP).unwrap();
+    let guest = booted(&pools, &s).unwrap();
+    ask(&*guest, |g| g.wait_for(Duration::MAX)).unwrap();
+    drop(guest);
+    let mut patience = Patience::started();
+    let footprints = loop {
+        let held = pools.held();
+        let footprints: Vec<u64> = held.iter().flat_map(|h| h.footprints.iter().copied()).collect();
+        let warm: usize = held.iter().map(|h| h.warm).sum();
+        if warm > 0 && footprints.len() == warm {
+            break footprints;
+        }
+        assert!(patience.holds(), "no warm host's footprint: {held:?}");
+        std::thread::sleep(patience.next_look());
+    };
+    patience.done();
+    assert!(footprints.iter().all(|&f| f > 0), "{footprints:?}");
 }

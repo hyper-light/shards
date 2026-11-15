@@ -2444,6 +2444,7 @@ pub const MAX_FDS: usize = run_fds::CLIENT
 
 mod host_memory;
 pub use host_memory::{holdable, holdable_known, host_available, host_memory};
+pub mod size;
 mod window;
 pub use window::{Window, WindowRefusal};
 pub mod slots;
