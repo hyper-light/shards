@@ -25238,6 +25238,74 @@ microseconds with no growth is no evidence that a process ran nothing: D215's re
 the kernel's tick as their resolution (`Watch::resolution`). The wake mode's n is small:
 its 1 ms sleeps between pokes ran about 8 ms under the session's QoS clamp.
 
+### M593. Where a shards-api image start's time goes, by the way it starts (D231, D253; api_image's `image_start_costs`)
+
+Why: Hex's `hex.image.boot` measured 122–719 ms on HVF and 167–235 ms on KVM (n=6), and the
+person asks for an order of magnitude less. This entry is the method; its numbers are owed.
+
+Method: `crates/shards/tests/api_image.rs` `image_start_costs` (`#[ignore]`), run as
+`SHARDS_IMAGE_COST_N=<n> cargo test -p shards --profile release --test api_image -- --ignored
+--exact image_start_costs --nocapture`, on the host whose backend it measures (HVF on an
+M-series Mac, KVM on Linux x86_64; WHP restores where `vm::restores_here`, else only `Booted`
+runs and the rest are said SKIP). The tests' own image, its harness the test guest's `sleep`
+(it prints `ready`, then waits for its end), 1 vCPU and 512 MiB, no members' stages, no
+network. Four kinds of start, each held to the `started_from` its run reports (a start of
+another kind fails the measurement):
+- `Booted`: `ImageShards`, the guest given by `SHARDS_KERNEL`/`SHARDS_INIT`, so no template.
+- `Saved`: `ImageShards` in a home of its own whose `templates/` is emptied before each start,
+  so each boots and saves its template.
+- `Restored`: `ImageShards` in a home whose template was saved once before the samples.
+- `Warm`: `ImagePools::new(2, ImagePools::KEEP)` over the restoring home's spec, warmed until a
+  start takes a warm host before the samples.
+
+Each start is timed from its `boot_stoppable` call: to its answer with the run host's
+diagnostics kept (`boot`, the span Hex's `ImageWaits::boot` measures: hex-runtime
+guest/image.rs `boot_on_its_thread`, its slot asked before the call and answered after
+`keep_diagnostics`); to the harness's first stdout line read (`first output`); and its
+`stop`, from its call to its answer. The kinds run round-robin, each round starting one kind
+later, so host drift and a pool's refill after a warm start fall on every kind alike (PM M29);
+one discarded start of each kind first. Each sample's line is printed
+(`IMAGE-START-SAMPLE`), then n, p50, p90, p99 and max per kind and span (`MEASURED IMAGE
+START …`, with host, OS-arch-CPUs, revision, backend and OS release).
+
+Then one start of each kind with `SHARDS_LOG=debug` in its run host's environment, which its
+VM process inherits (`netproc::child_env`) and logs to the run host's diagnostics with
+microseconds since its `main` (`shards_vmm::log`): the VM's own steps (`VM created and RAM
+mapped`, `GIC created`, `kernel and initrd copied` on a boot; the working set mapped ahead,
+each vCPU created and its state restored, `restored a N MiB guest`, layer and DAX heads mapped
+back on a restore; `N vCPU(s) ready to run after`, `the machine's start finished`; the
+snapshot written and made durable on a save), printed as below.
+
+What those outputs did not split, and the smallest instrument for each, built behind
+`SHARDS_TIMING` (which reaches the run host from its spec's environment and its VM through
+`netproc::child_env`); with it unset each is one `OnceLock` read and says nothing:
+- The run host's own steps before its VM's `main`: `api_run::say` prefixes `+US us`,
+  microseconds since the run host's `main` (`shards_vmm::log::uptime_us`), and its first line
+  says that clock's wall time (`its clock began at unix US us`, `log::began_unix_us`). Steps
+  said only when timed (`api_run::step`): its request read, its image prepared
+  (`run::prepare`), its microVM shaped, its run planned, its share process started,
+  launching its VM; and through `launch::say_steps`, which only the run host sets: its network
+  process started, spawning the VM, the VM spawned (Windows: made suspended, resumed). The VM
+  process's first log line (at debug) says its own clock's wall time (`its log began at unix US
+  us`), so its spawn, exec and App Sandbox entry are the way from `spawning the VM` to it.
+- The grants a macOS VM asks of its run host (D30): `the VM's grants: N of its asks answered`
+  as each is answered (`grant_answer::serve_waiting`'s hook, launch.rs `Grants::Answered`).
+- The guest's markers: the VMM already logs each at info (`guest marker N at US us`), on its
+  clock. `run_request` also sets `RUN_TIMING`, and the run host says the timing line its VM
+  sends in `EXIT` (`its VM's timing line: {...}`); a run stopped (the harness's `stop`) is
+  killed and sends none, so the measurement reads the markers from the VM's log.
+- `READY`, `TAKEN` and `STARTED`: `its VM said READY`, `its VM took the run`, `its start told
+  its orchestrator`, `its VM said STARTED`.
+The phase pass sets `SHARDS_TIMING` beside `SHARDS_LOG=debug` and prints every timed line,
+the run host's and each VM process's, on the caller's clock (each process's began wall clock
+plus its line's time, less the wall clock at the `boot_stoppable` call), in order, with the gap
+to the line before, beside the caller's own `the boot answered` and `its harness's first
+output read` (`IMAGE-START-PHASES KIND US +GAP WHO TEXT`). A warm host's lines from before the
+call are negative. Wall clocks line processes up to the host clock's resolution and its slew
+over one start; no number here is measured yet.
+
+Numbers: owed (ROOT runs it), on HVF and on KVM.
+
 ### M600. Where a loaded Mac's `shards guest use` spends its time (D215, ROOT's batch 32)
 
 Method: `docs/research/measurements/judge-blocked/states.c` (`cc -O2 -o states states.c &&
