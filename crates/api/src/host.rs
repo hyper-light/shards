@@ -117,7 +117,7 @@ pub fn host_check(binary: Option<&Path>) -> Result<HostCheck, CheckRefusal> {
             why: unsupported(os, arch),
         });
     }
-    let mut command = Command::start(binary, &["api-check".as_ref()])?;
+    let mut command = Command::start(binary, &["api-check".as_ref()], &[])?;
     let answer = command.frame();
     let ended = command.end();
     match answer {

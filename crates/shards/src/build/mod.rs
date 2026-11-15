@@ -173,6 +173,36 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+/// Whether this process's build tells its progress to shards-api (D263): set once, by
+/// [`for_api`], before its one build runs.
+static API_EVENTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The build `shards api-build` runs for shards-api (D263): `argv`, buildx's flags as
+/// `shards build image` takes them, read and run as that command's are (`run`), its progress
+/// told as events in place of a display, and its build cache collected after, as theirs is.
+/// It names no image to the daemon (`publish_built`): a build for an orchestrator reaches
+/// no daemon.
+pub(crate) fn for_api(argv: &[String]) -> Result<(), String> {
+    let parsed = match flags::parse(&BUILD, PATH, argv, &buildflags::validate) {
+        Outcome::Run(parsed) => parsed,
+        Outcome::Help { .. } => return Err("a build's flags asked for help".into()),
+        Outcome::Fail { text, .. } => return Err(text),
+    };
+    API_EVENTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let status = std::cell::Cell::new(0u8);
+    let built = run(&parsed, &status);
+    if let Ok(home) = shards_ipc::home()
+        && let Ok(store) = crate::pull::store(&home)
+        && let Err(e) = gc::after_build(&home, &store)
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the build cache was not collected: {e}"
+        );
+    }
+    built
+}
+
 /// What the build read of stdin (`-` as the context or the Dockerfile), once for every
 /// platform's build: a file in the home's `tmp`, removed when the build ends, its size, its
 /// digest, and its first 1024 bytes, which tell an archive from a Dockerfile.
@@ -253,6 +283,9 @@ struct Progress {
     /// What follows the recap: the warnings, then the excerpt of the Dockerfile where the
     /// failing step comes from, as buildx prints them before its error (D108).
     epilogue: RefCell<String>,
+    /// Each step's progress told as shards-api's events on stdout, in place of a display: a
+    /// build `shards api-build` runs (D263).
+    events: bool,
 }
 
 impl Progress {
@@ -266,8 +299,27 @@ impl Progress {
             recapped: std::cell::Cell::new(false),
             current: std::cell::Cell::new(0),
             epilogue: RefCell::new(String::new()),
+            events: false,
         }
     }
+
+    /// `event` told to shards-api, where this build's progress goes there (D263): a frame on
+    /// stdout, which carries nothing else in such a build. A client gone ends the build with
+    /// its group (`shards_api::Builds`), so a write it refuses is let go of.
+    fn tell(&self, event: shards_api::BuildEvent) {
+        if !self.events {
+            return;
+        }
+        if let Ok(frame) = shards_api::builds::wire::event(&event) {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&frame).and_then(|()| out.flush());
+        }
+    }
+}
+
+/// A step's number as shards-api tells it: no build has more steps than a u32 counts.
+fn told_index(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// A step's name, last lines and whether it failed.
@@ -325,6 +377,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().start(name);
         }
+        self.tell(shards_api::BuildEvent::Step {
+            index: told_index(self.next),
+            name: name.to_string(),
+        });
         self.to(self.next);
         Vertex {
             index: self.next,
@@ -362,6 +418,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().line(v.index, text);
         }
+        self.tell(shards_api::BuildEvent::Line {
+            index: told_index(v.index),
+            text: text.to_string(),
+        });
         self.to(v.index);
         self.say(&format!("#{} {text}\n", v.index));
     }
@@ -390,6 +450,10 @@ impl Progress {
         if let Some(step) = self.steps.borrow_mut().get_mut(&index) {
             step.0 = name.to_string();
         }
+        self.tell(shards_api::BuildEvent::Step {
+            index: told_index(index),
+            name: name.to_string(),
+        });
         self.resume(index, name)
     }
 
@@ -409,6 +473,10 @@ impl Progress {
             if let Some(live) = &self.live {
                 live.borrow_mut().line(v.index, line);
             }
+            self.tell(shards_api::BuildEvent::Line {
+                index: told_index(v.index),
+                text: line.to_string(),
+            });
             self.say(&format!("#{} {secs:.places$} {line}\n", v.index));
             self.remember(v.index, &format!("{secs:.places$} {line}"));
         }
@@ -452,6 +520,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().done(v.index);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Done,
+        });
         let secs = v.started.elapsed().as_secs_f64();
         self.ended(v);
         self.say(&format!("#{} DONE {secs:.1}s\n", v.index));
@@ -464,6 +536,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().error(v.index, message);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Failed(message.to_string()),
+        });
         self.ended(v);
         self.say(&format!("#{} ERROR: {message}\n", v.index));
     }
@@ -473,6 +549,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().cached(v.index);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Cached,
+        });
         self.ended(v);
         self.say(&format!("#{} CACHED\n", v.index));
     }
@@ -483,6 +563,10 @@ impl Progress {
             live.borrow_mut().canceled(v.index);
             live.borrow_mut().leave();
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Canceled,
+        });
         self.ended(v);
         self.say(&format!("#{} CANCELED\n", v.index));
     }
@@ -2959,7 +3043,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         "rawjson" => return Err("--progress=rawjson is not supported by shards yet".into()),
         other => return Err(format!("invalid progress mode {other:?}")),
     };
-    let quiet = parsed.bool("quiet") || mode == "quiet";
+    // A build for shards-api tells its progress as events, and shows no display (D263).
+    let events = API_EVENTS.load(std::sync::atomic::Ordering::Relaxed);
+    let quiet = parsed.bool("quiet") || mode == "quiet" || events;
     let host = host_platform();
     let progress = RefCell::new(Progress {
         quiet,
@@ -2975,6 +3061,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         recapped: std::cell::Cell::new(false),
         current: std::cell::Cell::new(0),
         epilogue: RefCell::new(String::new()),
+        events,
     });
     // Said once of a build of several platforms, not again by each platform's.
     if !multi::active() {

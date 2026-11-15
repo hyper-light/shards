@@ -35249,6 +35249,84 @@ same answer on KVM (adacachy2), WHP x86-64 (jupiter) and a host without virtuali
 runner, `NoNested` or `KvmMissing`), and `api-check`'s launch cost through
 `docs/research/measurements/macos-sched/launchd-run.sh`.
 
+### D263. An Agentfile's build for an orchestrator: `shards_api::Builds::build`, its progress told, its image pinned (built; a build with RUN steps through it owed on real VMs)
+
+**Asked.** Hex and kiln build Agentfiles into images, today by running the CLI and reading its
+display (kiln × Hex × Shards design section D, 2026-11-14): a shards-api call, over the same
+build `shards build image` runs, with progress events and typed refusals, the image pinned, the
+caller's home and store, and secrets and SSH by reference as the CLI takes them (D51, D68).
+
+**Decided.**
+- *One build, the CLI's.* `Builds::build(&BuildSpec, events)` starts `shards api-build`, an
+  internal command (`cli::INTERNAL`: it runs on this machine whatever context a home has
+  chosen), as `host_check` starts `api-check` (D262): its three standard streams alone, in a
+  group of its own, its readers ended by its exit watcher, never by a pipe's end (D231). The
+  request is one frame on its stdin. The host renders it as `shards build image`'s own flags
+  (`--file`, `--platform`, `--tag`, each secret a `--secret` of quoted CSV fields `id=`, `src=`
+  or `env=`, each agent an `--ssh id[=path,...]`, `--iidfile`, `--progress plain`, the context)
+  and runs them through the CLI's parse and build (`build::for_api`: `flags::parse(&BUILD)`, then
+  `run`, then the cache's collection, D114). The build runs in that process with no daemon. Its
+  builder microVMs are its own, and `Builds` dropped mid-build kills its group. It names no
+  image to the daemon (`publish_built`, which `build image` asks of one).
+- *Its result, pinned.* The image's ID, as `--iidfile` holds it (`sha256:` of the image's
+  index where it is attested, else its manifest): the name `ImageSpec::image` boots it by
+  (`run::find_image`'s `by_id`) whatever its tags are. A build with no tag is kept dangling
+  under that ID, as `build image` keeps one. The store is the caller's home's: `Builds::home`,
+  given the host as `SHARDS_HOME`, else this process's.
+- *Progress, typed.* The build's display has a third sink beside the plain and live ones: a
+  build for the API shows neither, and each step's start (`Step { index, name }`, again under a
+  new name where it runs again), line (`Line`) and end (`Ended { how: Done | Cached |
+  Failed(error) | Canceled }`) goes out as a frame on stdout. Nothing else writes to stdout in
+  such a build: the only flags that make a build write there (`-q`, `--call`, an output to `-`)
+  are none the host passes. Its stderr is diagnostics, its last bytes kept for a refusal.
+- *Its end, and refusals.* `BUILT(id)` or `FAILED(message)`, its last frame. `BuildRefusal`:
+  - `Spec { what, why }`: refused before anything starts. A context that is no directory or a
+    file that is none (absolute, UTF-8, as the build's command line takes paths), an empty or
+    spaced platform or tag, an id empty or given twice within its kind, a variable's name with
+    `=`, and what `--ssh` cannot say whole (an id with `=`, a key's path with `,`: buildx splits
+    there, with no quoting).
+  - `Step { index, name, error, message }`: the first step that ended failed, by its number
+    and name, its own error and the build's.
+  - `Failed(message)`: a build that failed outside any step (its Agentfile's text, its plan, a
+    base's pull, its export), in shards' words.
+  - `Start`, `Os`, `Ended { status, said }` (a `shards` without `api-build`, or one killed),
+    `Wire`.
+
+  A request of another version is refused by the host, said as its `Failed`.
+- *Secrets and SSH by reference.* A secret is a file's path or a variable's name in the
+  caller's environment, which the host inherits and the build reads as `--secret` reads it
+  (D51). An agent is its keys' paths, or the agent at `SSH_AUTH_SOCK` (D68). No secret's bytes
+  cross the channel.
+- *No literal of its own:* the frame kinds and the version are the channel's names. A list's
+  least item size (9 bytes for a secret, 8 for an agent, 4 for a path) is the sum of its
+  fields' length prefixes and tags, which bounds a hostile count before anything is allocated
+  (as `image::wire` bounds its counts).
+- *Deleted:* nothing. `shards build image` is unchanged, and its display is the same sink it
+  was.
+
+**Evidence.**
+- Unit tests:
+  - `shards-api` `builds::`: every refusal of a spec, by what. A request read back as sent,
+    another version, trailing bytes and a hostile count refused. Every event and end read back
+    as told, unknown kinds and tags refused.
+  - Stand-in hosts: a build's events and image, its request whole on the host's stdin, and its
+    `SHARDS_HOME` the one asked for; a failed step refused by its number and name; a failure
+    outside a step refused `Failed`; a host that ends unsaid refused `Ended` with its status and
+    words; a missing binary refused `Start`.
+  - `shards` `api_build::`: a request as the build command's flags, read back by buildx's own
+    parsers, a quoted secret's comma and quotes kept.
+- A real build through the API: `crates/api/tests/build_real.rs` (`SHARDS_API_BUILD=1`,
+  `SHARDS_BIN`), a FROM-scratch Agentfile with a COPY, built into a temporary home and pinned,
+  and a broken one refused at its step. On adas-mac-studio.local (macOS arm64) at f9172e36d
+  with a debug `shards`: built and pinned `sha256:76e7342810b2…` in the caller's home, 15
+  events, 1.6 s; the broken one refused `Step` at "[1/1] COPY missing /missing" ("failed to
+  compute cache key: … \"/missing\": not found"). Red with the refusal's step tracking removed
+  (`a_failed_step_is_refused_by_its_number_and_name`).
+- **Owed** (ROOT):
+  - A build with RUN steps through the API on HVF, KVM and WHP: its builder microVM booted by
+    `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
+  - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

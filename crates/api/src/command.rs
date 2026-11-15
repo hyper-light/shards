@@ -6,7 +6,7 @@
 //! to its end, reaps it, and only then tells the readers ([`UntilGone`]) that nothing is left
 //! to write. Dropped before it has ended, its group is killed.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,8 +42,13 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    /// Starts `binary` (else `SHARDS_BIN`, else `shards` on `PATH`) with `args`.
-    pub(crate) fn start(binary: Option<&Path>, args: &[&OsStr]) -> Result<Command, NotStarted> {
+    /// Starts `binary` (else `SHARDS_BIN`, else `shards` on `PATH`) with `args`, its
+    /// environment this process's with `env` over it.
+    pub(crate) fn start(
+        binary: Option<&Path>,
+        args: &[&OsStr],
+        env: &[(OsString, OsString)],
+    ) -> Result<Command, NotStarted> {
         let binary = binary
             .map(Path::to_path_buf)
             .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
@@ -53,7 +58,7 @@ impl Command {
             to_host,
             from_host,
             said,
-        } = start_host(&binary, args, &[]).map_err(|e| match e {
+        } = start_host(&binary, args, env).map_err(|e| match e {
             ImageRefusal::Os { what, kind } => NotStarted::Os { what, kind },
             other => NotStarted::Start(other.to_string()),
         })?;
@@ -108,6 +113,11 @@ impl Command {
                 Err(e)
             }
         }
+    }
+
+    /// Its stdin, until [`close`](Self::close).
+    pub(crate) fn input(&mut self) -> Option<&mut io::PipeWriter> {
+        self.to_host.as_mut()
     }
 
     /// Its stdin closed: the command reads its end.
