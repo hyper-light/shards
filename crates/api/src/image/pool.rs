@@ -1330,15 +1330,8 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.wait_ready(seen, timeout)
     }
 
-    fn plug(
-        &self,
-        member: &super::MemberName,
-        host: &std::path::Path,
-        at: &str,
-        read_only: bool,
-        patience: Duration,
-    ) -> Result<(), ImageRefusal> {
-        self.guest.plug(member, host, at, read_only, patience)
+    fn plug(&self, plug: &super::Plug, patience: Duration) -> Result<(), ImageRefusal> {
+        self.guest.plug(plug, patience)
     }
 
     fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal> {
@@ -1553,14 +1546,7 @@ mod tests {
         ) -> Result<Option<wire::Ready>, ImageRefusal> {
             none()
         }
-        fn plug(
-            &self,
-            _: &super::super::MemberName,
-            _: &std::path::Path,
-            _: &str,
-            _: bool,
-            _: Duration,
-        ) -> Result<(), ImageRefusal> {
+        fn plug(&self, _: &super::super::Plug, _: Duration) -> Result<(), ImageRefusal> {
             none()
         }
         fn unplug(&self, _: &str, _: Duration) -> Result<(), ImageRefusal> {
@@ -1788,6 +1774,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
             gpu_report: None,
         }
     }
@@ -1809,6 +1796,7 @@ mod tests {
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
             gpu_report: None,
         }
     }

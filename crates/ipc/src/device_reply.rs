@@ -21,6 +21,9 @@ pub enum Refusal {
     Shrink { has: u64, asked: u64 },
     /// Its disk's file is `bytes` long, not whole sectors of `sector`.
     Unaligned { bytes: u64, sector: u64 },
+    /// Its components' window (D270) holds no free range of the `asked` bytes a component's
+    /// file maps: its largest free range is `free` bytes.
+    NoRoom { asked: u64, free: u64 },
     /// The VM process has no running microVM to do it in.
     Inactive,
     /// The step itself is malformed, or names what this VM process does not take.
@@ -51,7 +54,7 @@ pub enum Retry {
 impl Refusal {
     pub fn retry(&self) -> Retry {
         match self {
-            Self::NoSlots { .. } | Self::StillDriven { .. } => Retry::AfterRelease,
+            Self::NoSlots { .. } | Self::StillDriven { .. } | Self::NoRoom { .. } => Retry::AfterRelease,
             Self::Host(_) => Retry::Unknown,
             Self::ConnectionEnded | Self::InvalidReply => Retry::Reconcile,
             Self::NoBus
@@ -84,6 +87,10 @@ impl std::fmt::Display for Refusal {
             Self::Unaligned { bytes, sector } => {
                 write!(f, "its file of {bytes} bytes: not whole sectors of {sector}")
             }
+            Self::NoRoom { asked, free } => write!(
+                f,
+                "its components' window has no free range of {asked} bytes: its largest is {free}"
+            ),
             Self::Inactive => f.write_str("the microVM has not started"),
             Self::InvalidRequest(why) | Self::Unsupported(why) | Self::Host(why) => f.write_str(why),
             Self::ConnectionEnded => {
@@ -121,6 +128,7 @@ mod cause {
     pub const HOST: u8 = 9;
     pub const CONNECTION_ENDED: u8 = 10;
     pub const INVALID_REPLY: u8 = 11;
+    pub const NO_ROOM: u8 = 12;
 }
 
 /// `answer` as `DEVICED` carries it after its number: [`DONE`] and its text, or [`REFUSED`],
@@ -159,6 +167,11 @@ pub fn encode(answer: &Result<String, Refusal>) -> Result<Vec<u8>, TryReserveErr
                     put(2, *bytes);
                     put(10, *sector);
                     (cause::UNALIGNED, 18, "")
+                }
+                Refusal::NoRoom { asked, free } => {
+                    put(2, *asked);
+                    put(10, *free);
+                    (cause::NO_ROOM, 18, "")
                 }
                 Refusal::Inactive => (cause::INACTIVE, 2, ""),
                 Refusal::InvalidRequest(why) => (cause::INVALID_REQUEST, 2, why.as_str()),
@@ -217,6 +230,10 @@ fn refusal(bytes: &[u8]) -> Result<Refusal, Refusal> {
             bytes: field()?,
             sector: field()?,
         },
+        cause::NO_ROOM => Refusal::NoRoom {
+            asked: field()?,
+            free: field()?,
+        },
         cause::INACTIVE => Refusal::Inactive,
         cause::INVALID_REQUEST => return Ok(Refusal::InvalidRequest(text(rest)?)),
         cause::UNSUPPORTED => return Ok(Refusal::Unsupported(text(rest)?)),
@@ -264,6 +281,10 @@ mod tests {
             Refusal::Unaligned {
                 bytes: 513,
                 sector: 512,
+            },
+            Refusal::NoRoom {
+                asked: 6 << 20,
+                free: 2 << 20,
             },
             Refusal::Inactive,
             Refusal::InvalidRequest("a disk of no file".into()),

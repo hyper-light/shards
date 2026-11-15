@@ -643,7 +643,7 @@ impl<'a> Follow<'a> {
     /// window's evidence is read no finer; none once a sample found its window its host's
     /// (D215, ROOT's ruling of 2026-11-14: a hold between looks was missed). None on Windows,
     /// whose samples could show nothing: a flush and a peer's unanswered pipe both wait
-    /// `Executive` there, and one read of the system's records took 13 ms (PM M602).
+    /// `Executive` there, and one read of the system's records took 13 ms (PM M603).
     fn schedule(&mut self, hold: &Hold, at: Instant) {
         let blocked = !hold.runnable && hold.io.waited.is_none();
         self.sample = (cfg!(unix) && self.bound == Bound::Rate && blocked && !self.held)
@@ -1531,7 +1531,7 @@ mod os {
         /// Windows counts its storage's work with its other I/O, a pipe's or a socket's, so a
         /// window in which a process did any I/O vouches for none of its rate ([`Io`]): a wait
         /// reason cannot tell them apart instead, as a thread in FlushFileBuffers and one in a
-        /// pipe's read no one answers both wait `Executive` (PM M602), and Windows keeps no time
+        /// pipe's read no one answers both wait `Executive` (PM M603), and Windows keeps no time
         /// a thread waited.
         fn io_done(&self) -> Option<u64> {
             self.members.iter().fold(None, |sum, member| {
@@ -2362,7 +2362,7 @@ mod tests {
 
     /// On Windows, a process whose thread writes a page and flushes it to its disk again and
     /// again (FlushFileBuffers) shows its storage's work between two looks ([`Io`]), its one
-    /// sign there: its wait reason, `Executive`, is a pipe reader's too (PM M602). Looked at
+    /// sign there: its wait reason, `Executive`, is a pipe reader's too (PM M603). Looked at
     /// until seen so, a wait for that fact, with no clock.
     #[cfg(windows)]
     #[test]
@@ -2794,7 +2794,7 @@ mod tests {
             // cargo built it on: $TMPDIR may be a tmpfs (adacachy2's is), whose flush waits on
             // nothing; a MiB keeps the device writing at each flush (on adacachy2's NVMe, 100
             // flushes of a MiB waited in `D` 117 times for 1 ms or more, PM M601). Windows: a
-            // page, then FlushFileBuffers (std's `sync_data`), as `record` there (PM M602).
+            // page, then FlushFileBuffers (std's `sync_data`), as `record` there (PM M603).
             Ok("flush") => {
                 let ended = std::sync::atomic::AtomicBool::new(false);
                 #[cfg(not(target_os = "linux"))]
