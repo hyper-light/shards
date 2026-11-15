@@ -473,6 +473,12 @@ pub mod kind {
     /// The network process asks it as the injector meets a sign-in's token response or its
     /// CLI's refresh, of a run host that relays it to its orchestrator.
     pub const NET_SIGN_IN: u8 = 105;
+    /// Run host → network process, as its run goes (D272): the run's grants past the
+    /// microVM now, a policy as `NET_POLICY` carries one (shards_net::encode_policy), each
+    /// within its `NET_POLICY`'s, the most the run could ever be granted; taken in place of
+    /// the grants before, every flow of its guest's they no longer reach ended. Answered with
+    /// the same kind: 0 once taken; or 1 and why not, nothing of it taken.
+    pub const NET_GRANTS: u8 = 107;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does

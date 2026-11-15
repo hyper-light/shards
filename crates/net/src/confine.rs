@@ -7,7 +7,9 @@
 //! Two layers, as a policy comes in two steps: [`at_start`] before the process reads
 //! anything a guest sends, and [`to_ports`] when an Agentfile's egress grants come
 //! (`NET_POLICY`, sent once, before the run). Landlock layers only narrow: what the first
-//! leaves open the second may close, never the reverse.
+//! leaves open the second may close, never the reverse. So `NET_POLICY` names the most a run
+//! could ever be granted (its ceiling, D272), which this layer holds the process to, and the
+//! grants the run has as it goes (`NET_GRANTS`) are the process's own rule table within it.
 //!
 //! It fails closed, as the VM process does (PM M66): a kernel whose Landlock is older than
 //! ABI v5, which the VM process needs too, starts no network process.
