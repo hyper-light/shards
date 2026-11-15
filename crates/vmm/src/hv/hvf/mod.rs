@@ -416,6 +416,7 @@ impl Vm {
         } else {
             None
         };
+        let (memory, memory_as_of) = self.watch.regions();
         Ok(Vcpu {
             kicker: Kicker {
                 sys: vcpu.kicker(),
@@ -428,7 +429,8 @@ impl Vm {
             ran: Arc::default(),
             index,
             on: false,
-            memory: lock(&self.watch.regions).clone(),
+            memory,
+            memory_as_of,
             watch: self.watch.clone(),
         })
     }
@@ -454,6 +456,9 @@ impl Region {
 #[derive(Debug, Default)]
 pub struct Watch {
     regions: Mutex<Vec<Region>>,
+    /// How many times `regions` has changed, counted under its lock: what tells a vCPU its
+    /// copy of them is out of date ([`Vcpu::memory_at`]).
+    changes: AtomicU64,
     recording: Mutex<Option<Recording>>,
     /// The pages the guest wrote since they were last taken ([`Watch::written`]), while the
     /// guest's writes are watched for a live move (D176 part 7): its writable memory taken
@@ -471,14 +476,28 @@ struct Recording {
 
 impl Watch {
     fn add(&self, region: Region) {
-        lock(&self.regions).push(region);
+        let mut regions = lock(&self.regions);
+        regions.push(region);
+        self.changes.fetch_add(1, Ordering::Release);
     }
 
-    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap), taken away
-    /// for writing at once where the guest's writes are watched.
+    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap, a range a
+    /// report of free memory gave back), taken away for writing at once where the guest's
+    /// writes are watched. A range that a region of the same access holds whole is listed
+    /// once: a report maps its range again each time it gives its pages back (D151).
     fn mapped(&self, region: Region) -> Result<()> {
         let dirty = lock(&self.dirty);
-        lock(&self.regions).push(region);
+        {
+            let mut regions = lock(&self.regions);
+            let end = region.gpa.saturating_add(region.len);
+            let held = regions.iter().any(|r| {
+                r.perms == region.perms && r.holds(region.gpa) && end <= r.gpa.saturating_add(r.len)
+            });
+            if !held {
+                regions.push(region);
+                self.changes.fetch_add(1, Ordering::Release);
+            }
+        }
         if dirty.is_some() && region.perms.writes() {
             sys::protect(region.gpa, region.len, region.perms.read_only())?;
         }
@@ -488,12 +507,18 @@ impl Watch {
     /// Forgets the regions within `len` bytes at `gpa`, unmapped.
     fn unmapped(&self, gpa: u64, len: u64) {
         let end = gpa.saturating_add(len);
-        lock(&self.regions).retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+        let mut regions = lock(&self.regions);
+        let before = regions.len();
+        regions.retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+        if regions.len() != before {
+            self.changes.fetch_add(1, Ordering::Release);
+        }
     }
 
-    /// The region that holds `gpa`, where one does.
-    fn region_of(&self, gpa: u64) -> Option<Region> {
-        lock(&self.regions).iter().find(|r| r.holds(gpa)).copied()
+    /// Its regions, and how many changes of them they are as of.
+    fn regions(&self) -> (Vec<Region>, u64) {
+        let regions = lock(&self.regions);
+        (regions.clone(), self.changes.load(Ordering::Relaxed))
     }
 
     /// Takes all guest memory away and starts recording. Call with every vCPU out of the
@@ -767,9 +792,13 @@ pub struct Vcpu {
     /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
     /// in the running guest take no lock.
     on: bool,
-    /// The VM's guest memory, fixed before any vCPU exists: a fault there is a page taken
-    /// away by `watch`, never a device access.
+    /// The VM's guest memory as `watch` listed it, and how many changes of the list that
+    /// copy is as of ([`Watch::changes`]): a fault there is a page the watch took away,
+    /// never a device access. Copied again at an exit on memory once the list has changed
+    /// (memory plugged or unplugged, a run's swap mapped), so that memory mapped while the
+    /// vCPU runs is given back as its RAM is.
     memory: Vec<Region>,
+    memory_as_of: u64,
     watch: Arc<Watch>,
 }
 
@@ -833,7 +862,7 @@ impl Vcpu {
             };
             let returned = given_back.take();
             match esr::ec(syndrome) {
-                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory.iter().any(|r| r.holds(ipa)) => {
+                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory_at(ipa).is_some() => {
                     given_back = self.give_back(io, ec, syndrome, ipa, returned)?;
                 }
                 // A cache maintenance instruction on no guest memory: nothing to keep
@@ -861,6 +890,19 @@ impl Vcpu {
         }
     }
 
+    /// Its copy of the watch's guest memory, copied again where the list has changed since.
+    fn refresh_memory(&mut self) {
+        if self.watch.changes.load(Ordering::Acquire) != self.memory_as_of {
+            (self.memory, self.memory_as_of) = self.watch.regions();
+        }
+    }
+
+    /// The guest memory that holds `ipa`, as the watch lists it now.
+    fn memory_at(&mut self, ipa: u64) -> Option<Region> {
+        self.refresh_memory();
+        self.memory.iter().find(|r| r.holds(ipa)).copied()
+    }
+
     /// A fault on guest memory, which faults only while [`Watch`] has taken it away, or
     /// for a write to read-only device memory. The page goes back, and the access runs
     /// again. Returns the page if it went back whole; `last` is the page the previous exit
@@ -873,15 +915,7 @@ impl Vcpu {
         ipa: u64,
         last: Option<u64>,
     ) -> Result<Option<u64>> {
-        // Memory mapped since this vCPU was made (plugged, a run's swap) is the watch's to
-        // say.
-        let Some(region) = self
-            .memory
-            .iter()
-            .find(|r| r.holds(ipa))
-            .copied()
-            .or_else(|| self.watch.region_of(ipa))
-        else {
+        let Some(region) = self.memory_at(ipa) else {
             return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
         };
         // Cache maintenance reports a write, and needs only to read: it goes on once the
@@ -1216,6 +1250,7 @@ impl Vcpu {
     /// which the restore sets again; HVF returns its `hvc #0` as the loop's end.
     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
         let lse = prefetch::lse(self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)?);
+        self.refresh_memory();
         let list = prefetch::entries(pages, PAGE, lse, |page| {
             let r = self.memory.iter().find(|r| r.holds(page))?;
             Some(r.perms == sys::Perms::RWX)
