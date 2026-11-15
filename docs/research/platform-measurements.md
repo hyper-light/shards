@@ -25261,7 +25261,11 @@ its 1 ms sleeps between pokes ran about 8 ms under the session's QoS clamp.
   - Cadence (whp_cadence, hex-winvm, ba6ed94b8): asks back to back, n 8,213, latency p50 234
     us, p90 279, p99 378, max 1,196; the guest time moved n 200 times, p50 10,013 us apart,
     p90 10,139, p99 10,318, max 10,511, by p50 9,404 us of guest each (p90 9,479, p99 9,598,
-    max 9,887). Its unit is 100 ns; its step, what a read may lag what ran, is a move's.
+    max 9,887). On jupiter (bare metal, the root scheduler), asks n 9,884, p50 191 us, p90
+    289, p99 387, max 1,156; moves n 1,216, p50 1,895 us apart, p90 2,121, p99 2,280, max
+    2,395, by p50 1,971 us of guest each (p90 1,989, p99 2,001, max 2,204). Its unit is
+    100 ns on both; its step, what a read may lag what ran, is a move's, five times coarser in
+    the nested guest.
 - **Consequence (D265).** The charge is learned per process (`Charged`), and the governor
   counts a vCPU's time as it says. A vCPU seen a move late overruns each hold by up to a move
   and a kick's landing, which its debt owes the periods after: the hold lasts across their
