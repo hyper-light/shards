@@ -549,6 +549,16 @@ const MSR_IA32_TSC: u32 = 0x10;
 const TSC_KHZ_TOLERANCE_PPM: u64 = 250;
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): its guest's kvmclock told it
+    /// was stopped (KVM_KVMCLOCK_CTRL, which sets PVCLOCK_GUEST_STOPPED; api.rst 4.70), so that
+    /// its soft-lockup and RCU-stall watchdogs take the pause for its host's, not a hang
+    /// (`kvm_check_and_clear_guest_paused`), as QEMU tells it as a stopped VM goes on
+    /// (hw/i386/kvm/clock.c `kvmclock_vm_state_change`). On this vCPU's own thread, before it
+    /// enters its guest again. Refused, harmlessly, for a guest that never enabled kvmclock.
+    pub fn went_on(&self) {
+        let _ = self.fd.kvmclock_ctrl();
+    }
+
     /// Captures the vCPU's state, in the order Firecracker's comments give: MP state first,
     /// since reading it may change the LAPIC's, and the events last; but the LAPIC after the
     /// MSRs. Each of these ioctls loads the vCPU, and one that loads it on another host CPU

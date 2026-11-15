@@ -35868,9 +35868,21 @@ is the long-pause follow-up below, not the pause.
   clock to its host's (`builtin::CLOCK`, init's `sync_clock`, as a restored VM sets its own): after
   resume's answer, holding up nothing, a failure said in the run host's diagnostics. Tested on real
   VMs: after a 3 s pause the first line its member prints holds a time within the host's reads
-  around its resume and its receipt (the bound `run.rs` holds a restore to). **Owed:** on KVM x86-64,
-  `KVM_KVMCLOCK_CTRL` on each vCPU as it goes on (QEMU does), so that its guest's soft-lockup
-  watchdog does not take a long pause for a lockup (its warning, never its panic, is the cost now).
+  around its resume and its receipt (the bound `run.rs` holds a restore to).
+- *A guest's watchdogs across a pause* (slice 2). On KVM x86-64 each vCPU held through a pause
+  (`Hold::wait`'s word) tells its guest's kvmclock it was stopped as it goes on, on its own thread
+  before it enters its guest (`KVM_KVMCLOCK_CTRL`, api.rst 4.70, already in the VM process's
+  seccomp allowlist, `IOCTLS`, as a restore calls it), which sets `PVCLOCK_GUEST_STOPPED`, so that
+  its soft-lockup and RCU-stall watchdogs take the pause for its host's
+  (`kvm_check_and_clear_guest_paused`), as QEMU tells a stopped VM going on
+  (`kvmclock_vm_state_change`). arm64 KVM, Hypervisor.framework and WHP have nothing to tell
+  (`Vcpu::went_on` is empty, each saying why): arm64 has no kvmclock, its arch timer's counter runs
+  on, and KVM's paravirtual time (`KVM_ARM_VCPU_PVTIME`) carries stolen time alone; WHP's guests
+  keep time by Hyper-V's reference TSC, which runs on (its partition's time is held for a snapshot
+  alone) with no stopped flag. Their guests may say a soft lockup after a long pause, a warning
+  and never a panic unless `softlockup_panic` is set, which shards' kernel does not ask. **Owed**
+  (ROOT): a long pause on KVM x86-64 with the guest's `dmesg` read for `soft lockup` and
+  `rcu_sched self-detected stall`, red with `went_on` empty.
 - *Literals.* None: no time, count or bound is chosen. The ask kinds and tags are the channel's
   (42, 43, 44 the next free kinds after `USE` and `USED`), the paused time is measured, and every wait is on an answer or
   an end.
@@ -35888,9 +35900,13 @@ is the long-pause follow-up below, not the pause.
   `a_runs_pause_moves_by_its_vms_word_and_counts_its_time`,
   `a_pause_holds_its_vm_at_once_and_its_resume_sets_its_guests_clock` (a stand-in VM: `PAUSE` 1
   first, nothing of its guest asked; a second pause and resume unasked; init's `CLOCK` once it goes
-  on), `asks_of_a_paused_runs_guest_are_refused_at_once`; `progress`
-  `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held while its
-  `Held` lives and refused `Stalled` once it goes: the red with the hold's check removed). Real VM:
+  on), `asks_of_a_paused_runs_guest_are_refused_at_once`, `a_pause_is_an_ask_of_a_run_and_refused_before_one`;
+  `progress` `a_process_its_owner_holds_is_held_not_stalled` (a sleeper followed past W* is held
+  while its `Held` lives and refused `Stalled` once it goes); `vmm` `hold`
+  `a_vcpu_held_through_a_pause_says_so` (a vCPU held through a pause says so once as it goes on, one
+  held by its share alone never: what `Vcpu::went_on` is called on). Mutations, each red: the
+  owner's hold unread in `Watch::look`; guest asks let through while paused; a pause of a paused run
+  asking its VM again; the paused time dropped from a run's end. Real VM:
   `api_image` `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped` (guest time flat across a 3
   s pause, the room and a member's stats refused `Paused`, the rate answered, a judged read of the
   member's stdout through the pause not refused, its count going on from the last before the pause
@@ -35907,7 +35923,7 @@ is the long-pause follow-up below, not the pause.
      Cold, with no save or restore measured on that host, a pause stays a pause until one is.
 - **Owed** (ROOT): the real-VM test on KVM and WHP (`cargo test -p shards --profile test-release
   --test api_image a_paused_run_runs_no_guest`), a Windows run of the stand-in tests, and
-  KVM x86-64's `KVM_KVMCLOCK_CTRL` at resume.
+  the watchdogs' run below on KVM x86-64.
 
 ## 4. Start path (≤ 5 ms budget)
 
