@@ -319,7 +319,9 @@ enum Ask<W> {
     /// A run of `key` ended: its pool is idle from its last run's end.
     Ended { key: Key },
     /// A warm host of `key`'s handed out, its room given (`Taken`): its pool refilled, its
-    /// claims after that give, so that a room sees the room it gave back.
+    /// claims after that give, so that a room sees the room it gave back. A take's is asked once
+    /// the run it took the host for has started or failed to ([`Pooling::boot`]), a
+    /// reservation's as it is reserved.
     Refill { key: Key },
     /// The coldest hosts, until `memory` bytes of them, handed to `reply` to be ended.
     Release {
@@ -449,8 +451,8 @@ impl<H: Hosts> Pools<H> {
     }
 
     /// A run of pool `key` at `now`: counted, and a warm host popped for it where one is
-    /// ready, its pool refilled once its asker has given its room ([`Ask::Refill`]); else
-    /// refilled now.
+    /// ready, its pool refilled once its asker has given its room and its run has started
+    /// ([`Ask::Refill`]); else refilled now.
     fn counted(&mut self, key: &Key, now: Instant) -> Option<H::Warm> {
         let pool = self.pools.get_mut(key)?;
         pool.demand.begin(now);
@@ -983,7 +985,9 @@ impl<H: Hosts> Pooling<H> {
     /// The run `request` of `spec`: on a warm host of its pool where one is ready and takes
     /// it, its room given to the run (`Taken`) here, else on a host of its own; its pool told
     /// of it, and of its end as its guest drops. A run that is no pool's ([`pool_of`]) gets a
-    /// host of its own and its pool hears nothing.
+    /// host of its own and its pool hears nothing. A pool whose warm host a run took is
+    /// refilled once that run has started, or failed to: a host starting warm meanwhile would
+    /// spend the CPU its start runs on (D253 amended, PM M593).
     pub(super) fn boot(
         &self,
         spec: &ImageSpec,
@@ -1008,11 +1012,24 @@ impl<H: Hosts> Pooling<H> {
             reply,
         });
         let warm = asked.ok().and_then(|()| warm.recv().ok()).flatten();
-        if warm.is_some() {
+        let took = warm.is_some();
+        if took {
             self.room.give(&size, Gave::Taken);
-            let _ = self.asks.send(Ask::Refill { key: key.clone() });
         }
-        run(&self.hosts, &self.asks, warm, key, spec, &request, patience, stop)
+        let booted = run(
+            &self.hosts,
+            &self.asks,
+            warm,
+            key.clone(),
+            spec,
+            &request,
+            patience,
+            stop,
+        );
+        if took {
+            let _ = self.asks.send(Ask::Refill { key });
+        }
+        booted
     }
 
     /// Holds a warm host of `spec`'s pool for one box, at once, where one is ready: its room
@@ -1411,6 +1428,10 @@ mod tests {
         untaken: bool,
         /// What the hosts that warm from now on report of their footprint.
         report: Option<u64>,
+        /// Its takes wait until let go.
+        hold_take: bool,
+        /// A take is under way.
+        taking: bool,
     }
 
     #[derive(Debug, Default)]
@@ -1653,6 +1674,10 @@ mod tests {
             _: &BootStop,
         ) -> Result<Box<dyn ImageGuest>, Taken> {
             drop(warm);
+            self.tell(|l| l.taking = true);
+            let held = self.0.changed.wait_while(self.log(), |l| l.hold_take).unwrap();
+            drop(held);
+            self.tell(|l| l.taking = false);
             if std::mem::take(&mut self.log().untaken) {
                 return Err(Taken::Untaken);
             }
@@ -1689,6 +1714,8 @@ mod tests {
         failed: usize,
         /// Gives with no claim held: none, ever.
         overgiven: usize,
+        /// Each claim's host's vCPUs, in the order claimed.
+        claimed: Vec<u32>,
     }
 
     #[derive(Debug, Default)]
@@ -1738,6 +1765,7 @@ mod tests {
             let _gate = self.0.gate.lock().unwrap();
             let mut log = self.log();
             let claimed = log.held < log.fits;
+            log.claimed.push(host.vcpus);
             if claimed {
                 log.held += 1;
                 log.held_memory += host.memory;
@@ -1844,6 +1872,45 @@ mod tests {
         let other = boot(&pools, &request(2, None));
         hosted.until("another microVM's run on a host of its own", |l| l.fresh == 2);
         drop((first, next, other));
+        hosted.until("every run's end told", |l| l.ended_runs == 3);
+        drop(pools);
+        hosted.until("every warm host ended with its pools", |l| l.warm == 0);
+        room.balanced();
+    }
+
+    /// A pool whose warm host a run takes is refilled once that run has started, never while
+    /// it starts (PM M593: a host starting warm would spend the CPU its start runs on). Do: hold
+    /// a take of pool 1's warm host, then boot pool 2's first run, whose pool claims a host of
+    /// the room as its run starts. Expect: the room sees pool 2's claim alone while pool 1's
+    /// take is held; pool 1's after it is let go.
+    #[test]
+    fn a_taken_pool_is_refilled_once_its_run_has_started() {
+        let (hosted, room) = (Hosted::default(), Room::fits(4));
+        let pools = Pooling::new(hosted.clone(), room.clone(), KEEP_TEST).unwrap();
+        let first = boot(&pools, &request(1, None));
+        until_ready(&pools, 1);
+        let before = room.log().claimed.len();
+        hosted.tell(|l| l.hold_take = true);
+        std::thread::scope(|s| {
+            let taking = s.spawn(|| boot(&pools, &request(1, None)));
+            hosted.until("pool 1's warm host being taken", |l| l.taking);
+            let other = boot(&pools, &request(2, None));
+            room.until("pool 2's claim", |l| l.claimed[before..].contains(&2));
+            assert_eq!(
+                room.log().claimed[before..],
+                [2],
+                "claimed while pool 1's take is held"
+            );
+            hosted.tell(|l| l.hold_take = false);
+            let taken = taking.join().unwrap();
+            assert_eq!(taken.started_from(), wire::StartedFrom::Warm);
+            // Its refill claims as many as its burst says: one or two (its first run's and this).
+            room.until("pool 1 refilled once its run has started", |l| {
+                l.claimed[before..].starts_with(&[2, 1])
+            });
+            drop((taken, other));
+        });
+        drop(first);
         hosted.until("every run's end told", |l| l.ended_runs == 3);
         drop(pools);
         hosted.until("every warm host ended with its pools", |l| l.warm == 0);

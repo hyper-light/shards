@@ -34214,6 +34214,18 @@ each compiled for that kernel.
   `its setup's security composed` and `its run planned` (said by `plan` itself, so a warm run
   says it too). *Owed* (ROOT): the A/B of the warm run's request-to-ready and every kind's
   shape-to-planned, interleaved on one host.
+- *A taken pool is refilled once its run has started* (`Pooling::boot`; ROOT's go,
+  2026-11-15). It asked its pool's refill as it took the warm host, so the replacement run
+  host (its spawn, its image prepared, its microVM shaped and secured, its VM spawned and
+  restored) ran over the very start it replaced, on the host's CPUs that start runs on. The
+  refill is now asked once that run has started, or failed to: still once per take, its room
+  given first as before, its demand rule unchanged. A burst's second take may now find the
+  pool emptier: its replacement starts later by the first start's span. A reservation's refill
+  (`ImagePools::reserve`) is asked as it is reserved, as before. Tested:
+  `a_taken_pool_is_refilled_once_its_run_has_started` (a take held in its host while another
+  pool's first run claims: the room sees that claim alone, the taken pool's after the take is
+  let go; red with the refill asked at the take). *Owed* (ROOT): the A/B of warm starts, and
+  of a burst's second, with and without it.
 
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
