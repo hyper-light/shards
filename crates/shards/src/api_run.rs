@@ -6165,6 +6165,14 @@ mod hosted {
                 for ask in asks {
                     assert!(take(&live, ask, &child, scope).is_ok());
                 }
+                // Nothing of its guest's asks reached its VM; its link then closed, so that one
+                // that did is answered (its VM gone) rather than waiting on it for ever.
+                let reached = shards_ipc::recv_by(&vm, Instant::now());
+                drop(vm);
+                assert!(
+                    matches!(&reached, Err(e) if e.kind() == io::ErrorKind::TimedOut),
+                    "an ask of its paused guest reached its VM: {reached:?}"
+                );
             });
             let _ = child.kill(libc::SIGKILL);
             let _ = child.wait();
@@ -6185,13 +6193,6 @@ mod hosted {
             let paused = paused.unwrap();
             assert_eq!(paused.id, 6);
             assert!(paused.result.unwrap().now);
-            assert!(
-                matches!(
-                    shards_ipc::recv_by(&vm, Instant::now()),
-                    Err(e) if e.kind() == io::ErrorKind::TimedOut
-                ),
-                "an ask of its paused guest reached its VM"
-            );
         }
 
         /// Do give room to a run whose VM takes no more of its managed output, its end of it
