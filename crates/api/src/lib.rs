@@ -28,6 +28,7 @@ use std::net::Shutdown;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+pub mod builds;
 mod client;
 mod command;
 pub mod conformance;
@@ -50,6 +51,9 @@ mod while_runs;
 #[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
 mod proc_allocation;
 
+pub use builds::{
+    BuildEvent, BuildRefusal, BuildSecret, BuildSpec, BuildSsh, Builds, Pinned, SecretSource, StepEnd,
+};
 pub use client::{
     ConfiguredShards, ManagedEnded, ManagedGuest, ManagedUse, ManagedUsed, Shards, attach_managed,
     boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
