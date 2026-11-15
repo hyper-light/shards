@@ -666,9 +666,17 @@ mod tests {
         let dir = shards_testdir::TempDir::new("guest-release").unwrap();
         let text = vec![0xD5u8; 3 << 20];
         let cases: [(&str, Vec<u8>, Option<&str>); 5] = [
-            ("deep", [&text[..], b"Linux version 6.18.48 (builder@host) #1 SMP"].concat(), Some("6.18.48")),
+            (
+                "deep",
+                [&text[..], b"Linux version 6.18.48 (builder@host) #1 SMP"].concat(),
+                Some("6.18.48"),
+            ),
             ("first", b"Linux version 6.1.0-rc3\0".to_vec(), Some("6.1.0-rc3")),
-            ("twice", [&text[..], b"Linux version 6.18.1 x Linux version 5.4 x"].concat(), Some("6.18.1")),
+            (
+                "twice",
+                [&text[..], b"Linux version 6.18.1 x Linux version 5.4 x"].concat(),
+                Some("6.18.1"),
+            ),
             ("none", text.clone(), None),
             ("cut", [&text[..], b"Linux versio"].concat(), None),
         ];

@@ -1907,7 +1907,11 @@ mod tests {
                 security_setup(&mut own, run, kernel, None, &[], grant.as_ref()).unwrap();
                 security_setup_with(&mut with, run, made, None, &[], grant.as_ref()).unwrap();
                 assert_eq!(with, own, "{run:?} {grant:?}");
-                let other = if grant.is_some() { None } else { Some(&Grant::default()) };
+                let other = if grant.is_some() {
+                    None
+                } else {
+                    Some(&Grant::default())
+                };
                 let mut refused = Vec::new();
                 assert!(
                     security_setup_with(&mut refused, run, made, None, &[], other).is_err(),
