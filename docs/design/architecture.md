@@ -34125,6 +34125,37 @@ and exits. Each expects the host's gone and another pid's kept. `a_layers_name_s
 `a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
 `layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
 
+**Amended: a run's security is its microVM's, made as it is shaped** (2026-11-14, the start
+path's first cut; PM M593's phase pass). ROOT's timed pass at 8d732fb2d (HVF, a loaded M4 Max)
+put 27.4 ms between a warm host's `its run's request read` and `its VM process … is ready
+(Warm)`, and 10.8–24 ms between `its microVM shaped` and `its run planned` on every kind. All
+of it was `plan`, and its costly part was its microVM's alone: the guest kernel's version
+(`guest::version_of`: the whole image read, then a 14-byte window compared at every byte up to
+the banner, past the kernel's text) and the filters its security setup installs (Docker's
+seccomp profile, the mount filter, the host network's binds filter, and the domains' two),
+each compiled for that kernel.
+- *Decided.* `shape` makes them (`Secured`: `setup::filters` and `setup::domain_seccomp` of
+  `guest::version_of`), since the kernel is the microVM's and whether the command has the
+  nesting grant is too (`agentfile::nesting`: asked and declared; a deadline changes only the
+  grant's entries). A warm host shapes before its run asks, so none of it is on a warm run's
+  way; `plan` composes the run's setup with them (`setup::security_setup_with`), the grant's
+  entries its own. `security_setup` is the two, so the daemon's runs compose as before, and
+  filters made for another grant than the command's are refused. Their refusals are said where
+  `plan` said them, after the run's own (its stages, its grant, its ports), with the same
+  causes.
+- *The banner* is found by `memchr::memmem` (a rare byte of it looked for a vector at a time),
+  for every kind's start, the daemon's runs and builds too.
+- *Literals:* none.
+- *Tested* (unit): `a_microvms_filters_made_once_compose_each_of_its_runs` (one set of filters
+  composes runs of two grants' deadlines as each run's own made them; another grant's filters
+  refused), `a_kernels_release_is_read_after_its_banner_wherever_it_lies`; the setup's
+  existing composition tests, now through the split.
+- *Timed* (`SHARDS_TIMING`): `its security made: its guest's kernel read, its filters
+  compiled` after `its microVM shaped`; then in `plan` `its members staged, its ports bound`,
+  `its setup's security composed` and `its run planned` (said by `plan` itself, so a warm run
+  says it too). *Owed* (ROOT): the A/B of the warm run's request-to-ready and every kind's
+  shape-to-planned, interleaved on one host.
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
