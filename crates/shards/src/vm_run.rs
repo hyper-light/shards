@@ -19,7 +19,7 @@ use crate::spec::Options;
 use crate::terminal::RawTerminal;
 use shards_ipc::device::Refusal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu | --gpu-probe] [--gpu-device ID]...] [--host-managed] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu | --gpu-probe] [--gpu-device ID]...] [--host-managed] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu] [--component-window MIB]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --share: the host directory DIR, as virtio-fs tag shards0, shards1, ... in order;
@@ -69,6 +69,9 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
   --pci-slots: N places on its PCI bus kept free for disks, shared directories and host
                functions plugged into it as it runs, which its guest finds as its init
                rescans the bus. A snapshot keeps them, empty.
+  --component-window: MIB of guest addresses past its DAX windows where a component's
+                      image plugged into one of its slots as a read-only pmem function is
+                      mapped (D270). Needs --pci-slots. A snapshot keeps it, empty.
   --pci-slots-iommu: the slots behind the guest's own IOMMU (virtio-iommu), each
                      translated while a function is plugged there: what a host's
                      function plugged in as it runs needs for the guest's own VFIO to
@@ -618,6 +621,13 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
                     .map_err(|e| format!("--pci-slots: {e}"))?
             }
             "--pci-slots-iommu" => cfg.pci_slots_iommu = true,
+            // A components' window of this many MiB (D270), its slots' pmem functions mapped
+            // in it.
+            "--component-window" => {
+                cfg.component_window_mib = text(value("--component-window")?)?
+                    .parse()
+                    .map_err(|e| format!("--component-window: {e}"))?
+            }
             // The CPU baseline its guest is told (D176 part 6), as its home keeps it.
             "--cpu-baseline" => {
                 cfg.cpu_baseline = shards_vmm::arch::cpu::decode(&text(value("--cpu-baseline")?)?)?
@@ -653,6 +663,9 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         if cfg.vfio.iter().any(|f| !f.iommu) && (memory_max.is_some() || cfg.reporting) {
             return Err("--vfio with --memory-max or --reporting: the device's DMA reaches all of guest RAM through mappings the host holds pinned, which neither may take away; behind the guest's IOMMU (--vfio-iommu) it reaches what the guest maps alone".into());
         }
+    }
+    if cfg.component_window_mib > 0 && cfg.pci_slots == 0 {
+        return Err("--component-window without --pci-slots: no slots to plug a component into".into());
     }
     if cfg.pci_slots_iommu {
         if cfg.pci_slots == 0 {
@@ -1028,6 +1041,17 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
             let slot: shards_vmm::devices::virtio::fs::Share = std::sync::Arc::default();
             slot.attach(stream).map_err(Refusal::Host)?;
             Ok(placed(&handle.plug_share(tag, slot)?))
+        }
+        device::PMEM => {
+            let file = fds
+                .into_iter()
+                .next()
+                .ok_or_else(|| asked("a component of no file"))?;
+            let plugged = handle.plug_pmem(std::fs::File::from(file))?;
+            let (gpa, len) = plugged
+                .region
+                .ok_or_else(|| Refusal::Host("a component's function plugged with no region".into()))?;
+            Ok(format!("{} {gpa} {len}", placed(&plugged)))
         }
         device::UNPLUG => {
             let &devfn = rest.first().ok_or_else(|| asked("an unplug of no place"))?;

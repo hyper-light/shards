@@ -36176,7 +36176,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slice 1 built: the component build; the attach, member restart, swap and saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 and 2 built: the component build, and its image plugged in and mapped DAX; member restart, swap and saves following)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36254,6 +36254,70 @@ the build's own parser reads it), `an_unpinned_source_is_refused_in_the_builds_w
 **Owed to ROOT:** `SHARDS_API_BUILD=1 SHARDS_BIN=… cargo test -p shards-api --test build_real
 a_component_builds_alone_from_its_directives_pinned_source` (no VM boots: `scratch` and a
 fetch) on HVF, KVM and WHP.
+
+**Slice 2: a component's image plugged into a running microVM, mapped DAX** (ROOT's pick of
+pmem per component over one virtio-fs DAX share, 2026-11-15, on main's records: a window maps
+a file only past the size its device learned, PM M338's 256 KiB on the Mac and 1 MiB on
+Fedora, where working trees are 99.8-99.9% files under 2 MiB, so most of a component would be
+FUSE's copy in each VM's page cache; a 4 KiB file mapped through a window costs its VM 23.6 to
+28.5 KiB more than FUSE's copy (M338); HVF maps no read-only share's file through its window
+(D189's `SHARED_NEEDS_WRITE`); and one share of the machine's store would need a per-run
+allowlist, or a guest's kernel reads every tenant's components. EROFS on pmem maps every file
+from one region, its cost the guest's page structures, 64 bytes a 4 KiB page.)
+- *The components' window* (`MachineConfig::component_window_mib`, snapshot format 35, a guest
+  saved in 34 refused `OlderMachine`): guest addresses past the DAX windows, at a GiB
+  boundary, within the guest's reach and fitted to it where shorter (said), its fitted length
+  kept so that a restore lays the guest out as its save did, refused where this host's reach
+  would shorten it (`window_kept`). A run's microVM has one where it has PCI slots, as long as
+  its host's memory (run.rs `Shape::give`), as its swap window is (D159): the most of the
+  components' files its page cache holds at once. Nothing of it is mapped until a function is
+  plugged, so a run that plugs none pays its addresses alone (`--component-window MIB`).
+- *A component's function* (`vm::Handle::plug_pmem`, the VM process's `device::PMEM` step):
+  its EROFS image's file, opened by its run's host (a confined VM process opens none), mapped
+  read-only into this process (`pmem::Region::of_file`), at the window's first free range
+  that holds it, whole 2 MiB, through a memory slot of its own (`pmem::Components`: KVM's
+  memslots, one for each of the bus's slots; HVF and WHP map by address); a read-only
+  virtio-pmem function on a D214 slot, its config's start and size that range (virtio 1.3
+  §5.19, which every kernel's virtio_pmem reads); its pages given the machine's other devices
+  as a boot's pmem files are (`GuestMemory::give_plugged`, D189's device DMA). Answered
+  `DEVFN ADDRESS GPA LEN`. Its unplug (`device::UNPLUG`, once its guest let it go) takes its
+  pages from its devices, then unmaps it from the guest and this process. Refused typed:
+  `NoBus`, `NoSlots`, and `NoRoom { asked, free }` (the window's longest free range), the
+  device channel's cause 12, its retry `AfterRelease`.
+- *Its guest* (init's `DEVICE` built-in, `pmem ADDR GPA KEY`): the bus rescanned (D214),
+  libnvdimm's drivers binding the region and its namespace of themselves, with page
+  structures (not raw, as the swap window is, D159), so that its files are DAX; its disk found
+  by its region's address as each uevent comes; EROFS mounted read-only, `nosuid`, `nodev`,
+  `dax=always`, attached nowhere, then put beside the run's writable layer at
+  `components/KEY`, where no path from the run's root reaches, as the in-VM server's binary
+  is (domains.rs); KEY the component's digest's 64 lowercase hex digits, refused otherwise.
+  `unpmem ADDR KEY` unmounts it, refused while it is held (`DEVICE_BUSY`), and writes the
+  function's `remove`.
+- *Capacity*: a microVM attaches as many components as its free slots, each within the
+  window's free ranges. Image runs' slots are derived in slice 4 (2 × the image's declared
+  agents, harnesses and stdio MCP servers, for a swap's old and new, plus its plug roots);
+  until then a run has D214's.
+- *What it costs*: a rescan and first read p50 2.4 and 3.1 ms on HVF, 6.6 and 7.6 ms on KVM
+  x86-64 (PM M430, a disk's); the probe and mount, and the page structures (size/64, made
+  as the namespace binds), are ROOT's to measure (slice 4's timing lines), and with them the
+  choice between an altmap head (D190's) and a lazy memmap, scheduled after slice 4.
+
+| Literal | Source |
+|---|---|
+| `PMEM` = 6 | the device channel's next step after `FUNCTION` = 5 (append-only) |
+| `NO_ROOM` = 12 | the device refusal's next cause after `INVALID_REPLY` = 11 |
+| 64 hex digits | a SHA-256 digest's (FIPS 180-4), the component's identity |
+| `components` | the directory beside the writable layer, as `server-binary` is beside it |
+| `dax=always` | EROFS's mount option for DAX (Documentation/filesystems/erofs.rst) |
+| format 35 | the snapshot format's next after D268's 34 |
+
+**Tests** (light): vmm `pmem::tests::a_components_window_maps_each_file_at_a_free_range_through_a_slot_of_its_own`,
+`memory::tests::plugged_device_memory_is_reached_until_it_is_taken_back`, the snapshot tests at
+format 35; ipc `device_refusals_keep_identity_and_retry_across_the_wire` (`NoRoom`); shards
+`run::tests` (the window as long as the host's memory where the run has slots, none
+without; `--component-window` among a boot's words); init
+`hotplug::tests::a_components_key_is_its_digest_alone` (Linux). The guest's probe and mount
+run on real VMs alone: slice 4's E2E tests, ROOT's.
 
 ## 4. Start path (≤ 5 ms budget)
 
