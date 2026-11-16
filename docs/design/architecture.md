@@ -36441,9 +36441,11 @@ for once slice 3b's host side asks).
   (`Setting::ProcAnew`, `ComponentGone`, `ComponentAt`), every code before them kept.
 
 **Tests** (light): init's own and abi's on Linux (aarch64, glibc), in a privileged
-container (Docker 29.3.1 on macOS arm64, cgroup v2), its `/tmp` a tmpfs, as overlayfs takes
-no lower directory on Docker's own overlay root (`a_skeletons_directories_are_the_images_own`
-answers EINVAL there at main and before D277 alike); clippy for shards-init and shards-abi
+container (Docker 29.3.1 on macOS arm64, cgroup v2): init 329 passed, abi 96 passed. The one
+init test left, `a_skeletons_directories_are_the_images_own`, answers EINVAL there at main and
+before D277 alike: overlayfs takes no lower directory on Docker's own overlay root, and with
+`/tmp` a tmpfs instead, tests this slice doesn't touch (agentdns, dnsrelay, a member's
+starter) wait for ever. It runs on Linux hosts and CI. Clippy for shards-init and shards-abi
 there, and for shards-init on aarch64- and x86_64-unknown-linux-musl.
 
 **Owed**: slice 3b (the host: a restart, output and waits by generation, the judged graceful
