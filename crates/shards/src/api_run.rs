@@ -4778,18 +4778,8 @@ mod hosted {
         let Some(answer) = answer else {
             return Err(failed("its microVM has gone".into()));
         };
-        if let Some((why, words)) = answer.refused {
-            let words = String::from_utf8_lossy(&words).into_owned();
-            return Err((
-                match why {
-                    protocol::members::StartRefusal::Unknown => R::Unknown,
-                    protocol::members::StartRefusal::Running => R::Running,
-                    protocol::members::StartRefusal::Generation => R::Generation,
-                    protocol::members::StartRefusal::Unsupported => R::Unsupported,
-                    protocol::members::StartRefusal::Failed => R::Failed,
-                },
-                words,
-            ));
+        if let Some((why, said)) = answer.refused {
+            return Err(start_refused(live.members, why, &said));
         }
         if has_input && live.stdio.get().is_none() {
             let started = std::thread::Builder::new()
@@ -4811,6 +4801,34 @@ mod hosted {
         }
         release_unused(live);
         Ok(next)
+    }
+
+    /// What a restart is refused as, its guest having refused its member's next generation `why`
+    /// (D270 slice 3b), `said` its answer's bytes: its init's refusal, in its words; one that could
+    /// not enter its working directory (D277) named as a first generation's is
+    /// (`workdir_refused`): the member as the image declares it, the directory and the errno.
+    fn start_refused(
+        members: &[wire::MemberInfo],
+        why: protocol::members::StartRefusal,
+        said: &[u8],
+    ) -> (wire::RestartRefusal, String) {
+        use protocol::members::StartRefusal as S;
+        use wire::RestartRefusal as R;
+        let words = || String::from_utf8_lossy(said).into_owned();
+        match why {
+            S::Unknown => (R::Unknown, words()),
+            S::Running => (R::Running, words()),
+            S::Generation => (R::Generation, words()),
+            S::Unsupported => (R::Unsupported, words()),
+            S::Failed => (R::Failed, words()),
+            S::Workdir => match protocol::members::Unentered::decode(said) {
+                Some(told) => (R::Workdir, super::workdir_refused(members, &told).why),
+                None => (
+                    R::Failed,
+                    "its guest told a working directory it could not enter malformed".into(),
+                ),
+            },
+        }
     }
 
     /// What came of a swap (D270 slice 4), told its orchestrator by its ask's id.
@@ -10072,6 +10090,39 @@ mod hosted {
                     Err((wire::RestartRefusal::Running, _))
                 ));
             });
+        }
+
+        /// D277 for a restart (D270 slice 3b): a next generation its guest refused as it could not
+        /// enter its working directory is refused `Workdir`, naming the member as its image
+        /// declares it, the directory and the errno, as a first generation's is; one told
+        /// malformed is `Failed`; each other refusal is its own, in its guest's words.
+        #[test]
+        fn a_restart_that_could_not_enter_its_workdir_is_refused_typed() {
+            use protocol::members::{StartRefusal as S, Unentered};
+            use wire::RestartRefusal as R;
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let told = Unentered {
+                member: 1,
+                errno: 2,
+                workdir: b"/Users/ada/proj".to_vec(),
+            };
+            let (why, words) = start_refused(&members, S::Workdir, &told.encode());
+            assert_eq!(why, R::Workdir);
+            assert!(
+                words.starts_with("Harness codex: /Users/ada/proj: errno 2"),
+                "{words}"
+            );
+            assert_eq!(start_refused(&members, S::Workdir, b"errno 2").0, R::Failed);
+            assert_eq!(
+                start_refused(&members, S::Failed, b"its exec: ENOENT"),
+                (R::Failed, "its exec: ENOENT".into())
+            );
+            assert_eq!(start_refused(&members, S::Running, b"under way").0, R::Running);
         }
 
         /// D270 slice 3b: a restart starts its member's next generation once every channel of its

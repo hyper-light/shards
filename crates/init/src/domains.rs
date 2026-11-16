@@ -2695,10 +2695,12 @@ pub fn end_member(s: &mut Started) -> io::Result<()> {
 /// end told, `start.generation` the one past it. Its server instance, its link, its volumes and
 /// what is plugged into it are its last's; its components are `start`'s, each laid at its path
 /// ([`rechild`]); its stdio, its input and its starter are its own. Refused typed, nothing of
-/// it started.
+/// it started; one that could not enter its working directory told in `unentered` too (D277),
+/// as its first generation's is ([`start`]).
 pub fn next_generation(
     s: &mut Started,
     start: &shards_abi::run::members::Start,
+    unentered: &mut Option<shards_abi::run::members::Unentered>,
 ) -> Result<(), (shards_abi::run::members::StartRefusal, String)> {
     use shards_abi::run::members::StartRefusal as R;
     use std::io::Read as _;
@@ -3054,6 +3056,7 @@ pub fn next_generation(
     drop(starter_end);
     drop(copies);
     if let Err(e) = lifecycle.launched() {
+        *unentered = unentered_of(member, &e, &confinement.workdir);
         let ended = lifecycle
             .reaper_end()
             .map(|how| format!(" ({how})"))

@@ -37815,8 +37815,8 @@ guest's own step.**
     after it, so it returns as before; each member's `wait_member` is then refused
     `ImageRefusal::Workdir`, where no end of its own came first. The image channel's version
     is 43: `REFUSED` may follow `STARTED`.
-- *Not typed:* a restart's next generation (D270) that cannot enter its working directory is
-  refused `StartRefusal::Failed` in init's words, as before.
+- *Not typed then:* a restart's next generation (D270) that cannot enter its working directory
+  was refused `StartRefusal::Failed` in init's words; typed since (amended below, P6-fix-2).
 - No literal (each kind is its protocol's next); no wait or cache touched.
 - **Tests** (written, not run: the person's rule of 2026-11-16 leaves every run to ROOT after
   the merge). abi `a_working_directory_unentered_reads_back_as_told`; init
@@ -37830,6 +37830,42 @@ guest's own step.**
   member, given at another path, and not shared: each refused `Workdir` at `wait_member`, errno 2.
   `/etc`, its image's, with no share: it exits 0. Its shared control stays
   `a_project_given_its_harness_is_where_it_works`.
+
+**Amended (P6-fix-2, 2026-11-16): a restart's next generation that cannot enter its working
+directory is refused typed too.**
+- *Before.* A restart (D270 slice 3b) whose next generation failed `entering its working
+  directory` was refused `RestartRefusal::Failed`, so `ImageRefusal::Restart(Failed, …)`, in
+  init's words alone: its orchestrator read words to learn the member, the directory and the
+  errno.
+- *Decided: as the first generation's is, carried by the restart's own answer.*
+  - abi: `StartRefusal::Workdir` (6, appended). Its `MEMBER_STARTED` answer's bytes are the
+    generation's `members::Unentered` (member, errno, directory), not words
+    (`StartAnswer::unentered`). An answer whose bytes are no `Unentered` of the member answered
+    is malformed (`Error::Shape`), which breaks the guest's protocol where the VM process relays
+    it, as any malformed answer does.
+  - init (domains.rs `next_generation`, run.rs `next_generation`): a next generation's launch that
+    failed at `Step::Setup` doing `Setting::WorkingDirectory` (its handover's chdir(2)), read by
+    `unentered_of` as a first launch's is, is answered `Workdir`. Its words, which also give its
+    cgroup's counts, go to init's stderr.
+  - The VM process relays the answer as it is (warm.rs `member_started`).
+  - The run host (api_run `start_refused`): `RestartRefusal::Workdir` (6, appended) in the
+    restart's answer (`RESTARTED`), worded by `workdir_refused`: the member as the image declares
+    it, the directory and the errno. Its member is let go (`Hold`, 0) and ends whole, as after
+    any restart that failed past its hold. One told malformed is `Failed`.
+  - The image channel's version is 45: a side of 44 reads no restart refusal 6.
+  - shards-api (session `restart_refused`): `restart` is refused `ImageRefusal::Workdir`, the
+    first generation's refusal, rather than `ImageRefusal::Restart`.
+  - Unchanged: a swap now (D270 slice 4) whose restart is so refused stays `SwapRefusal::Failed`,
+    its words naming `Workdir`.
+- No literal: 6 is each enum's next value; no wait or cache touched.
+- **Tests** (written, not run: the person's rule of 2026-11-16). abi
+  `a_next_generation_that_could_not_enter_its_workdir_is_answered_typed`; the run host's
+  `a_restart_that_could_not_enter_its_workdir_is_refused_typed`; shards-api's
+  `a_restart_whose_workdir_could_not_be_entered_is_refused_as_one` and the channel's
+  `a_restart_round_trips_and_its_malformed_answers_are_refused` (`Workdir` round-trips; tag 7
+  refused). Owed (ROOT): init's Linux suite and musl clippy (domains.rs, run.rs); a real-VM run
+  (HVF, KVM, WHP) of a member that removes its own working directory and is restarted, refused
+  `ImageRefusal::Workdir` with errno 2, which no test yet makes.
 
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 
