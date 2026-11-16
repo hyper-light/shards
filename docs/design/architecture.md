@@ -29871,7 +29871,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint built, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap; its real-VM runs and its measurement against arm g owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -29983,7 +29983,8 @@ So, for step 11:
   as the managed endpoints' `server` fingerprint does (the microVM's identity, point 2, below).
 - Step 11 serves each microVM from an endpoint of its own, bound where its caller says ("The
   stdio lanes' service", below). A controller dials that microVM's endpoint and meets its key
-  there. Where the daemon binds each endpoint is step 11's to build.
+  there. The daemon binds each on loopback ("Where the daemon binds it", below), as an
+  orchestrator's run host does (D252).
 - Each lane reaches its microVM over vsock, as a host reaches a guest's service in Firecracker:
   an AF_UNIX connection to the VMM, then `CONNECT PORT` (Firecracker edb60617, `docs/vsock.md`,
   "Host-Initiated Connections"). Inside the microVM, shards-init's relay carries it on. The
@@ -30012,12 +30013,12 @@ callers of it:
 
 Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): the connection,
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
-inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
-10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
-members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
-step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
-member's output (D240).
+inspect) and the terminal lane (attach, TTY) waited on step 6's member exec, attach and TTY
+(D243, D244). Step 10 has decided for the host (above). The endpoint runs in the daemon and
+holds each microVM's own key, and the key's SHA-256 reaches the controller in the run's managed
+metadata. Exec lanes, members' own lanes (signal, inspect, a terminal's size) and the log lane,
+which also waited on step 10, are built now, below, an owned member's log lane among them, as
+the daemon keeps every member's output (D240, "Every member's log").
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
