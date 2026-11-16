@@ -5593,7 +5593,7 @@ mod hosted {
 
     /// The run on a network shared by runs (D285): its members there, its address and the
     /// network's pairing, held by this host from its first member's join to its last's leaving
-    /// (its members' names first as they drop, then its address); the network's record, ID and
+    /// (its members' names first, [`Names`], then its address); the network's record, ID and
     /// pool.
     struct OnShared {
         members: Vec<OnMember>,
@@ -5611,12 +5611,77 @@ mod hosted {
         }
     }
 
-    /// A member on a shared network: its declared index, its name's lease there, and its
-    /// grants, each lowercased.
+    /// A member on a shared network: its declared index, its name there (its lease the run's
+    /// [`Names`]'), and its grants, each lowercased.
     struct OnMember {
         index: u32,
-        name: crate::networks::leases::Name,
+        name: String,
         grants: Vec<wire::NetworkGrant>,
+    }
+
+    /// The leases of the run's members' names and aliases on networks shared by runs (D285),
+    /// each by its network and member (R04): **held** while its VM runs, each taken and let go
+    /// with its member's place there; **withdrawn** as its VM ends, every one let go first of
+    /// all that goes with it ([`withdraw_names`]) and none taken again, so that no change of
+    /// another run's, reading the leases, tells them from then on, while its address and the
+    /// network's pairing stay its host's until it ends. Apart from [`Joined`], which a change
+    /// holds across its guest's and its network process's answers, so that no change in
+    /// flight holds the withdrawal up; under a lock no answer is waited for under.
+    enum Names {
+        Held(Vec<HeldName>),
+        Withdrawn,
+    }
+
+    /// A member's name, or alias, on a shared network, its lease held by the run's host.
+    struct HeldName {
+        network: shards_net::shared::NetworkId,
+        member: u32,
+        _lease: crate::networks::leases::Name,
+    }
+
+    /// How a change of a shared network is refused once the run's VM has ended and its names
+    /// were withdrawn: no lease is taken for it again.
+    fn names_withdrawn() -> (wire::NetRefusal, String) {
+        (
+            wire::NetRefusal::Network,
+            "its microVM has ended, and with it its members' names".into(),
+        )
+    }
+
+    /// The lease `take` makes (under the home's lock) held as member `member`'s name on shared
+    /// network `network`, with what else `take` made: refused, nothing taken, once the run's
+    /// names were withdrawn. Taken under [`Names`]' lock, so that none is made after the
+    /// withdrawal, which waits at most for the home's lock's few file operations.
+    fn hold_name<T>(
+        live: &Live<'_>,
+        network: shards_net::shared::NetworkId,
+        member: u32,
+        take: impl FnOnce() -> Result<(T, crate::networks::leases::Name), (wire::NetRefusal, String)>,
+    ) -> Result<T, (wire::NetRefusal, String)> {
+        let mut names = lock(&live.names);
+        let Names::Held(held) = &mut *names else {
+            return Err(names_withdrawn());
+        };
+        let (made, lease) = take()?;
+        held.push(HeldName {
+            network,
+            member,
+            _lease: lease,
+        });
+        Ok(made)
+    }
+
+    /// Member `member`'s name on shared network `network` let go: its lease's file removed.
+    fn let_name_go(live: &Live<'_>, network: shards_net::shared::NetworkId, member: u32) {
+        if let Names::Held(held) = &mut *lock(&live.names) {
+            held.retain(|n| !(n.network == network && n.member == member));
+        }
+    }
+
+    /// The run's VM has ended: every name and alias its members hold on shared networks let go
+    /// now, before anything else of it goes (D285), and none taken again.
+    fn withdraw_names(live: &Live<'_>) {
+        *lock(&live.names) = Names::Withdrawn;
     }
 
     /// `on` as its owner is told it.
@@ -5630,7 +5695,7 @@ mod hosted {
                 .iter()
                 .map(|m| wire::OnNetworkMember {
                     member: m.index,
-                    name: m.name.name().to_string(),
+                    name: m.name.clone(),
                     grants: m.grants.clone(),
                 })
                 .collect(),
@@ -5837,7 +5902,7 @@ mod hosted {
                     .collect();
                 (!grants.is_empty()).then(|| shared::Member {
                     index: m.index,
-                    name: m.name.name().to_string(),
+                    name: m.name.clone(),
                     grants,
                 })
             })
@@ -5864,7 +5929,7 @@ mod hosted {
                 .members
                 .iter()
                 .filter(|m| !members.iter().any(|s| s.index == m.index))
-                .map(|m| m.name.name())
+                .map(|m| m.name.as_str())
                 .collect();
             let (names, aliases) = on_now(live.home, on, &leaving)?;
             shared::args(&shared::Shared {
@@ -5935,7 +6000,7 @@ mod hosted {
             .members
             .iter()
             .find(|m| m.index == member)
-            .map(|m| (m.name.name().to_string(), m.grants.contains(&grant)));
+            .map(|m| (m.name.clone(), m.grants.contains(&grant)));
         match held {
             Some((name, _)) if name != grant.name => Err((
                 R::Grant,
@@ -5984,12 +6049,13 @@ mod hosted {
         member: u32,
         grant: &wire::NetworkGrant,
     ) -> Result<(), (wire::NetRefusal, String)> {
-        let name = {
+        let name = hold_name(live, on.id, member, || {
             let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
-            crate::networks::leases::Leases::of(live.home, &on.network.id)
+            let lease = crate::networks::leases::Leases::of(live.home, &on.network.id)
                 .and_then(|ledger| ledger.name(&held, &on.lease, &grant.name))
-                .map_err(lease_refused)?
-        };
+                .map_err(lease_refused)?;
+            Ok((lease.name().to_string(), lease))
+        })?;
         on.members.push(OnMember {
             index: member,
             name,
@@ -6004,6 +6070,7 @@ mod hosted {
         })();
         if told.is_err() {
             on.members.retain(|m| m.index != member);
+            let_name_go(live, on.id, member);
             let _ = tell_join(live.home, net, on, &[]);
         }
         told
@@ -6039,14 +6106,14 @@ mod hosted {
                 format!("network {}: its ID is no network's", record.name),
             )
         })?;
-        let (pairing, lease, name) = {
+        let (pairing, lease, name) = hold_name(live, id, member, || {
             let held = crate::networks::leases::hold(live.home).map_err(lease_refused)?;
             let ledger = crate::networks::leases::Leases::of(live.home, &record.id).map_err(lease_refused)?;
             let pairing = ledger.pair_as(&held, pairer, &holder).map_err(lease_refused)?;
             let lease = ledger.take(&held, &pool, None, &holder).map_err(lease_refused)?;
             let name = ledger.name(&held, &lease, &grant.name).map_err(lease_refused)?;
-            (pairing, lease, name)
-        };
+            Ok(((pairing, lease, name.name().to_string()), name))
+        })?;
         let place = OnShared {
             members: vec![OnMember {
                 index: member,
@@ -6059,14 +6126,21 @@ mod hosted {
             id,
             pool,
         };
-        tell_join(live.home, net, &place, &[])?;
-        let told = tell_grant(net, &place.id, grant, true).and_then(|()| {
-            tell_guest(live, &place, guest_members(&place, None)).inspect_err(|_| {
-                let _ = tell_grant(net, &place.id, grant, false);
-            })
+        let told = tell_join(live.home, net, &place, &[]).and_then(|()| {
+            tell_grant(net, &place.id, grant, true)
+                .and_then(|()| {
+                    tell_guest(live, &place, guest_members(&place, None)).inspect_err(|_| {
+                        let _ = tell_grant(net, &place.id, grant, false);
+                    })
+                })
+                .inspect_err(|_| {
+                    let _ = shared_ask(net, kind::NET_LEAVE, &place.id.0, &[]);
+                })
         });
+        // Refused: the member's name let go before its run's address and pairing, as `place`
+        // drops.
         if let Err(refused) = told {
-            let _ = shared_ask(net, kind::NET_LEAVE, &place.id.0, &[]);
+            let_name_go(live, id, member);
             return Err(refused);
         }
         Ok(place)
@@ -6098,7 +6172,7 @@ mod hosted {
             .members
             .iter()
             .find(|m| m.index == member && m.grants.contains(&grant))
-            .map(|m| m.name.name().to_string())
+            .map(|m| m.name.clone())
         else {
             return Ok(());
         };
@@ -6112,13 +6186,15 @@ mod hosted {
         if !last {
             return Ok(());
         }
+        let id = place.id;
         if place.members.len() > 1 {
             let told = tell_join(live.home, net, place, &[name.as_str()]);
             place.members.retain(|m| m.index != member);
+            let_name_go(live, id, member);
             return told;
         }
-        let id = place.id;
         let left = shared_ask(net, kind::NET_LEAVE, &id.0, &[]);
+        let_name_go(live, id, member);
         joined.on.retain(|n| n.id != id);
         left
     }
@@ -6433,6 +6509,8 @@ mod hosted {
         /// The networks shared by runs its members are on (D285 slice 4). Held under its ports'
         /// lock's turn, as every change of its network is.
         joined: Mutex<Joined>,
+        /// Its members' names and aliases there, withdrawn first as its VM ends (D285).
+        names: Mutex<Names>,
         /// Its links socket (D285 slice 4, Unix), where its starter gave it one.
         #[cfg(unix)]
         links: Option<&'a super::Links>,
@@ -7751,6 +7829,7 @@ mod hosted {
                 given: Mutex::new(HashMap::new()),
                 ceilings: plan.member_ceilings.clone(),
                 joined: Mutex::new(Joined::default()),
+                names: Mutex::new(Names::Held(Vec::new())),
                 #[cfg(unix)]
                 links: super::LINKS.get(),
                 components: Mutex::new(Components::default()),
@@ -7910,7 +7989,10 @@ mod hosted {
                     let link = lock(&live.link).try_clone();
                     let (end, said, used) = match link {
                         Ok(link) => follow(live, &link, scope),
-                        Err(e) => (RunEnd::Failed(format!("the VM's link: {e}")), false, None),
+                        Err(e) => {
+                            withdraw_names(live);
+                            (RunEnd::Failed(format!("the VM's link: {e}")), false, None)
+                        }
                     };
                     let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                     let asks = lock(&live.asks_end).clone();
@@ -7926,6 +8008,7 @@ mod hosted {
                 });
             if following.is_err() {
                 // Nothing would say its end: the run is ended now, and said so.
+                withdraw_names(live);
                 let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
                 lock(&live.held).take();
                 if let Some(agent) = &live.agent {
@@ -8502,6 +8585,9 @@ mod hosted {
                 }
             }
         };
+        // First of all that goes with its VM: no change of another run's tells its members'
+        // names from here (D285).
+        withdraw_names(live);
         // No VM takes an exec now: their clients' ends go, and each waiting for its exit
         // hears its end.
         lock(&live.held).take();
@@ -10200,6 +10286,7 @@ mod hosted {
                 given: Mutex::new(HashMap::new()),
                 ceilings: Vec::new(),
                 joined: Mutex::new(Joined::default()),
+                names: Mutex::new(Names::Held(Vec::new())),
                 #[cfg(unix)]
                 links: None,
                 components: Mutex::new(Components::default()),
@@ -10510,6 +10597,93 @@ mod hosted {
             let ledger = crate::networks::leases::Leases::of(dir.path(), &network.id).unwrap();
             assert!(ledger.addresses(&held).unwrap().is_empty());
             assert!(ledger.names(&held).unwrap().is_empty());
+        }
+
+        /// Do, on a run whose member 1 is on network `shared` as `web` (its name's lease, its
+        /// run's address and the network's pairing held), while a change holds the run's
+        /// networks as one waiting on its guest's answer does: end its VM, and follow its link
+        /// to its end; then take a name for it again; then let its places go, as its host's
+        /// end does.
+        /// Expect (D285): `web` withdrawn by the time its VM's end is followed, before the run's
+        /// end is said, though the change still holds its networks; its address and the
+        /// network's pairing held still; the name taken after refused `Network`, with no lease
+        /// made; its address and pairing let go with its host's state.
+        #[test]
+        fn a_runs_names_are_withdrawn_first_as_its_vm_ends() {
+            use crate::networks::leases::{Leases, Refused, hold};
+            let dir = shards_testdir::TempDir::new("api-names").unwrap();
+            let network = shared_record(dir.path());
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let live = live(&answers, dir.path(), link, None);
+            let id = shards_net::shared::NetworkId::of(network.id.as_bytes()).unwrap();
+            let ledger = Leases::of(dir.path(), &network.id).unwrap();
+            let holder = "a".repeat(64);
+            let held = hold(dir.path()).unwrap();
+            let pairing = ledger.pair_as(&held, &"1".repeat(64), &holder).unwrap();
+            let lease = ledger.take(&held, &network.pools[0], None, &holder).unwrap();
+            let web = ledger.name(&held, &lease, "web").unwrap();
+            drop(held);
+            lock(&live.joined).on.push(OnShared {
+                members: vec![OnMember {
+                    index: 1,
+                    name: "web".into(),
+                    grants: Vec::new(),
+                }],
+                lease,
+                _pairing: pairing,
+                network: network.clone(),
+                id,
+                pool: network.pools[0].clone(),
+            });
+            {
+                let mut names = lock(&live.names);
+                let Names::Held(held) = &mut *names else {
+                    panic!("its names withdrawn at its start");
+                };
+                held.push(HeldName {
+                    network: id,
+                    member: 1,
+                    _lease: web,
+                });
+            }
+            // Names, addresses, and whether a process pairs the network.
+            let leases = || {
+                let held = hold(dir.path()).unwrap();
+                let paired = matches!(ledger.pair(&held), Err(Refused::PairedElsewhere));
+                (
+                    ledger.names(&held).unwrap().len(),
+                    ledger.addresses(&held).unwrap().len(),
+                    paired,
+                )
+            };
+            assert_eq!(leases(), (1, 1, true));
+            let changing = lock(&live.joined);
+            drop(vm);
+            std::thread::scope(|scope| {
+                let link = lock(&live.link).try_clone().unwrap();
+                follow(&live, &link, scope)
+            });
+            assert_eq!(
+                leases(),
+                (0, 1, true),
+                "its name withdrawn as its VM ended, its address and pairing held"
+            );
+            drop(changing);
+            let again = hold_name::<()>(&live, id, 1, || {
+                panic!("a lease made once its names were withdrawn")
+            });
+            assert!(
+                matches!(again, Err((wire::NetRefusal::Network, _))),
+                "{:?}",
+                again.err()
+            );
+            lock(&live.joined).on.clear();
+            assert_eq!(
+                leases(),
+                (0, 0, false),
+                "its address and pairing let go with its host's state"
+            );
         }
 
         /// Do, on a run with a command of its own and a stand-in network process (D269):

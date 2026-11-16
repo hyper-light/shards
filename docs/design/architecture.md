@@ -39323,7 +39323,7 @@ named ones are.**
     image with a `VOLUME`, `shards volume prune -f` while it runs passing its volume by, its
     files kept; the volume and its lock file gone once the run ends.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends, built, its real-VM tests written and owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends and, first of all, as its VM ends, built, its real-VM tests written, their runs lane xnet-v's)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -39536,6 +39536,20 @@ join until 4 and 5 have landed):
   with its network process; each other run's network process withdraws its names as its link
   there closes, and shards-api tells the network's other runs their members without it once its
   host is reaped (slice 6; slice 4 waited for the network's next change).
+- *A run's names* (ROOT's decision, 2026-11-16, lane xnet-v; its host's `Names`): **held** while
+  its VM runs, each taken under their own lock with its member's place and let go as the member
+  leaves → (its VM ends: its link to the VM closed, or its host could not follow it) **withdrawn**,
+  every name and alias let go before anything else of the run's end (before an exec waiting on
+  the VM hears its end, the run's end is said, its network process is reaped, its VM's, and its
+  address and pairing go with its host's end), and none taken again: a change asked after is
+  refused `Network`. So no change of another run's, reading the leases, tells its names from
+  then on, where before another change in the window from its VM's end to its host's could put
+  them back in a guest's tables until shards-api's telling at its host's reaping. They are held
+  apart from the run's places (`Joined`), which a change holds across its guest's and its network
+  process's answers, under a lock no answer is waited for under, so that no change in flight
+  holds the withdrawal up: it waits at most for a name being taken, whose wait for the home's
+  lock is another process's few file operations. A host that ends in between has its locks let
+  go by the kernel, its leases stale at the next look.
 - *A flow* (slice 3), per link: none → (its first packet admitted: a TCP SYN or a UDP datagram, its
   sender's grant and its receiver's both taking it, each at its own end) **open** → (a TCP RST, or a
   FIN each way) none; **open** → (idle past its timer) none; its link dropped, every flow of it
@@ -39971,7 +39985,7 @@ alone: musl's lookup ends EAI_NONAME, "Name does not resolve", before musl's fir
 `a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not` (an `EXPOSE`d UDP
 port two harnesses answer, published; a's datagrams over the shared network answered by each of
 them, one holding the port and one not, and the published port answered by its holder before and
-after). Owed (ROOT), at this slice's landing:
+after; rewritten by lane xnet-v, *Amended* below). Owed (ROOT), at this slice's landing:
 - `cargo test -p shards-api --profile test-release networks:: image::session::links::`;
   `cargo test -p shards --bin shards --profile test-release -- networks::made api_networks
   daemon::networks`; `cargo test -p shards-net --profile test-release shared
@@ -39985,6 +39999,43 @@ after). Owed (ROOT), at this slice's landing:
   test-release --test containers -- a_networks_options_are_what_its_microvms_do
   microvms_on_a_network_reach_one_another_by_name`.
 - `scripts/lint` on the seven targets (the test guest through its musl targets).
+
+**Amended (lane xnet-v, 2026-11-16, ROOT's decisions on slice 6's three questions).**
+- *Who gives an ended run's leases back* (accepted as built): its host, as it ends, by their
+  drop or the kernel's; the network process holds none (it opens no path, D31). shards-api then
+  tells the network's other runs their members without it (`links::host_gone`).
+- *A dead run's names put back in a guest* (closed): in the window from a run's VM's end to its
+  host's, another change's `Rejoin`, reading the leases, told the dead run's names to the
+  other runs' guests again; its host now withdraws them first as its VM ends (*States*, *A run's
+  names*: `api_run`'s `Names`, `withdraw_names` at the head of `follow`'s end), no change refused
+  meanwhile but one of its own run's. Test (light): `api_run::hosted::tests::
+  a_runs_names_are_withdrawn_first_as_its_vm_ends` (a change holding the run's places all
+  along; the name gone once the VM's end is followed, its address and pairing held, a name
+  asked after refused `Network`).
+- *Which member holds a contested UDP port* (the real-VM test, rewritten): learned from the
+  members' own word, the holder alone being sent the datagrams of a client of the port
+  published on the host. D122's ports reader cannot say it: `shards read ports` names every
+  candidate ("the one listening of …", daemon/commands.rs `read_ports`), as `wire::Bound::to`
+  does ("several alike where several claim it"), and the chooser tells no host its choice. The
+  test grants one member at a time: as written it granted both in from a on the port, which
+  the run's one address on the network does not tell apart (`shared-in` has a translation for
+  each member's grant, init's `outside_batch`, the first that matches taking each new flow, so
+  a's datagrams to c would reach b and c's wait never end; read in the code, its live run owed,
+  *Open* below). ROOT's second assertion, that a grant to the member not holding the port gets no
+  flow, is not this design's: the chooser chooses for eth0's own address alone (D122's amendment
+  of this day, ROOT's decision on slice 5's open item: "a network shared by runs, eth0's second
+  address, is its members' grants'", chooser.rs), so a flow to the run's address on a shared
+  network goes to the member its grant names, holder or not. "No flow" would take the chooser's
+  choice at that address too: `shared-in` leaving a contested port to the chooser's chains, which
+  would match the shared addresses again, zoning the holder's answers there both ways, and the
+  forward chain telling a peer's flow from eth0's, whose ingress rule takes any source: slice 5
+  and D122's amendment redesigned, ROOT's to decide. The test holds the design as recorded: the
+  holder granted alone is reached, the other not; the other granted alone is reached, the
+  holder not; the holder answers eth0's own clients throughout.
+- *Open* (ROOT's): two members of a run granted in on one port of its address on a shared
+  network are both told, and the first translation takes every flow, where item 5 has each port
+  of the run's address one member's. Proposed: the run host refuses the second `Unheld`
+  (D278's: members "the microVM cannot hold apart"), nothing told, no wire change.
 
 ## 4. Start path (≤ 5 ms budget)
 

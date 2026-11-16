@@ -530,7 +530,7 @@ pub fn main() -> ! {
         "dnsttl-each" => dnsttl_each(arg(1)),
         "dnsrtt" => dnsrtt(arg(1), arg(2).parse().unwrap_or(1000)),
         "udp" => udp(arg(1)),
-        "udp-each" => udp_each(arg(1)),
+        "udp-each" => udp_each(arg(1), arg(2)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
         "rebind" => rebind(arg(1), arg(2).parse().unwrap_or(1)),
@@ -1495,13 +1495,15 @@ fn dnsttl_each(name: &str) -> i32 {
 /// `udp ADDR` again and again, each from a socket of its own and given a second, a tenth of a
 /// second apart, saying how each went (`udp N`, its answer's length, or `udp error E`), until
 /// it is ended: a datagram lost on its way is followed by the next, as a client asks again
-/// (D285 slice 6).
-fn udp_each(addr: &str) -> i32 {
+/// (D285 slice 6). Each datagram holds `held`, `?` where it is empty, so that its receiver's
+/// `datagram from ADDR LEN` tells one asker's datagrams from another's.
+fn udp_each(addr: &str, held: &str) -> i32 {
+    let held = if held.is_empty() { "?" } else { held };
     loop {
         let answered = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
             s.connect(addr)?;
             s.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
-            s.send(b"?")?;
+            s.send(held.as_bytes())?;
             let mut buf = [0u8; 512];
             s.recv(&mut buf)
         });
