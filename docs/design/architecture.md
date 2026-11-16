@@ -36263,7 +36263,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 and 2 built: the component build, and its image plugged in and mapped DAX; member restart, swap and saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1, 2 and 3a built: the component build, its image plugged in and mapped DAX, and a member's next generation in init; its host side, swap and saves following)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36405,6 +36405,56 @@ format 35; ipc `device_refusals_keep_identity_and_retry_across_the_wire` (`NoRoo
 without; `--component-window` among a boot's words); init
 `hotplug::tests::a_components_key_is_its_digest_alone` (Linux). The guest's probe and mount
 run on real VMs alone: slice 4's E2E tests, ROOT's.
+
+**Slice 3a: a member's next generation, in its running microVM** (init and abi; built, asked
+for once slice 3b's host side asks).
+- *Where its processes live* (ROOT's (B)): a member's cgroup keeps its limits (`memory.max`,
+  `pids.max` bound both leaves together), with two leaves under it, as cgroup v2 puts
+  processes in leaves alone: `server/`, its in-VM server instance (D60's channels to its
+  peers), and `gen/`, its generation's population: its reaper, its command and every exec
+  into it (D243). A generation's end, its reaper's PID namespace, leaves `server/` and its
+  channels to the next; a generation that ends with none held for it ends `server/` too
+  (that leaf's `cgroup.kill`, `end_server`), as a member's end did before generations.
+- *The run's protocol* (append-only): `MEMBER_HOLD` (56, host to guest): a member's next
+  generation is coming, so its current one's end keeps its server instance and namespaces.
+  `MEMBER_START` (54): the member, its generation (the one past its last), its command,
+  environment, working directory, components (path and key) and its input's token; answered
+  `MEMBER_STARTED` (55): started, or refused typed (`StartRefusal`: `Unknown`, no such member;
+  `Running`, its last generation not ended; `Generation`, not the one past its last;
+  `Unsupported`, as said; `Failed`, in init's words). The built-in `MEMBER_KILL` (24): its
+  generation's reaper killed through its pidfd, which takes its PID namespace and nothing
+  else of the member's; a graceful end is `SIGNAL`'s SIGTERM to its command (D238), then
+  `MEMBER_KILL` where a judged wait finds that stalled (slice 3b).
+- *A start* goes into the namespaces its generations keep (mount, network, IPC, UTS and
+  cgroup, `Kept`, taken as its first started) by setns(2), then clone3(2) into a PID
+  namespace of its own in its `gen/` leaf. Its `/proc` is mounted anew for that namespace;
+  each of its last generation's components is let go, and each of this one's put read-only at
+  its path (`move_mount` of a copy, `open_tree`, of the component's DAX mount, slice 2). Its
+  environment is made as its first's was, and it is confined as its first was, with a
+  Landlock ruleset of its own laid over this generation's view. Its stdio, its starter and its
+  input are its own: each generation dials an input of its own by its token, as the first
+  does. Its volumes, D277's shares and what is plugged into it are its first's, in the mount
+  namespace it keeps.
+- *One that starts once*: a member given a port among others (D122), whose chooser holds its
+  listener (`Unsupported`, said).
+- *Its setup's failures* say their step as D277's do, three more appended
+  (`Setting::ProcAnew`, `ComponentGone`, `ComponentAt`), every code before them kept.
+
+**Tests** (light): init's own and abi's on Linux (aarch64, glibc), in a privileged
+container (Docker 29.3.1 on macOS arm64, cgroup v2), its `/tmp` a tmpfs, as overlayfs takes
+no lower directory on Docker's own overlay root (`a_skeletons_directories_are_the_images_own`
+answers EINVAL there at main and before D277 alike); clippy for shards-init and shards-abi
+there, and for shards-init on aarch64- and x86_64-unknown-linux-musl.
+
+**Owed**: slice 3b (the host: a restart, output and waits by generation, the judged graceful
+end), slice 4 (swap, restore, components, and its four E2E tests), slice 5 (saves), and the
+real-VM runs of every member's start with its processes in `gen/` and `server/`.
+
+**A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
+as its host's address reach when its microVM is made, and is kept with its save, so a restore
+onto a host of shorter reach is refused (`window_kept`) rather than laid out otherwise. Until a
+restore can lay the window anew, a move (the roadmap's 7a) goes only to a host of equal or
+longer reach, which its planner reads of both hosts before it starts.
 
 ### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
 
