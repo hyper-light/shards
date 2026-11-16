@@ -1121,7 +1121,7 @@ mod windows_tests {
         let (gone, down, up) = shards_ipc::vsock_listen(&vsock).unwrap();
         drop((down, up));
         let (_, port_down, port_up) = shards_ipc::vsock_listen(&dir.join("v_5000")).unwrap();
-        let mut host = Listening::new(port_down, port_up);
+        let mut host = Listening::new(port_down, port_up).unwrap();
         let (spawner, vm) = link();
         std::thread::scope(|scope| {
             let serving = scope.spawn(|| serve(&spawner, &Here));
@@ -1137,12 +1137,12 @@ mod windows_tests {
             let names = shards_ipc::VsockNames::read(&vsock).unwrap();
             assert_ne!(names, gone, "an earlier VM's names taken");
             let ((down, up), _) = listen_pipes(&vsock).unwrap();
-            let mut first = Listening::new(down, up);
+            let mut first = Listening::new(down, up).unwrap();
             let theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
             whole(&mut first, "the granted pair, the path's");
             drop((first, theirs));
             let (down, up) = crate::grant_ask::next_pair(&vm).unwrap();
-            let mut next = Listening::new(down, up);
+            let mut next = Listening::new(down, up).unwrap();
             let _theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
             whole(&mut next, "the next pair, the first's names'");
             assert_eq!(shards_ipc::VsockNames::read(&vsock).unwrap(), names);
