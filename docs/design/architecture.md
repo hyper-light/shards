@@ -34502,7 +34502,9 @@ orch-stdio-2).
   or `Input`. Each is held by the daemon's guard (`execs::Held`, now generic over how it holds
   the budget: a borrow, or a share where it outlives one), against the daemon's bound: the
   host's available memory (`Charge::grow`).
-- *When.* As each stream is made: its first generation's as its run host starts serving them,
+- *When.* As each stream is made: its first generation's as its endpoint binds, before its
+  members start (since the amendment "a first generation charged before its members start",
+  below; before it, as its run host started serving them, its members already running), and
   before its endpoint's driver serves a lane, so that no lane reaches one its budget has no room
   for before it is let go; each next generation's as its restart joins it (D270). Held while its
   stream is; a past generation's streams that are over (an output finished or let go, a stdin
@@ -34518,17 +34520,17 @@ orch-stdio-2).
   guest is credited none of that output; its stdin's relay finds it gone and ends its member's
   input connection, so its member reads its end. The run, its other streams and their lanes go
   on. The daemon refuses its run whole where its streams have no room (`Admission::Insufficient`
-  as it starts); a run host's streams come and go with its members' generations, so each of a
-  first generation's is refused alone, and a restart's next generation is refused whole before
-  it starts (the amendment below). This amendment changed no wire: the image channel stayed at
-  version 44.
+  as it starts); a run host's streams come and go with its members' generations: a first
+  generation's were refused each alone here, and are now refused whole with their run before its
+  members start, and a restart's next generation whole before it starts (the amendments below).
+  This amendment changed no wire: the image channel stayed at version 44.
 - *Literals.* None new (R03): the daemon's bound and derivation apply.
 - *Not counted* (owed to ROOT, R14). The run host's capture reader reads each record into a
   buffer of its own and copies it into its lane's: a third record while one is in flight, where
   the daemon reads into its lane's own, so its account has two. Each stream's thread, where the
   daemon serves its streams on one credit worker. And its endpoint's own socket queues, which
   the daemon charges a run's endpoint (`kernel_buffer_bytes`) and the run host's endpoint holds
-  with or without stdio, uncharged before this amendment too.
+  with or without stdio, uncharged before this amendment too (charged since, below).
 - *Counted past what is held* (resolved by the amendment below). Each stream was charged a TLS
   handshake's crypto (RFC 8446's bound, 16 MiB) and a datagram each way, as each of step 5's
   endpoints of one stream had a connection of its own, where an agent-control endpoint's streams
@@ -34593,7 +34595,8 @@ ROOT's two decisions; lane lane-charge).
     itself has no endpoint, and is charged no link.
   - The run host: its endpoint's link as `bind_control` returns, before its driver runs
     (`charge_link`), held while the run is served. With no room, the run does not start: its
-    endpoint could not be made (`Cause::Boot`), as with any endpoint that could not be bound.
+    endpoint could not be made (`Cause::Boot`; `Cause::Capacity`, and before its members start,
+    since the amendment below), as with any endpoint that could not be bound.
     The link is charged whatever its endpoint serves: socket lanes, execs, MCP connections and
     stdio alike. Before this, the run host charged no link unless it served stdio.
 - *A restart with no room* (R04). `Stdio::join` charges each of the next generation's streams as
@@ -34609,8 +34612,8 @@ ROOT's two decisions; lane lane-charge).
   the run as it is asked. shards-api surfaces it as
   `ImageRefusal::Restart(RestartRefusal::Capacity, _)`. A swap that restarts its member now
   (`SwapWhen::Now`) maps it to `SwapRefusal::Failed`, with its words, as it maps every restart
-  refusal but `Running`. A first generation's streams are made while its members already run, so
-  each keeps the per-stream refusal above.
+  refusal but `Running`. A first generation's streams were made while its members already ran, so
+  each kept the per-stream refusal above (charged before its members start since, below).
 - *Literals.* None new (R03): RFC 8446 §4's bound (D180, D238); D238's `CONNECTIONS`; one
   connection for an endpoint of one stream; D180's datagram. The refusal's tag is the next free
   one.
@@ -34631,7 +34634,8 @@ ROOT's two decisions; lane lane-charge).
   - shards-api `image::wire::tests::a_restart_round_trips_and_its_malformed_answers_are_refused`:
     `Capacity` round-trips, and tag 8 is refused.
 - *Not counted* (owed to ROOT, R14), as the amendment above left it: the run host's endpoint's
-  socket queues, which the daemon charges with its link (`kernel_buffer_bytes`).
+  socket queues, which the daemon charges with its link (`kernel_buffer_bytes`). Charged since
+  (below).
 - *Owed* (ROOT).
   - The suites: `cargo test --profile test-release -p shards-remote --lib -- control:: managed::`,
     `cargo test --profile test-release -p shards-api --lib -- image::wire::`, and
@@ -34640,6 +34644,81 @@ ROOT's two decisions; lane lane-charge).
   - A real-VM restart of a harness whose next generation has no room (refused `Capacity`, its
     member ended, nothing of its next generation started), and a daemon's agent-control run's
     budget with several owned streams (one link), on HVF, KVM and WHP.
+
+**Amended: a first generation charged before its members start, and the endpoint's sockets'
+queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
+- *Why.*
+  1. The run host made and charged its members' first stdio streams as it started serving them,
+     after `hand_over` had handed its VM the run, so its members were already running. A stream
+     its budget had no room for was let go alone (`no_room`), and its member blocked once its
+     pipe filled, as a restart's next generation did before the amendment above.
+  2. The run host's endpoint's socket queues were charged nowhere, where the daemon charges its
+     runs' endpoints' (`kernel_buffer_bytes`). And the daemon counted its endpoint's waker only
+     through its first owned output's control, so an endpoint serving no owned output went
+     without it.
+- *Decided (ROOT).*
+  1. A first generation's lanes are charged before its members start, as a restart's are. With
+     no room, the run is refused, typed, before its members start.
+  2. The endpoint's socket queues are charged with the shared lane accounting, from the
+     sockets' own buffer sizes as the OS reports them (R03: no chosen number), once per
+     endpoint.
+- *The run host's start* (`serve_launched`), in its order:
+  1. Its endpoint is bound, as before past its VM's start (its key's rule is unchanged).
+  2. Its link and its sockets' queues are charged (`charge_link`, through `endpoint_bytes`).
+  3. Each first-generation stream is charged (`charge_first`), by the functions `Stdio::join`
+     charges a next generation with (`output_charge`, `input_charge`).
+  4. Only then does `hand_over` hand its VM the run, which starts its members.
+
+  A run its budget has no room for is refused `Cause::Capacity` at 2 or 3, its VM never handed
+  the run, so none of its members starts. What it held is given back as it is refused, and its
+  VM ended as any refused run's is (`end`). Its endpoint's driver still starts only as the run
+  is served, after `STARTED`. A first generation's stream is now charged or its run refused:
+  `Stdio::output` and `input` let a stream with no room go (`no_room`) only for a restart's next
+  generation, which `join` refuses whole.
+- *The sockets' queues* (`control::Endpoint::kernel_buffer_bytes`, shards-remote). Each socket
+  the endpoint holds, its send and receive buffers as `getsockopt(SO_SNDBUF)` and
+  `getsockopt(SO_RCVBUF)` report them (net.rs `socket_buffers`):
+  - its served socket and its wake, its driver's, as before;
+  - its waker, which its `Revoke` and every stream's control share: read as it is bound, and
+    now counted whatever streams it serves.
+
+  `endpoint_bytes` (daemon/managed.rs) is the endpoint's whole charge, its link (`link_bytes`)
+  and its queues, once per endpoint (R12). Both the daemon's agent-control endpoint and the run
+  host's are charged by it. The daemon no longer adds its first owned output's waker beside it,
+  which would count the one waker twice.
+- *Typed* (R04).
+  - `Cause::Capacity` (tag 7), the image channel's version 51, so that a side that reads no such
+    cause refuses the run as it is asked. shards-api surfaces it as `ImageRefusal::Capacity`,
+    in the run host's words.
+  - The link's no room, refused `Cause::Boot` by the amendment above, is `Capacity` now: the
+    same budget, at the same step of the start. A queue that could not be read, or a charge
+    that overflows, stays `Boot`: its endpoint could not be made.
+- *Literals.* None new (R03): the buffers the OS reports, the amendment above's link, the next
+  free tag and version.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  - shards-remote `control::tests::lanes::its_windows_are_its_streams_own_summed`: an endpoint's
+    queues are its driver's and its waker's, the one its streams' controls share; an endpoint of
+    no stream counts its waker too.
+  - `api_run::hosted::tests::an_orchestrators_endpoint_is_charged_its_link_once_whatever_lanes_it_carries`:
+    each endpoint charged its link and its own sockets' queues, given back whole.
+  - `api_run::hosted::tests::an_orchestrators_stdio_lanes_are_charged_to_its_budget_or_refused_capacity`:
+    a first generation charged with its budget full refused, nothing held; streams served with no
+    room, as a next generation's may be, let go, their lanes refused `Capacity`, its stdin's relay
+    ending its member's input connection.
+  - `api_run::hosted::tests::an_orchestrators_run_serves_its_members_stdio_on_its_endpoint_by_generation`
+    and `a_restart_whose_next_generation_has_no_room_is_refused_capacity_before_it_starts`: their
+    first generations charged by `charge_first` before they are served.
+  - shards-api `image::wire::tests::messages_round_trip`: `Capacity` round-trips, and tag 8 is
+    refused. `image::session::tests::refusals_come_typed_in_their_hosts_words`: `Capacity` read
+    as `ImageRefusal::Capacity`.
+- *Owed* (ROOT).
+  - The suites: `cargo test --profile test-release -p shards-remote --lib -- control::`,
+    `cargo test --profile test-release -p shards-api --lib -- image::`, and
+    `cargo test --profile test-release -p shards --lib -- daemon::managed:: api_run::`.
+  - Clippy on the seven targets.
+  - Real VM, on HVF, KVM and WHP: a run with stdio lanes whose budget has no room for its first
+    generation, refused `Capacity`, its VM never handed the run (no member output, no
+    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once.
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 
@@ -38941,7 +39020,9 @@ plugged it used them.
   with a letter or a digit), which the store's listing passes by and its removals' sweep
   (`.NAME.removing`) never matches. It is never removed, so every hold and every clearing of a
   name lock one file. A file removed and made again would let a hold of the old one and a
-  clearing of the new one each think itself alone.
+  clearing of the new one each think itself alone. (Since charge-2, below: an anonymous
+  volume's goes with it, unlinked only by one holding it alone, and a hold taken of a file
+  unlinked as it was taken holds nothing, so that every hold and removal still lock one file.)
 - *Clearing* (`api_volumes::clear`, `Store::alone`) takes the lock alone without waiting, once
   the volume is found: refused `ClearCause::InUse` (4) at once where any hold stands, its files
   kept, never waiting for that run to end. It then removes the volume under the store's lock,
@@ -38985,8 +39066,8 @@ daemon's run as an orchestrator's.**
     now `Holds`), where its plugs' join them (`source_dir`'s `take`, kept once the store took the
     plug). Its own map and its own hold-and-refuse, the duplicate path, are removed.
   - Not held: an anonymous volume, its run's own and gone with it, whose name is never asked again
-    and whose lock file would outlive it; a bind of a host directory. A named volume of a host
-    directory (`o=bind`) is held.
+    and whose lock file would outlive it (held since charge-2, below, its lock file gone with
+    it); a bind of a host directory. A named volume of a host directory (`o=bind`) is held.
   - A run keeps a plug's hold past its unplug, until it ends, a daemon's as an orchestrator's.
 - No literal; no wait: each hold is taken or refused at once.
 - *Still open* (ROOT's call): the daemon's `volume rm` and `volume prune` judge a volume's use by
@@ -39040,14 +39121,16 @@ neither removed nor pruned by the daemon.**
   `remove_unheld` takes one's lock alone only where its lock file is there, which only a plug of
   it by its name makes (`Holds::take`). So a prune of anonymous volumes makes no lock file to
   outlive them. The window this leaves: a plug of an anonymous volume by its 64-hex name that makes
-  its lock file between that look and the removal is not excluded. No start makes one.
+  its lock file between that look and the removal is not excluded. No start makes one. (Closed
+  by charge-2, below: every removal takes an anonymous volume's lock alone, and its lock file
+  goes with it.)
 - *Open (found here, ROOT's call):* an orchestrator's run's own anonymous volumes (its image's
   `VOLUME`s, api_run `made`) are held by none, as P6-fix-2 decided. The daemon's `volume prune`,
   anonymous volumes alone by default, and its `volume rm` of one remove them while that run runs,
   as no record of the daemon's mounts them. Holding them would take a lock file each, removed
   with its volume under its exclusive lock. That is safe only where every hold looks for its
   volume again once held: `Holds::found` does; a plug's `take`, which makes the volume where it
-  is not there, does not.
+  is not there, does not. Closed by charge-2 (below).
 - *A plug's refusals typed* (ROOT, 2026-11-16, answering vol-bound-2's question 3; R04). A run
   host's plug of a volume was refused `PlugRefusal::Volume` in words where its bound conflicted
   and where a clearing held it, as where the store would not give it. Their causes differ, and
@@ -39139,7 +39222,7 @@ per change is ROOT's to measure (R14).
     volume is made with it, or set to it where none holds it; none keeps its own. The image
     channel's `PlugFrom::Volume` carries it (version 47).
   - Refused: a size on an anonymous volume ("a bound (size) is held for a named volume alone":
-    it keeps no count file, as it keeps no lock file); a bounded volume's file alone; a bounded
+    it keeps no count file); a bounded volume's file alone; a bounded
     volume in a run joining another's network, whose join share holds no bound.
 - *Slice 4, the listing.* `HomeVolume::bound` and `charge` (api-volumes answers version 3; each
   volume at least 23 bytes). Its charge is the count while a run holds it bounded; otherwise it
@@ -39184,6 +39267,61 @@ per change is ROOT's to measure (R14).
     `a_homes_volumes_read_back_as_they_were_answered` (a bound and a charge, the charge's flag).
   - Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
     `an_agents_volume_refuses_writes_past_its_bound`.
+
+**Amended (lane charge-2, 2026-11-16, ROOT's decision 3): a run's anonymous volumes held as its
+named ones are.**
+- *Before.* No run held its own anonymous volumes (P6-fix-2), so the daemon's `volume prune`,
+  which takes anonymous volumes alone by default, and its `volume rm` removed an orchestrator's
+  run's (its image's `VOLUME`s, api_run `made`) while that run ran: no record of the daemon's
+  mounts them. So could shards-api's `clear_volume` of one by its 64-hex name, a daemon's run's
+  too.
+- *Decided (ROOT).* Hold them as named ones are, with the shared lock `volumes::open_for` takes
+  for the run's life, by the fix P6-fix-3 described: a lock file each, removed with its volume
+  under its exclusive lock.
+- *Held.* `Holds::found` holds a volume of the store whatever it is, named or anonymous, then
+  looks for it again. So every run's start holds its anonymous volumes, a daemon's run's and an
+  orchestrator's, its boot's and its warm host's (R12: the one path). A removal that respects
+  holds (`Store::remove_unheld`: a clearing, `volume rm`, `volume prune`, a microVM's own
+  engine's) is refused `InUse` while one does, its files kept; `prune` passes it by.
+- *Its lock file goes with it.* `remove_unheld` takes every volume's lock alone, an anonymous
+  one's too (made where missing, as no start made one before), and, once its anonymous volume
+  is set aside, unlinks its lock file while still holding it alone. One a removal found gone
+  meanwhile has the lock file it made unlinked too. The removals that ask no hold, as they did
+  not before (a run's own `--rm` end, the daemon's of a microVM removed with its volumes, a
+  failed registration's), unlink it where none holds it now, taking it alone at once
+  (`unlink_alone`); one a run still holds is unlinked by the last of its holders as it lets go,
+  its volume gone (`Held`'s drop). A named volume's lock file is kept, as before, for the next
+  volume of that name; it goes only where a hold outlived its volume (a start or a plug that
+  came as it was removed), by that last holder.
+- *Every hold stands on a linked file* (`Store::locking`). A hold opens the lock file and then
+  locks it; a removal may unlink it between the two. So a hold or a removal that finds the file
+  it locked unlinked (`os::unlinked`: no link left on Unix; its name gone or its delete pending
+  on Windows, FILE_STANDARD_INFO) holds nothing: refused at once, as one a clearing holds is
+  (`HoldRefusal::Clearing`, `ClearCause::InUse`). Every unlink is made by one holding the file
+  alone, so a linked file locked is the name's one file, and no hold is left on a file another
+  hold or removal cannot see. This makes a plug's `take`, which makes the volume after holding
+  it, safe as it is: its hold is of the name's file, made or found, whatever the volume was.
+- *Not changed.* A volume's count file, a named one's alone, is never removed. The daemon's own
+  removal of a microVM's anonymous volumes still asks its records, not the holds (D38).
+- *Costs.* Each anonymous volume a start mounts takes one lock file, made, locked shared and
+  unlinked with it; each hold an fstat more as it is taken; each hold's let go a stat of its
+  volume's directory. Unmeasured, ROOT's (R14).
+- No literal; no wait: each hold and removal takes the lock or is refused at once.
+- **Tests** (written, not run: the person's rule of 2026-11-16):
+  - The binary's `volumes` `a_starts_volumes_are_held_until_its_run_lets_go` (renamed from
+    `a_starts_named_volumes_are_held_until_its_run_lets_go`): a start holds its anonymous volume
+    as its named one, both refused `InUse` while held; an anonymous one removed under its holder
+    keeps its lock file until that holder lets go, which unlinks it.
+  - `a_volume_is_removed_only_where_no_run_holds_it`: an anonymous volume's removal leaves no
+    lock file, a plugged one's too; a named one's stays.
+  - `a_lock_its_removal_unlinked_holds_nothing`: a lock file opened before its anonymous volume's
+    removal is unlinked by it, and the lock then taken of it is of an unlinked file, which
+    `locking` refuses; the name's next hold takes a new, linked one.
+  - Owed (ROOT): `cargo test --profile test-release -p shards --bin shards -- volumes::
+    api_volumes:: daemon::volume::` and Windows clippy and unit tests (`os::unlinked` on a
+    lock file a removal deleted while open). Real VM (HVF, KVM, WHP): an orchestrator's run of an
+    image with a `VOLUME`, `shards volume prune -f` while it runs passing its volume by, its
+    files kept; the volume and its lock file gone once the run ends.
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends, built, its real-VM tests written and owed)
 

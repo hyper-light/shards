@@ -487,6 +487,19 @@ pub(crate) fn link_bytes(admitted: &Admitted, connections: usize) -> Option<u64>
         .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
 }
 
+/// What a run's host is charged for an agent-control endpoint itself, once as it binds it,
+/// whatever lanes it carries (D252): its link ([`link_bytes`], for each of the
+/// `control::CONNECTIONS` it holds at once), and the kernel's queues of every socket it holds,
+/// its driver's, its wake's and its waker's, each one's buffers as its OS reports them
+/// (`control::Endpoint::kernel_buffer_bytes`). A daemon's run's endpoint and an orchestrator's
+/// run's (api_run.rs) alike. None where it overflows.
+pub(crate) fn endpoint_bytes(
+    endpoint: &control::Endpoint,
+) -> Result<Option<u64>, shards_remote::managed::Error> {
+    let queues = endpoint.kernel_buffer_bytes()?;
+    Ok(link_bytes(&endpoint.link(), control::CONNECTIONS).and_then(|link| link.checked_add(queues)))
+}
+
 /// What output `producer`'s record holds past the `record` bytes it was admitted, its
 /// allocation's own, charged beside [`output_bytes`] once its stream is made.
 pub(crate) fn storage_excess(producer: &Producer, record: usize) -> io::Result<u64> {
@@ -1710,16 +1723,9 @@ impl<D: Disk> Daemon<D> {
             }
             let exec_admitted = exec_admissions();
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted, mcps)?;
-            // One driver's socket, and the waker every stream's control shares; and its link,
-            // each connection's handshake once, whatever lanes it carries (D252).
-            let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
-            if let Some((_, control)) = served.outputs.first() {
-                kernel = kernel
-                    .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
-                    .ok_or_else(|| io::Error::other("agent control kernel queue overflow"))?;
-            }
-            let held = link_bytes(&endpoint.link(), control::CONNECTIONS)
-                .and_then(|link| link.checked_add(kernel))
+            // Its link and its sockets' queues, once whatever lanes it carries (D252).
+            let held = endpoint_bytes(&endpoint)
+                .map_err(Failure::Endpoint)?
                 .ok_or_else(|| io::Error::other("agent control link overflow"))?;
             charge.grow(held)?;
             let control::Served {
