@@ -414,8 +414,8 @@ impl Poller {
         self.port
     }
 
-    /// Waits until an interest is ready or `timeout` passes; appends what is ready to
-    /// `out`.
+    /// Waits until an interest is ready, its waker wakes it, or `timeout` passes; appends what
+    /// is ready to `out`.
     ///
     /// Every interest's socket is associated with the event anew each wait, as a socket
     /// closed and its handle reused since the last is a socket the event knows nothing of.
@@ -423,7 +423,10 @@ impl Poller {
     /// sets it, which the thread-pool wait set before the port's wait posts. Pipes ready as
     /// their owner looked are ready now, and the rest are named by their packets: a pipes'
     /// call that ended after its owner's look posted one, as its handles were associated
-    /// before it.
+    /// before it. A packet that leaves nothing ready ends no wait, which goes on for the time
+    /// left, as poll(2)'s does: the sockets' event set by what no interest waits for (room for
+    /// a write where its interest reads; a socket associated anew, FD_WRITE), a packet an
+    /// earlier wait's thread-pool wait posted after that wait ended, or a pair gone's.
     pub fn wait<T: Copy>(
         &mut self,
         interests: &[Interest<T>],
@@ -445,10 +448,7 @@ impl Poller {
                 unsafe { WSAEventSelect(fd, self.event, (FD_READ | FD_WRITE | FD_CLOSE | FD_ACCEPT) as i32) };
             }
         }
-        // SAFETY: our own event.
-        unsafe { WSAResetEvent(self.event) };
         let before = out.len();
-        self.look(interests, out)?;
         self.keyed.clear();
         for (index, i) in interests.iter().enumerate() {
             if let Source::Pipes { key, ready } = i.fd {
@@ -464,66 +464,85 @@ impl Poller {
                 }
             }
         }
-        let now = out.len() > before || timeout == Some(Duration::ZERO);
-        if !now && sockets {
-            if self.sockets.is_none() {
-                self.sockets = Some(SocketWait::new(self.port)?);
-            }
-            if let Some(wait) = &self.sockets {
-                wait.set(self.event as windows_sys::Win32::Foundation::HANDLE);
-            }
-        }
-        // Rounded up, so a deadline is never missed by waking a moment early; none waits
-        // without end (INFINITE). Ready now, it takes what packets there are and waits for
-        // none, so that those told of already are not told of again next wait.
-        let ms = match timeout {
-            _ if now => 0,
-            None => INFINITE,
-            Some(t) => u32::try_from(t.as_micros().div_ceil(1000))
-                .unwrap_or(INFINITE - 1)
-                .min(INFINITE - 1),
-        };
+        // None: no end; Some(None): one past what an Instant holds, waited for as INFINITE - 1
+        // is, each round.
+        let deadline = timeout.map(|t| std::time::Instant::now().checked_add(t));
         // Room for a packet of each interest's key, the waker's and the sockets': what one
         // wait can learn of; more are the next wait's.
         let room = interests.len().saturating_add(2);
-        self.entries.clear();
-        self.entries.resize(room, OVERLAPPED_ENTRY::default());
-        let mut got = 0u32;
-        // SAFETY: the port, and room for `room` entries; not alertable.
-        let took = unsafe {
-            GetQueuedCompletionStatusEx(
-                self.port,
-                self.entries.as_mut_ptr(),
-                u32::try_from(room).unwrap_or(u32::MAX),
-                &mut got,
-                ms,
-                0,
-            )
-        };
-        if took == 0 {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() != i32::try_from(WAIT_TIMEOUT).ok() {
-                return Err(e);
-            }
-            got = 0;
-        }
-        for entry in self.entries.iter().take(usize::try_from(got).unwrap_or(0)) {
-            // A packet of a pair gone, or told of already, names none: its key is no
-            // interest's, never reused.
-            if let Some(index) = self.keyed.remove(&entry.lpCompletionKey)
-                && let Some(i) = interests.get(index)
-            {
-                out.push(Ready {
-                    token: i.token,
-                    read: i.read,
-                    write: i.write,
-                });
-            }
-        }
-        if !now && sockets {
+        loop {
+            // SAFETY: our own event.
+            unsafe { WSAResetEvent(self.event) };
             self.look(interests, out)?;
+            let now = out.len() > before || timeout == Some(Duration::ZERO);
+            if !now && sockets {
+                if self.sockets.is_none() {
+                    self.sockets = Some(SocketWait::new(self.port)?);
+                }
+                if let Some(wait) = &self.sockets {
+                    wait.set(self.event as windows_sys::Win32::Foundation::HANDLE);
+                }
+            }
+            // Rounded up, so a deadline is never missed by waking a moment early; none waits
+            // without end (INFINITE). Ready now, it takes what packets there are and waits for
+            // none, so that those told of already are not told of again next wait.
+            let ms = match deadline {
+                _ if now => 0,
+                None => INFINITE,
+                Some(at) => {
+                    let left = at.map_or(Duration::MAX, |at| {
+                        at.saturating_duration_since(std::time::Instant::now())
+                    });
+                    u32::try_from(left.as_micros().div_ceil(1000))
+                        .unwrap_or(INFINITE - 1)
+                        .min(INFINITE - 1)
+                }
+            };
+            self.entries.clear();
+            self.entries.resize(room, OVERLAPPED_ENTRY::default());
+            let mut got = 0u32;
+            // SAFETY: the port, and room for `room` entries; not alertable.
+            let took = unsafe {
+                GetQueuedCompletionStatusEx(
+                    self.port,
+                    self.entries.as_mut_ptr(),
+                    u32::try_from(room).unwrap_or(u32::MAX),
+                    &mut got,
+                    ms,
+                    0,
+                )
+            };
+            let mut timed_out = false;
+            if took == 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() != i32::try_from(WAIT_TIMEOUT).ok() {
+                    return Err(e);
+                }
+                got = 0;
+                timed_out = true;
+            }
+            let mut woken = false;
+            for entry in self.entries.iter().take(usize::try_from(got).unwrap_or(0)) {
+                woken |= entry.lpCompletionKey == WAKER;
+                // A packet of a pair gone, or told of already, names none: its key is no
+                // interest's, never reused.
+                if let Some(index) = self.keyed.remove(&entry.lpCompletionKey)
+                    && let Some(i) = interests.get(index)
+                {
+                    out.push(Ready {
+                        token: i.token,
+                        read: i.read,
+                        write: i.write,
+                    });
+                }
+            }
+            if !now && sockets {
+                self.look(interests, out)?;
+            }
+            if now || timed_out || woken || ms == 0 || out.len() > before {
+                return Ok(());
+            }
         }
-        Ok(())
     }
 
     /// What is ready of `interests`' sockets now: a WSAPoll that does not wait. End-of-stream
