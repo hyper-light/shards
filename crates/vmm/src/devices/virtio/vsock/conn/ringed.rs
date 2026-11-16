@@ -196,7 +196,7 @@ impl Conn {
             return false;
         };
         let mut byte = [0u8; 1];
-        match (&self.stream).read(&mut byte) {
+        match self.stream.read(&mut byte) {
             Ok(1) if byte == [CUE] => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
                 handle.put(offered);
@@ -326,7 +326,12 @@ impl Conn {
                 r.full = true;
                 return Ok(Filled::Moved);
             }
-            let turn = r.ring.from_host(&self.stream)?;
+            // A ring is a served port's (D230), whose host end is a socket.
+            let socket = self
+                .stream
+                .socket()
+                .ok_or(Broken::Socket(io::ErrorKind::Unsupported))?;
+            let turn = r.ring.from_host(socket)?;
             r.doorbell |= turn.ring;
             if turn.eof {
                 return Ok(Filled::End);
@@ -358,7 +363,7 @@ impl Conn {
         // The guest's client ended its writes: they end at the host too, after its last.
         if drained && r.ended && self.host_writes == HostWrites::Open {
             self.host_writes = HostWrites::Shut;
-            let _ = self.stream.shutdown(std::net::Shutdown::Write);
+            self.stream.shut_writes();
         }
         Ok(drained)
     }
@@ -380,7 +385,11 @@ impl Conn {
                 }
                 continue;
             }
-            let turn = r.ring.to_host(&self.stream)?;
+            let socket = self
+                .stream
+                .socket()
+                .ok_or(Broken::Socket(io::ErrorKind::Unsupported))?;
+            let turn = r.ring.to_host(socket)?;
             r.doorbell |= turn.ring;
             moved = moved.saturating_add(turn.moved);
             if turn.moved == 0 || moved >= quantum {

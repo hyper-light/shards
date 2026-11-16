@@ -331,6 +331,82 @@ pub struct Served {
     /// Each socket lane a controller asks for, for the host to connect ([`unix::Connect`]),
     /// where [`Streams::sockets`] admitted them.
     pub sockets: Option<std::sync::mpsc::Receiver<unix::Connect>>,
+    /// Where its host adds each member stream's next generation as its member starts again
+    /// ([`Generations`], D270).
+    pub generations: Generations,
+}
+
+/// Where an endpoint's host adds the next generation of a member stream it was bound with
+/// (D270: a member started again in its microVM; an orchestrator's run, D252): the stream of
+/// the same run, member and channel under a later generation, admitted as the one it was bound
+/// with, so that the connection's windows, each its streams' own, hold it as they held that one
+/// (R03). Its lanes are step 5's, as the first generation's are; once a later generation is
+/// served, a lane naming an earlier one is refused `Stale`, and an earlier one whose end its
+/// lane has told, or that was revoked, with no lane on it, is let go.
+#[derive(Debug)]
+pub struct Generations {
+    joins: std::sync::mpsc::Sender<Joined>,
+    sender: Sender<()>,
+    controller: Fingerprint,
+    outputs: Vec<(Scope, Admitted)>,
+    inputs: Vec<(input::Scope, Admitted)>,
+}
+
+/// A stream's next generation, made by its host's thread ([`Generations`]) for the endpoint's
+/// driver to serve from its next turn ([`Lanes::join`]).
+enum Joined {
+    Output(managed::Service),
+    Input(input::Service),
+}
+
+impl Generations {
+    /// Output `scope`, the next generation of the stream of its run, member and channel the
+    /// endpoint was bound with: its producer and control, as [`Served::outputs`] gives the
+    /// first's. Refused for a stream the endpoint was not bound with (`Scope`), and once its
+    /// endpoint has ended (`Closed`).
+    pub fn output(&self, scope: Scope) -> Result<(Producer, managed::Control), managed::Error> {
+        let (_, admitted) = self
+            .outputs
+            .iter()
+            .find(|(bound, _)| {
+                bound.run == scope.run && bound.member == scope.member && bound.channel == scope.channel
+            })
+            .ok_or(managed::Error::Protocol(ProtocolError::Scope))?;
+        let service = managed::Service::new(scope, self.controller, admitted.record_bytes)?;
+        let handles = service.handles(self.sender.try_clone()?, Stop::Lane)?;
+        self.join(Joined::Output(service))?;
+        Ok(handles)
+    }
+
+    /// Input `scope`, the next generation of the stdin of its run and member the endpoint was
+    /// bound with: its relay and control, as [`Served::inputs`] gives the first's; refused as
+    /// [`Generations::output`] is.
+    pub fn input(&self, scope: input::Scope) -> Result<(input::Relay, input::Control), managed::Error> {
+        let (_, admitted) = self
+            .inputs
+            .iter()
+            .find(|(bound, _)| bound.run == scope.run && bound.member == scope.member)
+            .ok_or(managed::Error::Protocol(ProtocolError::Scope))?;
+        let service = input::Service::new(scope, self.controller, admitted.record_bytes)?;
+        let handles = service.handles(self.sender.try_clone()?, Stop::Lane)?;
+        self.join(Joined::Input(service))?;
+        Ok(handles)
+    }
+
+    /// Hands `joined` to the endpoint's driver and wakes it; a full handoff is a wake queued
+    /// already, whose turn takes it. One its ended endpoint will never take is closed, its
+    /// handles told so.
+    fn join(&self, joined: Joined) -> Result<(), managed::Error> {
+        if let Err(std::sync::mpsc::SendError(joined)) = self.joins.send(joined) {
+            match joined {
+                Joined::Output(mut service) => service.close(),
+                Joined::Input(mut service) => service.close(),
+            }
+            return Err(managed::Error::Closed);
+        }
+        let _ = self.sender.try_send(crate::net::Command::Handler(()));
+        Ok(())
+    }
 }
 
 /// Ends the endpoint's driver, its connections and every lane: the microVM's control is over.
@@ -450,7 +526,8 @@ impl Endpoint {
             .map_or((RunId([0; 32]), 0), |(scope, _)| (scope.run, scope.generation));
         let (execs, (handed, members)) = exec::Execs::new(streams.execs, base, run);
         let (sockets, connects) = unix::Carried::new(streams.sockets);
-        let lanes = Lanes::new(controller, streams, windows.streams, execs, sockets)?;
+        let (joins, joined) = std::sync::mpsc::channel();
+        let lanes = Lanes::new(controller, streams, windows.streams, execs, sockets, joined)?;
         let (mut driver, sender) = Driver::bind_bounded(
             at,
             Some(config),
@@ -483,6 +560,24 @@ impl Endpoint {
         for input in &lanes.inputs {
             inputs.push(input.handles(sender.try_clone()?, Stop::Lane)?);
         }
+        // What each next generation is admitted: the stream it follows' admission.
+        let mut bound_outputs = Vec::new();
+        bound_outputs
+            .try_reserve_exact(streams.outputs.len())
+            .map_err(|_| managed::Error::Admission(AdmissionError::Allocation))?;
+        bound_outputs.extend_from_slice(streams.outputs);
+        let mut bound_inputs = Vec::new();
+        bound_inputs
+            .try_reserve_exact(streams.inputs.len())
+            .map_err(|_| managed::Error::Admission(AdmissionError::Allocation))?;
+        bound_inputs.extend_from_slice(streams.inputs);
+        let generations = Generations {
+            joins,
+            sender: sender.try_clone()?,
+            controller,
+            outputs: bound_outputs,
+            inputs: bound_inputs,
+        };
         Ok((
             Endpoint {
                 driver,
@@ -498,6 +593,7 @@ impl Endpoint {
                 execs: handed,
                 members,
                 sockets: connects,
+                generations,
             },
         ))
     }
@@ -515,6 +611,8 @@ impl Endpoint {
     pub fn run(mut self) -> Result<(), managed::Error> {
         let result = self.driver.run();
         let lanes = self.driver.handler_mut();
+        // A generation its host added as its driver ended goes with the rest.
+        lanes.join();
         for output in &mut lanes.outputs {
             output.close();
         }
@@ -611,6 +709,11 @@ struct Lanes {
     conns: Vec<ConnKey>,
     execs: exec::Execs,
     sockets: unix::Carried,
+    /// Each stream's next generation its host adds ([`Generations`]), taken at each turn.
+    joins: std::sync::mpsc::Receiver<Joined>,
+    /// A later generation of a stream it was bound with is served: earlier ones are let go
+    /// as they end ([`Lanes::join`]). An endpoint none is added to looks for none.
+    layered: bool,
 }
 
 /// Abandons `stream` both ways: what this side would send is let go (RESET_STREAM) and its
@@ -630,6 +733,7 @@ impl Lanes {
         open: u32,
         execs: exec::Execs,
         sockets: unix::Carried,
+        joins: std::sync::mpsc::Receiver<Joined>,
     ) -> Result<Lanes, managed::Error> {
         let allocation = managed::Error::Admission(AdmissionError::Allocation);
         let held = usize::try_from(open)
@@ -670,6 +774,8 @@ impl Lanes {
             conns: Vec::new(),
             execs,
             sockets,
+            joins,
+            layered: false,
         };
         let reserve = |held: usize| {
             managed::Error::Admission(if held == 0 {
@@ -876,41 +982,154 @@ impl Lanes {
             stream: which,
             offset,
         } = first;
+        // Its generation's stream; where the endpoint serves another generation of the same
+        // member's (D270), this one is past, or not yet: `Stale`, as step 5 refuses one.
         let channel = match which {
             Stdio::Stdin => {
-                let input = self
-                    .inputs
-                    .iter_mut()
-                    .find(|i| i.scope().run == run && i.scope().member == member)
-                    .ok_or(Reason::Scope)?;
                 let scope = input::Scope {
                     run,
                     generation,
                     member,
+                };
+                let at = self.inputs.iter().position(|i| i.scope() == scope);
+                let Some(input) = at.and_then(|at| self.inputs.get_mut(at)) else {
+                    let other = self
+                        .inputs
+                        .iter()
+                        .any(|i| i.scope().run == run && i.scope().member == member);
+                    return Err(if other { Reason::Stale } else { Reason::Scope });
                 };
                 return input.lane(conn, stream, scope, offset);
             }
             Stdio::Stdout => Channel::Stdout,
             Stdio::Stderr => Channel::Stderr,
         };
-        let output = self
-            .outputs
-            .iter_mut()
-            .find(|o| o.scope().run == run && o.scope().member == member && o.scope().channel == channel)
-            .ok_or(Reason::Scope)?;
         let scope = Scope {
             run,
             generation,
             member,
             channel,
         };
+        let at = self.outputs.iter().position(|o| o.scope() == scope);
+        let Some(output) = at.and_then(|at| self.outputs.get_mut(at)) else {
+            let other = self
+                .outputs
+                .iter()
+                .any(|o| o.scope().run == run && o.scope().member == member && o.scope().channel == channel);
+            return Err(if other { Reason::Stale } else { Reason::Scope });
+        };
         output.lane(conn, stream, scope, offset)
+    }
+
+    /// Whether an ask names the endpoint's scope (an exec's, a member's own lane's, a log's, a
+    /// socket lane's): its run (else `Scope`), and its generation, or one whose member streams
+    /// it serves now (else `Stale`). A controller's asks name its first output's (drive.rs), so
+    /// that one dialing the streams of a member's next generation (D270) names that generation.
+    fn in_scope(&self, run: RunId, generation: u64) -> Result<(), Reason> {
+        let (ours, our_generation) = self.execs.run;
+        if run != ours {
+            return Err(Reason::Scope);
+        }
+        let served = self
+            .outputs
+            .iter()
+            .any(|o| o.scope().run == run && o.scope().generation == generation)
+            || self
+                .inputs
+                .iter()
+                .any(|i| i.scope().run == run && i.scope().generation == generation);
+        if generation != our_generation && !served {
+            return Err(Reason::Stale);
+        }
+        Ok(())
+    }
+
+    /// Takes each stream's next generation its host added ([`Generations`]): one of a stream
+    /// the endpoint serves a generation as late or later of, or that cannot be held, is closed,
+    /// its handles told so. Then lets go of each generation a later one of its stream follows
+    /// whose end its lane has told, or that was revoked, with no lane on it: a lane naming it
+    /// is refused `Stale` from then on (`subscribe`).
+    fn join(&mut self) {
+        while let Ok(joined) = self.joins.try_recv() {
+            match joined {
+                Joined::Output(mut service) => {
+                    let new = service.scope();
+                    let behind = self.outputs.iter().any(|o| {
+                        let s = o.scope();
+                        s.run == new.run
+                            && s.member == new.member
+                            && s.channel == new.channel
+                            && s.generation >= new.generation
+                    });
+                    if behind || self.outputs.try_reserve(1).is_err() {
+                        service.close();
+                    } else {
+                        self.outputs.push(service);
+                        self.layered = true;
+                    }
+                }
+                Joined::Input(mut service) => {
+                    let new = service.scope();
+                    let behind = self.inputs.iter().any(|i| {
+                        let s = i.scope();
+                        s.run == new.run && s.member == new.member && s.generation >= new.generation
+                    });
+                    if behind || self.inputs.try_reserve(1).is_err() {
+                        service.close();
+                    } else {
+                        self.inputs.push(service);
+                        self.layered = true;
+                    }
+                }
+            }
+        }
+        if !self.layered {
+            return;
+        }
+        let mut at = 0;
+        while at < self.outputs.len() {
+            let past = self.outputs.get(at).is_some_and(|o| {
+                let s = o.scope();
+                o.subscriber().is_none()
+                    && (o.ended() || o.aborted())
+                    && self.outputs.iter().any(|n| {
+                        let later = n.scope();
+                        later.run == s.run
+                            && later.member == s.member
+                            && later.channel == s.channel
+                            && later.generation > s.generation
+                    })
+            });
+            if past {
+                self.outputs.swap_remove(at);
+            } else {
+                at = at.saturating_add(1);
+            }
+        }
+        let mut at = 0;
+        while at < self.inputs.len() {
+            let past = self.inputs.get(at).is_some_and(|i| {
+                let s = i.scope();
+                i.subscriber().is_none()
+                    && (i.ended() || i.revoked())
+                    && self.inputs.iter().any(|n| {
+                        let later = n.scope();
+                        later.run == s.run && later.member == s.member && later.generation > s.generation
+                    })
+            });
+            if past {
+                self.inputs.swap_remove(at);
+            } else {
+                at = at.saturating_add(1);
+            }
+        }
     }
 
     /// A turn of the endpoint's own: a revoked stream's lane is abandoned alone, every other
     /// lane says what it has to, and a lane done (its output finished, its input's end told)
     /// leaves its stream for the next subscription. Every refusal goes on.
     fn turn(&mut self, io: &mut Io<'_>) {
+        self.join();
         for output in &mut self.outputs {
             let Some((conn, stream)) = output.subscriber() else {
                 continue;
@@ -1516,6 +1735,7 @@ mod tests {
                     execs: starts,
                     members,
                     sockets: _,
+                    generations: _,
                 } = served;
                 let (relay, control) = inputs.pop().unwrap();
                 let input = Arc::new(control);
