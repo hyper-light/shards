@@ -493,6 +493,10 @@ pub enum ImageRefusal {
     /// now ([`ImageGuest::swap`], [`ImageGuest::restore`]), its member ended whole. Its run
     /// host's words name the member, the directory and the errno.
     Workdir(String),
+    /// Its run host's budget had no room for its agent-control endpoint or its members' first
+    /// stdio lanes, charged before its members start (D252): none of them ran, and it may be
+    /// booted again once its host has room. In its run host's words.
+    Capacity(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -532,6 +536,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Restart(cause, why) => write!(f, "a member's restart: {cause:?}: {why}"),
             Self::Swap(cause, why) => write!(f, "a component's swap: {cause:?}: {why}"),
             Self::Workdir(why) => write!(f, "a member's working directory: {why}"),
+            Self::Capacity(why) => write!(f, "the run's lanes: {why}"),
         }
     }
 }

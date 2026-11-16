@@ -2130,6 +2130,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                     r.why
                 )),
                 wire::Cause::Workdir => ImageRefusal::Workdir(r.why),
+                wire::Cause::Capacity => ImageRefusal::Capacity(r.why),
             });
         }
         k::OUTPUT => {
@@ -4154,7 +4155,7 @@ mod tests {
     /// grant asked of an image that does not give it (D234) a widening, in the daemon's
     /// words; a crafted image's (NESTING beside an agent) the image's, in its build's, as
     /// the daemon's read of the image says them; a member's working directory its guest could
-    /// not enter (D277) in its run host's.
+    /// not enter (D277) and a budget with no room for its lanes (D252) in its run host's.
     #[test]
     fn refusals_come_typed_in_their_hosts_words() {
         let undeclared = shards_abi::run::nesting::undeclared();
@@ -4164,6 +4165,7 @@ mod tests {
         );
         let unentered =
             "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started".to_string();
+        let no_room = "its run host's budget has no room for member 1's first Stdout lane".to_string();
         for (cause, why, typed) in [
             (
                 wire::Cause::Widening,
@@ -4175,6 +4177,11 @@ mod tests {
                 wire::Cause::Workdir,
                 &unentered,
                 ImageRefusal::Workdir(unentered.clone()),
+            ),
+            (
+                wire::Cause::Capacity,
+                &no_room,
+                ImageRefusal::Capacity(no_room.clone()),
             ),
         ] {
             let s = shared();
