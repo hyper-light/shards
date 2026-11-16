@@ -10855,8 +10855,15 @@ mod hosted {
                     sockets: None,
                     stdio: true,
                 };
-                let (endpoint, served) =
-                    bind_control(ControlKey::made().unwrap(), &ask, admissions, &outputs, &inputs).unwrap();
+                let (endpoint, served) = bind_control(
+                    ControlKey::made().unwrap(),
+                    &ask,
+                    admissions,
+                    &outputs,
+                    &inputs,
+                    &[],
+                )
+                .unwrap();
                 let (key, address) = (endpoint.fingerprint, endpoint.address);
                 let revoke = served.revoke;
                 std::thread::scope(|scope| {
