@@ -413,6 +413,32 @@ fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Str
     Ok(())
 }
 
+/// Mints member `member`'s next generation's input token (D270 slice 3b), registers it as its
+/// first's was ([`start_inputs`]), and hands the connection whose hello says it to the run's
+/// owner `owner` on a thread of its own, as its first's was handed: the token, for the
+/// generation's `MEMBER_START`. Its first's hand-over has ended with its hellos, so each later
+/// generation's has a thread of its own, which ends once its one connection is handed.
+pub fn next_input(member: u32, owner: shards_ipc::Stream) -> Result<[u8; run::TOKEN], String> {
+    let mut token = [0; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("managed input token: {e}"))?;
+    let (to, from) = std::sync::mpsc::sync_channel(1);
+    super::register(token, super::Target::Input { member, to })?;
+    if let Err(e) = std::thread::Builder::new()
+        .name("managed-input-next".into())
+        .spawn(move || {
+            for (member, conn) in from {
+                if let Err(e) = crate::warm::hand_input(&owner, member, conn) {
+                    shards_vmm::debug!("managed input of member {member}: its owner did not take it: {e}");
+                }
+            }
+        })
+    {
+        super::hellos::forget(&token);
+        return Err(format!("managed input worker: {e}"));
+    }
+    Ok(token)
+}
+
 /// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]) or
 /// its control was refused or ended unannounced ([`Control::supervise`]), said whole.
 static ENDED_RUN: Mutex<Option<String>> = Mutex::new(None);

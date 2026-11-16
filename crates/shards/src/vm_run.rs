@@ -2228,6 +2228,7 @@ fn serve_workload(
                                 capture: None,
                                 processes: None,
                                 members: None,
+                                restarted: None,
                                 readiness: None,
                                 host_net: None,
                                 resumed: None,
@@ -2297,6 +2298,7 @@ fn serve_workload(
                         };
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
                         let members = |ended: &[u8]| crate::warm::member_ended(&link, ended);
+                        let restarted = |answer: &[u8]| crate::warm::member_started(&link, answer);
                         let readiness = |ready: &[u8]| crate::warm::workload_ready(&link, ready);
                         let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
                         let set_up = || {
@@ -2451,6 +2453,7 @@ fn serve_workload(
                                 kept: Some(&kept),
                                 processes: Some(&processes),
                                 members: Some(&members),
+                                restarted: Some(&restarted),
                                 readiness: Some(&readiness),
                                 host_net: Some(&host_net),
                                 resumed: conns,

@@ -280,6 +280,9 @@ pub struct Asked<'a> {
     /// Given each member's end, where the run asked to hear them (D231): its
     /// `MEMBER_ENDED` payload.
     pub members: Option<&'a Records<'a>>,
+    /// Given what came of each member's next generation its owner asked for (D270 slice 3b):
+    /// its `MEMBER_STARTED` payload.
+    pub restarted: Option<&'a Records<'a>>,
     /// Given each move of its command's readiness under the nesting grant (D234): its
     /// `READY` payload.
     pub readiness: Option<&'a Records<'a>>,
@@ -738,6 +741,7 @@ pub fn serve(
         kept,
         processes,
         members,
+        restarted,
         readiness,
         host_net,
         resumed,
@@ -757,6 +761,7 @@ pub fn serve(
             kept: None,
             processes: None,
             members: None,
+            restarted: None,
             readiness: None,
             host_net: None,
             resumed: None,
@@ -849,6 +854,7 @@ pub fn serve(
     let records = RunRecords {
         processes,
         members,
+        restarted,
         readiness,
         host_net,
     };
@@ -969,6 +975,7 @@ fn relay(
 struct RunRecords<'a> {
     processes: Option<&'a Records<'a>>,
     members: Option<&'a Records<'a>>,
+    restarted: Option<&'a Records<'a>>,
     readiness: Option<&'a Records<'a>>,
     host_net: Option<&'a Records<'a>>,
 }
@@ -1058,6 +1065,15 @@ fn relay_frames(
                 run::members::Ended::decode(payload).ok_or("the guest sent a malformed member end")?;
                 if let Some(members) = records.members {
                     members(payload);
+                }
+            }
+            // What came of a member's next generation its owner asked for (D270 slice 3b), well
+            // formed or the guest's protocol broken.
+            kind::MEMBER_STARTED => {
+                run::members::StartAnswer::decode(payload)
+                    .map_err(|e| format!("the guest sent a malformed member start's answer: {e}"))?;
+                if let Some(restarted) = records.restarted {
+                    restarted(payload);
                 }
             }
             // Its command's readiness under the nesting grant (D234), as init moves it:
@@ -2440,6 +2456,18 @@ pub fn signal_guest(to: &ToGuest, linux: u32) -> Result<(), Unsent> {
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
 }
 
+/// Holds member `member` for its next generation (D270 slice 3b), as [`signal_guest`] sends a
+/// signal: its current one's end keeps its server instance and its namespaces.
+pub fn hold_member(to: &ToGuest, member: u32) -> Result<(), Unsent> {
+    to_guest(to, kind::MEMBER_HOLD, &member.to_be_bytes())
+}
+
+/// Gives the guest a member's next generation (D270 slice 3b), `start` as
+/// `run::members::Start` encodes it, as [`signal_guest`] sends a signal.
+pub fn start_member(to: &ToGuest, start: &[u8]) -> Result<(), Unsent> {
+    to_guest(to, kind::MEMBER_START, start)
+}
+
 /// Linux signal `linux` is one the guest delivers: `1..=NSIG`, as init checks it.
 fn is_signal(linux: u32) -> Result<(), Unsent> {
     if (1..=run::NSIG).contains(&linux) {
@@ -3350,6 +3378,7 @@ mod tests {
             let records = RunRecords {
                 processes: None,
                 members: None,
+                restarted: None,
                 readiness: Some(&readiness),
                 host_net: None,
             };

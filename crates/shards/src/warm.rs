@@ -880,6 +880,16 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     drop(held);
                 }
             }
+            // A member held for its next generation (D270 slice 3b), its owner's ask: held for
+            // the guest's signal connection.
+            kind::MEMBER_HOLD if matches!(from, From::Daemon(_)) => {
+                if let Ok(member) = <[u8; 4]>::try_from(message.payload.as_slice()) {
+                    let _ = workload::hold_member(to, u32::from_be_bytes(member));
+                }
+            }
+            // A member's next generation (D270 slice 3b), its owner's ask: its input's token
+            // minted where it has an input, then held for the guest's signal connection.
+            kind::MEMBER_START if matches!(from, From::Daemon(_)) => start_next(conn, to, &message.payload),
             // A lane to a socket of its run's own command (D251), its owner's ask: opened on a
             // thread of its own, its owner answered by the lane's number.
             kind::LANE_OPEN if matches!(from, From::Daemon(_)) => {
@@ -2162,6 +2172,56 @@ pub fn processes(link: &Link, records: &[u8]) {
 /// Gives the run's owner a member's end (D231), which only an owner that asked hears.
 pub fn member_ended(link: &Link, ended: &[u8]) {
     let _ = to_daemon(&link.daemon, kind::MEMBER_ENDED, ended, &[]);
+}
+
+/// Gives the run's owner what came of a member's next generation (D270 slice 3b), as its guest
+/// said it (`MEMBER_STARTED`).
+pub fn member_started(link: &Link, answer: &[u8]) {
+    let _ = to_daemon(&link.daemon, kind::MEMBER_STARTED, answer, &[]);
+}
+
+/// A member's next generation, its owner's `MEMBER_START` (D270 slice 3b): a flag, 1 where the
+/// member has an input, whose token this VM mints and registers as it minted its first's
+/// (capture.rs `next_input`), then the start as `run::members::Start` encodes it, its input
+/// none; held for the guest's signal connection. One this VM cannot give the guest is refused
+/// to its owner in the guest's answer's shape (`StartAnswer`, `Failed`), so that its owner
+/// waits on no answer that will not come.
+fn start_next(owner: &UnixStream, to: &'static ToGuest, payload: &[u8]) {
+    use shards_abi::run::members::{Start, StartAnswer, StartRefusal};
+    let refuse = |member: u32, generation: u32, why: String| {
+        let answer = StartAnswer {
+            member,
+            generation,
+            refused: Some((StartRefusal::Failed, why.into_bytes())),
+        };
+        if let Ok(bytes) = answer.encode() {
+            let _ = to_daemon(owner, kind::MEMBER_STARTED, &bytes, &[]);
+        }
+    };
+    let Some((&flag, rest)) = payload.split_first() else {
+        return refuse(0, 0, "an empty start".into());
+    };
+    let mut start = match Start::decode(rest) {
+        Ok(start) => start,
+        Err(e) => return refuse(0, 0, format!("a malformed start: {e}")),
+    };
+    if flag == 1 {
+        let token = owner
+            .try_clone()
+            .map_err(|e| format!("its owner's link: {e}"))
+            .and_then(|link| workload::capture::next_input(start.member, link));
+        match token {
+            Ok(token) => start.input = Some(token),
+            Err(e) => return refuse(start.member, start.generation, format!("its input: {e}")),
+        }
+    }
+    let held = start
+        .encode()
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| workload::start_member(to, &bytes).map_err(|e| e.to_string()));
+    if let Err(e) = held {
+        refuse(start.member, start.generation, format!("its guest: {e}"));
+    }
 }
 
 /// Gives the run's owner each move of its command's readiness under the nesting grant

@@ -772,6 +772,19 @@ pub mod kind {
     /// `shards_abi::rate::used` writes a use's answer. Told from another thread than the
     /// run's `DONE`, in no order with it: its owner reads both until the link closes.
     pub const FINAL_USE: u8 = 106;
+    /// Its owner → a VM, on its link (D270 slice 3b): member `member` (4, big-endian) is held
+    /// for its next generation, so that its current one's end keeps its server instance and
+    /// its namespaces: the VM holds the guest's `MEMBER_HOLD` for its signal connection.
+    pub const MEMBER_HOLD: u8 = 108;
+    /// Its owner → a VM, on its link (D270 slice 3b): a member's next generation,
+    /// `shards_abi::run::members::Start` as it encodes, its input's token none: the VM mints
+    /// one where the member has an input, as it minted its first's, and holds the guest's
+    /// `MEMBER_START` for its signal connection. Answered [`MEMBER_STARTED`].
+    pub const MEMBER_START: u8 = 109;
+    /// A VM → its owner (D270 slice 3b): what came of a [`MEMBER_START`], as its guest's
+    /// `MEMBER_STARTED` says it (`shards_abi::run::members::StartAnswer`), or the VM's own
+    /// refusal in that shape where it could not give the guest the start.
+    pub const MEMBER_STARTED: u8 = 110;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
