@@ -4079,7 +4079,16 @@ fn a_port_published_live_answers_and_is_gone_after_unpublish() {
 /// The lines a running member writes on `channel`, as they come, read on a thread of their own
 /// until its channel ends (its run's end): each sent on the receiver this returns.
 fn lines_of(guest: &dyn ImageGuest, channel: Channel) -> std::sync::mpsc::Receiver<String> {
-    let pipe = guest.take_output(&codex(), 0, channel).unwrap();
+    lines_of_member(guest, &codex(), channel)
+}
+
+/// [`lines_of`] member `member`.
+fn lines_of_member(
+    guest: &dyn ImageGuest,
+    member: &MemberName,
+    channel: Channel,
+) -> std::sync::mpsc::Receiver<String> {
+    let pipe = guest.take_output(member, 0, channel).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead as _;
@@ -4324,6 +4333,92 @@ fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
         shards_api::volumes::clear_volume(binary, &s.env, volume),
         Err(VolumeRefusal::Clear(ClearCause::Unknown, _))
     ));
+}
+
+/// P6.2 (D281): an agent's volume plugged with its bound into two members, each served by a
+/// share process of its own, is held to that bound in one count: each member's df says the
+/// bound as its volume's size; each fills a file of its own until a write is refused ENOSPC,
+/// the room the two share gone; and what both wrote stays within the bound together, where a
+/// count each would have let each fill it. It is listed with its bound and its count, which
+/// holds at least what its members wrote and never more than its bound.
+#[test]
+fn an_agents_volume_refuses_writes_past_its_bound() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-bound-vol-home");
+    let volume = "agent-b.cache";
+    // A whole number of every host's allocation unit (4 KiB on APFS, ext4 and NTFS, 16 KiB at
+    // most), so that df's size is the bound itself.
+    let bound: u64 = 4 << 20;
+    build(
+        &home,
+        "api-bound-vol:1",
+        &["plugged-bound", "/session/vol"],
+        "HARNESS claude FROM ./harness.tar\n",
+    );
+    let mut s = spec(&home, "api-bound-vol:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.plug_roots = vec!["/session".into()];
+    let guest = boot(&home, &s);
+    let members = [codex(), MemberName::harness("claude")];
+    let lines: Vec<_> = members
+        .iter()
+        .map(|m| lines_of_member(&*guest, m, Channel::Stdout))
+        .collect();
+    let plug = Plug {
+        source: PlugSource::Volume {
+            name: volume.into(),
+            bound: NonZeroU64::new(bound),
+        },
+        to: PlugFor::Every,
+        at: "/session/vol".into(),
+        read_only: false,
+        exec: true,
+    };
+    ask(&*guest, |g| g.plug(&plug, Duration::MAX)).unwrap();
+    let data = home.join("volumes").join(volume).join("_data");
+    std::fs::write(data.join("from-host"), "fill\n").unwrap();
+    let mut filled = 0u64;
+    for lines in &lines {
+        let seen = said_all(lines, &["holding /session/vol".to_string()]);
+        let said = |what: &str| {
+            seen.iter()
+                .find_map(|l| {
+                    l.strip_prefix(&format!("/session/vol {what} "))
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| panic!("no {what} in {seen:?}"))
+        };
+        let df = said("statfs");
+        let (size, _room) = df.split_once(' ').unwrap();
+        assert_eq!(size.parse::<u64>().unwrap(), bound, "its df's size: {seen:?}");
+        let fill = said("filled");
+        let (bytes, errno) = fill.split_once(" errno ").unwrap();
+        assert_eq!(errno, "28", "refused ENOSPC: {seen:?}");
+        filled += bytes.parse::<u64>().unwrap();
+    }
+    assert!(
+        filled > 0 && filled < bound,
+        "both together within the bound: {filled} of {bound}"
+    );
+    let on_host: u64 = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("fill-"))
+        .map(|e| e.metadata().unwrap().len())
+        .sum();
+    assert_eq!(on_host, filled, "what its members were told they wrote");
+    let listed = shards_api::volumes::volumes(s.binary.as_deref(), &s.env).unwrap();
+    let found = listed.iter().find(|v| v.name == volume).unwrap();
+    assert_eq!(found.bound, Some(bound));
+    let charge = found.charge.unwrap();
+    assert!(
+        charge >= filled && charge <= bound,
+        "its count {charge} of {bound}, {filled} written"
+    );
+    guest.stop().unwrap();
 }
 
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked

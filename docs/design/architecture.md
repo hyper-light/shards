@@ -38539,6 +38539,101 @@ daemon's run as an orchestrator's.**
   `InUse` by `clear_volume` while it runs and cleared once it stops; the same for a volume
   `shards plug volume` plugged into it.
 
+**Amended (lane vol-bound-2, 2026-11-16): slices 2 to 5 built, written and not run.** ROOT's
+answers to slice 1's questions: one count per volume, shared by its many holders' servers, not a
+volume held by one run; an atomic count in a small file mapped beside the volume, changed without
+a lock; walked by the first holder, found by a non-blocking exclusive try. Its cost against a lock
+per change is ROOT's to measure (R14).
+- *Slice 2, the count.*
+  - It is the first 8 bytes of `volumes/.NAME.charge`, a page long: a shared mapping maps whole
+    pages (`platform::page_size`). Every share process serving the volume maps it shared
+    (`fs::bound::mapped`; mmap(2) `MAP_SHARED` on Unix, a section and its view on Windows, the
+    platform seam's `map_file_shared`, R12). Never removed, as its lock file is not.
+  - Each change is one compare-and-swap of that word, never a lock. A change that takes room
+    takes it before it is made (`Bound::reserve`, `reserve_write`), all of it or none, so no two
+    servers' changes together pass the bound. What it did not use goes back as it ends
+    (`Taken`): a write cut short, a name whose making failed, a growth its host refused. Relaxed
+    atomics: the word orders nothing else, and its changes are in one order in every process.
+  - The first holder walks. Each run's hold of a volume it serves (`Holds::count`, a daemon's
+    or an orchestrator's) opens its count file and tries it exclusive, never waiting. Alone, it
+    sets the bound asked (slice 3) and, where the volume is bounded, walks its files
+    (`server::charge_of_dir`) and writes the count before any server serves them. Then it holds
+    the file shared for its run's life, as every holder does, waiting only while a first holder
+    walks (the kernel's lock wakes it; nothing polls). So what a crashed holder, a share process
+    killed before its guest's RELEASEs, or a change made on the host left in the count lasts
+    until the volume's next first holder. A file shorter than a page was never counted: a walker
+    that died before writing leaves it so, and the next holder to find it so walks again.
+  - Why a lock file of its own: a walk under `.NAME.lock` would refuse plugs that come meanwhile
+    as "being cleared", which that lock refuses at once. No lock is converted: flock(2)'s
+    conversion results "in the previous lock being released and the new lock applied (possibly
+    after other processes have gained and released the lock)" (macOS flock(2), read on this
+    Mac), and std's `File::unlock` on Windows calls UnlockFile twice, letting go of an exclusive
+    and a shared hold together (library/std/src/sys/fs/windows.rs, Rust 1.94.1). A first
+    holder lets go of its exclusive hold, then takes a shared one; one that slips in between
+    walks again, which errs nothing, as no server serves while a holder holds it exclusive.
+  - A server takes its count with its bound (`Server::bound(limit, count)`); the walk is no
+    longer a server's.
+- *Slice 3, wiring.*
+  - The store takes `size`, read as go-units' RAMInBytes (`Volume::bound`): `validate_options`
+    no longer refuses it. A volume whose only option is its size mounts its own files.
+  - A volume's bound changes only while none holds it. Its first holder sets the bound it asks
+    (opts.json, under the store's lock). One asked while it is held with another is refused
+    ("its bound changes only while no run holds it"; a plug's `PlugRefusal::Volume`).
+  - `volumes::open_for` counts each named volume it serves and gives each bounded one's share its
+    bound (`Opened::bounds`). The share process takes `--bound SHARE BYTES COUNT-FILE` for each
+    bounded share and maps its count (share.rs). The daemon's starts and visits
+    (`start_shares`), `shards plug volume`, and the run host's boots, warm hosts and plugs pass
+    them.
+  - shards-api: `PlugSource::Volume { name, bound }`, an agent's admitted `disk_bytes`. The
+    volume is made with it, or set to it where none holds it; none keeps its own. The image
+    channel's `PlugFrom::Volume` carries it (version 46).
+  - Refused: a size on an anonymous volume ("a bound (size) is held for a named volume alone":
+    it keeps no count file, as it keeps no lock file); a bounded volume's file alone; a bounded
+    volume in a run joining another's network, whose join share holds no bound.
+- *Slice 4, the listing.* `HomeVolume::bound` and `charge` (api-volumes answers version 3; each
+  volume at least 23 bytes). Its charge is the count while a run holds it bounded; otherwise it
+  is walked, the count file held alone and the count written as a first holder writes it, so a
+  holder that waited meanwhile finds it counted. moby's `bytes` are kept beside it.
+- *Slice 5.* api_image.rs `an_agents_volume_refuses_writes_past_its_bound`: a volume plugged
+  with its bound into two members, each served by its own share process; each member's df says
+  the bound; each fills its own file until ENOSPC; both together stay within the bound; the
+  listing says the bound and a count between what they wrote and the bound. The test guest's
+  `plugged-bound DEST` is its member.
+- *Gaps, stated.*
+  - Two servers changing one file's length at once each count from the length they saw, so the
+    count drifts by what the other changed, either way. Two members racing writes and
+    truncations of one file could pass the bound by each race's drift. Exact across servers
+    needs one file's changes serialized across processes (a lock per bounded length change),
+    whose cost is the one ROOT measures against the atomic count (R14). The next first holder's
+    walk corrects the count.
+  - A removed file a guest held open, its share process ended without its RELEASEs (a killed
+    microVM), keeps its charge until the next first holder: it errs high.
+  - Windows, unverified: a one-page view in a placeholder (`map_file_shared`), and a count file
+    mapped by servers while its holders hold LockFileEx's byte-range locks on it, which bind
+    ReadFile and WriteFile; whether a view's paging I/O is held to them is unread.
+  - Unmeasured, ROOT's (R14): the compare-and-swap under contention, the walk's cost on a
+    first hold and on each listing, the measure's distance from du.
+- No literal (R03): the count file's length is the host's page; the bound is its caller's;
+  `--bound`'s numbers are a share's place and its caller's bytes.
+- **Tests** (written, not run: the person's rule of 2026-11-16):
+  - vmm `fs::bound`: `what_is_taken_first_goes_back_unless_kept`,
+    `the_servers_of_a_volume_share_one_count`,
+    `a_count_file_is_written_once_and_shared_by_its_mappings`, and slice 1's four on a shared
+    count.
+  - vmm `fs::server`: `the_servers_of_one_volume_charge_one_count`, and slice 1's three, bounded
+    after `charge_of_dir`.
+  - The binary's `volumes`: `a_volumes_size_is_its_bound`,
+    `a_volumes_first_holder_counts_it_and_the_others_share_its_count`,
+    `a_starts_bounded_volume_is_served_with_its_bound`. Its `share`:
+    `bounds_go_to_the_shares_they_name`. Its `api_volumes`:
+    `a_volume_is_listed_with_its_bound_and_its_count`. The run host's
+    `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots`: a bounded
+    plug, and another bound refused while it is held.
+  - shards-api: wire `plugs_round_trip_and_bad_ones_are_refused` (a bound), volumes
+    `a_homes_volumes_read_back_as_they_were_answered` (a bound and a charge, the charge's flag).
+  - Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
+    `an_agents_volume_refuses_writes_past_its_bound`.
+
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
