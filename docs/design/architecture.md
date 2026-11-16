@@ -13064,7 +13064,7 @@ children, the first reading of the failure.
   look (`Party::look`) that finds a process of its party live and nothing else (`Still`)
   while a run of its home is within its grace finds it `Held`: the daemon's own deadline.
   Past the grace it is judged as before, a whole W* without progress refused. Part 10 keeps
-  a run's log's next try so too (`ship.retry`).
+  a run's log's next try so too (`ship.retry`), for a wait on that log's delivery alone.
 - *R03.* No literal: the grace is the run's own or the daemon's default, the deadline the
   daemon itself acts at. The clock is the system clock, the one std reads alike in two
   processes on every OS; a step of it moves the hold by the step. A grace that cannot be
@@ -13312,8 +13312,9 @@ batch 26 brief)
   condition wait (`sample`, adas-mac-studio-3.local, f749bf9fb's build). So no housekeeping
   of the daemon's is counted as a wait's progress.
 
-**Part 10: a log's next try is its daemon's own deadline too** (#77, 2026-11-16; goal
-fb3528f9, the syslog-wait lane, on the shards-green lane's root cause). HVF at 6f5755ae1
+**Part 10: a log's next try is its daemon's own deadline for that log's delivery** (#77,
+2026-11-16; goal fb3528f9, the syslog-wait lane, on the shards-green lane's root cause;
+scoped the same day by ROOT's ruling, the syslog-scope lane). HVF at 6f5755ae1
 (adas-mac-studio.local-2, macOS 26.4 arm64): containers.rs
 `a_runs_log_is_sent_to_syslog_as_its_options_say` failed 2 of 2, once with `--nocapture`, at
 its step "a server that comes up only after the run". Its wait for the server's first
@@ -13329,51 +13330,79 @@ comes to made no progress for 399 ms, past the slowest answer of its kind seen o
 - *The rule.* Through each pause before its next try, a shipper keeps `ship.retry` in its
   run's directory (`shards_ipc::RETRY`): the try's time, written and removed as
   `stop.grace` is (nanoseconds since the Unix epoch, written whole, removed by its guard's
-  drop as the pause ends or as the daemon stops). It reuses Part 6's mechanism (R12): one
-  guard keeps both files (daemon.rs `Deadline`, which was `Grace`), and one writer and one
-  reader serve both (`shards_ipc::deadline_text` and `deadline_in`, which were `grace_text`
-  and `grace_until`). Each deadline has a file of its own: a run in its stop grace may
-  have a shipper paused too, and one guard's drop must not end the other's hold. The
-  judge's look (`Party::look`, through `Party::graced`) takes the deadline of its home's
-  runs that has longest to go, of either kind, and its account says which ("its daemon in
-  run …'s log's pause before its next try, … more"). Past the deadline it is judged as
-  before. Its last `Held` look restarts the window, so a whole W* without progress past the
+  drop as the pause ends or as the daemon stops), and on the line after it the destination
+  the pause holds up (`logging::destination`): the run's option that addresses its
+  receiver, `KEY=VALUE` as given (`syslog-address=tcp://127.0.0.1:514`), else its driver's
+  name. The run is the directory's. It reuses Part 6's mechanism (R12): one guard keeps both
+  files (daemon.rs `Deadline`, which was `Grace`, writing a destination where it is given
+  one and `stop.grace` none), and one writer and one reader serve both
+  (`shards_ipc::deadline_text` and `deadline_in`, which were `grace_text` and
+  `grace_until`). Each deadline has a file of its own: a run in its stop grace may have a
+  shipper paused too, and one guard's drop must not end the other's hold.
+- *Its scope* (ROOT's ruling, 2026-11-16). A pause holds up the delivery of its run's log
+  to its destination and nothing else, so it holds only a wait on that delivery: a test
+  waiting for its log line to arrive at a log server. Such a wait names the delivery it
+  reads (`Wait::delivery_to`, `Patience::delivery_to`: the destination as the run's options
+  name it), as containers.rs' `accept_within` does for each log server's first connection
+  (syslog over TCP and TLS, the server up only after its run, the restarted daemon's; gelf
+  and fluentd over TCP). The judge's look (`Party::look`, through `Party::graced`) holds
+  such a wait while a run of its home keeps a `ship.retry` naming that destination, compared
+  whole, and its account says so ("its daemon in run …'s log's pause before its next try to
+  syslog-address=…, … more"). Every other wait on that daemon is judged on its own
+  evidence, as before 03c0b8603, which held them all: a stall elsewhere in a daemon whose
+  shipper retries is refused. A run's stop grace (Part 6) is unchanged: a deadline of the
+  whole stop, it holds every wait on the daemon. Past a deadline a wait is judged as before.
+  Its last `Held` look restarts the window, so a whole W* without progress past the
   deadline is refused; the shipper wakes at the deadline and connects.
 - *R03.* No literal: the deadline is the pause the shipper takes (`RETRY_FIRST`, growing by
-  half to `RETRY_MOST`, D163's sources), read on the system clock as Part 6's is. A deadline
-  that cannot be kept (its run's directory gone, a write that fails) is said in the daemon's
-  log and keeps no hold: that wait is judged as before. A daemon killed in a pause leaves
-  its file, which holds a wait only until the deadline it names (`RETRY_MOST` at most), as
-  a stop grace's file does. Its cost, a write, a rename and a remove a pause, is unmeasured
-  (R14, ROOT's).
-- *What it leaves.* A shipper whose receiver never comes back keeps a deadline at every
-  pause, and each try between pauses is its progress. So a wait on its home's daemon is
-  never refused while that shipper retries, whatever else of the daemon stalls: ROOT's rule
-  of ecc4810a9 (a party asleep on a deadline of its own has not stalled before it) taken
-  whole. Before, such a wait was judged within each pause longer than W*, where a stall
-  elsewhere in the daemon was refused. The drivers' own pauses within a send are deadlines
-  of their own too, and are not kept: fluentd's `fluentd-retry-wait`, gelf's reconnect
-  delay, and a stream's wait for its receiver's delivery window (stream.rs
-  `await_delivery`). None was seen refused, and none is changed (R09). On Windows the
-  shipper's `Wait::pause` does not go through `timed`, so the in-process registry misses it
-  in the daemon's own unit tests. That was read in the code alone, not reproduced, and is
-  not changed.
+  half to `RETRY_MOST`, D163's sources), read on the system clock as Part 6's is. The
+  destination is the run's own option; the keys it is read from are moby's drivers' own
+  address options (`syslog-address`, `gelf-address`, `fluentd-address`, `splunk-url`,
+  `awslogs-endpoint`, `gcp-endpoint`, each in its module's `OPTIONS`). A deadline that
+  cannot be kept (its run's directory gone, a write that fails) is said in the daemon's log
+  and keeps no hold: that wait is judged as before. A daemon killed in a pause leaves its
+  file, which holds a wait on its delivery only until the deadline it names (`RETRY_MOST` at
+  most), as a stop grace's file does. A `ship.retry` that names no destination (a daemon of
+  03c0b8603's build) holds no wait. Its cost, a write, a rename and a remove a pause, is
+  unmeasured (R14, ROOT's).
+- *What it leaves.* A wait on a delivery its shipper never makes (its server up, yet
+  unreachable to the shipper) is held through every pause, each try between them its
+  progress, as its test's server is the receiver the retries are for: such a wait ends with
+  its test, not its judge. Waits that read a delivery without naming it are judged as before
+  03c0b8603: a log server's reads after its first connection (`Following::of_home`) and a
+  UDP server's datagrams (`received`). None was seen refused in a pause, and none is changed
+  (R09). The drivers' own pauses within a send are deadlines of their own too, and are not
+  kept: fluentd's `fluentd-retry-wait`, gelf's reconnect delay, and a stream's wait for its
+  receiver's delivery window (stream.rs `await_delivery`). None was seen refused, and none
+  is changed (R09). On Windows the shipper's `Wait::pause` does not go through `timed`, so
+  the in-process registry misses it in the daemon's own unit tests. That was read in the
+  code alone, not reproduced, and is not changed.
 - *Held by* (written, not run: the person's rule of 2026-11-16 leaves every test to ROOT):
-  daemon/ship.rs `a_shippers_pause_before_its_next_try_is_its_daemons_deadline`, a send
-  always refused, tried as a shipper tries it. Its run's directory keeps the pause's end: a
-  first pause or more past the first refusal, and no more than the tries' pause past its
-  read. None is kept once the daemon stops. Its reds, expected and unrun: the guard removed
-  (no deadline through two pauses), or its drop (the deadline kept past the wait). Also
-  tests/harness.rs `a_logs_next_try_is_its_daemons_and_not_refused`, Part 6's test with its
-  deadline `ship.retry` (its red, expected and unrun: `graced`'s `RETRY` arm removed,
-  refused before the deadline).
-  Owed (ROOT): those two, `SHARDS_HELPERS=skip cargo test -p shards --profile test-release
-  --bin shards -- daemon::ship::tests::a_shippers_pause_before_its_next_try_is_its_daemons_deadline`
-  and `cargo test -p shards --profile test-release --test harness --
-  a_logs_next_try_is_its_daemons_and_not_refused a_runs_stop_grace_is_its_daemons_and_not_refused`,
-  each red with its guard removed; and `cargo test -p shards --profile test-release --test
-  containers -- --exact a_runs_log_is_sent_to_syslog_as_its_options_say` on HVF, KVM and
-  WHP.
+  daemon/ship.rs `a_shippers_pause_before_its_next_try_is_its_daemons_deadline`, a send to a
+  destination always refused, tried as a shipper tries it. Its run's directory keeps the
+  pause's end and that destination: a first pause or more past the first refusal, and no
+  more than the tries' pause past its read. None is kept once the daemon stops. Its reds,
+  expected and unrun: the guard removed (no deadline through two pauses), its drop (the
+  deadline kept past the wait), or its destination left out ("not the destination it holds
+  up"). logging.rs `a_runs_log_goes_where_its_address_option_says`: the destination as
+  given, the last of its key's, else the driver's name. tests/harness.rs
+  `a_logs_next_try_holds_a_wait_on_its_delivery`, Part 6's test with its deadline
+  `ship.retry` naming a server, 20 W* away, and its wait that server's delivery: held until
+  the deadline, refused once past it (its red, expected and unrun: `graced`'s `RETRY` arm
+  removed, or its destination compared to another's, refused before the deadline); and
+  `a_logs_next_try_holds_no_other_wait_on_its_daemon`, the same deadline as far away as a
+  refusal past one is waited for, and a wait on no delivery, then one on another server's:
+  each refused before it (its red, expected and unrun: `graced` holding every wait by
+  `RETRY`, as at 03c0b8603, or a wait on any delivery whatever its destination).
+  Owed (ROOT): `SHARDS_HELPERS=skip cargo test -p shards --profile test-release --bin shards
+  -- daemon::ship::tests::a_shippers_pause_before_its_next_try_is_its_daemons_deadline
+  logging::tests::a_runs_log_goes_where_its_address_option_says` and `cargo test -p shards
+  --profile test-release --test harness -- a_logs_next_try_holds
+  a_runs_stop_grace_is_its_daemons_and_not_refused`, each red as said; and `cargo test -p
+  shards --profile test-release --test containers -- --exact
+  a_runs_log_is_sent_to_syslog_as_its_options_say
+  a_runs_log_is_sent_to_gelf_as_its_options_say
+  a_runs_log_is_sent_to_fluentd_as_its_options_say` on HVF, KVM and WHP.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -17888,8 +17917,9 @@ and the way every later one sends.
   - the VM, its guest and its run reach no network for their log;
   - a server that is slow or down holds up nothing but its own sending, retried after
     1 s, half as long again each time, at most 60 s (fluent-logger-golang's waits, through
-    which moby's fluentd driver sends), each pause's end kept in the run's directory as the
-    daemon's own deadline (`ship.retry`, D209 Part 10);
+    which moby's fluentd driver sends), each pause's end kept in the run's directory, with
+    where it sends, as the daemon's own deadline for a wait on that delivery (`ship.retry`,
+    D209 Part 10);
   - a run starts whether or not its server is up, where Docker's would not start;
   - what is not yet sent waits in the store, bounded as the store is, and survives the
     daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next

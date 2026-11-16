@@ -1301,19 +1301,19 @@ struct Stop {
 
 /// A deadline of the daemon's own, kept in a run's directory until it is dropped: the run's
 /// stop grace (`shards_ipc::GRACE`), from its stop signal until its SIGKILL or its end; and
-/// its log's shipper's next try (`shards_ipc::RETRY`), through the pause before it. So a
-/// wait on the daemon can tell the deadline from a stall, as nothing need run before it
-/// (D209).
+/// its log's shipper's next try (`shards_ipc::RETRY`), through the pause before it, naming
+/// the destination it holds up. So a wait on the daemon, or on that delivery, can tell the
+/// deadline from a stall, as nothing need run before it (D209).
 struct Deadline(PathBuf);
 
 impl Deadline {
-    /// The deadline `name` of the run whose directory is `dir`, `after` from now; none where
-    /// it cannot be kept, which the log says.
-    fn begin(dir: &Path, name: &str, after: Duration) -> Option<Deadline> {
+    /// The deadline `name` of the run whose directory is `dir`, `after` from now, of `of`
+    /// where it names what it holds up; none where it cannot be kept, which the log says.
+    fn begin(dir: &Path, name: &str, after: Duration, of: Option<&str>) -> Option<Deadline> {
         let file = dir.join(name);
         let kept = std::time::SystemTime::now()
             .checked_add(after)
-            .and_then(shards_ipc::deadline_text)
+            .and_then(|until| shards_ipc::deadline_text(until, of))
             .ok_or_else(|| io::Error::other("its end past the system clock's reach"))
             .and_then(|text| keep_whole(&file, text.as_bytes()));
         match kept {
@@ -7670,7 +7670,7 @@ impl<D: Disk> Daemon<D> {
                         let dir = lock(&self.containers).dir(&id);
                         (
                             grace.and_then(|grace| now.checked_add(grace)),
-                            grace.and_then(|grace| Deadline::begin(&dir, shards_ipc::GRACE, grace)),
+                            grace.and_then(|grace| Deadline::begin(&dir, shards_ipc::GRACE, grace, None)),
                         )
                     }
                     // A signal Linux has no number for cannot be sent: SIGKILL at once.
@@ -14013,7 +14013,7 @@ mod tests {
             let (_stop, stopped) = UnixStream::pair().unwrap();
             // Its run ended once it has answered or follows: one that followed it ends Ok.
             let (shipped, _) = asked_while_running(t, &id, &vm, starting, || {
-                t.daemon.ship(&id, &dir, &mut Taking, true, &stopped)
+                t.daemon.ship(&id, &dir, "taking", &mut Taking, true, &stopped)
             });
             let Err(e) = shipped else {
                 panic!("a shipper followed its log unwatched");

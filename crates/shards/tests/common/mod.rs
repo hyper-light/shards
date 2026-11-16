@@ -2482,6 +2482,13 @@ impl Patience {
         }
     }
 
+    /// It as a wait on the delivery of a run's log to `to` ([`Wait::delivery_to`]): a log
+    /// server's wait for a run's lines.
+    pub fn delivery_to(mut self, to: &str) -> Patience {
+        self.wait.party.delivery = Some(to.to_string());
+        self
+    }
+
     /// Whether to look again: while its judge holds it and its party lives; once either
     /// refuses it, once more, the look after this one, and then no more, its account said on
     /// stderr. Ask it after each look that found the state not yet come, as often as they
@@ -3522,6 +3529,9 @@ pub struct Party {
     /// for its account: which of them a refusal's last progress was (b24: a run's VM
     /// process, its daemon's spawner's child, told from the client's by its name alone).
     kin: std::collections::BTreeMap<u32, (u32, String)>,
+    /// The destination of the delivery of a run's log its wait reads, as the run's options
+    /// name it ([`Wait::delivery_to`]); none for a wait on anything else.
+    delivery: Option<String>,
 }
 
 /// Process `pid`'s status as its OS gives it: Linux its `/proc/<pid>/stat` state (field 3,
@@ -3642,8 +3652,9 @@ pub struct Looked {
     pub daemon_ran: Option<String>,
     /// Whether it saw its party's own processes run or rest unheld: none of them held from
     /// running, stopped, starved of a CPU (`shards_api::Watch::starved`), ending or found
-    /// anew, its daemon within no deadline of its own ([`Party::graced`]: a run's stop grace,
-    /// a log's next try), its daemon saying nothing (words are
+    /// anew, its daemon within no deadline of its own that holds it ([`Party::graced`]: a
+    /// run's stop grace, a log's next try to the destination it reads), its daemon saying
+    /// nothing (words are
     /// progress its CPU does not show), and no progress of this process's servers', which it
     /// may be waiting on. Only such looks' windows are its judge's rate's
     /// (`shards_api::Span::work`, D215).
@@ -3695,6 +3706,7 @@ impl Party {
             beside: None,
             served: None,
             kin: std::collections::BTreeMap::new(),
+            delivery: None,
         }
     }
 
@@ -3777,8 +3789,9 @@ impl Party {
     /// D215's look finds `Still` on Linux and a test's wait counts as its host's hold: a kiln
     /// runner's headroom guard suspends a run's processes as it paces them (ROOT,
     /// 2026-11-13); or, a process of it live, held where its daemon is within a deadline of
-    /// its own, a run of its home in its stop grace or its log's shipper paused until its
-    /// next try ([`graced`](Self::graced)); else still; and gone where no process of it runs and its daemon said
+    /// its own that holds it, a run of its home in its stop grace or, for a wait on the
+    /// delivery of a run's log, that run's shipper paused until its next try there
+    /// ([`graced`](Self::graced)); else still; and gone where no process of it runs and its daemon said
     /// nothing, its liveness ended. A process found anew is judged from the look after. A
     /// machine of this process's is never gone: its liveness is its caller's. Its daemon's own
     /// run is said apart ([`Looked::daemon_ran`]), its waiter's to weigh. A look that found
@@ -3969,32 +3982,35 @@ impl Party {
         looked
     }
 
-    /// The deadline of its home's daemon that has longest to go: the run it is of, what it
-    /// is, and how long. The daemon keeps each in its run's directory while it holds, and
-    /// before it nothing need run, so none is a stall (D209): a run's stop grace
+    /// The deadline of its home's daemon that holds it and has longest to go: the run it is
+    /// of, what it is, and how long. The daemon keeps each in its run's directory while it
+    /// holds, and before it nothing need run, so none is a stall (D209): a run's stop grace
     /// (`shards_ipc::GRACE`), its SIGKILL, before which the daemon and that run may run
-    /// nothing at all, as a command that ignores its stop signal keeps them; and its log's
-    /// shipper's next try (`shards_ipc::RETRY`), before which the shipper sleeps, its
-    /// receiver having failed it, as a server not yet up does. None past every one, nor
-    /// where none is kept.
-    fn graced(&self) -> Option<(String, &'static str, Duration)> {
+    /// nothing at all, as a command that ignores its stop signal keeps them, which holds
+    /// every wait on the daemon; and a run's log's shipper's next try (`shards_ipc::RETRY`),
+    /// before which the shipper sleeps, its receiver having failed it, as a server not yet
+    /// up does, which holds up the delivery to the destination it names alone, and so holds
+    /// only a wait on that delivery ([`delivery`](Self::delivery), Part 10). None past every
+    /// one, nor where none is kept.
+    fn graced(&self) -> Option<(String, String, Duration)> {
         let now = std::time::SystemTime::now();
-        let deadlines = [
-            (shards_ipc::GRACE, "stop grace"),
-            (shards_ipc::RETRY, "log's pause before its next try"),
-        ];
         std::fs::read_dir(self.home.as_ref()?.join("containers"))
             .ok()?
             .filter_map(Result::ok)
             .flat_map(|run| {
-                deadlines.map(|(name, what)| {
-                    let left = shards_ipc::deadline_in(&run.path(), name)?
-                        .duration_since(now)
-                        .ok()?;
-                    Some((run.file_name().to_string_lossy().into_owned(), what, left))
-                })
+                let dir = run.path();
+                let grace = shards_ipc::deadline_in(&dir, shards_ipc::GRACE)
+                    .map(|(due, _)| (due, "stop grace".to_string()));
+                let retry = shards_ipc::deadline_in(&dir, shards_ipc::RETRY).and_then(|(due, to)| {
+                    let to = to.filter(|to| self.delivery.as_ref() == Some(to))?;
+                    Some((due, format!("log's pause before its next try to {to}")))
+                });
+                let name = run.file_name().to_string_lossy().into_owned();
+                [grace, retry]
+                    .into_iter()
+                    .flatten()
+                    .filter_map(move |(due, what)| Some((name.clone(), what, due.duration_since(now).ok()?)))
             })
-            .flatten()
             .max_by_key(|(_, _, left)| *left)
     }
 
@@ -4712,6 +4728,15 @@ impl Wait {
         let mut wait = Wait::on(kind, Party::client(client, home), asked);
         wait.command = true;
         wait
+    }
+
+    /// It as a wait on the delivery of a run's log to `to`, the destination as the run's
+    /// options name it (`logging::destination`: `syslog-address=tcp://127.0.0.1:514`): a
+    /// pause of that run's shipper before its next try there holds it, and holds no other
+    /// wait (`shards_ipc::RETRY`, D209 Part 10).
+    pub fn delivery_to(mut self, to: &str) -> Wait {
+        self.party.delivery = Some(to.to_string());
+        self
     }
 
     /// A wait beginning now on `party`, `asked` naming what it waits for.
