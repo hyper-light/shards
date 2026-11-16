@@ -10,9 +10,10 @@
 //! One change of a shared network at a time in this process ([`TURN`]): a member's grant made
 //! by its run's host, then each other run of this process's on the network told its members
 //! again (`Rejoin`), and, where the run is new to the network, each linked to it, its own
-//! members having been told theirs as it joined. A run that has ended is let go of at its
-//! network's next change: its link went with its network process, so nothing reaches it
-//! meanwhile.
+//! members having been told theirs as it joined. A run whose host has gone is let go of at
+//! once, each other run on its networks told its members again without it ([`host_gone`],
+//! D285 slice 6): its link went with its network process, whose peers withdrew its names as it
+//! closed, and its leases with its host.
 
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -144,6 +145,34 @@ pub(super) fn disconnect(
         }
     }
     Ok(changed.networks)
+}
+
+/// The run `shared`, whose host has gone, let go of on every shared network of this
+/// process's it was on, and each other run there told its members again at once (D285 slice
+/// 6): its leases went with its host, let go by their own drop or by the kernel at its end,
+/// so that the others' hosts, reading the leases, tell its names to no one; never left to the
+/// network's next change. Called by its host's watcher once the host is reaped, which nothing
+/// else waits on: each run told with no clock, until its host answers, its run ends or its
+/// host is gone. Its tellings need no turn of a change's ([`TURN`]): each tells a run the
+/// network whole, as the leases stand as its host reads them, so any order of them leaves the
+/// last read standing.
+pub(super) fn host_gone(shared: &Arc<Shared>) {
+    let on: Vec<String> = lock(&ON)
+        .0
+        .iter()
+        .filter(|l| {
+            l.runs
+                .iter()
+                .any(|r| std::ptr::eq(r.shared.as_ptr(), Arc::as_ptr(shared)))
+        })
+        .map(|l| l.id.clone())
+        .collect();
+    for id in on {
+        lock(&ON).unregister(shared, &id);
+        for (other, _) in others(shared, &id) {
+            told_again(&other, &id, Duration::MAX);
+        }
+    }
 }
 
 impl Linking {
@@ -327,6 +356,37 @@ mod tests {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         );
         assert_eq!(token(), t);
+    }
+
+    /// D285 slice 6. Do: register runs a and b on a network, a's host a pipe this test reads;
+    /// have b's host go (`host_gone`), on a thread of its own, as b's watcher does; read what a's
+    /// host was asked, then end a's run. Expect: b let go of at once; a asked to be told the
+    /// network's members again (`Rejoin` of that network), with no clock, its wait ended by
+    /// its run's end, which lets it go too.
+    #[test]
+    fn a_run_whose_host_has_gone_is_let_go_and_the_others_told_at_once() {
+        let (a, b) = (run(), run());
+        let id = "e".repeat(64);
+        let (mut asked, to_a) = std::io::pipe().unwrap();
+        *lock(&a.to_host) = Some(to_a);
+        lock(&ON).register(&a, 1, &id, Ipv4Addr::new(10, 89, 0, 2));
+        lock(&ON).register(&b, 2, &id, Ipv4Addr::new(10, 89, 0, 3));
+        let gone = b.clone();
+        let telling = std::thread::spawn(move || host_gone(&gone));
+        let (kind, payload) = wire::read_frame(&mut asked).unwrap().unwrap();
+        assert_eq!(kind, wire::to_host::NET);
+        assert_eq!(
+            wire::NetAsk::decode(&payload).unwrap().change,
+            wire::NetChange::Rejoin { network: id.clone() }
+        );
+        assert!(!registered(&b, &id), "b let go of at once");
+        lock(&a.state).end = Some(wire::RunEnded::unused(
+            wire::RunEnd::Stopped,
+            wire::Unused::Killed,
+        ));
+        a.changed.notify_all();
+        telling.join().unwrap();
+        assert!(!registered(&a, &id), "a, ended as it was asked, let go of too");
     }
 
     /// Do register two runs on a network, look for each one's others, have one's host say its

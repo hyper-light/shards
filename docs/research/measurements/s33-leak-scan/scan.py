@@ -181,8 +181,9 @@ class Runs:
     def __init__(self, units, windows, width):
         unit = b"".join(b"[" + b"".join(re.escape(bytes([c])) for c in sorted(u)) + b"]" for u in units)
         self.start = re.compile(b"(?:" + unit + b"){%d}" % RUN)
-        page_units = max(1, mmap.PAGESIZE // len(units))
-        self.page = page_units * len(units)
+        self.units = len(units)
+        page_units = max(1, mmap.PAGESIZE // self.units)
+        self.page = page_units * self.units
         self.more = re.compile(b"(?:" + unit + b"){0,%d}" % page_units)
         self.windows = windows
         self.width = width
@@ -192,7 +193,9 @@ class Runs:
 
     def regions(self, buf, lo, hi):
         """Each (start, end) of a run in `buf[lo:hi]`, in order, as one unbounded match would
-        span it."""
+        span it. A run that reaches `hi` with less than a unit left takes what is left too: a
+        UTF-16LE run paired from the parity that leaves its last byte alone at `hi` (a file's
+        end, a range read from beside a hole) would otherwise lose the window ending there."""
         pos = lo
         while True:
             found = self.start.search(buf, pos, hi)
@@ -205,6 +208,8 @@ class Runs:
                 end = step
                 if not whole:
                     break
+            if hi - end < self.units:
+                end = hi
             yield start, end
             pos = end
 
@@ -290,14 +295,33 @@ def files(paths):
 
 def extents(f, size, zeros):
     """Each (start, end) of `f` to read, in order: its data, where its file system says it lies
-    (lseek(2)'s SEEK_DATA and SEEK_HOLE), each widened by the `zeros` bytes of the holes beside
-    it that a finding can take. A hole is zeros alone, which hold no finding but at its ends;
-    it is whole blocks of its file system, longer than the twice `zeros` (2 * 2 * RUN at most)
-    that would make two widened ranges meet. The whole file where `zeros` is None or the
-    system cannot say (Windows, a file system without them)."""
+    (`data`), each widened by the `zeros` bytes of the holes beside it that a finding can take,
+    and those that then meet joined. A hole is zeros alone, which hold no finding but at its
+    ends. Two of lseek(2)'s data ranges never meet: a hole parts them. Windows' allocated
+    ranges are not said to be given joined where they touch, and a window across where two
+    touch lies in neither. The whole file where `zeros` is None or the system cannot say."""
     whole = [(0, size)]
-    if zeros is None or not hasattr(os, "SEEK_DATA"):
+    found = None if zeros is None else data(f, size)
+    if found is None:
         return whole
+    joined = []
+    for start, end in found:
+        start, end = max(0, start - zeros), min(size, end + zeros)
+        if joined and start <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], end))
+        else:
+            joined.append((start, end))
+    return joined
+
+
+def data(f, size):
+    """Each (start, end) of `f`'s first `size` bytes that its file system holds data in, in
+    order; None where it cannot say: lseek(2)'s SEEK_DATA and SEEK_HOLE, or on Windows, which
+    has neither, its allocated ranges (`allocated`)."""
+    if os.name == "nt":
+        return allocated(f, size)
+    if not hasattr(os, "SEEK_DATA"):
+        return None
     found = []
     at = 0
     while at < size:
@@ -308,8 +332,81 @@ def extents(f, size, zeros):
             # ENXIO: no data past `at`.
             if e.errno == errno.ENXIO:
                 break
-            return whole
-        found.append((max(0, start - zeros), min(size, end + zeros)))
+            return None
+        found.append((start, end))
+        at = end
+    return found
+
+
+# winioctl.h's CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 51, METHOD_NEITHER, FILE_READ_DATA), and
+# winerror.h's ERROR_MORE_DATA.
+FSCTL_QUERY_ALLOCATED_RANGES = 0x940CF
+ERROR_MORE_DATA = 234
+
+
+def ioctl():
+    """Windows: kernel32's DeviceIoControl, its arguments typed, its error kept for
+    ctypes.get_last_error."""
+    import ctypes
+    from ctypes import wintypes
+
+    call = ctypes.WinDLL("kernel32", use_last_error=True).DeviceIoControl
+    call.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    call.restype = wintypes.BOOL
+    return call
+
+
+def allocated(f, size):
+    """Windows: the ranges of `f`'s first `size` bytes that its file system holds allocated
+    (FSCTL_QUERY_ALLOCATED_RANGES), as the VMM reads a file's (platform::allocated_ranges): a
+    sparse file's holes left out, a file not sparse whole, as the call's documentation says.
+    Asked one range at a time, each answer's end the next ask's start while the call says more
+    (ERROR_MORE_DATA); None where it refuses."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class Range(ctypes.Structure):
+        # FILE_ALLOCATED_RANGE_BUFFER: its offset and length, LARGE_INTEGERs.
+        _fields_ = [("offset", ctypes.c_int64), ("length", ctypes.c_int64)]
+
+    call = ioctl()
+    handle = msvcrt.get_osfhandle(f.fileno())
+    found = []
+    at = 0
+    while at < size:
+        asked, given, returned = Range(at, size - at), Range(), wintypes.DWORD()
+        done = call(
+            handle,
+            FSCTL_QUERY_ALLOCATED_RANGES,
+            ctypes.byref(asked),
+            ctypes.sizeof(asked),
+            ctypes.byref(given),
+            ctypes.sizeof(given),
+            ctypes.byref(returned),
+            None,
+        )
+        if not done and ctypes.get_last_error() != ERROR_MORE_DATA:
+            return None
+        if returned.value < ctypes.sizeof(given):
+            # None given: none is allocated past `at`, or more were said and none given.
+            return found if done else None
+        end = min(size, given.offset + given.length)
+        if end <= at:
+            # An answer that would ask the same again.
+            return None
+        found.append((given.offset, end))
+        if done:
+            break
         at = end
     return found
 

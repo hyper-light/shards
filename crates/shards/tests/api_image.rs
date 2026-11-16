@@ -31,10 +31,11 @@ use shards_api::image::{
     BootStop, Captured, Channel, Cli, ComponentAt, CredentialGrant, EgressGrant, FinalUse, ImageGuest,
     ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased,
     Lessor, MemberCeiling, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing,
-    NetRefusal, Plug, PlugFor, PlugRefusal, PlugSource, Proto, Publish, Reach, RunEnd, RunEnded, RunLessor,
-    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, SwapRefusal,
-    SwapWhen, Unused, UpstreamRoot,
+    NetRefusal, NetworkGrant, OnNetwork, Plug, PlugFor, PlugRefusal, PlugSource, Proto, Publish, Reach,
+    RunEnd, RunEnded, RunLessor, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom,
+    StatsScope, SwapRefusal, SwapWhen, Unused, UpstreamRoot, Way,
 };
+use shards_api::networks::{CreateCause, NetworkRefusal, Networks, RemoveCause};
 use shards_api::volumes::{ClearCause, VolumeRefusal};
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -2810,6 +2811,66 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let _ = driver.join().unwrap();
 }
 
+/// D252: a run's first stdio lanes are charged before its members start, and a run whose run
+/// host has no room for them is refused `Capacity`. The run host is told what its host has
+/// available, as no test may set its host's own: the first line of a file that
+/// `SHARDS_PRESSURE` names (D188's told word). Its image's harness asleep, its stdio served as
+/// its endpoint's lanes (`ControlAsk::stdio`):
+/// - told it has nothing, it is refused `Capacity` at its endpoint's link, which says the link's
+///   bytes;
+/// - told that many, room for its link alone, it is refused `Capacity` at its harness's first
+///   lane, typed before its VM is handed the run, so none of its members starts;
+/// - told the most a u64 counts, it starts.
+#[test]
+fn a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start() {
+    use shards_api::control::Identity;
+    use shards_api::image::ControlAsk;
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-room-home");
+    build(&home, "api-room:1", &["sleep"], "");
+    let hex = Identity::generate().unwrap();
+    // The run, its host told it has `bytes` of memory available.
+    let told = |bytes: u64| {
+        let word = home.join(format!("told-{bytes}"));
+        std::fs::write(&word, format!("available {bytes}\n")).unwrap();
+        let mut s = spec(&home, "api-room:1");
+        s.env.push(("SHARDS_PRESSURE".into(), word.into_os_string()));
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        s.control = Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: None,
+            stdio: true,
+        });
+        s
+    };
+    let refused = |s: &ImageSpec| match booted(&ImageShards::new(), s) {
+        Err(ImageRefusal::Capacity(why)) => why,
+        Err(other) => panic!("refused, but not for its room: {other:?}"),
+        Ok(_) => panic!("started with no room"),
+    };
+    let why = refused(&told(0));
+    let link: u64 = why
+        .split_once("its sockets' queues, ")
+        .and_then(|(_, rest)| rest.split_once(" bytes"))
+        .and_then(|(bytes, _)| bytes.parse().ok())
+        .unwrap_or_else(|| panic!("its link's bytes unsaid: {why}"));
+    let why = refused(&told(link));
+    assert!(why.ends_with("'s first Stdout lane"), "{why}");
+    let guest = boot(&home, &told(u64::MAX));
+    guest.stop().unwrap();
+}
+
 /// A value the guest's memory holds, unique to this test's run: a SHA-256 of `label`, this
 /// process and the time, in hex.
 fn canary(label: &str) -> String {
@@ -4088,7 +4149,17 @@ fn lines_of_member(
     member: &MemberName,
     channel: Channel,
 ) -> std::sync::mpsc::Receiver<String> {
-    let pipe = guest.take_output(member, 0, channel).unwrap();
+    lines_of_generation(guest, member, 0, channel)
+}
+
+/// [`lines_of_member`], of its generation `generation` (D270 slice 3b).
+fn lines_of_generation(
+    guest: &dyn ImageGuest,
+    member: &MemberName,
+    generation: u32,
+    channel: Channel,
+) -> std::sync::mpsc::Receiver<String> {
+    let pipe = guest.take_output(member, generation, channel).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead as _;
@@ -4419,6 +4490,63 @@ fn an_agents_volume_refuses_writes_past_its_bound() {
         "its count {charge} of {bound}, {filled} written"
     );
     guest.stop().unwrap();
+}
+
+/// P6.2 (D281, lane charge-2): an orchestrator's run's own anonymous volume, made for its
+/// image's `VOLUME` that no share stands in for, is held for the run's life as a named one is:
+/// `prune volumes` while the run runs passes it by, its files kept, where the same prune
+/// removes an anonymous volume no run holds; and it goes as its run ends, its lock file with
+/// it, as `--rm`'s volumes go.
+#[test]
+fn a_runs_anonymous_volume_is_passed_by_a_prune_while_it_runs_and_goes_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-anon-vol-home");
+    build(&home, "api-anon-vol:1", &["trap", "TERM"], "VOLUME /scratch\n");
+    let env = host_env(&home);
+    let named: Vec<(&str, &std::ffi::OsStr)> = env
+        .iter()
+        .map(|(k, v)| (k.to_str().unwrap(), v.as_os_str()))
+        .collect();
+    let shards = |args: &[&str]| run_shards_env(&[], args, &named);
+    let anonymous = || -> Vec<String> {
+        shards_api::volumes::volumes(Some(common::shards()), &env)
+            .unwrap()
+            .into_iter()
+            .filter(|v| v.anonymous)
+            .map(|v| v.name)
+            .collect()
+    };
+    let volumes = home.join("volumes");
+    let lock_file = |name: &str| volumes.join(format!(".{name}.lock"));
+    let guest = boot(&home, &spec(&home, "api-anon-vol:1"));
+    let lines = lines_of(&*guest, Channel::Stdout);
+    said_all(&lines, &["ready".to_string()]);
+    let listed = anonymous();
+    let [held] = listed.as_slice() else {
+        panic!("its VOLUME's own alone: {listed:?}");
+    };
+    let held = held.as_str();
+    assert!(lock_file(held).exists(), "held as its run runs");
+    let made = shards(&["create", "volume"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let unheld = made.stdout.trim().to_owned();
+    let pruned = shards(&["prune", "volumes", "-f"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    assert!(
+        pruned.stdout.contains(&format!("\n{unheld}\n")) && !pruned.stdout.contains(held),
+        "{pruned}"
+    );
+    assert_eq!(anonymous(), [held]);
+    assert!(volumes.join(held).join("_data").is_dir());
+    guest.stop().unwrap();
+    drop(guest);
+    assert_eq!(anonymous(), Vec::<String>::new(), "gone with its run");
+    assert!(!volumes.join(held).exists());
+    assert!(!lock_file(held).exists(), "its lock file gone with it");
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
@@ -4836,6 +4964,405 @@ fn a_members_open_connection_is_reset_as_its_reach_is_taken_back() {
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);
     guest.stop().unwrap();
+}
+
+/// Member `member` running its image's command with `args` after it, as the orchestrator
+/// stages nothing else into it.
+fn running(member: MemberName, args: &[&str]) -> MemberSpec {
+    MemberSpec {
+        member,
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: None,
+        stdin: false,
+        terminal: false,
+        args: args.iter().map(|a| a.to_string()).collect(),
+        mcp: false,
+    }
+}
+
+/// Member `member` of `guest` started again with `args` after its image's command (D270 slice
+/// 3b), its generation before ended by its SIGTERM: the lines its next says on its stdout.
+#[track_caller]
+fn again(guest: &dyn ImageGuest, member: &MemberName, args: &[&str]) -> std::sync::mpsc::Receiver<String> {
+    let args: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+    let generation = ask(guest, |g| g.restart(member, &args, Duration::MAX)).unwrap();
+    lines_of_generation(guest, member, generation, Channel::Stdout)
+}
+
+/// The first line on `rx` that `wanted` takes, waited for as long as its run goes on
+/// (`Patience` of what this test started).
+#[track_caller]
+fn first_said(rx: &std::sync::mpsc::Receiver<String>, wanted: impl Fn(&str) -> bool) -> String {
+    let mut seen = Vec::new();
+    let mut patience = Patience::started();
+    loop {
+        match rx.recv_timeout(patience.next_look()) {
+            Ok(line) if wanted(&line) => {
+                patience.done();
+                return line;
+            }
+            Ok(line) => seen.push(line),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the member's channel ended, having said {seen:?}")
+            }
+        }
+        assert!(
+            patience.holds(),
+            "the member said {seen:?}, none of it the line waited for"
+        );
+    }
+}
+
+/// Waits, as long as its run goes on, for `reach-each`'s lines on `rx` to say three refusals:
+/// before the first, a connection that opened where `opened_before` (what a change since ended),
+/// none after it.
+#[track_caller]
+fn reach_refused_from_now(rx: &std::sync::mpsc::Receiver<String>, opened_before: bool) {
+    let mut refused = 0;
+    let mut patience = Patience::started();
+    while refused < 3 {
+        match rx.recv_timeout(patience.next_look()) {
+            Ok(line) if line.starts_with("reach errno") => refused += 1,
+            Ok(line) => assert!(opened_before && refused == 0, "{line} after a refusal"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => panic!("{e}"),
+        }
+        assert!(patience.holds(), "no refusal");
+    }
+    patience.done();
+}
+
+/// The run's address on network `network`, as its connection answered it.
+#[track_caller]
+fn address_on(network: &str, on: &[OnNetwork]) -> std::net::Ipv4Addr {
+    on.iter()
+        .find(|n| n.network == network)
+        .unwrap_or_else(|| panic!("the run on no network {network}: {on:?}"))
+        .address
+}
+
+/// A run of `image` for the tests of networks shared by runs (D285 slice 6): its `members`, on
+/// shards' own kernel and the init it carries, as D278's tests of a member's reach run; its
+/// harness `codex` held to the ports `ceiling` names, where it names any, within which its
+/// grants on a shared network are (a ceiling of ports gives its member the agents' resolver
+/// from its start).
+fn shared_run(home: &TempDir, image: &str, members: Vec<MemberSpec>, ceiling: &[&str]) -> ImageSpec {
+    let mut s = spec(home, image);
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.members = members;
+    if !ceiling.is_empty() {
+        s.egress_ceiling = vec![MemberCeiling {
+            kind: MemberKind::Harness,
+            name: "codex".into(),
+            reach: Reach {
+                ports: ceiling.iter().map(|p| p.to_string()).collect(),
+                ..Reach::default()
+            },
+        }];
+    }
+    s
+}
+
+/// How long a connection the tests of networks shared by runs dial is given, in milliseconds:
+/// past its SYN's first two retransmissions (RFC 6298 §2.1, an initial RTO of 1 s; §5.5, doubled
+/// at each: SYNs at 0, 1 and 3 s), so that a flow a grant lets open has opened by then, as one
+/// does in a round trip; a SYN no grant lets through is answered by nothing at all.
+const DIAL_MS: &str = "4000";
+
+/// D285 slice 6: members of two runs on a network shared by runs reach each other only as both
+/// ends grant it. The network is made by its name through shards-api with no daemon
+/// (`Networks::create`, the daemon's own path), a second making refused `Exists`. Run A's
+/// harness, `a` there, is granted out to `b` on TCP port P; run B's, `b`, in from `a` on P, and
+/// on P + 2, which keeps it on the network once its grant on P is taken back. Each verdict is
+/// the members' own word: a reaches b by b's name on P, b's server seeing a's address there and
+/// echoing a's bytes; a's connections to b on P + 1, where b listens, never open; b's to a on
+/// P, where a listens, never open, the way no grant opens; a name nobody granted is answered at
+/// once by the agents' resolver, NXDOMAIN; once b's grant on P is taken back, a's connections
+/// there, which opened before, open no more; once run B has ended, b's name, answered to a
+/// before, is answered no more (the closed link the evidence). The network's removal is
+/// refused `InUse` while run A holds it, made once A has ended, and refused `Unknown` again.
+#[test]
+fn members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted() {
+    if cannot_run_vms() {
+        return;
+    }
+    const P: u16 = 7300;
+    let home = TempDir::new("xn6");
+    build(
+        &home,
+        "api-xnet:1",
+        &[],
+        "NETWORK provider FOR codex\nCONNECT codex WITH codex ON provider\n",
+    );
+    let env = host_env(&home);
+    let networks = Networks {
+        binary: Some(common::shards()),
+        env: &env,
+    };
+    let id = networks.create("team").unwrap();
+    assert!(matches!(
+        networks.create("team"),
+        Err(NetworkRefusal::Create(CreateCause::Exists, _))
+    ));
+    let (port, beside, keeps) = (P.to_string(), (P + 1).to_string(), (P + 2).to_string());
+    let ceiling = [format!("{port}/tcp"), format!("{keeps}/tcp")];
+    let ceiling: Vec<&str> = ceiling.iter().map(String::as_str).collect();
+    let start = |args: &[&str]| {
+        let s = shared_run(&home, "api-xnet:1", vec![running(codex(), args)], &ceiling);
+        boot(&home, &s)
+    };
+    let run_a = start(&["trap", "TERM"]);
+    let run_b = start(&["serve", &port, "2"]);
+    let b_said = lines_of(&*run_b, Channel::Stdout);
+    said_all(&b_said, &["ready".to_string()]);
+    let grant = |name: &str, peer: &str, port: u16, way: Way| NetworkGrant {
+        name: name.into(),
+        peer: peer.into(),
+        proto: Proto::Tcp,
+        first: port,
+        last: port,
+        way,
+    };
+    let b_in = grant("b", "a", P, Way::In);
+    let connect = |guest: &dyn ImageGuest, grant: &NetworkGrant| {
+        let on = ask(guest, |g| g.connect(&codex(), "team", grant, Duration::MAX)).unwrap();
+        assert!(on.iter().any(|n| n.network == "team" && n.id == id), "{on:?}");
+        address_on("team", &on)
+    };
+    let a_at = connect(&*run_a, &grant("a", "b", P, Way::Out));
+    let b_at = connect(&*run_b, &b_in);
+    assert_eq!(connect(&*run_b, &grant("b", "a", P + 2, Way::In)), b_at);
+    // a reaches b by its name on P: b's server sees a's address there, and echoes a's bytes.
+    let a_said = again(
+        &*run_a,
+        &codex(),
+        &["ask-trap", &format!("b:{port}"), DIAL_MS, "hello"],
+    );
+    said_all(&a_said, &[format!("ask from {a_at}"), "hello".to_string()]);
+    said_all(&b_said, &["served 5".to_string()]);
+    // a's connections to b on P + 1, where b listens, never open: neither end grants one.
+    let b_said = again(&*run_b, &codex(), &["serve", &beside, "1"]);
+    said_all(&b_said, &["ready".to_string()]);
+    let a_said = again(&*run_a, &codex(), &["reach-each", &format!("b:{beside}")]);
+    reach_refused_from_now(&a_said, false);
+    // b's connections to a on P, where a listens, never open: the way no grant opens.
+    let a_said = again(&*run_a, &codex(), &["serve", &port, "1"]);
+    said_all(&a_said, &["ready".to_string()]);
+    let b_said = again(&*run_b, &codex(), &["reach-each", &format!("a:{port}")]);
+    reach_refused_from_now(&b_said, false);
+    // A name nobody granted: answered at once by the agents' resolver, NXDOMAIN (D278).
+    let a_said = again(&*run_a, &codex(), &["dnsttl-each", "nobody"]);
+    assert_eq!(first_said(&a_said, |l| l.starts_with("dnsttl")), "dnsttl rcode 3");
+    // b's grant on P taken back: a's connections there, which opened before, open no more; b
+    // stays on the network by its grant on P + 2, its name answered to a still.
+    let b_said = again(&*run_b, &codex(), &["hold", &port]);
+    said_all(&b_said, &["ready".to_string()]);
+    let a_said = again(&*run_a, &codex(), &["reach-each", &format!("b:{port}")]);
+    said_all(&a_said, &["reach ok".to_string()]);
+    let on = ask(&*run_b, |g| g.disconnect(&codex(), "team", &b_in, Duration::MAX)).unwrap();
+    assert_eq!(
+        address_on("team", &on),
+        b_at,
+        "b kept on the network by its grant on P + 2"
+    );
+    reach_refused_from_now(&a_said, true);
+    // Run B ended: b's name, answered to a before, is answered no more (the closed link the
+    // evidence, D285 slice 6). What was answered before its end may still come; from the first
+    // NXDOMAIN on, nothing else.
+    let answered_b = format!("dnsttl 0 {b_at}");
+    let a_said = again(&*run_a, &codex(), &["dnsttl-each", "b"]);
+    assert_eq!(first_said(&a_said, |l| l.starts_with("dnsttl")), answered_b);
+    run_b.stop().unwrap();
+    let mut refused = 0;
+    let mut patience = Patience::started();
+    while refused < 3 {
+        match a_said.recv_timeout(patience.next_look()) {
+            Ok(line) if line == "dnsttl rcode 3" => refused += 1,
+            Ok(line) => assert!(refused == 0 && line == answered_b, "{line} after its end"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => panic!("{e}"),
+        }
+        assert!(patience.holds(), "b's name answered still, its run ended");
+    }
+    patience.done();
+    // The network: kept while run A holds it, removed once A has ended.
+    assert!(matches!(
+        networks.remove("team"),
+        Err(NetworkRefusal::Remove(RemoveCause::InUse, _))
+    ));
+    run_a.stop().unwrap();
+    assert_eq!(networks.remove("team"), Ok(()));
+    assert!(matches!(
+        networks.remove("team"),
+        Err(NetworkRefusal::Remove(RemoveCause::Unknown, _))
+    ));
+}
+
+/// D278 amended by lane xnet-s5b, D46: a member whose ceiling is of ports alone, granted
+/// nothing, has the agents' resolver from its start, and its C library's lookup of a name
+/// nothing grants it is answered at once, NXDOMAIN: musl's lookup ends "Name does not resolve"
+/// (EAI_NONAME, which only answers give it), never "Try again" (EAI_AGAIN, its timeout's, as
+/// when the resolver answered REFUSED, which musl's stub drops: src/network/res_msend.c), and
+/// before musl asks again, at `timeout / attempts` (res_msend.c), 5 s / 2 by resolv.conf's
+/// defaults (src/network/resolvconf.c): no timeout was waited.
+#[test]
+fn a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("xn6-ns");
+    build(
+        &home,
+        "api-xnet-ns:1",
+        &[],
+        "NETWORK provider FOR codex\nCONNECT codex WITH codex ON provider\n",
+    );
+    let s = shared_run(
+        &home,
+        "api-xnet-ns:1",
+        vec![running(codex(), &["resolve-took", "nobody.example"])],
+        &["7300/tcp"],
+    );
+    let guest = boot(&home, &s);
+    let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
+    let mut lines = said.lines();
+    let resolved = lines.next().unwrap_or_default();
+    assert!(
+        resolved.starts_with("resolve error") && resolved.contains("Name does not resolve"),
+        "{said}"
+    );
+    let took: u64 = lines
+        .next()
+        .and_then(|l| l.strip_prefix("took "))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("{said}"));
+    // musl's retry interval, `timeout / attempts`: 5000 ms over 2 attempts.
+    assert!(took < 5000 / 2, "{said}");
+    guest.stop().unwrap();
+}
+
+/// D285 slice 6, D122 amended by lane xnet-s5b: a UDP port its image's `EXPOSE` contests,
+/// given its run's two harnesses on one of its own networks, each answering it, and granted in
+/// on a network shared by runs to each of them, b and c, from run A's `a`. One of them holds
+/// the port for eth0's own clients (the chooser's, by which listened first), and that holder
+/// answers one published on the host, before and after; a's datagrams to b and to c over the
+/// shared network are each answered by its member, the holder and the one that holds it not:
+/// a shared flow is the grant's, in zone 0 both ways, never the holder's.
+#[test]
+fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not() {
+    if cannot_run_vms() {
+        return;
+    }
+    const U: u16 = 7600;
+    let home = TempDir::new("xn6-udp");
+    build(
+        &home,
+        "api-xnet-client:1",
+        &[],
+        "NETWORK provider FOR codex\nCONNECT codex WITH codex ON provider\n",
+    );
+    build(
+        &home,
+        "api-xnet-contest:1",
+        &[],
+        &format!(
+            "HARNESS claude FROM ./harness.tar\nNETWORK --ingress={U}/udp front\n\
+             CONNECT codex WITH codex ON front\nCONNECT claude WITH claude ON front\n\
+             EXPOSE {U}/udp AS ingress FOR front\n"
+        ),
+    );
+    let env = host_env(&home);
+    let networks = Networks {
+        binary: Some(common::shards()),
+        env: &env,
+    };
+    networks.create("team").unwrap();
+    let (port, udp) = (U.to_string(), format!("{U}/udp"));
+    let claude = MemberName::harness("claude");
+    let run_a = boot(
+        &home,
+        &shared_run(
+            &home,
+            "api-xnet-client:1",
+            vec![running(codex(), &["trap", "TERM"])],
+            &[udp.as_str()],
+        ),
+    );
+    let mut b = shared_run(
+        &home,
+        "api-xnet-contest:1",
+        vec![
+            running(codex(), &["udp-echo", &port, "stop"]),
+            running(claude.clone(), &["udp-echo", &port, "stop"]),
+        ],
+        &[],
+    );
+    b.publish = vec![Publish {
+        guest_port: U,
+        proto: Proto::Udp,
+        host: Some("127.0.0.1".parse().unwrap()),
+        host_port: 0,
+    }];
+    let run_b = boot(&home, &b);
+    let b_said = lines_of_member(&*run_b, &codex(), Channel::Stdout);
+    let c_said = lines_of_member(&*run_b, &claude, Channel::Stdout);
+    said_all(&b_said, &["ready".to_string()]);
+    said_all(&c_said, &["ready".to_string()]);
+    // eth0's own client, the port published on the host: answered by the port's holder.
+    let bound = run_b.published().first().cloned().expect("a bound port");
+    let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    client.connect(bound.host).unwrap();
+    client.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let held = |what: &str| {
+        let mut buf = [0u8; 512];
+        let mut patience = Patience::started();
+        loop {
+            let _ = client.send(b"who");
+            if let Ok(n) = client.recv(&mut buf) {
+                patience.done();
+                return String::from_utf8_lossy(&buf[..n]).into_owned();
+            }
+            assert!(patience.holds(), "{what}: no answer on {}", bound.host);
+        }
+    };
+    assert!(held("before").ends_with(" who"));
+    let grant = |name: &str, peer: &str, way: Way| NetworkGrant {
+        name: name.into(),
+        peer: peer.into(),
+        proto: Proto::Udp,
+        first: U,
+        last: U,
+        way,
+    };
+    let mut a_at = None;
+    for peer in ["b", "c"] {
+        let on = ask(&*run_a, |g| {
+            g.connect(&codex(), "team", &grant("a", peer, Way::Out), Duration::MAX)
+        })
+        .unwrap();
+        a_at = Some(address_on("team", &on));
+    }
+    let a_at = a_at.unwrap();
+    for (member, name) in [(codex(), "b"), (claude.clone(), "c")] {
+        ask(&*run_b, |g| {
+            g.connect(&member, "team", &grant(name, "a", Way::In), Duration::MAX)
+        })
+        .unwrap();
+    }
+    // a's datagrams to each, over the shared network: each answered, by its member.
+    for (peer, said) in [("b", &b_said), ("c", &c_said)] {
+        let a_said = again(&*run_a, &codex(), &["udp-each", &format!("{peer}:{port}")]);
+        first_said(&a_said, |l| l.starts_with("udp ") && !l.starts_with("udp error"));
+        first_said(said, |l| l.starts_with(&format!("datagram from {a_at}:")));
+    }
+    // The holder answers eth0's own clients still.
+    assert!(held("after").ends_with(" who"));
+    run_a.stop().unwrap();
+    run_b.stop().unwrap();
+    assert_eq!(networks.remove("team"), Ok(()));
 }
 
 /// An OSI artifact of `kind` (`agent`, `harness`) built of the test guest (`bin/codex`), a

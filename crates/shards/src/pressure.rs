@@ -1,13 +1,117 @@
 //! The host's word that it is short of memory, as the daemon and a build hear it (D188): its
 //! kernel's ([`MemoryPressure`]), or, where a variable names a FIFO (on Windows, a named
 //! pipe), each line written to it, in place of its kernel's, so that a test tells it where
-//! no unprivileged process may raise the system's pressure (macOS, Windows).
+//! no unprivileged process may raise the system's pressure (macOS, Windows). A told line may
+//! say instead what memory its host has available, which every charge of a run's buffers is
+//! then held to in place of its kernel's count ([`available`], D252): no test may set that
+//! either.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use shards_vmm::platform::{MemoryPressure, PressureWatches};
+
+/// The variable naming the pipe a test tells the daemon its host's word through, and the
+/// file or pipe whose first line a run host is told by (api_run.rs): D188, D252.
+pub const TOLD: &str = "SHARDS_PRESSURE";
+
+/// A told line: its host's word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Word {
+    /// It is short of memory: an empty line (D188).
+    Short,
+    /// It has this many bytes of memory available, in place of its kernel's count: a line
+    /// `available BYTES`, BYTES in decimal digits alone (D252).
+    Available(u64),
+}
+
+/// What a told line of available memory begins with, before its bytes.
+const AVAILABLE: &[u8] = b"available ";
+/// The longest told line, its newline apart: [`AVAILABLE`] and the most decimal digits a u64
+/// has (20, `u64::MAX`'s). A line past it is no word, refused as it reaches this length rather
+/// than held.
+const WORD_MOST: usize = AVAILABLE.len() + (u64::MAX.ilog10() as usize + 1);
+
+/// What its host has available as a told line said it last ([`Word::Available`]); none until
+/// one has. One for the process, as its kernel's count is.
+static TOLD_AVAILABLE: Mutex<Option<u64>> = Mutex::new(None);
+
+/// What this host has available of its memory, which every charge of a run's buffers is held
+/// to (daemon/managed.rs `Charge`, the daemon's runs' and a run host's alike, D252): what a
+/// told line said last, where one has ([`Word::Available`]); else its kernel's count
+/// (`platform::host_available`), none where that cannot be read.
+pub fn available() -> Option<u64> {
+    let told = *TOLD_AVAILABLE.lock().unwrap_or_else(PoisonError::into_inner);
+    told.or_else(shards_vmm::platform::host_available)
+}
+
+/// Where variable `told` names a FIFO, a named pipe or a file, the word its first line says,
+/// an `available` one told at once ([`available`]): a run host's (api_run.rs), told once,
+/// before its run is made, as its run's charges are made as it starts (D252). A pipe nothing
+/// has written to yet is waited on. None where `told` names nothing.
+pub fn first(told: &str) -> io::Result<Option<Word>> {
+    let Some(path) = std::env::var_os(told) else {
+        return Ok(None);
+    };
+    heard(&mut open(&path)?).map(Some)
+}
+
+/// What `path` names, read and written, so that a pipe's writer's going is no end: reads
+/// wait for the next.
+fn open(path: &OsStr) -> io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().read(true).write(true).open(path)
+}
+
+/// `from`'s next line's word ([`read_word`]), an `available` one told at once.
+fn heard(from: &mut impl io::Read) -> io::Result<Word> {
+    let word = read_word(from)?;
+    if let Word::Available(bytes) = word {
+        *TOLD_AVAILABLE.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes);
+    }
+    Ok(word)
+}
+
+/// Reads `from`'s next line as a word: refused `InvalidData` where it says none or is longer
+/// than any ([`WORD_MOST`]), `UnexpectedEof` where it ends before its newline.
+fn read_word(from: &mut impl io::Read) -> io::Result<Word> {
+    let mut line = [0u8; WORD_MOST];
+    let mut len = 0;
+    loop {
+        let mut byte = [0u8; 1];
+        from.read_exact(&mut byte)?;
+        if byte == *b"\n" {
+            break;
+        }
+        let [b] = byte;
+        let at = line.get_mut(len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("a told line past {WORD_MOST} bytes, longer than any word"),
+            )
+        })?;
+        *at = b;
+        len += 1;
+    }
+    let line = line.get(..len).unwrap_or_default();
+    if line.is_empty() {
+        return Ok(Word::Short);
+    }
+    line.strip_prefix(AVAILABLE)
+        .filter(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
+        .and_then(|digits| std::str::from_utf8(digits).ok()?.parse::<u64>().ok())
+        .map(Word::Available)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{:?} is no told word: an empty line, or `available BYTES`",
+                    String::from_utf8_lossy(line)
+                ),
+            )
+        })
+}
 
 /// What tells its listener its host is short of memory: its kernel, or the pipe a variable
 /// names, by its path.
@@ -22,8 +126,7 @@ impl Pressure {
     /// what has it watch more (a Linux cgroup's).
     pub fn new(told: &str) -> io::Result<(Pressure, Option<PressureWatches>)> {
         if let Some(path) = std::env::var_os(told) {
-            // Read and written, so that a writer's going is no end: reads wait for the next.
-            let pipe = std::fs::OpenOptions::new().read(true).write(true).open(&path)?;
+            let pipe = open(&path)?;
             return Ok((Pressure::Told(pipe, path), None));
         }
         MemoryPressure::new().map(|(pressure, watches)| (Pressure::Kernel(pressure), Some(watches)))
@@ -58,22 +161,12 @@ impl Pressure {
         }
     }
 
-    /// Waits for the next word that its host is short of memory.
-    pub fn wait(&mut self) -> io::Result<()> {
+    /// Waits for its host's next word: its kernel's, that it is short of memory; a told pipe's
+    /// next line, an `available` one told at once ([`available`]).
+    pub fn wait(&mut self) -> io::Result<Word> {
         match self {
-            Pressure::Kernel(pressure) => pressure.wait(),
-            Pressure::Told(pipe, _) => {
-                use std::io::Read as _;
-                let mut byte = [0u8; 1];
-                loop {
-                    if pipe.read(&mut byte)? == 0 {
-                        return Err(io::ErrorKind::UnexpectedEof.into());
-                    }
-                    if byte == *b"\n" {
-                        return Ok(());
-                    }
-                }
-            }
+            Pressure::Kernel(pressure) => pressure.wait().map(|()| Word::Short),
+            Pressure::Told(pipe, _) => heard(pipe),
         }
     }
 }
@@ -174,6 +267,53 @@ mod saying {
     }
 }
 
+#[cfg(test)]
+mod words {
+    use super::*;
+
+    /// A told line is an empty one, its host short of memory, or `available BYTES` in decimal
+    /// digits alone, as far as a u64 counts; one after another from one pipe. Any other line, a
+    /// line past the longest word and one cut off are refused. Read alone, never told: what
+    /// [`available`] answers is the process's, which its other tests' charges read.
+    #[test]
+    fn a_told_line_is_short_or_what_its_host_has_available() {
+        let read = |mut text: &[u8]| read_word(&mut text).map_err(|e| e.kind());
+        assert_eq!(read(b"\n"), Ok(Word::Short));
+        assert_eq!(read(b"available 0\n"), Ok(Word::Available(0)));
+        assert_eq!(
+            read(b"available 18446744073709551615\n"),
+            Ok(Word::Available(u64::MAX))
+        );
+        for no_word in [
+            &b"available 18446744073709551616\n"[..],
+            b"available +5\n",
+            b"available \n",
+            b"available 5 \n",
+            b"available 5\r\n",
+            b"available\n",
+            b"x\n",
+            b"available 000000000000000000005\n",
+        ] {
+            assert_eq!(
+                read(no_word),
+                Err(io::ErrorKind::InvalidData),
+                "{}",
+                String::from_utf8_lossy(no_word)
+            );
+        }
+        assert_eq!(read(b"available 5"), Err(io::ErrorKind::UnexpectedEof));
+        assert_eq!(read(b""), Err(io::ErrorKind::UnexpectedEof));
+        let mut pipe: &[u8] = b"available 7\n\navailable 9\n";
+        let words: Vec<_> = (0..3)
+            .map(|_| read_word(&mut pipe).map_err(|e| e.kind()))
+            .collect();
+        assert_eq!(
+            words,
+            [Ok(Word::Available(7)), Ok(Word::Short), Ok(Word::Available(9))]
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -202,12 +342,12 @@ mod tests {
             let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
             w.write_all(b"\n\n").unwrap();
         }
-        told.wait().unwrap();
-        told.wait().unwrap();
+        assert_eq!(told.wait().unwrap(), Word::Short);
+        assert_eq!(told.wait().unwrap(), Word::Short);
         let (heard, hear) = std::sync::mpsc::channel();
         std::thread::scope(|s| {
             s.spawn(|| {
-                told.wait().unwrap();
+                assert_eq!(told.wait().unwrap(), Word::Short);
                 heard.send(()).unwrap();
             });
             assert!(

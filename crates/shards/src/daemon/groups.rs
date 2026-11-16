@@ -135,6 +135,17 @@ pub(super) fn made(home: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `text` put at group `dir`'s file `name` whole, as a cgroup's files read: written beside
+/// it, then renamed over it, so that its reader finds the last pass's or this one's. Written
+/// in place, a reader between its truncation and its write read it empty (lane shards-green,
+/// `a_joiner_and_its_provider_in_one_group_count_their_vm_process_once`).
+#[cfg(any(target_os = "macos", windows))]
+fn put_whole(dir: &Path, name: &str, text: &str) -> std::io::Result<()> {
+    let beside = dir.join(format!(".{name}.new"));
+    std::fs::write(&beside, text)?;
+    std::fs::rename(&beside, dir.join(name))
+}
+
 /// The budget group directory `dir`'s files say; a file not there is `max`.
 pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
     let read = |file: &str| -> Result<Option<String>, String> {
@@ -735,7 +746,6 @@ impl<D: Disk> Daemon<D> {
         self.limit_group_job(name, budget.max);
         let held = self.footprints(members);
         let current = sum(&held);
-        let _ = std::fs::write(dir.join("memory.current"), format!("{current}\n"));
         // Its processes, a line each, as a cgroup's `cgroup.procs` lists its own: on Windows
         // its job's, every process of its microVMs; on macOS, which has no group of
         // processes, its microVMs' VM processes, whose footprints it holds.
@@ -754,10 +764,12 @@ impl<D: Disk> Daemon<D> {
                 .filter_map(|&(i, _)| members.get(i).map(|m| m.pid))
                 .collect::<Vec<_>>(),
         );
+        // Its processes put before their sum, so that a reader of the sum finds them listed.
         if let Some(procs) = procs {
             let listed: String = procs.iter().map(|p| format!("{p}\n")).collect();
-            let _ = std::fs::write(dir.join("cgroup.procs"), listed);
+            let _ = put_whole(&dir, "cgroup.procs", &listed);
         }
+        let _ = put_whole(&dir, "memory.current", &format!("{current}\n"));
         let Some(limit) = budget.room_of() else {
             // Its budget gone: each told a room is told it has none, its hold let go of.
             for m in members {

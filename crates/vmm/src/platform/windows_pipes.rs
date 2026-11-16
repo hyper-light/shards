@@ -57,10 +57,56 @@ enum Writing {
     Failed(u32),
 }
 
-/// The calls' OVERLAPPEDs, each the system's while its call is under way.
+/// One overlapped call's slot: its OVERLAPPED, the system's while the call is under way, and
+/// the manual-reset event the OVERLAPPED names, which the call's end sets. Named, an end is
+/// the OVERLAPPED's at once, and its packet still goes to a port the handle is associated with
+/// (an hEvent whose low bit is clear, GetQueuedCompletionStatus). With none, a handle associated
+/// with a port has its calls' ends written to their OVERLAPPEDs, and the handle set, only as
+/// their packets are taken from the port: a cancelled read's OVERLAPPED still said it was under
+/// way 4.8 s on, where one named an event ended at once (docs/research/measurements/
+/// vsock-pipes-port-cancel), so that a wait for an end there (`settle`) waited for ever on the
+/// device's worker, the port's one taker.
+struct Call {
+    ov: UnsafeCell<OVERLAPPED>,
+    ended: shards_ipc::Event,
+}
+
+impl Call {
+    fn new() -> io::Result<Call> {
+        Ok(Call {
+            ov: UnsafeCell::new(OVERLAPPED::default()),
+            ended: shards_ipc::Event::new()?,
+        })
+    }
+
+    /// Its OVERLAPPED made fresh for its next call, naming its event: a ReadFile or WriteFile
+    /// resets that as it begins (their documentation), and a ConnectNamedPipe's is its pair's
+    /// own, used once.
+    ///
+    /// # Safety
+    /// No call is under way with it.
+    unsafe fn fresh(&self) -> *mut OVERLAPPED {
+        let ov = self.ov.get();
+        // SAFETY: no call is under way with it, its caller says: it is ours to write.
+        unsafe {
+            ov.write(OVERLAPPED {
+                hEvent: self.ended.raw(),
+                ..OVERLAPPED::default()
+            });
+        }
+        ov
+    }
+
+    /// Its OVERLAPPED, as its last call left it.
+    fn ov(&self) -> *mut OVERLAPPED {
+        self.ov.get()
+    }
+}
+
+/// A connection's two calls' slots.
 struct Calls {
-    read: UnsafeCell<OVERLAPPED>,
-    write: UnsafeCell<OVERLAPPED>,
+    read: Call,
+    write: Call,
 }
 
 /// A vsock connection's host side on Windows: see the module's documentation.
@@ -128,16 +174,16 @@ fn outcome(handle: &OwnedHandle, ov: *mut OVERLAPPED) -> Option<Result<usize, u3
     }
 }
 
-/// Cancels the call under way on `handle` with `ov`, and waits for its end, cancelled or
+/// Cancels the call under way on `handle` in `call`, and waits for its end, cancelled or
 /// finished: until then the system writes its OVERLAPPED, and its buffer.
-fn settle(handle: &OwnedHandle, ov: *mut OVERLAPPED) {
+fn settle(handle: &OwnedHandle, call: &Call) {
     let mut moved = 0u32;
-    // SAFETY: the OVERLAPPED of the one call under way on `handle`, which carries no other: an
-    // OVERLAPPED with no event is waited for on its handle (GetOverlappedResult). Waited for
-    // (bWait 1), so the system is done with it and its buffer once this returns.
+    // SAFETY: the OVERLAPPED of the one call under way on `handle` with it, which names its
+    // call's event ([`Call`]): waited for (bWait 1) on that, so the system is done with it and
+    // its buffer once this returns.
     unsafe {
-        CancelIoEx(handle.as_raw_handle(), ov);
-        GetOverlappedResult(handle.as_raw_handle(), ov, &mut moved, 1);
+        CancelIoEx(handle.as_raw_handle(), call.ov());
+        GetOverlappedResult(handle.as_raw_handle(), call.ov(), &mut moved, 1);
     }
 }
 
@@ -202,8 +248,8 @@ impl Pipes {
             down: Some(down),
             up: Some(up),
             calls: Box::new(Calls {
-                read: UnsafeCell::new(OVERLAPPED::default()),
-                write: UnsafeCell::new(OVERLAPPED::default()),
+                read: Call::new()?,
+                write: Call::new()?,
             }),
             into,
             out: Vec::new(),
@@ -245,7 +291,7 @@ impl Pipes {
     /// that its client, reading the way down's end after every byte, finds its writes refused.
     pub fn end_reads(&mut self) {
         if let (Reading::UnderWay, Some(up)) = (self.reading, &self.up) {
-            settle(up, self.calls.read.get());
+            settle(up, &self.calls.read);
         }
         self.up = None;
         self.reading = Reading::Ended;
@@ -272,10 +318,10 @@ impl Pipes {
                 break;
             };
             let mut moved = 0u32;
-            // SAFETY: the OVERLAPPED of the one write under way on `down`, which carries no
-            // event: waited for (bWait 1) on its handle, so the system is done with it and its
-            // bytes once this returns. Its outcome is `look`'s to take.
-            unsafe { GetOverlappedResult(down.as_raw_handle(), self.calls.write.get(), &mut moved, 1) };
+            // SAFETY: the OVERLAPPED of the one write under way on `down`, which names its call's
+            // event ([`Call`]): waited for (bWait 1) on that, so the system is done with it and
+            // its bytes once this returns. Its outcome is `look`'s to take.
+            unsafe { GetOverlappedResult(down.as_raw_handle(), self.calls.write.ov(), &mut moved, 1) };
             self.look();
         }
         match self.writing {
@@ -291,12 +337,11 @@ impl Pipes {
             self.reading = Reading::Ended;
             return;
         };
-        let ov = self.calls.read.get();
         let len = u32::try_from(self.into.len()).unwrap_or(u32::MAX);
         // SAFETY: no read is under way: its OVERLAPPED is ours to make fresh, and the buffer's
         // `len` bytes are the system's until the call finishes (`look`, `drop`).
         let started = unsafe {
-            ov.write(OVERLAPPED::default());
+            let ov = self.calls.read.fresh();
             ReadFile(
                 up.as_raw_handle(),
                 self.into.as_mut_ptr(),
@@ -325,11 +370,10 @@ impl Pipes {
         };
         let rest = self.out.get(at..).unwrap_or_default();
         let len = u32::try_from(rest.len()).unwrap_or(u32::MAX);
-        let ov = self.calls.write.get();
         // SAFETY: no write is under way: its OVERLAPPED is ours to make fresh, and the buffer's
         // bytes from `at` are the system's, untouched, until the call finishes (`look`, `drop`).
         let started = unsafe {
-            ov.write(OVERLAPPED::default());
+            let ov = self.calls.write.fresh();
             WriteFile(down.as_raw_handle(), rest.as_ptr(), len, std::ptr::null_mut(), ov)
         };
         // SAFETY: no arguments.
@@ -351,7 +395,7 @@ impl Pipes {
     /// from here on; none where none did.
     pub fn look(&mut self) -> usize {
         let read = match (self.reading, &self.up) {
-            (Reading::UnderWay, Some(up)) => outcome(up, self.calls.read.get()),
+            (Reading::UnderWay, Some(up)) => outcome(up, self.calls.read.ov()),
             _ => None,
         };
         match read {
@@ -375,7 +419,7 @@ impl Pipes {
         let Some(down) = &self.down else {
             return 0;
         };
-        match outcome(down, self.calls.write.get()) {
+        match outcome(down, self.calls.write.ov()) {
             None => 0,
             Some(Err(code)) => {
                 if closing {
@@ -552,10 +596,10 @@ impl io::Write for Pipes {
 impl Drop for Pipes {
     fn drop(&mut self) {
         if let (Reading::UnderWay, Some(up)) = (self.reading, &self.up) {
-            settle(up, self.calls.read.get());
+            settle(up, &self.calls.read);
         }
         if let (Writing::UnderWay { .. } | Writing::Closing { .. }, Some(down)) = (self.writing, &self.down) {
-            settle(down, self.calls.write.get());
+            settle(down, &self.calls.write);
         }
     }
 }
@@ -597,12 +641,11 @@ pub enum Paired {
     Broken,
 }
 
-/// A listening pair's calls' OVERLAPPEDs, each the system's while its call is under way, and
-/// the byte its watch reads none of.
+/// A listening pair's calls' slots, and the byte its watch reads none of.
 struct ListenCalls {
-    down: UnsafeCell<OVERLAPPED>,
-    up: UnsafeCell<OVERLAPPED>,
-    watch: UnsafeCell<OVERLAPPED>,
+    down: Call,
+    up: Call,
+    watch: Call,
     byte: UnsafeCell<u8>,
 }
 
@@ -637,16 +680,13 @@ impl std::fmt::Debug for Listening {
     }
 }
 
-/// Starts `instance`'s ConnectNamedPipe with `ov`: where it stands as the call returns. A
+/// Starts `instance`'s ConnectNamedPipe in `call`: where it stands as the call returns. A
 /// client may open an instance as soon as it is made, before this call, which then says so
 /// at once (ERROR_PIPE_CONNECTED, ConnectNamedPipe), its OVERLAPPED never the system's.
-fn connect(instance: &OwnedHandle, ov: *mut OVERLAPPED) -> Connect {
-    // SAFETY: a fresh OVERLAPPED of ours, the system's until the call finishes (`look`, `drop`),
-    // on a server end of ours opened for overlapped calls.
-    let started = unsafe {
-        ov.write(OVERLAPPED::default());
-        ConnectNamedPipe(instance.as_raw_handle(), ov)
-    };
+fn connect(instance: &OwnedHandle, call: &Call) -> Connect {
+    // SAFETY: a slot no call is under way in, its OVERLAPPED made fresh, the system's until the
+    // call finishes (`look`, `drop`), on a server end of ours opened for overlapped calls.
+    let started = unsafe { ConnectNamedPipe(instance.as_raw_handle(), call.fresh()) };
     if started != 0 {
         return Connect::Connected;
     }
@@ -671,16 +711,16 @@ fn connected(finished: Option<Result<usize, u32>>) -> Connect {
 impl Listening {
     /// The pair whose way down is `down` and way up `up`: server ends of byte-mode duplex
     /// instances opened for overlapped calls, unconnected. Its connects start at once.
-    pub fn new(down: OwnedHandle, up: OwnedHandle) -> Listening {
+    pub fn new(down: OwnedHandle, up: OwnedHandle) -> io::Result<Listening> {
         let calls = Box::new(ListenCalls {
-            down: UnsafeCell::new(OVERLAPPED::default()),
-            up: UnsafeCell::new(OVERLAPPED::default()),
-            watch: UnsafeCell::new(OVERLAPPED::default()),
+            down: Call::new()?,
+            up: Call::new()?,
+            watch: Call::new()?,
             byte: UnsafeCell::new(0),
         });
-        let down_at = connect(&down, calls.down.get());
-        let up_at = connect(&up, calls.up.get());
-        Listening {
+        let down_at = connect(&down, &calls.down);
+        let up_at = connect(&up, &calls.up);
+        Ok(Listening {
             down: Some(down),
             up: Some(up),
             calls,
@@ -688,7 +728,7 @@ impl Listening {
             up_at,
             watch: Watch::Idle,
             key: None,
-        }
+        })
     }
 
     /// Associates its handles with the completion port `port`, which is told of its calls'
@@ -712,13 +752,13 @@ impl Listening {
     /// way down open and its way up not, the way down's watch starts.
     pub fn look(&mut self) -> Paired {
         if let (Connect::UnderWay, Some(down)) = (self.down_at, &self.down) {
-            self.down_at = connected(outcome(down, self.calls.down.get()));
+            self.down_at = connected(outcome(down, self.calls.down.ov()));
         }
         if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
-            self.up_at = connected(outcome(up, self.calls.up.get()));
+            self.up_at = connected(outcome(up, self.calls.up.ov()));
         }
         if let (Watch::UnderWay, Some(down)) = (self.watch, &self.down)
-            && outcome(down, self.calls.watch.get()).is_some()
+            && outcome(down, self.calls.watch.ov()).is_some()
         {
             self.watch = Watch::Ended;
         }
@@ -744,17 +784,15 @@ impl Listening {
             self.watch = Watch::Ended;
             return;
         };
-        let ov = self.calls.watch.get();
         // SAFETY: no watch is under way: its OVERLAPPED is ours to make fresh; a read of none
         // of the byte kept beside it, the system's until it finishes (`look`, `into_pipes`, `drop`).
         let started = unsafe {
-            ov.write(OVERLAPPED::default());
             ReadFile(
                 down.as_raw_handle(),
                 self.calls.byte.get(),
                 0,
                 std::ptr::null_mut(),
-                ov,
+                self.calls.watch.fresh(),
             )
         };
         // SAFETY: no arguments.
@@ -772,7 +810,7 @@ impl Listening {
             ));
         }
         if let (Watch::UnderWay, Some(down)) = (self.watch, &self.down) {
-            settle(down, self.calls.watch.get());
+            settle(down, &self.calls.watch);
         }
         self.watch = Watch::Idle;
         let (Some(down), Some(up)) = (self.down.take(), self.up.take()) else {
@@ -793,14 +831,14 @@ impl Drop for Listening {
     fn drop(&mut self) {
         if let Some(down) = &self.down {
             if self.down_at == Connect::UnderWay {
-                settle(down, self.calls.down.get());
+                settle(down, &self.calls.down);
             }
             if self.watch == Watch::UnderWay {
-                settle(down, self.calls.watch.get());
+                settle(down, &self.calls.watch);
             }
         }
         if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
-            settle(up, self.calls.up.get());
+            settle(up, &self.calls.up);
         }
     }
 }
@@ -1077,7 +1115,7 @@ mod tests {
     fn a_listening_pair_is_a_connection_once_both_ways_are_open() {
         let names = shards_ipc::VsockNames::fresh().unwrap();
         let (down, up) = shards_ipc::vsock_pair(&names, true).unwrap();
-        let mut pair = Listening::new(down, up);
+        let mut pair = Listening::new(down, up).unwrap();
         assert_eq!(pair.look(), Paired::Waiting);
         let mut their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
         // Its connect's finish is the next look's, as it lands.
@@ -1110,7 +1148,7 @@ mod tests {
     fn a_client_gone_before_its_way_up_breaks_its_pair() {
         let names = shards_ipc::VsockNames::fresh().unwrap();
         let (down, up) = shards_ipc::vsock_pair(&names, true).unwrap();
-        let mut pair = Listening::new(down, up);
+        let mut pair = Listening::new(down, up).unwrap();
         let their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while pair.watch != Watch::UnderWay {

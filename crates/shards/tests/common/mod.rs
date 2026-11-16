@@ -6836,6 +6836,7 @@ pub fn host_port_accept(port: &mut HostPort) -> io::Result<VsockStream> {
 /// it; its writes as `std` writes a file, each waited for to its end, a refused one's error
 /// the OS's own (ERROR_NO_DATA, 232, once its reader has closed its end).
 #[cfg(windows)]
+#[derive(Debug)]
 pub struct PipeStream {
     reads: shards_ipc::Pipe,
     /// None once its writes are shut down, which its peer reads as their end.
@@ -8483,15 +8484,27 @@ impl Told {
 
     /// Its host's word that it is short of memory, once.
     pub fn say(&mut self) {
+        self.word(b"\n");
+    }
+
+    /// Its host's word that it has `bytes` of memory available, in place of its kernel's
+    /// count (D252): every charge its daemon makes of a run's buffers is held to it once its
+    /// daemon has heard it, which it says in its log (`told the host has N bytes`), as a
+    /// microVM runs (D188: its watcher listens then alone).
+    pub fn available(&mut self, bytes: u64) {
+        self.word(format!("available {bytes}\n").as_bytes());
+    }
+
+    fn word(&mut self, line: &[u8]) {
         #[cfg(unix)]
         std::fs::OpenOptions::new()
             .write(true)
             .open(&self.path)
             .unwrap()
-            .write_all(b"\n")
+            .write_all(line)
             .unwrap();
         #[cfg(windows)]
-        self.server.write_all(b"\n").unwrap();
+        self.server.write_all(line).unwrap();
     }
 }
 

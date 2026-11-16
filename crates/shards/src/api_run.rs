@@ -305,6 +305,23 @@ fn host(answers: &Answers) -> Result<(), No> {
     };
     step(format_args!("its request read"));
     input.shed();
+    // What its host has available where a test tells it (D188's told pipe, D252): the first
+    // line of what `SHARDS_PRESSURE` names, read before its run is made, so that every charge
+    // its run makes as it starts is held to it in place of its kernel's count.
+    match crate::pressure::first(crate::pressure::TOLD) {
+        Ok(Some(crate::pressure::Word::Available(bytes))) => {
+            say(format_args!(
+                "told its host has {bytes} bytes of memory available"
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(No(
+                Cause::Boot,
+                format!("its host's word ({}): {e}", crate::pressure::TOLD),
+            ));
+        }
+    }
     // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
     if kind == wire::to_host::WARM {
         return hosted::warm(answers, &request, input);
@@ -9685,6 +9702,10 @@ mod hosted {
         Ok(())
     }
 
+    /// A bounded volume's bound, in bytes, and its count file (D281), as its hold counts it
+    /// ([`crate::volumes::Holds::count`]).
+    type PlugBound = (u64, PathBuf);
+
     /// The host directory a plug gives (D271): the one named, absolute; or the data of the
     /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
     /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
@@ -9695,7 +9716,7 @@ mod hosted {
         live: &Live<'_>,
         from: &wire::PlugFrom,
         at: &str,
-    ) -> Result<(PathBuf, Option<(u64, PathBuf)>), (wire::PlugRefusal, String)> {
+    ) -> Result<(PathBuf, Option<PlugBound>), (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
         match from {
             wire::PlugFrom::Host(host) => {
@@ -9748,7 +9769,7 @@ mod hosted {
         live: &Live<'_>,
         member: u32,
         host: &Path,
-        bound: Option<&(u64, PathBuf)>,
+        bound: Option<&PlugBound>,
         at: &str,
         read_only: bool,
         exec: bool,

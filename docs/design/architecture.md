@@ -4890,6 +4890,30 @@ Open:
 - Egress grants for a network (AGENTFILE_ARCH §4.6 `NETWORK --egress`), with the
   Agentfile.
 
+**Amended (lane xnet-s6, 2026-11-16, ROOT's decision): NXDOMAIN, not REFUSED.** A question no
+table of the network process holds and no grant lets past the microVM (a name the network does
+not hold, a peer no link reaches, an `enable_icc` false network's among them, a name past the
+network; D59's ungranted names; a shared network's, D285) is answered at once NXDOMAIN
+(`shards_dns::denied`), by UDP and by TCP (D79's relay), where it was REFUSED, as the agents'
+resolver answers one since D278's amendment of the same day. musl's stub drops REFUSED: "Only
+accept positive or negative responses; retry immediately on server failure, and ignore all other
+codes such as refusal" (src/network/res_msend.c, its `switch` on the RCODE: 0 and 3 kept, 2 sent
+again, the rest `continue`), so a member's lookup of a name its network refused waited out
+musl's timeout (`RES_TIMEOUT`, 5 s) and ended EAI_AGAIN (lookup_name.c `name_from_dns`), where
+NXDOMAIN ends it at once, EAI_NONAME; glibc ends either at once (resolv/res_send.c `send_dg`).
+The answer carries no SOA, so that no resolver caches it past a grant that names the name later
+(RFC 2308 §5). REFUSED stays for what is no query of one question.
+- *Literals* (R03): NXDOMAIN, 3, and REFUSED, 5: RFC 1035 §4.1.1's RCODEs.
+- *Tests* (written, not run, by the person's word of 2026-11-16): shards-dns
+  `a_responses_addresses_are_read` (a question no grant names: NXDOMAIN, its ID and question
+  kept; one of two questions: REFUSED), `tcp_questions_go_on_whole_and_only_as_granted` and
+  `tcp_refusals_wait_for_an_answer_to_end_and_answers_are_learned` (by TCP); containers.rs
+  `a_networks_options_are_what_its_microvms_do` (a peer no link reaches: `dnsttl rcode 3`) and
+  `microvms_on_a_network_reach_one_another_by_name` (`example.com`: rcode 3). Owed (ROOT):
+  `cargo test -p shards-dns --profile test-release`; on real VMs (HVF, KVM, WHP), `cargo test -p
+  shards --profile test-release --test containers -- a_networks_options_are_what_its_microvms_do
+  microvms_on_a_network_reach_one_another_by_name`.
+
 ### Every action makes an image a microVM first (D47)
 
 `shards run vm IMAGE` has made a microVM of a container image as it pulls it since D25:
@@ -9776,6 +9800,64 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**Amended: a told line says what its host has available** (2026-11-16, ROOT's decision; lane
+charge-seam).
+- *Why.* D252's charges are held to the host's available memory (daemon/managed.rs
+  `Charge::grow`), which no unprivileged process can set. So no real-VM test could give a run
+  room for its link but not for its first lanes (lane phase6-v). ROOT's decision: tell it
+  through this channel (R12), with one reader for the daemon and the run host, and no channel
+  of its own.
+- *The words.* Each told line, its newline apart, is one of two:
+  - empty: the host is short of memory, as before;
+  - `available BYTES`, BYTES in decimal digits alone: the host has BYTES of memory available,
+    in place of its kernel's count (`shards_ipc::host_available`: Linux's `MemAvailable`,
+    macOS's `kern.memorystatus_level`, Windows' `ullAvailPhys`). Every charge is held to it
+    from then on, until a line says another.
+
+  Any other line is refused `InvalidData`: a sign, a CR, a space, a number past a u64, or a
+  line past the longest word. The longest word is 30 bytes (`available ` and the 20 digits of
+  `u64::MAX`); a longer line is refused as it reaches that length rather than held. A line its
+  pipe's end cuts off is `UnexpectedEof`. Before, any line was a short word. Every line
+  written so far was empty (`common::Told::say`, build.rs's and build_windows.rs's), so no
+  writer changes.
+- *One reader* (pressure.rs).
+  - `read_word` reads a line a byte at a time, as before, so that it never takes the next
+    line's bytes.
+  - `heard` keeps an `available` word's bytes as the process's own (`TOLD_AVAILABLE`).
+  - `available()` answers the told bytes where a line has told some, else the kernel's count.
+  - `Charge::grow` measures every charge against `available()`, the daemon's runs' and a run
+    host's alike.
+- *Where it is read.*
+  - The daemon: its watcher, through `Pressure::wait`, which now returns the word
+    (`Word::Short` for every word of its kernel's). It hears an `available` word as it hears a
+    short one, while a microVM runs, since it listens only then (above). It says each in its
+    log: `told the host has N bytes of memory available: every run's charge is held to that`.
+    A test keeps a microVM running and waits for that line before it starts a run.
+  - A run host (`shards api-run`, D231, which shards-api's boot starts): the first line of
+    what `SHARDS_PRESSURE` names in its environment (`ImageSpec::env`), a FIFO, a named pipe
+    or a file. It is read once its request is read and before its run is made
+    (`pressure::first`, in `host`), so that every charge its run makes as it starts is held to
+    it. A pipe no line has reached yet is waited on. The run host says the word in its
+    diagnostics; one it cannot read refuses its run `Cause::Boot`. Later lines are not read: a
+    run host is told once, as its run is made.
+  - A build (`SHARDS_BUILD_PRESSURE`): its watcher reads the word and asks its builders
+    nothing at it, as no builder is charged to a budget.
+- *Literals* (R03): the word's name, `available`; its longest line, 30 bytes, derived from the
+  name and `u64::MAX` (`u64::MAX.ilog10() + 1` digits). No number is chosen.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  - `pressure::words::a_told_line_is_short_or_what_its_host_has_available`: both words, one
+    after another from one pipe; each refused line; a line cut off. It reads only and tells
+    nothing, since the told bytes are the process's, which other unit tests' charges read.
+  - `pressure::tests::a_fifo_tells_its_pressure_a_line_at_a_time`: its words are `Word::Short`.
+  - Real VM: D252's two tests (its amendment of this date).
+- *Owed* (ROOT).
+  - `cargo test --profile test-release -p shards --bin shards -- pressure::`
+  - The told pipe's real-VM tests, whose words are unchanged, on HVF, KVM and WHP:
+    `--test containers -- --exact what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`,
+    `--test engine_ring -- --exact a_give_back_lets_an_idle_slot_go`,
+    `--test build -- --exact a_builder_gives_back_what_it_holds_cold_at_its_builds_word`
+    (Unix), and `--test build_windows` (WHP).
+
 **R03 review memory-06..08, 10 (2026-11-14, implemented; PM M581):** no fixed time
 or level is left in how the host hears its pressure and paces what follows it:
 - *What a pressure is* (memory-07): a PSI trigger's window's stall is pressure once
@@ -9868,7 +9950,8 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   the daemon reads on its passes' pace (memory-06). Where `SHARDS_PRESSURE` names a FIFO (on Windows,
   a named pipe), each line written to it is the host's word in place of its kernel's, as
   `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
-  macOS's or Windows' pressure.
+  macOS's or Windows' pressure. A line may say what the host has available instead (the
+  amendment of 2026-11-16, above).
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -34694,7 +34777,74 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
   - Clippy on the seven targets.
   - Real VM, on HVF, KVM and WHP: a run with stdio lanes whose budget has no room for its first
     generation, refused `Capacity`, its VM never handed the run (no member output, no
-    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once.
+    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once. Both
+    written since (the amendment below).
+
+**Amended: the host's available memory told, and the charges' two real-VM tests written**
+(2026-11-16, ROOT's decision; lane charge-seam).
+- *Why.* The two real-VM tests the amendment above owes could not be written (lane
+  phase6-v). Both charges are held to the host's available memory, which no test can set, and
+  a host with room shows no charge's size. ROOT's decision: a test seam on D188's told channel
+  (R12), read by the same reader in the daemon and in the run host; and a charge made
+  observable only where a test cannot otherwise see that it is charged once.
+- *The seam* (D188's amendment of this date). A told line `available BYTES` sets what
+  `Charge::grow` measures against (`pressure::available`): the told bytes where a line has
+  told some, else the kernel's count.
+  - The daemon hears the line on its watcher while a microVM runs, and logs it.
+  - A run host reads the first line of what its `SHARDS_PRESSURE` names before its run is
+    made.
+
+  No wire changed: the image channel stays at version 51.
+- *Nothing new made observable.* Each refusal already says what its charge asked:
+  - the daemon's, typed `Admission::Insufficient { requested, available }`, which its client
+    is told as `managed output admission: N bytes requested, M available`;
+  - the run host's link's, typed `Cause::Capacity`, which names the link's bytes.
+
+  A test that tells a size reads what the refused step asked, so no field was added.
+- *The tests* (written, not run: the person's rule of 2026-11-16).
+  1. api_image.rs
+     `a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`: an
+     image whose harness sleeps, its stdio as its endpoint's lanes (`ControlAsk::stdio`), its
+     run host told through a file.
+     - Told 0: refused `ImageRefusal::Capacity` at its link, which names the link's bytes, L.
+     - Told L, room for its link alone: refused `Capacity` at its harness's first lane
+       (`member N's first Stdout lane`), by `charge_first` before `hand_over`, so its VM is
+       never handed the run and none of its members starts.
+     - Told `u64::MAX`: it starts.
+  2. managed_output
+     `endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`:
+     log_lanes's image of agents `a` and `b` (its `Home`, now shared and given a told pipe),
+     with a plain microVM kept running so that the daemon's watcher listens.
+     - Told 0: a run asking `shards.control=true` and owning `a`'s output is refused at its
+       reservation, which says its bytes, R.
+     - Told R: that run, and one owning no output, are each refused at their endpoint with
+       nothing left, and each says the same charge. It is the link (`HANDSHAKE_BYTES` ×
+       `control::CONNECTIONS`, and a datagram each way) and the kernel queues of three
+       sockets. The test reads those queues from an endpoint of one stream it binds itself
+       (step 5's: its driver's served socket and wake, and its control's waker, all bound on
+       loopback by the same `net::Driver::bind_bounded`).
+     - A waker charged twice where an output is owned, or not at all where none is (as before
+       lane charge-2), makes one of the two charges differ by one socket's queues.
+     - Told `u64::MAX`: the run starts.
+- *Literals* (R03). Every number the tests use is D252's own or read on the host:
+  - RFC 8446 §4's largest handshake message (`HANDSHAKE_BYTES`, 16,777,219), D238's two
+    connections (`control::CONNECTIONS`) and D180's datagram (`DATAGRAM_BYTES`, 65,527), one
+    each way (`link_bytes`);
+  - the sockets' queues, as the OS where the test runs reports them (`getsockopt`);
+  - every other size is what a refusal said;
+  - 0 is no room at all, and `u64::MAX` the most a told word can say, room for any charge.
+- *On Windows.* The daemon's told pipe is a named pipe (`common::Told`). The run host's told
+  word is a file, read the same way on every OS.
+- *Owed* (ROOT), on HVF (macOS arm64), KVM (Linux amd64) and WHP (Windows), with
+  `SHARDS_REQUIRE_VMS=1`:
+  - `cargo test --profile test-release -p shards --bin shards -- pressure:: daemon::managed:: api_run::`
+  - `cargo test --profile test-release -p shards --test api_image -- --exact
+    a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`
+  - `cargo test --profile test-release -p shards --test managed_output -- --exact
+    endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`
+  - `cargo test --profile test-release -p shards --test managed_output log_lanes` (its `Home`
+    changed)
+  - `scripts/lint` (the seven targets).
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 
@@ -35868,7 +36018,7 @@ ended by an orchestrator's broken channel, or by a VM that could not serve it, w
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
 
-### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and step 33's real sessions, owed)
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605, and on WHP once the scan left Windows' holes unread, step 33.10; again on KVM x86-64 with that scan, on KVM arm64, and step 33's real sessions, owed)
 
 **Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
 harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
@@ -35956,6 +36106,12 @@ on disk is the most sensitive thing a run has:
     mapped, not read in, and walked in time linear in its size, with a heap that does not grow
     with it (#74 step 10: a run of a form's bytes walked a host page at a time, windows looked
     up through anchors; the old unbounded match ran out of memory on WHP);
+  - a save's holes left unread (PM M561): only each file's data, as lseek(2)'s SEEK_DATA and
+    SEEK_HOLE give it, and on Windows as FSCTL_QUERY_ALLOCATED_RANGES gives it, the call the
+    VMM's `platform::allocated_ranges` makes (step 33.10: on WHP the check never ended, reading
+    every byte of a save's sparse files, a 10 GiB layer among them); each range widened by the zeros a
+    finding can take, those that meet joined, as the call does not say it gives touching ranges
+    joined; a run cut short of a unit where a read ends keeping its last byte;
   - each value's UTF-16LE and base64 forms;
   - the run's placeholders, given as public, whose windows are no leak;
   - the bring-up's credential shapes, those no value explains listed by where they lie;
@@ -35983,6 +36139,10 @@ on disk is the most sensitive thing a run has:
       macOS, 281300 B on Linux), where the old scan's reached 2239349400 B; the time is less
       than half the old; the findings are the same, digest for digest.
   - Exit 3 is credentials.py's for a leak; 4 is the next.
+  - Step 33.10 adds no chosen number. FSCTL_QUERY_ALLOCATED_RANGES (0x940CF) and
+    FSCTL_SET_SPARSE (0x900C4) are winioctl.h's CTL_CODEs, ERROR_MORE_DATA (234) winerror.h's and
+    INVALID_FILE_SIZE fileapi.h's; st_blocks counts 512-byte units (Linux's and macOS's stat(2)).
+    The scan asks for one range at a time, so no buffer is sized.
 
 **Cold start** (R03). Nothing is learned or chosen.
 
@@ -36010,15 +36170,21 @@ carrier: a bundle over origin/main in a blobless clone):
     now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
     first hung its test; the test's VM now bounds its reads, so the test fails rather than
     hangs.
+- Step 33.10 (lane s33-scan, the scan's README): `scan_test.py` 12 passed on Windows (jupiter,
+  NTFS, Python 3.14.8) and macOS (Python 3.9.6), and `guards.py`'s removals failed, 6 of 6 there
+  and 4 of 4 here, `windows-ranges` among them: scan.py as main had it on Windows, which the
+  sparse test fails there. The sparse test found the run's last byte lost on macOS first.
 
 **Owed** (ROOT).
-- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
-  WHP and, through L1, KVM arm64. On KVM x86_64 and HVF it passed (PM M605, 2026-11-15,
-  `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at 6a0adfc09, KVM twice, and 32 of
-  32 at the vendor point 4124d8c70).
+- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`
+  through L1 on KVM arm64, and again on KVM x86_64 with step 33.10's scan. On KVM x86_64 and HVF
+  it passed (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at
+  6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70). On WHP it passed in 22.49 s
+  with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, lane whp-verify's D272 commit
+  over main 3d91d54f1, on main since fe83503c2; the scan's README).
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
-- These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
+- These light tests on Linux (`scan_test.py`, `guards.py`), and `scripts/lint` on every target.
 
 **What would falsify it.**
 - A save asked other than on its run's own channel that is made.
@@ -37765,7 +37931,7 @@ for its VM process, as D269's did (a Linux run host starts its VM binary through
 **Owed** (ROOT, real VMs): both on WHP and KVM arm64; the test guest's `plugged-volumes` mode is
 new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; run on WHP 2026-11-16, two faults found and fixed, below; xwin clippy of S3-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37925,8 +38091,8 @@ finds nothing.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
-- *Slots*: a connection holds two handles on Windows (`HELD_PER_CONNECTION`), a served
-  port's one.
+- *Slots*: a connection holds two pipes on Windows, and an event each (the WHP run, below):
+  four handles (`HELD_PER_CONNECTION`), a served port's one.
 - *The pipes' conventions* are shards_ipc's (`pipe/vsock.rs`), every party's: names of 64
   random bits (`VsockNames::fresh`); the path's file, the way down's name and the way up's,
   each with a newline, read within two names' bytes (256 characters each, CreateNamedPipeW,
@@ -38042,6 +38208,40 @@ written, not run):
   nowhere (M358); green on pipes, as the device closes a connection's way up before its way
   down's end can be read: as the connection ends (`Conn::end`), and where the guest's one
   SHUTDOWN ends both ways at once and its way down closes in the same turn (`Conn::flush`).
+
+**The first WHP run** (lane whp-verify; jupiter, Windows 10.0.26200.9974; main 3d91d54f1):
+shards_ipc `pipe::vsock::tests` (4) and shards_api's `client::borrowed_tests` and full-listener
+dial (13, 2 ignored as written) passed; of shards_vmm's `platform::windows_pipes` and
+`devices::virtio::vsock` tests one failed and four hung, and the vsock E2E hung, each found here:
+- *A call's end on the device's port* (fixed). `muxer::tests`
+  `a_host_programs_pipes_reach_its_guest_and_end_with_it`, `a_rates_pipes_are_answered_by_its_owner`
+  and `a_client_gone_with_its_way_down_alone_lets_the_next_in` hung, each in GetOverlappedResult
+  (cdb: from `Conn::end` and from drops of `Pipes`), as did `vsock::tests::a_refused_worker_leaves_the_device_whole`,
+  and so did the E2E's VM process, its `virtio-vsock` thread there. `settle` cancelled a call and waited for its end on its handle,
+  the OVERLAPPED naming no event; a handle associated with a completion port has such a call's
+  end written, and the handle set, only as its packet is taken from the port, and the device's
+  worker, the one thread that takes it, was the thread waiting. Measured
+  (docs/research/measurements/vsock-pipes-port-cancel): a cancelled read's 3 s wait timed out
+  after 4.7 s still under way, its packet in the port; with no port, or with an event named,
+  it ended in 1.3 us at most. Each call's OVERLAPPED now names a manual-reset event of its own
+  (`platform::windows_pipes::Call`, shards_ipc's `Event`), which a ReadFile or WriteFile resets
+  as it begins and its end sets, its packet still the port's; `settle` and
+  `write_all_waiting` wait on it. A connection then holds four handles on Windows, two pipes and
+  an event each (`HELD_PER_CONNECTION`), a listening pair five.
+- *A wait a packet ends with nothing ready* (fixed). `poll::tests::a_wait_wakes_for_data_that_comes_while_it_waits`
+  failed: its wait for a socket's data returned after 292.6 us with nothing ready. A packet only
+  says to look, and one came that left nothing ready. Which one is unmeasured; the sockets'
+  event is set by network events no interest waits for (FD_WRITE as a socket is associated
+  anew, WSAEventSelect), and the thread-pool wait one wait sets is left set into the next. The
+  Windows wait now goes on for the time left past a packet that leaves nothing ready, as
+  poll(2)'s does: it ends as an interest is ready, as its waker wakes it, or as its timeout
+  passes.
+- *After both* (jupiter, the fix on main f8f95832f): shards_vmm's 62 passed, the five above
+  among them; shards_ipc's 4 and shards_api's 13 (2 ignored) passed again; and every test of
+  crates/shards/tests/vsock.rs passed on WHP, none skipped (`SHARDS_REQUIRE_VMS=1`): first
+  `a_guest_that_ends_its_stream_gives_its_host_every_byte_first` (34.8 s, the host's write after
+  each end refused at once, 232), then the other five, the two restores among them. Unmeasured
+  still: `VSOCK_QUOTA` over WHP's pipes, and a connection's cost in its four handles.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
@@ -39329,7 +39529,7 @@ named ones are.**
     image with a `VOLUME`, `shards volume prune -f` while it runs passing its volume by, its
     files kept; the volume and its lock file gone once the run ends.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends, built, its real-VM tests written and owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -39496,7 +39696,8 @@ join until 4 and 5 have landed):
    its guest's asks; shards-api's pairings and each run host's links socket; a network made
    beforehand, with `network create`'s pool and words (`Networks::create`), never by a join. The
    image channel's version one past main's at landing (built: version 50, *Slice 4, built* below;
-   `AddressTaken` arises from no join, which asks no address; `Networks::create` is not built).
+   `AddressTaken` arises from no join, which asks no address; `Networks::create`, and its removal,
+   built by slice 6, *Slice 6, built* below).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -39507,7 +39708,7 @@ join until 4 and 5 have landed):
    `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`: A's client reaches
    B's server's port once both have joined; refused on another port, the other way, and from B's
    other member; reset and refused once A leaves; a run host killed, its address given to the next
-   join.
+   join (written as built, *Slice 6, built* below).
 - IPv6 on a shared network (D99's) comes after: a network with IPv6 is refused (`Ipv6`) until then.
 - Docker's `network connect` of a running microVM (D46's open item) can come of slice 3's table,
   Docker's networks keeping Docker's reach; a microVM's second network is then eth0's second
@@ -39538,8 +39739,9 @@ join until 4 and 5 have landed):
   without it: its gate shut, its open flows reset; then `NET_PEER_GRANT`; then `NET_JOIN` without
   it as its name goes, or, the run's last member's, `NET_LEAVE`, dropping the run's links, as its
   address and pairing go) → none. A run's end lets every lease go with its host and every link
-  with its network process; shards-api tells the network's other runs their names without it at
-  the network's next change.
+  with its network process; each other run's network process withdraws its names as its link
+  there closes, and shards-api tells the network's other runs their members without it once its
+  host is reaped (slice 6; slice 4 waited for the network's next change).
 - *A flow* (slice 3), per link: none → (its first packet admitted: a TCP SYN or a UDP datagram, its
   sender's grant and its receiver's both taking it, each at its own end) **open** → (a TCP RST, or a
   FIN each way) none; **open** → (idle past its timer) none; its link dropped, every flow of it
@@ -39818,7 +40020,7 @@ and `image::session::links`; the run host's `connect_live`, `disconnect_live`, `
   run's host asked; each other run of the process's on the network told its members again
   (`Rejoin`); then, the run new to it, a link made with each. A run that has ended is let go of at
   its network's next change: its link ended with its network process, so nothing reaches it, its
-  name answered meanwhile.
+  name answered meanwhile (slice 6: at once, *Slice 6, built*).
 - *Pairing across processes* (`Leases::pair_as`): an orchestrator's run hosts hold a network's
   pairing together, each a lease `pairers/HOLDER` saying its orchestrator's token, refused
   `PairedElsewhere` while the daemon pairs the network or another orchestrator's run host holds
@@ -39858,7 +40060,7 @@ and `image::session::links`; the run host's `connect_live`, `disconnect_live`, `
   the standard streams (POSIX's 0 to 2); the token's 64 hex digits, slice 1's ID form. Nothing
   else: names' 253 bytes are slice 5's `HOST_MOST`.
 - *Not built*: `Networks::create` of shards-api's own (a network is made through the daemon's
-  `network create` until it is); `AddressTaken` (no join asks an address).
+  `network create` until it is; built by slice 6); `AddressTaken` (no join asks an address).
 - *Unmeasured* (R14, ROOT's): a connect's round trips (its host's leases, `NET_JOIN`,
   `NET_PEER_GRANT`, its guest's exec, then each other run's `Rejoin` and each link's two asks); the
   reservation's duplicates, one per link to come at each control message.
@@ -39890,6 +40092,105 @@ macOS, Linux (glibc and musl) and Windows (the links' Windows arm: cargo-xwin, j
   among them, has its questions taken by its gate and the switch from its start, each answered at
   once, a name nothing grants it NXDOMAIN, where its gate held them until a grant opened them and
   each lookup waited out its stub's timeout (D278's amendment of this day).
+
+**Slice 6, built** (lane xnet-s6, 2026-11-16; written, neither built nor run, by the person's word
+of that day: ROOT builds and runs it). shards-api `networks`; `shards api-networks`
+(`api_networks.rs`); `networks::made`, the daemon's path moved there; the net crate's `shared.rs`
+and `lib.rs`; shards-api `image::session::links` and `session::watch`; the test guest's
+`ask-trap`, `dnsttl-each`, `udp-each`, `resolve-took` and `ask`'s bytes; api_image.rs's tests.
+- *A network made and removed by an orchestrator* (item 4's `Networks::create`): shards-api's
+  `networks::Networks { binary, env }`, `create(name)`, the network's ID, and `remove(name)`, each
+  asking `shards api-networks create|remove NAME` (one of `cli::INTERNAL`), which answers one frame
+  on stdout (`CREATED` 1, `REMOVED` 2, version 1), as `shards api-volumes` answers (D281), with no
+  daemon. What kiln and Hex need and no more: a network by its name, `network create NAME`'s
+  defaults (a bridge network of IPv4, its subnet the lowest of dockerd's pools free of the home's
+  networks and the host's), and its removal by that name.
+- *One path, the daemon's* (R12): `network create`'s whole path is `networks::made::create(home,
+  bridge, &Create)`, moved from the daemon unchanged in its order and words (docker/cli's checks,
+  `consolidate` and `ipam_errors`; then dockerd's; the record kept under the home's networks lock,
+  slice 1's `leases::hold`); its ask typed (`Create`: the daemon builds it of its flags;
+  `Create::named` is `network create NAME`'s). `made::all(home, bridge)` is the home's networks with
+  dockerd's predefined ones, `bridge` the default network's its caller elected: the daemon's at its
+  start; `shards api-networks`' as `api-run` elects its runs' (`bridge::elected_here`, D31), so that
+  a network made keeps clear of the subnet its runs' eth0 is on, which a join there would refuse
+  `Overlaps` (slice 5). `made::remove(home, held, networks, n)` is `network rm`'s and `prune`'s:
+  refused while networks take their settings from it, else its leases cleared (slice 1's
+  `Leases::clear`: refused while a lease lives or a process pairs it) and then its record;
+  `made::remove_named(home, name)`, the orchestrator's, finds it by its name alone, never by an
+  ID's beginning as `network rm` does, so that a name whose network has gone names no other
+  network. The daemon says each refusal as before: the CLI's checks bare, the rest after
+  `shards: `; its own runs named before `remove`, as before.
+- *Refusals* (R04): shards-api `NetworkRefusal::Create(CreateCause, words)`: `Name` (1: none, or
+  one of shards' own), `Exists` (2: its caller's to take as made), `Pool` (3), `Host` (4: the
+  home's files, its lock, the host's random source); `NetworkRefusal::Remove(RemoveCause, words)`:
+  `Unknown` (1), `Shards` (2), `InUse` (3: a run of any process on it, the daemon's runs' address
+  leases among them, a process pairing it, networks made from it; refused at once, never waited
+  for), `Host` (4); `Start`, `Os`, `Ended`, `Version` and `Wire`, as `VolumeRefusal`'s. The seam's:
+  `made::Unmade` (`Flags`, `Name`, `Exists`, `Settings`, `Pool`, `Host`) and `made::Kept`
+  (`Unknown`, `Shards`, `InUse`, `Host`); a name alone meets no `Flags` or `Settings`, which
+  `shards api-networks` would fail on, saying it on its stderr (`Ended`).
+- *A run's names withdrawn as its link ends* (slice 4's let-go at the next change, ROOT's
+  decision): a network process whose link to another run closes at its far end (its end read, or
+  a read or write broken: that run ended, or left the network) withdraws, at once, every name and
+  alias at that run's address from the network's names (`shared::Networks::unlinked`, from
+  `Stack::peer_gone`), the closed link the evidence. None is answered there again until a link to
+  that address comes (`Networks::linked`, at `NET_LINK`), whatever a join names meanwhile, as one
+  told before that run's leases went may; a join without the address forgets its mark, so that a
+  run joining there later is answered. The table is made again from its join's list in its order,
+  names before aliases, so that an address's PTR answers a member's name. Its own drops (a newer
+  link in an older's place, a join without the peer, its leaving) withdraw nothing: no far end
+  closed. The guest's resolver answers from the guest's own tables (slice 5), so shards-api tells
+  the other runs too, at once: once an ended run's host is reaped (`session::watch`), its leases
+  gone with it (their own drop, or the kernel's at its end), the run is let go of on each of the
+  process's shared networks and each other run there told its members again (`links::host_gone`;
+  slice 4's `Rejoin`, whole, from the leases), each waiting with no clock until its host answers,
+  its run ends or its host is gone, outside a change's turn (`TURN`), as each telling is whole and
+  the last read of the leases stands. The closed link's run gives its leases back as its host
+  ends; the others' tellings, looking under the home's lock, remove a stale one's file.
+- *Literals* (R03): `networks::VERSION` 1, a new answer's first; the frame kinds 1 and 2 and the
+  causes' bytes from 1 (0 a success's), each answer's own, as `api-volumes`'. Nothing else: the
+  pools, checks and words are `network create`'s (D46), moved unchanged. The tests' own:
+  `DIAL_MS`, 4000, past a SYN's first two retransmissions (RFC 6298 §2.1's initial RTO of 1 s,
+  doubled at each, §5.5); 2500 ms, musl's first retry of a question (`timeout / attempts`,
+  res_msend.c, 5 s and 2 its resolv.conf defaults).
+- *Unmeasured* (R14, ROOT's): a create's and a remove's cost (a process started, the home's
+  lock, a store's walk); the other runs' tellings as a run ends, one `Rejoin` each.
+
+**Tests** (slice 6; written, not run). Light: shards-api `networks`
+`a_makings_answer_reads_back_typed`, `a_removals_answer_reads_back_typed`,
+`each_call_asks_shards_api_networks_in_its_home`, `a_missing_shards_is_refused_as_not_started`;
+`image::session::links` `a_run_whose_host_has_gone_is_let_go_and_the_others_told_at_once`;
+`networks::made` `ipam_configs_are_consolidated` (moved from the daemon),
+`a_network_is_made_by_its_name_and_removed_once_no_run_holds_it`,
+`a_removal_by_name_never_takes_a_network_by_its_ids_beginning`; `api_networks`
+`a_network_is_made_and_removed_by_its_name_alone`; the net crate's shared.rs
+`a_runs_names_go_with_its_link` and lib.rs `a_runs_names_are_withdrawn_as_its_link_ends`. Real
+VMs, api_image.rs: `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`
+(the network made with `Networks::create`, a second refused `Exists`; a reaching b by name on P,
+its bytes echoed, b's server seeing a's address; no flow to b on P + 1, where b listens; none
+from b to a on P, where a listens; a name nobody granted answered NXDOMAIN; a's connections to b
+on P refused from the first after b's grant there is taken back, b kept on the network by its
+grant on P + 2; b's name answered to a no more once run B has ended; the network's removal
+refused `InUse` while run A holds it, made once A has ended, then `Unknown`);
+`a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once` (a ceiling of ports
+alone: musl's lookup ends EAI_NONAME, "Name does not resolve", before musl's first retry);
+`a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not` (an `EXPOSE`d UDP
+port two harnesses answer, published; a's datagrams over the shared network answered by each of
+them, one holding the port and one not, and the published port answered by its holder before and
+after). Owed (ROOT), at this slice's landing:
+- `cargo test -p shards-api --profile test-release networks:: image::session::links::`;
+  `cargo test -p shards --bin shards --profile test-release -- networks::made api_networks
+  daemon::networks`; `cargo test -p shards-net --profile test-release shared
+  a_runs_names_are_withdrawn_as_its_link_ends`; `cargo test -p shards-dns --profile test-release`;
+  on macOS, Linux (glibc and musl) and Windows (shared.rs's there; lib.rs's test is Unix's).
+- Real VMs on HVF, KVM and WHP: `cargo test -p shards --profile test-release --test api_image --
+  members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted
+  a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once
+  a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not`; D46's again, its
+  resolver's answers now NXDOMAIN (D46's amendment of this day): `cargo test -p shards --profile
+  test-release --test containers -- a_networks_options_are_what_its_microvms_do
+  microvms_on_a_network_reach_one_another_by_name`.
+- `scripts/lint` on the seven targets (the test guest through its musl targets).
 
 ## 4. Start path (≤ 5 ms budget)
 
