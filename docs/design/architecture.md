@@ -30574,7 +30574,8 @@ copied):
   where its link has closed. Its answer comes by its exit, as the daemon's does;
   `Fault::Unsteered` is the refusal its controller matches.
 - *Its budget*: the run host's own (`Charge`, held to the host's available memory as the daemon's
-  managed budget is), which its execs, its MCP connections and its member lanes are charged to.
+  managed budget is), which its execs, its MCP connections and its member lanes are charged to,
+  and each of its members' stdio streams its endpoint serves (D252, amended 2026-11-16).
   No new literal: a payload's size is its number's eight bytes, its flags' one and its spec's
   encoded length.
 
@@ -30604,6 +30605,8 @@ stdio lanes, against the daemon's:
 | A generation not its stream's | refused `Stale` | refused `Stale`: one past, let go, or one not started |
 | A stream revoked | refused `Closed` | refused `Closed`: cut before its end, sealed with no credit, a failed restart's |
 | Its member ended | its end: an output's `Finished`, a stdin's `InputEnded` | the same |
+| Its charge | the daemon's budget, each stream's `output_bytes` or `input_bytes` as its run starts, held for the run | its run host's budget, the same accounting as each stream is made, a past generation's given back once over |
+| No room for it | the run refused as it starts (`Admission::Insufficient`) | the stream let go (`no_room`), each lane to it refused `Capacity` |
 
 An ask (exec, member, MCP, log, socket) names the endpoint's run and its generation, or any
 generation whose streams it serves (`Lanes::in_scope`), as a controller names its first
@@ -34290,9 +34293,76 @@ lane s17's finding).
 - *Owed* (ROOT). The suites of shards-remote (`control::`), shards-api (`image::`, `control::`)
   and `shards` (`api_run::`, `daemon::managed::`), clippy on the seven targets, and a real-VM
   run of a harness's stdio over its lanes, a restart among it, on HVF, KVM and WHP; the stdio
-  lanes' cost, its threads and buffers, against the channel's (R14); the run host's budget
-  holding its stdio lanes, as the daemon's managed budget holds a run's owned streams (not
-  charged here).
+  lanes' cost, its threads and buffers, against the channel's (R14). The run host's budget
+  holding its stdio lanes, as the daemon's managed budget holds a run's owned streams: charged
+  since (below).
+
+**Amended: its stdio lanes charged to its budget** (2026-11-16, ROOT's decision; lane
+orch-stdio-2).
+- *Why.* The run host served its members' stdio as lanes (above), but its budget (`Agent::charge`,
+  D238's run host) counted none of their buffers, where the daemon's managed budget counts every
+  stream a run's endpoint serves (D180's ledger,
+  [admission](../research/measurements/managed-output/admission.md)). ROOT's decision: count
+  them, as the daemon does, with its code and its bound.
+- *What each stream is charged.* The daemon's own account, now one function of each kind in
+  daemon/managed.rs, which the daemon's reservation and the run host both call (R12). An output,
+  `output_bytes`: its record twice (its VM process's capture worker's and its host's), what its
+  endpoint sends of it unacknowledged, a TLS handshake's crypto, its control frame and a datagram
+  each way, each as its admission says, and its host's record of it; then `storage_excess`, what
+  its record's allocation holds past that, once it is made. A stdin, `input_bytes`: its record,
+  its taken frames, what its endpoint holds of its owner's stream (a record's head, the record
+  and an end), a handshake's crypto, a datagram each way and its host's record of it. Its
+  admission is what its endpoint admits it (`member_output`, `member_input`: `exec_admissions`);
+  its host's record is its entry in the run host's map of them, as the daemon's is its `Output`
+  or `Input`. Each is held by the daemon's guard (`execs::Held`, now generic over how it holds
+  the budget: a borrow, or a share where it outlives one), against the daemon's bound: the
+  host's available memory (`Charge::grow`).
+- *When.* As each stream is made: its first generation's as its run host starts serving them,
+  before its endpoint's driver serves a lane, so that no lane reaches one its budget has no room
+  for before it is let go; each next generation's as its restart joins it (D270). Held while its
+  stream is; a past generation's streams that are over (an output finished or let go, a stdin
+  ended or let go: none of their buffers held) give theirs back as their member's next generation
+  joins, and the rest go at the run's end. Never less than what is held: a stream not yet over
+  keeps its charge, as the daemon's ledger is conservative.
+- *No room, refused typed* (R04). A stream its budget has no room for is let go before any lane
+  reaches it (shards-remote: `managed::Control::no_room` and `input::Control::no_room`, explicit
+  states `Ending::NoRoom` and `Slot::NoRoom`, observed as let go), its record or its buffer with
+  it, and each lane to it is refused `Capacity`: D251's reason, close code 6, which a controller
+  reads as `Fault::Refused(Reason::Capacity)`, never queued. Revoked after (its run's end, a
+  sealed or failed generation), a lane to it is refused `Closed`, as any revoked stream's. Its
+  guest is credited none of that output; its stdin's relay finds it gone and ends its member's
+  input connection, so its member reads its end. The run, its other streams and their lanes go
+  on. The daemon refuses its run whole where its streams have no room (`Admission::Insufficient`
+  as it starts); a run host's streams come and go with its members' generations, so each is
+  refused alone. No wire changes: the image channel stays at version 44.
+- *Literals.* None new (R03): the daemon's bound and derivation apply.
+- *Not counted* (owed to ROOT, R14). The run host's capture reader reads each record into a
+  buffer of its own and copies it into its lane's: a third record while one is in flight, where
+  the daemon reads into its lane's own, so its account has two. Each stream's thread, where the
+  daemon serves its streams on one credit worker. And its endpoint's own socket queues, which
+  the daemon charges a run's endpoint (`kernel_buffer_bytes`) and the run host's endpoint holds
+  with or without stdio, uncharged before this amendment too.
+- *Counted past what is held* (owed to ROOT, R03/R14). Each stream is charged a TLS handshake's
+  crypto (RFC 8446's bound, 16 MiB) and a datagram each way, as each of step 5's endpoints of one
+  stream had a connection of its own; an agent-control endpoint's streams share its one
+  connection, whose transport admits the most any stream does (`control::Endpoint::bind`), not
+  their sum. The daemon's runs' endpoints are charged so too; this amendment applies its account
+  as asked, and leaves its derivation for an agent-control endpoint to ROOT.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  `daemon::managed::terminal_tests::a_streams_charge_is_what_its_admission_holds_and_its_hosts_record`
+  (each account's parts, and none past a u64); shards-remote
+  `control::tests::a_stream_its_host_has_no_room_for_refuses_its_lanes_capacity` (an output's
+  and a stdin's lanes refused `Capacity`, the other lanes served, `Closed` once revoked);
+  `api_run::hosted::tests::an_orchestrators_stdio_lanes_are_charged_to_its_budget_or_refused_capacity`
+  (a first generation served with its budget full refused `Capacity` and charged nothing, its
+  member's stdin reading its end; each next generation charged exactly the daemon's bytes for
+  its two outputs; a past generation given back as the next joins; the budget whole after the
+  run).
+- *Owed* (ROOT): those suites (`cargo test --profile test-release -p shards-remote --lib --
+  control:: managed::`; `cargo test --profile test-release -p shards --lib -- daemon::managed::
+  api_run::`), clippy on the seven targets;
+  a real-VM run of a harness's stdio under a budget with no room (its lanes refused `Capacity`)
+  and with room (charged, and given back across a restart), on HVF, KVM and WHP.
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 

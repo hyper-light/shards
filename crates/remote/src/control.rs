@@ -2289,6 +2289,39 @@ mod tests {
             assert_eq!(live.lost, None);
         }
 
+        /// D252: a stream its host's budget has no room for (`no_room`) refuses each lane
+        /// `Capacity`, an output's and a stdin's alike, typed and never queued; it is let go
+        /// (its output's record with it, its stdin's relay told it is gone); the other lanes and
+        /// the connection go on; and once it is revoked a lane of it is refused `Closed`, as
+        /// any revoked stream's is.
+        #[test]
+        fn a_stream_its_host_has_no_room_for_refuses_its_lanes_capacity() {
+            let (vm, kiln) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+            let serving = Serving::bind(&vm, kiln.fingerprint());
+            serving.outputs[STDOUT].1.no_room();
+            serving.input.no_room();
+            assert!(matches!(serving.outputs[STDOUT].1.state(), State::Aborted(_)));
+            assert_eq!(serving.input.state(), input::State::Revoked);
+            assert!(serving.outputs[STDOUT].0.wait_capacity().is_err());
+            let mut live = Live::dial(&kiln, vm.fingerprint(), serving.address);
+            live.open(STDOUT, &managed::subscribe(output(Channel::Stdout), 0));
+            assert_eq!(live.take(STDOUT, refusal), Reason::Capacity);
+            assert_eq!(live.end(STDOUT), Heard::End(STDOUT));
+            live.open(STDIN, &input::subscribe(stdin(), 0));
+            assert_eq!(live.take(STDIN, refusal), Reason::Capacity);
+            assert_eq!(live.end(STDIN), Heard::End(STDIN));
+            live.open(STDERR, &managed::subscribe(output(Channel::Stderr), 0));
+            serving.submit(STDERR, b"served");
+            assert_eq!(live.take(STDERR, record), (0, b"served".to_vec()));
+            serving.outputs[STDOUT].1.abort();
+            serving.input.abort();
+            live.open(3, &managed::subscribe(output(Channel::Stdout), 0));
+            assert_eq!(live.take(3, refusal), Reason::Closed);
+            live.open(4, &input::subscribe(stdin(), 0));
+            assert_eq!(live.take(4, refusal), Reason::Closed);
+            assert_eq!(live.lost, None);
+        }
+
         /// A member's stdin that ends on its own (its reader gone, EPIPE) tells its lane so and
         /// ends it; what the controller sends on it then is let go, the connection and the other
         /// lanes go on, and a new lane of the ended stdin is told the end again.

@@ -441,6 +441,57 @@ impl Drop for Charge {
     }
 }
 
+/// What a run's host is charged for one member output its endpoint serves, by D180's ledger
+/// (docs/research/measurements/managed-output/admission.md): its record twice, its VM process's
+/// capture worker's and its host's; what the endpoint sends of it unacknowledged; a TLS
+/// handshake's crypto; its control frame; a datagram each way, each as `admitted` admits it;
+/// and `host`, its host's own record of it. A daemon's run's owned output and an orchestrator's
+/// run's member output (api_run.rs, D252) alike. None where it overflows.
+pub(crate) fn output_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
+    [
+        admitted.record_bytes,
+        admitted.record_bytes,
+        admitted.handshake_bytes,
+        shards_remote::managed::CONTROL_BYTES,
+        admitted.datagram_bytes,
+        admitted.datagram_bytes,
+        host,
+    ]
+    .into_iter()
+    .try_fold(admitted.transport_bytes, |sum, n| {
+        sum.checked_add(u64::try_from(n).ok()?)
+    })
+}
+
+/// What a run's host is charged for one member stdin its endpoint serves, as [`output_bytes`]
+/// counts an output: its one record; what the endpoint sends unacknowledged (its taken frames);
+/// what it holds of its owner's stream, a record's head, the record and an end; a TLS
+/// handshake's crypto; a datagram each way; and `host`, its host's own record of it. None where
+/// it overflows.
+pub(crate) fn input_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
+    let owners = input::RECORD_HEAD
+        .checked_add(admitted.record_bytes)?
+        .checked_add(input::END_BYTES)?;
+    [
+        admitted.record_bytes,
+        owners,
+        admitted.handshake_bytes,
+        admitted.datagram_bytes,
+        admitted.datagram_bytes,
+        host,
+    ]
+    .into_iter()
+    .try_fold(admitted.transport_bytes, |sum, n| {
+        sum.checked_add(u64::try_from(n).ok()?)
+    })
+}
+
+/// What output `producer`'s record holds past the `record` bytes it was admitted, its
+/// allocation's own, charged beside [`output_bytes`] once its stream is made.
+pub(crate) fn storage_excess(producer: &Producer, record: usize) -> io::Result<u64> {
+    u64::try_from(producer.storage_capacity().saturating_sub(record)).map_err(io::Error::other)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Terminal {
     End,
@@ -1573,19 +1624,20 @@ impl<D: Disk> Daemon<D> {
         let transport = capacity
             .checked_add(shards_remote::managed::DATA_HEAD)
             .ok_or_else(|| io::Error::other("capture window overflow"))?;
-        let per_channel = [
-            capacity,
-            capacity,
-            transport,
-            HANDSHAKE_BYTES,
-            shards_remote::managed::CONTROL_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            size_of::<Output>(),
-        ]
-        .into_iter()
-        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
-        .ok_or_else(|| io::Error::other("capture reservation overflow"))?;
+        let admitted = Admitted {
+            record_bytes: capacity,
+            transport_bytes: u64::try_from(transport).map_err(io::Error::other)?,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+        };
+        let input_admitted = Admitted {
+            record_bytes: INPUT_ROOM,
+            transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+        };
+        let per_channel = output_bytes(&admitted, size_of::<Output>())
+            .ok_or_else(|| io::Error::other("capture reservation overflow"))?;
         let structural = count
             .checked_mul(
                 size_of::<CreditSlot>()
@@ -1600,19 +1652,10 @@ impl<D: Disk> Daemon<D> {
             })
             .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(|| io::Error::other("capture structure overflow"))?;
-        // Each input: its one record, what its endpoint sends and holds of its owner's stream,
-        // its handshake and datagrams, and its state.
-        let per_input = [
-            INPUT_ROOM,
-            input::TAKEN_BYTES,
-            input::RECORD_HEAD + INPUT_ROOM + input::END_BYTES,
-            HANDSHAKE_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
+        let per_input = input_bytes(
+            &input_admitted,
             size_of::<Input>() + size_of::<Option<Arc<Input>>>(),
-        ]
-        .into_iter()
-        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
+        )
         .ok_or_else(|| io::Error::other("input reservation overflow"))?;
         let reservation = per_channel
             .checked_mul(u64::try_from(active_count).map_err(io::Error::other)?)
@@ -1625,18 +1668,6 @@ impl<D: Disk> Daemon<D> {
         let dir = lock(&self.containers).dir(id);
         let generation = generation(&dir)?;
         let run = RunId(Sha256::digest(id.as_bytes()).into());
-        let admitted = Admitted {
-            record_bytes: capacity,
-            transport_bytes: u64::try_from(transport).map_err(io::Error::other)?,
-            handshake_bytes: HANDSHAKE_BYTES,
-            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-        };
-        let input_admitted = Admitted {
-            record_bytes: INPUT_ROOM,
-            transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
-            handshake_bytes: HANDSHAKE_BYTES,
-            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-        };
         // Each stream with where it is served, and its own endpoint where it has one; the run's
         // agent-control endpoint serves them all where the run asked for it. An owner's are its
         // members' named for it alone (`owned`, as `inputs` are): the rest the daemon drains.
@@ -1696,8 +1727,7 @@ impl<D: Disk> Daemon<D> {
                 generations: _,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
-                let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
-                    .map_err(io::Error::other)?;
+                let excess = storage_excess(&producer, capacity)?;
                 if excess > 0 {
                     charge.grow(excess)?;
                 }
@@ -1729,8 +1759,7 @@ impl<D: Disk> Daemon<D> {
                         .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
                         .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
                     charge.grow(kernel)?;
-                    let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
-                        .map_err(io::Error::other)?;
+                    let excess = storage_excess(&producer, capacity)?;
                     if excess > 0 {
                         charge.grow(excess)?;
                     }
@@ -2973,6 +3002,42 @@ mod terminal_tests {
         assert_eq!(*lock(&charge.bytes), 90);
         drop(charge);
         assert_eq!(*lock(&budget), Some(0));
+    }
+
+    /// D252: one account of a member stream an endpoint serves, a daemon's run's and an
+    /// orchestrator's run host's alike: an output's record twice, its window, a handshake's
+    /// crypto, its control frame, a datagram each way and its host's record of it; a stdin's
+    /// record, its taken frames, what it holds of its owner's stream, a handshake's crypto, a
+    /// datagram each way and its host's record of it; none where they overflow.
+    #[test]
+    fn a_streams_charge_is_what_its_admission_holds_and_its_hosts_record() {
+        let admitted = Admitted {
+            record_bytes: 100,
+            transport_bytes: 113,
+            handshake_bytes: 1000,
+            datagram_bytes: 7,
+        };
+        let control = shards_remote::managed::CONTROL_BYTES as u64;
+        assert_eq!(
+            output_bytes(&admitted, 50),
+            Some(113 + 2 * 100 + 1000 + control + 2 * 7 + 50)
+        );
+        let owners = (input::RECORD_HEAD + 100 + input::END_BYTES) as u64;
+        assert_eq!(
+            input_bytes(&admitted, 50),
+            Some(113 + 100 + owners + 1000 + 2 * 7 + 50)
+        );
+        let past = Admitted {
+            transport_bytes: u64::MAX,
+            ..admitted
+        };
+        assert_eq!(output_bytes(&past, 0), None);
+        assert_eq!(input_bytes(&past, 0), None);
+        let unbounded = Admitted {
+            record_bytes: usize::MAX,
+            ..admitted
+        };
+        assert_eq!(input_bytes(&unbounded, 0), None);
     }
 
     #[test]
