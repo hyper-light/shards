@@ -25826,3 +25826,46 @@ the counts are a process's, not a thread's. n is one run of each child.
   `launched`, from `binaries`): with the copy removed before each run, three of three then passed. Any
   executable shards itself writes (its helpers, D36) pays the same once, at its first exec after it is
   written: once per build on each host.
+
+### M612. P3.1's warm start at Shards' level: shards-api's `ImagePools` against `ImageShards`, quiet and loaded (D253; p3-warm-start)
+
+- **Why.** Step P3.1 of kiln plan 01a1dd2e313f72f69c6d93061143cc2e (Phase 3, warm pools) is met
+  when a "warm agent start, end to end (p50, n>=20) on KVM and HVF is at most 300 ms, measured by
+  committed benchmark reporting n, p50, p90, p99, max". Lane phase3-v found no harness measuring
+  it (2026-11-16). This entry is the method. Its numbers are owed: ROOT runs it.
+- **Method.** `docs/research/measurements/p3-warm-start/warm.py DIR OUT` runs api_image's
+  `image_start_costs` (M593) with `SHARDS_IMAGE_COST_KINDS=Restored,Warm`. In one process it
+  makes two starts by turns (ABBA): one through `ImageShards`, the call Hex makes today, which
+  restores the image's template (D25); and one through `ImagePools`, the call Hex makes once
+  P3.1 lands, which takes a warm host. Each start is held to its kind.
+  - Span: each start is timed from its `boot_stoppable` call to the member's first output read
+    (`ready`, the test guest's harness): the agent's start end to end, the plan's span.
+  - Pacing: a warm start is asked only once its pool says a host of it is warm
+    (`CostRig::warm_ready`, new). With two kinds, a warm start can come right after the round's
+    other start, before the pool's refill.
+  - Conditions, by turns (image-start-ab's ABBA order): `quiet`, the host as it is; and
+    `loaded`, one process spinning on each CPU of the harness's affinity (s33-injector-ab's
+    `S33_AB_LOAD=cpus`).
+  - n: from 368 starts of each kind per condition, the fewest whose p99 has a distribution-free
+    95% interval (Le Boudec 2010, Theorem 2.1). n doubles until each arm's first-output p99 lies
+    within its previous round's interval (s33-injector-ab's rule).
+  - Report, per condition, arm and span (boot, first output, stop): n, p50, p90, p99 and max by
+    nearest rank (image-start-ab's `stats`, which warm.py imports with its runner), each p99's
+    95% interval, and the median of the paired warm-less-cold first output with its interval.
+    Then P3.1's verdict (the warm first output's p50 at most 300 ms over n ≥ 20) and the time it
+    leaves for Hex's own steps. The header gives host, OS, CPUs and revision, and each process's
+    load averages.
+  - On macOS it runs through `macos-sched/launchd-run.sh` (PM M317). README.md beside it has the
+    commands for HVF, KVM and WHP.
+- **Changed with it.**
+  - `image_start_costs` takes `SHARDS_IMAGE_COST_KINDS`. Where it is unset, all four kinds run,
+    as before.
+  - Each warm start is paced on its pool (above). M593's own runs now are too.
+  - `image-start-ab/ab.py` keeps its command line and output. Its runner and statistics are now
+    importable.
+- **Self-check.** `warm_test.py` (`python3 -I warm_test.py`) holds to their sources: the first n,
+  each interval (against exact binomial sums), nearest rank, the pairing, the stability rule,
+  the turns and the bar. README.md lists eight guard removals that must each fail it. Not run
+  yet: the person's rule of 2026-11-16 leaves every build and test to ROOT.
+- **Numbers.** Owed (ROOT runs it): on HVF and KVM, the plan's two backends; and on WHP, where
+  `vm::restores_here()` says snapshots restore.
