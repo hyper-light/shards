@@ -51,33 +51,13 @@ fn every(store: &Store) -> Vec<HomeVolume> {
         .collect()
 }
 
-/// Volume `name` removed from `store` with its files, as `volume rm` removes one: held alone
-/// (`Store::alone`), refused `InUse` at once where a run that mounts or plugged it holds it
-/// (D281), a daemon's or an orchestrator's, then under the store's lock; refused by why.
+/// Volume `name` removed from `store` with its files, as `volume rm` removes one, under the
+/// store's lock: refused `InUse` at once where a run that mounts or plugged it holds it (D281),
+/// a daemon's or an orchestrator's (`Store::remove_unheld`); refused by why.
 fn clear(store: &Store, name: &str) -> Result<(), (ClearCause, String)> {
     Store::valid(name).map_err(|e| (ClearCause::Name, format!("{name}: {e}")))?;
-    let unknown = || (ClearCause::Unknown, format!("get {name}: no such volume"));
-    // Looked for first, so that no hold's file is made for a volume that is not there.
-    if store.get(name).is_none() {
-        return Err(unknown());
-    }
-    let _alone = store
-        .alone(name)
-        .map_err(|e| (ClearCause::Store, e))?
-        .ok_or_else(|| {
-            (
-                ClearCause::InUse,
-                format!(
-                    "remove {name}: volume is in use: a run that mounts or plugged it holds it, or another clearing"
-                ),
-            )
-        })?;
     let _held = crate::volumes::lock();
-    // Another clearing may have taken it while this one waited for none.
-    if store.get(name).is_none() {
-        return Err(unknown());
-    }
-    store.remove(name).map_err(|e| (ClearCause::Store, e))
+    store.remove_unheld(name)
 }
 
 #[cfg(test)]

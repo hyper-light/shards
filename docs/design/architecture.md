@@ -38527,7 +38527,7 @@ daemon's run as an orchestrator's.**
 - No literal; no wait: each hold is taken or refused at once.
 - *Still open* (ROOT's call): the daemon's `volume rm` and `volume prune` judge a volume's use by
   the daemon's own records (`volume_refs`), not by the holds, so they remove a volume an
-  orchestrator's run holds.
+  orchestrator's run holds. Closed since (amended below, P6-fix-3).
 - **Tests** (written, not run: the person's rule of 2026-11-16): the binary's `volumes`
   `a_starts_named_volumes_are_held_until_its_run_lets_go`: a named volume mounted twice is held
   once, and its clearing refused until what was opened drops; an anonymous one is not held and
@@ -38537,7 +38537,70 @@ daemon's run as an orchestrator's.**
   Owed (ROOT): the binary's daemon tests (the `Keep` and `Inbox` fields) and Windows clippy. Real
   VM (HVF, KVM, WHP), not yet written: a daemon run with `-v NAME:/data`, its volume refused
   `InUse` by `clear_volume` while it runs and cleared once it stops; the same for a volume
-  `shards plug volume` plugged into it.
+  `shards plug volume` plugged into it. Written since (P6-fix-3, below).
+
+**Amended (P6-fix-3, 2026-11-16, ROOT's decision: the daemon's `volume rm` and `volume prune`
+respect the holds, with the clearing's exclusive non-blocking try): a volume a run holds is
+neither removed nor pruned by the daemon.**
+- *Before.* The daemon's `volume rm` and `volume prune` judged a volume's use by its own records
+  alone (`volume_refs`: the microVMs here that mount it). They removed a volume an orchestrator's
+  run held, or one `shards plug volume` plugged into a daemon's run, as a plug is no mount of its
+  run's record. So did a microVM's own engine (D181): its `DELETE /volumes/{name}`, its
+  `POST /volumes/prune`, and the removal of its volumes as it goes.
+- *Decided: one removal that respects the holds, shared* (R12). `Store::remove_unheld` is P6-fix's
+  clearing moved into the store, so that every removal of a volume a run may hold takes it:
+  - The volume is looked for first, so that no lock file is made for one that is not there.
+  - Its lock is taken alone at once (`Store::alone`, `try_hold`), never waiting for a run, and
+    held through the removal, so that no start or plug takes it meanwhile. A named volume's lock
+    file is made where it is missing and left after the removal, as a clearing's was: a start
+    racing the removal must find the same file (P6-fix), and the next volume of that name
+    takes it.
+  - It is looked for again, `Unknown` where another removal took it meanwhile, then removed.
+  - It is refused typed by `ClearCause`: `Unknown`, `InUse` (its files kept) or `Store`.
+- *Its callers:*
+  - `api_volumes::clear` (shards-api's `clear_volume`) answers as before. It takes the store's
+    lock first now.
+  - The daemon's `volume rm` (`remove_volume`) is refused while a microVM here mounts the volume,
+    in its words as before (`cannot remove volume NAME: in use by ID`). It is then refused while a
+    run holds it, `-f` or not, as one in use is (D38): `cannot remove volume NAME: in use by a run
+    that mounts or plugged it, or by another removal`. These words take D158's frame, the one
+    beside them. dockerd's (`remove NAME: volume is in use - [ID]`, D38's) were reworded by D158;
+    crates/cmdline holds no text for it, and no holder's ID is known to say. The Engine API
+    answers it 409, as it answers every "in use" (engine.rs `status_of`).
+  - The daemon's `volume prune` (`prune_volumes`, which `system prune --volumes` and the Engine
+    API's prune share) passes a held volume by, as it passes one a microVM here mounts.
+  - A microVM's own engine (own_volumes.rs): `DELETE /volumes/{name}` is refused 409 while the
+    volume is held; its prune passes one by; its volumes' removal as it goes leaves one held, said
+    in the log.
+- *Anonymous volumes* hold no lock file of their own (P6-fix-2: no start holds one).
+  `remove_unheld` takes one's lock alone only where its lock file is there, which only a plug of
+  it by its name makes (`Holds::take`). So a prune of anonymous volumes makes no lock file to
+  outlive them. The window this leaves: a plug of an anonymous volume by its 64-hex name that makes
+  its lock file between that look and the removal is not excluded. No start makes one.
+- *Open (found here, ROOT's call):* an orchestrator's run's own anonymous volumes (its image's
+  `VOLUME`s, api_run `made`) are held by none, as P6-fix-2 decided. The daemon's `volume prune`,
+  anonymous volumes alone by default, and its `volume rm` of one remove them while that run runs,
+  as no record of the daemon's mounts them. Holding them would take a lock file each, removed
+  with its volume under its exclusive lock. That is safe only where every hold looks for its
+  volume again once held: `Holds::found` does; a plug's `take`, which makes the volume where it
+  is not there, does not.
+- Not changed: `volume ls`'s `dangling` and `system df`'s reference counts count the daemon's
+  records alone.
+- No literal; no wait: each removal takes the lock or is refused at once.
+- **Tests** (written, not run: the person's rule of 2026-11-16):
+  - The binary's `volumes` `a_volume_is_removed_only_where_no_run_holds_it`: a held named volume
+    and an anonymous one a plug held are refused `InUse`, their files kept; an unheld anonymous
+    one is removed with no lock file made; a start is refused while a removal holds one alone;
+    each is removed once let go of; `Unknown` after.
+  - `daemon::volume` `a_volume_a_run_holds_is_neither_removed_nor_pruned`: `volume rm` refused
+    in use, `-f` or not; `prune --all` passes it and prunes the volume beside it; removed once let
+    go of; then refused by name, and nothing with `-f`.
+  - `api_volumes`' two tests stand unchanged.
+  - Real VM, owed (ROOT; HVF, KVM, WHP): containers.rs
+    `a_volume_a_daemon_run_holds_is_cleared_only_once_it_stops`, P6-fix-2's owed test. A daemon
+    run's `-v mounted:/data`, and a volume `plug volume` plugged into it, are each refused `InUse`
+    by `clear_volume` while it runs, their files kept. The plugged one is refused `remove volume`
+    as in use and passed by `prune volumes -af`. Both are cleared once the run has stopped.
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 

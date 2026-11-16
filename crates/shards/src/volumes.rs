@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use shards_api::volumes::ClearCause;
 use shards_cmdline::mounts::{self, Mount, clean};
 use shards_image::store::Locked;
 
@@ -842,12 +843,49 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Removes volume `name` and its files ([`remove`](Self::remove)) where no run holds it
+    /// (D281), as a clearing, `volume rm` and `volume prune` remove one: held alone at once,
+    /// never waiting, through its removal, so that no run's start or plug takes it meanwhile;
+    /// refused `InUse` where a run that mounts or plugged it holds it, or another removal does,
+    /// its files kept. An anonymous volume is held alone only where a plug of it by its name made
+    /// its lock file: no start holds one ([`Holds::found`]), and a lock file made here would
+    /// outlive it. Callers hold [`lock`].
+    pub fn remove_unheld(&self, name: &str) -> Result<(), (ClearCause, String)> {
+        let unknown = || (ClearCause::Unknown, format!("get {name}: no such volume"));
+        // Looked for first, so that no lock file is made for a volume that is not there.
+        let v = self.get(name).ok_or_else(unknown)?;
+        let holders = self.holders(name);
+        let takes_lock = !v.is_anonymous()
+            || holders
+                .try_exists()
+                .map_err(|e| (ClearCause::Store, format!("{}: {e}", holders.display())))?;
+        let _alone = if takes_lock {
+            let alone = self.alone(name).map_err(|e| (ClearCause::Store, e))?;
+            Some(alone.ok_or_else(|| {
+                (
+                    ClearCause::InUse,
+                    format!(
+                        "remove {name}: volume is in use: a run that mounts or plugged it holds it, or another removal"
+                    ),
+                )
+            })?)
+        } else {
+            None
+        };
+        // Another removal may have taken it while this one waited for none.
+        if self.get(name).is_none() {
+            return Err(unknown());
+        }
+        self.remove(name).map_err(|e| (ClearCause::Store, e))
+    }
 }
 
 /// The named volumes of the store a run holds for its life (D281), each once, by its name: those
 /// it mounts as it starts ([`open_for`]) and those plugged into it as it runs, a daemon's run's
-/// and an orchestrator's alike. A clearing of one is refused while it is held; each is let go
-/// of as this drops, or as its process ends, however it ends.
+/// and an orchestrator's alike. A removal of one ([`Store::remove_unheld`]: a clearing, `volume
+/// rm`, `volume prune`) is refused while it is held; each is let go of as this drops, or as its
+/// process ends, however it ends.
 #[derive(Debug, Default)]
 pub struct Holds(BTreeMap<String, Locked>);
 
@@ -1966,5 +2004,49 @@ mod tests {
         assert!(refused.contains("volume agent-a is being cleared"), "{refused}");
         drop(clearing);
         assert!(open(&points, true, &store).unwrap().held.holds("agent-a"));
+    }
+
+    /// D281: a volume is removed where no run holds it. One a run holds is refused `InUse` at
+    /// once, its files kept, and removed once let go of; asked again, `Unknown`. An anonymous one
+    /// is removed with no lock file made for it; one a plug held by its name is refused while it
+    /// holds it, as a named one is. A start while a removal holds one alone is refused.
+    #[test]
+    fn a_volume_is_removed_only_where_no_run_holds_it() {
+        let dir = shards_testdir::TempDir::new("vol-unheld").unwrap();
+        let store = Store::new(dir.path());
+        let none = BTreeMap::new();
+        let (anonymous, plugged) = {
+            let _held = lock();
+            store.create("agent-a", &none, &none, "").unwrap();
+            let anonymous = store.create("", &none, &none, "").unwrap().0.name;
+            (anonymous, store.create("", &none, &none, "").unwrap().0.name)
+        };
+        let lock_file = |name: &str| dir.path().join(ROOT).join(format!(".{name}.lock"));
+        let mut run = Holds::default();
+        run.take(&store, "agent-a").unwrap();
+        run.take(&store, &plugged).unwrap();
+        for name in ["agent-a", plugged.as_str()] {
+            assert!(
+                matches!(store.remove_unheld(name), Err((ClearCause::InUse, _))),
+                "{name}"
+            );
+            assert!(store.data(name).exists(), "{name}");
+        }
+        assert_eq!(store.remove_unheld(&anonymous), Ok(()));
+        assert!(!store.data(&anonymous).exists());
+        assert!(!lock_file(&anonymous).exists(), "no lock file outlives it");
+        drop(run);
+        let removing = store.alone("agent-a").unwrap().unwrap();
+        assert!(Holds::default().take(&store, "agent-a").is_err());
+        drop(removing);
+        for name in ["agent-a", plugged.as_str()] {
+            assert_eq!(store.remove_unheld(name), Ok(()), "{name}");
+            assert!(!store.data(name).exists(), "{name}");
+        }
+        assert!(store.list().is_empty());
+        assert!(matches!(
+            store.remove_unheld("agent-a"),
+            Err((ClearCause::Unknown, _))
+        ));
     }
 }
