@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use crate::command::{Command, NotStarted};
@@ -30,6 +31,10 @@ use crate::image::wire::{Reader, WireError, Writer, frame};
 pub struct Builds {
     pub binary: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// Variables of the build's own process, over this process's (`home`'s `SHARDS_HOME` over
+    /// these): where a [`SecretSource::Env`] is read, so a secret this process holds reaches
+    /// its build without being set in this process's environment or written to a file.
+    pub env: Vec<(OsString, OsString)>,
 }
 
 /// A build to make.
@@ -201,21 +206,34 @@ pub enum StepEnd {
     Canceled,
 }
 
-/// Why a build made no image.
+/// Why a build made no image. Where its error is at lines of its Agentfile, `lines` holds each
+/// range of them (1-based, first to last), as `shards build image` shows them in its excerpt:
+/// a syntax error's line, a failed step's instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildRefusal {
     /// The spec, refused before anything started: which part, and why.
     Spec { what: &'static str, why: String },
+    /// A build policy's decision (D101) refused one of its sources: what the policy said (its
+    /// deny messages, none where it gave none), and the build's error.
+    Policy {
+        said: Vec<String>,
+        lines: Vec<RangeInclusive<u32>>,
+        message: String,
+    },
     /// A step failed: its number and name, its own error, and the build's.
     Step {
         index: u32,
         name: String,
         error: String,
         message: String,
+        lines: Vec<RangeInclusive<u32>>,
     },
     /// The build failed outside any step (its Agentfile's text, its plan, a base image's
     /// pull, its export), in shards' words.
-    Failed(String),
+    Failed {
+        message: String,
+        lines: Vec<RangeInclusive<u32>>,
+    },
     /// The `shards` binary did not start: its path and the OS's words.
     Start(String),
     /// What this process could not make for it.
@@ -235,7 +253,14 @@ impl std::fmt::Display for BuildRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Spec { what, why } => write!(f, "{what}: {why}"),
-            Self::Step { message, .. } | Self::Failed(message) => f.write_str(message),
+            // As buildx says a refusal: each of the policy's messages, then the error.
+            Self::Policy { said, message, .. } => {
+                for m in said {
+                    writeln!(f, "Policy: {m}")?;
+                }
+                f.write_str(message)
+            }
+            Self::Step { message, .. } | Self::Failed { message, .. } => f.write_str(message),
             Self::Start(why) => write!(f, "starting shards api-build: {why}"),
             Self::Os { what, kind } => write!(f, "{what}: {kind}"),
             Self::Ended { status, said } => {
@@ -302,9 +327,14 @@ impl Builds {
     ) -> Result<Pinned, BuildRefusal> {
         let frame = frame?;
         let env: Vec<(OsString, OsString)> = self
-            .home
+            .env
             .iter()
-            .map(|home| (OsString::from("SHARDS_HOME"), home.clone().into_os_string()))
+            .cloned()
+            .chain(
+                self.home
+                    .iter()
+                    .map(|home| (OsString::from("SHARDS_HOME"), home.clone().into_os_string())),
+            )
             .collect();
         let mut command = Command::start(self.binary.as_deref(), &[OsStr::new("api-build")], &env)?;
         let asked = {
@@ -334,6 +364,9 @@ impl Builds {
                         steps.saw(&event);
                         events(event);
                     }
+                    wire::Answer::Policy(said) if steps.policy.is_none() => steps.policy = Some(said),
+                    wire::Answer::At(lines) if steps.lines.is_none() => steps.lines = Some(lines),
+                    wire::Answer::Policy(_) | wire::Answer::At(_) => {}
                     wire::Answer::Built(digest) => break Ok(Some(Ok(Pinned { digest }))),
                     wire::Answer::Failed(message) => break Ok(Some(Err(steps.refusal(message)))),
                 }
@@ -350,11 +383,16 @@ impl Builds {
     }
 }
 
-/// The steps a build's events named, and the first that failed: what its refusal says.
+/// The steps a build's events named, the first that failed, and what the build said of its
+/// error before its end: what its refusal says.
 #[derive(Debug, Default)]
 struct Steps {
     names: BTreeMap<u32, String>,
     failed: Option<(u32, String)>,
+    /// What a policy's decision said as it refused a source, where one did.
+    policy: Option<Vec<String>>,
+    /// The lines of the Agentfile the error is at, as first told.
+    lines: Option<Vec<RangeInclusive<u32>>>,
 }
 
 impl Steps {
@@ -371,15 +409,26 @@ impl Steps {
         }
     }
 
+    /// A policy's refusal is the build's whatever step it failed (its policies' own), as buildx
+    /// says it; else the first step that failed; else the build's failure outside a step.
     fn refusal(&mut self, message: String) -> BuildRefusal {
+        let lines = self.lines.take().unwrap_or_default();
+        if let Some(said) = self.policy.take() {
+            return BuildRefusal::Policy {
+                said,
+                lines,
+                message,
+            };
+        }
         match self.failed.take() {
             Some((index, error)) => BuildRefusal::Step {
                 index,
                 name: self.names.get(&index).cloned().unwrap_or_default(),
                 error,
                 message,
+                lines,
             },
-            None => BuildRefusal::Failed(message),
+            None => BuildRefusal::Failed { message, lines },
         }
     }
 }
@@ -390,8 +439,10 @@ impl Steps {
 pub mod wire {
     use super::*;
 
-    /// The request's version, its first byte: changed only by appending.
-    pub const VERSION: u8 = 1;
+    /// The channel's version, its request's first byte, which a host refuses unless its own:
+    /// no side is sent an answer it does not read. 2: [`POLICY`](to_client::POLICY) and
+    /// [`AT`](to_client::AT).
+    pub const VERSION: u8 = 2;
 
     /// What the client sends.
     pub mod to_host {
@@ -414,6 +465,12 @@ pub mod wire {
         pub const BUILT: u8 = 4;
         /// The build failed: its error, in shards' words. Its last frame.
         pub const FAILED: u8 = 5;
+        /// A policy's decision refused one of the build's sources: what it said, each message
+        /// buildx prints as `Policy: …` (policysession.DenyMessages). Before its end.
+        pub const POLICY: u8 = 6;
+        /// The lines of the build's Agentfile its error is at, each range first and last, as
+        /// BuildKit locates an error (solver/errdefs Source ranges). Before its end.
+        pub const AT: u8 = 7;
     }
 
     /// A build's spec as `shards api-build` takes it: each path UTF-8, as the build's command
@@ -633,6 +690,8 @@ pub mod wire {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Answer {
         Event(BuildEvent),
+        Policy(Vec<String>),
+        At(Vec<RangeInclusive<u32>>),
         Built(String),
         Failed(String),
     }
@@ -907,6 +966,27 @@ pub mod wire {
         frame(kind, &w.done()?)
     }
 
+    /// What a policy's decision said as it refused one of the build's sources.
+    pub fn policy(said: &[String]) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.count(said.len())?;
+        for m in said {
+            w.text(m)?;
+        }
+        frame(to_client::POLICY, &w.done()?)
+    }
+
+    /// The lines of the build's Agentfile its error is at.
+    pub fn at(lines: &[RangeInclusive<u32>]) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.count(lines.len())?;
+        for l in lines {
+            w.u32(*l.start());
+            w.u32(*l.end());
+        }
+        frame(to_client::AT, &w.done()?)
+    }
+
     /// The build's end: its image's ID, or its error.
     pub fn end(built: &Result<String, String>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -954,6 +1034,28 @@ pub mod wire {
             }
             to_client::BUILT => Answer::Built(r.text().map_err(wire)?),
             to_client::FAILED => Answer::Failed(r.text().map_err(wire)?),
+            to_client::POLICY => {
+                let mut said = Vec::new();
+                // Each message holds at least its length.
+                for _ in 0..r.count(4).map_err(wire)? {
+                    said.push(r.text().map_err(wire)?);
+                }
+                Answer::Policy(said)
+            }
+            to_client::AT => {
+                let mut lines = Vec::new();
+                // Each range is its first line and its last, a u32 each.
+                for _ in 0..r.count(8).map_err(wire)? {
+                    let (first, last) = (r.u32().map_err(wire)?, r.u32().map_err(wire)?);
+                    if last < first {
+                        return Err(wire(WireError::Order {
+                            what: "a range of lines",
+                        }));
+                    }
+                    lines.push(first..=last);
+                }
+                Answer::At(lines)
+            }
             tag => {
                 return Err(wire(WireError::Tag {
                     what: "a build's answer",
@@ -1163,6 +1265,26 @@ mod tests {
         assert_eq!(answer(kind, &bytes).unwrap(), Answer::Built("sha256:ab".into()));
         let (kind, bytes) = payload(&end(&Err("no".into())).unwrap());
         assert_eq!(answer(kind, &bytes).unwrap(), Answer::Failed("no".into()));
+        let said = vec!["bucket agents is not trusted".to_string(), "and another".to_string()];
+        let (kind, bytes) = payload(&wire::policy(&said).unwrap());
+        assert_eq!(answer(kind, &bytes).unwrap(), Answer::Policy(said));
+        let lines = vec![2..=2, 4..=6];
+        let (kind, bytes) = payload(&wire::at(&lines).unwrap());
+        assert_eq!(answer(kind, &bytes).unwrap(), Answer::At(lines));
+        // A range whose last line comes before its first is refused; so is a count past what
+        // its bytes could hold, before anything is allocated for it.
+        assert_eq!(
+            answer(wire::to_client::AT, &[0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 4]),
+            Err(BuildRefusal::Wire(WireError::Order {
+                what: "a range of lines"
+            }))
+        );
+        for kind in [wire::to_client::AT, wire::to_client::POLICY] {
+            assert_eq!(
+                answer(kind, &u32::MAX.to_be_bytes()),
+                Err(BuildRefusal::Wire(WireError::Short))
+            );
+        }
         assert!(matches!(
             answer(9, &[]),
             Err(BuildRefusal::Wire(WireError::Tag { tag: 9, .. }))
@@ -1213,6 +1335,7 @@ mod tests {
         let builds = Builds {
             binary: Some(stand_in(dir.path(), &answering(&frames, ""))),
             home: Some(dir.path().join("home")),
+            env: Vec::new(),
         };
         let mut seen = Vec::new();
         let built = builds.build(&spec, &mut |e| seen.push(e));
@@ -1232,6 +1355,15 @@ mod tests {
         );
     }
 
+    /// A builder's stand-in answering `frames`, in `dir`.
+    #[cfg(unix)]
+    fn answered_by(dir: &Path, frames: &[Vec<u8>]) -> Builds {
+        Builds {
+            binary: Some(stand_in(dir, &answering(frames, ""))),
+            ..Builds::default()
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_failed_step_is_refused_by_its_number_and_name() {
@@ -1247,23 +1379,102 @@ mod tests {
                 how: StepEnd::Failed("exit code: 1".into()),
             })
             .unwrap(),
+            wire::at(&[2..=2]).unwrap(),
             end(&Err(
                 "process \"/bin/sh -c false\" did not complete successfully: exit code: 1".into(),
             ))
             .unwrap(),
         ];
-        let builds = Builds {
-            binary: Some(stand_in(dir.path(), &answering(&frames, ""))),
-            home: None,
-        };
         assert_eq!(
-            builds.build(&spec, &mut |_| {}),
+            answered_by(dir.path(), &frames).build(&spec, &mut |_| {}),
             Err(BuildRefusal::Step {
                 index: 2,
                 name: "[2/2] RUN false".into(),
                 error: "exit code: 1".into(),
                 message: "process \"/bin/sh -c false\" did not complete successfully: exit code: 1".into(),
+                lines: vec![2..=2],
             })
+        );
+    }
+
+    /// An Agentfile the build cannot read is refused at its line, typed beside the build's own
+    /// words (P4.4): a caller marks the line without reading it out of the message.
+    #[cfg(unix)]
+    #[test]
+    fn a_syntax_error_is_refused_at_its_line() {
+        let (dir, spec) = context();
+        let message = "failed to build: failed to solve: dockerfile parse error on line 2: unknown instruction: FOO";
+        let frames = [wire::at(&[2..=2]).unwrap(), end(&Err(message.into())).unwrap()];
+        assert_eq!(
+            answered_by(dir.path(), &frames).build(&spec, &mut |_| {}),
+            Err(BuildRefusal::Failed {
+                message: message.into(),
+                lines: vec![2..=2],
+            })
+        );
+    }
+
+    /// A build a policy refused is refused as the policy's, in its words, whatever step of the
+    /// build's that failed (P4.4, D101); said as buildx says it.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_a_policy_refused_is_refused_in_the_policys_words() {
+        let (dir, spec) = context();
+        let message = "failed to build: failed to solve: failed to read dockerfile: failed to load LLB: error evaluating the source policy: source \"local://dockerfile\" not allowed by policy: action DENY";
+        let frames = [
+            event(&BuildEvent::Step {
+                index: 1,
+                name: "loading policies".into(),
+            })
+            .unwrap(),
+            event(&BuildEvent::Ended {
+                index: 1,
+                how: StepEnd::Failed(message.into()),
+            })
+            .unwrap(),
+            wire::policy(&["no source is trusted here".into()]).unwrap(),
+            end(&Err(message.into())).unwrap(),
+        ];
+        let refused = answered_by(dir.path(), &frames).build(&spec, &mut |_| {});
+        assert_eq!(
+            refused,
+            Err(BuildRefusal::Policy {
+                said: vec!["no source is trusted here".into()],
+                lines: Vec::new(),
+                message: message.into(),
+            })
+        );
+        assert_eq!(
+            refused.unwrap_err().to_string(),
+            format!("Policy: no source is trusted here\n{message}")
+        );
+    }
+
+    /// A build's own variables reach its process over this one's, and its home over any of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_builds_variables_reach_its_host_and_its_home_comes_last() {
+        let (dir, spec) = context();
+        let frames = [end(&Ok("sha256:0123".into())).unwrap()];
+        let builds = Builds {
+            binary: Some(stand_in(
+                dir.path(),
+                &answering(
+                    &frames,
+                    "printf %s \"$SHARDS_TEST_TOKEN\" > \"$(dirname \"$0\")/token\"",
+                ),
+            )),
+            home: Some(dir.path().join("home")),
+            env: vec![
+                ("SHARDS_TEST_TOKEN".into(), "t0k".into()),
+                ("SHARDS_HOME".into(), "/elsewhere".into()),
+            ],
+        };
+        assert!(builds.build(&spec, &mut |_| {}).is_ok());
+        assert_eq!(std::fs::read_to_string(dir.path().join("token")).unwrap(), "t0k");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("home")).unwrap(),
+            dir.path().join("home").to_str().unwrap()
         );
     }
 
@@ -1271,21 +1482,20 @@ mod tests {
     #[test]
     fn a_build_that_fails_outside_a_step_or_ends_unsaid_is_refused_so() {
         let (dir, spec) = context();
-        let failed = [end(&Err("dockerfile parse error on line 1".into())).unwrap()];
-        let builds = Builds {
-            binary: Some(stand_in(dir.path(), &answering(&failed, ""))),
-            home: None,
-        };
+        let failed = [end(&Err("failed to export image".into())).unwrap()];
         assert_eq!(
-            builds.build(&spec, &mut |_| {}),
-            Err(BuildRefusal::Failed("dockerfile parse error on line 1".into()))
+            answered_by(dir.path(), &failed).build(&spec, &mut |_| {}),
+            Err(BuildRefusal::Failed {
+                message: "failed to export image".into(),
+                lines: Vec::new(),
+            })
         );
         let builds = Builds {
             binary: Some(stand_in(
                 dir.path(),
                 &answering(&[], "echo 'shards: killed' >&2; exit 137"),
             )),
-            home: None,
+            ..Builds::default()
         };
         assert_eq!(
             builds.build(&spec, &mut |_| {}),
@@ -1301,7 +1511,7 @@ mod tests {
         let (dir, spec) = context();
         let builds = Builds {
             binary: Some(dir.path().join("no-shards-here")),
-            home: None,
+            ..Builds::default()
         };
         assert!(matches!(
             builds.build(&spec, &mut |_| {}),
@@ -1479,6 +1689,7 @@ mod tests {
         let builds = Builds {
             binary: Some(stand_in(dir.path(), &answering(&frames, ""))),
             home: Some(dir.path().join("home")),
+            env: Vec::new(),
         };
         let mut spec = harness("https://example.com/codex.tar.gz");
         spec.checksum = Some(format!("sha256:{}", "c".repeat(64)));
