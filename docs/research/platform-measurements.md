@@ -25793,3 +25793,24 @@ the counts are a process's, not a thread's. n is one run of each child.
   `aarch64-unknown-linux-musl` here and passed clippy) and the real-VM suites on KVM and WHP: CI's
   backends at the merge, and the next vendor point's batch. Linux (glibc, musl) and Windows builds:
   CI's.
+
+### M611. A freshly written executable's first exec on macOS waits on the system's assessment of it (the E2E copy of `shards`)
+
+- **Where.** adas-macbook-pro-2.local (Apple M-series, macOS 26.4.1), 2026-11-16: the hot-swap land
+  branch b21a3e570's test-release `shards` (56,759,144 bytes), a kiln build and Docker Desktop's VM
+  running beside it.
+- **Found.** The land gate's first api_image test after its build,
+  `a_harness_swapped_at_its_next_start_runs_its_component_once_restarted`, was refused at its first
+  command: `shards build harness` "made no progress for 379.78 ms, past the slowest answer of its kind
+  seen on this host (192.63 ms)", its one member the client, asleep with no thread runnable, its home's
+  daemon not yet started. With the copy in place 13 of 13 passed again; with `target/e2e/shards-<digest>`
+  removed before each run, three of three were refused so.
+- **Measured** (`docs/research/measurements/first-exec/first-exec.sh`: each of n copies written anew,
+  `--version` exec'd twice, `ps` CPU before and after the first): first 1.645, 1.525, 1.558 and 1.391 s;
+  second 0.011, 0.008, 0.010 and 0.008 s (n=4); a run before it, 1.188-1.336 s against 0.004-0.010 s
+  (n=4). During each first exec XprotectService gained 0.37-0.39 s of CPU and syspolicyd about 0.20 s;
+  the process itself ran nothing of its own.
+- **So.** Each test process launches its copy once before any of its tests runs it (tests/common
+  `launched`, from `binaries`): with the copy removed before each run, three of three then passed. Any
+  executable shards itself writes (its helpers, D36) pays the same once, at its first exec after it is
+  written: once per build on each host.

@@ -1652,10 +1652,29 @@ fn binaries() -> &'static Path {
             // them (every mutant's and past build's copy stayed: 3.4 GiB by 2026-10-03).
             if hold(&dir) {
                 prune(&root, &name);
+                launched(&dir.join(format!("shards{}", std::env::consts::EXE_SUFFIX)));
                 return dir;
             }
         }
     })
+}
+
+/// Launches the tests' copy of `shards` once, by each test process before any of its tests
+/// runs it: a freshly written executable's first exec waits on its host's assessment of it
+/// (macOS: XProtect and syspolicyd, 1.19-1.34 s for a test-release `shards` against 4-10 ms
+/// for its next, its process running nothing of its own meanwhile, PM M611), which a judged
+/// command would take for a stall (the hot-swap land gate's first api_image test, refused
+/// 380 ms into its `shards build harness`). What it answers is nothing: a copy that cannot run
+/// fails the test that runs it.
+fn launched(shards: &Path) {
+    let mut cmd = Command::new(shards);
+    as_tests_run(&mut cmd);
+    let _ = cmd
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Copies `built` into `root`, as `name`: `shards`, which carries the rest, the VM process
