@@ -19,8 +19,9 @@ pub const LISTED: u8 = 1;
 pub const CLEARED: u8 = 2;
 
 /// The answers' version, each one's first byte: changed only by appending. 2: a clearing
-/// refused [`ClearCause::InUse`] (D281).
-pub const VERSION: u8 = 2;
+/// refused [`ClearCause::InUse`] (D281); 3: each volume's bound and what its files take by
+/// its measure ([`HomeVolume::bound`], [`HomeVolume::charge`], D281).
+pub const VERSION: u8 = 3;
 
 /// A volume of a home's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,14 @@ pub struct HomeVolume {
     /// The bytes its files take, as `system df` counts a volume's (moby's `directory.Size`: each
     /// file's length, a hard link's once); none where its files could not all be read.
     pub bytes: Option<u64>,
+    /// What its files may take (D281): its bound, held as they are written, a write past it
+    /// refused ENOSPC; none where it has none, its host's room alone bounding it.
+    pub bound: Option<u64>,
+    /// What its files take by its bound's measure (D281), what an admission holds to its
+    /// bound: each name a unit of its host file system's, each file's length and its
+    /// attributes in whole units. The count its servers share while a run holds it bounded,
+    /// else walked as it is asked; none where its files could not all be read.
+    pub charge: Option<u64>,
     /// When it was made, in nanoseconds since the Unix epoch.
     pub created_ns: u64,
     /// Made for one run by no one's name (an image's `VOLUME` no share stands in for), and gone
@@ -109,7 +118,8 @@ impl From<NotStarted> for VolumeRefusal {
 
 /// Every volume of the home `env` names (`SHARDS_HOME`, else its default), by name, as `binary`
 /// (else `SHARDS_BIN`, else `shards` on `PATH`) reads its store: each walked for its bytes as
-/// it is asked, so a call costs a walk of every volume's files.
+/// it is asked, and for its charge where no run holds it bounded, so a call costs two walks of
+/// every volume's files.
 pub fn volumes(
     binary: Option<&Path>,
     env: &[(OsString, OsString)],
@@ -172,6 +182,15 @@ pub fn listed(volumes: &[HomeVolume]) -> Result<Vec<u8>, WireError> {
         }
         w.u64(v.created_ns);
         w.u8(u8::from(v.anonymous));
+        // Appended in version 3 (D281): its bound, 0 for none, which none is.
+        w.u64(v.bound.unwrap_or(0));
+        match v.charge {
+            None => w.u8(0),
+            Some(charge) => {
+                w.u8(1);
+                w.u64(charge);
+            }
+        }
     }
     frame(LISTED, &w.done()?)
 }
@@ -202,8 +221,9 @@ fn read_listed(payload: &[u8]) -> Result<Vec<HomeVolume>, VolumeRefusal> {
     let wire = VolumeRefusal::Wire;
     let mut r = Reader(payload);
     version(&mut r)?;
-    // Each at least its name's length, its bytes' flag, its time and its flag.
-    let n = r.count(4 + 1 + 8 + 1).map_err(wire)?;
+    // Each at least its name's length, its bytes' flag, its time, its flag, its bound and its
+    // charge's flag.
+    let n = r.count(4 + 1 + 8 + 1 + 8 + 1).map_err(wire)?;
     let mut volumes = Vec::new();
     volumes
         .try_reserve_exact(n)
@@ -222,9 +242,22 @@ fn read_listed(payload: &[u8]) -> Result<Vec<HomeVolume>, VolumeRefusal> {
         };
         let created_ns = r.u64().map_err(wire)?;
         let anonymous = r.flag().map_err(wire)?;
+        let bound = Some(r.u64().map_err(wire)?).filter(|b| *b > 0);
+        let charge = match r.u8().map_err(wire)? {
+            0 => None,
+            1 => Some(r.u64().map_err(wire)?),
+            tag => {
+                return Err(wire(WireError::Tag {
+                    what: "what a volume's files take",
+                    tag,
+                }));
+            }
+        };
         volumes.push(HomeVolume {
             name,
             bytes,
+            bound,
+            charge,
             created_ns,
             anonymous,
         });
@@ -276,12 +309,16 @@ mod tests {
             HomeVolume {
                 name: "agent-7.cache".into(),
                 bytes: Some(3 << 30),
+                bound: Some(4 << 30),
+                charge: Some((3 << 30) + (1 << 20)),
                 created_ns: 1_794_712_180_000_000_000,
                 anonymous: false,
             },
             HomeVolume {
                 name: "0f".repeat(32),
                 bytes: None,
+                bound: None,
+                charge: None,
                 created_ns: 0,
                 anonymous: true,
             },
@@ -322,6 +359,13 @@ mod tests {
         anonymous[flag + 1 + 8 + 8] = 2;
         assert!(matches!(
             read_listed(&anonymous),
+            Err(VolumeRefusal::Wire(WireError::Tag { tag: 2, .. }))
+        ));
+        // Its charge's flag follows its anonymity's and its bound (version 3, D281).
+        let mut charge = p.clone();
+        charge[flag + 1 + 8 + 8 + 1 + 8] = 2;
+        assert!(matches!(
+            read_listed(&charge),
             Err(VolumeRefusal::Wire(WireError::Tag { tag: 2, .. }))
         ));
         // A count past what its bytes could hold allocates nothing.
