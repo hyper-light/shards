@@ -338,7 +338,8 @@ impl RunEnd {
 }
 
 /// What a run holds of its budget: the daemon's, shared by its runs, or an orchestrator's run
-/// host's own (api_run.rs), each held to the host's available memory.
+/// host's own (api_run.rs), each held to the host's available memory (`pressure::available`:
+/// its kernel's count, or what a test told it, D188, D252).
 pub(crate) struct Charge {
     budget: Arc<Mutex<Option<u64>>>,
     bytes: Mutex<u64>,
@@ -355,7 +356,7 @@ impl Charge {
     }
 
     fn grow(&self, extra: u64) -> Result<(), Admission> {
-        let available = crate::build::host_available().ok_or(Admission::UnknownHeadroom)?;
+        let available = crate::pressure::available().ok_or(Admission::UnknownHeadroom)?;
         let mut held = lock(&self.bytes);
         let mut budget = lock(&self.budget);
         let used = budget.ok_or(Admission::Unavailable)?;

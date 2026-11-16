@@ -2813,6 +2813,66 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let _ = driver.join().unwrap();
 }
 
+/// D252: a run's first stdio lanes are charged before its members start, and a run whose run
+/// host has no room for them is refused `Capacity`. The run host is told what its host has
+/// available, as no test may set its host's own: the first line of a file that
+/// `SHARDS_PRESSURE` names (D188's told word). Its image's harness asleep, its stdio served as
+/// its endpoint's lanes (`ControlAsk::stdio`):
+/// - told it has nothing, it is refused `Capacity` at its endpoint's link, which says the link's
+///   bytes;
+/// - told that many, room for its link alone, it is refused `Capacity` at its harness's first
+///   lane, typed before its VM is handed the run, so none of its members starts;
+/// - told the most a u64 counts, it starts.
+#[test]
+fn a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start() {
+    use shards_api::control::Identity;
+    use shards_api::image::ControlAsk;
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-room-home");
+    build(&home, "api-room:1", &["sleep"], "");
+    let hex = Identity::generate().unwrap();
+    // The run, its host told it has `bytes` of memory available.
+    let told = |bytes: u64| {
+        let word = home.join(format!("told-{bytes}"));
+        std::fs::write(&word, format!("available {bytes}\n")).unwrap();
+        let mut s = spec(&home, "api-room:1");
+        s.env.push(("SHARDS_PRESSURE".into(), word.into_os_string()));
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        s.control = Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: None,
+            stdio: true,
+        });
+        s
+    };
+    let refused = |s: &ImageSpec| match booted(&ImageShards::new(), s) {
+        Err(ImageRefusal::Capacity(why)) => why,
+        Err(other) => panic!("refused, but not for its room: {other:?}"),
+        Ok(_) => panic!("started with no room"),
+    };
+    let why = refused(&told(0));
+    let link: u64 = why
+        .split_once("its sockets' queues, ")
+        .and_then(|(_, rest)| rest.split_once(" bytes"))
+        .and_then(|(bytes, _)| bytes.parse().ok())
+        .unwrap_or_else(|| panic!("its link's bytes unsaid: {why}"));
+    let why = refused(&told(link));
+    assert!(why.ends_with("'s first Stdout lane"), "{why}");
+    let guest = boot(&home, &told(u64::MAX));
+    guest.stop().unwrap();
+}
+
 /// A value the guest's memory holds, unique to this test's run: a SHA-256 of `label`, this
 /// process and the time, in hex.
 fn canary(label: &str) -> String {
@@ -4432,6 +4492,63 @@ fn an_agents_volume_refuses_writes_past_its_bound() {
         "its count {charge} of {bound}, {filled} written"
     );
     guest.stop().unwrap();
+}
+
+/// P6.2 (D281, lane charge-2): an orchestrator's run's own anonymous volume, made for its
+/// image's `VOLUME` that no share stands in for, is held for the run's life as a named one is:
+/// `prune volumes` while the run runs passes it by, its files kept, where the same prune
+/// removes an anonymous volume no run holds; and it goes as its run ends, its lock file with
+/// it, as `--rm`'s volumes go.
+#[test]
+fn a_runs_anonymous_volume_is_passed_by_a_prune_while_it_runs_and_goes_with_it() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-anon-vol-home");
+    build(&home, "api-anon-vol:1", &["trap", "TERM"], "VOLUME /scratch\n");
+    let env = host_env(&home);
+    let named: Vec<(&str, &std::ffi::OsStr)> = env
+        .iter()
+        .map(|(k, v)| (k.to_str().unwrap(), v.as_os_str()))
+        .collect();
+    let shards = |args: &[&str]| run_shards_env(&[], args, &named);
+    let anonymous = || -> Vec<String> {
+        shards_api::volumes::volumes(Some(common::shards()), &env)
+            .unwrap()
+            .into_iter()
+            .filter(|v| v.anonymous)
+            .map(|v| v.name)
+            .collect()
+    };
+    let volumes = home.join("volumes");
+    let lock_file = |name: &str| volumes.join(format!(".{name}.lock"));
+    let guest = boot(&home, &spec(&home, "api-anon-vol:1"));
+    let lines = lines_of(&*guest, Channel::Stdout);
+    said_all(&lines, &["ready".to_string()]);
+    let listed = anonymous();
+    let [held] = listed.as_slice() else {
+        panic!("its VOLUME's own alone: {listed:?}");
+    };
+    let held = held.as_str();
+    assert!(lock_file(held).exists(), "held as its run runs");
+    let made = shards(&["create", "volume"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let unheld = made.stdout.trim().to_owned();
+    let pruned = shards(&["prune", "volumes", "-f"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    assert!(
+        pruned.stdout.contains(&format!("\n{unheld}\n")) && !pruned.stdout.contains(held),
+        "{pruned}"
+    );
+    assert_eq!(anonymous(), [held]);
+    assert!(volumes.join(held).join("_data").is_dir());
+    guest.stop().unwrap();
+    drop(guest);
+    assert_eq!(anonymous(), Vec::<String>::new(), "gone with its run");
+    assert!(!volumes.join(held).exists());
+    assert!(!lock_file(held).exists(), "its lock file gone with it");
+    let stopped = shards(&["stop", "daemon"]);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
 }
 
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked

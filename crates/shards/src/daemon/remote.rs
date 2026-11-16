@@ -667,9 +667,15 @@ impl Machine {
     /// owner's commands use, of the daemon's environment only what shards is set by
     /// ([`kept`]), and the client's own, which its request carries.
     fn command_env(&self, client: &str, given: Vec<(String, Vec<u8>)>) -> Vec<(String, OsString)> {
+        // Each variable set here once: the daemon's own value of one, which `kept` passes, came
+        // first in the command's environment, the one its getenv reads, so its home was the
+        // daemon's path to it, not `.`, which its copies are placed beneath (runs-02): on macOS
+        // a path through a link (`/var`), its copies' `/private/var` beneath none of it.
+        let set_here = ["SHARDS_HOME", crate::context::HERE.0, "SHARDS_CACHE"];
         let mut env: Vec<(String, OsString)> = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v)))
             .filter(|(k, _)| kept(k) && !k.eq_ignore_ascii_case(crate::client_grants::CLIENT_VAR))
+            .filter(|(k, _)| !set_here.iter().any(|s| k.eq_ignore_ascii_case(s)))
             .collect();
         env.extend([
             ("SHARDS_HOME".to_string(), self.home.clone().into_os_string()),
