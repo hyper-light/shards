@@ -2388,7 +2388,7 @@ impl<'r> Stack<'r> {
         }
         if linked {
             for (_, _, frame) in frames {
-                self.from_link(i, frame);
+                self.frame_from_link(i, frame);
             }
             if gone {
                 self.drop_peer(i);
@@ -2668,7 +2668,7 @@ impl<'r> Stack<'r> {
     /// A frame from link `i` of a network shared by runs (D285), to the guest only as a flow
     /// both ends grant ([`shared::Packet::linked`]): its flow's, or the first of one the
     /// guest's ingress takes; from the gateway's MAC, as a routed frame comes.
-    fn from_link(&mut self, i: usize, mut frame: Vec<u8>) {
+    fn frame_from_link(&mut self, i: usize, mut frame: Vec<u8>) {
         let crossed = match self.peers.get_mut(i) {
             Some(Some(peer)) => {
                 let from = peer.ip;

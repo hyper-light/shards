@@ -269,12 +269,16 @@ fn negotiated_frame(negotiated: Negotiated, bridges: usize) -> Option<[u8; NEGOT
     Some(out)
 }
 
+/// An endpoint's report as read: what its TLS negotiated, the bytes of the bridges it names,
+/// and the report's length.
+type Report<'a> = (Negotiated, &'a [u8], usize);
+
 /// The endpoint's report at the front of `bytes`, once it has come whole: what its TLS
 /// negotiated, the bytes of the bridges it names (a big-endian u32 each), and the report's
 /// length; none before. Another frame there is no report: `Err` with what it is, as
 /// [`read_refused`] has it; a report of a length no bridges make, or naming more than
 /// [`BRIDGES_MOST`] bytes of them, `Err(None)`.
-fn read_report(bytes: &[u8]) -> Result<Option<(Negotiated, &[u8], usize)>, Option<Tag>> {
+fn read_report(bytes: &[u8]) -> Result<Option<Report<'_>>, Option<Tag>> {
     let Some((tag, len)) = frame::peek(bytes).map_err(|_| None)? else {
         return Ok(None);
     };
