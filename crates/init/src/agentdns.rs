@@ -172,8 +172,16 @@ pub fn running() -> bool {
     CONTROL.get().is_some()
 }
 
-/// Has the relay keep `asker`, in place of any of its link's (D181).
+/// Has the relay keep `asker`, in place of any of its link's (D181), its names among it
+/// (D278).
 pub fn admit(asker: &Asker) -> io::Result<()> {
+    tell(&admission(asker)?)
+}
+
+/// What [`admit`] tells the relay: its link, whether it may ask any name, its addresses, each
+/// name it may ask (a length, then its bytes: a host's name is 253 at most, D236), then its
+/// tables.
+fn admission(asker: &Asker) -> io::Result<Vec<u8>> {
     let mut m = vec![b'A'];
     m.extend_from_slice(&asker.link.to_be_bytes());
     m.push(u8::from(asker.any));
@@ -183,6 +191,11 @@ pub fn admit(asker: &Asker) -> io::Result<()> {
     for a in &asker.addrs {
         m.extend_from_slice(&a.octets());
     }
+    m.push(u8::try_from(asker.names.len()).map_err(|_| io::Error::other("an asker with too many names"))?);
+    for name in &asker.names {
+        m.push(u8::try_from(name.len()).map_err(|_| io::Error::other("a name too long to ask"))?);
+        m.extend_from_slice(name.as_bytes());
+    }
     for table in &asker.local {
         let bytes = table.table();
         let len =
@@ -190,7 +203,7 @@ pub fn admit(asker: &Asker) -> io::Result<()> {
         m.extend_from_slice(&len.to_be_bytes());
         m.extend_from_slice(&bytes);
     }
-    tell(&m)
+    Ok(m)
 }
 
 /// Has the relay let the asker of link `link` go (D181).
@@ -231,8 +244,21 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
                 return false;
             };
             let addrs = addrs.iter().map(|c| Ipv4Addr::from(*c)).collect();
+            let Some((&count, mut rest)) = m.get(end..).and_then(<[u8]>::split_first) else {
+                return false;
+            };
+            let mut names = Vec::new();
+            for _ in 0..count {
+                let Some((&len, tail)) = rest.split_first() else {
+                    return false;
+                };
+                let Some((name, tail)) = tail.split_at_checked(usize::from(len)) else {
+                    return false;
+                };
+                names.push(String::from_utf8_lossy(name).into_owned());
+                rest = tail;
+            }
             let mut local = Vec::new();
-            let mut rest = m.get(end..).unwrap_or_default();
             while let Some((&[a, b], tail)) = rest.split_first_chunk::<2>() {
                 let len = usize::from(u16::from_be_bytes([a, b]));
                 let Some((table, tail)) = tail.split_at_checked(len) else {
@@ -252,7 +278,7 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
             a.push(Asker {
                 link,
                 any: any != 0,
-                names: Vec::new(),
+                names,
                 addrs,
                 local,
             });
@@ -652,6 +678,44 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An asker admitted as the run goes keeps the names it may ask (D278), and its next
+    /// admission takes its link's place, what it may ask with it; one cut short is nothing.
+    #[test]
+    fn an_askers_names_are_admitted_with_it() {
+        let askers = RwLock::new(Vec::new());
+        let asker = Asker {
+            link: 9,
+            any: false,
+            names: vec!["api.example.com".into(), "chatgpt.com".into()],
+            addrs: vec![Ipv4Addr::new(10, 88, 0, 2)],
+            local: Vec::new(),
+        };
+        assert!(apply(&admission(&asker).unwrap(), &askers));
+        {
+            let a = askers.read().unwrap();
+            assert_eq!(
+                (a.len(), a[0].names.clone(), a[0].addrs.clone()),
+                (1, asker.names.clone(), asker.addrs.clone())
+            );
+            assert!(a[0].may_ask(&question("chatgpt.com")) && !a[0].may_ask(&question("evil.example")));
+        }
+        let none = Asker {
+            names: Vec::new(),
+            ..asker
+        };
+        let told = admission(&none).unwrap();
+        assert!(apply(&told, &askers));
+        assert!(askers.read().unwrap()[0].names.is_empty(), "its names taken back");
+        assert!(!apply(&told[..told.len() - 1], &askers));
+        fn question(name: &str) -> Vec<u8> {
+            let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            q.push(u8::try_from(name.len()).unwrap());
+            q.extend_from_slice(name.as_bytes());
+            q.extend_from_slice(&[0, 0, 1, 0, 1]);
+            q
+        }
+    }
 
     #[test]
     fn an_existing_tcp_session_uses_the_members_current_names() {

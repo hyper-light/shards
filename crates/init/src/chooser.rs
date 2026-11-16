@@ -762,7 +762,7 @@ fn listened(ask: &OwnedFd, addr: Ipv4Addr, (proto, lo, hi): Egress) -> Vec<u16> 
 /// length first, which recv(2)'s MSG_PEEK | MSG_TRUNC give (netlink's since Linux 2.6.22),
 /// so that no dump's datagram is cut to a buffer of a guessed size. None where there is
 /// none, or it cannot be held.
-fn whole(sock: &OwnedFd, buf: &mut Vec<u8>) -> Option<usize> {
+pub(crate) fn whole(sock: &OwnedFd, buf: &mut Vec<u8>) -> Option<usize> {
     // SAFETY: recv(2) of no bytes into no buffer, the datagram left queued.
     let len = unsafe {
         libc::recv(

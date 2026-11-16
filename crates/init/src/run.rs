@@ -288,7 +288,7 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
-        let declared = declared.map_or_else(crate::domains::read, Ok);
+        let declared = declared.map_or_else(|| crate::domains::read(&spec.setup), Ok);
         match declared.and_then(|(all, domains, pairs)| {
             workload.capture = crate::capture::Capture::prepare(
                 &spec.setup,
@@ -3005,7 +3005,7 @@ impl Standby {
         // daemon refuses it: what the image declares, in the image as built (D109).
         let declared = match crate::setup::filter_named(&spec.setup, b"domains-seccomp=") {
             Some(_) if spec.builtin != run::builtin::HOLD => {
-                Some(crate::domains::read().map_err(setup_failed)?)
+                Some(crate::domains::read(&spec.setup).map_err(setup_failed)?)
             }
             _ => None,
         };
@@ -3815,17 +3815,32 @@ fn builtin(
     let (stderr_r, stderr_w) = pipe()?;
     // What a microVM's engine asks of its networks is init's own state (D181): done here,
     // and said by the child as any built-in's answer is.
-    let networked = (kind == run::builtin::NETWORK).then(|| crate::members::network(args));
+    // Each answer its text, or why not and the built-in's exit status.
+    let networked =
+        (kind == run::builtin::NETWORK).then(|| crate::members::network(args).map_err(|e| (e, 1)));
     // What a joiner listens on, read through init's `/proc` by its process, whose
     // network namespace its socket tables are (D181).
     let networked = networked.or_else(|| {
-        (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
+        (kind == run::builtin::LISTENS)
+            .then(|| crate::members::listening(joiner.unwrap_or(workload)).map_err(|e| (e, 1)))
     });
     // The workload's device filter widened to the nodes of the host's functions plugged
     // into its microVM (D214): init's own state, as the filter it keeps, done here.
     let networked = networked.or_else(|| {
         (kind == run::builtin::DEVICE && joiner.is_none() && args.first().is_some_and(|a| a == b"allow"))
-            .then(|| crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP))
+            .then(|| {
+                crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP).map_err(|e| (e, 1))
+            })
+    });
+    // A member's grants past the microVM made as its host says (D278): init's own state, as
+    // the switch and the gates it keeps, done here; answered with nothing, or refused by its
+    // cause's status.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::EGRESS).then(|| {
+            crate::egress::change(args)
+                .map(|()| String::new())
+                .map_err(|e| (e.to_string(), failed_status(kind, &e)))
+        })
     });
     // What reads the host's stdin: unpacking an archive, and the host's notices (D235).
     let input = if matches!(kind, run::builtin::EXTRACT | run::builtin::NOTICE) {
@@ -3843,9 +3858,11 @@ fn builtin(
         if let Some(said) = networked {
             let (mut to, text, code) = match said {
                 Ok(text) => (File::from(stdout_w), text, 0),
-                Err(why) => (File::from(stderr_w), why, 1),
+                Err((why, code)) => (File::from(stderr_w), why, code),
             };
-            let _ = writeln!(to, "{text}");
+            if !(text.is_empty() && kind == run::builtin::EGRESS) {
+                let _ = writeln!(to, "{text}");
+            }
             // SAFETY: _exit(2) ends the child without running init's exit paths.
             unsafe { libc::_exit(code) }
         }
@@ -6564,12 +6581,25 @@ fn resize(fd: RawFd, size: Size) {
 /// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`).
 fn failed_status(kind: u8, e: &io::Error) -> i32 {
     let unsignalled = e.get_ref().and_then(|inner| inner.downcast_ref::<Unsignalled>());
-    match (kind, unsignalled) {
-        (run::builtin::DEVICE, _) if e.kind() == io::ErrorKind::ResourceBusy => {
+    let refused = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::egress::Refused>());
+    match (kind, unsignalled, refused) {
+        (run::builtin::DEVICE, _, _) if e.kind() == io::ErrorKind::ResourceBusy => {
             i32::from(run::builtin::DEVICE_BUSY)
         }
-        (run::builtin::SIGNAL, Some(Unsignalled::Ended(_))) => i32::from(run::builtin::SIGNAL_ENDED),
-        (run::builtin::SIGNAL, Some(Unsignalled::Unknown(_))) => i32::from(run::builtin::SIGNAL_UNKNOWN),
+        (run::builtin::SIGNAL, Some(Unsignalled::Ended(_)), _) => i32::from(run::builtin::SIGNAL_ENDED),
+        (run::builtin::SIGNAL, Some(Unsignalled::Unknown(_)), _) => i32::from(run::builtin::SIGNAL_UNKNOWN),
+        // A member's grants past the microVM refused by a cause its host tells apart (D278).
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Unknown(_))) => {
+            i32::from(run::builtin::EGRESS_UNKNOWN)
+        }
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Past(_))) => {
+            i32::from(run::builtin::EGRESS_PAST)
+        }
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Unheld(_))) => {
+            i32::from(run::builtin::EGRESS_UNHELD)
+        }
         _ => 1,
     }
 }

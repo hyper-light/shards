@@ -37064,6 +37064,79 @@ narrowed to its own member, taken; widened to another, refused); the image chann
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
 `give_members` not called, and the first test fails as kiln's launch did.
 
+### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress in the guest (slice b1, init and abi: built; its host and API, b2, and its real-VM test, b3, owed)
+
+**Why.** The person (2026-11-15): connect and disconnect harnesses, agents and MCP servers
+*individually*, live, with no rebuild or restart. D273 changed a run's grants as it goes, but
+for the whole microVM, within its image's: the network process sees the microVM whole, since
+init translates every member's flow to eth0's address (links.rs `outside`, its `post` chain), so
+it cannot hold one member apart from another. A member's own reach is the guest's to hold.
+
+**Alternatives.**
+- *Addresses of its own past the translation* (D236's deferred alternative): each member's flows
+  leave under an address of its own, which the network process holds apart. It changes init's
+  translation, the switch and the network process's per-flow table, and the guest's own hold
+  (its gate, its resolver) is needed either way. Not taken.
+- *Landlock*: it only narrows (landlock(7)), so it cannot widen a member as the run goes; the
+  gate's nftables already hold its TCP and UDP.
+- *ctnetlink to end a revoked member's flows* (the design's first choice): the guest kernel has
+  none (`# CONFIG_NF_CT_NETLINK is not set` in resources/kernel/firecracker-{x86_64,aarch64}-6.18
+  .config; shards.config adds no netfilter option but NF_TABLES_IPV6 and NFT_FIB_IPV6). It has
+  `CONFIG_INET_DIAG_DESTROY=y`, so sock_diag's SOCK_DESTROY does it (ROOT, 2026-11-15).
+
+**Decided.**
+- *What a member reaches* is what its host gives it, whole, within its image's grants (its
+  link as the plan makes it: port grants to any address, its destinations, its names) and the
+  most its host may give it past them, its *ceiling*; until its host gives it any, its image's
+  grants. So a host disconnects a member from what its image grants it as it connects it to
+  what its ceiling lets it: the person's ask both ways. Setup entries say them as the run
+  starts: `member-egress=<index>\0<item>\0…` and `member-ceiling=<index>\0<item>\0…`, each
+  item `PROTO/LO-HI` (6 or 17), `HOST:PORT` (D236's) or `dns` (abi `run::egress`). Built-in
+  `EGRESS` (25) gives a member its grants as they are to stand, whole, as the run goes:
+  answered with nothing, or refused by its cause, its exit status `EGRESS_PAST` (13, past its
+  image and its ceiling), `EGRESS_UNHELD` (95, below) or `EGRESS_UNKNOWN` (2, no such member
+  linked). A grant is within where every item is: a port range the image's or the ceiling's
+  port grants cover, a destination either names or whose TCP port either grants to any address,
+  `dns` where either grants it. The design had a member's own grants beside its image's, which
+  no host could take back; corrected so before it landed (ROOT, 2026-11-16).
+- *Held apart as D236 holds an image* (`egress::unheld`, the build's `agentfile::held` rule):
+  each configuration as it is made, the start's (image and start grants) and each `EGRESS`'s,
+  not their ceilings' union, which neither implies a narrower one holds nor is needed (A with
+  {N1:443} and B with {N2:443} are within A and B's {N1, N2:443} and cannot be held apart).
+- *Where a ceiling may be*: on a member whose link joins a network that is not internal. Its
+  link then has its way past the microVM from the start, its gate holding it shut until a grant
+  opens it: the switch's uplink and its IPv6 part, init's confinement of the run's own processes
+  (`uplinked`), its resolver in its resolv.conf where its ceiling names hosts or names, its hosts
+  file's entry for the host itself where its ceiling names it, and Landlock's TCP connect left to
+  the gate (its link's `connects`), so that a grant needs no right Landlock took away. A member
+  with no ceiling keeps Landlock's TCP connect refusal where its image gives it no connection:
+  the design's blanket `net_handled = 0` for every domain was narrowed so.
+- *A change, in order* (`egress::change`, run in init itself before its built-ins' fork, as
+  D181's `NETWORK` is, since it is init's own state): its gate first (`Switch::regate_domain`),
+  so that no new flow opens on what it lost; its open TCP flows to a port it lost at an address
+  past the microVM reset in its own network namespace (sock_diag SOCK_DESTROY: its process reads
+  ECONNABORTED, its peer an RST, which still crosses the switch and init, so the network process
+  lets its host side go); then the switch's tables and init's own, IPv6's among them where the
+  uplink carries it (`Switch::regrant`: each programmed again whole, each table one transaction,
+  its chains emptied first); then the agents' resolver (`agentdns::admit` now carries an asker's
+  names, and the resolver starts for the first member to ask). UDP the switch, stateless by link
+  and port, cuts at once.
+
+**Tests** (light, Linux in a container): abi `a_members_grants_read_back_as_written` and the
+setup keys' registration; init `ranges_cover_and_lose_by_the_port`,
+`a_grant_is_held_within_its_image_and_its_ceiling`, `members_are_held_apart_as_an_images_are`,
+`a_lost_flow_is_found_and_named_exactly`, `grants_as_a_run_starts_join_its_links`,
+`a_grant_and_its_revoke_program_the_switch_and_the_gate_whole` (the switch's and the gate's
+transactions before a grant, after it and after its revoke, rule for rule), and agentdns's
+`an_askers_names_are_admitted_with_it`.
+
+**Owed.** b2 (the host and its API): `ImageSpec::egress_ceiling` (`member-ceiling=`); each
+member's live grants held on its run host, `NET_GRANTS` their union over `NET_POLICY` (image and
+ceilings), `grant_egress` and `revoke_egress` taking members for every `EgressGrant`, one
+`EGRESS` per member changed. b3 (ROOT): a live grant to member A alone, which A reaches and B
+does not; a revoked member's open TCP connection reset, not stalled; its microVM's VM process,
+`started_from` and templates unchanged throughout.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
