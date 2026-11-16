@@ -3665,6 +3665,10 @@ mod hosted {
         shares: Option<Shares>,
         from: wire::StartedFrom,
         held: Option<shards_vmm::snapshot::Held>,
+        /// Its writable layer's file's name (D190), its VM's file once it is ready: let go of
+        /// once its run has said its start (`STARTED`), off its caller's way; a warm host's as
+        /// its VM is ready, before any run asks.
+        layer: Option<crate::daemon::LayerFile>,
         /// On Windows the job each of them is made in, whose last handle is this
         /// process's (`GroupJob::ending_with_this_process`): they end as it ends, however
         /// it ends, as a direct boot's do (D141, D197); let go of once they are reaped.
@@ -3896,7 +3900,7 @@ mod hosted {
             super::step(format_args!("its VM's start settled"));
             started
         });
-        let ((launched, link, _, _), from, held) = match started {
+        let ((launched, link, layer, _), from, held) = match started {
             Ok(started) => started,
             Err(e) => {
                 if let Some(shares) = shares {
@@ -3912,6 +3916,7 @@ mod hosted {
             shares,
             from,
             held,
+            layer,
             #[cfg(windows)]
             job,
         })
@@ -3949,8 +3954,8 @@ mod hosted {
     }
 
     impl super::Machine for Host<'_> {
-        /// Its VM, its link, its writable layer's file until it is ready, and its GPU report's
-        /// pipe until it is read (D233).
+        /// Its VM, its link, its writable layer's file until its run says its start, and its GPU
+        /// report's pipe until it is read (D233).
         type Vm = (
             crate::launch::Launched,
             Stream,
@@ -4075,9 +4080,9 @@ mod hosted {
                 Ok(None) => Err("the VM ended before it was ready".into()),
                 Err(e) => Err(format!("the VM was not ready: {e}")),
             };
-            // Its writable layer's file is its VM's once it is ready or has failed (D190).
-            vm.2 = None;
-            super::step(format_args!("its writable layer's name let go of"));
+            // Its writable layer's file is its VM's once it is ready or has failed (D190): one
+            // that failed lets its name go as it ends (`end`); a ready one's goes once its run
+            // has said its start (`Launched::layer`), its unlink off the run's way.
             // A ready VM's GPU report was written, and its writer closed, before its guest ran
             // (D233): read now, at once. One not ready is read once it has ended (`end`).
             if said.is_ok()
@@ -5862,13 +5867,17 @@ mod hosted {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
         let mut shaped = shape(exemplar, &home, &mut checking)?;
-        let launched = match launch(&home, &shaped.launch(), checking, &mut None) {
+        let mut launched = match launch(&home, &shaped.launch(), checking, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
                 return Err(e);
             }
         };
+        // Its writable layer's name let go of now, before any run asks, so that a host that
+        // goes unasked, however it goes, leaves none behind.
+        drop(launched.layer.take());
+        super::step(format_args!("its writable layer's name let go of"));
         // The ready VM holds its rootfs and settled template files itself (D26).
         // An idle spare must not keep unrelated collection waiting for its CREATE.
         drop(shaped.prepared.lease.take());
@@ -5944,7 +5953,6 @@ mod hosted {
                 return Err(e);
             }
         };
-        let mut launched = launched;
         launched.from = wire::StartedFrom::Warm;
         serve_launched(answers, input, &home, plan, launched, premade)
     }
@@ -5961,6 +5969,7 @@ mod hosted {
             shares,
             from: _,
             held,
+            layer,
             #[cfg(windows)]
             job,
         }) = launched
@@ -5968,8 +5977,10 @@ mod hosted {
             let _ = vm.kill(shards_ipc::signal::SIGKILL);
             let _ = vm.wait();
             drop(link);
-            // Its template's files, held open while its VM ran (D253).
+            // Its template's files, held open while its VM ran (D253); its writable layer's name,
+            // where its run ended before it said its start.
             drop(held);
+            drop(layer);
             let record = Ends::kept_in(home);
             if let Some((child, control)) = net {
                 drop(control);
@@ -6168,6 +6179,8 @@ mod hosted {
                 .send(wire::to_client::STARTED, &[&started])
                 .map_err(|e| boot(format!("its orchestrator: {e}")))?;
             super::step(format_args!("its start told its orchestrator"));
+            drop(launched.layer.take());
+            super::step(format_args!("its writable layer's name let go of"));
             serve(&live, input, &launched, client, control);
             // What was plugged in goes with the VM: each share process ends as its streams
             // close (`Shares::end`).

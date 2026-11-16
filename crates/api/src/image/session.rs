@@ -422,11 +422,19 @@ impl Shared {
     /// microseconds since the Unix epoch, which lines it up with its host's and its VM's
     /// lines, each of which says its own clock's wall time (api_image's `image_start_costs`).
     fn step(&self, what: std::fmt::Arguments<'_>) {
+        if self.timed {
+            self.step_at(std::time::SystemTime::now(), what);
+        }
+    }
+
+    /// [`step`](Self::step) as of `at`: a time read where its line could not be said then, its
+    /// keeper's lock held (a line takes it, [`said`](Self::said)).
+    fn step_at(&self, at: std::time::SystemTime, what: std::fmt::Arguments<'_>) {
         if !self.timed {
             return;
         }
-        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            let line = format!("shards-api: at unix {} us {what}\n", now.as_micros());
+        if let Ok(at) = at.duration_since(std::time::UNIX_EPOCH) {
+            let line = format!("shards-api: at unix {} us {what}\n", at.as_micros());
             self.said(line.as_bytes(), said_kept());
         }
     }
@@ -448,10 +456,13 @@ impl Shared {
         };
         self.step(format_args!("its diagnostics' file named"));
         let mut said_to = lock(&self.said_to);
+        // Its steps' times read under the keeper's lock, their lines said once it is let go.
+        let taken = self.timed.then(std::time::SystemTime::now);
         // A truncation to its own length: a file that cannot be cut is refused now, not at
         // its first cut.
         let size = to.metadata().map_err(os)?.len();
         to.set_len(size).map_err(os)?;
+        let cut = self.timed.then(std::time::SystemTime::now);
         let mut kept = Diagnostics {
             file: to,
             bound,
@@ -463,6 +474,10 @@ impl Shared {
         drop(state);
         *said_to = Some(kept);
         drop(said_to);
+        if let (Some(taken), Some(cut)) = (taken, cut) {
+            self.step_at(taken, format_args!("its diagnostics' keeper taken"));
+            self.step_at(cut, format_args!("its diagnostics' file cut to its length"));
+        }
         self.step(format_args!("its diagnostics kept"));
         Ok(())
     }
@@ -3347,7 +3362,9 @@ mod tests {
     /// A session whose host times its run (`SHARDS_TIMING` given its host at all) says its own
     /// steps among its host's diagnostics as `shards-api: at unix US us WHAT`, US its wall
     /// clock's microseconds, in the tail kept to quote and in the file its caller names, its
-    /// keep's own two among them; one whose host does not says none.
+    /// keep's own four among them (its file named, its keeper taken and its file cut to its
+    /// length, each timed where it happened under the keeper's lock, then kept), in the order of
+    /// their times; one whose host does not says none.
     #[test]
     fn a_timed_sessions_steps_are_said_among_its_hosts_diagnostics() {
         let untimed = shared();
@@ -3380,6 +3397,8 @@ mod tests {
             [
                 "its start taken",
                 "its diagnostics' file named",
+                "its diagnostics' keeper taken",
+                "its diagnostics' file cut to its length",
                 "its diagnostics kept"
             ]
         );
