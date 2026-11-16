@@ -19,7 +19,8 @@
 //! the uplink's chain `chosen` (links::program_chosen), programmed again whole, once every
 //! call a round of poll(2) found is answered, on a netfilter socket kept for the process's
 //! life (closing one waits out an RCU grace period, PM M513): what no domain listens on
-//! goes nowhere past init, as a port no domain claims.
+//! goes nowhere past init, as a port no domain claims. It chooses for eth0's own address
+//! alone: a network shared by runs, eth0's second address, is its members' grants' (D285).
 //!
 //! No grant rests on this process: every candidate is granted the port by its
 //! Agentfile, its gate and the switch letting it in, and the process only chooses among
@@ -154,9 +155,12 @@ pub fn filter() -> [libc::sock_filter; 8] {
 }
 
 /// What init sends: a domain's listener, then its network namespace, each with its
-/// address.
+/// address; and a network shared by runs the run joined or left (D285), whether it is on it
+/// and its subnet, which the chooser answers once its chains keep its holders' answers there
+/// out of their zones, or no longer (links::program_chosen), and whether they are programmed.
 const LISTENER: u8 = b'L';
 const NETNS: u8 = b'N';
+const SHARED: u8 = b'S';
 
 /// Init's end of the chooser. Dropped, the chooser's ends: its candidates' calls are
 /// refused as a listener no one holds refuses them.
@@ -181,8 +185,8 @@ impl std::fmt::Display for Refused {
     }
 }
 
-/// Starts the chooser for `contests`, before any domain does.
-pub fn start(contests: Vec<Contest>) -> Result<Chooser, Refused> {
+/// Starts the chooser for `contests` at eth0's own address, `own`, before any domain does.
+pub fn start(contests: Vec<Contest>, own: Ipv4Addr) -> Result<Chooser, Refused> {
     let choices = Choices::new(contests).map_err(Refused::Zones)?;
     let (ours, theirs) = hostbind::seqpacket().map_err(Refused::Io)?;
     // SAFETY: fork(2) from init, which has no other thread: the child runs only this
@@ -191,7 +195,7 @@ pub fn start(contests: Vec<Contest>) -> Result<Chooser, Refused> {
         -1 => Err(Refused::Io(io::Error::last_os_error())),
         0 => {
             crate::dnsrelay::keep_only(&[theirs.as_raw_fd()]);
-            serve(theirs, choices);
+            serve(theirs, choices, own);
             // SAFETY: _exit(2) of the child, which owns nothing to flush.
             unsafe { libc::_exit(0) }
         }
@@ -210,6 +214,56 @@ impl Chooser {
             listener.as_raw_fd(),
             0,
         ) && hostbind::send_fd(self.sock.as_raw_fd(), &[NETNS, a, b, c, d], netns.as_raw_fd(), 0)
+    }
+
+    /// Has the chooser keep its holders' answers to network `subnet`, shared by runs, out of
+    /// their zones as the run joins it (`on`), or no longer as it leaves (D285); returns once
+    /// the chooser says it has programmed its chains so, an error where it could not or has
+    /// gone.
+    pub fn share(&self, subnet: (Ipv4Addr, u8), on: bool) -> io::Result<()> {
+        let sock = self.sock.as_raw_fd();
+        let told = shared_told(on, subnet);
+        // SAFETY: send(2) of our own bytes on our own descriptor.
+        let sent = unsafe { libc::send(sock, told.as_ptr().cast(), told.len(), libc::MSG_NOSIGNAL) };
+        if usize::try_from(sent).ok() != Some(told.len()) {
+            return Err(io::Error::last_os_error());
+        }
+        let mut answer = [0u8; 2];
+        loop {
+            // SAFETY: recv(2) into a buffer of ours, waiting for the chooser's answer.
+            let n = unsafe { libc::recv(sock, answer.as_mut_ptr().cast(), answer.len(), 0) };
+            match (usize::try_from(n), answer) {
+                (Ok(2), [SHARED, 1]) => return Ok(()),
+                (Ok(2), [SHARED, _]) => {
+                    return Err(io::Error::other(
+                        "the ports' chooser could not program its choices",
+                    ));
+                }
+                (Ok(_), _) => return Err(io::Error::other("the ports' chooser has gone")),
+                (Err(_), _) => {
+                    let e = io::Error::last_os_error();
+                    if e.kind() != io::ErrorKind::Interrupted {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What [`Chooser::share`] tells the chooser: [`SHARED`], whether the run is on the network,
+/// then its subnet's address and prefix.
+fn shared_told(on: bool, (net, prefix): (Ipv4Addr, u8)) -> [u8; 7] {
+    let [a, b, c, d] = net.octets();
+    [SHARED, u8::from(on), a, b, c, d, prefix]
+}
+
+/// What a message [`shared_told`] made says: whether the run is on the network, and its
+/// subnet; none for any other message.
+fn shared_heard(m: &[u8]) -> Option<(bool, (Ipv4Addr, u8))> {
+    match *m {
+        [SHARED, on, a, b, c, d, prefix] => Some((on != 0, (Ipv4Addr::new(a, b, c, d), prefix))),
+        _ => None,
     }
 }
 
@@ -236,6 +290,10 @@ struct Serve {
     /// Whether a holder is to be chosen again: once every call this round of poll(2)
     /// found is answered, so that none waits behind programming another's choice.
     stale: bool,
+    /// eth0's own address, whose flows alone are chosen; and the subnets of the networks
+    /// shared by runs the run is on (D285), its holders' answers to which keep zone 0.
+    own: Ipv4Addr,
+    shared: Vec<(Ipv4Addr, u8)>,
 }
 
 /// What the chooser holds of each contest: who holds each of its ports, and the
@@ -365,7 +423,7 @@ enum Owner {
     Told(usize),
 }
 
-fn serve(ctl: OwnedFd, choices: Choices) {
+fn serve(ctl: OwnedFd, choices: Choices, own: Ipv4Addr) {
     let mut s = Serve {
         ctl,
         choices,
@@ -373,6 +431,8 @@ fn serve(ctl: OwnedFd, choices: Choices) {
         programmed: None,
         nft: None,
         stale: false,
+        own,
+        shared: Vec::new(),
     };
     s.program();
     let mut watched: Vec<(RawFd, Owner)> = Vec::new();
@@ -441,7 +501,11 @@ impl Serve {
                         self.member(which, Ipv4Addr::new(a, b, c, d), fd);
                     }
                 }
-                Ok(_) => {}
+                Ok((n, None)) => {
+                    if let Some((on, subnet)) = buf.get(..n).and_then(shared_heard) {
+                        self.share(on, subnet);
+                    }
+                }
                 Err(e) => return e.kind() == io::ErrorKind::WouldBlock,
             }
         }
@@ -485,6 +549,27 @@ impl Serve {
             }
             _ => {}
         }
+    }
+
+    /// A network shared by runs the run joined (`on`) or left, `subnet` (D285): the chains
+    /// programmed again at once, and init told whether they are, before it gives eth0 the
+    /// run's address there.
+    fn share(&mut self, on: bool, subnet: (Ipv4Addr, u8)) {
+        self.shared.retain(|s| *s != subnet);
+        if on {
+            self.shared.push(subnet);
+        }
+        self.programmed = None;
+        let answer = [SHARED, u8::from(self.program())];
+        // SAFETY: send(2) of our own bytes on our own descriptor; init waits for them.
+        unsafe {
+            libc::send(
+                self.ctl.as_raw_fd(),
+                answer.as_ptr().cast(),
+                answer.len(),
+                libc::MSG_NOSIGNAL,
+            )
+        };
     }
 
     /// One notification of member `i`'s listener, answered.
@@ -640,10 +725,11 @@ impl Serve {
         self.program();
     }
 
-    fn program(&mut self) {
+    /// The chains programmed with the choices, where they changed: whether they hold them now.
+    fn program(&mut self) -> bool {
         let chosen = self.choices.chosen();
         if self.programmed.as_ref() == Some(&chosen) {
-            return;
+            return true;
         }
         let nft = match self.nft.take() {
             Some(nft) => Ok(nft),
@@ -651,17 +737,21 @@ impl Serve {
         };
         // Kept while it programs; one that failed, opened again for the next choice.
         let done = nft.and_then(|nft| {
-            crate::links::program_chosen(&nft, &chosen)?;
+            crate::links::program_chosen(&nft, self.own, &self.shared, &chosen)?;
             self.nft = Some(nft);
             Ok(())
         });
         match done {
-            Ok(()) => self.programmed = Some(chosen),
+            Ok(()) => {
+                self.programmed = Some(chosen);
+                true
+            }
             Err(e) => {
                 let _ = writeln!(
                     io::stderr(),
                     "shards-init: the ports' chooser: programming its choices: {e}"
                 );
+                false
             }
         }
     }
@@ -1290,5 +1380,44 @@ mod tests {
         assert_eq!(run(arch, listen), SECCOMP_RET_USER_NOTIF);
         assert_eq!(run(arch, 0), SECCOMP_RET_ALLOW);
         assert_eq!(run(arch ^ 1, listen), SECCOMP_RET_ALLOW);
+    }
+
+    /// A network shared by runs, as init tells the chooser of it (D285), reads back as told,
+    /// and no other message reads as one; init's wait ends with the chooser's answer: its
+    /// chains programmed, not programmed, or the chooser gone.
+    #[test]
+    fn a_shared_networks_subnet_is_told_and_answered() {
+        let subnet = (Ipv4Addr::new(10, 89, 0, 0), 24);
+        for on in [true, false] {
+            assert_eq!(shared_heard(&shared_told(on, subnet)), Some((on, subnet)));
+        }
+        assert_eq!(shared_heard(&[LISTENER, 10, 0, 0, 1]), None);
+        let (ours, theirs) = hostbind::seqpacket().unwrap();
+        let chooser = Chooser { sock: ours };
+        // The chooser's end: each message heard, answered done, then not done, then gone.
+        let answering = std::thread::spawn(move || {
+            let mut heard = Vec::new();
+            for done in [1u8, 0, 2] {
+                let mut buf = [0u8; 16];
+                let (n, fd) = hostbind::recv_fd(theirs.as_raw_fd(), &mut buf, 0).unwrap();
+                assert!(fd.is_none(), "a descriptor with it");
+                heard.push(shared_heard(&buf[..n]).unwrap());
+                if done < 2 {
+                    let answer = [SHARED, done];
+                    // SAFETY: send(2) of a buffer of ours on our own descriptor.
+                    unsafe { libc::send(theirs.as_raw_fd(), answer.as_ptr().cast(), answer.len(), 0) };
+                }
+            }
+            heard
+        });
+        chooser.share(subnet, true).unwrap();
+        let not_done = chooser.share(subnet, false).unwrap_err();
+        assert!(not_done.to_string().contains("could not program"), "{not_done}");
+        let gone = chooser.share(subnet, true).unwrap_err();
+        assert!(gone.to_string().contains("has gone"), "{gone}");
+        assert_eq!(
+            answering.join().unwrap(),
+            vec![(true, subnet), (false, subnet), (true, subnet)]
+        );
     }
 }

@@ -234,7 +234,7 @@ fn switch() -> io::Result<&'static crate::links::Switch> {
     if let Some(s) = crate::domains::SWITCH.get() {
         return Ok(s);
     }
-    let made = crate::links::Switch::new(&[], &[], &[], &[], None, false, 0, &[])?;
+    let made = crate::links::Switch::new(&[], &[], &[], &[], &[], None, false, 0, &[])?;
     Ok(crate::domains::SWITCH.get_or_init(|| made))
 }
 
