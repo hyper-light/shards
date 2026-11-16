@@ -36672,7 +36672,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 built, S2-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -36745,12 +36745,56 @@ and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock te
 first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
 guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
 
+**S1, built** (`shards_vmm::platform::Pipes`, platform/windows_pipes.rs): a connection's two
+server ends. Reads: one overlapped ReadFile at a time into the connection's own buffer, kept
+under way while nothing read is held, so that its client's next bytes or its end finish it
+(`Reading`: under way, holding, ended, failed). Writes: one overlapped WriteFile at a time of
+bytes copied from the caller (no reference into guest memory), the connection's until it
+finishes (`Writing`: idle, under way, closing, shut, failed), their count said by `look` as it
+finishes, so that a caller counts the guest's bytes forwarded only then and the guest's credit
+bounds what it holds. `shut_down` closes the way down once its write under way has finished,
+never DisconnectNamedPipe, which drops what its client has not read. A connection dropped
+cancels its calls and waits for them (GetOverlappedResult) before their OVERLAPPEDs and buffers
+go. `look` reads each call's OVERLAPPED without waiting (GetOverlappedResult, bWait 0): whatever
+tells of a finish (S2's completion port, a test's loop) only makes it look, and a stale telling
+finds nothing.
+- *Its one size* (R03): the read buffer is the way up's inbound quota, read back from the
+  instance (GetNamedPipeInfo): a read takes at most what the pipe holds. The quota is its
+  maker's, S3's spawner's; an instance of none is refused. No literal.
+- *Tests* (Windows, no VM): `platform::windows_pipes::tests`, seven, over real byte-mode
+  instances and clients opened as `std` opens a file, as Hex's are: a write past the pipe under
+  way until its reader takes it, its count said once; the client's bytes in order, a line a
+  byte at a time leaving what follows it held, then its end; the way down shut as the client's
+  end, its writes up going on (M609 (h)); a shut behind a write under way; the whole end failing
+  the client's write up at once, ERROR_NO_DATA, after every byte down; the client's write up
+  while its read down waits; a drop with both calls under way.
+- *For S2*, found building S1: a completion port's packet comes once, so the poller takes each
+  connection's readiness from `readable` and `writable` before it waits (one already ready
+  waits for nothing); one key per connection, never reused, so that a packet of a connection
+  gone names none; the waker a posted packet. `Conn` counts the guest's bytes forwarded at
+  `look`'s count, its `send_host` check counting `in_flight` with `tx_buf`, and not the
+  `OK <port>` line's bytes. The device's served ports are AF_UNIX pairs on Windows (`serve`'s
+  `UnixStream::pair`, `VsockHost`'s `ports` and `rate` senders of `UnixStream`): pipe pairs
+  (`shards_ipc::pipe::byte_pair`) keep one kind of host end there. A connection holds two
+  handles where `slots` counts one.
+- *For S2 and S3*, found reading the grants: a pair is two names opened one after the other,
+  so two clients dialling at once could each open one instance of the same pair, one its way
+  down and the other its way up, and each be served the other's stream. None can where every
+  client opens its way down first, as Hex's must (a client's change, below), and the VM holds
+  one pair unconnected at a time, asking its spawner for the next only once both of the last
+  are connected: a second client waits on the way down (ERROR_PIPE_BUSY, WaitNamedPipeW) until
+  the first holds its way up too. A pair whose way down's client goes before its way up is
+  connected (a read of no bytes on the way down, ERROR_BROKEN_PIPE) is dropped and replaced,
+  so that a client that dies there stops no other. The same holds of a host port's own pair,
+  which the spawner opens for its VM's dial (S3).
+
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
-reading the way down and writing the way up, each a byte-mode file as `std` opens one (no
-mode to set, nothing to cancel), in place of an AF_UNIX connect; the line protocol over them
-(`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through `shards_api` takes
-it with its pin.
+its way down first and then its way up, each waited for while busy (ERROR_PIPE_BUSY,
+WaitNamedPipeW), reading the way down and writing the way up, each a byte-mode file as `std`
+opens one (no mode to set, nothing to cancel), in place of an AF_UNIX connect; the line
+protocol over them (`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through
+`shards_api` takes it with its pin.
 
 **What would falsify it.** A guest byte its host never read where it read on to its end; a
 host's write after the guest's end taken without an error; a process other than its user's
