@@ -5337,6 +5337,8 @@ directive makes.
 [--endpoint=URL] [--region=R] [--path-style] [--version-id=V] [--credentials=aws-default]
 <name> FROM <source>`.
 - An http(s) source needs `--checksum`: the content behind a URL changes without notice.
+  Bytes that hash to another are refused, `digest mismatch GOT: WANT`
+  (`a_directives_source_serving_other_bytes_than_its_pin_is_refused`).
 - An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
   S3; the bytes are hashed either way.
 - `--endpoint`, `--region`, `--path-style`, `--version-id` and `--credentials` go only with
@@ -5441,6 +5443,8 @@ Agentfile directive's source is its own grant.
   (D101) is how a build refuses an `ADD`'s hosts.
 - Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
   `a_git_source_opens_only_the_remotes_it_grants`,
+  `a_git_sources_redirect_elsewhere_is_refused_until_granted` (a smart-HTTP advertisement
+  redirected to another origin: refused naming both, nothing sent there; followed once granted),
   `a_granted_fetch_is_refused_a_redirect_it_does_not_name`,
   `a_skill_from_a_redirecting_source_is_fetched_once_granted`; real VMs:
   `a_skill_from_a_redirecting_source_builds_once_granted`.
@@ -36004,6 +36008,76 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
   - A build with RUN steps through the API on HVF, KVM and WHP: its builder microVM booted by
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
+
+#### Refusals in the build's words: a policy's, and the lines (P4.4, 2026-11-16)
+
+**Asked.** Phase 4's P4.4 (kiln plan 01a1dd2e…): a build error comes back typed in shards'
+words; a syntax error refused with its line; a build a policy refuses, in the policy's words.
+
+**Found.** `shards build image` prints, with its error, what the API lost. A policy's deny
+messages (buildx's `Policy: …` lines, policysession.DenyMessages) went to `api-build`'s
+stderr, so the refusal carried only BuildKit's `… not allowed by policy: action DENY`, as a
+`Step` of the policies' step. The excerpt at the error's lines (BuildKit's solver/errdefs Source
+ranges) went there too. A syntax error's line could be found only by reading
+`dockerfile parse error on line N` out of the message, and a located error that does not name
+its line in its words could not be found at all.
+
+**Decided.**
+- *Two answers before the end*, told where the CLI prints the same. `POLICY` (6) carries a
+  policy decision's messages. It is told only for a decision (`Refused::denied`), as buildx fails
+  its policies' step only for a denial; a policy's own error stays the build's error, in its
+  words. `AT` (7) carries the lines of the Agentfile the error is at: each range of each of its
+  locations, first and last. It is told for a plan's error (parsing included) and for a failed
+  step's source map.
+- *The refusal, typed.* `BuildRefusal::Policy { said, lines, message }` is new. A policy's
+  refusal is the build's whatever step it failed. `Step` and `Failed` gain `lines`
+  (`Failed(String)` becomes `Failed { message, lines }`). The lines are a field of each
+  refusal, not a variant of their own: a base's failed pull or a policy's own error is located
+  at its `FROM` without the text being at fault. `Policy` is said as buildx says it: each
+  `Policy: …`, then the error.
+- *The channel's version, 1 to 2.* A host refuses a request of another version, so no side is
+  sent an answer it does not read. FAILED's layout is unchanged: each side reads the other's
+  refusal of its version.
+- *`Builds::env`*: variables of the build's process over this one's, `home`'s `SHARDS_HOME`
+  last, as `ImageSpec::env` gives a run host's. A `SecretSource::Env` is read from there.
+  An orchestrator that holds a person's secret (P4.6: credentials chosen from their secrets) can
+  give it to one build without writing it to a file or setting it in its own environment,
+  which `std::env::set_var` (unsafe in Rust 2024) does not do soundly while other threads run.
+- Rejected: callers reading the line out of the message (R04: callers match fields, not text);
+  a stream of the excerpt's text (presentation, which the caller renders from `lines`).
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| answer kinds 6 and 7 | the channel's next names after FAILED (5) |
+| version 2 | the channel's version, one past main's (D263) |
+| 4 and 8, least item sizes | a message's length prefix; a range's two u32s. They bound a hostile count before anything is allocated, as the request's lists are bounded |
+| a line past `u32::MAX` told as `u32::MAX` | no Agentfile has more lines than a u32 counts, as a step's index is told (`told_index`) |
+
+**Evidence.**
+- Unit (`shards-api` `builds::`): `every_answer_reads_back_as_it_was_told` (POLICY and AT read
+  back; a range whose last line precedes its first, and counts past their bytes, refused);
+  `a_syntax_error_is_refused_at_its_line`; `a_build_a_policy_refused_is_refused_in_the_policys_words`
+  (said as buildx says it); `a_failed_step_is_refused_by_its_number_and_name` (with its line);
+  `a_builds_variables_reach_its_host_and_its_home_comes_last`.
+- Light, a real `shards` and no VM (`build_real.rs`, `SHARDS_API_BUILD=1`):
+  `a_build_refused_comes_back_typed_in_its_words`, a syntax error refused `Failed` at line 2 and
+  an `Agentfile.rego` that trusts nothing refused `Policy` with its message. The broken COPY is
+  refused at its line 2. On adas-mac-studio.local (macOS arm64) at af07ec039 with a debug
+  `shards` (kiln run r47): 3 passed. The syntax error: `… dockerfile parse error on line 2:
+  unknown instruction: FOO (did you mean FROM?)`, lines `[2..=2]`. The policy: said
+  `["no source is trusted here"]`, `… source "local://dockerfile" not allowed by policy: action
+  DENY`. The broken COPY: `[1/1] COPY missing /missing`, lines `[2..=2]`. shards-api's unit tests
+  there: 280 passed, 9 ignored; `scripts/check-development-policy` passed.
+- **Owed** (ROOT):
+  - `api_image.rs` `an_image_built_through_the_api_boots_by_its_digest` (built through
+    `Builds`, booted by its `sha256:` ID as an `ImageSpec`'s image) on HVF, KVM and WHP.
+  - `cargo test -p shards --profile test-release --lib build::` (this slice's `mod.rs`, D54's new
+    git and http tests). Its debug-profile run in r47 exited 101 with no test-result line and no
+    failed test named. Its cause is unread.
+  - clippy of `shards-api` and `shards` at the revision that fixed r47's
+    `single_range_in_vec_init` in these tests.
 
 ### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
 

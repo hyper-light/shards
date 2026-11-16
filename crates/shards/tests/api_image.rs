@@ -49,17 +49,25 @@ fn host_env(home: &TempDir) -> Vec<(OsString, OsString)> {
     ]
 }
 
-/// Builds `agentfile` (its `{image}` the test image) in a context holding a harness
-/// archive whose `codex` is the test guest started with `options`, and an agent of files
-/// alone; tagged `tag` in `home`.
+/// Builds `agentfile` (its `{image}` the test image) in [`context`]'s context, tagged `tag` in
+/// `home`.
 #[track_caller]
 fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
-    let (image, _) = served();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
+    let ctx = context(options, agentfile);
+    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+}
+
+/// A context holding a harness archive whose `codex` is the test guest started with
+/// `options`, an agent of files alone, and an Agentfile of both over the test image, then
+/// `agentfile`.
+fn context(options: &[&str], agentfile: &str) -> TempDir {
+    let (image, _) = served();
     let ctx = TempDir::new("api-image-ctx");
     std::fs::write(ctx.join("Dockerfile"), format!("FROM {image}\n")).unwrap();
     std::fs::create_dir(ctx.join("helper")).unwrap();
@@ -81,8 +89,43 @@ fn build(home: &TempDir, tag: &str, options: &[&str], agentfile: &str) {
         format!("FROM {image}\nAGENT helper FROM ./helper\nHARNESS codex FROM ./harness.tar\n{agentfile}"),
     )
     .unwrap();
-    let built = run_shards_env(&["build", "image"], &["-t", tag, ctx.to_str().unwrap()], &env);
-    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    ctx
+}
+
+/// P4.4 (D263): an Agentfile built through shards-api's `Builds` into the caller's home, its
+/// progress told, is pinned by its image's ID, and that ID boots as an `ImageSpec`'s image
+/// with no tag named.
+#[test]
+fn an_image_built_through_the_api_boots_by_its_digest() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-built-home");
+    let ctx = context(&["managed-capture", "codex", "echo"], "");
+    let builds = shards_api::Builds {
+        binary: Some(common::shards().to_path_buf()),
+        home: Some(home.to_path_buf()),
+        env: host_env(&home),
+    };
+    let asked = shards_api::BuildSpec {
+        context: ctx.to_path_buf(),
+        ..shards_api::BuildSpec::default()
+    };
+    let mut events = Vec::new();
+    let pinned = builds.build(&asked, &mut |e| events.push(e)).unwrap();
+    assert!(pinned.digest.starts_with("sha256:"), "{pinned:?}");
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            shards_api::BuildEvent::Ended {
+                how: shards_api::StepEnd::Done,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    let guest = boot(&home, &spec(&home, &pinned.digest));
+    guest.stop().unwrap();
 }
 
 /// The longest life a lease is told, its wire's (a u64 of nanoseconds: shards-api's
