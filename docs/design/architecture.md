@@ -8575,12 +8575,19 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     host-pressure reclaim (review waits-01). Before the kind's first answer, liveness
     alone still governs; another member teaching the record does not bound a wait begun
     cold. The parallel-group fixture therefore starts its stuck word learned. A refusal
-    stands for the exec its judge refused alone: each exec of a word (its room told, then
+    stands while the exec its judge refused does: each exec of a word (its room told, then
     its give-back) begins `Waiting`, so a refused room is no verdict on the give-back that
     follows it, which its own judge judges, nor on a round opened while that give-back runs
     (red `daemon::tests::a_refused_room_is_not_the_next_rounds_verdict`: round 2 counted a
-    member whose give-back was under way as one that gave nothing and OOM-killed it). An answer
-    or refusal wakes the existing groups condvar. No new bound, reader or cache.
+    member whose give-back was under way as one that gave nothing and OOM-killed it). A
+    refusal of an exec of a round's word is that round's answer too, nothing given, queued
+    with every answer (`Answered`, `refuse_word`): as a state alone, reset as the word's
+    next exec began, a round whose groups' thread looked only after its give-back began
+    lost it, waited on that give-back, and the next member's pass opened no round (CI run
+    43876891053 at 1b8d1cddd, macOS and three Windows jobs: the member that joined was told
+    its room twice, `16 != 15`). A round its answers finished is judged before the pass that
+    follows, so that pass opens the next where its group is still short. An answer or
+    refusal wakes the existing groups condvar. No new bound, reader or cache.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
