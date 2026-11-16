@@ -36861,6 +36861,68 @@ then `asking_again`, is the next slice. ROOT's real-VM runs: a build whose
 `HARNESS` comes from git over a resolver that fails on and off (goose's), and
 `cargo test -p shards --profile test-release --test build` on HVF.
 
+### D277. A share given its members as they start: an orchestrator's start share, at any path, in the members it names before their commands run (built; real-VM runs: HVF here, KVM and WHP owed)
+
+**Found.** kiln's P1.4 on HVF (kiln 76738d566 with 9dc625f72's typed step): every member launch
+"harness claude: its launch: Setup (entering its working directory): errno 2", from a fresh
+boot and a template restore alike. kiln launches its harness in its project, which it shares at
+the project's host path (kiln-seams `Share::at_its_path`, D235) and names as the harness's
+working directory. An image run's shares became `-v HOST:AT` binds (api_run `as_run`), which a
+member is given only where the image's own `VOLUME` lies (D109: volumes.rs flags such a bind
+`domains`, and init's `shares_of` stages those alone), so the project reached the run's own root
+alone. D235 and D271 give a member a project by a plug after it starts: too late for the
+directory a member starts in, which its exec fixes.
+
+**Reproduced** (R09; PM M610): a share at its host path, read by the harness, `errno 2`; the
+harness's own `/proc/self/mountinfo` holds no mount there; the same at a path through macOS's
+`/var` link, from its real path, and at a plain one, with plug roots and without.
+
+**Alternatives.**
+- *Every start share every member's* (Docker gives a container every bind): a member's default
+  deny (D59) gives nothing up front. Not taken.
+- *A share beneath one of the run's plug roots given every member, inferred:* it gives members
+  directories nobody named for them, and whom a share reaches would change as roots are added.
+  Not taken.
+- *The orchestrator plugs the project as the member starts:* a member's working directory is its
+  exec's, and a plug lands after it. Not taken.
+- *Chosen:* the share says whom it is given to, typed, none by default: `PlugFor`'s shape, as a
+  plug says it.
+
+**Decided.**
+- *shards-api:* `ImageShare::members: Option<PlugFor>`: none, the run's own root alone, as
+  before; `Every`, every member that runs; `Members`, those named. Refused by its spec for a
+  named list of none, or a member named twice (`ImageRefusal::Spec`, "a share's members").
+- *The image channel* (version 37): each share's members after the plug roots (`ShareAt::members`,
+  `ShareTo`): 0 none, 1 every member, 2 those named, each its kind and name; a named list of none,
+  or one twice, refused (`WireError::ShareMembers`); a side of version 36 refuses the run as it
+  is asked.
+- *The run host* (api_run `share_members`, `give_members`): each member named one the image
+  declares that runs, refused by name otherwise (`Cause::Image`, as a staged member is); the
+  share's setup entry told `domains` and `member=N` for each, by declared index. Where the
+  image's own `VOLUME` lies, its Agentfile is the most the share is given: it may narrow whom it
+  reaches, and is refused as a widening for a member its `FOR` names not (`Cause::Widening`,
+  `ImageRefusal::Widening`), as a run's egress narrows its image's and never widens it (D231). A
+  file shared alone is given to no member (no directory stands in for it).
+- *init* (domains.rs `given_share`): a share given members is theirs alone, by declared index,
+  and where a `VOLUME` lies only as it says too; mounted at its path in each one's root before its
+  command, as a `VOLUME`'s is (D109: the skeleton's mount point, a copy of the run's mount, a
+  Landlock rule beneath it). Given one member alone, the files its host made there are named that
+  member's (D38), as a `VOLUME … FOR` one's are, so that its member writes its project.
+- No literal; no wait or cache touched. Amends D109 (a member is given a share its orchestrator
+  names, not only where a `VOLUME` lies) and D235 (a project reaches a member at its host path
+  from its start where its orchestrator names it, a plug thereafter).
+
+**Tested.** `a_project_given_its_harness_is_where_it_works` (api_image.rs, HVF): a project shared
+beneath `/var/folders/…` given its harness, its working directory, a plugin folder at
+`/plugins/p` read-only given it too, its person's home at its `VOLUME` given it, its plug roots
+kiln's: it starts in its project, reads it at its host path, its files its own, and reads its
+plugin. `a_share_given_no_member_is_the_runs_alone` (its default deny),
+`a_share_given_no_member_of_its_image_is_refused` (no such member; one of files alone; a `VOLUME`
+narrowed to its own member, taken; widened to another, refused); the image channel's
+`each_shares_members_ride_the_request_last`; shards-api's spec refusals; init's
+`a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
+`give_members` not called, and the first test fails as kiln's launch did.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
