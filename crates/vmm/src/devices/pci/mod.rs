@@ -64,6 +64,9 @@ impl std::fmt::Debug for Lines {
 /// machine runs (hot-plug), each found by the guest as it next scans the bus.
 pub struct Ecam {
     functions: std::sync::RwLock<Vec<Function>>,
+    /// The places of the functions it was made with, whose state is their devices' own: those
+    /// plugged in as it runs are its hotplug window's to save or refuse (D270 slice 5).
+    fixed: Vec<u8>,
 }
 
 impl std::fmt::Debug for Ecam {
@@ -78,6 +81,7 @@ impl std::fmt::Debug for Ecam {
 impl Ecam {
     pub fn new(functions: Vec<Function>) -> Ecam {
         Ecam {
+            fixed: functions.iter().map(|(devfn, _)| *devfn).collect(),
             functions: std::sync::RwLock::new(functions),
         }
     }
@@ -147,13 +151,17 @@ impl MmioDevice for Ecam {
         Ok(())
     }
 
-    /// A function's state, its device's own (a passed-through device's above all), is not
-    /// in a snapshot: a machine with a function on its bus saves none. An empty bus, a
-    /// machine's slots for devices to come (D214), is saved as nothing, and a restore
-    /// makes it again.
+    /// A function it was made with keeps its state its device's own (a passed-through
+    /// device's above all), not in a snapshot: a machine with one saves none. One plugged in as
+    /// it runs is its hotplug window's to save or refuse (D270 slice 5). An empty bus, a
+    /// machine's slots for devices to come (D214), is saved as nothing, and a restore makes it
+    /// again.
     fn unsaved(&self) -> Option<String> {
         let functions = self.functions.read().unwrap_or_else(PoisonError::into_inner);
-        (!functions.is_empty()).then(|| "its PCI functions' state is their devices' own".into())
+        functions
+            .iter()
+            .any(|(devfn, _)| self.fixed.contains(devfn))
+            .then(|| "its PCI functions' state is their devices' own".into())
     }
 }
 
@@ -370,6 +378,29 @@ impl MsixTable {
         }
         Some(k)
     }
+
+    /// Its vectors as the guest wrote them and those pending (D270 slice 5), for a snapshot.
+    pub fn save(&self, w: &mut Writer) {
+        w.seq(&self.entries, |w, e| e.iter().for_each(|d| w.u32(*d)));
+        w.seq(&self.pending, |w, p| w.u64(*p));
+    }
+
+    /// Puts back what [`save`](Self::save) kept: refused for a table of another size.
+    pub fn restore(&mut self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let entries = r.seq(self.entries.len(), 16, |r| {
+            Ok([r.u32()?, r.u32()?, r.u32()?, r.u32()?])
+        })?;
+        let pending = r.seq(self.pending.len(), 8, Reader::u64)?;
+        if entries.len() != self.entries.len() || pending.len() != self.pending.len() {
+            return Err(codec::DecodeError(format!(
+                "an MSI-X table of {} vectors kept for one of {}",
+                entries.len(),
+                self.entries.len()
+            )));
+        }
+        (self.entries, self.pending) = (entries, pending);
+        Ok(())
+    }
 }
 
 /// Reads `data` at `offset` of registers that `dword` gives a dword at a time: a qword
@@ -560,6 +591,37 @@ impl Header {
             }
         }
         Ok(self)
+    }
+
+    /// Its configuration space as the guest left it (D270 slice 5): its command, its BARs where
+    /// it placed them, its interrupt line and its capabilities' controls among the rest, each
+    /// read back from there ([`bar_addr`](Self::bar_addr), [`msix`](Self::msix)), so that a
+    /// restore puts the function back whole.
+    pub fn save(&self, w: &mut Writer) {
+        let space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        w.bytes(&space);
+    }
+
+    /// Puts back what [`save`](Self::save) kept: refused for a space of another size, or of
+    /// another function (its vendor, device and class), as no function's is another's.
+    pub fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let mut space = self.space.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = r.bytes(space.len())?;
+        // A function is its read-only identification: vendor and device, revision and class.
+        // The command and status registers between them are the guest's to write.
+        let identity = |s: &[u8]| {
+            let at = |o: u16| s.get(usize::from(o)..usize::from(o) + 4).map(<[u8]>::to_vec);
+            (at(reg::VENDOR), at(reg::REVISION))
+        };
+        if kept.len() != space.len() || identity(kept) != identity(&space) {
+            return Err(codec::DecodeError(format!(
+                "a configuration space of {} bytes, of another function, kept for this one's of {}",
+                kept.len(),
+                space.len()
+            )));
+        }
+        space.copy_from_slice(kept);
+        Ok(())
     }
 
     /// Where BAR `index` is now, where it is one: as the guest placed it, for a movable
@@ -795,6 +857,100 @@ mod tests {
         get_le(&b)
     }
 
+    /// D270 slice 5: a movable header's space as its guest left it (its command, a BAR where it
+    /// placed it, its MSI-X enabled) is put back whole in a fresh header of the same function,
+    /// and read back there as here; one of another function, or cut short, is refused. An MSI-X
+    /// table's vectors and pending bits likewise, refused for a table of another size.
+    #[test]
+    fn a_functions_space_and_msix_table_are_saved_and_put_back_whole() {
+        let bars = || {
+            vec![Bar {
+                index: 0,
+                addr: 0,
+                size: 0x4000,
+                kind: BarKind::Memory32,
+            }]
+        };
+        let msix = MsixCap {
+            at: 0x40,
+            next: 0,
+            size: 4,
+            table: (0, 0x1000),
+            pba: (0, 0x2000),
+        };
+        let interrupts = Interrupts {
+            pin: 0,
+            msi: None,
+            msix: Some(msix),
+        };
+        let header = || {
+            Header::with_interrupts(id(), bars(), interrupts)
+                .unwrap()
+                .movable()
+        };
+        let left = header();
+        left.write(reg::BAR0, &0x1000_8000u32.to_le_bytes());
+        left.write(
+            reg::COMMAND,
+            &(reg::COMMAND_MEMORY | reg::COMMAND_MASTER).to_le_bytes(),
+        );
+        left.write(0x40 + reg::MSIX_CONTROL, &reg::MSIX_ENABLE.to_le_bytes());
+        let mut w = Writer::default();
+        left.save(&mut w);
+        let saved = w.into_bytes();
+        let put = header();
+        put.restore(&mut Reader::new(&saved)).unwrap();
+        assert_eq!(put.bar_addr(0), Some(0x1000_8000));
+        assert_eq!(put.command(), reg::COMMAND_MEMORY | reg::COMMAND_MASTER);
+        assert_eq!(
+            put.msix(),
+            Some(MsixState {
+                enabled: true,
+                masked: false
+            })
+        );
+        for offset in (0..0x100u16).step_by(4) {
+            assert_eq!(read(&put, offset, 4), read(&left, offset, 4), "at {offset:#x}");
+        }
+        let other = Header::with_interrupts(
+            Identity {
+                device: 0x1001,
+                ..id()
+            },
+            bars(),
+            interrupts,
+        )
+        .unwrap()
+        .movable();
+        assert!(
+            other.restore(&mut Reader::new(&saved)).is_err(),
+            "another function's"
+        );
+        assert!(
+            header()
+                .restore(&mut Reader::new(&saved[..saved.len() - 1]))
+                .is_err(),
+            "cut short"
+        );
+
+        let mut table = MsixTable::new(4);
+        table.write(16, &0xfee0_0000u32.to_le_bytes());
+        table.write(16 + 8, &0x41u32.to_le_bytes());
+        table.write(16 + 12, &0u32.to_le_bytes());
+        table.set_pending(2, true);
+        let mut w = Writer::default();
+        table.save(&mut w);
+        let saved = w.into_bytes();
+        let mut back = MsixTable::new(4);
+        back.restore(&mut Reader::new(&saved)).unwrap();
+        assert_eq!(back.message(1), Some((0xfee0_0000, 0x41)));
+        assert!(back.pending(2) && !back.pending(1));
+        assert!(
+            MsixTable::new(8).restore(&mut Reader::new(&saved)).is_err(),
+            "another size"
+        );
+    }
+
     /// A header says what its function is, and its BARs are sized as the spec asks and
     /// kept where they were placed.
     #[test]
@@ -986,6 +1142,15 @@ mod tests {
             assert!(b.iter().all(|&x| x == 0xff), "{addr:#x}+{len}: {b:?}");
         }
         assert!(ecam.unsaved().is_some());
-        assert!(Ecam::new(Vec::new()).unsaved().is_none(), "an empty bus");
+        let plugged = Ecam::new(Vec::new());
+        assert!(plugged.unsaved().is_none(), "an empty bus");
+        // One plugged in as it runs is its hotplug window's to save or refuse (D270 slice 5).
+        let g: Arc<dyn PciFunction> = Arc::new(Fixed(Header::new(id(), Vec::new()).unwrap()));
+        plugged.plug(2 << 3, g).unwrap();
+        assert!(plugged.unsaved().is_none(), "a function plugged in");
+        assert!(ecam.unplug(1 << 3).is_some());
+        let h: Arc<dyn PciFunction> = Arc::new(Fixed(Header::new(id(), Vec::new()).unwrap()));
+        ecam.plug(1 << 3, h).unwrap();
+        assert!(ecam.unsaved().is_some(), "at a place it was made with");
     }
 }

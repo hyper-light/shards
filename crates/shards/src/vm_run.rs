@@ -911,6 +911,9 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         swap: None,
         layer,
         layer_cloned,
+        // Its components' images (D270 slice 5): none yet, so a snapshot holding one is
+        // refused, saying which, until its spawner gives them.
+        components: Vec::new(),
     };
     Ok(Restore {
         cfg,
@@ -1047,7 +1050,9 @@ pub fn device(payload: &[u8], fds: Vec<shards_ipc::fd::OwnedFd>) -> Result<Strin
                 .into_iter()
                 .next()
                 .ok_or_else(|| asked("a component of no file"))?;
-            let plugged = handle.plug_pmem(std::fs::File::from(file))?;
+            // Its key after its step (D270 slice 5): what a save keeps it by.
+            let key = std::str::from_utf8(rest).map_err(|_| asked("a component's key not UTF-8"))?;
+            let plugged = handle.plug_pmem(std::fs::File::from(file), key)?;
             let (gpa, len) = plugged
                 .region
                 .ok_or_else(|| Refusal::Host("a component's function plugged with no region".into()))?;

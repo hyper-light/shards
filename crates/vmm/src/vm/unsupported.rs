@@ -90,7 +90,11 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn plug_pmem(&self, _file: std::fs::File) -> Result<super::Plugged, shards_ipc::device::Refusal> {
+    pub fn plug_pmem(
+        &self,
+        _file: std::fs::File,
+        _key: &str,
+    ) -> Result<super::Plugged, shards_ipc::device::Refusal> {
         match self.0 {}
     }
 

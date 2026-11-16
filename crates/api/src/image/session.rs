@@ -2008,6 +2008,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
                     "a warm run host of another microVM's than the run's: {}",
                     r.why
                 )),
+                wire::Cause::Workdir => ImageRefusal::Workdir(r.why),
             });
         }
         k::OUTPUT => {
@@ -3987,7 +3988,8 @@ mod tests {
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting
     /// grant asked of an image that does not give it (D234) a widening, in the daemon's
     /// words; a crafted image's (NESTING beside an agent) the image's, in its build's, as
-    /// the daemon's read of the image says them.
+    /// the daemon's read of the image says them; a member's working directory in no share
+    /// given it (D277) its own.
     #[test]
     fn refusals_come_typed_in_their_hosts_words() {
         let undeclared = shards_abi::run::nesting::undeclared();
@@ -3995,6 +3997,7 @@ mod tests {
             "the image's Agentfile (sha256:00): {}",
             shards_abi::run::beside::nesting("agent", "a")
         );
+        let unshared = "Harness codex: /Users/ada/proj: no share given it there".to_string();
         for (cause, why, typed) in [
             (
                 wire::Cause::Widening,
@@ -4002,6 +4005,11 @@ mod tests {
                 ImageRefusal::Widening(undeclared.clone()),
             ),
             (wire::Cause::Image, &crafted, ImageRefusal::Image(crafted.clone())),
+            (
+                wire::Cause::Workdir,
+                &unshared,
+                ImageRefusal::Workdir(unshared.clone()),
+            ),
         ] {
             let s = shared();
             let refused = wire::Refused {
