@@ -5860,7 +5860,7 @@ pub(crate) mod tests {
         "kiln-placeholder-bbbb456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn access_reference() -> String {
-        format!("sign-ins/{SIGN_IN}/access")
+        CLAUDE_ACCOUNT.access()
     }
 
     /// A token response as Claude Code reads one (`formatTokens`).
@@ -5895,36 +5895,85 @@ pub(crate) mod tests {
         H1Host::new(leaf_config(root, &[API_HOST]), H1Answers::Echo, false)
     }
 
+    /// A CLI's sign-in as these tests drive it: its CLI, its name in the orchestrator's store, the
+    /// host its access token goes to, and the token response its provider answers a refresh with,
+    /// for an access and a refresh token.
+    struct Account {
+        cli: Cli,
+        sign_in: &'static str,
+        api_host: &'static str,
+        response: fn(&str, &str) -> String,
+        /// The access token's life that token response gives.
+        expires_in: Option<u64>,
+    }
+
+    const CLAUDE_ACCOUNT: Account = Account {
+        cli: Cli::ClaudeCode,
+        sign_in: SIGN_IN,
+        api_host: API_HOST,
+        response: token_response,
+        expires_in: Some(28800),
+    };
+
+    impl Account {
+        /// Its access token's reference in the orchestrator's store.
+        fn access(&self) -> String {
+            format!("sign-ins/{}/access", self.sign_in)
+        }
+    }
+
+    /// Claude Code's: the sign-in these tests drive where none is named.
+    impl Default for Account {
+        fn default() -> Account {
+            CLAUDE_ACCOUNT
+        }
+    }
+
     /// A run with Claude Code's sign-in granted, its access token toward its API host alone, its
     /// injector's host side trusting `root`; captured before where `captured` says.
     fn sign_in_credentials(root: &CertifiedIssuer<'static, KeyPair>, captured: bool) -> Credentials {
+        credentials_of(root, &CLAUDE_ACCOUNT, captured)
+    }
+
+    /// A run with `account`'s sign-in granted, its access token toward its API host alone, its
+    /// injector's host side trusting `root`; captured before where `captured` says.
+    fn credentials_of(
+        root: &CertifiedIssuer<'static, KeyPair>,
+        account: &Account,
+        captured: bool,
+    ) -> Credentials {
         let captured = captured.then(|| signin::Captured {
-            access: access_reference(),
+            access: account.access(),
             access_placeholder: SIGNED_ACCESS.into(),
             refresh_placeholder: Some(SIGNED_REFRESH.into()),
         });
-        let grants: Vec<Grant> = captured.iter().map(|c| c.grant(&[API_HOST.into()])).collect();
+        let grants: Vec<Grant> = captured
+            .iter()
+            .map(|c| c.grant(&[account.api_host.into()]))
+            .collect();
+        let token_host = signin::profile(account.cli).token.host;
         Credentials {
             leases: lease::Leases::new(grants.iter().map(|g| g.reference.clone()).collect()),
             grants,
-            ca: ca::Ca::new(ca::Key::generate().unwrap(), &[API_HOST, TOKEN_HOST]).unwrap(),
+            ca: ca::Ca::new(ca::Key::generate().unwrap(), &[account.api_host, token_host]).unwrap(),
             upstream: Upstream::new(&shards_verify::Platform::read(), vec![root.der().clone()]).unwrap(),
             sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
-                sign_in: SIGN_IN.into(),
-                cli: Cli::ClaudeCode,
-                toward: vec![API_HOST.into()],
+                sign_in: account.sign_in.into(),
+                cli: account.cli,
+                toward: vec![account.api_host.into()],
                 captured,
             }]),
         }
     }
 
-    /// The run host and its orchestrator's broker, as a test lessor: each capture's tokens kept
-    /// and the broker's placeholders given; each refresh one call to the provider, which rotates
-    /// the tokens and whose answer, real tokens and all, comes back as it came; each revocation
-    /// counted, the stored tokens kept; each lease of the access token answered with the stored
-    /// one.
+    /// The run host and its orchestrator's broker, as a test lessor of `account`'s sign-in: each
+    /// capture's tokens kept, its ID token inert where it has one, and the broker's placeholders
+    /// given; each refresh one call to the provider, which rotates the tokens and whose answer,
+    /// real tokens and all, comes back as it came; each revocation counted, the stored tokens
+    /// kept; each lease of the access token answered with the stored one.
     #[derive(Default)]
     struct Broker {
+        account: Account,
         access: Vec<u8>,
         refresh: Vec<u8>,
         provider_calls: usize,
@@ -5949,7 +5998,7 @@ pub(crate) mod tests {
                 let (id, reference) = lease::decode_ask(&ask).unwrap();
                 assert_eq!(
                     reference,
-                    access_reference(),
+                    self.account.access(),
                     "a lease of what no capture granted"
                 );
                 let life = NonZeroU64::new(60_000_000_000).unwrap();
@@ -5961,28 +6010,35 @@ pub(crate) mod tests {
                 n += 1;
                 let answered = match signin::Told::decode(&told).unwrap() {
                     signin::Told::Capture { id, sign_in, taken } => {
-                        assert_eq!(sign_in, SIGN_IN);
-                        assert_eq!(taken.expires_in, Some(28800));
+                        assert_eq!(sign_in, self.account.sign_in);
+                        assert_eq!(taken.expires_in, self.account.expires_in);
+                        assert!(
+                            taken
+                                .id_token
+                                .as_ref()
+                                .is_none_or(|t| t.ends_with(b".shards-placeholder")),
+                            "a real ID token reached the run host"
+                        );
                         self.access = taken.access.to_vec();
                         self.refresh = taken.refresh.unwrap().to_vec();
                         signin::Answered::Captured {
                             id,
                             result: Ok(signin::Captured {
-                                access: access_reference(),
+                                access: self.account.access(),
                                 access_placeholder: SIGNED_ACCESS.into(),
                                 refresh_placeholder: Some(SIGNED_REFRESH.into()),
                             }),
                         }
                     }
                     signin::Told::Refresh { id, sign_in } if self.refuse.is_some() => {
-                        assert_eq!(sign_in, SIGN_IN);
+                        assert_eq!(sign_in, self.account.sign_in);
                         signin::Answered::Refreshed {
                             id,
                             result: Err(self.refuse.clone().unwrap()),
                         }
                     }
                     signin::Told::Refresh { id, sign_in } => {
-                        assert_eq!(sign_in, SIGN_IN);
+                        assert_eq!(sign_in, self.account.sign_in);
                         assert!(!self.refresh.is_empty(), "a refresh of a sign-in never kept");
                         self.provider_calls += 1;
                         self.access = ROTATED_ACCESS.as_bytes().to_vec();
@@ -5990,12 +6046,12 @@ pub(crate) mod tests {
                         signin::Answered::Refreshed {
                             id,
                             result: Ok(Zeroizing::new(
-                                token_response(ROTATED_ACCESS, ROTATED_REFRESH).into_bytes(),
+                                (self.account.response)(ROTATED_ACCESS, ROTATED_REFRESH).into_bytes(),
                             )),
                         }
                     }
                     signin::Told::Revoke { sign_in } => {
-                        assert_eq!(sign_in, SIGN_IN);
+                        assert_eq!(sign_in, self.account.sign_in);
                         self.revoked += 1;
                         continue;
                     }
@@ -7872,6 +7928,9 @@ pub(crate) mod tests {
         assert!(!bench.closed);
     }
 
+    /// Codex's sign-in (D242 step 8): its device flow taken outside, its JSON refresh and its
+    /// revocations answered there.
+    mod codex;
     mod expectations;
     /// creds-01..04 (docs/bugs/2026-11-13/creds.md): a value never reaching the guest past the mask.
     mod leaks;
