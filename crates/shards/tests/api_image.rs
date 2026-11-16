@@ -30,9 +30,10 @@ use common::{
 use shards_api::image::{
     BootStop, Captured, Channel, Cli, CredentialGrant, EgressGrant, FinalUse, ImageGuest, ImagePools,
     ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor,
-    MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing, NetRefusal, Plug,
-    PlugFor, PlugRefusal, PlugSource, Proto, Publish, RunEnd, RunEnded, RunLessor, SaveRefusal, Secret,
-    SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused, UpstreamRoot,
+    MemberCeiling, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing,
+    NetRefusal, Plug, PlugFor, PlugRefusal, PlugSource, Proto, Publish, Reach, RunEnd, RunEnded, RunLessor,
+    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused,
+    UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -118,6 +119,7 @@ fn spec(home: &TempDir, image: &str) -> ImageSpec {
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     }
 }
@@ -3596,6 +3598,7 @@ fn pooled_spec(home: &std::path::Path, image: &str, binary: &std::path::Path) ->
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     }
 }
@@ -4199,6 +4202,177 @@ fn a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own() {
         Ok(Some(MemberEnd::Exited(0)))
     );
     assert_eq!(rest_within(&*guest, next), "got 15\n");
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// D278 b3: a member given, as its run runs, a destination its ceiling allows and its image
+/// does not grant reaches it; given its image's grants back, its next connection is refused and
+/// every one after; a reach past its ceiling is refused typed (`Widening`), and one of a member
+/// that runs nothing (`Image`). Its image links it past its microVM on a network that opens no
+/// port out, so it reaches nothing until its orchestrator gives it something: all of it in the
+/// running microVM in place, its start (`started_from`), its one VM process and its template's
+/// files the same throughout.
+#[test]
+fn a_members_own_reach_given_and_taken_back_holds_in_its_running_microvm() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = host.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for taken in host.incoming() {
+            drop(taken);
+        }
+    });
+    let to = format!("host.docker.internal:{port}");
+    let home = common::home_with("api-member-egress-home");
+    build(
+        &home,
+        "api-member-egress:1",
+        &["reach-each", &to],
+        "NETWORK provider FOR codex\nCONNECT codex WITH codex ON provider\n",
+    );
+    let mut s = spec(&home, "api-member-egress:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let reach = Reach {
+        destinations: vec![to.clone()],
+        ..Reach::default()
+    };
+    s.egress_ceiling = vec![MemberCeiling {
+        kind: MemberKind::Harness,
+        name: "codex".into(),
+        reach: reach.clone(),
+    }];
+    let guest = boot(&home, &s);
+    let from = guest.started_from();
+    let vms = vm_processes(&home);
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    let templates = templates_of(&home);
+    let lines = lines_of(&*guest, Channel::Stdout);
+    // Refused until it is given anything: every connection, from the first.
+    let refused_from_now = |lines: &std::sync::mpsc::Receiver<String>, after_ok: bool| {
+        let mut refused = 0;
+        let mut patience = Patience::started();
+        while refused < 3 {
+            match lines.recv_timeout(patience.next_look()) {
+                Ok(line) if line.starts_with("reach errno") => refused += 1,
+                Ok(line) => assert!(after_ok && refused == 0, "{line} after a refusal"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(e) => panic!("{e}"),
+            }
+            assert!(patience.holds(), "no refusal");
+        }
+        patience.done();
+    };
+    refused_from_now(&lines, false);
+    ask(&*guest, |g| {
+        g.member_egress(&codex(), Some(&reach), Duration::MAX)
+    })
+    .unwrap();
+    said_all(&lines, &["reach ok".to_string()]);
+    ask(&*guest, |g| g.member_egress(&codex(), None, Duration::MAX)).unwrap();
+    // What was said before its image's grants came back may still come: from its first refusal
+    // on, every connection is refused.
+    refused_from_now(&lines, true);
+    let past = Reach {
+        ports: vec!["22/tcp".into()],
+        ..Reach::default()
+    };
+    assert!(matches!(
+        ask(&*guest, |g| g.member_egress(&codex(), Some(&past), Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Widening, _))
+    ));
+    let helper = MemberName::agent("helper");
+    assert!(matches!(
+        ask(&*guest, |g| g.member_egress(&helper, Some(&reach), Duration::MAX)),
+        Err(ImageRefusal::Image(_))
+    ));
+    // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// D278 b3: a member's open TCP connection past its microVM, its reach taken back as its run
+/// runs, is reset rather than left to stall: its read ends at once, aborted (ECONNABORTED, 103,
+/// as sock_diag's SOCK_DESTROY ends it in its own network namespace), and it says so. The host
+/// holds the connection open and writes nothing, so nothing but the reset ends the member's
+/// read. The member dials as it starts, before its grant: TCP retransmits its SYN (RFC 6298), so
+/// it connects once its grant opens its way.
+#[test]
+fn a_members_open_connection_is_reset_as_its_reach_is_taken_back() {
+    if cannot_run_vms() {
+        return;
+    }
+    let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = host.local_addr().unwrap().port();
+    let (taken_tx, taken_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for taken in host.incoming().flatten() {
+            // Held open and written nothing: the member's read waits on it.
+            if taken_tx.send(taken).is_err() {
+                break;
+            }
+        }
+    });
+    let to = format!("host.docker.internal:{port}");
+    let home = common::home_with("api-member-reset-home");
+    build(
+        &home,
+        "api-member-reset:1",
+        &["tcp", &to],
+        "NETWORK provider FOR codex\nCONNECT codex WITH codex ON provider\n",
+    );
+    let mut s = spec(&home, "api-member-reset:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    let reach = Reach {
+        destinations: vec![to.clone()],
+        ..Reach::default()
+    };
+    s.egress_ceiling = vec![MemberCeiling {
+        kind: MemberKind::Harness,
+        name: "codex".into(),
+        reach: reach.clone(),
+    }];
+    let guest = boot(&home, &s);
+    let (from, vms, templates) = (guest.started_from(), vm_processes(&home), templates_of(&home));
+    let lines = lines_of(&*guest, Channel::Stdout);
+    ask(&*guest, |g| {
+        g.member_egress(&codex(), Some(&reach), Duration::MAX)
+    })
+    .unwrap();
+    let stop = || {
+        let _ = guest.stop();
+    };
+    let held = common::judged(Party::started(None), "a member's connection", stop, move || {
+        taken_rx.recv()
+    })
+    .unwrap_or_else(|refused| panic!("the member's connection never came: {refused}"))
+    .unwrap();
+    ask(&*guest, |g| g.member_egress(&codex(), None, Duration::MAX)).unwrap();
+    let stop = || {
+        let _ = guest.stop();
+    };
+    let said = common::judged(
+        Party::started(None),
+        "a member's connection's end",
+        stop,
+        move || lines.recv(),
+    )
+    .unwrap_or_else(|refused| panic!("the member's read never ended: {refused}"))
+    .unwrap();
+    assert!(
+        said.starts_with("tcp error") && said.contains("os error 103"),
+        "{said}"
+    );
+    drop(held);
+    // In place: the same start, the same VM process, no template saved or replaced.
     assert_eq!(guest.started_from(), from);
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);

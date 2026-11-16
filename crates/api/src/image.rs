@@ -34,10 +34,10 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
-    GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
-    NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RestartRefusal, RunEnd, RunEnded,
-    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats,
-    StatsScope, Unused, UseBroken, VcpuTime, decide,
+    GuestTimes, HostUse, Keep, LeaseRefusal, MemberCeiling, MemberInfo, MemberKind, MemberReach, Microvm,
+    Narrowing, NetRefusal, Paused, PlugRefusal, Proto, Publish, Reach, Ready, Receiving, RestartRefusal,
+    RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant,
+    StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -295,6 +295,31 @@ pub struct ImageSpec {
     /// beneath one: a session's volumes are placed beneath a root granted here. Empty: the
     /// host's own and its shares' alone. Refused by field where one is no root.
     pub plug_roots: Vec<String>,
+    /// The most each member may be given past its image's grants as the run goes (D278): the
+    /// person's own policy, which the run's network process is held to beside the image's
+    /// grants and each member's guest within it ([`ImageGuest::member_egress`]). A member named
+    /// once, one its image declares and that runs, linked past its microVM (on a network that
+    /// is not internal): else refused. Empty: nothing past the image's grants. Part of what a
+    /// warm host is made for ([`ImagePools`]): its network process is held to it from its start.
+    pub egress_ceiling: Vec<MemberCeiling>,
+}
+
+/// Each member's ceiling past its microVM as its spec names them (D278): each member once,
+/// refused by field where one is named twice. What each holds, and whether its member is one
+/// the image declares and links past its microVM, its run host checks against the image.
+fn ceilings(asked: &[MemberCeiling]) -> Result<Vec<MemberCeiling>, ImageRefusal> {
+    for (i, c) in asked.iter().enumerate() {
+        if asked
+            .get(..i)
+            .is_some_and(|before| before.iter().any(|b| b.kind == c.kind && b.name == c.name))
+        {
+            return Err(ImageRefusal::Spec {
+                what: "egress_ceiling",
+                why: format!("{:?} {:?} is named twice", c.kind, c.name),
+            });
+        }
+    }
+    Ok(asked.to_vec())
 }
 
 /// A root a run's injector trusts beside the host's own ([`ImageSpec::upstream_roots`], D242).
@@ -647,6 +672,21 @@ pub trait ImageGuest: Send + Sync {
     /// longer reach (a TCP connection its guest opened is reset, a UDP flow closed). Answers
     /// and is refused as [`grant_egress`](Self::grant_egress).
     fn revoke_egress(&self, grant: &EgressGrant, patience: Duration) -> Result<Narrowing, ImageRefusal>;
+    /// Member `member`'s own reach past its microVM made `reach`, whole, in place of what it
+    /// reached, or its image's grants back where `reach` is none (D278): held in its guest (its
+    /// gate, its switch's and init's tables, its resolver; its open TCP connections to a port it
+    /// loses reset) and by its network process (the run's grants with every member's), its
+    /// microVM in place. Within its image's grants and its ceiling ([`ImageSpec::egress_ceiling`]):
+    /// past them refused [`NetRefusal::Widening`]; members whose reach the microVM could not hold
+    /// apart so (D236), [`NetRefusal::Unheld`]; no member of that name that runs linked past its
+    /// microVM, [`NetRefusal::Unknown`]. Answers the run's grants once both hold it, waiting at
+    /// most `patience`; refused as [`ImageRefusal::Net`].
+    fn member_egress(
+        &self,
+        member: &MemberName,
+        reach: Option<&Reach>,
+        patience: Duration,
+    ) -> Result<Narrowing, ImageRefusal>;
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its
@@ -1396,6 +1436,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
         upstream_roots,
         gpu_report: spec.gpu_report,
         plug_roots: plug_roots(&spec.plug_roots)?,
+        egress_ceiling: ceilings(&spec.egress_ceiling)?,
     };
     // Past the channel's bound it would never be read; the guest's bound is the same one.
     request.encode().map_err(|e| ImageRefusal::Spec {
@@ -1452,6 +1493,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }

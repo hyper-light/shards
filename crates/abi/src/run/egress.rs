@@ -23,6 +23,9 @@ pub const EGRESS_KEY: &[u8] = b"member-egress=";
 pub const CEILING_KEY: &[u8] = b"member-ceiling=";
 /// The item that grants names asked past the microVM (`NETWORK --dns`).
 pub const DNS: &[u8] = b"dns";
+/// [`builtin::EGRESS`](super::builtin::EGRESS)'s one item that gives a member its image's
+/// grants back, whatever its host gave it before (D278).
+pub const IMAGE: &[u8] = b"image";
 /// A host's name as text at its most: 253, its 255 octets on the wire less its first length
 /// and the root's (RFC 1035 §2.3.4), as D236 bounds a destination's.
 pub const HOST_MOST: usize = 253;
@@ -157,14 +160,29 @@ pub fn args(member: u32, g: &Grants) -> Vec<Vec<u8>> {
     out
 }
 
-/// The member and the grants [`args`] gives, checked.
-pub fn parse_args(args: &[Vec<u8>]) -> Result<(u32, Grants), Error> {
+/// [`builtin::EGRESS`](super::builtin::EGRESS)'s arguments that give member `member` its
+/// image's grants back: its index, then [`IMAGE`] alone.
+pub fn args_image(member: u32) -> Vec<Vec<u8>> {
+    let mut index = Vec::new();
+    push_decimal(&mut index, member);
+    alloc::vec![index, IMAGE.to_vec()]
+}
+
+/// The member and what [`args`] or [`args_image`] gives it, checked: its grants as they are to
+/// stand, or none for its image's back. [`IMAGE`] beside another item is no grant.
+pub fn parse_args(args: &[Vec<u8>]) -> Result<(u32, Option<Grants>), Error> {
     let (index, items) = args.split_first().ok_or(Error::Shape)?;
+    let index = decimal(index).map_err(|_| Error::Index)?;
+    if let [only] = items
+        && only.as_slice() == IMAGE
+    {
+        return Ok((index, None));
+    }
     let mut g = Grants::default();
     for item in items {
         parse_item(item, &mut g)?;
     }
-    Ok((decimal(index).map_err(|_| Error::Index)?, g))
+    Ok((index, Some(g)))
 }
 
 /// The setup entry of `key` ([`EGRESS_KEY`] or [`CEILING_KEY`]) giving member `member` `g`.
@@ -215,10 +233,15 @@ mod tests {
     #[test]
     fn a_members_grants_read_back_as_written() {
         let g = some();
-        assert_eq!(parse_args(&args(7, &g)), Ok((7, g.clone())));
+        assert_eq!(parse_args(&args(7, &g)), Ok((7, Some(g.clone()))));
         assert_eq!(
             parse_args(&args(0, &Grants::default())),
-            Ok((0, Grants::default()))
+            Ok((0, Some(Grants::default())))
+        );
+        assert_eq!(parse_args(&args_image(4)), Ok((4, None)), "its image's back");
+        assert_eq!(
+            parse_args(&[b"4".to_vec(), IMAGE.to_vec(), DNS.to_vec()]),
+            Err(Error::Item)
         );
         let setup = vec![
             entry(EGRESS_KEY, 3, &g),
@@ -250,11 +273,11 @@ mod tests {
             parse_args(&twice),
             Ok((
                 1,
-                Grants {
+                Some(Grants {
                     ports: vec![(6, 80, 80)],
                     named: vec![],
                     dns: true
-                }
+                })
             ))
         );
         assert_eq!(parse_args(&[]), Err(Error::Shape));

@@ -777,32 +777,204 @@ fn egress(
     grants: Option<&shards_agentfile::agentfile::Grants>,
     narrowing: &wire::Narrowing,
 ) -> Result<Option<Vec<u8>>, No> {
+    policy_with(grants, narrowing, &[])
+}
+
+/// [`egress`] with members' own reach beside the run's (D278): the network process holds the
+/// whole microVM to the union of every member's, each member's guest to its own. `given` is
+/// each member's reach its orchestrator set, or each member's ceiling for the most the run may
+/// ever reach. Each item once; none where nothing is.
+fn policy_with(
+    grants: Option<&shards_agentfile::agentfile::Grants>,
+    narrowing: &wire::Narrowing,
+    given: &[&wire::Reach],
+) -> Result<Option<Vec<u8>>, No> {
     let none = shards_agentfile::agentfile::Grants::default();
     let g = grants.unwrap_or(&none);
     let ports = kept("egress", &g.egress, &narrowing.egress)?;
     let mcp = kept("remote MCP server", &g.mcp, &narrowing.mcp)?;
     let destinations = kept("destination", &g.destinations, &narrowing.destinations)?;
-    let dns = g.dns && narrowing.dns;
-    if ports.is_empty() && mcp.is_empty() && destinations.is_empty() && !dns {
-        return Ok(None);
-    }
-    let text: Vec<String> = ports
+    let mut dns = g.dns && narrowing.dns;
+    let mut text: Vec<String> = ports
         .iter()
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .collect();
-    let ports = if text.is_empty() {
-        shards_net::Ports::default()
-    } else {
-        shards_net::Ports::parse(&text.join(","))
-            .map_err(|e| No(Cause::Image, format!("the image's egress grants: {e}")))?
-    };
     let mut named = crate::agentfile::named(&mcp);
     for d in crate::agentfile::named(&destinations) {
         if !named.contains(&d) {
             named.push(d);
         }
     }
+    for r in given {
+        for p in &r.ports {
+            if !text.contains(p) {
+                text.push(p.clone());
+            }
+        }
+        for at in r.mcp.iter().chain(&r.destinations) {
+            let d = shards_net::dns::destination(at).map_err(|why| No(Cause::Request, why))?;
+            if !named.contains(&d) {
+                named.push(d);
+            }
+        }
+        dns |= r.dns;
+    }
+    if text.is_empty() && named.is_empty() && !dns {
+        return Ok(None);
+    }
+    let ports = if text.is_empty() {
+        shards_net::Ports::default()
+    } else {
+        shards_net::Ports::parse(&text.join(","))
+            .map_err(|e| No(Cause::Image, format!("the run's egress grants: {e}")))?
+    };
     Ok(Some(shards_net::encode_policy(&ports, &named, dns)))
+}
+
+/// A port range as an Agentfile writes one (`443`, `53/udp`, `8000-8010/tcp`), TCP where it
+/// names none: its IP protocol's number and its ends (init's netplan `port_range`).
+fn port_range(s: &str) -> Option<(u8, u16, u16)> {
+    let (range, proto) = match s.rsplit_once('/') {
+        Some((r, "tcp")) => (r, 6),
+        Some((r, "udp")) => (r, 17),
+        Some(_) => return None,
+        None => (s, 6),
+    };
+    let port = |p: &str| p.parse::<u16>().ok().filter(|p| *p > 0);
+    let (lo, hi) = match range.split_once('-') {
+        Some((a, b)) => (port(a)?, port(b)?),
+        None => (port(range)?, port(range)?),
+    };
+    (lo <= hi).then_some((proto, lo, hi))
+}
+
+/// A member's reach as its guest takes it (D278, `run::egress`): each port range, each remote
+/// MCP server's and destination's host and TCP port, and whether it asks names; refused, saying
+/// which, for one that is none.
+fn reach_grants(r: &wire::Reach) -> Result<shards_abi::run::egress::Grants, String> {
+    let mut g = shards_abi::run::egress::Grants {
+        ports: Vec::new(),
+        named: Vec::new(),
+        dns: r.dns,
+    };
+    for p in &r.ports {
+        let range = port_range(p).ok_or_else(|| format!("{p:?} is no port range"))?;
+        if !g.ports.contains(&range) {
+            g.ports.push(range);
+        }
+    }
+    for at in r.mcp.iter().chain(&r.destinations) {
+        let d = shards_net::dns::destination(at)?;
+        if !g.named.contains(&d) {
+            g.named.push(d);
+        }
+    }
+    Ok(g)
+}
+
+/// The first item of `asked` past what the image grants the run and `ceiling` grants its
+/// member together (D278), as init's `egress::past` reads it for the member alone: a port range
+/// their port grants cover, a destination either names or whose TCP port either grants to any
+/// address, names where either grants them. None where every one is within.
+fn past_run(
+    asked: &shards_abi::run::egress::Grants,
+    image: Option<&shards_agentfile::agentfile::Grants>,
+    ceiling: Option<&shards_abi::run::egress::Grants>,
+) -> Option<String> {
+    let none = shards_agentfile::agentfile::Grants::default();
+    let image = image.unwrap_or(&none);
+    let text = |b: &Vec<u8>| String::from_utf8_lossy(b).into_owned();
+    let mut wide: Vec<(u8, u16, u16)> = image.egress.iter().filter_map(|p| port_range(&text(p))).collect();
+    let mut named: Vec<(String, u16)> = image
+        .mcp
+        .iter()
+        .chain(&image.destinations)
+        .filter_map(|d| shards_net::dns::destination(&text(d)).ok())
+        .collect();
+    let mut dns = image.dns;
+    if let Some(c) = ceiling {
+        wide.extend(c.ports.iter().copied());
+        named.extend(c.named.iter().cloned());
+        dns |= c.dns;
+    }
+    let covers = |(proto, lo, hi): (u8, u16, u16)| {
+        let mut of: Vec<(u16, u16)> = wide.iter().filter(|r| r.0 == proto).map(|r| (r.1, r.2)).collect();
+        of.sort_unstable();
+        let mut next = u32::from(lo);
+        for (a, b) in of {
+            if u32::from(a) > next {
+                break;
+            }
+            next = next.max(u32::from(b) + 1);
+        }
+        next > u32::from(hi)
+    };
+    let proto = |p: u8| if p == 17 { "UDP" } else { "TCP" };
+    for &range in &asked.ports {
+        if !covers(range) {
+            return Some(format!("{} ports {}-{}", proto(range.0), range.1, range.2));
+        }
+    }
+    for (host, port) in &asked.named {
+        if !named.iter().any(|(h, p)| h == host && p == port) && !covers((6, *port, *port)) {
+            return Some(format!("{host}:{port}"));
+        }
+    }
+    if asked.dns && !dns {
+        return Some("names past the microVM (dns)".into());
+    }
+    None
+}
+
+/// `a`'s reach and `b`'s together, each item once (D278).
+fn reach_union(a: &wire::Reach, b: &wire::Reach) -> wire::Reach {
+    let mut out = a.clone();
+    for (into, from) in [
+        (&mut out.ports, &b.ports),
+        (&mut out.mcp, &b.mcp),
+        (&mut out.destinations, &b.destinations),
+    ] {
+        for item in from {
+            if !into.contains(item) {
+                into.push(item.clone());
+            }
+        }
+    }
+    out.dns |= b.dns;
+    out
+}
+
+/// Each member's ceiling past its microVM as its init takes it (D278): its declared index, of a
+/// member the image declares and runs, and its reach as its guest takes it; refused, by its
+/// member, for one of no member that runs, or a reach that is none.
+fn ceilings(
+    asked: &[wire::MemberCeiling],
+    members: &[wire::MemberInfo],
+) -> Result<Vec<(u32, shards_abi::run::egress::Grants)>, No> {
+    asked
+        .iter()
+        .map(|c| {
+            let m = members
+                .iter()
+                .find(|m| m.kind == c.kind && m.name == c.name && m.runs)
+                .ok_or_else(|| {
+                    No(
+                        Cause::Request,
+                        format!(
+                            "a ceiling for {:?} {:?}, which runs in no member of the image",
+                            c.kind, c.name
+                        ),
+                    )
+                })?;
+            let g = reach_grants(&c.reach).map_err(|why| {
+                No(
+                    Cause::Request,
+                    format!("{:?} {:?}'s ceiling: {why}", c.kind, c.name),
+                )
+            })?;
+            Ok((m.index, g))
+        })
+        .collect()
 }
 
 /// `narrowing` as its run holds it (D273): what of its image's grants each list keeps, written
@@ -1076,7 +1248,12 @@ fn network(
 ) -> Result<Option<Vec<u8>>, No> {
     let egress = egress(agentfile.map(|a| &a.grants), &request.egress)?;
     held_apart(agentfile, &request.egress)?;
-    if egress.is_some() || agentfile.is_some_and(crate::agentfile::Agentfile::linked_past) {
+    // A member that may be given a way past the microVM as the run goes has one from the
+    // start (D278): its guest holds it shut until it is given.
+    if egress.is_some()
+        || agentfile.is_some_and(crate::agentfile::Agentfile::linked_past)
+        || !request.egress_ceiling.is_empty()
+    {
         run.network = "bridge".into();
     }
     if let Some(a) = agentfile {
@@ -2719,6 +2896,8 @@ mod hosted {
         ceiling: Option<Vec<u8>>,
         /// Its grants past its microVM as its request keeps them, written out whole (D273).
         narrowing: wire::Narrowing,
+        /// Each member's ceiling past its microVM, by its index (D278).
+        member_ceilings: Vec<(u32, protocol::egress::Grants)>,
         /// Its credential grants as its network process takes them (`NET_CREDENTIALS`), where
         /// it has any, or sign-ins.
         credentials: Option<Vec<u8>>,
@@ -2950,7 +3129,14 @@ mod hosted {
         }
         super::ports_granted(&request.publish, agentfile.as_ref(), request.command.is_some())?;
         let egress = super::network(agentfile.as_ref(), request, &mut run)?;
-        let ceiling = super::egress(agentfile.as_ref().map(|a| &a.grants), &wire::Narrowing::default())?;
+        // The most the run may ever reach past its microVM (D273, D278): its image's grants with
+        // every member's ceiling.
+        let ceilings: Vec<&wire::Reach> = request.egress_ceiling.iter().map(|c| &c.reach).collect();
+        let ceiling = super::policy_with(
+            agentfile.as_ref().map(|a| &a.grants),
+            &wire::Narrowing::default(),
+            &ceilings,
+        )?;
         let sign_ins = super::sign_ins(&request.sign_ins, &request.credentials, egress.as_deref())?;
         let credentials = super::credentials(
             &request.credentials,
@@ -3148,8 +3334,19 @@ mod hosted {
             .filter_map(protocol::plug::root_name)
             .map(<[u8]>::to_vec)
             .collect();
-        // Grants past the microVM: the run's own processes kept to eth0's subnet (D59).
-        if agentfile.as_ref().is_some_and(|a| a.grants.past()) {
+        // Each member's ceiling past its microVM (D278), which its init holds its own grants
+        // within as the run goes.
+        let ceilings = super::ceilings(&request.egress_ceiling, &members)?;
+        for (member, grants) in &ceilings {
+            setup.push(protocol::egress::entry(
+                protocol::egress::CEILING_KEY,
+                *member,
+                grants,
+            ));
+        }
+        // Grants past the microVM, the image's or a member's ceiling's: the run's own processes
+        // kept to eth0's subnet (D59).
+        if agentfile.as_ref().is_some_and(|a| a.grants.past()) || !ceilings.is_empty() {
             setup.push(b"confine-eth0".to_vec());
         }
         // Its agents' flows past the microVM by IPv6 (D99): eth0's IPv6 for them alone.
@@ -3236,6 +3433,7 @@ mod hosted {
             egress,
             ceiling,
             narrowing,
+            member_ceilings: ceilings,
             credentials,
             sign_ins,
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
@@ -4038,6 +4236,9 @@ mod hosted {
             wire::NetChange::Publish(p) => publish_live(live, &mut ports, &p),
             wire::NetChange::Unpublish { proto, host } => unpublish_live(live, &mut ports, proto, host),
             wire::NetChange::Egress(asked) => egress_live(live, &asked).map(|()| Vec::new()),
+            wire::NetChange::Member { member, reach } => {
+                member_live(live, member, reach.as_ref()).map(|()| Vec::new())
+            }
         }
         .map(|changed| wire::NetChanged {
             changed,
@@ -4368,7 +4569,11 @@ mod hosted {
             _ => (R::Image, why),
         };
         let grants = live.agentfile.map(|a| &a.grants);
-        let policy = super::egress(grants, asked).map_err(refused)?;
+        // Each member's own reach its orchestrator set stays in what its network process holds
+        // (D278).
+        let given = lock(&live.given).clone();
+        let reaches: Vec<&wire::Reach> = given.values().collect();
+        let policy = super::policy_with(grants, asked, &reaches).map_err(refused)?;
         super::held_apart(live.agentfile, asked).map_err(refused)?;
         let resolved = super::resolved(grants, asked).map_err(refused)?;
         if !live.ceiled {
@@ -4393,6 +4598,124 @@ mod hosted {
             ));
         }
         *lock(&live.egress) = resolved;
+        Ok(())
+    }
+
+    /// Member `member`'s own reach past its microVM made `reach`, whole, or its image's grants
+    /// back (D278), in place: its guest holds it (init's `EGRESS`: its gate, its switch's and
+    /// init's tables, its resolver, its open TCP connections to a port it loses reset), and its
+    /// network process the union of the run's grants and every member's. Widening, the network
+    /// process takes the union of what was and what is to be first, then the guest its own, then
+    /// the network process what is; so no flow a guest lets out meets a network process that
+    /// refuses it, nor one the guest shuts one that lets it through after. Refused typed by its
+    /// guest's word: past its image and its ceiling `Widening`, members it could not hold apart
+    /// `Unheld`, no such member linked `Unknown`; the network process's union put back where the
+    /// guest refused.
+    fn member_live(
+        live: &Live<'_>,
+        member: u32,
+        reach: Option<&wire::Reach>,
+    ) -> Result<(), (wire::NetRefusal, String)> {
+        use wire::NetRefusal as R;
+        let net = live.net.ok_or_else(no_network)?;
+        if !live.members.iter().any(|m| m.index == member && m.runs) {
+            return Err((R::Unknown, format!("no member {member} runs in this run")));
+        }
+        let args = match reach {
+            None => protocol::egress::args_image(member),
+            Some(r) => {
+                let asked = super::reach_grants(r).map_err(|why| (R::Image, why))?;
+                // Within what its image grants the run and its own ceiling, before anything is
+                // told: its guest holds it to its image's grants for it alone (`EGRESS_PAST`).
+                let ceiling = live.ceilings.iter().find(|(m, _)| *m == member).map(|(_, g)| g);
+                if let Some(item) = super::past_run(&asked, live.agentfile.map(|a| &a.grants), ceiling) {
+                    return Err((
+                        R::Widening,
+                        format!(
+                            "member {member}: {item} is past what its image and its ceiling let it reach"
+                        ),
+                    ));
+                }
+                protocol::egress::args(member, &asked)
+            }
+        };
+        let refused = |super::No(cause, why)| match cause {
+            Cause::Widening => (R::Widening, why),
+            _ => (R::Image, why),
+        };
+        let grants = live.agentfile.map(|a| &a.grants);
+        let narrowing = lock(&live.egress).clone();
+        let before = lock(&live.given).clone();
+        let mut after = before.clone();
+        let mut during = before.clone();
+        match reach {
+            Some(r) => {
+                after.insert(member, r.clone());
+                let both = during
+                    .get(&member)
+                    .map_or_else(|| r.clone(), |was| super::reach_union(was, r));
+                during.insert(member, both);
+            }
+            None => {
+                after.remove(&member);
+            }
+        }
+        let policy = |given: &HashMap<u32, wire::Reach>| {
+            let reaches: Vec<&wire::Reach> = given.values().collect();
+            super::policy_with(grants, &narrowing, &reaches).map_err(refused)
+        };
+        let (was, between, is) = (policy(&before)?, policy(&during)?, policy(&after)?);
+        let tell = |p: &Option<Vec<u8>>| -> Result<(), (R, String)> {
+            if !live.ceiled {
+                // No ceiling was told its network process: its image grants nothing past its
+                // microVM and no member has a ceiling, so nothing can be reached.
+                return match p {
+                    Some(_) => Err((R::Widening, "the run may reach nothing past its microVM".into())),
+                    None => Ok(()),
+                };
+            }
+            let said = net
+                .ask(kind::NET_GRANTS, p.as_deref().unwrap_or_default())
+                .map_err(|why| (R::Network, why))?;
+            if said == [0] {
+                return Ok(());
+            }
+            Err((
+                R::Network,
+                format!(
+                    "its network process: {}",
+                    String::from_utf8_lossy(said.get(1..).unwrap_or_default())
+                ),
+            ))
+        };
+        if between != was {
+            tell(&between)?;
+        }
+        let said = builtin(live, protocol::builtin::EGRESS, args)
+            .map_err(|e| (R::Network, format!("its guest: {e}")));
+        let refusal = match said {
+            Ok(said) if said.status == Some(0) => None,
+            Ok(said) => {
+                let words = String::from_utf8_lossy(&said.err).trim().to_string();
+                Some(match said.status {
+                    Some(protocol::builtin::EGRESS_PAST) => (R::Widening, words),
+                    Some(protocol::builtin::EGRESS_UNHELD) => (R::Unheld, words),
+                    Some(protocol::builtin::EGRESS_UNKNOWN) => (R::Unknown, words),
+                    _ => (R::Network, format!("its guest: {words}")),
+                })
+            }
+            Err(e) => Some(e),
+        };
+        if let Some(refused) = refusal {
+            if between != was {
+                let _ = tell(&was);
+            }
+            return Err(refused);
+        }
+        *lock(&live.given) = after;
+        if is != between {
+            tell(&is)?;
+        }
         Ok(())
     }
 
@@ -4573,6 +4896,12 @@ mod hosted {
         /// Its grants past its microVM as they stand, written out whole (D273): held under its
         /// ports' lock's turn, as every change of its network is.
         egress: Mutex<wire::Narrowing>,
+        /// Each member's own reach past its microVM its orchestrator set, by its index (D278):
+        /// one not here reaches its image's grants. Held under the same turn.
+        given: Mutex<HashMap<u32, wire::Reach>>,
+        /// Each member's ceiling past its microVM, by its index (D278): none, nothing past its
+        /// image's grants.
+        ceilings: Vec<(u32, protocol::egress::Grants)>,
         /// Whether its network process was told a ceiling (`NET_POLICY`): its image grants
         /// something past its microVM (D273).
         ceiled: bool,
@@ -5315,6 +5644,8 @@ mod hosted {
                 net: net.as_ref(),
                 ports: Mutex::new(ports),
                 egress: Mutex::new(plan.narrowing.clone()),
+                given: Mutex::new(HashMap::new()),
+                ceilings: plan.member_ceilings.clone(),
                 ceiled: plan.ceiling.is_some(),
                 agentfile: plan.prepared.agentfile.as_ref(),
                 command: plan.command,
@@ -7427,6 +7758,8 @@ mod hosted {
                 net: None,
                 ports: Mutex::new(Ports::default()),
                 egress: Mutex::new(wire::Narrowing::default()),
+                given: Mutex::new(HashMap::new()),
+                ceilings: Vec::new(),
                 ceiled: false,
                 agentfile: None,
                 command: false,
@@ -7655,6 +7988,116 @@ mod hosted {
                 egress_live(&unnetworked, &asked(&[])),
                 Err((R::NoNetwork, _))
             ));
+        }
+
+        /// D278. Do, on a run whose image grants 443/tcp and whose member 1 (a harness) runs
+        /// with a ceiling of 8000-9999/tcp, its stand-in network process and VM taking what they
+        /// are told: give member 1 8443/tcp; give it its image's back; give it 9999/tcp, its guest
+        /// refusing it as unheld (`EGRESS_UNHELD`); give it 22/tcp, past its ceiling; and give a
+        /// member that does not run anything. Expect: widening, the network process told the
+        /// union (443 and 8443) before its guest's `EGRESS` (member 1, 6/8443-8443); narrowing,
+        /// its guest's `EGRESS` (member 1, `image`) before the network process told 443 alone;
+        /// the refused grant told, then the guest refusing it, then the union before put back,
+        /// `Unheld`, member 1's reach as it was; `Widening` for 22/tcp and `Unknown`, nothing
+        /// told.
+        #[test]
+        fn a_members_own_reach_changes_in_its_guest_and_the_runs_union() {
+            use wire::NetRefusal as R;
+            let dir = shards_testdir::TempDir::new("api-member-egress").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let (netproc, run_host) = std::os::unix::net::UnixStream::pair().unwrap();
+            netproc
+                .set_read_timeout(Some(std::time::Duration::from_secs(120)))
+                .unwrap();
+            let control = super::super::NetControl::new(&run_host);
+            let agentfile = crate::agentfile::Agentfile {
+                grants: shards_agentfile::agentfile::Grants {
+                    egress: vec![b"443/tcp".to_vec()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let grants = |lo, hi| protocol::egress::Grants {
+                ports: vec![(6, lo, hi)],
+                named: Vec::new(),
+                dns: false,
+            };
+            let live = Live {
+                net: Some(&control),
+                ceiled: true,
+                agentfile: Some(&agentfile),
+                members: &members,
+                ceilings: vec![(1, grants(8000, 9999))],
+                ..live(&answers, dir.path(), link, None)
+            };
+            let ports = |told: &shards_ipc::Message| {
+                assert_eq!(told.kind, kind::NET_GRANTS);
+                shards_net::decode_policy(&told.payload).map(|(p, _, _)| p.0)
+            };
+            let tcp = |lo, hi| (shards_net::Proto::Tcp, lo, hi);
+            // Its VM: the guest's EGRESS taken, its exit as asked.
+            let egress = |argv: Vec<Vec<u8>>, status: u8| {
+                let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                assert_eq!(m.kind, kind::EXEC_RUN);
+                let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                assert_eq!((spec.builtin, spec.argv), (protocol::builtin::EGRESS, argv));
+                let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                shards_ipc::send(&conn, kind::EXIT, &[status], &[]).unwrap();
+            };
+            let reach = |port: &str| wire::Reach {
+                ports: vec![port.into()],
+                ..wire::Reach::default()
+            };
+            let (wide, past) = (reach("8443/tcp"), reach("9999/tcp"));
+            std::thread::scope(|s| {
+                let reading = s.spawn(|| super::super::relay(&control, None, &answers));
+                // Widening: the union first, then its guest.
+                let changing = s.spawn(|| member_live(&live, 1, Some(&wide)));
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!(ports(&told), Some(vec![tcp(443, 443), tcp(8443, 8443)]));
+                shards_ipc::send(&netproc, kind::NET_GRANTS, &[0], &[]).unwrap();
+                egress(protocol::egress::args(1, &grants(8443, 8443)), 0);
+                assert_eq!(changing.join().unwrap(), Ok(()));
+                assert_eq!(lock(&live.given).get(&1), Some(&wide));
+                // Narrowing to its image's: its guest first, then the union.
+                let changing = s.spawn(|| member_live(&live, 1, None));
+                egress(protocol::egress::args_image(1), 0);
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!(ports(&told), Some(vec![tcp(443, 443)]));
+                shards_ipc::send(&netproc, kind::NET_GRANTS, &[0], &[]).unwrap();
+                assert_eq!(changing.join().unwrap(), Ok(()));
+                assert!(lock(&live.given).is_empty());
+                // Refused by its guest: the union put back.
+                let changing = s.spawn(|| member_live(&live, 1, Some(&past)));
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!(ports(&told), Some(vec![tcp(443, 443), tcp(9999, 9999)]));
+                shards_ipc::send(&netproc, kind::NET_GRANTS, &[0], &[]).unwrap();
+                egress(
+                    protocol::egress::args(1, &grants(9999, 9999)),
+                    protocol::builtin::EGRESS_UNHELD,
+                );
+                let told = shards_ipc::recv(&netproc).unwrap().unwrap();
+                assert_eq!(ports(&told), Some(vec![tcp(443, 443)]), "put back");
+                shards_ipc::send(&netproc, kind::NET_GRANTS, &[0], &[]).unwrap();
+                assert!(matches!(changing.join().unwrap(), Err((R::Unheld, _))));
+                assert!(lock(&live.given).is_empty(), "its reach as it was");
+                // Past its image's and its ceiling: refused here, nothing told.
+                match member_live(&live, 1, Some(&reach("22/tcp"))) {
+                    Err((R::Widening, why)) => assert!(why.contains("TCP ports 22-22"), "{why}"),
+                    other => panic!("{other:?}"),
+                }
+                assert!(matches!(member_live(&live, 0, None), Err((R::Unknown, _))));
+                drop(netproc);
+                reading.join().unwrap();
+            });
         }
 
         /// D271. Do: ask a plug's source of a host directory, of a relative one, of a volume of
@@ -9050,6 +9493,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }

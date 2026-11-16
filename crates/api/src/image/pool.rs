@@ -1292,6 +1292,15 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.revoke_egress(grant, patience)
     }
 
+    fn member_egress(
+        &self,
+        member: &super::MemberName,
+        reach: Option<&wire::Reach>,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        self.guest.member_egress(member, reach, patience)
+    }
+
     fn control(&self) -> Option<&wire::ControlAt> {
         self.guest.control()
     }
@@ -1553,6 +1562,14 @@ mod tests {
         fn revoke_egress(
             &self,
             _: &super::super::EgressGrant,
+            _: Duration,
+        ) -> Result<wire::Narrowing, ImageRefusal> {
+            none()
+        }
+        fn member_egress(
+            &self,
+            _: &super::super::MemberName,
+            _: Option<&wire::Reach>,
             _: Duration,
         ) -> Result<wire::Narrowing, ImageRefusal> {
             none()
@@ -1871,6 +1888,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }
@@ -1893,6 +1911,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }

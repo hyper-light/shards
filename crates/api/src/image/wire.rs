@@ -99,8 +99,12 @@ pub use shards_abi::run::nesting::Ready;
 /// orchestrator gave it; 38, a member's generations (D270 slice 3b): a member started again in
 /// its microVM ([`to_host::RESTART`], [`RestartAsk`], [`RestartAnswer`]), each of its output,
 /// input and end frames saying the generation it is of, so that a side that knows none refuses
-/// the run as it is asked, rather than reading one generation's bytes as another's.
-pub const VERSION: u8 = 38;
+/// the run as it is asked, rather than reading one generation's bytes as another's; 39, each
+/// member's own reach past its microVM (D278): the most it may be given ([`Request::egress_ceiling`])
+/// and its reach set as the run goes ([`NetChange::Member`]), so that a side that holds no
+/// member apart in its guest refuses the run as it is asked, rather than leaving a member the
+/// reach its orchestrator took back.
+pub const VERSION: u8 = 39;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -424,6 +428,27 @@ pub struct MemberReach {
     pub destinations: Vec<String>,
 }
 
+/// A member's reach past its microVM, whole (D278): the ports it may open flows on to any
+/// address, as an Agentfile writes them (`443/tcp`, `8000-8010/udp`); the remote MCP servers and
+/// the destinations it reaches by name, `host:port` (D236); and whether it asks names past it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reach {
+    pub ports: Vec<String>,
+    pub mcp: Vec<String>,
+    pub destinations: Vec<String>,
+    pub dns: bool,
+}
+
+/// The most a member may be given past its image's grants as its run goes (D278): the member,
+/// by the kind and name its image's Agentfile declares, and that reach. The person's own policy:
+/// its run host takes it as the most, never as a grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberCeiling {
+    pub kind: MemberKind,
+    pub name: String,
+    pub reach: Reach,
+}
+
 /// A run's credential grants and the injector's decision with them (D242): shards-dns's, which
 /// the network process's injector decides with too (both name a grant's hosts by its rules).
 /// A grant rides this channel by reference with the hosts it may be filled in toward and the
@@ -626,6 +651,9 @@ pub struct Request {
     /// `shards_abi::run::plug::root_name` takes one, beneath which what is plugged into them
     /// as it runs lies. Appended in version 35.
     pub plug_roots: Vec<String>,
+    /// The most each member may be given past its image's grants as the run goes (D278), each
+    /// member once; empty, nothing past them. Appended in version 39.
+    pub egress_ceiling: Vec<MemberCeiling>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -1206,6 +1234,10 @@ pub enum NetChange {
     /// The run's grants past its microVM, whole, as its owner asks them to be from now on
     /// (version 36, D273): checked as its start's are, its image's grants their ceiling.
     Egress(Narrowing),
+    /// A member's own reach past its microVM, by its declared index, whole, in place of what it
+    /// reached; or none, its image's grants back (version 39, D278): within its image's grants
+    /// and its ceiling ([`Request::egress_ceiling`]), held in its guest.
+    Member { member: u32, reach: Option<Reach> },
 }
 
 /// A network change asked (D269), its answer named by `id`.
@@ -1232,6 +1264,9 @@ pub enum NetRefusal {
     Network = 4,
     /// The image's own declaration of it: a port it gives a member that is none of the run's.
     Image = 5,
+    /// Members whose reach, so changed, the microVM cannot hold apart (D278, D236's `held`):
+    /// on a TCP port one reaches by name, another by other names or a port grant.
+    Unheld = 6,
 }
 
 fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
@@ -1242,6 +1277,7 @@ fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
         3 => NetRefusal::Unknown,
         4 => NetRefusal::Network,
         5 => NetRefusal::Image,
+        6 => NetRefusal::Unheld,
         tag => {
             return Err(WireError::Tag {
                 what: "a network change's refusal",
@@ -1573,6 +1609,18 @@ impl Writer {
         }
         Ok(())
     }
+    /// A member's reach past its microVM (D278): its ports', remote MCP servers' and
+    /// destinations' lists, each a count and its texts, then 1 where it asks names, else 0.
+    fn reach_past(&mut self, r: &Reach) -> Result<(), WireError> {
+        for list in [&r.ports, &r.mcp, &r.destinations] {
+            self.count(list.len())?;
+            for item in list {
+                self.text(item)?;
+            }
+        }
+        self.u8(u8::from(r.dns));
+        Ok(())
+    }
     /// A run's grants past its microVM whole (D273): its ports', remote MCP servers' and
     /// destinations' lists, whether names are asked, and its members' reach.
     fn narrowing(&mut self, n: &Narrowing) -> Result<(), WireError> {
@@ -1799,6 +1847,24 @@ impl<'a> Reader<'a> {
             });
         }
         Ok(Some(reach))
+    }
+    /// What [`Writer::reach_past`] wrote.
+    fn reach_past(&mut self) -> Result<Reach, WireError> {
+        let mut lists: [Vec<String>; 3] = Default::default();
+        for list in &mut lists {
+            let n = self.count(4)?;
+            list.reserve(n);
+            for _ in 0..n {
+                list.push(self.text()?);
+            }
+        }
+        let [ports, mcp, destinations] = lists;
+        Ok(Reach {
+            ports,
+            mcp,
+            destinations,
+            dns: self.flag()?,
+        })
     }
     /// What [`Writer::narrowing`] wrote.
     fn narrowing(&mut self) -> Result<Narrowing, WireError> {
@@ -2199,6 +2265,14 @@ impl Request {
                 }
             }
         }
+        // Each member's ceiling past its microVM, appended in version 39 (D278): its kind, its
+        // name and its reach.
+        w.count(self.egress_ceiling.len())?;
+        for c in &self.egress_ceiling {
+            w.u8(c.kind as u8);
+            w.text(&c.name)?;
+            w.reach_past(&c.reach)?;
+        }
         w.done()
     }
 
@@ -2436,6 +2510,25 @@ impl Request {
                 }
             };
         }
+        // Each member's ceiling, appended in version 39 (D278): each at least its kind's byte,
+        // its name's length, its three lists' counts and its names' flag; a member named twice
+        // refused, as the run host would refuse it.
+        let n = r.count(1 + 4 + 4 * 3 + 1)?;
+        let mut egress_ceiling: Vec<MemberCeiling> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (kind, name) = (member_kind(r.u8()?)?, r.text()?);
+            if egress_ceiling.iter().any(|c| c.kind == kind && c.name == name) {
+                return Err(WireError::Tag {
+                    what: "a member's ceiling, twice",
+                    tag: kind as u8,
+                });
+            }
+            egress_ceiling.push(MemberCeiling {
+                kind,
+                name,
+                reach: r.reach_past()?,
+            });
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -2455,6 +2548,7 @@ impl Request {
             upstream_roots,
             gpu_report,
             plug_roots,
+            egress_ceiling,
         })
     }
 }
@@ -2980,6 +3074,17 @@ impl NetAsk {
                 w.u8(2);
                 w.narrowing(n)?;
             }
+            NetChange::Member { member, reach } => {
+                w.u8(3);
+                w.u32(*member);
+                match reach {
+                    None => w.u8(0),
+                    Some(r) => {
+                        w.u8(1);
+                        w.reach_past(r)?;
+                    }
+                }
+            }
         }
         w.done()
     }
@@ -3001,6 +3106,11 @@ impl NetAsk {
                 }
             }
             2 => NetChange::Egress(r.narrowing()?),
+            3 => {
+                let member = r.u32()?;
+                let reach = if r.flag()? { Some(r.reach_past()?) } else { None };
+                NetChange::Member { member, reach }
+            }
             tag => {
                 return Err(WireError::Tag {
                     what: "a network change",
@@ -4083,6 +4193,24 @@ mod tests {
             },
             NetChange::Egress(granted.clone()),
             NetChange::Egress(Narrowing::default()),
+            // A member's own reach set whole, none of it, and its image's back (D278).
+            NetChange::Member {
+                member: 1,
+                reach: Some(Reach {
+                    ports: vec!["8443/tcp".into(), "5000-5010/udp".into()],
+                    mcp: vec!["mcp.example.com:443".into()],
+                    destinations: vec!["api.example.com:443".into()],
+                    dns: true,
+                }),
+            },
+            NetChange::Member {
+                member: 0,
+                reach: Some(Reach::default()),
+            },
+            NetChange::Member {
+                member: u32::MAX,
+                reach: None,
+            },
         ];
         for change in asks {
             let ask = NetAsk { id: 7, change };
@@ -4097,7 +4225,7 @@ mod tests {
             );
         }
         assert!(matches!(
-            NetAsk::decode(&[0, 0, 0, 7, 3]),
+            NetAsk::decode(&[0, 0, 0, 7, 4]),
             Err(WireError::Tag { .. })
         ));
         // An unpublish names the address it lets go of: none is no binding.
@@ -4133,6 +4261,7 @@ mod tests {
             }),
         ];
         for cause in [
+            NetRefusal::Unheld,
             NetRefusal::NoNetwork,
             NetRefusal::Widening,
             NetRefusal::Bind,
@@ -4159,7 +4288,7 @@ mod tests {
             Err(WireError::Tag { .. })
         ));
         assert!(matches!(
-            NetAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
+            NetAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
             Err(WireError::Tag { .. })
         ));
         // A count of bindings past the bytes left is refused, allocating nothing.
@@ -4482,6 +4611,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }
@@ -4575,10 +4705,10 @@ mod tests {
         // report's flag (version 29), the plug roots' count (version 35) and the share's members
         // (none, version 37) last.
         assert_eq!(
-            asked.get(asked.len() - 43..).unwrap(),
+            asked.get(asked.len() - 47..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
@@ -4587,7 +4717,8 @@ mod tests {
              count (zero, version 16), the member's arguments' count (zero, version 18), then \
              the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25), then \
              the upstream roots' count (zero, version 26), then the GPU report's flag (none, \
-             version 29), then the plug roots' count (zero, version 35)"
+             version 29), then the plug roots' count (zero, version 35), then the members' \
+             ceilings' count (zero, version 39)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -4847,9 +4978,10 @@ mod tests {
         // One member, so its input is the thirtieth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
         // count, the sign-ins' count, its MCP bridge, the upstream roots' count, the GPU
-        // report's flag, the plug roots' count and the share's members follow it).
+        // report's flag, the plug roots' count, the share's members and the members' ceilings'
+        // count, version 39's, follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 31;
+        let at = bad.len() - 35;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -4904,10 +5036,10 @@ mod tests {
             let bytes = with(refused).encode().unwrap();
             assert_eq!(Request::decode(&bytes), Err(WireError::ShareMembers));
         }
+        // The share's members' tag, before the members' ceilings' count (version 39).
         let mut bytes = with(None).encode().unwrap();
-        if let Some(last) = bytes.last_mut() {
-            *last = 3;
-        }
+        let at = bytes.len() - 1 - 4;
+        bytes[at] = 3;
         assert_eq!(
             Request::decode(&bytes),
             Err(WireError::Tag {
@@ -4983,9 +5115,10 @@ mod tests {
         }
         // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
         // count, the sign-ins' count, the MCP bridges, the upstream roots' count, the GPU
-        // report's flag, the plug roots' count and the share's members where none is held apart.
+        // report's flag, the plug roots' count, the share's members and the members' ceilings'
+        // count (version 39) where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 25;
+        let at = flag.len() - 29;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -5001,8 +5134,9 @@ mod tests {
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
         // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
         // bridge (version 25), the upstream roots' count (version 26), the GPU report's flag
-        // (version 29), the plug roots' count (version 35) and the share's members (version 37).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1);
+        // (version 29), the plug roots' count (version 35), the share's members (version 37) and
+        // the members' ceilings' count (version 39).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1 + 4);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -5069,7 +5203,8 @@ mod tests {
         // (version 29), the plug roots' count (version 35) and the share's members (version 37):
         // its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - 1 - 4 - 1 - 4 - 2 - 4 - "ü".len();
+        // ... and the members' ceilings' count (version 39).
+        let at = bad.len() - 1 - 4 - 1 - 4 - 2 - 4 - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
         // The second member's count, before the sign-ins', said as four billion in no bytes.
@@ -5210,9 +5345,9 @@ mod tests {
         // (version 15), the GPUs' count (version 16), its arguments' count (version 18), the
         // sign-ins' count (version 24), its MCP bridge (version 25), the upstream roots' count
         // (version 26), the GPU report's flag (version 29), the plug roots' count (version 35)
-        // and the share's members (version 37): no flag.
+        // the share's members (version 37) and the members' ceilings' count (version 39): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 31;
+        let at = flag.len() - 35;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -5224,10 +5359,10 @@ mod tests {
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
         // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge,
-        // the upstream roots' count, the GPU report's flag, the plug roots' count and the share's
-        // members: no list of version 3's and on.
+        // the upstream roots' count, the GPU report's flag, the plug roots' count, the share's
+        // members and the members' ceilings' count (version 39): no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 33;
+        let at = list.len() - 37;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -5438,8 +5573,9 @@ mod tests {
             result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
+        // ... and the members' ceilings' count (version 39) after them.
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 25;
+        let at = bad.len() - 29;
         assert_eq!(
             bad[at], 0,
             "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
@@ -5696,6 +5832,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         };
         let exemplar = full.exemplar();
@@ -5955,6 +6092,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         }
     }
@@ -6086,7 +6224,8 @@ mod tests {
         // count (version 35) and the share's members (version 37), made one D232's grammar
         // refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - 1 - 4 - 1 - 4 - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        // ... and the members' ceilings' count (version 39).
+        let at = unnamed.len() - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
         assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
@@ -6202,7 +6341,7 @@ mod tests {
         // members (version 37) after it.
         let mut cli = bytes.clone();
         let at = cli.len()
-            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1);
+            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1 + 4);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));

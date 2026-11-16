@@ -2678,6 +2678,25 @@ impl ImageGuest for Session {
             .map(|changed| changed.egress)
     }
 
+    fn member_egress(
+        &self,
+        member: &MemberName,
+        reach: Option<&wire::Reach>,
+        patience: Duration,
+    ) -> Result<wire::Narrowing, ImageRefusal> {
+        let info = self.index(member)?;
+        if !info.runs {
+            return Err(ImageRefusal::Image(format!(
+                "{member:?} is files alone, and runs nothing"
+            )));
+        }
+        let change = wire::NetChange::Member {
+            member: info.index,
+            reach: reach.cloned(),
+        };
+        self.shared.net(change, patience).map(|changed| changed.egress)
+    }
+
     fn control(&self) -> Option<&wire::ControlAt> {
         self.control.as_ref()
     }
@@ -5360,6 +5379,7 @@ mod tests {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
             shares: Vec::new(),
             nesting: false,

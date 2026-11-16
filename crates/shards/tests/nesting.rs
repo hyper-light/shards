@@ -571,6 +571,7 @@ fn a_deadline_given_through_shards_api_is_met_or_said_passed() {
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec(met())).unwrap();
@@ -782,6 +783,7 @@ fn a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller() {
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec).unwrap();
@@ -894,6 +896,7 @@ fn over_lanes(home: &str, case: impl FnOnce(&shards_api::control::Sockets, &[u8]
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     };
     let guest = booted(&ImageShards::new(), &spec).unwrap();
@@ -1062,6 +1065,7 @@ fn an_orchestrators_run_binds_its_own_agent_control_endpoint() {
             sign_ins: Vec::new(),
             upstream_roots: Vec::new(),
             plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
             gpu_report: None,
         };
         booted(&ImageShards::new(), &spec).unwrap()

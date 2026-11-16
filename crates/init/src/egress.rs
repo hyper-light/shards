@@ -379,10 +379,10 @@ impl std::fmt::Display for Refused {
 impl std::error::Error for Refused {}
 
 /// `builtin::EGRESS`: member `args` names given the grants they say, whole, in place of its
-/// reach as it stood, its image's or what it was given last (D278). Within what its image and
-/// its ceiling let it reach, every member's reach held apart as D236 holds an image's;
-/// programmed gate first, its lost TCP flows reset, then the switch and init's tables, then its
-/// resolver. Refused, typed ([`Refused`]).
+/// reach as it stood, its image's or what it was given last, or its image's back (`image`)
+/// (D278). Within what its image and its ceiling let it reach, every member's reach held apart
+/// as D236 holds an image's; programmed gate first, its lost TCP flows reset, then the switch
+/// and init's tables, then its resolver. Refused, typed ([`Refused`]).
 pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     let (member, asked) =
         abi::parse_args(args).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
@@ -391,14 +391,17 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     let mut all = linked_now();
     let at = all.iter().position(|l| l.member == member).ok_or_else(unknown)?;
     let l = all.get(at).ok_or_else(unknown)?;
-    if let Some(item) = past(&asked, &l.granted.image, &l.granted.ceiling) {
+    if let Some(item) = asked
+        .as_ref()
+        .and_then(|asked| past(asked, &l.granted.image, &l.granted.ceiling))
+    {
         return Err(io::Error::other(Refused::Past(format!(
             "{}: {item} is past what its image and its ceiling let it reach",
             l.label
         ))));
     }
     let before = l.granted.reach();
-    let after = asked.clone();
+    let after = asked.clone().unwrap_or_else(|| l.granted.image.clone());
     let reach: Vec<(usize, &str, Grants)> = all
         .iter()
         .map(|x| {
@@ -425,7 +428,7 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     switch.regrant(l.domain, &l.own, &l.own6, &egress, dns)?;
     resolver(switch, l, &after)?;
     if let Some(l) = all.get_mut(at) {
-        l.granted.given = Some(asked);
+        l.granted.given = asked;
     }
     Ok(())
 }

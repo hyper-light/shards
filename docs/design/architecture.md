@@ -37064,7 +37064,7 @@ narrowed to its own member, taken; widened to another, refused); the image chann
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
 `give_members` not called, and the first test fails as kiln's launch did.
 
-### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress in the guest (slice b1, init and abi: built; its host and API, b2, and its real-VM test, b3, owed)
+### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (slice b1, the guest: built; b2, its host and API: built; b3, its real-VM test, owed)
 
 **Why.** The person (2026-11-15): connect and disconnect harnesses, agents and MCP servers
 *individually*, live, with no rebuild or restart. D273 changed a run's grants as it goes, but
@@ -37130,12 +37130,51 @@ setup keys' registration; init `ranges_cover_and_lose_by_the_port`,
 transactions before a grant, after it and after its revoke, rule for rule), and agentdns's
 `an_askers_names_are_admitted_with_it`.
 
-**Owed.** b2 (the host and its API): `ImageSpec::egress_ceiling` (`member-ceiling=`); each
-member's live grants held on its run host, `NET_GRANTS` their union over `NET_POLICY` (image and
-ceilings), `grant_egress` and `revoke_egress` taking members for every `EgressGrant`, one
-`EGRESS` per member changed. b3 (ROOT): a live grant to member A alone, which A reaches and B
-does not; a revoked member's open TCP connection reset, not stalled; its microVM's VM process,
-`started_from` and templates unchanged throughout.
+**Slice b2, the host and its API** (image channel version 39).
+- *The API* (shards-api): `ImageSpec::egress_ceiling: Vec<MemberCeiling { kind, name, reach }>`,
+  the most each member may be given past its image's grants, the person's own policy; and
+  `ImageGuest::member_egress(member, Option<&Reach>, patience) -> Narrowing`, a member's reach
+  set *whole* (`Reach { ports, mcp, destinations, dns }`), or its image's grants back where
+  none. The brief had `grant_egress` and `revoke_egress` take members for deltas instead; a
+  delta needs the host to know each member's image reach exactly as init's netplan computes it
+  (its ports from its networks' boundaries, its names, its resolver), a second reading that can
+  drift, where a whole reach is init's own `EGRESS` form and idempotent: a retry after a lost
+  answer is safe. Refused typed (`ImageRefusal::Net`): `Widening` past its image and its ceiling,
+  `Unheld` (new, 6) where the microVM could not hold its members apart so (D236), `Unknown` for
+  no such member that runs linked past its microVM, `NoNetwork`.
+- *The wire*: the request's ceilings (each member once, refused twice), `NetChange::Member {
+  member, reach }` (3), `NetRefusal::Unheld`; `EGRESS` gains its `image` item (alone): a member's
+  image's grants back.
+- *Its run host*: each ceiling to its member's index (a member of the image that runs, else
+  refused) and `member-ceiling=` in the guest's setup; the run on the bridge and its own
+  processes confined to eth0 (`confine-eth0`) where any ceiling is, as where the image grants
+  anything past the microVM; its network process's ceiling (`NET_POLICY`) the image's grants with
+  every ceiling. As the run goes it refuses a reach past what the image grants the run and the
+  member's own ceiling (`Widening`, nothing told), its guest holding it to its image's grants for
+  it alone; it holds each member's given reach, and its network process
+  the union of the run's grants (D273's narrowing) and every member's: widening, the union of
+  what was and what is to be first, then the guest's `EGRESS`, then what is; narrowing, the
+  guest first; refused by the guest (its exit status: 13 `Widening`, 95 `Unheld`, 2 `Unknown`),
+  the union before put back. A run-level change (D273) keeps every member's given reach in what
+  its network process holds.
+- *Pools*: a run's ceilings are part of what a warm host is made for (`Request::exemplar` keeps
+  them): its network process is held to them from its start (Landlock's layer on Linux only
+  narrows).
+
+**Tests** (b2, Linux container): the image channel's `network_changes_and_their_answers_cross_the_channel`
+(a member's reach set, none of it, its image's back; `Unheld`) and the request's round trips;
+abi's `IMAGE` item; the run host's `a_members_own_reach_changes_in_its_guest_and_the_runs_union`
+(widening: the union told before the guest's `EGRESS`; narrowing: the guest's before the union;
+refused by the guest as unheld: the union put back, `Unheld`; past the member's ceiling:
+`Widening`, nothing told; `Unknown`).
+
+**Owed.** b3 (ROOT, HVF, KVM and WHP as runners allow): api_image.rs's
+`a_members_own_reach_given_and_taken_back_holds_in_its_running_microvm` (written: a harness its
+image links past its microVM on a network that opens nothing out, its ceiling the host itself at
+a listener's port; refused until given, reaching once given, refused from its first refusal on
+once given its image's back, `Widening` past its ceiling, `Image` for a member of files alone;
+in place). Also owed: an open TCP connection of a member narrowed reset, not stalled (a mode of
+the test guest that holds one open and says how it ended).
 
 ## 4. Start path (≤ 5 ms budget)
 

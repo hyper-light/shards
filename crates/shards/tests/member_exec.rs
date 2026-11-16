@@ -116,6 +116,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
         sign_ins: Vec::new(),
         upstream_roots: Vec::new(),
         plug_roots: Vec::new(),
+        egress_ceiling: Vec::new(),
         gpu_report: None,
     };
     booted(&ImageShards::new(), &spec).unwrap()
