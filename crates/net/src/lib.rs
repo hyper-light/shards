@@ -17,7 +17,8 @@ mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
 /// agents' resolver in the guest (D181).
 pub use shards_dns as dns;
-pub mod hpack;
+/// HTTP/2's field compression (RFC 7541): shards-http2's, shared with the gateway's client (R12).
+pub use shards_http2::hpack;
 pub mod http2;
 pub mod inject;
 pub mod lease;

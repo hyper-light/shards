@@ -10,6 +10,7 @@ on:
     paths:
       - crates/net/**
       - crates/net-process/**
+      - crates/http2/**
       - crates/shards/benches/net_memory.rs
       - .github/workflows/net-costs.yml
   workflow_dispatch:
