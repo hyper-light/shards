@@ -36417,8 +36417,10 @@ for once slice 3b's host side asks).
   (that leaf's `cgroup.kill`, `end_server`), as a member's end did before generations.
 - *The run's protocol* (append-only): `MEMBER_HOLD` (56, host to guest): a member's next
   generation is coming, so its current one's end keeps its server instance and namespaces.
-  `MEMBER_START` (54): the member, its generation (the one past its last), its command,
-  environment, working directory, components (path and key) and its input's token; answered
+  `MEMBER_START` (54): the member, its generation (the one past its last), its run-time
+  arguments (D256: after its image's command, as its first's staged ones were, its host knowing
+  none of that command), its environment, working directory, components (path and key) and its
+  input's token; answered
   `MEMBER_STARTED` (55): started, or refused typed (`StartRefusal`: `Unknown`, no such member;
   `Running`, its last generation not ended; `Generation`, not the one past its last;
   `Unsupported`, as said; `Failed`, in init's words). The built-in `MEMBER_KILL` (24): its

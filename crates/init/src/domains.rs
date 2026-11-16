@@ -2707,13 +2707,10 @@ pub fn next_generation(
     if let Some(l) = &again.laid {
         l.name_in(&mut env).map_err(|e| failed(e.to_string()))?;
     }
-    // Its command, its program found only in its own view as it starts (confine-04).
-    let mut domain = d.clone();
-    domain.argv = start
-        .command
-        .iter()
-        .map(|a| cstr(a))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Its command, its image's as its first's was, its program found only in its own view as it
+    // starts (confine-04), and its run-time arguments after it, as its first's staged ones were.
+    let domain = d.clone();
+    let args = start.args.iter().map(|a| cstr(a)).collect::<Result<Vec<_>, _>>()?;
     let (explicit, paths) = executable(&domain, &env).map_err(|e| (R::Failed, e))?;
     let program = domain.argv.first().ok_or_else(|| failed("no program".into()))?;
     let workdir = match &start.workdir {
@@ -2784,7 +2781,7 @@ pub fn next_generation(
         scratch: None,
         hide: Vec::new(),
         hostname: CString::default(),
-        argv: command_line(program, &domain, &[])
+        argv: command_line(program, &domain, &args)
             .into_iter()
             .map(CStr::as_ptr)
             .chain([std::ptr::null()])
@@ -3551,7 +3548,14 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
 /// their places and no other descriptor of init's, then confined and its program run
 /// ([`exec_child`]).
 fn handover(p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, setup: RawFd) -> ! {
-    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
+    let fail = |out, s: Setting| -> ! {
+        crate::domains::fail(
+            out,
+            setup,
+            crate::managed::Step::Setup,
+            Some(crate::managed::Doing::Setting(s)),
+        )
+    };
     // SAFETY: each call below is a system call on descriptors and buffers made before the
     // clone, in a process of one thread.
     unsafe {
@@ -3608,7 +3612,14 @@ fn handover(p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, setup: Raw
 /// the last generation's let go, each of this one's put at its path, read-only. Then as its
 /// first ([`handover`]).
 fn rechild(p: &Prepared, c: &Confinement, swaps: &Swaps, stdout: RawFd, out: RawFd, setup: RawFd) -> ! {
-    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
+    let fail = |out, s: Setting| -> ! {
+        crate::domains::fail(
+            out,
+            setup,
+            crate::managed::Step::Setup,
+            Some(crate::managed::Doing::Setting(s)),
+        )
+    };
     let nil = std::ptr::null::<libc::c_void>();
     // SAFETY: each call below is a system call on NUL-terminated strings and descriptors made
     // before the clone, in a process of one thread.
@@ -3617,11 +3628,11 @@ fn rechild(p: &Prepared, c: &Confinement, swaps: &Swaps, stdout: RawFd, out: Raw
         if libc::umount2(c"/proc".as_ptr(), libc::MNT_DETACH) != 0
             || libc::mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), quiet, nil) != 0
         {
-            fail(out, c"mounting its /proc anew");
+            fail(out, Setting::ProcAnew);
         }
         for at in &swaps.detach {
             if libc::umount2(at.as_ptr(), libc::MNT_DETACH) != 0 {
-                fail(out, c"letting its last generation's component go");
+                fail(out, Setting::ComponentGone);
             }
         }
         for (copy, at) in &swaps.attach {
@@ -3634,7 +3645,7 @@ fn rechild(p: &Prepared, c: &Confinement, swaps: &Swaps, stdout: RawFd, out: Raw
                 mount_api::MOVE_MOUNT_F_EMPTY_PATH,
             ) != 0
             {
-                fail(out, c"putting its component at its path");
+                fail(out, Setting::ComponentAt);
             }
         }
     }
@@ -3828,11 +3839,17 @@ pub enum Setting {
     Starter,
     Descriptors,
     WorkingDirectory,
+    /// A later generation's `/proc`, made anew for its PID namespace (D270).
+    ProcAnew,
+    /// A path its last generation had a component at, let go of (D270).
+    ComponentGone,
+    /// One of its generation's components put at its path (D270).
+    ComponentAt,
 }
 
 impl Setting {
     /// Every setting, each once.
-    pub const ALL: [Setting; 33] = [
+    pub const ALL: [Setting; 36] = [
         Setting::MountsPrivate,
         Setting::ImageRoot,
         Setting::SystemReadOnly,
@@ -3866,6 +3883,9 @@ impl Setting {
         Setting::Starter,
         Setting::Descriptors,
         Setting::WorkingDirectory,
+        Setting::ProcAnew,
+        Setting::ComponentGone,
+        Setting::ComponentAt,
     ];
 
     pub fn what(self) -> &'static CStr {
@@ -3903,6 +3923,9 @@ impl Setting {
             Setting::Starter => c"retaining its starter's channel",
             Setting::Descriptors => c"closing init's descriptors",
             Setting::WorkingDirectory => c"entering its working directory",
+            Setting::ProcAnew => c"mounting its /proc anew",
+            Setting::ComponentGone => c"letting its last generation's component go",
+            Setting::ComponentAt => c"putting its component at its path",
         }
     }
 

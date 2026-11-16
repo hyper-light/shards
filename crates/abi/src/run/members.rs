@@ -668,14 +668,17 @@ pub const KEY_LEN: usize = 64;
 
 /// A member's next generation (D270), the payload of
 /// [`kind::MEMBER_START`](super::kind::MEMBER_START): its index, the generation it is to be
-/// (its last ended, this one past it), its command line, its environment over its image's,
-/// its working directory where it names one, and the components laid at their paths in its
-/// view, over what its image has there.
+/// (its last ended, this one past it), its run-time arguments (D256), on its command line
+/// after its image's command as its first's staged ones were, its environment over its
+/// image's, its working directory where it names one, and the components laid at their paths
+/// in its view, over what its image has there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Start {
     pub member: u32,
     pub generation: u32,
-    pub command: Vec<Vec<u8>>,
+    /// Its run-time arguments, after its image's command: its host knows none of that command,
+    /// which is its image's alone.
+    pub args: Vec<Vec<u8>>,
     pub env: Vec<Vec<u8>>,
     pub workdir: Option<Vec<u8>>,
     pub components: Vec<Component>,
@@ -772,15 +775,12 @@ impl<'a> Fields<'a> {
 }
 
 impl Start {
-    /// Its fields checked as its decoding checks them: a command of at least its program, no
-    /// argument holding a NUL ([`arg_ok`]), each variable `KEY=VALUE` and none init's own
+    /// Its fields checked as its decoding checks them: no argument holding a NUL ([`arg_ok`]),
+    /// none or many of them, each variable `KEY=VALUE` and none init's own
     /// ([`variable_ok`]), a working directory and each component's path absolute and plain
     /// ([`workdir_ok`]), each component's key lowercase hex, and no path given two components.
     pub fn check(&self) -> Result<(), Error> {
-        if self.command.is_empty() {
-            return Err(Error::Shape);
-        }
-        self.command.iter().try_for_each(|a| arg_ok(a))?;
+        self.args.iter().try_for_each(|a| arg_ok(a))?;
         self.env.iter().try_for_each(|v| variable_ok(v))?;
         if self.workdir.as_deref().is_some_and(|w| !workdir_ok(w)) {
             return Err(Error::Workdir);
@@ -810,7 +810,7 @@ impl Start {
         let mut out = Vec::new();
         push_word(&mut out, self.member);
         push_word(&mut out, self.generation);
-        for list in [&self.command, &self.env] {
+        for list in [&self.args, &self.env] {
             push_word(&mut out, u32::try_from(list.len()).map_err(|_| Error::Shape)?);
             for item in list {
                 push_bytes(&mut out, item)?;
@@ -851,7 +851,7 @@ impl Start {
                 list.push(r.bytes()?.to_vec());
             }
         }
-        let [command, env] = lists;
+        let [args, env] = lists;
         let (flag, rest) = r.0.split_first().ok_or(Error::Shape)?;
         r.0 = rest;
         let workdir = match flag {
@@ -881,7 +881,7 @@ impl Start {
         let start = Start {
             member,
             generation,
-            command,
+            args,
             env,
             workdir,
             components,
@@ -1015,7 +1015,7 @@ mod tests {
         let start = Start {
             member: 3,
             generation: 2,
-            command: vec![b"codex".to_vec(), b"--resume".to_vec(), Vec::new()],
+            args: vec![b"--resume".to_vec(), Vec::new()],
             env: vec![b"A=1".to_vec(), b"B=x=y".to_vec()],
             workdir: Some(b"/Users/ada/project".to_vec()),
             components: vec![
@@ -1042,8 +1042,7 @@ mod tests {
             s
         };
         for (bad, why) in [
-            (with(&|s| s.command.clear()), Error::Shape),
-            (with(&|s| s.command[0] = b"co\0dex".to_vec()), Error::Argument),
+            (with(&|s| s.args[0] = b"--re\0sume".to_vec()), Error::Argument),
             (with(&|s| s.env[0] = b"=1".to_vec()), Error::Variable),
             (with(&|s| s.workdir = Some(b"relative".to_vec())), Error::Workdir),
             (

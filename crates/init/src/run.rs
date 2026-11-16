@@ -7307,7 +7307,7 @@ mod generation_tests {
         let start = Start {
             member: 4,
             generation: 1,
-            command: vec![b"codex".to_vec()],
+            args: vec![b"--resume".to_vec()],
             env: Vec::new(),
             workdir: None,
             components: Vec::new(),
