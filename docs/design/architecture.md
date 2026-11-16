@@ -36342,7 +36342,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 4 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, and a swap by digest; saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36688,6 +36688,55 @@ and `Artifact`, nothing asked).
   two, and the image runs before them) passed, member_exec 6 and managed_output 29; clippy on macOS,
   Linux (x86_64 glibc, aarch64 musl for init) and Windows (x86_64, and arm64 for the VMM); shards-api's
   lib 276, the run host's 76, the VM process's workload 42, the VMM's pmem 13. KVM and WHP are owed.
+
+**Slice 5: a run holding components saved with them** (the VMM, the VM process and the run host,
+snapshot format 36; built, its real-VM test owed).
+- *A save*: a machine whose plugged functions are each a component's saves. Its hotplug window
+  keeps each component's function as it is plugged (`Window::saves`) and refuses a save while
+  anything else is plugged (a disk's, a share's, a host's function, whose host side no snapshot
+  holds); its bus refuses only for the functions it was made with (`Ecam::unsaved`). Its snapshot
+  keeps each component by its function's place on the bus, its range of the components' window
+  and its key; its devices' state keeps each such function's state by its place: its
+  configuration space as its guest left it (its command, its BAR where its guest placed it, its
+  MSI-X control: `Header::save`), its MSI-X table and pending bits, its vectors, what virtio's
+  common configuration keeps of its own, and its transport's state, its device's among it.
+- *A restore*, given each component's image by its key (`RestoreConfig::components`,
+  `Hosts::components`; one missing, or one the snapshot holds none of, refused, naming it), maps
+  each back at its range and plugs its function back at its place (`Components::place_at`,
+  `Hotplug::plug_at`, `runtime::plug_component`) before the devices' state is put back on each.
+  Refused: an image of another length than its range, a range not free in the window or a place
+  with no free slot, a function plugged back whose state the snapshot keeps none of or a state
+  with no function plugged back at its place, and a configuration space of another function (its
+  vendor, device, revision and class, PCI Local Bus 3.0 §6.1; the command and status between them
+  are its guest's to write).
+- *Its key*: a component's plug says it (`device::PMEM`'s step, then its digest's 64 lowercase
+  hex digits), which the window keeps with its range; a key of another length is refused
+  (`Refusal::InvalidRequest`), as no snapshot's decoding reads one.
+- *Its bounds*, each the format's own: one component at most for each of the machine's slots,
+  each its place, its range and its key of `shards_abi::run::members::KEY_LEN` bytes (a SHA-256
+  digest's 32 bytes in hex, FIPS 180-4); one function's state at most for each function plugged
+  back, each its place and its length; an MSI-X table, and a virtio function's queues, as many
+  as the function's own.
+- *Templates* hold none: an image's template is saved as its first run gets ready (D25), before
+  its run is handed to its orchestrator and so before any swap, and a run restored from it lays
+  each member's components at its starts as its orchestrator swaps them (`Start.components`,
+  slice 3a): the desired set is the run's, laid again at every start. A template that held one
+  would be refused by its restore, given no image, and replaced, as any that does not restore is.
+- *Not yet*: no save of an orchestrator's run is restored by Shards (D259); the images a restore
+  needs come with that path (the roadmap's moves, 7a). Until then the VM process's restore gives
+  none, and a snapshot holding a component is refused before its guest runs, naming it.
+
+**Tests** (slice 5, light): the VMM's `a_functions_space_and_msix_table_are_saved_and_put_back_whole`,
+`a_virtio_function_set_up_is_saved_and_put_back_whole` (a function set up by its driver put back
+whole on a fresh one, refused for another device's queues),
+`a_window_saves_the_functions_it_keeps_by_their_places_and_puts_them_back`,
+`a_state_keeps_its_components_no_more_than_its_slots`,
+`a_restore_gives_each_component_its_snapshot_holds_and_no_other`, `ecam_reaches_the_functions_there`
+(a function plugged in is its window's to save) and the window's placement test with keys; the run
+host's `a_component_swapped_is_plugged_mounted_laid_at_its_members_start_and_let_go_of_unused` (its
+plug says its key). Real-VM (api_image.rs), owed on HVF, KVM and WHP:
+`a_run_holding_a_component_is_saved_with_it` (a harness swapped to its component, its run saved,
+its snapshot keeping the component's key, its member running on).
 
 **A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
 as its host's address reach when its microVM is made, and is kept with its save, so a restore

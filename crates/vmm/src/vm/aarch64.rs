@@ -866,6 +866,7 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
             io: cfg.io_limit,
             layer: layer.as_ref(),
             window_heads: None,
+            components: &[],
         };
         let a = assemble(
             &memory,
@@ -1108,8 +1109,8 @@ pub fn restore(
         snap,
         plug_at(ram),
     )?);
-    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
-    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
+    // A machine saves no snapshot with functions on its PCI bus but its components' (D270
+    // slice 5), which are plugged back below: it has the slots its snapshot's had (D214).
     let a = assemble(
         &memory,
         &snap.config,
@@ -1128,6 +1129,7 @@ pub fn restore(
     };
     super::window_kept(a.component_window_mib, &snap.config)?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
+    super::replug_components(&a.control, &memory, snap, hosts.components)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))

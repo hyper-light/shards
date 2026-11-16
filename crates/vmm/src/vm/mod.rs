@@ -310,12 +310,35 @@ pub(crate) struct Hosts<'a> {
     /// The heads of its DAX windows a snapshot kept (D189), which a restore maps privately;
     /// none for a boot's, whose are its own memory.
     pub window_heads: Option<&'a std::fs::File>,
+    /// Each component's image a restore plugs back (D270 slice 5), by its key: one for each
+    /// its snapshot holds. None for a boot.
+    pub components: &'a [(String, std::fs::File)],
 }
 
-/// A snapshot's vsock and network devices, and the restore's host sides for them, come
-/// together or not at all.
+/// A snapshot's vsock and network devices and its components, and the restore's host sides
+/// and images for them, come together or not at all.
 #[cfg(hv)]
 fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(), String> {
+    // Each component it holds, given its image; none given that it holds not (D270 slice 5).
+    if let Some(k) = snap
+        .components
+        .iter()
+        .find(|k| !hosts.components.iter().any(|(key, _)| *key == k.key))
+    {
+        return Err(format!(
+            "the snapshot holds component {}: the restore gives no image of it",
+            k.key
+        ));
+    }
+    if let Some((key, _)) = hosts
+        .components
+        .iter()
+        .find(|(key, _)| !snap.components.iter().any(|k| k.key == *key))
+    {
+        return Err(format!(
+            "the restore gives component {key}'s image, which the snapshot holds none of"
+        ));
+    }
     match (snap.config.vsock, hosts.vsock) {
         (true, None) => {
             return Err(
@@ -562,6 +585,32 @@ fn restored_memory(
                 .map_err(|e| format!("snapshot memory: {e}"))
         }
     }
+}
+
+/// Each component `snap` holds plugged back from its image in `images`, by its key, where the
+/// snapshot kept it (D270 slice 5): its range of the components' window and its place on the
+/// bus, before the devices' state is put back on its function ([`check_hosts`] has each image).
+#[cfg(hv)]
+fn replug_components(
+    control: &Arc<crate::devices::control::Control>,
+    memory: &Arc<GuestMemory>,
+    snap: &crate::snapshot::Snapshot,
+    images: &[(String, std::fs::File)],
+) -> Result<(), String> {
+    for kept in &snap.components {
+        let (_, image) = images.iter().find(|(key, _)| *key == kept.key).ok_or_else(|| {
+            format!(
+                "the snapshot holds component {}: the restore gives no image of it",
+                kept.key
+            )
+        })?;
+        let file = image
+            .try_clone()
+            .map_err(|e| format!("component {}'s image: {e}", kept.key))?;
+        runtime::plug_component(control, memory, file, &kept.key, Some(kept))
+            .map_err(|e| format!("component {} plugged back: {e}", kept.key))?;
+    }
+    Ok(())
 }
 
 /// The memory `snap`'s machine had plugged, plugged again in `memory` and read back from
@@ -2736,6 +2785,9 @@ pub struct RestoreConfig {
     /// The snapshot generation whose layer `layer` is a clone of, where its spawner made
     /// one (APFS, btrfs, XFS).
     pub layer_cloned: Option<String>,
+    /// Each component's image its snapshot holds (D270 slice 5), by its key, which the restore
+    /// plugs back where the snapshot kept it before its devices' state is put back.
+    pub components: Vec<(String, std::fs::File)>,
 }
 
 #[derive(Debug, Clone)]
@@ -3195,6 +3247,7 @@ mod tests {
         let snap = |vsock, net| Snapshot {
             config: machine(vsock, net),
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
@@ -3209,6 +3262,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -3229,6 +3283,47 @@ mod tests {
         assert!(e.contains("--vsock PATH"), "{e}");
         let e = check_hosts(&snap(false, mac), hosts(false, false)).unwrap_err();
         assert!(e.contains("its own network process"), "{e}");
+    }
+
+    /// A restore gives each component its snapshot holds its image, by its key, and none that
+    /// it holds not (D270 slice 5): one missing, or one more, is refused, naming it.
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_gives_each_component_its_snapshot_holds_and_no_other() {
+        fn hosts(components: &[(String, std::fs::File)]) -> Hosts<'_> {
+            Hosts {
+                vsock: None,
+                net: None,
+                shares: &[],
+                join: None,
+                join_share: None,
+                io: None,
+                layer: None,
+                window_heads: None,
+                components,
+            }
+        }
+        let key = |c: char| c.to_string().repeat(64);
+        let image = || std::fs::File::open("/dev/null").unwrap();
+        let snap = Snapshot {
+            config: machine(false, None),
+            plugged: Vec::new(),
+            components: vec![crate::devices::virtio::pmem::Kept {
+                devfn: 3 << 3,
+                gpa: 1 << 32,
+                len: 2 << 20,
+                key: key('a'),
+            }],
+            data: None,
+            arch: Vec::new(),
+            devices: Vec::new(),
+            init: None,
+        };
+        check_hosts(&snap, hosts(&[(key('a'), image())])).unwrap();
+        let e = check_hosts(&snap, hosts(&[])).unwrap_err();
+        assert!(e.contains(&key('a')) && e.contains("gives no image"), "{e}");
+        let e = check_hosts(&snap, hosts(&[(key('a'), image()), (key('b'), image())])).unwrap_err();
+        assert!(e.contains(&key('b')) && e.contains("holds none of"), "{e}");
     }
 
     /// Each share's DAX window and the join share's (D189), at GiB boundaries from where
@@ -3353,6 +3448,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 4)
             .err()
@@ -3395,6 +3491,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
@@ -3409,6 +3506,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
