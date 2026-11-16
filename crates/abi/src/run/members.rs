@@ -654,6 +654,293 @@ impl Refusal {
     }
 }
 
+/// A component laid at a path of a member's view as its next generation starts (D270): the
+/// path, absolute and plain ([`workdir_ok`]), and the component's key, its digest's 64
+/// lowercase hex digits, which init has it mounted by (`DEVICE pmem`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Component {
+    pub path: Vec<u8>,
+    pub key: [u8; KEY_LEN],
+}
+
+/// A component key's length: a SHA-256 digest's 32 bytes in hex (FIPS 180-4).
+pub const KEY_LEN: usize = 64;
+
+/// A member's next generation (D270), the payload of
+/// [`kind::MEMBER_START`](super::kind::MEMBER_START): its index, the generation it is to be
+/// (its last ended, this one past it), its command line, its environment over its image's,
+/// its working directory where it names one, and the components laid at their paths in its
+/// view, over what its image has there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Start {
+    pub member: u32,
+    pub generation: u32,
+    pub command: Vec<Vec<u8>>,
+    pub env: Vec<Vec<u8>>,
+    pub workdir: Option<Vec<u8>>,
+    pub components: Vec<Component>,
+    /// Its input connection's token, where its owner writes its stdin (D270: each generation
+    /// an input of its own, dialed as the first's is at the run's start,
+    /// [`managed::INPUT_TOKEN_KEY`](super::managed::INPUT_TOKEN_KEY)); none for `/dev/null`.
+    pub input: Option<[u8; super::TOKEN]>,
+}
+
+/// Why a member's next generation was not started (D270), typed, as
+/// [`kind::MEMBER_STARTED`](super::kind::MEMBER_STARTED) carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StartRefusal {
+    /// No member of that index started in this run.
+    Unknown = 1,
+    /// Its last generation has not ended: a member runs one generation at a time.
+    Running = 2,
+    /// The generation asked is not the one past its last.
+    Generation = 3,
+    /// What it is cannot be started again yet, as said.
+    Unsupported = 4,
+    /// Its start failed, in init's words.
+    Failed = 5,
+}
+
+impl StartRefusal {
+    fn of(tag: u8) -> Option<StartRefusal> {
+        Some(match tag {
+            1 => StartRefusal::Unknown,
+            2 => StartRefusal::Running,
+            3 => StartRefusal::Generation,
+            4 => StartRefusal::Unsupported,
+            5 => StartRefusal::Failed,
+            _ => return None,
+        })
+    }
+}
+
+/// What came of a [`Start`]: the member and the generation asked, and its refusal where it was
+/// refused, with init's words; the payload of
+/// [`kind::MEMBER_STARTED`](super::kind::MEMBER_STARTED).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAnswer {
+    pub member: u32,
+    pub generation: u32,
+    pub refused: Option<(StartRefusal, Vec<u8>)>,
+}
+
+fn push_word(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_be_bytes());
+}
+
+fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
+    push_word(out, u32::try_from(bytes.len()).map_err(|_| Error::Shape)?);
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// A reader of [`Start`]'s and [`StartAnswer`]'s fields, each refused [`Error::Shape`] where it
+/// runs short.
+struct Fields<'a>(&'a [u8]);
+
+impl<'a> Fields<'a> {
+    fn word(&mut self) -> Result<u32, Error> {
+        let (word, rest) = self.0.split_first_chunk::<4>().ok_or(Error::Shape)?;
+        self.0 = rest;
+        Ok(u32::from_be_bytes(*word))
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], Error> {
+        let len = usize::try_from(self.word()?).map_err(|_| Error::Shape)?;
+        let (bytes, rest) = self.0.split_at_checked(len).ok_or(Error::Shape)?;
+        self.0 = rest;
+        Ok(bytes)
+    }
+
+    /// A count of items each at least `least` bytes, no more than what is left could hold.
+    fn count(&mut self, least: usize) -> Result<usize, Error> {
+        let n = usize::try_from(self.word()?).map_err(|_| Error::Shape)?;
+        if n.saturating_mul(least) > self.0.len() {
+            return Err(Error::Shape);
+        }
+        Ok(n)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Shape)
+        }
+    }
+}
+
+impl Start {
+    /// Its fields checked as its decoding checks them: a command of at least its program, no
+    /// argument holding a NUL ([`arg_ok`]), each variable `KEY=VALUE` and none init's own
+    /// ([`variable_ok`]), a working directory and each component's path absolute and plain
+    /// ([`workdir_ok`]), each component's key lowercase hex, and no path given two components.
+    pub fn check(&self) -> Result<(), Error> {
+        if self.command.is_empty() {
+            return Err(Error::Shape);
+        }
+        self.command.iter().try_for_each(|a| arg_ok(a))?;
+        self.env.iter().try_for_each(|v| variable_ok(v))?;
+        if self.workdir.as_deref().is_some_and(|w| !workdir_ok(w)) {
+            return Err(Error::Workdir);
+        }
+        for (i, c) in self.components.iter().enumerate() {
+            if !workdir_ok(&c.path) {
+                return Err(Error::Path);
+            }
+            if !c.key.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(Error::Shape);
+            }
+            if self
+                .components
+                .get(..i)
+                .unwrap_or_default()
+                .iter()
+                .any(|o| o.path == c.path)
+            {
+                return Err(Error::Twice);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        self.check()?;
+        let mut out = Vec::new();
+        push_word(&mut out, self.member);
+        push_word(&mut out, self.generation);
+        for list in [&self.command, &self.env] {
+            push_word(&mut out, u32::try_from(list.len()).map_err(|_| Error::Shape)?);
+            for item in list {
+                push_bytes(&mut out, item)?;
+            }
+        }
+        match &self.workdir {
+            None => out.push(0),
+            Some(w) => {
+                out.push(1);
+                push_bytes(&mut out, w)?;
+            }
+        }
+        push_word(
+            &mut out,
+            u32::try_from(self.components.len()).map_err(|_| Error::Shape)?,
+        );
+        for c in &self.components {
+            push_bytes(&mut out, &c.path)?;
+            out.extend_from_slice(&c.key);
+        }
+        match &self.input {
+            None => out.push(0),
+            Some(token) => {
+                out.push(1);
+                out.extend_from_slice(token);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Start, Error> {
+        let mut r = Fields(bytes);
+        let (member, generation) = (r.word()?, r.word()?);
+        let mut lists = [Vec::new(), Vec::new()];
+        for list in &mut lists {
+            // Each item holds at least its length.
+            for _ in 0..r.count(4)? {
+                list.push(r.bytes()?.to_vec());
+            }
+        }
+        let [command, env] = lists;
+        let (flag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let workdir = match flag {
+            0 => None,
+            1 => Some(r.bytes()?.to_vec()),
+            _ => return Err(Error::Shape),
+        };
+        let mut components = Vec::new();
+        for _ in 0..r.count(4 + KEY_LEN)? {
+            let path = r.bytes()?.to_vec();
+            let (key, rest) = r.0.split_first_chunk::<KEY_LEN>().ok_or(Error::Shape)?;
+            r.0 = rest;
+            components.push(Component { path, key: *key });
+        }
+        let (flag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let input = match flag {
+            0 => None,
+            1 => {
+                let (token, rest) = r.0.split_first_chunk::<{ super::TOKEN }>().ok_or(Error::Shape)?;
+                r.0 = rest;
+                Some(*token)
+            }
+            _ => return Err(Error::Shape),
+        };
+        r.end()?;
+        let start = Start {
+            member,
+            generation,
+            command,
+            env,
+            workdir,
+            components,
+            input,
+        };
+        start.check()?;
+        Ok(start)
+    }
+}
+
+impl StartAnswer {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::new();
+        push_word(&mut out, self.member);
+        push_word(&mut out, self.generation);
+        match &self.refused {
+            None => out.push(0),
+            Some((why, words)) => {
+                out.push(*why as u8);
+                push_bytes(&mut out, words)?;
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<StartAnswer, Error> {
+        let mut r = Fields(bytes);
+        let (member, generation) = (r.word()?, r.word()?);
+        let (tag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let refused = match tag {
+            0 => None,
+            tag => Some((StartRefusal::of(*tag).ok_or(Error::Shape)?, r.bytes()?.to_vec())),
+        };
+        r.end()?;
+        Ok(StartAnswer {
+            member,
+            generation,
+            refused,
+        })
+    }
+}
+
+/// [`builtin::MEMBER_KILL`](super::builtin::MEMBER_KILL)'s arguments: the member's index, in
+/// decimal.
+pub fn kill_args(member: u32) -> Vec<Vec<u8>> {
+    let mut arg = Vec::new();
+    push_decimal(&mut arg, member);
+    alloc::vec![arg]
+}
+
+/// The member [`kill_args`] gives, checked: one argument, a decimal u32.
+pub fn parse_kill(args: &[Vec<u8>]) -> Result<u32, Error> {
+    let [member] = args else {
+        return Err(Error::Shape);
+    };
+    decimal(member)
+}
+
 fn split_once(bytes: &[u8], at: u8) -> Option<(&[u8], &[u8])> {
     let i = bytes.iter().position(|&b| b == at)?;
     Some((bytes.get(..i)?, bytes.get(i + 1..)?))
@@ -719,6 +1006,84 @@ fn push_octal(out: &mut Vec<u8>, mode: u32) {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    /// A member's next generation (D270) reads back as it was made, its answer too; what its
+    /// check refuses is refused both ways, and a payload cut short or past its end is refused.
+    #[test]
+    fn a_members_next_generation_reads_back_as_it_was_made() {
+        let key = |c: u8| [c; KEY_LEN];
+        let start = Start {
+            member: 3,
+            generation: 2,
+            command: vec![b"codex".to_vec(), b"--resume".to_vec(), Vec::new()],
+            env: vec![b"A=1".to_vec(), b"B=x=y".to_vec()],
+            workdir: Some(b"/Users/ada/project".to_vec()),
+            components: vec![
+                Component {
+                    path: b"/harness/codex".to_vec(),
+                    key: key(b'a'),
+                },
+                Component {
+                    path: b"/mcp/tools".to_vec(),
+                    key: key(b'0'),
+                },
+            ],
+            input: Some([7; super::super::TOKEN]),
+        };
+        let bytes = start.encode().unwrap();
+        assert_eq!(Start::decode(&bytes).unwrap(), start);
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert_eq!(Start::decode(&longer), Err(Error::Shape));
+        assert_eq!(Start::decode(&bytes[..bytes.len() - 1]), Err(Error::Shape));
+        let with = |f: &dyn Fn(&mut Start)| {
+            let mut s = start.clone();
+            f(&mut s);
+            s
+        };
+        for (bad, why) in [
+            (with(&|s| s.command.clear()), Error::Shape),
+            (with(&|s| s.command[0] = b"co\0dex".to_vec()), Error::Argument),
+            (with(&|s| s.env[0] = b"=1".to_vec()), Error::Variable),
+            (with(&|s| s.workdir = Some(b"relative".to_vec())), Error::Workdir),
+            (
+                with(&|s| s.components[0].path = b"/harness/../etc".to_vec()),
+                Error::Path,
+            ),
+            (with(&|s| s.components[0].key = key(b'G')), Error::Shape),
+            (
+                with(&|s| s.components[1].path = b"/harness/codex".to_vec()),
+                Error::Twice,
+            ),
+        ] {
+            assert_eq!(bad.encode(), Err(why), "{bad:?}");
+        }
+        // A count past what its bytes could hold allocates nothing and is refused.
+        let mut hostile = bytes.clone();
+        hostile[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Start::decode(&hostile), Err(Error::Shape));
+        for answer in [
+            StartAnswer {
+                member: 3,
+                generation: 2,
+                refused: None,
+            },
+            StartAnswer {
+                member: 0,
+                generation: 1,
+                refused: Some((StartRefusal::Running, b"its last generation runs".to_vec())),
+            },
+        ] {
+            assert_eq!(StartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert_eq!(
+            StartAnswer::decode(&[0, 0, 0, 1, 0, 0, 0, 1, 9]),
+            Err(Error::Shape)
+        );
+        assert_eq!(parse_kill(&kill_args(7)).unwrap(), 7);
+        assert_eq!(parse_kill(&[b"07".to_vec()]), Err(Error::Index));
+        assert_eq!(parse_kill(&[]), Err(Error::Shape));
+    }
 
     /// An entry made is the entry read back, for every field at its bounds: index 0 and
     /// u32::MAX, mode 0 and 0777, bytes holding NULs, an empty file.

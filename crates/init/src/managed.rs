@@ -266,6 +266,10 @@ pub struct Owned {
     pid: libc::pid_t,
     pidfd: OwnedFd,
     _group: std::fs::File,
+    /// Its generation's own cgroup, `gen/` beneath its member's (D270): its reaper, command and
+    /// every command run in it, whose `cgroup.kill` and `cgroup.events` are its population's;
+    /// its member's limits are `_group`'s, over this and its server instance's `server/`.
+    population: std::fs::File,
     kill: std::fs::File,
     events: std::fs::File,
     owner: Option<OwnedFd>,
@@ -280,6 +284,7 @@ pub struct Owned {
 /// All inherited descriptors exist before clone3; neither child allocates before exec.
 pub struct Launch {
     binary: OwnedFd,
+    population: std::fs::File,
     events: std::fs::File,
     kill: std::fs::File,
     owner: (OwnedFd, OwnedFd),
@@ -302,6 +307,8 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 }
 
 impl Launch {
+    /// A launch into `group`, its generation's own cgroup (D270, `gen/`), whose population its
+    /// lifecycle follows and kills.
     pub fn new(last_cap: u32, group: &std::fs::File) -> io::Result<Self> {
         // SAFETY: open(2) of init's own executable, before entering an actor root.
         let binary = unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
@@ -314,6 +321,7 @@ impl Launch {
         std::fs::File::from(owner.1.try_clone()?).write_all(&last_cap.to_be_bytes())?;
         Ok(Self {
             binary,
+            population: group.try_clone()?,
             events: open_at(group, c"cgroup.events", libc::O_RDONLY)?,
             kill: open_at(group, c"cgroup.kill", libc::O_WRONLY)?,
             owner,
@@ -327,6 +335,12 @@ impl Launch {
 
     /// Only the actor branch returns; the namespace init immediately execs fresh code.
     pub fn child(&self) -> RawFd {
+        self.child_into(None)
+    }
+
+    /// [`child`](Self::child), the actor entering `mounts`, the mount namespace its member's
+    /// earlier generations had (D270), where given, rather than a copy of its reaper's.
+    pub fn child_into(&self, mounts: Option<RawFd>) -> RawFd {
         // SAFETY: raw clone as fork, from the namespace's single thread. No Rust runtime
         // or allocator is entered in either branch before its exec.
         let actor = unsafe { libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0) };
@@ -349,7 +363,11 @@ impl Launch {
                 ] {
                     libc::close(fd);
                 }
-                if libc::unshare(libc::CLONE_NEWNS) != 0 || !raw_write(self.split.1.as_raw_fd(), &[SPLIT]) {
+                let separated = match mounts {
+                    None => libc::unshare(libc::CLONE_NEWNS),
+                    Some(fd) => libc::setns(fd, libc::CLONE_NEWNS),
+                };
+                if separated != 0 || !raw_write(self.split.1.as_raw_fd(), &[SPLIT]) {
                     raw_fail(self.setup.1.as_raw_fd(), Step::Setup);
                 }
                 libc::close(self.split.1.as_raw_fd());
@@ -429,10 +447,18 @@ impl Launch {
         }
         // SAFETY: CLONE_PIDFD stored a new descriptor into this slot in the parent.
         let pidfd = unsafe { OwnedFd::from_raw_fd(self.pidfd) };
+        self.parent_of(pid, pidfd, group)
+    }
+
+    /// [`parent`](Self::parent) of a reaper cloned by another process, its pidfd opened here
+    /// (pidfd_open(2)), as a later generation's is (D270): its cloner gives it this process as
+    /// its parent (`CLONE_PARENT`), so that its PID is no other's until this process reaps it.
+    pub fn parent_of(self, pid: libc::pid_t, pidfd: OwnedFd, group: std::fs::File) -> io::Result<Owned> {
         let owned = Owned {
             pid,
             pidfd,
             _group: group,
+            population: self.population,
             kill: self.kill,
             events: self.events,
             owner: Some(self.owner.1),
@@ -448,6 +474,18 @@ impl Launch {
 impl Owned {
     pub fn group(&self) -> &std::fs::File {
         &self._group
+    }
+
+    /// Its generation's own cgroup (D270, `gen/`): where its processes are listed.
+    pub fn population(&self) -> &std::fs::File {
+        &self.population
+    }
+
+    /// Its generation ended at once (D270, `builtin::MEMBER_KILL`): SIGKILL to its reaper, its
+    /// PID namespace's init, which takes every process of that namespace with it and nothing
+    /// of its member's beside them. One reaped already is ended already.
+    pub fn kill_reaper(&self) -> io::Result<()> {
+        signal_stop(&self.pidfd)
     }
 
     /// Its reaper's PID in init's namespace: the parent of its command ([`ACTOR`] in its own).
@@ -1373,6 +1411,7 @@ mod tests {
             pid,
             pidfd,
             _group: group.try_clone().unwrap(),
+            population: group.try_clone().unwrap(),
             kill,
             // Reading a private directory gives EISDIR, never a real kernel cgroup fault.
             events: group,

@@ -4009,6 +4009,9 @@ fn builtin(
             run::builtin::RESIZE => resize_member(args, domains),
             // A member's command signalled (D238, goal 58's step 5).
             run::builtin::SIGNAL => signal_member(args, domains),
+            // A member's generation ended at once (D270): its reaper killed, its PID
+            // namespace with it.
+            run::builtin::MEMBER_KILL => kill_member(args, domains),
             // Its clock its host's, as its run goes on from a pause (D267).
             run::builtin::CLOCK => crate::linux::sync_clock(),
             run::builtin::SIZE => match &layers {
@@ -5253,6 +5256,13 @@ impl Workload {
                         .encode();
                         to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
                         d.end_told = true;
+                        // A generation no next one is held for ends its whole member, its server
+                        // instance with it, as a member's end did before generations (D270).
+                        if !d.held
+                            && let Err(e) = crate::domains::end_server(d)
+                        {
+                            let _ = writeln!(io::stderr(), "shards-init: {}'s server instance: {e}", d.label);
+                        }
                     }
                 }
             }
@@ -5881,6 +5891,9 @@ impl Workload {
                                 let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
                                 let hosts = self.hosts.as_ref();
                                 let mut taken_for_malformed = false;
+                                // A member's next generation asked for, or held for (D270): taken
+                                // once the frames are read, as they change the members.
+                                let mut generations: Vec<(u8, Vec<u8>)> = Vec::new();
                                 let whole = each_frame(&mut from_signals, |which, payload| {
                                     let id_and = |p: &[u8]| {
                                         let (id, rest) = p.split_at_checked(4)?;
@@ -5974,9 +5987,35 @@ impl Workload {
                                                 hosts.answer(payload);
                                             }
                                         }
+                                        kind::MEMBER_START | kind::MEMBER_HOLD => {
+                                            generations.push((which, payload.to_vec()));
+                                        }
                                         _ => {}
                                     }
                                 });
+                                for (which, payload) in generations {
+                                    if which == kind::MEMBER_HOLD {
+                                        hold_member(&payload, &mut self.domains);
+                                    } else {
+                                        let answer = next_generation(
+                                            &payload,
+                                            &mut self.domains,
+                                            self.capture.as_mut(),
+                                        );
+                                        match answer.encode() {
+                                            Ok(bytes) => to_host.extend(&[
+                                                &run::header(kind::MEMBER_STARTED, bytes.len() as u32),
+                                                &bytes,
+                                            ]),
+                                            Err(e) => {
+                                                let _ = writeln!(
+                                                    io::stderr(),
+                                                    "shards-init: a member's next generation's answer: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 if !whole || taken_for_malformed {
                                     signals = None;
                                 }
@@ -6573,7 +6612,7 @@ fn signal_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::R
     // SAFETY: openat(2) of a fixed name under the cgroup directory init holds for the member.
     let procs = unsafe {
         libc::openat(
-            started.lifecycle.group().as_raw_fd(),
+            started.lifecycle.population().as_raw_fd(),
             c"cgroup.procs".as_ptr(),
             libc::O_RDONLY | libc::O_CLOEXEC,
         )
@@ -6588,6 +6627,91 @@ fn signal_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::R
         true => Ok(()),
         false => Err(ended()),
     }
+}
+
+/// [`run::builtin::MEMBER_KILL`] (D270): member `args` names' generation ended at once, its
+/// reaper killed, which takes every process of its PID namespace and nothing else of the
+/// member's. Refused, as [`signal_member`] refuses, for a member that never started, and for one
+/// whose generation has ended already.
+fn kill_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::Result<()> {
+    let member = run::members::parse_kill(args)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let started = domains
+        .iter()
+        .find(|d| d.member == member)
+        .ok_or_else(|| io::Error::other(Unsignalled::Unknown(member)))?;
+    if started.lifecycle.ended() {
+        return Err(io::Error::other(Unsignalled::Ended(started.label.clone())));
+    }
+    started.lifecycle.kill_reaper()
+}
+
+/// A [`kind::MEMBER_HOLD`]: its member's next generation is coming (D270), so that its current
+/// one's end keeps its server instance and its namespaces. One of no member, or malformed, is
+/// nothing: the start that follows it is refused, typed.
+fn hold_member(payload: &[u8], domains: &mut [crate::domains::Started]) {
+    let Some(member) = <[u8; 4]>::try_from(payload).ok().map(u32::from_be_bytes) else {
+        return;
+    };
+    if let Some(d) = domains.iter_mut().find(|d| d.member == member) {
+        d.held = true;
+    }
+}
+
+/// A [`kind::MEMBER_START`]'s answer (D270): its member's next generation started, its channels
+/// waiting for their credit again, or why not, typed.
+fn next_generation(
+    payload: &[u8],
+    domains: &mut [crate::domains::Started],
+    capture: Option<&mut crate::capture::Capture>,
+) -> run::members::StartAnswer {
+    use run::members::{Start, StartAnswer, StartRefusal};
+    let start = match Start::decode(payload) {
+        Ok(start) => start,
+        Err(e) => {
+            let (member, generation) = (
+                payload
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .map_or(0, u32::from_be_bytes),
+                payload
+                    .get(4..8)
+                    .and_then(|b| b.try_into().ok())
+                    .map_or(0, u32::from_be_bytes),
+            );
+            return StartAnswer {
+                member,
+                generation,
+                refused: Some((
+                    StartRefusal::Failed,
+                    format!("a malformed start: {e}").into_bytes(),
+                )),
+            };
+        }
+    };
+    let answer = |refused: Option<(StartRefusal, String)>| StartAnswer {
+        member: start.member,
+        generation: start.generation,
+        refused: refused.map(|(why, words)| (why, words.into_bytes())),
+    };
+    let Some(d) = domains.iter_mut().find(|d| d.member == start.member) else {
+        return answer(Some((
+            StartRefusal::Unknown,
+            format!("member {} did not start in this run", start.member),
+        )));
+    };
+    if let Err(refused) = crate::domains::next_generation(d, &start) {
+        return answer(Some(refused));
+    }
+    let reopened = match capture {
+        Some(capture) => capture.reopen(start.member).map_err(|e| e.to_string()),
+        None => Ok(()),
+    };
+    answer(
+        reopened
+            .err()
+            .map(|e| (StartRefusal::Failed, format!("{}: its output: {e}", d.label))),
+    )
 }
 
 /// Signals the member's command among `listed`'s processes (its cgroup's, `cgroup.procs`):
@@ -7166,6 +7290,46 @@ pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod generation_tests {
+    use super::*;
+
+    /// A member's next generation asked of a run with no such member, or in a malformed start,
+    /// is refused typed, by the member and generation it asked for where they are read (D270);
+    /// a hold of no member is nothing; a kill of no member is refused as a signal of none is.
+    #[test]
+    fn a_start_of_no_member_or_no_start_is_refused_typed() {
+        use run::members::{Start, StartRefusal};
+        let start = Start {
+            member: 4,
+            generation: 1,
+            command: vec![b"codex".to_vec()],
+            env: Vec::new(),
+            workdir: None,
+            components: Vec::new(),
+            input: None,
+        };
+        let mut none: Vec<crate::domains::Started> = Vec::new();
+        let answer = next_generation(&start.encode().unwrap(), &mut none, None);
+        assert_eq!((answer.member, answer.generation), (4, 1));
+        assert_eq!(answer.refused.map(|(why, _)| why), Some(StartRefusal::Unknown));
+        let mut malformed = start.encode().unwrap();
+        malformed.push(9);
+        let answer = next_generation(&malformed, &mut none, None);
+        assert_eq!((answer.member, answer.generation), (4, 1));
+        assert_eq!(answer.refused.map(|(why, _)| why), Some(StartRefusal::Failed));
+        hold_member(&4u32.to_be_bytes(), &mut none);
+        hold_member(b"no", &mut none);
+        let refused = kill_member(&run::members::kill_args(4), &none).unwrap_err();
+        assert!(refused.to_string().contains('4'), "{refused}");
+        assert_eq!(
+            kill_member(&[], &none).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }
 

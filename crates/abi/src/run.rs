@@ -193,7 +193,8 @@ pub mod kind {
     pub const MANAGED_CONTROL_END: u8 = 47;
     /// Guest to host, on the workload's connection, once a member's population has ended
     /// (D231): its member index and how its command ended, exited or signaled, as
-    /// [`members::Ended`](super::members::Ended) encodes them; once a member.
+    /// [`members::Ended`](super::members::Ended) encodes them; once each generation of a
+    /// member (D270), in their order, so that a member's n-th is its generation n−1's.
     pub const MEMBER_ENDED: u8 = 48;
     /// Guest to host, on the workload's connection of a run given the nesting grant (D234):
     /// its readiness moved, as [`nesting::Ready`](super::nesting::Ready) encodes it: ready,
@@ -219,6 +220,20 @@ pub mod kind {
     /// anything, as [`socket::refused`](super::socket::refused) encodes it, so that the host
     /// fails it rather than wait for its connection, as [`EXEC_FAILED`] fails an exec.
     pub const SOCKET_REFUSED: u8 = 53;
+    /// Host to guest, on the signal connection: a member's next generation (D270), as
+    /// [`members::Start`](super::members::Start) encodes it, once its last generation has
+    /// ended and its [`MEMBER_ENDED`] been told: started in the member's namespaces, which its
+    /// generations keep, in a PID namespace of its own. Init answers [`MEMBER_STARTED`].
+    pub const MEMBER_START: u8 = 54;
+    /// Guest to host, on the workload's connection: what came of a [`MEMBER_START`], as
+    /// [`members::StartAnswer`](super::members::StartAnswer) encodes it.
+    pub const MEMBER_STARTED: u8 = 55;
+    /// Host to guest, on the signal connection: member `u32`'s next generation is coming
+    /// (D270): its current one's end keeps its server instance and its namespaces for it, as
+    /// its end otherwise ends its whole member. Sent before its host ends that generation
+    /// ([`builtin::SIGNAL`](super::builtin::SIGNAL)'s SIGTERM, then
+    /// [`builtin::MEMBER_KILL`](super::builtin::MEMBER_KILL) if it stalls).
+    pub const MEMBER_HOLD: u8 = 56;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
@@ -774,6 +789,14 @@ pub mod builtin {
     /// Its clock set to its host's (`control::HOST_TIME`), as a restored VM sets its own: asked
     /// as a paused run goes on (D267), so that a step its host's clock took meanwhile is its too.
     pub const CLOCK: u8 = 23;
+    /// A member's generation ended at once (D270), its arguments
+    /// [`members::kill_args`](super::members::kill_args)': SIGKILL to its reaper, its PID
+    /// namespace's init, which takes every process of that namespace with it
+    /// (pid_namespaces(7)) and nothing else of the member's: its server instance, its
+    /// namespaces and its cgroup are its next generation's. A host asks it of a generation it
+    /// asked to end ([`SIGNAL`]'s SIGTERM) that its judged wait found stalled. Exit status as
+    /// [`SIGNAL`]'s.
+    pub const MEMBER_KILL: u8 = 24;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every

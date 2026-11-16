@@ -682,6 +682,19 @@ impl Capture {
         Ok(())
     }
 
+    /// Member `member`'s channels made ready for its next generation (D270): each waits for its
+    /// host's credit again, as a member's do as the run starts, and is opened again, at offset 0,
+    /// once it comes ([`open`](Self::open)), its last generation's having ended. Refused for a
+    /// member past those the run admitted.
+    pub fn reopen(&mut self, member: u32) -> Result<(), Failure> {
+        let slot = usize::try_from(member)
+            .ok()
+            .and_then(|at| self.credits.get_mut(at))
+            .ok_or(Failure::Protocol(managed::Error::Member))?;
+        *slot = [CreditState::Waiting; 2];
+        Ok(())
+    }
+
     pub fn open(
         &mut self,
         member: u32,

@@ -97,7 +97,7 @@ pub fn start(spec: &run::Spec, member: u32, members: &[Started], id: u32) -> Res
         .ok_or_else(|| refused(Refusal::Widening, "no command given".into()))?;
     // A process of the member's command, held before it is checked to be the member's still
     // (hotplug.rs): its root, for the terminal types it describes.
-    let actor = crate::hotplug::member_process(&m.cgroup)
+    let actor = crate::hotplug::member_process(&m.population)
         .map_err(|e| refused(Refusal::Ended, format!("{}: {e}", m.label)))?;
     let starter = m.starter.as_ref().ok_or_else(|| gone(&m.label))?;
     let c = &m.confinement;

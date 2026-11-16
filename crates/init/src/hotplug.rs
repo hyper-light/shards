@@ -760,7 +760,8 @@ fn member_of<'a>(
     let id = crate::domains::FIRST_ID
         .checked_add(n)
         .ok_or_else(|| io::Error::other(format!("member {n}: past the domains' IDs")))?;
-    Ok(Some((id, started.cgroup.as_str())))
+    // Where its processes are (D270): its generation's leaf.
+    Ok(Some((id, started.population.as_str())))
 }
 
 /// A process's PID in a domain's PID namespace, a child of init's, from its `status`
@@ -783,6 +784,17 @@ fn domain_pid(status: &str) -> Option<u32> {
 /// namespace of its own (managed.rs), its command (PID 2 there) first. Each is held before
 /// it is checked to be the domain's still, so that a PID another process took meanwhile is
 /// never entered: one that ended once held fails setns(2), and the next is tried.
+/// The PID, in init's namespace, of the process `pidfd` names (`/proc/self/fdinfo`'s `Pid:`,
+/// proc(5)): -1 there once it has ended, which is refused.
+pub(crate) fn pid_of(pidfd: &OwnedFd) -> io::Result<libc::pid_t> {
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd()))?;
+    info.lines()
+        .find_map(|l| l.strip_prefix("Pid:"))
+        .and_then(|p| p.trim().parse::<libc::pid_t>().ok())
+        .filter(|p| *p > 0)
+        .ok_or_else(|| io::Error::from_raw_os_error(libc::ESRCH))
+}
+
 pub(crate) fn member_process(cgroup: &str) -> io::Result<OwnedFd> {
     let procs = std::fs::read_to_string(format!("{cgroup}/cgroup.procs"))
         .map_err(|e| io::Error::new(e.kind(), format!("{cgroup}: {e}")))?;
@@ -987,6 +999,31 @@ fn grow_ext4(dst: &str, bytes: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pidfd's process is known by its PID in this namespace (D270's kept namespaces read its
+    /// `/proc`), and one of no live process is refused.
+    #[test]
+    fn a_pidfds_process_is_known_by_its_pid() {
+        // SAFETY: pidfd_open(2) of this process, with no flags; getpid(2).
+        let (fd, me) = unsafe {
+            (
+                libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0u32),
+                libc::getpid(),
+            )
+        };
+        // SAFETY: the descriptor pidfd_open just made, owned here alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).unwrap()) };
+        assert_eq!(pid_of(&fd).unwrap(), me);
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        // SAFETY: as above, of the child before it is waited for.
+        let theirs = unsafe {
+            OwnedFd::from_raw_fd(i32::try_from(libc::syscall(libc::SYS_pidfd_open, pid, 0u32)).unwrap())
+        };
+        let mut child = child;
+        child.wait().unwrap();
+        assert_eq!(pid_of(&theirs).unwrap_err().raw_os_error(), Some(libc::ESRCH));
+    }
 
     /// A component is named by its digest's 64 lowercase hex digits alone (D270), so that its
     /// key names one directory beside the run's writable layer and nothing else: one that
