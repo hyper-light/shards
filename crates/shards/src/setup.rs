@@ -1125,7 +1125,7 @@ mod tests {
     const COMPOSERS: [(&str, &[&str]); 14] = [
         ("setup.rs", &["rb", "ri", "w", "wb", "wi"]),
         ("daemon.rs", &["ro", "rw"]),
-        ("api_run.rs", &[]),
+        ("api_run.rs", &["domains"]),
         ("warm.rs", &[]),
         ("vm_run.rs", &[]),
         ("volumes.rs", &["mode", "size"]),

@@ -37,6 +37,14 @@ pub trait Plugged: PciFunction {
     fn resume(&self) -> Result<(), String>;
     /// Stops what it runs for good, once it is off the bus.
     fn unplugged(&self);
+    /// Its state for a snapshot (D270 slice 5): what its guest set of it and its device's own.
+    /// Saved paused. A function no snapshot can bring back (a host's, a disk's, a share's) is
+    /// never asked: its machine refuses to save while it is plugged ([`Window::saves`]).
+    fn save(&self, _: &mut Writer) {}
+    /// Puts back what [`save`](Self::save) kept, the function plugged back where it was first.
+    fn restore(&self, _: &mut Reader<'_>) -> codec::Result<()> {
+        Ok(())
+    }
 }
 
 /// The bus's 32-bit window, which plugged functions' BARs go in wherever the guest places
@@ -47,6 +55,9 @@ pub struct Window {
     base: u64,
     fixed: MmioBus,
     plugged: RwLock<Vec<(u8, Arc<dyn Plugged>)>>,
+    /// The places of the plugged functions a snapshot keeps (D270 slice 5): its components',
+    /// which a restore plugs back from their images before their state is put back.
+    saved: RwLock<std::collections::BTreeSet<u8>>,
 }
 
 impl std::fmt::Debug for Window {
@@ -65,7 +76,17 @@ impl Window {
             base,
             fixed,
             plugged: RwLock::new(Vec::new()),
+            saved: RwLock::new(std::collections::BTreeSet::new()),
         }
+    }
+
+    /// The function at `devfn` a snapshot keeps, as long as it is plugged (D270 slice 5): a
+    /// component's, which a restore plugs back.
+    pub fn saves(&self, devfn: u8) {
+        self.saved
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(devfn);
     }
 
     /// The plugged function an access reaches, its BAR and the offset there.
@@ -120,15 +141,59 @@ impl MmioDevice for Window {
         self.functions().iter().try_for_each(|f| f.resume())
     }
 
-    fn save(&self, _: &mut Writer) {}
+    /// Each plugged function's state, by its place (D270 slice 5): only those it keeps are
+    /// plugged when it saves ([`unsaved`](MmioDevice::unsaved)).
+    fn save(&self, w: &mut Writer) {
+        let mut plugged: Vec<(u8, Arc<dyn Plugged>)> = self
+            .plugged
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        plugged.sort_by_key(|(devfn, _)| *devfn);
+        w.seq(&plugged, |w, (devfn, f)| {
+            let mut own = Writer::default();
+            f.save(&mut own);
+            w.u8(*devfn);
+            w.bytes(&own.into_bytes());
+        });
+    }
 
-    fn restore(&self, _: &mut Reader<'_>) -> codec::Result<()> {
+    /// Puts its state back on each function plugged back, by its place: refused unless each
+    /// one plugged back has a state kept, and every state kept has one plugged back, which
+    /// reads it whole.
+    fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+        let plugged: Vec<(u8, Arc<dyn Plugged>)> = self
+            .plugged
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        // At most a state for each function plugged back: its place, then its length.
+        let kept = r.seq(plugged.len(), 1 + 4, |r| Ok((r.u8()?, r.bytes(usize::MAX)?)))?;
+        for (devfn, f) in &plugged {
+            let state = kept
+                .iter()
+                .find(|(at, _)| at == devfn)
+                .map(|(_, state)| *state)
+                .ok_or_else(|| {
+                    codec::DecodeError(format!(
+                        "the snapshot keeps no state of the function plugged back at {devfn:#04x}"
+                    ))
+                })?;
+            let mut own = Reader::new(state);
+            f.restore(&mut own)?;
+            own.finish()?;
+        }
         Ok(())
     }
 
     fn unsaved(&self) -> Option<String> {
         self.fixed.unsaved().or_else(|| {
-            (!self.functions().is_empty()).then(|| "it has PCI functions plugged into it".to_string())
+            let saved = self.saved.read().unwrap_or_else(PoisonError::into_inner);
+            let plugged = self.plugged.read().unwrap_or_else(PoisonError::into_inner);
+            plugged.iter().any(|(devfn, _)| !saved.contains(devfn)).then(|| {
+                "it has PCI functions plugged into it that no snapshot brings back (a disk's, a share's, a host's)"
+                    .to_string()
+            })
         })
     }
 }
@@ -233,6 +298,16 @@ impl Hotplug {
             .ok_or(Refusal::NoSlots {
                 slots: u64::try_from(self.slots.len()).unwrap_or(u64::MAX),
             })?;
+        self.plug_in(slot, make)
+    }
+
+    /// Plugs what `make` makes into `slot`, free: its BARs reached first, then its
+    /// configuration space.
+    fn plug_in(
+        &self,
+        slot: &Slot,
+        make: impl FnOnce(&Slot) -> Result<Arc<dyn Plugged>, String>,
+    ) -> Result<u8, Refusal> {
         slot.occupy().map_err(Refusal::Host)?;
         let function = match make(slot) {
             Ok(function) => function,
@@ -253,6 +328,37 @@ impl Hotplug {
             return Err(Refusal::Host(e));
         }
         Ok(slot.devfn)
+    }
+
+    /// [`plug`](Self::plug) at the slot of `devfn`, as a restore plugs a component back where it
+    /// was (D270 slice 5): refused where the machine kept no slot there or one is taken.
+    pub fn plug_at(
+        &self,
+        devfn: u8,
+        make: impl FnOnce(&Slot) -> Result<Arc<dyn Plugged>, String>,
+    ) -> Result<u8, Refusal> {
+        let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        if self
+            .window
+            .plugged
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(at, _)| *at == devfn)
+        {
+            return Err(Refusal::Host(format!("its slot {devfn:#04x} is taken")));
+        }
+        let slot = self
+            .slots
+            .iter()
+            .find(|s| s.devfn == devfn)
+            .ok_or_else(|| Refusal::Host(format!("this machine kept no slot at {devfn:#04x}")))?;
+        self.plug_in(slot, make)
+    }
+
+    /// The function at `devfn` a snapshot keeps ([`Window::saves`]).
+    pub fn saves(&self, devfn: u8) {
+        self.window.saves(devfn);
     }
 
     /// Takes the function at `devfn` off the bus, once its guest has let it go: an error,
@@ -302,6 +408,11 @@ impl Hotplug {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(f, _)| *f != devfn);
+        self.window
+            .saved
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&devfn);
     }
 }
 
@@ -356,6 +467,105 @@ mod tests {
         let mut b = [0u8; 4];
         d.read(offset, &mut b);
         u32::from_le_bytes(b)
+    }
+
+    /// D270 slice 5: a machine whose plugged functions are each one a snapshot keeps saves,
+    /// each one's state by its place, and one with a function it keeps not refuses to. A restore
+    /// puts each state back on the function plugged back at its place (`plug_at`), refused for
+    /// a state whose place has none, or a function plugged back whose state it keeps none of;
+    /// `plug_at` refuses a place taken or no slot's.
+    #[test]
+    fn a_window_saves_the_functions_it_keeps_by_their_places_and_puts_them_back() {
+        struct Stateful(std::sync::Mutex<u64>);
+        impl PciFunction for Stateful {
+            fn config_read(&self, _: u16, data: &mut [u8]) {
+                data.fill(0);
+            }
+            fn config_write(&self, _: u16, _: &[u8]) {}
+        }
+        impl Plugged for Stateful {
+            fn claims(&self, _: u64, _: u64) -> Option<(usize, u64)> {
+                None
+            }
+            fn bar_read(&self, _: usize, _: u64, data: &mut [u8]) {
+                data.fill(0);
+            }
+            fn bar_write(&self, _: usize, _: u64, _: &[u8]) {}
+            fn held(&self) -> Option<String> {
+                None
+            }
+            fn pause(&self) {}
+            fn resume(&self) -> Result<(), String> {
+                Ok(())
+            }
+            fn unplugged(&self) {}
+            fn save(&self, w: &mut Writer) {
+                w.u64(*self.0.lock().unwrap());
+            }
+            fn restore(&self, r: &mut Reader<'_>) -> codec::Result<()> {
+                *self.0.lock().unwrap() = r.u64()?;
+                Ok(())
+            }
+        }
+        let stateful = |v: u64| Arc::new(Stateful(std::sync::Mutex::new(v)));
+        let machine = || {
+            let window = Arc::new(Window::new(0x1000_0000, MmioBus::default()));
+            let slots = [2u8, 3]
+                .map(|d| Slot {
+                    devfn: d << 3,
+                    msi: Arc::new(NoMsi),
+                    #[cfg(target_os = "linux")]
+                    route: None,
+                    iommu: None,
+                })
+                .to_vec();
+            let hotplug = Hotplug::new(Arc::new(Ecam::new(Vec::new())), window.clone(), slots);
+            (window, hotplug)
+        };
+        let (window, hotplug) = machine();
+        let at = hotplug.plug(|_| Ok(stateful(7) as Arc<dyn Plugged>)).unwrap();
+        assert!(window.unsaved().is_some(), "a function no snapshot keeps");
+        hotplug.saves(at);
+        assert!(window.unsaved().is_none(), "every plugged function one it keeps");
+        let mut w = Writer::default();
+        window.save(&mut w);
+        let saved = w.into_bytes();
+        let (back, again) = machine();
+        let put = stateful(0);
+        let p = put.clone();
+        assert_eq!(again.plug_at(at, move |_| Ok(p as Arc<dyn Plugged>)).unwrap(), at);
+        back.restore(&mut Reader::new(&saved)).unwrap();
+        assert_eq!(*put.0.lock().unwrap(), 7, "its state put back on it");
+        let (empty, _) = machine();
+        assert!(
+            empty.restore(&mut Reader::new(&saved)).is_err(),
+            "no function plugged back at its place"
+        );
+        let (more, plugs) = machine();
+        for d in [at, 3 << 3] {
+            plugs.plug_at(d, |_| Ok(stateful(0) as Arc<dyn Plugged>)).unwrap();
+        }
+        assert!(
+            more.restore(&mut Reader::new(&saved)).is_err(),
+            "a function plugged back whose state it keeps none of"
+        );
+        assert!(
+            again
+                .plug_at(at, |_| Ok(stateful(0) as Arc<dyn Plugged>))
+                .is_err(),
+            "its place taken"
+        );
+        assert!(
+            again
+                .plug_at(5 << 3, |_| Ok(stateful(0) as Arc<dyn Plugged>))
+                .is_err(),
+            "no slot kept there"
+        );
+        // Kept as the runtime keeps a component it plugs back; taken off, kept no more.
+        again.saves(at);
+        assert!(back.saved.read().unwrap().contains(&at));
+        again.unplug(at).unwrap();
+        assert!(back.saved.read().unwrap().is_empty());
     }
 
     /// A function plugged takes the first free slot, its configuration space on the bus and

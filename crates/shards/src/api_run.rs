@@ -4721,8 +4721,9 @@ mod hosted {
     /// The component of `digest` plugged into the run's microVM and mounted beside its writable
     /// layer where it is not already (D270 slices 2 and 4): its EROFS image, checked for path
     /// `at` (`component_image`), plugged as a read-only virtio-pmem function (the VM process's
-    /// `PMEM`: `DEVFN ADDRESS GPA LEN`), then mounted by its guest (init's `DEVICE pmem ADDRESS
-    /// GPA KEY`), its function let go where its guest refused it. Its key.
+    /// `PMEM` and its key, which a snapshot keeps it by (slice 5): `DEVFN ADDRESS GPA LEN`),
+    /// then mounted by its guest (init's `DEVICE pmem ADDRESS GPA KEY`), its function let go
+    /// where its guest refused it. Its key.
     fn plug_component(
         live: &Live<'_>,
         at: &str,
@@ -4734,7 +4735,8 @@ mod hosted {
             return Ok(key);
         }
         let image = (live.component_image)(at, digest)?;
-        let said = ask_device(live, &[shards_ipc::device::PMEM], &[image.as_fd()])
+        let step = [&[shards_ipc::device::PMEM][..], &key[..]].concat();
+        let said = ask_device(live, &step, &[image.as_fd()])
             .map_err(|refusal| (R::Device, format!("its microVM: {refusal}")))?;
         let words: Vec<&str> = said.split_whitespace().collect();
         let [devfn, address, gpa, _len] = words.as_slice() else {
@@ -8590,12 +8592,12 @@ mod hosted {
         /// D270 slice 4. Do, on a run whose member 1 (a harness, `/harness/codex`) runs, its
         /// stand-in VM and guest taking what they are asked: swap `/harness/codex` to digest D
         /// now; give it its image's back at its next start; restart it; swap a path no member
-        /// runs at, and one to no sha256 digest. Expect: D's image plugged (the VM's `PMEM`,
-        /// answered `DEVFN ADDRESS GPA LEN`) and mounted (init's `DEVICE pmem ADDRESS GPA KEY`),
-        /// its member restarted with D laid at its path, the swap answering D wanted and held and
-        /// the generation started; the restore answering D held and nothing wanted, nothing let
-        /// go; the restart laying nothing, then D unmounted (`DEVICE unpmem ADDRESS KEY`) and its
-        /// function unplugged; `Unknown` and `Artifact`, nothing asked.
+        /// runs at, and one to no sha256 digest. Expect: D's image plugged (the VM's `PMEM` and
+        /// D's key, slice 5's, answered `DEVFN ADDRESS GPA LEN`) and mounted (init's `DEVICE pmem
+        /// ADDRESS GPA KEY`), its member restarted with D laid at its path, the swap answering D
+        /// wanted and held and the generation started; the restore answering D held and nothing
+        /// wanted, nothing let go; the restart laying nothing, then D unmounted (`DEVICE unpmem
+        /// ADDRESS KEY`) and its function unplugged; `Unknown` and `Artifact`, nothing asked.
         #[test]
         fn a_component_swapped_is_plugged_mounted_laid_at_its_members_start_and_let_go_of_unused() {
             use protocol::members::{Component, Start, StartAnswer};
@@ -8668,7 +8670,10 @@ mod hosted {
                         };
                         started_told(&live, &answer.encode().unwrap());
                     };
-                    device(&[shards_ipc::device::PMEM], &format!("5 {address} {gpa} 2097152"));
+                    device(
+                        &[&[shards_ipc::device::PMEM][..], &key[..]].concat(),
+                        &format!("5 {address} {gpa} 2097152"),
+                    );
                     builtin(
                         protocol::builtin::DEVICE,
                         vec![b"pmem".to_vec(), address.into(), gpa.into(), key.to_vec()],
