@@ -873,11 +873,13 @@ impl Shared {
 
     /// Asks a swap of the run's host (D270 slice 4) and waits for its answer: its artifact read
     /// and checked, its image built where its store has none, plugged, mounted and, now, its
-    /// member restarted, each at most `patience`.
+    /// member restarted with `args`, or its kept ones where none are given, each at most
+    /// `patience`.
     fn swap(
         &self,
         change: wire::SwapChange,
         when: wire::SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<wire::Swapped, ImageRefusal> {
         let id = {
@@ -894,6 +896,7 @@ impl Shared {
             id,
             change,
             when,
+            args: args.map(<[Vec<u8>]>::to_vec),
             patience,
         };
         // Its image's build, its plug and mount, and, now, its member's restart's three waits.
@@ -2858,13 +2861,14 @@ impl ImageGuest for Session {
         at: &str,
         digest: &str,
         when: wire::SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<wire::Swapped, ImageRefusal> {
         let change = wire::SwapChange::Swap {
             at: at.to_string(),
             digest: digest.to_string(),
         };
-        let swapped = self.shared.swap(change, when, patience)?;
+        let swapped = self.shared.swap(change, when, args, patience)?;
         self.started_by_swap(&swapped)?;
         Ok(swapped)
     }
@@ -2873,10 +2877,11 @@ impl ImageGuest for Session {
         &self,
         at: &str,
         when: wire::SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<wire::Swapped, ImageRefusal> {
         let change = wire::SwapChange::Restore { at: at.to_string() };
-        let swapped = self.shared.swap(change, when, patience)?;
+        let swapped = self.shared.swap(change, when, args, patience)?;
         self.started_by_swap(&swapped)?;
         Ok(swapped)
     }

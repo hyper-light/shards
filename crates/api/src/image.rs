@@ -755,21 +755,32 @@ pub trait ImageGuest: Send + Sync {
     /// its path's, its platform the microVM's, its asks within its member's grants), its EROFS
     /// image plugged into the microVM and mounted read-only beside its writable layer, then laid
     /// at its path as its member starts again: at its next start, or now, its member restarted
-    /// as [`restart`](Self::restart) restarts it. Answers every member's component as its host
-    /// holds them after it ([`ComponentAt`]), and, now, the member's index and the generation
-    /// started, whose output, input and end are taken by it ([`Swapped`]); refused as
-    /// [`ImageRefusal::Swap`], and, now, as [`ImageRefusal::Workdir`] where its member's next
+    /// as [`restart`](Self::restart) restarts it. That start's run-time arguments are `args`,
+    /// after its image's command, which its member keeps from then (given for its next start,
+    /// kept at once); none, the ones its host keeps: its first start's ([`MemberSpec::args`]),
+    /// then each later start's as it was given them. Answers every member's component as its
+    /// host holds them after it ([`ComponentAt`]), and, now, the member's index and the
+    /// generation started, whose output, input and end are taken by it ([`Swapped`]); refused
+    /// as [`ImageRefusal::Swap`], and, now, as [`ImageRefusal::Workdir`] where its member's next
     /// generation could not enter its working directory (D277), its member then ended whole.
     fn swap(
         &self,
         at: &str,
         digest: &str,
         when: SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<Swapped, ImageRefusal>;
     /// The member at path `at` given its image's own component back (D270 slice 4), at its next
-    /// start or now, as [`swap`](Self::swap) gives it another; answered and refused as it is.
-    fn restore(&self, at: &str, when: SwapWhen, patience: Duration) -> Result<Swapped, ImageRefusal>;
+    /// start or now, its start's arguments `args` or its kept ones, as [`swap`](Self::swap)
+    /// gives it another; answered and refused as it is.
+    fn restore(
+        &self,
+        at: &str,
+        when: SwapWhen,
+        args: Option<&[Vec<u8>]>,
+        patience: Duration,
+    ) -> Result<Swapped, ImageRefusal>;
     /// Every member's component as its run host last said them (D270 slice 4): none where none
     /// was swapped.
     fn components(&self) -> Vec<ComponentAt>;
