@@ -5,7 +5,6 @@ use super::*;
 /// socket's end reaches its peer once no process holds the socket, and a process another
 /// test starts as the socket lives can hold it, so beside the other tests its peer read
 /// found it open, `WouldBlock` where its end was due.
-#[cfg(unix)]
 #[test]
 fn zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply() {
     let name = "client::borrowed_tests::contract::zero_patience_alone";
@@ -22,16 +21,18 @@ fn zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 #[ignore = "zero_patience_attempts_one_request_and_does_not_wait_for_accept_or_reply runs it alone"]
 fn zero_patience_alone() {
     let dir = shards_testdir::TempDir::new("nb-zero").unwrap();
     let path = dir.join("v");
-    let listener = UnixListener::bind(&path).unwrap();
+    let mut listener = stand_in_listener(&path);
+    // A dial or a byte not there fails its socket's accept or read at once. On Windows the
+    // attempt has opened both ways and closed them as it returned (D272), so neither waits.
+    #[cfg(unix)]
     listener.set_nonblocking(true).unwrap();
     // The peer cannot answer: no accept or server thread runs until the call returns.
-    let result = connect_borrowed(&identity(path), 1234, Duration::ZERO);
+    let result = connect_borrowed(&identity(path.clone()), 1234, Duration::ZERO);
     assert!(
         matches!(
             result,
@@ -47,7 +48,8 @@ fn zero_patience_alone() {
         "one immediate request must reach the unanswered Read phase: {:?}",
         result.err()
     );
-    let (mut peer, _) = listener.accept().unwrap();
+    let mut peer = next_dial(&mut listener);
+    #[cfg(unix)]
     peer.set_nonblocking(true).unwrap();
     let expected = b"CONNECT 1234\n";
     let mut bytes = [0; b"CONNECT 1234\n".len()];
@@ -63,19 +65,18 @@ fn zero_patience_alone() {
         0,
         "failed attempt closes its socket"
     );
-    assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    assert!(undialed(&listener, &path));
 }
 
 #[test]
 fn overflow_is_bounds_before_process_or_dial_io() {
     let dir = shards_testdir::TempDir::new("nb-bound").unwrap();
     let path = dir.join("v");
-    let listener = UnixListener::bind(&path).unwrap();
-    listener.set_nonblocking(true).unwrap();
+    let listener = stand_in_listener(&path);
     let id = Identity {
         pid: 0,
         started: 0,
-        vsock: path,
+        vsock: path.clone(),
     };
     let result = connect_borrowed(&id, 1234, Duration::MAX);
     assert!(
@@ -83,5 +84,5 @@ fn overflow_is_bounds_before_process_or_dial_io() {
         "{:?}",
         result.err()
     );
-    assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    assert!(undialed(&listener, &path));
 }

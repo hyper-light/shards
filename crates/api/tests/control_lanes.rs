@@ -1,14 +1,15 @@
 //! An orchestrator steers a run's members through `shards_api::control` alone (D238, D252):
 //! every type a member's lane gives or refuses with, its typed end among them
-//! (`exec::End`), and the admissions its controller dials with, are reachable without naming
-//! shards-remote. A compile test: it fails to build where
+//! (`exec::End`), the admissions its controller dials with, and its link's report (D254), are
+//! reachable without naming shards-remote. A compile test: it fails to build where
 //! one is no longer re-exported.
 
 use std::time::Duration;
 
 use shards_api::control::{
-    Admissions, ExecControl, Execs, Fault, Got, Input, McpConnection, Member, MemberControl, MemberEnd,
-    MemberSteering, Output, PendingMember, Subscriptions, Unstarted, Unsteered, exec, exec_admissions,
+    Admissions, ExecControl, Execs, Fault, Got, Granted, Input, Link, LinkReport, Linked, McpConnection,
+    Member, MemberControl, MemberEnd, MemberSteering, Negotiated, Output, PendingMember, Subscriptions,
+    Unstarted, Unsteered, exec, exec_admissions,
 };
 
 /// What an orchestrator does with a member's lane: ask for it once, wait for it within its own
@@ -71,6 +72,15 @@ fn runs_nothing(fault: &Fault) -> bool {
     matches!(fault, Fault::Unstarted(Unstarted::Refused))
 }
 
+/// What an orchestrator reports of a run's agent-control link (D254; kiln's `/runs/control`):
+/// each end's suite and group, by name, and every lane, by Shards' name, `mcp:N` among them.
+fn reported(linked: &mut Linked) -> Result<(Link, Vec<String>), Fault> {
+    let LinkReport { link, lanes } = linked.report()?;
+    let named = |end: &Negotiated| (end.suite_name(), end.group_name());
+    let _: [(Option<&str>, Option<&str>); 2] = [named(&link.controller), named(&link.endpoint)];
+    Ok((*link, lanes.iter().map(Granted::name).collect()))
+}
+
 #[test]
 fn a_members_lane_is_steered_through_shards_api_alone() {
     let admissions: Admissions = exec_admissions();
@@ -87,4 +97,6 @@ fn a_members_lane_is_steered_through_shards_api_alone() {
     let _: fn(&Execs, u32) -> Result<Vec<u8>, Fault> = first_said;
     assert!(killed_by(exec::End::Signaled(15), 15));
     assert!(!killed_by(exec::End::Exited(143), 15));
+    let _: fn(&mut Linked) -> Result<(Link, Vec<String>), Fault> = reported;
+    assert_eq!(Granted::Mcp(1).name(), "mcp:1");
 }

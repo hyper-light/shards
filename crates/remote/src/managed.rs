@@ -255,6 +255,9 @@ enum Ending {
     Open,
     Finishing,
     Aborted,
+    /// Its host's budget had no room for it (D252, [`Control::no_room`]): let go as an abort
+    /// lets it go, and each lane to it refused `Capacity` until it is revoked.
+    NoRoom,
 }
 
 struct Shared {
@@ -638,6 +641,17 @@ impl Control {
     /// Revocation uses the driver's separate stop flag, even with a full handoff, where the
     /// driver is this stream's alone ([`Stop`]).
     pub fn abort(&self) {
+        self.let_go(Ending::Aborted);
+    }
+
+    /// Its host's budget has no room for it (D252): let go as [`Control::abort`] lets it go,
+    /// its record with it, and each lane to it refused `Capacity`, never queued, as a lane
+    /// past what its run admits is (D251), until it is revoked.
+    pub fn no_room(&self) {
+        self.let_go(Ending::NoRoom);
+    }
+
+    fn let_go(&self, ending: Ending) {
         {
             let mut state = lock(&self.shared);
             let at = progress(&state.0);
@@ -645,7 +659,7 @@ impl Control {
                 accepted: at.accepted,
                 consumed: at.consumed,
             };
-            state.1 = Ending::Aborted;
+            state.1 = ending;
         }
         self.shared.notify();
         self.stop.revoke(&self.sender);
@@ -917,6 +931,17 @@ impl Service {
         matches!(lock(&self.shared).0, Slot::Aborted { .. })
     }
 
+    /// Why a lane to it is refused once it was let go: `Capacity` where its host had no room
+    /// for it ([`Control::no_room`]), `Closed` where it was revoked; none while it serves.
+    fn refusal(&self) -> Option<Reason> {
+        let state = lock(&self.shared);
+        match (&state.0, state.1) {
+            (Slot::Aborted { .. }, Ending::NoRoom) => Some(Reason::Capacity),
+            (Slot::Aborted { .. }, _) => Some(Reason::Closed),
+            _ => None,
+        }
+    }
+
     /// Its output finished, its last record acknowledged: its subscriber's stream is finished
     /// at its next flush.
     pub(crate) fn finished(&self) -> bool {
@@ -942,8 +967,8 @@ impl Service {
             return Err(Reason::Scope);
         }
         self.check_scope(scope)?;
-        if self.aborted() {
-            return Err(Reason::Closed);
+        if let Some(refusal) = self.refusal() {
+            return Err(refusal);
         }
         if !self.subscribe(offset) {
             return Err(Reason::Protocol);

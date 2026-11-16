@@ -119,10 +119,13 @@ pub use shards_abi::run::nesting::Ready;
 /// none reads; 45, a restart's next generation that could not enter its working directory
 /// refused typed ([`RestartRefusal::Workdir`], D277), as 43 refuses a first generation's, so
 /// that a side that reads no such refusal refuses the run as it is asked, rather than its
-/// restart's answer breaking the channel; 46, the bound a plug of a volume asks
+/// restart's answer breaking the channel; 46, a swap's run-time arguments for the start that
+/// takes it ([`SwapAsk::args`], D270 slice 4), none its member's kept ones, so that a side that
+/// reads none refuses the run as it is asked, rather than starting its member again without the
+/// arguments its orchestrator started it with; 47, the bound a plug of a volume asks
 /// ([`PlugFrom::Volume`]'s `bound`, D281), Hex's admitted `disk_bytes`, so that a side that
 /// holds none refuses the run as it is asked, rather than serving its volume unbounded.
-pub const VERSION: u8 = 46;
+pub const VERSION: u8 = 47;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1123,7 +1126,7 @@ pub enum PlugFrom {
     /// A host directory: absolute, UTF-8.
     Host(String),
     /// A volume of the run's home's store, by its name, made where it is not there as a
-    /// run's `-v NAME:PATH` makes one. Its bound (version 46, D281): the bytes its files may
+    /// run's `-v NAME:PATH` makes one. Its bound (version 47, D281): the bytes its files may
     /// take, which it is made with, or set to where no run holds it; none for its own.
     Volume { name: String, bound: Option<NonZeroU64> },
 }
@@ -1411,6 +1414,10 @@ pub struct SwapAsk {
     pub id: u32,
     pub change: SwapChange,
     pub when: SwapWhen,
+    /// The run-time arguments of the start that takes it, after its image's command, as a
+    /// [`RestartAsk`]'s are, and its member's kept ones from then; none, the ones its run host
+    /// keeps: its member's first start's staged ones, then each later start's (D270 slice 4).
+    pub args: Option<Vec<Vec<u8>>>,
     pub patience: std::time::Duration,
 }
 
@@ -2961,7 +2968,7 @@ impl PlugAsk {
             PlugFrom::Volume { name, bound } => {
                 w.u8(1);
                 w.text(name)?;
-                // Appended in version 46 (D281): 0 for none.
+                // Appended in version 47 (D281): 0 for none.
                 w.u64(bound.map_or(0, NonZeroU64::get));
             }
         }
@@ -3353,7 +3360,8 @@ impl RestartAsk {
 
 impl SwapAsk {
     /// Its id, then its change: 0, the path and the digest; or 1 and the path; then when (0 its
-    /// next start, 1 now) and its patience.
+    /// next start, 1 now), its arguments (0; or 1, a count, then each's length and bytes) and its
+    /// patience.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
@@ -3369,6 +3377,16 @@ impl SwapAsk {
             }
         }
         w.u8(self.when as u8);
+        match &self.args {
+            None => w.u8(0),
+            Some(args) => {
+                w.u8(1);
+                w.count(args.len())?;
+                for a in args {
+                    w.bytes(a)?;
+                }
+            }
+        }
         w.duration(self.patience);
         w.done()
     }
@@ -3394,12 +3412,23 @@ impl SwapAsk {
                 });
             }
         };
+        let args = if r.flag()? {
+            let n = r.count(size_of::<u32>())?;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(r.bytes()?.to_vec());
+            }
+            Some(args)
+        } else {
+            None
+        };
         let patience = r.duration()?;
         r.end()?;
         Ok(SwapAsk {
             id,
             change,
             when,
+            args,
             patience,
         })
     }
@@ -5226,11 +5255,18 @@ mod tests {
     }
 
     /// A swap (D270 slice 4) round-trips, of a digest and of its image's back, at its next start
-    /// and now; its answer too, every member's component or why not; a cut one, one of another
-    /// change, when or refusal, and one trailing a byte, refused.
+    /// and now, with its member's kept arguments, with none and with its own, an empty one among
+    /// them; its answer too, every member's component or why not; a cut one, one of another
+    /// change, when, arguments' flag or refusal, one counting more arguments than it holds, and
+    /// one trailing a byte, refused.
     #[test]
     fn a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused() {
-        const { assert!(VERSION >= 40, "the channel's version 40 carries swaps") };
+        const {
+            assert!(
+                VERSION >= 46,
+                "the channel's version 46 carries a swap's arguments"
+            )
+        };
         let digest = format!("sha256:{}", "ab".repeat(32));
         for ask in [
             SwapAsk {
@@ -5240,6 +5276,7 @@ mod tests {
                     digest: digest.clone(),
                 },
                 when: SwapWhen::Now,
+                args: None,
                 patience: std::time::Duration::from_secs(30),
             },
             SwapAsk {
@@ -5248,7 +5285,18 @@ mod tests {
                     at: "/agents/helper".into(),
                 },
                 when: SwapWhen::NextStart,
+                args: Some(Vec::new()),
                 patience: std::time::Duration::ZERO,
+            },
+            SwapAsk {
+                id: 9,
+                change: SwapChange::Swap {
+                    at: "/harness/codex".into(),
+                    digest: digest.clone(),
+                },
+                when: SwapWhen::Now,
+                args: Some(vec![b"--resume".to_vec(), b"s-1".to_vec(), Vec::new()]),
+                patience: std::time::Duration::from_secs(30),
             },
         ] {
             let bytes = ask.encode().unwrap();
@@ -5269,6 +5317,7 @@ mod tests {
             id: 1,
             change: SwapChange::Restore { at: "/mcp/x".into() },
             when: SwapWhen::Now,
+            args: Some(Vec::new()),
             patience: std::time::Duration::ZERO,
         };
         let mut when = restore.encode().unwrap();
@@ -5281,6 +5330,15 @@ mod tests {
                 ..
             })
         ));
+        let mut flag = restore.encode().unwrap();
+        flag[at + 1] = 2;
+        assert!(matches!(
+            SwapAsk::decode(&flag),
+            Err(WireError::Tag { what: "a flag", .. })
+        ));
+        let mut counted = restore.encode().unwrap();
+        counted[at + 2..at + 6].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(SwapAsk::decode(&counted), Err(WireError::Short));
         for answer in [
             SwapAnswer {
                 id: 7,

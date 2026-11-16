@@ -348,6 +348,39 @@ pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
     }
 }
 
+/// How many of `wanted` more descriptors this process may open now (D285: a shared
+/// network's links to come), read from its limit as the kernel holds it to it, as
+/// network-08 admits a relay's workers. On Unix, as many duplicates of `held` as the kernel
+/// gives before its limit (EMFILE), each closed again: a confined process opens no file to
+/// count its own (Landlock, D31), and F_DUPFD_CLOEXEC is among its seccomp filter's calls.
+/// On Windows, what the 2^24 handles a process may hold ("The per-process limit on kernel
+/// handles is 2^24", Microsoft, "Kernel Objects") leave past those it holds; none where it
+/// cannot say.
+#[cfg(unix)]
+pub fn descriptors_left(held: &UnixStream, wanted: usize) -> usize {
+    let mut taken = Vec::new();
+    while taken.len() < wanted {
+        match held.try_clone() {
+            Ok(copy) => taken.push(copy),
+            Err(_) => break,
+        }
+    }
+    taken.len()
+}
+
+#[cfg(windows)]
+pub fn descriptors_left(_held: &UnixStream, wanted: usize) -> usize {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    const HANDLES: u64 = 1 << 24;
+    let mut count = 0u32;
+    // SAFETY: this process's pseudo-handle, and a count to fill.
+    if unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) } == 0 {
+        return 0;
+    }
+    let left = HANDLES.saturating_sub(u64::from(count));
+    usize::try_from(left).map_or(wanted, |left| left.min(wanted))
+}
+
 /// Asks `sock`'s send and receive buffers to be `size` bytes each (SO_SNDBUF, SO_RCVBUF);
 /// what the OS gives is its own business.
 pub fn set_buffers(sock: RawSock, size: usize) {

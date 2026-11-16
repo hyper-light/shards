@@ -4845,7 +4845,7 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     assert_eq!(line, "none\n", "its image's own: no marker");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::Now, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
@@ -4860,7 +4860,10 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     assert_eq!(rest_within(&*guest, first), "ready\ngot 15\n");
     let (next, line) = line_within(&*guest, stdout(1));
     assert_eq!(line, "v2\n", "its component, laid at its path");
-    let restored = ask(&*guest, |g| g.restore("/harness/codex", SwapWhen::Now, patience)).unwrap();
+    let restored = ask(&*guest, |g| {
+        g.restore("/harness/codex", SwapWhen::Now, None, patience)
+    })
+    .unwrap();
     assert_eq!(restored.started.map(|(_, g)| g), Some(2));
     assert_eq!(
         restored.components,
@@ -4894,7 +4897,7 @@ fn a_run_holding_a_component_is_saved_with_it() {
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::Now, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
@@ -4933,7 +4936,7 @@ fn a_harness_swapped_at_its_next_start_runs_its_component_once_restarted() {
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::NextStart, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::NextStart, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started, None, "nothing restarted");
@@ -4987,7 +4990,8 @@ fn a_swap_that_cannot_be_made_is_refused_typed_and_its_member_runs_on() {
     );
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
-    let refused = |at: &str, digest: &str| ask(&*guest, |g| g.swap(at, digest, SwapWhen::Now, patience));
+    let refused =
+        |at: &str, digest: &str| ask(&*guest, |g| g.swap(at, digest, SwapWhen::Now, None, patience));
     let absent = format!("sha256:{}", "0".repeat(64));
     for (at, digest, why) in [
         ("/harness/codex", absent.as_str(), SwapRefusal::Artifact),
