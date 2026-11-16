@@ -510,11 +510,27 @@ pub fn main() -> ! {
         "bulk-emit" => crate::engine_bulk::emit(arg(1).parse().unwrap_or(0)),
         "bulk-sum" => crate::engine_bulk::sum(),
         "api-bulk" => crate::engine_bulk::api_bulk(args.get(1..).unwrap_or_default()),
-        "ask" => ask(arg(1), arg(2).parse().ok()),
+        "ask" => ask(arg(1), arg(2).parse().ok(), arg(3)),
+        // `ask`, then holds its generation until SIGTERM as `trap TERM` does: a check whose
+        // member is started again for the next (D270 slice 3b, D285 slice 6).
+        "ask-trap" => {
+            let _ = ask(arg(1), arg(2).parse().ok(), arg(3));
+            trap("TERM")
+        }
         "resolve" => resolve(arg(1)),
+        // `resolve`, then `took MS`, the C library's lookup's time by the guest's clock: an
+        // answer's, or a stub's timeout's (D46, D278).
+        "resolve-took" => {
+            let started = std::time::Instant::now();
+            let code = resolve(arg(1));
+            let _ = writeln!(io::stdout(), "took {}", started.elapsed().as_millis());
+            code
+        }
         "dnsttl" => dnsttl(arg(1)),
+        "dnsttl-each" => dnsttl_each(arg(1)),
         "dnsrtt" => dnsrtt(arg(1), arg(2).parse().unwrap_or(1000)),
         "udp" => udp(arg(1)),
+        "udp-each" => udp_each(arg(1)),
         "serve" => serve(arg(1), arg(2).parse().unwrap_or(1)),
         "listen" => listen(arg(1), arg(2).parse().unwrap_or(1)),
         "rebind" => rebind(arg(1), arg(2).parse().unwrap_or(1)),
@@ -1433,9 +1449,10 @@ fn report() -> i32 {
 }
 
 /// Connects to `addr` (HOST:PORT, a name resolved as the C library resolves it), within
-/// `within` milliseconds where given, says nothing, its side closed, and prints what comes
-/// back until the far end closes: `ask BYTES`, or `ask error E`.
-fn ask(addr: &str, within: Option<u64>) -> i32 {
+/// `within` milliseconds where given, says `say` (nothing where it is empty), its side
+/// closed, and prints what comes back until the far end closes: `ask BYTES`, or `ask error
+/// E`.
+fn ask(addr: &str, within: Option<u64>, say: &str) -> i32 {
     use std::io::Read as _;
     use std::net::ToSocketAddrs as _;
     let mut got = Vec::new();
@@ -1449,6 +1466,7 @@ fn ask(addr: &str, within: Option<u64>) -> i32 {
         }),
     };
     let asked = connected.and_then(|mut s| {
+        s.write_all(say.as_bytes())?;
         s.shutdown(std::net::Shutdown::Write)?;
         s.read_to_end(&mut got)
     });
@@ -1461,6 +1479,38 @@ fn ask(addr: &str, within: Option<u64>) -> i32 {
             let _ = writeln!(io::stdout(), "ask error {e}");
             1
         }
+    }
+}
+
+/// `dnsttl NAME` again and again, each its own question, a tenth of a second apart as
+/// `reach-each` dials, until it is ended: a name's answers as its grants and its peers change
+/// (D285 slice 6).
+fn dnsttl_each(name: &str) -> i32 {
+    loop {
+        let _ = dnsttl(name);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// `udp ADDR` again and again, each from a socket of its own and given a second, a tenth of a
+/// second apart, saying how each went (`udp N`, its answer's length, or `udp error E`), until
+/// it is ended: a datagram lost on its way is followed by the next, as a client asks again
+/// (D285 slice 6).
+fn udp_each(addr: &str) -> i32 {
+    loop {
+        let answered = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| {
+            s.connect(addr)?;
+            s.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
+            s.send(b"?")?;
+            let mut buf = [0u8; 512];
+            s.recv(&mut buf)
+        });
+        let said = match answered {
+            Ok(n) => format!("udp {n}"),
+            Err(e) => format!("udp error {e}"),
+        };
+        let _ = writeln!(io::stdout(), "{said}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 

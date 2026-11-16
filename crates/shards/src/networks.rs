@@ -18,6 +18,7 @@ use shards_net::bridge::{Prefix, free_subnet, overlap};
 // names on a network, which it leases not yet (slice 2 leases its runs' addresses alone).
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod leases;
+pub mod made;
 
 /// dockerd's predefined networks, which no user's may be named or removed.
 pub const PREDEFINED: [&str; 4] = ["bridge", "host", "none", "default"];

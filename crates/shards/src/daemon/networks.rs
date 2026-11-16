@@ -1,7 +1,8 @@
 //! `shards network` (D46): user-defined networks as dockerd keeps them (moby docker-v29.3.1
 //! at f78c987a: daemon/network.go, libnetwork, defaultipam), dockerd's predefined `bridge`,
-//! `host` and `none` beside them, and what docker/cli checks before it asks
-//! (cli/command/network/create.go createIPAMConfig). Their members are the running
+//! `host` and `none` beside them, each made and removed as `networks::made` makes and removes
+//! every network, an orchestrator's among them (D285), with what docker/cli checks before it
+//! asks (cli/command/network/create.go createIPAMConfig). Their members are the running
 //! microVMs on them, which the daemon holds as it starts and ends their runs, their
 //! addresses leased from the home's records, which every process putting runs on a network
 //! shares (D285).
@@ -16,7 +17,7 @@ use super::filters::Filters;
 use super::{Daemon, lock};
 use crate::containers::Disk;
 use crate::networks::leases::{self, Leases};
-use crate::networks::{self as nets, Found, Network, Pool, Pool6, Store};
+use crate::networks::{self as nets, Found, Network, made};
 
 /// The filters `network ls` takes (daemon/network/filter.go).
 const LIST_FILTERS: [&str; 7] = ["dangling", "driver", "id", "label", "name", "scope", "type"];
@@ -186,255 +187,6 @@ fn kv_map(given: &[String]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// `s` as ADDRESS/BITS (Go's net.ParseCIDR): its address and its network, or why not.
-fn go_parse_cidr(s: &str) -> Result<(std::net::IpAddr, std::net::IpAddr, u8), String> {
-    let bad = || format!("{s} is no subnet: give ADDRESS/BITS, as 10.10.0.0/16");
-    let (addr, bits) = s.split_once('/').ok_or_else(bad)?;
-    let ip: std::net::IpAddr = addr.parse().map_err(|_| bad())?;
-    let bits: u8 = bits.parse().map_err(|_| bad())?;
-    let net = match ip {
-        std::net::IpAddr::V4(v4) if bits <= 32 => {
-            let m = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
-            std::net::IpAddr::V4(Ipv4Addr::from(u32::from(v4) & m))
-        }
-        std::net::IpAddr::V6(v6) if bits <= 128 => {
-            let m = u128::MAX.checked_shl(128 - u32::from(bits)).unwrap_or(0);
-            std::net::IpAddr::V6(Ipv6Addr::from(u128::from(v6) & m))
-        }
-        _ => return Err(bad()),
-    };
-    Ok((ip, net, bits))
-}
-
-/// Whether `ip` is in the network `net`/`bits`.
-fn net_contains(net: std::net::IpAddr, bits: u8, ip: std::net::IpAddr) -> bool {
-    match (net, ip) {
-        (std::net::IpAddr::V4(n), std::net::IpAddr::V4(i)) => {
-            let m = u32::MAX.checked_shl(32 - u32::from(bits)).unwrap_or(0);
-            u32::from(n) & m == u32::from(i) & m
-        }
-        (std::net::IpAddr::V6(n), std::net::IpAddr::V6(i)) => {
-            let m = u128::MAX.checked_shl(128 - u32::from(bits)).unwrap_or(0);
-            u128::from(n) & m == u128::from(i) & m
-        }
-        _ => false,
-    }
-}
-
-/// subnetMatches(subnet, data): whether `data`'s address is in `subnet`.
-fn subnet_matches(subnet: &str, data: &str) -> Result<bool, String> {
-    let (_, net, bits) = go_parse_cidr(subnet).map_err(|e| format!("--subnet {e}"))?;
-    Ok(go_parse_cidr(data).is_ok_and(|(ip, _, _)| net_contains(net, bits, ip)))
-}
-
-/// `s` as ADDRESS/BITS, the address and the prefix's length (Go's netip.ParsePrefix: no
-/// zero before a length), or why not.
-fn netip_prefix(s: &str) -> Result<(std::net::IpAddr, u8), String> {
-    let Some((addr, bits)) = s.split_once('/') else {
-        return Err(format!("--subnet {s}: give ADDRESS/BITS, as 10.10.0.0/16"));
-    };
-    let ip: std::net::IpAddr = addr
-        .parse()
-        .map_err(|_| format!("--subnet {s}: {addr} is no IP address"))?;
-    let ok = !bits.is_empty()
-        && bits.bytes().all(|b| b.is_ascii_digit())
-        && !(bits.len() > 1 && bits.starts_with('0'));
-    let n: u32 = if ok {
-        bits.parse().unwrap_or(u32::MAX)
-    } else {
-        u32::MAX
-    };
-    if !ok {
-        return Err(format!("--subnet {s}: {bits} is no prefix length"));
-    }
-    let max = if ip.is_ipv4() { 32 } else { 128 };
-    if n > max {
-        return Err(format!(
-            "--subnet {s}: an IPv{} prefix is at most {max} bits",
-            if max == 32 { 4 } else { 6 }
-        ));
-    }
-    Ok((ip, u8::try_from(n).unwrap_or(0)))
-}
-
-/// One IPAM config as the CLI consolidates it: the subnet as given, its range and gateway
-/// as given, its auxiliary addresses.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Asked {
-    subnet: String,
-    ip_range: String,
-    gateway: String,
-    aux: BTreeMap<String, String>,
-}
-
-/// The subnets, ranges, gateways and auxiliary addresses a network is made with, each
-/// range, gateway and address matched to its subnet, checked in the order createIPAMConfig
-/// checks them (cli/command/network/create.go, consolidateIpam).
-fn consolidate(
-    subnets: &[String],
-    ranges: &[String],
-    gateways: &[String],
-    aux: &BTreeMap<String, String>,
-) -> Result<Vec<Asked>, String> {
-    if subnets.len() < ranges.len() || subnets.len() < gateways.len() {
-        return Err("--ip-range and --gateway each belong to a --subnet: give its subnet".into());
-    }
-    let mut configs: Vec<Asked> = Vec::new();
-    for s in subnets {
-        for k in &configs {
-            if subnet_matches(s, &k.subnet)? || subnet_matches(&k.subnet, s)? {
-                return Err(format!("--subnet {s} overlaps --subnet {}", k.subnet));
-            }
-        }
-        netip_prefix(s)?;
-        configs.push(Asked {
-            subnet: s.clone(),
-            ..Asked::default()
-        });
-    }
-    for r in ranges {
-        let mut matched = false;
-        for c in &mut configs {
-            if subnet_matches(&c.subnet, r)? {
-                if !c.ip_range.is_empty() {
-                    return Err(format!(
-                        "--ip-range {r} and --ip-range {}: subnet {} takes one range",
-                        c.ip_range, c.subnet
-                    ));
-                }
-                c.ip_range = r.clone();
-                matched = true;
-            }
-        }
-        if !matched {
-            return Err(format!("--ip-range {r}: in none of the subnets given"));
-        }
-    }
-    for g in gateways {
-        let mut matched = false;
-        for c in &mut configs {
-            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("--subnet {e}"))?;
-            let ip: Option<std::net::IpAddr> = g.parse().ok();
-            if ip.is_some_and(|ip| net_contains(net, bits, ip)) {
-                if !c.gateway.is_empty() {
-                    return Err(format!(
-                        "--gateway {g} and --gateway {}: subnet {} takes one gateway",
-                        c.gateway, c.subnet
-                    ));
-                }
-                c.gateway = g.clone();
-                matched = true;
-            }
-        }
-        if !matched {
-            return Err(format!("--gateway {g}: in none of the subnets given"));
-        }
-    }
-    for (name, value) in aux {
-        if value.is_empty() {
-            continue;
-        }
-        let ip: std::net::IpAddr = value
-            .parse()
-            .map_err(|_| format!("--aux-address {name}={value}: {value} is no IP address"))?;
-        let mut matched = false;
-        for c in &mut configs {
-            let (_, net, bits) = go_parse_cidr(&c.subnet).map_err(|e| format!("--subnet {e}"))?;
-            if net_contains(net, bits, ip) {
-                c.aux.insert(name.clone(), value.clone());
-                matched = true;
-            }
-        }
-        if !matched {
-            return Err(format!(
-                "--aux-address {name}={value}: in none of the subnets given"
-            ));
-        }
-    }
-    Ok(configs)
-}
-
-/// validateIpamConfig's errors for `c` (one IPv4 or IPv6 config the daemon keeps).
-fn ipam_errors(c: &Asked) -> Vec<String> {
-    let mut errs = Vec::new();
-    let Ok((ip, bits)) = netip_prefix(&c.subnet) else {
-        return errs;
-    };
-    let Ok((_, net, _)) = go_parse_cidr(&c.subnet) else {
-        return errs;
-    };
-    if ip != net {
-        errs.push(format!(
-            "--subnet {}: its network's address is {net}/{bits}",
-            c.subnet
-        ));
-    }
-    let family = |a: std::net::IpAddr| if a.is_ipv4() { 4 } else { 6 };
-    if !c.ip_range.is_empty()
-        && let Ok((rip, rnet, rbits)) = go_parse_cidr(&c.ip_range)
-    {
-        if family(rip) != family(net) {
-            errs.push(format!(
-                "--ip-range {}: its subnet is IPv{}",
-                c.ip_range,
-                family(net)
-            ));
-        } else if rbits < bits {
-            errs.push(format!(
-                "--ip-range {}: larger than its subnet {}",
-                c.ip_range, c.subnet
-            ));
-        } else if !net_contains(net, bits, rnet) {
-            errs.push(format!(
-                "--ip-range {}: outside its subnet {}",
-                c.ip_range, c.subnet
-            ));
-        }
-    }
-    if let Ok(gw) = c.gateway.parse::<std::net::IpAddr>() {
-        if family(gw) != family(net) {
-            errs.push(format!(
-                "--gateway {}: its subnet is IPv{}",
-                c.gateway,
-                family(net)
-            ));
-        } else if !net_contains(net, bits, gw) {
-            errs.push(format!(
-                "--gateway {}: outside its subnet {}",
-                c.gateway, c.subnet
-            ));
-        }
-    }
-    for (name, value) in &c.aux {
-        if let Ok(a) = value.parse::<std::net::IpAddr>() {
-            if family(a) != family(net) {
-                errs.push(format!("--aux-address {name}: its subnet is IPv{}", family(net)));
-            } else if !net_contains(net, bits, a) {
-                errs.push(format!("--aux-address {name}: outside its subnet {}", c.subnet));
-            }
-        }
-    }
-    errs
-}
-
-/// What the default network does, said as its options (D31): its flows leave from its
-/// network process's host sockets, under the host's address, as masquerading makes them; a
-/// port published with no address is bound at every one (publish::bind); no member
-/// reaches another, as each has the same address, so that one template serves them all
-/// (shards_net::bridge); and its interface's MTU is its device's.
-fn bridge_options() -> BTreeMap<String, String> {
-    [
-        (nets::DEFAULT_BRIDGE, "true".to_string()),
-        (nets::ICC, "false".to_string()),
-        (nets::MASQUERADE, "true".to_string()),
-        (nets::HOST_BINDING, "0.0.0.0".to_string()),
-        (nets::MTU, shards_vmm::devices::virtio::net::MTU.to_string()),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v))
-    .collect()
-}
-
 /// The names member `asker` of `network` is answered (D46), as `NET_NAMES` carries them:
 /// its own, and those of each member it reaches, every member of a network whose members
 /// reach one another and none of one made with `enable_icc` false. A name resolves only
@@ -457,11 +209,6 @@ fn names_table(network: &Network, members: &[Member], asker: &str) -> Vec<u8> {
 }
 
 impl<D: Disk> Daemon<D> {
-    /// The ULA pool dockerd derives from its host's ID (`crate::networks::ula_base`).
-    fn ula_base(&self) -> u128 {
-        crate::networks::ula_base(&self.home)
-    }
-
     /// A run on the host's network's IPv6 address and its gateway's, and eth0's IPv6 for an
     /// image's agents' flows past the microVM on a network without it
     /// (`crate::networks::host_ipv6`, D99, D124).
@@ -470,67 +217,10 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// The networks: dockerd's predefined ones, made here the first time they are
-    /// asked for, the bridge's on the subnet this daemon elected, then the user's.
+    /// asked for, the bridge's on the subnet this daemon elected, then the user's
+    /// (`made::all`).
     pub(super) fn all_networks(&self) -> Vec<Network> {
-        let store = Store::new(&self.home);
-        let mut all = store.list();
-        for (name, driver) in [("bridge", "bridge"), ("host", "host"), ("none", "null")] {
-            let pools: Vec<Pool> = if name == "bridge" {
-                self.bridge
-                    .iter()
-                    .map(|b| Pool {
-                        subnet: b.subnet(),
-                        ip_range: None,
-                        gateway: b.gateway(),
-                        aux: BTreeMap::new(),
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let options = if name == "bridge" {
-                bridge_options()
-            } else {
-                BTreeMap::new()
-            };
-            match all.iter_mut().find(|n| n.name == name) {
-                // A home's record of what the default network does, kept so as shards
-                // changes (the options a home of an older shards recorded).
-                Some(n) if n.pools != pools || n.options != options => {
-                    n.pools = pools;
-                    n.options = options;
-                    let _ = store.put(n);
-                }
-                Some(_) => {}
-                None => {
-                    let Ok(id) = new_id() else { continue };
-                    let n = Network {
-                        name: name.into(),
-                        id,
-                        created: crate::containers::now(),
-                        scope: "local".into(),
-                        driver: driver.into(),
-                        ipv4: true,
-                        ipv6: false,
-                        ipam_driver: "default".into(),
-                        ipam_options: BTreeMap::new(),
-                        pools,
-                        pools6: Vec::new(),
-                        v6_first: false,
-                        internal: false,
-                        attachable: false,
-                        ingress: false,
-                        config_from: String::new(),
-                        config_only: false,
-                        options,
-                        labels: BTreeMap::new(),
-                    };
-                    let _ = store.put(&n);
-                    all.push(n);
-                }
-            }
-        }
-        all
+        made::all(&self.home, self.bridge)
     }
 
     /// MicroVM `given`'s kept request, its ID and its turn to change it (D37), held until
@@ -1157,31 +847,10 @@ impl<D: Disk> Daemon<D> {
             .collect()
     }
 
-    /// Network `n`'s record and its leases removed, under the home's networks lock
-    /// (`held`): refused where another process's run is on it, or that process links its
-    /// members (D285).
-    fn remove_network(&self, held: &leases::Held, n: &Network) -> Result<(), String> {
-        match Leases::of(&self.home, &n.id).and_then(|ledger| ledger.clear(held)) {
-            // No process takes a lease of a network whose ID is not one: it has none.
-            Ok(()) | Err(leases::Refused::NotAnId) => {}
-            Err(leases::Refused::InUse) => {
-                return Err(format!(
-                    "cannot remove network {}: another process's runs are on it",
-                    n.name
-                ));
-            }
-            Err(e) => return Err(format!("network {}: {e}", n.name)),
-        }
-        Store::new(&self.home).remove(&n.id)
-    }
-
-    /// Every IPv4 pool allocated, the default bridge's among them.
-    fn allocated(&self, networks: &[Network]) -> Vec<nets::Pool> {
-        networks.iter().flat_map(|n| n.pools.iter().cloned()).collect()
-    }
-
-    /// `shards network create NAME` (NetworkCreate, Controller.NewNetwork): the CLI's
-    /// checks, then dockerd's, each in its order and words; its ID once kept.
+    /// `shards network create NAME` (NetworkCreate, Controller.NewNetwork): its flags as
+    /// the network's ask, made as `made::create` makes every network, an orchestrator's
+    /// among them (D285): the CLI's checks, then dockerd's, each in its order and words; its
+    /// ID once kept.
     pub(super) fn network_create(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -1191,331 +860,40 @@ impl<D: Disk> Daemon<D> {
         let Some(name) = parsed.args.first() else {
             return 1;
         };
-        let daemon = |e: &str| {
-            reply.err(&format!("shards: {e}"));
-            1
+        let family = |flag: &str| parsed.changed(flag).then(|| parsed.bool(flag));
+        let ask = made::Create {
+            name: name.clone(),
+            subnets: parsed.many("subnet").to_vec(),
+            ranges: parsed.many("ip-range").to_vec(),
+            gateways: parsed.many("gateway").to_vec(),
+            aux: kv_map(parsed.many("aux-address")),
+            driver: parsed.string("driver").to_string(),
+            options: kv_map(parsed.many("opt")),
+            ipv4: family("ipv4"),
+            ipv6: family("ipv6"),
+            config_from: parsed.string("config-from").to_string(),
+            config_only: parsed.bool("config-only"),
+            scope: parsed.string("scope").to_string(),
+            ipam_driver: parsed.string("ipam-driver").to_string(),
+            ipam_options: kv_map(parsed.many("ipam-opt")),
+            internal: parsed.bool("internal"),
+            attachable: parsed.bool("attachable"),
+            ingress: parsed.bool("ingress"),
+            labels: kv_map(parsed.many("label")),
         };
-        let aux = kv_map(parsed.many("aux-address"));
-        let configs = match consolidate(
-            parsed.many("subnet"),
-            parsed.many("ip-range"),
-            parsed.many("gateway"),
-            &aux,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                reply.err(&e);
+        let n = match made::create(&self.home, self.bridge, &ask) {
+            Ok(n) => n,
+            // The CLI's own checks are said as it says them; the rest as the daemon's.
+            Err((made::Unmade::Flags, why)) => {
+                reply.err(&why);
+                return 1;
+            }
+            Err((_, why)) => {
+                reply.err(&format!("shards: {why}"));
                 return 1;
             }
         };
-        if nets::PREDEFINED.contains(&name.as_str()) {
-            return daemon(&format!(
-                "{name} is one of shards' own networks, bridge, host and none: give yours another name"
-            ));
-        }
-        let driver = match parsed.string("driver") {
-            "" => "bridge",
-            d => d,
-        };
-        if driver == "overlay" {
-            return daemon("--driver overlay: shards has no swarm mode, whose networks overlay ones are");
-        }
-        let mut options = kv_map(parsed.many("opt"));
-        let config_from = parsed.string("config-from").to_string();
-        let family = |flag: &str, option: &str, default: bool, options: &mut BTreeMap<String, String>| {
-            if parsed.changed(flag) {
-                options.remove(option);
-                return Ok(parsed.bool(flag));
-            }
-            match options.get(option) {
-                Some(v) => shards_cmdline::go::parse_bool(v).map_err(|_| {
-                    format!(
-                        "driver-opt {} is not a valid bool",
-                        shards_cmdline::go::quote(option)
-                    )
-                }),
-                None => Ok(default),
-            }
-        };
-        let ipv4 = match family("ipv4", "com.docker.network.enable_ipv4", true, &mut options) {
-            Ok(b) => b,
-            Err(e) => return daemon(&e),
-        };
-        let ipv6 = match family("ipv6", "com.docker.network.enable_ipv6", false, &mut options) {
-            Ok(b) => b,
-            Err(e) => return daemon(&e),
-        };
-        // IPv6's configs go where IPv6 is off.
-        let configs: Vec<Asked> = configs
-            .into_iter()
-            .filter(|c| ipv6 || netip_prefix(&c.subnet).is_ok_and(|(ip, _)| ip.is_ipv4()))
-            .collect();
-        let errs: Vec<String> = configs.iter().flat_map(ipam_errors).collect();
-        if !errs.is_empty() {
-            return daemon(&errs.join("\n"));
-        }
-        if name.trim().is_empty() {
-            return daemon("a network needs a name");
-        }
-        // Its name and pool checked against every network kept, and kept, under the home's
-        // networks lock, which any process making a network takes (D285).
-        let held = match leases::hold(&self.home) {
-            Ok(held) => held,
-            Err(e) => return daemon(&e.to_string()),
-        };
-        let networks = self.all_networks();
-        if networks.iter().any(|n| &n.name == name) {
-            return daemon(&format!("a network is named {name} already"));
-        }
-        let config_only = parsed.bool("config-only");
-        let (driver, scope) = if config_only {
-            ("null", "local".to_string())
-        } else {
-            (driver, parsed.string("scope").to_string())
-        };
-        let mut from: Option<Network> = None;
-        if !config_from.is_empty() {
-            let Some(source) = networks.iter().find(|n| n.name == config_from && n.config_only) else {
-                return daemon(&format!(
-                    "--config-from {config_from}: no config-only network is named so"
-                ));
-            };
-            if config_only {
-                return daemon(
-                    "--config-from with --config-only: a config-only network takes its settings from none",
-                );
-            }
-            if !configs.is_empty() {
-                return daemon(&format!(
-                    "--config-from {config_from}: the network's subnets come from it: give none of your own"
-                ));
-            }
-            if !options.is_empty() {
-                return daemon(&format!(
-                    "--config-from {config_from}: the network's options come from it: give none of your own"
-                ));
-            }
-            from = Some(source.clone());
-        }
-        match driver {
-            "bridge" | "null" | "macvlan" | "ipvlan" | "host" => {}
-            other => {
-                return daemon(&format!(
-                    "--driver {other}: shards' networks are bridge, macvlan, ipvlan, host and null: it has no plugins"
-                ));
-            }
-        }
-        if !config_only && (driver == "host" || (driver == "null" && !config_only)) {
-            let kind = if driver == "host" { "host" } else { "null" };
-            return daemon(&format!("--driver {kind}: shards has one {kind} network already"));
-        }
-        let ipam_driver = parsed.string("ipam-driver").to_string();
-        if !matches!(ipam_driver.as_str(), "default" | "") {
-            return daemon(&format!(
-                "--ipam-driver {ipam_driver}: shards gives a network's addresses itself (default): it has no plugins"
-            ));
-        }
-        if scope == "swarm" {
-            return daemon("--scope swarm: shards has no swarm mode");
-        }
-        if parsed.bool("ingress") {
-            return daemon("--ingress: shards has no swarm mode, whose ingress network it is");
-        }
-        if !ipv4 && !ipv6 {
-            return daemon("--ipv4=false with --ipv6=false: a network needs addresses of one family");
-        }
-        let Ok(id) = new_id() else {
-            return daemon("making the network's ID");
-        };
-        let mut options = from.as_ref().map_or(options, |f| f.options.clone());
-        let configs = from.as_ref().map_or(configs, |f| {
-            f.pools
-                .iter()
-                .map(|p| Asked {
-                    subnet: nets::show(p.subnet),
-                    ip_range: p.ip_range.map(nets::show).unwrap_or_default(),
-                    gateway: p.gateway.to_string(),
-                    aux: p.aux.iter().map(|(k, v)| (k.clone(), v.to_string())).collect(),
-                })
-                .collect()
-        });
-        // The IPv4 pool, allocated (none for a configuration network, which allocates
-        // nothing).
-        let (v4, v6): (Vec<&Asked>, Vec<&Asked>) = configs
-            .iter()
-            .partition(|c| netip_prefix(&c.subnet).is_ok_and(|(ip, _)| ip.is_ipv4()));
-        let mut pools = Vec::new();
-        if ipv4 && !config_only {
-            if driver == "bridge" && v4.len() > 1 {
-                return daemon("a bridge network has one IPv4 subnet in shards, yet");
-            }
-            let allocated: Vec<shards_net::bridge::Prefix> =
-                self.allocated(&networks).iter().map(|p| p.subnet).collect();
-            let asked = v4.first();
-            let explicit = asked.and_then(|c| nets::parse_prefix(&c.subnet));
-            // Explicit pools are checked against the networks' alone; the daemon's own
-            // picks also keep off the host's (InferReservedNetworks).
-            let mut taken = allocated.clone();
-            if explicit.is_none_or(|(a, _)| a.is_unspecified()) {
-                taken.extend(
-                    shards_net::bridge::reserved(&shards_net::bridge::host_resolv()).unwrap_or_default(),
-                );
-            }
-            let range = asked.and_then(|c| nets::parse_prefix(&c.ip_range));
-            let gateway = asked.and_then(|c| c.gateway.parse().ok());
-            let aux: BTreeMap<String, Ipv4Addr> = asked
-                .map(|c| {
-                    c.aux
-                        .iter()
-                        .filter_map(|(k, v)| Some((k.clone(), v.parse().ok()?)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            match nets::new_pool(explicit, range, gateway, &aux, &taken) {
-                Ok(p) => pools.push(p),
-                Err(e) => return daemon(&e),
-            }
-        }
-        let mut pools6 = Vec::new();
-        if ipv6 && !config_only {
-            for c in &v6 {
-                let gateway = if c.gateway.is_empty() {
-                    go_parse_cidr(&c.subnet)
-                        .ok()
-                        .and_then(|(_, net, _)| match net {
-                            std::net::IpAddr::V6(n) => Some(Ipv6Addr::from(u128::from(n) + 1).to_string()),
-                            std::net::IpAddr::V4(_) => None,
-                        })
-                        .unwrap_or_default()
-                } else {
-                    c.gateway.clone()
-                };
-                pools6.push(Pool6 {
-                    subnet: c.subnet.clone(),
-                    ip_range: c.ip_range.clone(),
-                    gateway,
-                    aux: c.aux.clone(),
-                });
-            }
-            if pools6.is_empty() {
-                // The ULA pool dockerd derives from its host's ID, given out a /64 at a
-                // time; its last /64 the host's network's (`host_ipv6`).
-                let base = self.ula_base();
-                let used: Vec<String> = networks
-                    .iter()
-                    .flat_map(|n| n.pools6.iter().map(|p| p.subnet.clone()))
-                    .collect();
-                let subnet = (0u128..(1 << 16) - 1)
-                    .map(|i| format!("{}/64", Ipv6Addr::from(base | (i << 64))))
-                    .find(|s| !used.contains(s))
-                    .unwrap_or_default();
-                let gateway = subnet
-                    .split_once('/')
-                    .and_then(|(a, _)| a.parse::<Ipv6Addr>().ok())
-                    .map(|a| Ipv6Addr::from(u128::from(a) + 1).to_string())
-                    .unwrap_or_default();
-                pools6.push(Pool6 {
-                    subnet,
-                    ip_range: String::new(),
-                    gateway,
-                    aux: BTreeMap::new(),
-                });
-            }
-        }
-        // The bridge driver's own options, each read as dockerd reads it (moby
-        // docker-v29.3.1, drivers/bridge/bridge_linux.go fromLabels, in a Go map's order,
-        // here the options' own), then its checks of them (parseNetworkOptions, Validate).
-        if driver == "bridge" && !config_only {
-            for (label, value) in &options {
-                let why = match label.as_str() {
-                    nets::MTU => shards_cmdline::go::atoi(value).err().map(|e| e.to_string()),
-                    nets::MASQUERADE | nets::ICC | nets::INHIBIT_IPV4 | nets::DEFAULT_BRIDGE => {
-                        shards_cmdline::go::parse_bool(value).err().map(|e| e.to_string())
-                    }
-                    nets::GATEWAY_MODE4 | nets::GATEWAY_MODE6 => {
-                        (!matches!(value.as_str(), "nat" | "nat-unprotected" | "routed" | "isolated"))
-                            .then(|| format!("unknown gateway mode {value}"))
-                    }
-                    nets::HOST_BINDING | nets::HOST_IPV4 | nets::HOST_IPV6 => value
-                        .parse::<std::net::IpAddr>()
-                        .is_err()
-                        .then(|| "nil ip".to_string()),
-                    _ => None,
-                };
-                if let Some(why) = why {
-                    return daemon(&format!("failed to parse {label} value: {value} ({why})"));
-                }
-            }
-            let isolated = [nets::GATEWAY_MODE4, nets::GATEWAY_MODE6]
-                .iter()
-                .any(|m| options.get(*m).is_some_and(|v| v == "isolated"));
-            if isolated && !parsed.bool("internal") {
-                return daemon("gateway mode 'isolated' can only be used for an internal network");
-            }
-            if let Some(mtu) = options
-                .get(nets::MTU)
-                .and_then(|v| shards_cmdline::go::atoi(v).ok())
-                && mtu < 0
-            {
-                return daemon(&format!("invalid MTU number: {mtu}"));
-            }
-            // A network's bridge name is a Linux bridge's interface name, which shards makes
-            // none of: no length of an interface's, no two networks' bridge in common, to
-            // refuse.
-        }
-        // shards' own option (D192): what its members' commands may reach past their
-        // microVMs, which only a bridge network's members reach past them at all, and an
-        // internal one's never; a config-only network keeps it for those made from it,
-        // which take it as theirs.
-        let egress = from
-            .as_ref()
-            .map_or(options.get(nets::EGRESS), |f| f.options.get(nets::EGRESS));
-        if let Some(value) = egress {
-            if let Err(why) = nets::parse_egress(value) {
-                return daemon(&format!("--opt {}: {why}", nets::EGRESS));
-            }
-            if driver != "bridge" && !config_only {
-                return daemon(&format!(
-                    "--opt {}: only a bridge network's members reach past their microVMs",
-                    nets::EGRESS
-                ));
-            }
-            if parsed.bool("internal") {
-                return daemon(&format!(
-                    "--opt {}: an internal network's members reach nothing past their microVMs",
-                    nets::EGRESS
-                ));
-            }
-        }
-        if from.is_some() {
-            options.clear();
-        }
-        let n = Network {
-            name: name.clone(),
-            id: id.clone(),
-            created: crate::containers::now(),
-            scope: if scope.is_empty() { "local".into() } else { scope },
-            driver: driver.into(),
-            ipv4: ipv4 && !config_only,
-            ipv6: ipv6 && !config_only,
-            ipam_driver: "default".into(),
-            ipam_options: kv_map(parsed.many("ipam-opt")),
-            pools,
-            pools6,
-            v6_first: v4.is_empty() && !v6.is_empty(),
-            internal: parsed.bool("internal"),
-            attachable: parsed.bool("attachable"),
-            ingress: false,
-            config_from,
-            config_only,
-            options: from.map_or(options, |f| f.options),
-            labels: kv_map(parsed.many("label")),
-        };
-        if let Err(e) = Store::new(&self.home).put(&n) {
-            return daemon(&e);
-        }
-        drop(held);
-        reply.out(&id);
+        reply.out(&n.id);
         // An MTU is kept as given, and its microVMs keep their device's: what they send
         // leaves through the host's own sockets, which fit it to each path the host finds,
         // where a container's packets cross the host's wire as they were made. A smaller
@@ -1875,13 +1253,8 @@ impl<D: Disk> Daemon<D> {
                             n.name,
                             listed.join(", ")
                         ))
-                    } else if n.config_only && networks.iter().any(|o| o.config_from == n.name) {
-                        Err(format!(
-                            "cannot remove network {}: networks take their settings from it",
-                            n.name
-                        ))
                     } else {
-                        self.remove_network(&held, n)
+                        made::remove(&self.home, &held, &networks, n).map_err(|(_, why)| why)
                     }
                 }
                 Found::Ambiguous(count, by_name) => Err(format!(
@@ -1952,10 +1325,11 @@ impl<D: Disk> Daemon<D> {
             None => None,
         };
         // Another process's runs keep a network as this daemon's do: its removal refuses it
-        // (`remove_network`), under the home's networks lock, which `idle` would take again.
+        // (`made::remove`), under the home's networks lock, which `idle` would take again.
         let held = leases::hold(&self.home).map_err(|e| e.to_string())?;
         let mut names = Vec::new();
-        for n in self.all_networks() {
+        let networks = self.all_networks();
+        for n in &networks {
             let keep = n.predefined()
                 || n.config_only
                 || !self.members_of(&n.id).is_empty()
@@ -1965,8 +1339,8 @@ impl<D: Disk> Daemon<D> {
             if keep {
                 continue;
             }
-            if self.remove_network(&held, &n).is_ok() {
-                names.push(n.name);
+            if made::remove(&self.home, &held, &networks, n).is_ok() {
+                names.push(n.name.clone());
             }
         }
         drop(held);
@@ -1987,58 +1361,6 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
-    }
-
-    /// A network's subnets, ranges, gateways and auxiliary addresses, each checked and
-    /// refused in shards' words, in the order docker/cli 29.3.1 checks them.
-    #[test]
-    fn ipam_configs_are_consolidated() {
-        let none = BTreeMap::new();
-        assert_eq!(
-            consolidate(&[], &[], &s(&["10.0.0.1"]), &none).unwrap_err(),
-            "--ip-range and --gateway each belong to a --subnet: give its subnet"
-        );
-        assert_eq!(
-            consolidate(&s(&["10.10.0.0/16", "10.10.1.0/24"]), &[], &[], &none).unwrap_err(),
-            "--subnet 10.10.1.0/24 overlaps --subnet 10.10.0.0/16"
-        );
-        assert_eq!(
-            consolidate(&s(&["bogus"]), &[], &[], &none).unwrap_err(),
-            "--subnet bogus: give ADDRESS/BITS, as 10.10.0.0/16"
-        );
-        assert_eq!(
-            consolidate(&s(&["10.10.0.0/33"]), &[], &[], &none).unwrap_err(),
-            "--subnet 10.10.0.0/33: an IPv4 prefix is at most 32 bits"
-        );
-        assert_eq!(
-            consolidate(
-                &s(&["10.10.0.0/16", "10.20.0.0/16"]),
-                &s(&["10.10.1.0/24", "10.10.0.0/24"]),
-                &[],
-                &none
-            )
-            .unwrap_err(),
-            "--ip-range 10.10.0.0/24 and --ip-range 10.10.1.0/24: subnet 10.10.0.0/16 takes one range"
-        );
-        assert_eq!(
-            consolidate(&s(&["10.10.0.0/16"]), &[], &s(&["10.20.0.1"]), &none).unwrap_err(),
-            "--gateway 10.20.0.1: in none of the subnets given"
-        );
-        let aux = BTreeMap::from([("a".to_string(), "bogus".to_string())]);
-        assert_eq!(
-            consolidate(&s(&["10.10.0.0/16"]), &[], &[], &aux).unwrap_err(),
-            "--aux-address a=bogus: bogus is no IP address"
-        );
-        let c = consolidate(&s(&["10.10.0.5/16"]), &[], &[], &none).unwrap();
-        assert_eq!(
-            ipam_errors(&c[0]),
-            ["--subnet 10.10.0.5/16: its network's address is 10.10.0.0/16"]
-        );
-        let c = consolidate(&s(&["10.10.0.0/24"]), &s(&["10.10.0.0/16"]), &[], &none).unwrap();
-        assert_eq!(
-            ipam_errors(&c[0]),
-            ["--ip-range 10.10.0.0/16: larger than its subnet 10.10.0.0/24"]
-        );
     }
 
     /// Each member is answered its own names and those of the members it reaches: all of a

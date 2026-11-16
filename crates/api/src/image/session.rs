@@ -2635,8 +2635,10 @@ fn keep_said(shared: &Shared, mut said: impl io::Read) {
 /// (`shards_ipc::Child::end_group`, D231): the VM, network and share processes it started,
 /// which a host that ends as it should has reaped already, and one it leaves is ended with
 /// it. Then reaps it under the state's lock as `exited` is set, and tells its pipes' readers
-/// (`gone`) that no process the run started is left to write to them.
-fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>, gone: Gone) {
+/// (`gone`) that no process the run started is left to write to them. Last, its networks
+/// shared by runs told without it at once ([`links::host_gone`], D285 slice 6): its leases
+/// went with its host.
+fn watch(shared: &Arc<Shared>, host: &shards_ipc::Child, layers: Option<&Path>, gone: Gone) {
     let awaited = host.ended();
     let followed = awaited
         .as_ref()
@@ -2658,6 +2660,7 @@ fn watch(shared: &Shared, host: &shards_ipc::Child, layers: Option<&Path>, gone:
     shared.changed.notify_all();
     drop(state);
     gone.tell();
+    links::host_gone(shared);
 }
 
 /// The word a run host's watcher gives its pipes' readers once the host and every process of
