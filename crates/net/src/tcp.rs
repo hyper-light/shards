@@ -198,7 +198,7 @@ pub struct Conn {
     probes: u32,
     pub closed: bool,
     /// A published port took it (`accept`): no flow of its guest's own, which its grants hold
-    /// (D272).
+    /// (D273).
     pub accepted: bool,
     /// The guest reset the connection: nothing more goes to it, nor is read from the host;
     /// what it sent before, which this side acknowledged, still goes to the host, whose

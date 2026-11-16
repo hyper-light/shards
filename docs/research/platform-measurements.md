@@ -25311,8 +25311,9 @@ Max) left untimed (D253's amendment, the start path's cuts):
   `its members staged, its ports bound`, `its setup's security composed` and `its run
   planned`, which `plan` says on every kind, a warm run's too.
 - Before its VM's launch (stretch 3): `its VM's binary checked` (now on a thread of its own
-  from the run host's first step, api_run.rs `Checking`), `its network decided`, `its
-  writable layer cloned|made|none`, then `launching its VM`.
+  from the run host's first step, api_run.rs `Checking`; `, its network process's too` where
+  its run has a network, whose binary that thread checks once `shape` elects its bridge),
+  `its network decided`, `its writable layer cloned|made|none`, then `launching its VM`.
 - Past `READY` (stretch 6): `its writable layer's name let go of`, `its VM's start settled`,
   then `its VM process … is ready`.
 - shards-api's side (stretch 2): `shards-api: at unix US us WHAT` lines among the run host's
@@ -25320,6 +25321,12 @@ Max) left untimed (D253's amendment, the start path's cuts):
   timeline: `its run host N started`, `its run's request sending` and `sent`, `its host's
   answer K read` (STARTED 16, WARMED 32), `its start taken`, `its members' outputs pumped`,
   `its diagnostics' file named` and `kept`, beside the harness's own `the boot answered`.
+- The phase pass runs twice, its lines labelled: `IMAGE-START-PHASES timed …` with
+  `SHARDS_TIMING` alone (the run host's and shards-api's lines), then `IMAGE-START-PHASES
+  debug …` with `SHARDS_LOG=debug` too (the VM's own steps). The VM's debug lines share one
+  pipe with the run host's, which only the caller's diagnostics reader drains, and a run
+  host's line takes its time before its write: where the reader lags, the line after a wait
+  shows it as its gap, so `timed`'s gaps are the run host's own.
 
 Numbers: owed (ROOT runs it), on HVF and on KVM.
 
@@ -25457,3 +25464,241 @@ it. Neither host's counts are a bound; n is one loop each.
   VM's listener and dials its ports today (D141, M203); a connection's write pends until its
   bytes are all in the pipe, and is never cancelled while the connection lives.
 
+
+### M604. Memory a guest plugged before its template's save, taken away by HVF's working-set recording, served as a device (D274)
+
+- **Where.** adas-mac-studio-3.local (Apple M4 Max, macOS 26.2), kiln run r99, the
+  test-release profile; Shards 8f4bc8184 (main 6bfdcb1a9 and the tests) for red, d02f9fdcf
+  (the fix) for green. The harness, `docs/research/measurements/hvf-plugged-watch/`: `run.sh`
+  (its steps), `sweep.rs` (a test appended to api_image.rs for the run alone, never
+  committed there), `inst.py` (logging of each plug, each snapshot's plugged runs, what a
+  recording takes away and each fault on memory mapped since a vCPU was made, the red build
+  alone; no behaviour changes) and `mut.py` (the fix's mutation).
+- **The least memory, by its first run** (`sweep.rs`, 1 vCPU, the test image, n = 1 each):
+
+  | MiB | first run: boots, saves its template, records its working set | booted alone (a guest its caller gives: no template, no recording) |
+  |---|---|---|
+  | 64 | **ended before ready**: 128 MiB plugged at 0xc000_0000 0.89 s into its boot; the snapshot staged with plugged runs `[(c0000000, 8000000)]`; the recording took that run away with the rest; `vCPU 0: a fault at 0xc0000000 (ESR 0x92000046) on 0xc0000000+0x8000000, mapped since this vCPU was made, taken as MMIO`, then `unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000, PC 0xffff800080bcf554` | booted, plugged 128 MiB, ran |
+  | 72, 80, 96, 112, 128, 160, 192, 256 | saved (snapshot with no plugged runs), ran | booted, ran |
+
+  So 64 MiB is the only size here whose guest plugged before its template point; with
+  members and shares, as kiln's images have, a guest needs more as it boots. At the fix,
+  every size saved its template and booted alone, 64 MiB's with its plugged run held.
+- **The exit itself** (`hv::hvf::tests::vcpu_and_gic_state_round_trip_through_a_fresh_vcpu`):
+  a page mapped through `Stage2::map` at 0xc000_0000 once vCPU 0 was made, a recording
+  started, then the guest's `str x5, [x4, #16]; ldr x6, [x4, #16]` (ISV 1) and, under a
+  second recording, `stp x4, x4, [x4]` (ISV 0), an `Io` recording each device access. Red:
+  `(Ok(Shutdown), 0, Err("unhandled guest exception: EC 0x24, ESR 0x92000046, IPA 0xc0000000,
+  PC 0x90000040"), [3221225488, 3221225488])`: the store dropped and the load zero at
+  0xc0000010, then kiln's syndrome, a level-2 translation fault on a page the framework had
+  never filled. Green at the fix; red again, the same, with the vCPU's copy never made again
+  (`mut.py`).
+- **The run** (api_image.rs `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`):
+  red at 8f4bc8184 in its first run's boot, as above, before any member or command of the run
+  ran (its first form gave an `alloc 256` to its harness; it now gives `alloc 64` to the run's
+  own command, which D148's grower grows, as the finding below ends a member's; the run's own
+  `alloc 256` at this envelope ended 137 at the merge with main 53214fcad, not followed here).
+- **Found beside it.** In every run of the sweep, both revisions and both ways, the harness
+  member's `alloc 256` was ended by init, `the agents' memory, 21069824 bytes, was past their
+  share, 20873216` at 64 MiB: a member's share does not grow with the plug (D274's owed list).
+
+### M605. The 2026-11-15 vendor point's real-VM batch: an orchestrator's run's plug and its members' share (D275), HVF's plugged memory (D274), on HVF and KVM
+
+- **Where.** HVF: adas-mac-studio.local-2 (Apple M3 Ultra, 32 cores, macOS 26.4), each pass a launchd job of
+  the user's session (`docs/research/measurements/macos-sched/launchd-run.sh`). KVM: adacachy2 (AMD Ryzen 9
+  9950X3D2, 32 cores, CachyOS, Linux 7.3.3, glibc 2.44), each pass a transient user unit (`systemd-run --user`,
+  `Delegate=yes`). rustc 1.100.0; the test-release profile; `SHARDS_REQUIRE_VMS=1`. One tree per host
+  (`git archive` of b8a861356 unpacked once, the passes' patches applied in it and taken off, one target), so no two
+  source paths share a target (cargo's metadata hash is relative to the workspace: a second path's build runs the
+  first's binaries). Each pass is `docs/research/measurements/vendor-point-1115/svp.sh`'s; every command is below.
+- **Revisions.** b8a861356 (main ec7de3568, p/small-vm-fault's D274 and `--component-window` fix, p/member-share's
+  d4990fec8 and 4e0b82699, D275's entry); 6a0adfc09 (b8a861356 and the three test fixes below). Red: 6a0adfc09 with
+  `crates/shards/src/{api_run,daemon,daemon/visit,run}.rs` and `crates/init` as at ce5f97ab6 (D275's two fixes out,
+  their tests in). Mutation: 6a0adfc09 without the `ROOM` built-in's `reshare(domains)` (init `run.rs`). The vendor point,
+  4124d8c70: 6a0adfc09 with 4e0b82699 reverted (D275's share within a room held back, below).
+- **Green at b8a861356** (`cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings`; `cargo clippy -p
+  shards-init -p shards-testguest --all-targets --target <arch>-unknown-linux-musl -- -D warnings`; `cargo test -p
+  shards-init --target x86_64-unknown-linux-musl`; `cargo test --profile test-release -p shards-vmm --lib --
+  hv::hvf::tests`; `cargo test --profile test-release -p shards --bin shards --
+  api_run::tests::an_orchestrators_run_may_plug_its_most_less_its_boot`; `cargo test --profile test-release -p
+  shards --no-fail-fast --test api_image --test nesting --test member_exec --test managed_output --test tty --test
+  engine_ring --test guest_time`; `--test boot shards_api_`; `scripts/check-development-policy`):
+
+  | | HVF | KVM |
+  |---|---|---|
+  | clippy (host; init and the test guest for musl) | clean | clean; clean |
+  | shards-init's unit tests (Linux) | | 325 of 326: `a_members_top_lists_its_own_processes_alone` (below) |
+  | `hv::hvf::tests` (D274's exit among them) | 2 of 2 (4 ignored) | |
+  | api_run's plug unit test (D275) | pass | pass |
+  | api_image | 32 of 33 (the pause test, below) | 28 of 33 and the pause test hung (below) |
+  | nesting | 14 of 14 | 12 of 14 (below) |
+  | member_exec, managed_output, tty, engine_ring, guest_time | 6, 29, 7, 8, 1: all | 6, 38, 7, 8, 1: all |
+  | boot `shards_api_` | 3 of 3 | 3 of 3 |
+  | policy check | pass | pass |
+
+- **What failed at b8a861356, each reproduced and its cause found** (test fixes in 6a0adfc09):
+  - KVM, api_image's live publish, egress and volume tests (D269, D273, D271): `vm_processes` matched "shards-vm" in a
+    command line, and a Linux run host starts its VM binary through its own descriptor (`/proc/PID/fd/N`,
+    helpers.rs `Program::path`), so each found no VM process: `assertion left == right failed: [] left: 0 right: 1`
+    (api_image.rs 3642, 3911, 3779). The binary names itself after its file (`name_after_executable`): its
+    `/proc/PID/comm` is matched too.
+  - KVM, `the_least_envelope_saves_and_restores_its_template_and_grows_past_its_boot_memory`: both runs, Saved then
+    Restored, "allocated 64" and ended 0, then "its guest plugged nothing before its save": x86-64's least envelope,
+    128 MiB, holds its guest's boot, so its template holds nothing plugged (arm64's 64 MiB does not, M604). The
+    template's plugged runs are asserted on arm64 alone.
+  - Both, `a_paused_run_runs_no_guest_and_goes_on_where_it_stopped`: it compared the stats said while paused, init's
+    last answer (its run host keeps each answer as its last, `Pauses::said`), with one read before
+    `guest_time_step`'s reads, each an answer too: HVF `left: (Some(2684000), Some(1671168)) right: (Some(2625000),
+    Some(1671168))` (api_image.rs 712); on KVM the same failure, inside the scope, left its run paused and the reading
+    thread waiting for a tick: hung (its VM process's vCPU parked, 0.42 s of CPU in 8 minutes), ended by ROOT. `before`
+    is read after the step's reads, and a failure while paused stops the run as it unwinds.
+- **Green at 6a0adfc09**: api_image HVF 33 of 33 (2 ignored), KVM 33 of 33 twice (2 ignored).
+- **4e0b82699 and nesting on KVM** (`--test nesting`, 14 tests, each run whole):
+
+  | tree | runs | each run |
+  |---|---|---|
+  | with 4e0b82699 (b8a861356 once, 6a0adfc09 three times) | 4 | 1 or 2 failed: `a_granted_workload_is_held_to_its_subtree` and `a_granted_workload_still_reaches_no_host_port_over_vsock` (b8a861356), `a_granted_commands_runtime_makes_boxes_in_its_own_subtree` (twice), `no_box_is_made_without_both_words_or_beside_a_domain` |
+  | D275's fixes out (red) | 3 | 14 of 14 |
+  | 6a0adfc09 without the `ROOM` arm's `reshare(domains)` | 3 | 14 of 14 |
+  | 4124d8c70 (4e0b82699 reverted) | 3 | 14 of 14 |
+
+  Each failure is a judged wait on the daemon refused as making no progress past this host's record: `shards stop
+  daemon made no progress for 34.751041ms, past the slowest answer of its kind seen on this host (19.244182ms)` (in
+  `Home::drop`, nesting.rs:168, while another daemon was starting in its home), `shards build image -q -t plain:1 ...
+  made no progress for 307.311174ms, past ... (156.498513ms)`, `shards ps -q --no-trunc`. 4e0b82699 is reverted from
+  the vendor point and owed to its lane (D275, held back); the pushed revert's message says five runs and four at
+  6a0adfc09: they were four and three, as here.
+- **Green at 4124d8c70, the vendor point** (the passes above at their full scope):
+
+  | | HVF | KVM |
+  |---|---|---|
+  | clippy (host; init and the test guest for musl) | clean | clean; clean |
+  | shards-init's unit tests (Linux) | | 325 of 326 (`a_members_top_lists_its_own_processes_alone`, below) |
+  | `hv::hvf::tests`; api_run's plug unit test | pass; pass | ; pass |
+  | api_image | 32 of 32 (2 ignored) | 32 of 32 (2 ignored) |
+  | nesting | 14 of 14 | 14 of 14, three runs |
+  | member_exec, managed_output, tty, engine_ring, guest_time | 6, 29, 7, 8, 1: all | 6, 38, 7, 8, 1: all |
+  | boot `shards_api_` | 3 of 3 | 3 of 3 |
+  | policy check | pass | pass |
+
+  `scripts/lint aarch64-apple-darwin` (the workspace's clippy and the GPU renderer's) at 6a0adfc09: clean; every other
+  target's lint is CI's (below).
+- **Red (D275's fixes out)**:
+  - `a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug`: HVF `shards-init: ended: the agents'
+    memory, 23465984 bytes, was past their share, 23212032` (kiln's 20873216, P1.4); KVM `75132928 bytes, was past
+    their share, 75083776`: each member ended at its boot's `MemAvailable`, its run told to plug nothing.
+  - `an_orchestrators_room_is_its_members_share`, KVM: ended at its boot share, 75116544, before the room of 256 MiB,
+    in words naming no room.
+  - `the_least_envelope_saves_and_restores_...`: HVF's run did not end 0 (api_image.rs 1271); KVM's passed (its
+    `alloc 64` fits x86-64's 128 MiB boot).
+- **Mutation (no share re-derived at `ROOM`, 4e0b82699's guard)**, KVM: the half-room case's member, held at the run's room, was never
+  ended: its channel made no progress, its VM process asleep (0 of 22 threads runnable), until the test's wait
+  refused it 12.6 s in. Green: ended `Signaled(9)` in init's words naming the room.
+- **Not caused by this batch, each A/B'd:**
+  - shards-init's `a_members_top_lists_its_own_processes_alone` ("the member ended before its exec", domains.rs) fails
+    3 of 3 on adacachy2 with init as at ce5f97ab6 too: this host's (Landlock-confined `execv` of `/bin/sleep`), not
+    the share's.
+- **Unrun or owed.** WHP and every other target's tests and lints: GitHub CI run 43748291795 at 4124d8c70 (its
+  windows-2022 and windows-2025 legs boot WHP), still running when the vendor point was merged to main at Ada's word
+  (2026-11-15, about 18:55Z): its lints had passed on Windows x86-64 and arm64 and Linux glibc x86-64 and arm64 at
+  6a0adfc09, whose code 4124d8c70 changes only in init and the test guest; every other result is owed, ROOT's to follow; KVM arm64 (the L1 guest on an M3+ Mac), musl hosts and other Linux
+  distributions and kernels: unverified here. 4e0b82699's stall and D275's review note on it (a member's page cache
+  counted twice at a re-derivation with no room) are its lane's. No performance is claimed (R14).
+- **The harness.** `docs/research/measurements/vendor-point-1115/svp.sh` (one pass: its steps' commands as above, each
+  step's exit and seconds to a summary), run on HVF through `launchd-run.sh` and on KVM as a user unit.
+
+### M606. What a Windows thread in FlushFileBuffers shows a look (D215)
+
+Question: does a thread waiting on its disk's flush show a wait reason of its own to D215's
+Windows reader, as macOS's `TH_STATE_UNINTERRUPTIBLE` and Linux's `D` do (M600, M601), and do
+its process's I/O counts show the wait between two looks?
+
+Method: `docs/research/measurements/judge-blocked/wait-reasons` (`cargo run --release
+--offline -- 3000`) starts three children of its own in turn and reads the system's process
+records 3,000 times for each (NtQuerySystemInformation SystemProcessInformation, as
+progress.rs's `records` does): each thread's state and wait reason (KWAIT_REASON), and its
+process's record's I/O operation and byte counts (`Reserved7`, the counts
+GetProcessIoCounters gives) and hard faults (`Reserved1[8..12]`, `HardFaultCount` in System
+Informer's phnt), and whether those had grown since the read before. Children: `flush`, 4
+KiB written at its file's start and FlushFileBuffers, again and again; `pipe`, a read of a
+pipe no one writes; `sleep`, 1 ms sleeps. Host: jupiter (Windows 10.0.26200, AMD Ryzen AI
+Max+ 395, 32 CPUs, 9 of 32 idle, C: 98% full, Defender real-time protection on), 2026-11-15.
+
+| child | its thread | reads | state and reason | counts grown |
+|---|---|---|---|---|
+| flush | the flusher | 2,360 | waiting, Executive | 1,862 |
+| flush | the flusher | 543 | running | 539 |
+| flush | the flusher | 97 | ready, standby, deferred ready, suspended, WrResource | 82 |
+| flush | its stdin's reader | 3,000 | waiting, Executive | 2,483 |
+| pipe | the pipe's reader | 3,000 | waiting, Executive | 0 |
+| sleep | the sleeper | 2,849 | waiting, UserRequest | 0 |
+
+Each read of the records took 13.1 to 13.8 ms. By their ends, the flusher's process had made
+36,515 write and 36,533 other operations (a FlushFileBuffers is an other one) and written
+149.6 MB, with 12 hard faults; the pipe reader's and the sleeper's counts stayed at their
+starts. So a flush and a read no peer answers wait alike, `Executive`: no reason tells the
+host's disk apart, and none is folded in as a hold. The I/O counts are the evidence: they
+grew across 79% of the flusher's reads, and Windows counts a pipe's and a socket's I/O with a
+file's. A thread of the flusher's that only read its stdin showed its process's growth too:
+the counts are a process's, not a thread's. n is one run of each child.
+
+### M607. A git fetch's pack, which GitHub sends after its 200, cut as a silence and asked again for as long as the build ran (D276)
+
+- **Where.** adas-mac-studio-2.local and adas-mac-studio-3.local (Apple M3 Ultra, macOS 26.4), each a kiln run
+  of ROOT's; the LAN's path to github.com about 0.5 to 1 MiB/s. Before: kiln's carried `shards` at the vendor point
+  1c4570e36 (`ci/shards/pack.sh`, test-release). After: `shards` at d756d2a3b (main 4dfa731b1 with this change),
+  test-release.
+- **Found.** kiln's P1.4 E2E on HVF (its stand-ins' Agentfiles take a `HARNESS` from kiln's GitHub repository at
+  the checkout's commit, not yet pushed): a stand-in build sat 26 minutes in `build::git::snapshot` →
+  `shards_registry::http::Client::pause` (sampled), its step saying nothing under `--progress=quiet`.
+- **Reproduced** (R09): `FROM scratch` and `HARNESS x FROM https://github.com/hyper-light/kiln.git#0000…00aa:crates
+  TO /opt/x`, `shards build --progress=plain`, a fresh home: "the server's pack: Resource temporarily unavailable
+  (os error 35): asking github.com again in 0.2 s", then 4.9 s, 8.9 s (a handshake cut) and 23.2 s, still asking
+  at 75 s. Real git (2.50.1) asks the same: `GIT_TRACE_PACKET` shows GitHub's `ERR upload-pack: not our ref …`
+  0.28 s after its request, the whole fetch 0.52 s.
+- **Cause.** GitHub's upload-pack sends its head at once and its pack, or its `ERR`, after its work; the client
+  read the gap before the body's first bytes as a silence, cut at the slowest its advertisement's and ls-refs'
+  quick bodies had shown (D276's rule cut a lookup's answer alone, but a body's silences every request's); the
+  build's fetch asked again, and the next asking's quick bodies ended the run-out (`Paths::silenced` with
+  `Last::Bytes`), so the pack was cut again every time.
+- **After.** The same build at d756d2a3b asks nothing again: its fetch takes GitHub's `ERR` and goes on to D48's
+  whole fetch, as BuildKit's `git fetch --tags origin` does for a commit its server will not send by name (sampled
+  in `protocol::fetched`, reading the pack). At a commit GitHub has (kiln main 8bde8f2d1, the stand-in's
+  `crates/kiln/tests/fixtures/vm-stub/harness`): `#3 DONE 78.7s`, one asking, 80 MiB.
+- **Tests.** `cargo test -p shards-registry --lib -- http::`: 36 of 36, among them
+  `a_non_lookups_body_waits_out_its_servers_work_before_its_first_bytes` (a head at once and a body 300 ms later,
+  its path's silences 1 ms: a POST's body read whole, a GET's cut). Mutation (`working: false`, every body bounded
+  from its first read): that test fails at its POST's read. `cargo clippy -p shards-registry --all-targets`: clean.
+- **Unrun or owed.** Linux and Windows: CI's. A run-out stays its path's (`host:port`): a quick body of another
+  kind on the path ends one a slow body began, so a big pack over a jittery link can still be cut between its
+  bytes past a broken record and fetched whole again; owed to D276's next look.
+
+### M608. An `ARG`-named Agentfile source refused before its stage expanded it, and checked once expanded (D56, D54)
+
+- **Where.** adas-mac-studio.local-2 (Apple M3 Ultra, macOS 26.4), kiln runs of the Hex lead's, one source tree
+  per tip from a `git archive` tarball with the change as a patch, its own target
+  (`docs/research/measurements/vendor-point-1115/svp.sh`), test-release, `SHARDS_REQUIRE_VMS=1`. Logs:
+  `~/.cache/hex-lead/svp/logs/af-{red,green,mut}/` on that Studio.
+- **Found.** Main's CI after a9f17f701 (P4.1 to P4.3): `build.rs`'s `agents_expand_their_words_and_are_copied_from`
+  red on every backend, and on HVF at 4dfa731b1.
+- **Reproduced** (R09): `a_sources_variables_expand_before_it_is_checked` at 4dfa731b1 (9975d1f55's agentfile crate
+  is the same): `dockerfile parse error on line 2: "$SRC" is no path (./, ../ or /), Git or http(s) URL, or OCI
+  reference`, the error the build test shows.
+- **Cause.** The sources lane moved `AGENT`'s and `HARNESS`'s source checks (D54) to parse, before D56's expansion,
+  as `MCP`'s and `SKILL`'s were: a source named by a variable was judged by its name, not by what it names.
+- **After** (b9ad1d0fb on 4dfa731b1): the unit test passes, and `cargo test -p shards --test build --
+  agents_expand_their_words_and_are_copied_from` on HVF passes (1 of 1, 53 s with its build). Mutation (the plan's
+  check once expanded removed): the unit test fails, an unpinned `https://` `AGENT` source planned.
+- **Tests at the branch** (from 9975d1f55): `cargo test -p shards-agentfile`, every suite passed (43, 44, 1, 3, 12);
+  `cargo clippy -p shards-agentfile --all-targets` and `cargo fmt --check`: clean (macOS arm64).
+- **R01 to R16.** R01: no new panic path (a byte search; errors returned as before), clippy's panic lints clean.
+  R02: D56's contract restored (BuildKit's `dispatch` expands a command's words before it runs it); checking every
+  source only once expanded was rejected because it loses a written-out source's refusal at parse; refusing
+  variables in sources was rejected because it breaks D56. R03: no literal. R04: where a source is checked follows
+  from its text alone; refusals keep their words. R05/R06/R12/R13: the same three check functions shared by parse
+  and plan, one closure for `AGENT` and `HARNESS` in place of two copies; no wait or cache touched. R07: doc comments
+  say where each source is checked. R08/R14: not applicable, no hot path (a parse-time byte check). R09/R10: above.
+  R11: platform-independent parser code; macOS arm64 unit and HVF build run here. R15: the coordinator's own change,
+  merged on its light checks and the HVF build; pending checks below. R16: not applicable.
+- **Unrun or owed.** Linux (glibc, musl) and Windows: CI's at the merge. The build test on KVM and WHP: CI's
+  backends.

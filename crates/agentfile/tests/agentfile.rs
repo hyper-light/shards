@@ -2011,6 +2011,66 @@ fn fetched_sources_are_pinned_and_say_where_they_are() {
     assert_eq!(g.fetch.redirects, vec![b("mirror.example")]);
 }
 
+/// An extension's source that names a variable expands as `ADD`'s does (D56) and is held to
+/// its directive's checks once expanded (D54): `AGENT main FROM $SRC` parses as written, and
+/// what its stage makes of it is pinned and refused as a source written out is.
+#[test]
+fn a_sources_variables_expand_before_it_is_checked() {
+    use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+    use shards_agentfile::platform::Platform;
+    /// Every base image, as one of one layer for linux/amd64.
+    struct Bases;
+    impl Resolver for Bases {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let Directive::Agent(a) = one("AGENT main FROM $SRC") else {
+        panic!()
+    };
+    assert_eq!(a.source, b("$SRC"));
+    let Directive::Mcp(m) = one("MCP files FROM ${MCP_SRC}") else {
+        panic!()
+    };
+    assert_eq!(m.source, b("${MCP_SRC}"));
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: Dialect::Agentfile,
+        ..Default::default()
+    };
+    for (text, words) in [
+        (
+            "FROM alpine\nARG SRC=https://h.example/a.tgz\nAGENT a FROM $SRC\n",
+            "AGENT from an http(s) URL is pinned by --checksum=sha256:<hex>",
+        ),
+        (
+            "FROM alpine\nARG SRC=s3://b/k.tgz\nHARNESS h FROM $SRC\n",
+            "HARNESS from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>",
+        ),
+        (
+            "FROM alpine\nARG M=s3://b/k\nMCP m FROM $M\n",
+            "MCP takes no s3:// source",
+        ),
+        (
+            "FROM alpine\nARG S=./s.md\nSKILL --redirect=x.example $S /skills/s/SKILL.md\n",
+            "SKILL --redirect grants where an http(s) or Git source is redirected",
+        ),
+    ] {
+        let e = plan::plan(text.as_bytes(), &opts, &Bases).unwrap_err();
+        let got = String::from_utf8_lossy(&e.message);
+        assert!(got.contains(words), "{text}: {got}");
+    }
+}
+
 /// SKILL and MCP take `--redirect` as AGENT and HARNESS do (D54): where their source is
 /// fetched from an http(s) URL or Git and can be redirected, each `HOST[:PORT]`; refused for
 /// a context path, a skill copied from another stage, and a remote MCP server, which is

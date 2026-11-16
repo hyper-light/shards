@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use shards_agentfile::url as gourl;
-use shards_registry::http::{Cancel, Client, Patience, Request};
+use shards_registry::http::{Cancel, Client, Request};
 use shards_registry::url::{Scheme, Url};
 
 use sha2::Digest as _;
@@ -810,14 +810,11 @@ impl<'p> Session<'p> {
         }
         let cancel = Cancel::new();
         let tls = proxy.tls.clone();
-        // As the client wrote it: its own User-Agent or none; waiting as long as the step
-        // does, as Go's transport has no bound; never to the host itself.
+        // As the client wrote it: its own User-Agent or none; its answers and silences
+        // waited for as long as the step does, as Go's transport has no bound, the step's own
+        // client their judge (D110, D276); never to the host itself.
         let client = Client::new(Box::new(move |_| Ok(tls.clone())), "")
-            .with_patience(Patience {
-                head: None,
-                stall: None,
-                ..Patience::default()
-            })
+            .following_liveness()
             .reaching(proxy.reach)
             .with_proxies(upstream)
             .cancelled_by(cancel.clone());

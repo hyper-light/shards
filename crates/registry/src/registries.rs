@@ -23,7 +23,6 @@
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use serde::Deserialize;
 
@@ -119,11 +118,11 @@ impl Registries {
         if self.networks.is_empty() {
             return false;
         }
-        // Looked up as a connection to it looks it up, within a dial's time (http.rs,
-        // `dial`); a name that cannot be is in no network, as `isCIDRMatch` finds.
-        let within = crate::http::Patience::default().connect;
+        // Looked up as a connection to it looks it up, while the system's resolver works on
+        // it (http.rs, `resolve`); a name that cannot be is in no network, as `isCIDRMatch`
+        // finds.
         let addresses: Vec<IpAddr> = crate::url::Url::parse(&format!("https://{authority}/"))
-            .and_then(|url| crate::http::resolve(&url, Instant::now() + within, None))
+            .and_then(|url| crate::http::resolve(&url, None, crate::http::system_lookup))
             .map(|found| found.iter().map(|a| a.ip()).collect())
             .unwrap_or_default();
         addresses

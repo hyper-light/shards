@@ -4336,6 +4336,24 @@ mod tests {
         }
     }
 
+    /// A boot's components' window (D270) takes its value, as a run's boot gives it beside its
+    /// slots (run.rs `boot_args`): unlisted among the flags `run` reads a value after
+    /// (`spec::RUN_VALUED`), every orchestrator's image boot was refused, "--component-window
+    /// needs a value".
+    #[test]
+    fn a_components_window_takes_its_value() {
+        let run = parse_run(args(&[
+            b"--kernel",
+            b"/k",
+            b"--pci-slots",
+            b"2",
+            b"--component-window",
+            b"8192",
+        ]))
+        .unwrap();
+        assert_eq!((run.cfg.pci_slots, run.cfg.component_window_mib), (2, 8192));
+    }
+
     /// What `restore` alone reads a value after, as `spec::RESTORE_VALUED` tells what reads
     /// its command line ahead of it (cli/mod.rs `vm_options`): each needs its value, which
     /// it takes whatever it reads as (D232).

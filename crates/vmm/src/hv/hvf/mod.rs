@@ -416,6 +416,7 @@ impl Vm {
         } else {
             None
         };
+        let (memory, memory_as_of) = self.watch.regions();
         Ok(Vcpu {
             kicker: Kicker {
                 sys: vcpu.kicker(),
@@ -428,7 +429,8 @@ impl Vm {
             ran: Arc::default(),
             index,
             on: false,
-            memory: lock(&self.watch.regions).clone(),
+            memory,
+            memory_as_of,
             watch: self.watch.clone(),
         })
     }
@@ -454,6 +456,9 @@ impl Region {
 #[derive(Debug, Default)]
 pub struct Watch {
     regions: Mutex<Vec<Region>>,
+    /// How many times `regions` has changed, counted under its lock: what tells a vCPU its
+    /// copy of them is out of date ([`Vcpu::memory_at`]).
+    changes: AtomicU64,
     recording: Mutex<Option<Recording>>,
     /// The pages the guest wrote since they were last taken ([`Watch::written`]), while the
     /// guest's writes are watched for a live move (D176 part 7): its writable memory taken
@@ -471,14 +476,28 @@ struct Recording {
 
 impl Watch {
     fn add(&self, region: Region) {
-        lock(&self.regions).push(region);
+        let mut regions = lock(&self.regions);
+        regions.push(region);
+        self.changes.fetch_add(1, Ordering::Release);
     }
 
-    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap), taken away
-    /// for writing at once where the guest's writes are watched.
+    /// Notes `region`, mapped while the VM runs (memory plugged, a run's swap, a range a
+    /// report of free memory gave back), taken away for writing at once where the guest's
+    /// writes are watched. A range that a region of the same access holds whole is listed
+    /// once: a report maps its range again each time it gives its pages back (D151).
     fn mapped(&self, region: Region) -> Result<()> {
         let dirty = lock(&self.dirty);
-        lock(&self.regions).push(region);
+        {
+            let mut regions = lock(&self.regions);
+            let end = region.gpa.saturating_add(region.len);
+            let held = regions.iter().any(|r| {
+                r.perms == region.perms && r.holds(region.gpa) && end <= r.gpa.saturating_add(r.len)
+            });
+            if !held {
+                regions.push(region);
+                self.changes.fetch_add(1, Ordering::Release);
+            }
+        }
         if dirty.is_some() && region.perms.writes() {
             sys::protect(region.gpa, region.len, region.perms.read_only())?;
         }
@@ -488,12 +507,18 @@ impl Watch {
     /// Forgets the regions within `len` bytes at `gpa`, unmapped.
     fn unmapped(&self, gpa: u64, len: u64) {
         let end = gpa.saturating_add(len);
-        lock(&self.regions).retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+        let mut regions = lock(&self.regions);
+        let before = regions.len();
+        regions.retain(|r| r.gpa < gpa || r.gpa.saturating_add(r.len) > end);
+        if regions.len() != before {
+            self.changes.fetch_add(1, Ordering::Release);
+        }
     }
 
-    /// The region that holds `gpa`, where one does.
-    fn region_of(&self, gpa: u64) -> Option<Region> {
-        lock(&self.regions).iter().find(|r| r.holds(gpa)).copied()
+    /// Its regions, and how many changes of them they are as of.
+    fn regions(&self) -> (Vec<Region>, u64) {
+        let regions = lock(&self.regions);
+        (regions.clone(), self.changes.load(Ordering::Relaxed))
     }
 
     /// Takes all guest memory away and starts recording. Call with every vCPU out of the
@@ -767,9 +792,13 @@ pub struct Vcpu {
     /// Powered on. Only a powered-off vCPU consults the shared power table, so exits
     /// in the running guest take no lock.
     on: bool,
-    /// The VM's guest memory, fixed before any vCPU exists: a fault there is a page taken
-    /// away by `watch`, never a device access.
+    /// The VM's guest memory as `watch` listed it, and how many changes of the list that
+    /// copy is as of ([`Watch::changes`]): a fault there is a page the watch took away,
+    /// never a device access. Copied again at an exit on memory once the list has changed
+    /// (memory plugged or unplugged, a run's swap mapped), so that memory mapped while the
+    /// vCPU runs is given back as its RAM is.
     memory: Vec<Region>,
+    memory_as_of: u64,
     watch: Arc<Watch>,
 }
 
@@ -839,7 +868,7 @@ impl Vcpu {
             };
             let returned = given_back.take();
             match esr::ec(syndrome) {
-                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory.iter().any(|r| r.holds(ipa)) => {
+                ec @ (esr::EC_DABT_LOW | esr::EC_IABT_LOW) if self.memory_at(ipa).is_some() => {
                     given_back = self.give_back(io, ec, syndrome, ipa, returned)?;
                 }
                 // A cache maintenance instruction on no guest memory: nothing to keep
@@ -867,6 +896,19 @@ impl Vcpu {
         }
     }
 
+    /// Its copy of the watch's guest memory, copied again where the list has changed since.
+    fn refresh_memory(&mut self) {
+        if self.watch.changes.load(Ordering::Acquire) != self.memory_as_of {
+            (self.memory, self.memory_as_of) = self.watch.regions();
+        }
+    }
+
+    /// The guest memory that holds `ipa`, as the watch lists it now.
+    fn memory_at(&mut self, ipa: u64) -> Option<Region> {
+        self.refresh_memory();
+        self.memory.iter().find(|r| r.holds(ipa)).copied()
+    }
+
     /// A fault on guest memory, which faults only while [`Watch`] has taken it away, or
     /// for a write to read-only device memory. The page goes back, and the access runs
     /// again. Returns the page if it went back whole; `last` is the page the previous exit
@@ -879,15 +921,7 @@ impl Vcpu {
         ipa: u64,
         last: Option<u64>,
     ) -> Result<Option<u64>> {
-        // Memory mapped since this vCPU was made (plugged, a run's swap) is the watch's to
-        // say.
-        let Some(region) = self
-            .memory
-            .iter()
-            .find(|r| r.holds(ipa))
-            .copied()
-            .or_else(|| self.watch.region_of(ipa))
-        else {
+        let Some(region) = self.memory_at(ipa) else {
             return Err(Error::Guest(self.describe_fault(ec, syndrome, ipa)));
         };
         // Cache maintenance reports a write, and needs only to read: it goes on once the
@@ -1222,6 +1256,7 @@ impl Vcpu {
     /// which the restore sets again; HVF returns its `hvc #0` as the loop's end.
     pub fn prefetch(&mut self, vm: &Vm, pages: &[Touch]) -> Result<usize> {
         let lse = prefetch::lse(self.sys.sys_reg(sysreg::ID_AA64ISAR0_EL1)?);
+        self.refresh_memory();
         let list = prefetch::entries(pages, PAGE, lse, |page| {
             let r = self.memory.iter().find(|r| r.holds(page))?;
             Some(r.perms == sys::Perms::RWX)
@@ -1415,7 +1450,9 @@ mod tests {
         // A guest that reads a page of its own and writes another, powers off (PSCI
         // SYSTEM_OFF), writes the next page, powers off, and writes the next: mov x1, x0;
         // add x3, x1, #2 * PAGE; ldr x2, [x3]; str x1, [x1]; mov w0, #SYSTEM_OFF; hvc #0;
-        // then twice add x1, x1, #PAGE; str x1, [x1]; hvc #0.
+        // then twice add x1, x1, #PAGE; str x1, [x1]; hvc #0; then stores x5 past x4 and
+        // loads it back, and powers off: str x5, [x4, #16]; ldr x6, [x4, #16]; hvc #0; then
+        // stores x4 twice at x4, a store pair, and powers off: stp x4, x4, [x4]; hvc #0.
         const CODE: u64 = 0x9000_0000;
         let code_len = 4 * PAGE as usize;
         let code = crate::platform::reserve(code_len).unwrap().as_ptr();
@@ -1434,6 +1471,11 @@ mod tests {
             0xd400_0002,
             next,
             0xf900_0021,
+            0xd400_0002,
+            0xf900_0885,
+            0xf940_0886,
+            0xd400_0002,
+            0xa900_1084,
             0xd400_0002u32,
         ];
         for (i, word) in program.iter().enumerate() {
@@ -1469,6 +1511,13 @@ mod tests {
         assert_eq!(regs(), [0; 4]);
         vm.restore_gic(&saved).unwrap();
         assert_eq!(regs(), before);
+
+        // A page that vCPU 0 is made before, mapped as a plug maps memory (`Stage2::map`) at
+        // the first byte of what arm64's 64 MiB guest plugs (`vm::aarch64::plug_at`).
+        const PLUGGED: u64 = 0xc000_0000;
+        const STORED: u64 = 0x5eed_0000_0000_0016;
+        let plugged = crate::platform::reserve(PAGE as usize).unwrap().as_ptr();
+        let plugged_at = plugged.expose_provenance();
 
         // vCPU 0 gets distinctive state and is captured; vCPU 1 (the next redistributor
         // frame, so vCPU 0 stays alive meanwhile) restores it and must capture the same.
@@ -1577,6 +1626,48 @@ mod tests {
                     "the write after a recording within the watch ended"
                 );
                 watch.unwatch_writes();
+
+                // Memory mapped once this vCPU was made, as plugged memory is, is the watch's
+                // as RAM is: taken away as a recording starts, and given back to the vCPU that
+                // faults on it, never taken for a device. Taken for one, an access the
+                // framework says in full (ISV 1) went to no device, the store dropped and the
+                // load zero, and a store pair, which it says with no syndrome to emulate (ISV
+                // 0), ended the VM: "unhandled guest exception: EC 0x24", as kiln's harnesses'
+                // VMs ended at the least envelope, at the first byte their guests plugged.
+                #[derive(Default)]
+                struct Devices(Mutex<Vec<u64>>);
+                impl Io for Devices {
+                    fn mmio_read(&self, addr: u64, data: &mut [u8]) {
+                        lock(&self.0).push(addr);
+                        data.fill(0);
+                    }
+                    fn mmio_write(&self, addr: u64, _data: &[u8]) {
+                        lock(&self.0).push(addr);
+                    }
+                }
+                let devices = Devices::default();
+                let host = std::ptr::with_exposed_provenance_mut::<u8>(plugged_at);
+                // SAFETY: the reservation is never unmapped.
+                unsafe { vm.stage2().map(host, PLUGGED, PAGE as usize) }.unwrap();
+                a.sys.set_x(4, PLUGGED).unwrap();
+                a.sys.set_x(5, STORED).unwrap();
+                watch.start().unwrap();
+                let whole = a.run(&devices).map_err(|e| e.to_string());
+                let loaded = a.sys.x(6).unwrap();
+                let touched = watch.stop();
+                watch.start().unwrap();
+                let paired = a.run(&devices).map_err(|e| e.to_string());
+                watch.stop();
+                assert_eq!(
+                    (whole, loaded, paired, lock(&devices.0).clone()),
+                    (Ok(Exit::Shutdown), STORED, Ok(Exit::Shutdown), Vec::new()),
+                    "memory mapped since this vCPU was made: (its store and load, the value \
+                     loaded, its store pair, the device accesses made of them)"
+                );
+                assert!(
+                    touched.iter().any(|t| t.gpa == PLUGGED && t.written),
+                    "the write to memory mapped since, recorded: {touched:?}"
+                );
                 done_rx.recv().unwrap();
             });
             s.spawn(move || {
@@ -1587,6 +1678,9 @@ mod tests {
                 done_tx.send(()).unwrap();
             });
         });
+        // SAFETY: within the reservation; no vCPU runs any more.
+        let landed = unsafe { plugged.cast::<[u64; 3]>().read() };
+        assert_eq!(landed, [PLUGGED, PLUGGED, STORED]);
         for i in 0..ram_len {
             // SAFETY: within the reservation; no vCPU runs any more.
             assert_eq!(unsafe { ram.add(i).read() }, pattern(i), "byte {i}");
