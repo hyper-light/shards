@@ -853,7 +853,12 @@ fn a_contexts_engine_is_its_machines() {
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert_eq!(named, ["laptop"], "{clients}");
-    assert!(!machine.join("invitations/again").exists(), "the invitation kept");
+    // Its record kept as ended, used, so that no other key takes it (remote-08).
+    let record = std::fs::read_to_string(machine.join("invitations/again")).unwrap_or_default();
+    assert!(
+        record.starts_with("shards invitation ended 1\nused "),
+        "the invitation not ended as used: {record:?}"
+    );
     // A socket someone removed is served again as the daemon next looks.
     std::fs::remove_file(&engine).unwrap();
     let listed = run_shards_env(&["ps"], &["-a"], &on_laptop);
