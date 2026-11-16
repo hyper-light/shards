@@ -58,7 +58,7 @@ impl Command {
             to_host,
             from_host,
             said,
-        } = start_host(&binary, args, env).map_err(|e| match e {
+        } = start_host(&binary, args, env, None).map_err(|e| match e {
             ImageRefusal::Os { what, kind } => NotStarted::Os { what, kind },
             other => NotStarted::Start(other.to_string()),
         })?;

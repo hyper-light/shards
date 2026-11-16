@@ -4,10 +4,10 @@
 //! fact: an answer, a channel's bytes or end, the host's exit; a caller's patience bounds
 //! only its own wait.
 //!
-//! The host is started holding its three standard streams alone (D248), reaped under the
-//! state's lock as `exited` is set, and signalled only while it is unreaped
-//! (`shards_ipc::Child`), so no signal reaches another process that took its pid (as
-//! `crate::client` does a direct boot's).
+//! The host is started holding its three standard streams alone (D248), and on Unix its
+//! links socket (D285 slice 4); reaped under the state's lock as `exited` is set, and
+//! signalled only while it is unreaped (`shards_ipc::Child`), so no signal reaches another
+//! process that took its pid (as `crate::client` does a direct boot's).
 //!
 //! A lease the host asks (D242) is asked of the run's lessor on a thread of its own, and every
 //! lease it gives is released once: as the host says the run released them, as its answers
@@ -27,6 +27,8 @@ use super::wire::{
 use super::{
     ChannelEnd, ImageGuest, ImageRefusal, ImageSpec, Leased, Lessor, MemberEnd, MemberName, RunLessor,
 };
+
+mod links;
 
 /// The most of a member channel's bytes the client lets its host send ahead of what the
 /// caller's pipe has taken: one read of the guest's (`run::CHUNK`), the most one of its
@@ -135,6 +137,9 @@ struct State {
     /// The run's grants past its microVM, as its host last said them (its start's, then each
     /// network change's answer's, D273), held as [`published`](Self::published) is.
     egress: wire::Narrowing,
+    /// The run's places on networks shared by runs, as its host last said them (each network
+    /// change's answer's, D285), held as [`published`](Self::published) is.
+    networks: Vec<wire::OnNetwork>,
     /// Each ask its host refused at once as its run was paused or pausing (`ASK_PAUSED`, D267),
     /// by its id, until its asker takes it.
     asks_paused: std::collections::HashSet<u32>,
@@ -416,6 +421,10 @@ struct Shared {
     /// Its own steps are said among its host's diagnostics ([`Shared::step`]): its host times
     /// its run (`SHARDS_TIMING` in its environment, PM M593).
     timed: bool,
+    /// This process's end of its host's links socket (D285 slice 4, Unix), on which each link
+    /// of a network shared by runs is handed it ([`links`]).
+    #[cfg(unix)]
+    links: Option<std::os::unix::net::UnixStream>,
 }
 
 /// The file the host's diagnostics are written to, held within its caller's bound
@@ -1007,6 +1016,13 @@ impl Shared {
     }
 }
 
+/// The run host's end of its links socket (D285 slice 4): on Unix a socket it is given as its
+/// descriptor [`wire::LINKS_FD`]; on Windows none, where a link's socket rides its ask.
+#[cfg(unix)]
+pub(crate) type LinksEnd = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+pub(crate) type LinksEnd = std::convert::Infallible;
+
 /// The run host started, and the ends of its standard streams this process holds.
 pub(crate) struct Host {
     pub(crate) process: shards_ipc::Child,
@@ -1031,11 +1047,13 @@ pub(crate) type Output = shards_ipc::Pipe;
 /// (`POSIX_SPAWN_CLOEXEC_DEFAULT` on macOS, every descriptor close-on-exec on Linux, a
 /// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` of its three on Windows), where std's would hand it
 /// whatever another thread of the orchestrator holds inheritable at that moment. A variable's
-/// name that is not UTF-8 is refused, as that spawn names variables in UTF-8.
+/// name that is not UTF-8 is refused, as that spawn names variables in UTF-8. On Unix `links`,
+/// where given, is its links socket (D285 slice 4), its descriptor [`wire::LINKS_FD`].
 pub(crate) fn start_host(
     program: &Path,
     args: &[&OsStr],
     env: &[(OsString, OsString)],
+    links: Option<&LinksEnd>,
 ) -> Result<Host, ImageRefusal> {
     let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
     let set = env
@@ -1061,12 +1079,18 @@ pub(crate) fn start_host(
     #[cfg(unix)]
     let ends = {
         use std::os::fd::AsFd as _;
-        [
+        let mut ends = vec![
             (child_in.as_fd(), 0),
             (child_out.as_fd(), 1),
             (child_err.as_fd(), 2),
-        ]
+        ];
+        if let Some(links) = links {
+            ends.push((links.as_fd(), wire::LINKS_FD));
+        }
+        ends
     };
+    #[cfg(windows)]
+    let _ = links;
     #[cfg(windows)]
     let ends = {
         use std::os::windows::io::AsHandle as _;
@@ -1145,12 +1169,28 @@ impl Begun {
             .or_else(|| std::env::var_os("SHARDS_BIN").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("shards"));
         let os = |what: &'static str| move |e: io::Error| ImageRefusal::Os { what, kind: e.kind() };
+        // Its links socket (D285 slice 4, Unix): its end given it as a descriptor of its own,
+        // this process's kept to hand it each link of a network shared by runs.
+        #[cfg(unix)]
+        let (links, theirs) =
+            std::os::unix::net::UnixStream::pair().map_err(os("the run host's links socket"))?;
+        #[cfg(unix)]
+        let host = start_host(
+            &binary,
+            &[OsStr::new("api-run"), OsStr::new(wire::LINKS_ARG)],
+            env,
+            Some(&theirs),
+        )?;
+        #[cfg(windows)]
+        let host = start_host(&binary, &[OsStr::new("api-run")], env, None)?;
+        #[cfg(unix)]
+        drop(theirs);
         let Host {
             process,
             to_host,
             from_host,
             said,
-        } = start_host(&binary, &[OsStr::new("api-run")], env)?;
+        } = host;
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
@@ -1160,6 +1200,8 @@ impl Begun {
             sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
             timed: timed(env),
+            #[cfg(unix)]
+            links: Some(links),
         });
         shared.step(format_args!("its run host {} started", process.id()));
         // Shared: the session and its exit watcher, which outlives this call.
@@ -1747,6 +1789,21 @@ impl Session {
             .ok_or_else(|| ImageRefusal::Image(format!("{member:?}: the image declares no such member")))
     }
 
+    /// Member `member`'s index for `grant` on a network shared by runs (D285): one that runs,
+    /// and a grant that is one ([`wire::NetworkGrant::refused`]), before anything is asked.
+    fn shared_member(&self, member: &MemberName, grant: &wire::NetworkGrant) -> Result<u32, ImageRefusal> {
+        let info = self.index(member)?;
+        if !info.runs {
+            return Err(ImageRefusal::Image(format!(
+                "{member:?} is files alone, and runs nothing"
+            )));
+        }
+        if let Some(why) = grant.refused() {
+            return Err(ImageRefusal::Net(wire::NetRefusal::Grant, why));
+        }
+        Ok(info.index)
+    }
+
     /// The generation a swap started now (D270 slice 4), its channels pumped and given their room
     /// and its stdin's flow kept, as a restart's are ([`ImageGuest::restart`]).
     fn started_by_swap(&self, swapped: &wire::Swapped) -> Result<(), ImageRefusal> {
@@ -2175,6 +2232,7 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
             if let Ok(changed) = &answer.result {
                 state.published = changed.published.clone();
                 state.egress = changed.egress.clone();
+                state.networks = changed.networks.clone();
             }
             if let Some(awaited) = state.nets.get_mut(&answer.id) {
                 *awaited = Some(answer.result);
@@ -2907,6 +2965,35 @@ impl ImageGuest for Session {
             reach: reach.cloned(),
         };
         self.shared.net(change, patience).map(|changed| changed.egress)
+    }
+
+    fn connect(
+        &self,
+        member: &MemberName,
+        network: &str,
+        grant: &wire::NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<wire::OnNetwork>, ImageRefusal> {
+        let index = self.shared_member(member, grant)?;
+        links::connect(
+            &self.shared,
+            self.host.id(),
+            index,
+            network,
+            &grant.lowered(),
+            patience,
+        )
+    }
+
+    fn disconnect(
+        &self,
+        member: &MemberName,
+        network: &str,
+        grant: &wire::NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<wire::OnNetwork>, ImageRefusal> {
+        let index = self.shared_member(member, grant)?;
+        links::disconnect(&self.shared, index, network, &grant.lowered(), patience)
     }
 
     fn control(&self) -> Option<&wire::ControlAt> {
@@ -3767,6 +3854,8 @@ mod tests {
             sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
             timed: false,
+            #[cfg(unix)]
+            links: None,
         });
         lock(&s.state).inputs.insert((1, 0), InputFlow::default());
         let (reader, mut writer) = input_pipe(&s, 1, 0).unwrap();
@@ -3993,7 +4082,7 @@ mod tests {
         }
         let (read, write) = io::pipe().unwrap();
         inheritable(&write);
-        let host = start_host(&reader(), &[OsStr::new("api-run")], &[]).unwrap();
+        let host = start_host(&reader(), &[OsStr::new("api-run")], &[], None).unwrap();
         drop(write);
         let gone = writers_gone(&read);
         drop(host.to_host);
@@ -4024,11 +4113,11 @@ mod tests {
                 "api-run",
             ];
             let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-            start_host(Path::new("cmd"), &args, &env)
+            start_host(Path::new("cmd"), &args, &env, None)
         } else {
             let args = ["-c", "printf '%s\\n' \"$SHARDS_API_SPAWN_TEST\"; grep api-run"];
             let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-            start_host(Path::new("sh"), &args, &env)
+            start_host(Path::new("sh"), &args, &env, None)
         }
         .unwrap();
         let Host {
@@ -4052,7 +4141,7 @@ mod tests {
             use std::os::unix::ffi::OsStringExt as _;
             let bad = [(OsString::from_vec(vec![0xff]), OsString::from("x"))];
             assert!(matches!(
-                start_host(Path::new("sh"), &[], &bad),
+                start_host(Path::new("sh"), &[], &bad, None),
                 Err(ImageRefusal::Spec {
                     what: "the run host's environment",
                     ..
@@ -4484,6 +4573,7 @@ mod tests {
             changed: Vec::new(),
             published: Vec::new(),
             egress: added.clone(),
+            networks: Vec::new(),
         };
         let answer = wire::NetAnswer {
             id: 3,
@@ -4693,6 +4783,7 @@ mod tests {
             changed: vec![bound(41001)],
             published: vec![bound(41000), bound(41001)],
             egress: wire::Narrowing::default(),
+            networks: Vec::new(),
         };
         assert_eq!(
             take(&s, wire::to_client::NET_CHANGED, &answer(4, Ok(made.clone()))),
@@ -4705,6 +4796,7 @@ mod tests {
             changed: vec![bound(41000)],
             published: vec![bound(41001)],
             egress: wire::Narrowing::default(),
+            networks: Vec::new(),
         };
         assert_eq!(
             take(&s, wire::to_client::NET_CHANGED, &answer(5, Ok(after.clone()))),
@@ -4773,6 +4865,7 @@ mod tests {
                     changed: vec![bound.clone()],
                     published: vec![bound.clone()],
                     egress: wire::Narrowing::default(),
+                    networks: Vec::new(),
                 }),
             ),
             (
@@ -4784,6 +4877,7 @@ mod tests {
                     changed: vec![bound.clone()],
                     published: Vec::new(),
                     egress: wire::Narrowing::default(),
+                    networks: Vec::new(),
                 }),
             ),
         ] {
@@ -5187,6 +5281,8 @@ mod tests {
             sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
             timed: false,
+            #[cfg(unix)]
+            links: None,
         });
         let reader = {
             let shared = Arc::clone(&shared);
@@ -5559,6 +5655,8 @@ mod tests {
             }]),
             said_to: Mutex::new(None),
             timed: false,
+            #[cfg(unix)]
+            links: None,
         });
         let reader = {
             let shared = Arc::clone(&shared);

@@ -35,10 +35,10 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ComponentAt, ControlAsk, ControlAt, CredentialGrant, Fill,
     FinalUse, GuestTimes, HostUse, Keep, LeaseRefusal, MemberCeiling, MemberInfo, MemberKind, MemberReach,
-    Microvm, Narrowing, NetRefusal, Paused, PlugRefusal, Proto, Publish, Reach, Ready, Receiving,
-    RestartRefusal, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
-    SocketGrant, StartedFrom, Stats, StatsScope, SwapRefusal, SwapWhen, Swapped, Unused, UseBroken, VcpuTime,
-    decide,
+    Microvm, Narrowing, NetRefusal, NetworkGrant, OnNetwork, OnNetworkMember, Paused, PlugRefusal, Proto,
+    Publish, Reach, Ready, Receiving, RestartRefusal, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant,
+    SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, SwapRefusal, SwapWhen, Swapped,
+    Unused, UseBroken, VcpuTime, Way, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -719,6 +719,56 @@ pub trait ImageGuest: Send + Sync {
         reach: Option<&Reach>,
         patience: Duration,
     ) -> Result<Narrowing, ImageRefusal>;
+    /// Member `member` given `grant` on the network shared by runs named `network` (D285), its
+    /// microVM in place: on the network from its first grant there, under the grant's name,
+    /// one member's ([`NetRefusal::NameTaken`] where another's), its run given an address
+    /// there (its guest's eth0's second) and linked to each other run of this process's on it;
+    /// a flow there crossing only where its sender's grant out and its receiver's grant in both
+    /// take it, held by each run's guest and network process (default deny; kiln's
+    /// `Change::Connect`, one grant each). Names are Docker's (`_` and `.` among them; a member's
+    /// one member's, an alias shared). Within its image's grants and its ceiling
+    /// ([`ImageSpec::egress_ceiling`]), as [`member_egress`](Self::member_egress)'s reach is:
+    /// `Out` within its image's or its ceiling's port grants, or a destination either names at
+    /// the grant's peer; `In` within the ports its image's `EXPOSE` gives it coming in (D122)
+    /// or its ceiling's port grants; past them refused [`NetRefusal::Widening`]. A network is
+    /// made beforehand in the run's home, as `network create` makes one, never by a
+    /// connection; one another process's runs are on is refused
+    /// [`NetRefusal::PairedElsewhere`]. A grant held already is done already. Answers the
+    /// run's places on shared networks once its network process and its guest hold the grant,
+    /// waiting at most `patience` for each run it asks; refused as [`ImageRefusal::Net`]:
+    /// [`NetRefusal::NoSuchNetwork`], [`NetRefusal::Exhausted`], [`NetRefusal::Ipv6`],
+    /// [`NetRefusal::Overlaps`] for a subnet that meets another of its microVM's,
+    /// [`NetRefusal::Grant`] for a grant that is none, [`NetRefusal::Unknown`] for a member
+    /// that runs not, [`NetRefusal::NoNetwork`], [`NetRefusal::Network`] for its network
+    /// process's or its guest's other refusals. By default refused
+    /// [`ImageRefusal::Unsupported`], for a guest that joins no shared network.
+    fn connect(
+        &self,
+        member: &MemberName,
+        network: &str,
+        grant: &NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<OnNetwork>, ImageRefusal> {
+        let _ = (member, network, grant, patience);
+        Err(shared_unsupported())
+    }
+    /// `grant` of member `member` on shared network `network` taken back (D285), in place: its
+    /// guest first, which shuts its gate on what it lost and resets its open TCP flows there,
+    /// then its network process, which ends each flow it no longer admits. The member off the
+    /// network with its last grant there, and the run with its last member's: its address let
+    /// go and its links dropped, each other run of this process's told its members without it.
+    /// A grant not held is done already. Answered, waiting and refused as
+    /// [`connect`](Self::connect).
+    fn disconnect(
+        &self,
+        member: &MemberName,
+        network: &str,
+        grant: &NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<OnNetwork>, ImageRefusal> {
+        let _ = (member, network, grant, patience);
+        Err(shared_unsupported())
+    }
     /// Where the run's agent-control endpoint is bound, and its microVM's key, which its
     /// controller pins (D252), where [`ImageSpec::control`] asked for one: as the run started,
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its
@@ -957,6 +1007,14 @@ pub trait ImageGuest: Send + Sync {
     /// [`ImageRefusal::GpuProbe`]: `Unavailable` for a run that asked none, `ReportTaken` once
     /// taken, `Pending` past either budget, and its frame's own refusals.
     fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, ImageRefusal>;
+}
+
+/// What a guest that joins no network shared by runs refuses a connection with (D285).
+fn shared_unsupported() -> ImageRefusal {
+    ImageRefusal::Unsupported {
+        what: "a network shared by runs",
+        why: "this guest joins none".into(),
+    }
 }
 
 /// A run stopped before its microVM started: it used nothing of a machine.

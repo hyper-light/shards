@@ -1301,6 +1301,26 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.member_egress(member, reach, patience)
     }
 
+    fn connect(
+        &self,
+        member: &super::MemberName,
+        network: &str,
+        grant: &wire::NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<wire::OnNetwork>, ImageRefusal> {
+        self.guest.connect(member, network, grant, patience)
+    }
+
+    fn disconnect(
+        &self,
+        member: &super::MemberName,
+        network: &str,
+        grant: &wire::NetworkGrant,
+        patience: Duration,
+    ) -> Result<Vec<wire::OnNetwork>, ImageRefusal> {
+        self.guest.disconnect(member, network, grant, patience)
+    }
+
     fn swap(
         &self,
         at: &str,
