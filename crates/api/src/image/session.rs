@@ -239,6 +239,16 @@ type Saved = Result<(), (wire::SaveRefusal, String)>;
 /// refused and why.
 type Restarted = Result<u32, (wire::RestartRefusal, String)>;
 
+/// What a restart its host refused (D270 slice 3b) is refused as: [`ImageRefusal::Workdir`]
+/// where its next generation could not enter its working directory, as a first generation's
+/// waits are refused (D277); [`ImageRefusal::Restart`] by its cause otherwise.
+fn restart_refused(cause: wire::RestartRefusal, why: String) -> ImageRefusal {
+    match cause {
+        wire::RestartRefusal::Workdir => ImageRefusal::Workdir(why),
+        cause => ImageRefusal::Restart(cause, why),
+    }
+}
+
 /// A swap's outcome as its host said it (D270 slice 4): every member's component after it, or
 /// refused and why.
 type Swapped = Result<wire::Swapped, (wire::SwapRefusal, String)>;
@@ -832,7 +842,7 @@ impl Shared {
             .and_then(|()| {
                 self.wait(waited, |s| {
                     if let Some(answer) = s.restarts.get_mut(&id).and_then(Option::take) {
-                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Restart(cause, why)));
+                        return Some(answer.map_err(|(cause, why)| restart_refused(cause, why)));
                     }
                     if let Some(end) = &s.end {
                         return Some(Err(ImageRefusal::Ended(end.clone())));
@@ -4466,6 +4476,22 @@ mod tests {
             Ok(false)
         );
         assert_eq!(lock(&s.state).egress, added);
+    }
+
+    /// D277 for a restart (D270 slice 3b): one its host refused as its member's next generation
+    /// could not enter its working directory is refused `Workdir`, as a first generation's waits
+    /// are, in its host's words; any other is the restart's own refusal.
+    #[test]
+    fn a_restart_whose_workdir_could_not_be_entered_is_refused_as_one() {
+        let words = "Harness codex: /w: errno 2: its guest could not enter it as it started";
+        assert_eq!(
+            restart_refused(wire::RestartRefusal::Workdir, words.into()),
+            ImageRefusal::Workdir(words.into())
+        );
+        assert_eq!(
+            restart_refused(wire::RestartRefusal::Failed, "its exec: ENOENT".into()),
+            ImageRefusal::Restart(wire::RestartRefusal::Failed, "its exec: ENOENT".into())
+        );
     }
 
     /// D270 slice 3b: a restart's answer is its asker's by its id, one no ask awaits dropped; a

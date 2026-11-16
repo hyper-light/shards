@@ -224,7 +224,8 @@ pub fn check(grants: &[CredentialGrant]) -> Result<(), Refused> {
 }
 
 /// A CLI whose own sign-in a run may capture outside its microVM (D242, step 8); its token
-/// endpoint's profile is the network process's (shards-net's `signin`).
+/// endpoint's profile is the network process's (shards-net's `signin`). It names an OAuth client:
+/// another CLI signing in as that client (goose's ChatGPT sign-in, as Codex) is granted as it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cli {
     ClaudeCode,

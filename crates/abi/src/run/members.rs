@@ -772,6 +772,10 @@ pub enum StartRefusal {
     Unsupported = 4,
     /// Its start failed, in init's words.
     Failed = 5,
+    /// It could not enter its working directory as it started (D277), as a first generation
+    /// that could not is told ([`kind::WORKDIR_UNENTERED`](super::kind::WORKDIR_UNENTERED)): its
+    /// answer's bytes are no words but that [`Unentered`], of the member answered.
+    Workdir = 6,
 }
 
 impl StartRefusal {
@@ -782,13 +786,14 @@ impl StartRefusal {
             3 => StartRefusal::Generation,
             4 => StartRefusal::Unsupported,
             5 => StartRefusal::Failed,
+            6 => StartRefusal::Workdir,
             _ => return None,
         })
     }
 }
 
 /// What came of a [`Start`]: the member and the generation asked, and its refusal where it was
-/// refused, with init's words; the payload of
+/// refused, with init's words ([`StartRefusal::Workdir`]'s an [`Unentered`]); the payload of
 /// [`kind::MEMBER_STARTED`](super::kind::MEMBER_STARTED).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartAnswer {
@@ -962,6 +967,16 @@ impl Start {
 }
 
 impl StartAnswer {
+    /// Member `told.member`'s generation `generation` refused, as it could not enter its working
+    /// directory as it started ([`StartRefusal::Workdir`], D277).
+    pub fn unentered(generation: u32, told: &Unentered) -> StartAnswer {
+        StartAnswer {
+            member: told.member,
+            generation,
+            refused: Some((StartRefusal::Workdir, told.encode())),
+        }
+    }
+
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let mut out = Vec::new();
         push_word(&mut out, self.member);
@@ -983,7 +998,17 @@ impl StartAnswer {
         r.0 = rest;
         let refused = match tag {
             0 => None,
-            tag => Some((StartRefusal::of(*tag).ok_or(Error::Shape)?, r.bytes()?.to_vec())),
+            tag => {
+                let why = StartRefusal::of(*tag).ok_or(Error::Shape)?;
+                let said = r.bytes()?.to_vec();
+                // A working directory unentered is an `Unentered` whole, of the member answered.
+                if why == StartRefusal::Workdir
+                    && Unentered::decode(&said).is_none_or(|told| told.member != member)
+                {
+                    return Err(Error::Shape);
+                }
+                Some((why, said))
+            }
         };
         r.end()?;
         Ok(StartAnswer {
@@ -1593,6 +1618,40 @@ mod tests {
         assert_eq!(Unentered::decode(&bytes), Some(told));
         for cut in 0..=8 {
             assert_eq!(Unentered::decode(&bytes[..cut]), None, "cut at {cut}");
+        }
+    }
+
+    /// D277 for a restart (D270): a next generation that could not enter its working directory
+    /// is answered `Workdir`, its bytes its member's `Unentered`, read back as told; one whose
+    /// bytes are no `Unentered`, or another member's, is malformed.
+    #[test]
+    fn a_next_generation_that_could_not_enter_its_workdir_is_answered_typed() {
+        let told = Unentered {
+            member: 2,
+            errno: 2,
+            workdir: b"/Users/ada/proj".to_vec(),
+        };
+        let answer = StartAnswer::unentered(3, &told);
+        assert_eq!((answer.member, answer.generation), (2, 3));
+        let read = StartAnswer::decode(&answer.encode().unwrap()).unwrap();
+        assert_eq!(read, answer);
+        let (why, said) = read.refused.unwrap();
+        assert_eq!(why, StartRefusal::Workdir);
+        assert_eq!(Unentered::decode(&said), Some(told.clone()));
+        for said in [
+            b"errno 2".to_vec(),
+            Unentered {
+                member: 5,
+                ..told.clone()
+            }
+            .encode(),
+        ] {
+            let bad = StartAnswer {
+                member: 2,
+                generation: 3,
+                refused: Some((StartRefusal::Workdir, said)),
+            };
+            assert_eq!(StartAnswer::decode(&bad.encode().unwrap()), Err(Error::Shape));
         }
     }
 }
