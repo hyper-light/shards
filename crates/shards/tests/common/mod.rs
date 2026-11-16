@@ -6836,6 +6836,7 @@ pub fn host_port_accept(port: &mut HostPort) -> io::Result<VsockStream> {
 /// it; its writes as `std` writes a file, each waited for to its end, a refused one's error
 /// the OS's own (ERROR_NO_DATA, 232, once its reader has closed its end).
 #[cfg(windows)]
+#[derive(Debug)]
 pub struct PipeStream {
     reads: shards_ipc::Pipe,
     /// None once its writes are shut down, which its peer reads as their end.
