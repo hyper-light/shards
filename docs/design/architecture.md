@@ -8583,11 +8583,19 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     refusal of an exec of a round's word is that round's answer too, nothing given, queued
     with every answer (`Answered`, `refuse_word`): as a state alone, reset as the word's
     next exec began, a round whose groups' thread looked only after its give-back began
-    lost it, waited on that give-back, and the next member's pass opened no round (CI run
-    43876891053 at 1b8d1cddd, macOS and three Windows jobs: the member that joined was told
-    its room twice, `16 != 15`). A round its answers finished is judged before the pass that
-    follows, so that pass opens the next where its group is still short. An answer or
-    refusal wakes the existing groups condvar. No new bound, reader or cache.
+    lost it and waited on that give-back. A round its answers finished is judged before the
+    pass that follows, so that pass opens the next where its group is still short. A round
+    asks the members it began with: one joining while it runs is told its room at each
+    pass, and asked to give back by the round after. The test had its second member's join
+    open round 2, true while passes waited out a 2 s pressure window; on D215's pace
+    (2275e3829) the pass after round 1's verdict comes first and opens round 2 with the
+    first member alone, so the second was told its room twice, `16 != 15` (`ROOM` where
+    `RECLAIM` was due; CI run 43876891053 at 1b8d1cddd, macOS and three Windows jobs, and
+    adas-mac-studio.local-2 at 4999d113a, after the queued refusal, 3 of 3). A thread now
+    plays the second's guest whichever round asks it, and the first's give-back brings its
+    group within its max, so the round after, ended by the first's unanswered room, stops
+    nothing. An answer or refusal wakes the existing groups condvar. No new bound, reader
+    or cache.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
