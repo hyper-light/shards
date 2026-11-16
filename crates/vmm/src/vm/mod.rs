@@ -618,6 +618,11 @@ impl pmem::Slots for crate::hv::DeviceSlots {
         unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len, writable) }.map_err(|e| e.to_string())
     }
 
+    unsafe fn map_programs(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map_programs(self, i, host, gpa, len) }.map_err(|e| e.to_string())
+    }
+
     fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String> {
         crate::hv::DeviceSlots::unmap(self, i, gpa, len).map_err(|e| e.to_string())
     }

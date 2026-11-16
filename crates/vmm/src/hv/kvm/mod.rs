@@ -460,10 +460,24 @@ impl DeviceSlots {
     }
 
     /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these, read-only
-    /// to the guest unless `writable`: its writes there exit as MMIO writes to nothing.
+    /// to the guest and executable: a component's programs, which its member runs through
+    /// DAX (D270).
     ///
     /// # Safety
     /// `host..host+len` must stay mapped until slot `i` is unmapped or the VM is destroyed.
+    pub unsafe fn map_programs(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // A read-only slot refuses writes alone (Linux 7.2-rc4): arm64's stage 2 gains execute
+        // at an exec fault (arch/arm64/kvm/mmu.c:1995-1996), and x86's maps a fault ACC_ALL with
+        // only `map_writable` cleared (arch/x86/kvm/mmu/mmu.c:4629, :4851).
+        // SAFETY: forwarded caller contract.
+        unsafe { self.map(i, host, gpa, len, false) }
+    }
+
+    /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these, read-only
+    /// to the guest unless `writable`: its writes there exit as MMIO writes to nothing.
+    ///
+    /// # Safety
+    /// As for [`map_programs`](Self::map_programs).
     pub unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let region = sys::kvm_userspace_memory_region {
             slot: self.slot(i)?,

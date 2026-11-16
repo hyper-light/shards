@@ -123,6 +123,13 @@ pub trait Slots: Send + Sync {
     /// VM is destroyed.
     unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String>;
 
+    /// [`map`](Self::map) for programs: read-only to the guest, and executable, as a
+    /// component's image holds what its member runs (D270), mapped through DAX.
+    ///
+    /// # Safety
+    /// As for [`map`](Self::map).
+    unsafe fn map_programs(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String>;
+
     /// Unmaps slot `i`, mapped at `gpa` for `len` bytes.
     fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String>;
 }
@@ -197,7 +204,8 @@ impl Components {
         // SAFETY: the region stays mapped in this process while its range is: the record
         // below holds it until `unmap` takes the range back, or the window drops after the
         // VM (`Running` drops the VM before the devices).
-        unsafe { self.slots.map(slot, region.host(), gpa, region.len(), false) }.map_err(Refusal::Host)?;
+        // Its member runs programs from it, through DAX: executable, as an image's root is.
+        unsafe { self.slots.map_programs(slot, region.host(), gpa, region.len()) }.map_err(Refusal::Host)?;
         placed.push(Placed {
             gpa,
             len: asked,
@@ -1599,6 +1607,10 @@ mod tests {
             Ok(())
         }
 
+        unsafe fn map_programs(&self, _: u32, _: *mut u8, _: u64, _: usize) -> Result<(), String> {
+            Ok(())
+        }
+
         fn unmap(&self, _: u32, _: u64, _: usize) -> Result<(), String> {
             Ok(())
         }
@@ -1608,20 +1620,29 @@ mod tests {
         Arc::new(SwapWindow::new(1 << 32, 8 * ALIGN, Box::new(Unmapped)).unwrap())
     }
 
-    /// Slots that keep what is mapped through them, by slot: `(guest address, length,
-    /// writable)`.
-    /// What each slot maps: its guest address, length, and whether the guest may write it.
-    type SlotMaps = std::collections::BTreeMap<u32, (u64, usize, bool)>;
+    /// What each slot maps, by slot: its guest address, its length, and what the guest may do
+    /// there (`r`, `rw`, or `rx`, programs').
+    type SlotMaps = std::collections::BTreeMap<u32, (u64, usize, &'static str)>;
 
     #[derive(Default)]
     struct Kept(Arc<Mutex<SlotMaps>>);
 
-    impl Slots for Kept {
-        unsafe fn map(&self, i: u32, _: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
-            match lock(&self.0).insert(i, (gpa, len, writable)) {
+    impl Kept {
+        fn keep(&self, i: u32, gpa: u64, len: usize, perms: &'static str) -> Result<(), String> {
+            match lock(&self.0).insert(i, (gpa, len, perms)) {
                 None => Ok(()),
                 Some(was) => Err(format!("slot {i} mapped twice: {was:?}")),
             }
+        }
+    }
+
+    impl Slots for Kept {
+        unsafe fn map(&self, i: u32, _: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
+            self.keep(i, gpa, len, if writable { "rw" } else { "r" })
+        }
+
+        unsafe fn map_programs(&self, i: u32, _: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+            self.keep(i, gpa, len, "rx")
         }
 
         fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String> {
@@ -1638,8 +1659,8 @@ mod tests {
         Arc::new(Region::of_file(f, name).unwrap())
     }
 
-    /// A components' window (D270) maps each file read-only at its first free range,
-    /// whole 2 MiB, through a slot of its own; one released gives its range and slot back to
+    /// A components' window (D270) maps each file read-only and executable (its member runs
+    /// its programs from it) at its first free range, whole 2 MiB, through a slot of its own; one released gives its range and slot back to
     /// the next; a file longer than any free range is refused naming the longest, and one
     /// past its slots refused as the bus refuses a function past its slots.
     #[test]
@@ -1661,8 +1682,8 @@ mod tests {
         assert_eq!(
             *lock(&maps),
             std::collections::BTreeMap::from([
-                (0, (at, 2 * ALIGN as usize, false)),
-                (1, (at + 2 * ALIGN, ALIGN as usize, false))
+                (0, (at, 2 * ALIGN as usize, "rx")),
+                (1, (at + 2 * ALIGN, ALIGN as usize, "rx"))
             ])
         );
         // Five ranges are left, at the window's end: six are not there.
@@ -1678,11 +1699,11 @@ mod tests {
         window.release(8).unwrap();
         assert_eq!(
             *lock(&maps),
-            std::collections::BTreeMap::from([(1, (at + 2 * ALIGN, ALIGN as usize, false))])
+            std::collections::BTreeMap::from([(1, (at + 2 * ALIGN, ALIGN as usize, "rx"))])
         );
         let c = component(dir.as_ref(), "c", ALIGN);
         assert_eq!(window.place(&c).unwrap(), at);
-        assert_eq!(lock(&maps).get(&0), Some(&(at, ALIGN as usize, false)));
+        assert_eq!(lock(&maps).get(&0), Some(&(at, ALIGN as usize, "rx")));
         let d = component(dir.as_ref(), "d", ALIGN);
         assert_eq!(window.place(&d).unwrap(), at + ALIGN);
         // Every slot maps a file.

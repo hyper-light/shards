@@ -4467,7 +4467,8 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     };
     assert_eq!(swapped.components, vec![at(Some(&digest), Some(&digest))]);
     assert_eq!(guest.components(), swapped.components);
-    assert_eq!(rest_within(&*guest, first), "got 15\n");
+    // `say-trap` says its marker, then that it is ready, then the signal it got.
+    assert_eq!(rest_within(&*guest, first), "ready\ngot 15\n");
     let (next, line) = line_within(&*guest, stdout(1));
     assert_eq!(line, "v2\n", "its component, laid at its path");
     let restored = ask(&*guest, |g| g.restore("/harness/codex", SwapWhen::Now, patience)).unwrap();
@@ -4477,7 +4478,7 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
         Vec::new(),
         "nothing wanted or held, its component let go"
     );
-    assert_eq!(rest_within(&*guest, next), "got 15\n");
+    assert_eq!(rest_within(&*guest, next), "ready\ngot 15\n");
     let (_, line) = line_within(&*guest, stdout(2));
     assert_eq!(line, "none\n", "its image's own again");
     assert_eq!(guest.started_from(), from);
@@ -4520,7 +4521,7 @@ fn a_harness_swapped_at_its_next_start_runs_its_component_once_restarted() {
         "its generation runs on"
     );
     assert_eq!(ask(&*guest, |g| g.restart(&codex(), &[], patience)), Ok(1));
-    assert_eq!(rest_within(&*guest, first), "got 15\n");
+    assert_eq!(rest_within(&*guest, first), "ready\ngot 15\n");
     let (_, line) = line_within(&*guest, stdout(1));
     assert_eq!(line, "v3\n", "laid at its next start");
     assert_eq!(

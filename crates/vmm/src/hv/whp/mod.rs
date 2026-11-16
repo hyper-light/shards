@@ -1045,12 +1045,25 @@ const RWX: WHV_MAP_GPA_RANGE_FLAGS =
 pub struct DeviceSlots(Arc<Partition>);
 
 impl DeviceSlots {
-    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
-    /// `writable`, never executable.
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest and
+    /// executable: a component's programs, which its member runs through DAX (D270).
     ///
     /// # Safety
     /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
     /// destroyed.
+    pub unsafe fn map_programs(&self, _i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        unsafe {
+            self.0
+                .map(host, gpa, len, WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagExecute)
+        }
+    }
+
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// As for [`map_programs`](Self::map_programs).
     pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let flags = if writable {
             WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite
