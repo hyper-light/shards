@@ -36856,7 +36856,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 built, S2-S5 owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 and S2 built, S3-S5 owed; Windows tests and WHP runs owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -36971,6 +36971,80 @@ finds nothing.
   connected (a read of no bytes on the way down, ERROR_BROKEN_PIPE) is dropped and replaced,
   so that a client that dies there stops no other. The same holds of a host port's own pair,
   which the spawner opens for its VM's dial (S3).
+
+**S2, built** (vmm's vsock device on pipes; its Windows unit tests written, not yet run):
+- *The connection's host end* (`conn.rs` `Host`, R04): a socket, or on Windows pipes. A pipes'
+  write's bytes are the connection's until it finishes: they count as forwarded (`fwd_cnt`)
+  at `look`'s count (`Conn::forwarded`), never as the write takes them; the credit check
+  counts what a write holds in flight with `tx_buf` (`Conn::held`), so the guest's credit
+  bounds both; and the `OK <port>` line's bytes, this connection's own, are counted out of
+  the finish that carries them (`line_in_flight`). An ended connection (`Conn::end`) closes
+  its way up first (`Pipes::end_reads`), so that its host's writes fail at once
+  (ERROR_NO_DATA), then is held while a write is in flight (`Ended::Owing`) and drops once
+  its last is in the pipe: its way down closes, and its host reads every byte, then the end.
+  A cut (D251) ends so too, both ways closed; a half-close closes the way down alone
+  (`Pipes::shut_down`). A killed one keeps nothing, its write cancelled as it drops.
+- *The poller on a completion port* (`poll.rs`). The port is the waker's (`mod.rs` `Waker`),
+  made with the device, so that every worker of it waits where its pipes were associated:
+  one thread takes its packets (CreateIoCompletionPort's concurrency 1: the device's one
+  worker). Keys: the waker's 0, the sockets' 1, and each pair's from 2 on, given as its
+  handles are associated (`Muxer::attach_port`, `attach_host`, `next_pair`), never reused,
+  so that a packet of a pair gone names no interest. Readiness is taken before each wait:
+  the muxer looks at every pipes' calls as it says its interests (`Source::Pipes { ready }`),
+  what finished of a write counted there, and a wait with anything ready takes the port's
+  packets without waiting. A packet names its key's interest once a wait, and only says to
+  look. The waker is a posted packet, at most one untaken (`posted`: a wake while one is
+  posted posts none, as a set event held one). A wait takes as many packets as there are
+  interests' keys and the waker's and sockets' (what one wait can learn of); more wait for
+  the next.
+- *Served ports stay AF_UNIX* (decided here, R02/R12). Both their ends are the VM process's,
+  and their owners are shards' own code: the run, signal, exec, engine and MCP ports, whose
+  engine and MCP connections carry D230's rings over the socket's own readv and writev. What
+  D272 fixes is a host program's end, M358's loss arising where a closer holds its peer's
+  unread bytes; a served port's owner reads its connection to the end, and the device holds
+  an ended one's socket until it does (`Ended::Lingering`), as before. Pipes there would
+  retype every served port's owner on Windows for no end a test has shown lost. Their cost is
+  the poller's socket path: WSAEventSelect's event, whose setting a thread-pool wait posts to
+  the port (key 1, as shards_ipc's poller posts its streams'), then WSAPoll's look, as before.
+- *The listener* (`platform::Listening`): one pair unconnected at a time, each instance's
+  ConnectNamedPipe overlapped (ERROR_PIPE_CONNECTED, a client in before the call, connected
+  at once). With its way down open and its way up not, the way down is watched by a read of
+  no bytes (PM M348), which ends as its client goes (or writes on the way it reads): the pair
+  is then `Broken`, dropped and replaced. Whole, it is a handshake's (`Muxer::take`), and the
+  next pair is made first (`platform::PairMaker`: the spawner's, through the hook S3 sets, or
+  this process's own, under the names it made the first with where none was granted).
+- *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
+  host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
+  refuses at once, as a socket's full backlog does, rather than stall the device.
+- *Slots*: a connection holds two handles on Windows (`HELD_PER_CONNECTION`), a served
+  port's one.
+- *The pipes' conventions* are shards_ipc's (`pipe/vsock.rs`), every party's: names of 64
+  random bits (`VsockNames::fresh`); the path's file, the way down's name and the way up's,
+  each with a newline, read within two names' bytes (256 characters each, CreateNamedPipeW,
+  three bytes of UTF-8 each); duplex instances of this user's alone, remote clients refused,
+  the first FILE_FLAG_FIRST_PIPE_INSTANCE (`vsock_instance`, the public wrapper of
+  `instance`); a stale file, whose pipes are gone, replaced, and one in use refused
+  (`vsock_listen`, written whole beside the path and linked in); a client's open, the way
+  down first, each waited for while busy to its deadline (`vsock_open`). Their quota,
+  `VSOCK_QUOTA`, 256 KiB each way: what a connection's host socket buffers on the other
+  hosts (muxer.rs `SOCKET_BUFFER`, measured on Hypervisor.framework, r433), for the same
+  bytes in flight; unmeasured over pipes, WHP's measurement owed. A pipe's read buffer is
+  the quota of the way it reads, its server end's inbound or its client end's outbound
+  (`read_quota`: a dial's pipes are client ends, `Pipes::dialed`).
+- *Tests* (Windows, written, not run): `platform::windows_pipes::tests`
+  `a_listening_pair_is_a_connection_once_both_ways_are_open`,
+  `a_client_gone_before_its_way_up_breaks_its_pair`,
+  `its_reads_ended_fail_its_clients_writes_at_once`,
+  `a_dial_reads_its_way_down_and_writes_its_way_up`,
+  `a_waited_write_is_in_the_pipe_as_it_returns`,
+  `its_calls_ends_come_to_its_port_under_its_key`; `poll::tests`
+  `a_wait_takes_its_ports_packets_by_their_keys`; `muxer::tests`
+  `a_host_programs_pipes_reach_its_guest_and_end_with_it` (the guest's whole end: every byte,
+  then the end, then the host's write refused, 232), `a_rates_pipes_are_answered_by_its_owner`,
+  `a_client_gone_with_its_way_down_alone_lets_the_next_in`; shards_ipc `pipe::vsock::tests`
+  `a_pairs_file_says_its_two_names`, `a_pair_is_opened_by_its_file`,
+  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dial its AF_UNIX
+  listener run on Unix alone now; their Windows counterparts are the three above.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),

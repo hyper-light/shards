@@ -233,58 +233,60 @@ impl Waker {
     }
 }
 
-/// An event vCPU threads set to wake the worker out of its wait, which the Windows poller
-/// sleeps on beside its sockets' (poll.rs): no socket, and so no socket file a confined VM
-/// process might be refused.
+/// A packet vCPU threads post to the device's completion port to wake the worker out of its
+/// wait (poll.rs, D272): the port its connections' pipes tell their calls' ends, which the
+/// worker's poller takes its packets from, kept here, as long as the device lives, so that
+/// every worker of it waits on the port its pipes were associated with. No socket, and so no
+/// socket file a confined VM process might be refused.
 #[cfg(windows)]
 #[derive(Debug)]
-struct Waker(windows_sys::Win32::Networking::WinSock::WSAEVENT);
+struct Waker {
+    port: std::os::windows::io::OwnedHandle,
+    /// A wake posted and not yet taken ([`Waker::drain`]): a wake then posts none, as a set
+    /// event holds one.
+    posted: AtomicBool,
+}
 
 #[cfg(windows)]
 impl Waker {
     fn new() -> io::Result<Waker> {
-        use windows_sys::Win32::Networking::WinSock::{WSA_INVALID_EVENT, WSACreateEvent};
-        crate::platform::winsock()?;
-        // SAFETY: no arguments.
-        let event = unsafe { WSACreateEvent() };
-        if event == WSA_INVALID_EVENT {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Waker(event))
+        Ok(Waker {
+            port: poll::completion_port()?,
+            posted: AtomicBool::new(false),
+        })
     }
 
-    /// The event the worker's poller sleeps on.
-    fn event(&self) -> windows_sys::Win32::Networking::WinSock::WSAEVENT {
-        self.0
+    /// The port the worker's poller waits on.
+    fn port(&self) -> windows_sys::Win32::Foundation::HANDLE {
+        use std::os::windows::io::AsRawHandle as _;
+        self.port.as_raw_handle()
     }
 
-    /// Cheap enough for a vCPU thread. A set event already holds a wakeup.
+    /// Cheap enough for a vCPU thread. A wake posted and not yet taken holds a wakeup; one
+    /// the port refused (out of memory) is tried again by the next wake.
     fn wake(&self) {
-        // SAFETY: our own event.
-        unsafe { windows_sys::Win32::Networking::WinSock::WSASetEvent(self.0) };
+        if self.posted.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // SAFETY: our own port, open as long as the waker; no OVERLAPPED.
+        let posted = unsafe {
+            windows_sys::Win32::System::IO::PostQueuedCompletionStatus(
+                self.port(),
+                0,
+                poll::WAKER,
+                std::ptr::null(),
+            )
+        };
+        if posted == 0 {
+            self.posted.store(false, Ordering::Release);
+        }
     }
 
+    /// Takes the wake, after a wait: the next posts again.
     fn drain(&self) {
-        // SAFETY: our own event.
-        unsafe { windows_sys::Win32::Networking::WinSock::WSAResetEvent(self.0) };
+        self.posted.store(false, Ordering::Release);
     }
 }
-
-#[cfg(windows)]
-impl Drop for Waker {
-    fn drop(&mut self) {
-        // SAFETY: our own event, which no wait uses once the waker drops: the worker that
-        // waits on it has ended (Vsock::stop joins it) or holds the waker itself.
-        unsafe { windows_sys::Win32::Networking::WinSock::WSACloseEvent(self.0) };
-    }
-}
-
-// SAFETY: an event handle, set and reset from any thread.
-#[cfg(windows)]
-unsafe impl Send for Waker {}
-// SAFETY: as above.
-#[cfg(windows)]
-unsafe impl Sync for Waker {}
 
 /// What the worker owns while it runs, handed back when it stops.
 struct Session {
@@ -323,10 +325,18 @@ impl std::fmt::Debug for Vsock {
 impl Vsock {
     /// A device whose host side is `host`.
     pub fn new(host: crate::vm::VsockHost, guest_cid: u64) -> Result<Vsock, String> {
+        let waker = Waker::new().map_err(|e| format!("vsock: {e}"))?;
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut muxer = Muxer::new(host, guest_cid).map_err(|e| format!("vsock: {e}"))?;
+        // Its pipes tell the device's port of their calls' ends from their first (D272).
+        #[cfg(windows)]
+        muxer
+            .attach_port(waker.port())
+            .map_err(|e| format!("vsock: {e}"))?;
         Ok(Vsock {
             guest_cid,
-            waker: Arc::new(Waker::new().map_err(|e| format!("vsock: {e}"))?),
-            muxer: Some(Muxer::new(host, guest_cid).map_err(|e| format!("vsock: {e}"))?),
+            waker: Arc::new(waker),
+            muxer: Some(muxer),
             context: None,
             worker: None,
             paused: None,
@@ -540,7 +550,7 @@ fn run(
             None => poll::Poller::new().and_then(|p| {
                 let p = poller.insert(p);
                 #[cfg(windows)]
-                p.watch(waker.event());
+                p.watch(waker.port());
                 p.wait(&interests, timeout, &mut ready)
             }),
         };
@@ -875,7 +885,11 @@ mod tests {
         );
         // Its queues gone with it, and its sockets kept.
         assert!(vsock.worker.is_none() && vsock.paused.is_none());
+        #[cfg(unix)]
         crate::platform::UnixStream::connect(&dir).unwrap();
+        // On Windows its pipes, which its listener named at the path (D272).
+        #[cfg(windows)]
+        drop(shards_ipc::vsock_open(&dir, Some(Instant::now() + Duration::from_secs(10))).unwrap());
         vsock.activate(activation()).unwrap();
         assert!(vsock.worker.is_some());
         let states = vsock.pause();
@@ -884,10 +898,15 @@ mod tests {
         assert!(vsock.resume().is_err());
         super::super::worker::REFUSE.set(false);
         assert!(vsock.worker.is_none() && vsock.paused.is_some() && vsock.muxer.is_some());
+        #[cfg(unix)]
         crate::platform::UnixStream::connect(&dir).unwrap();
         assert_eq!(vsock.pause().len(), 3, "paused still");
         vsock.resume().unwrap();
         assert!(vsock.worker.is_some() && vsock.paused.is_none());
+        // On Windows a client waits for the listener's next pair, made by a worker as it takes
+        // the last (D272): kept, it lets one in once the device runs again.
+        #[cfg(windows)]
+        drop(shards_ipc::vsock_open(&dir, Some(Instant::now() + Duration::from_secs(10))).unwrap());
         drop(vsock);
         let _ = std::fs::remove_file(&dir);
     }
