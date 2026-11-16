@@ -37829,20 +37829,133 @@ each volume's bytes, and its person's page needs them listed and one cleared.
 - No other literal; no wait or cache: each call walks every volume's files as it is asked, which
   is an admission's and a page's cost, never a start's.
 
-**Not built: a volume's bound held as it is written.** Its size admitted to its node's room means
-a bound its writes cannot pass. The store refuses `size` today ("quota size requested but no quota
-support", the local driver's own words where its filesystem has no quotas), and nothing bounds a
-directory a share serves. Until one is decided, an orchestrator admits a volume's measured bytes
-and refuses its next session where they pass its bound, which a session may still pass while it
-runs. The ways to hold it, each owed its R02 research and ROOT's decision: (1) the share server
-holds a byte budget per volume across every share process serving it (a count kept beside the
-volume and taken by each), refusing a write, an extension or an allocation past it (ENOSPC),
-counted by lengths as `Store::size` counts (a DAX write within a file's length changes none);
-(2) a fixed-size disk instead of a directory, as `shards plug disk FILE:PATH --size` makes one
-(D214, an ext4 of D190's mke2fs: its own bound, exact, its host use at most its size), which needs image runs' disk
-plugs, each member's mount of it and its owners mapped to a member's ids; (3) the host's quotas
-(XFS project quotas, root's to set; APFS has none per directory), which R12 and "no host root"
-refuse.
+**Decided (lane vol-bound, 2026-11-16): a volume's bound held as it is written, by the server of
+its share (slice 1 built; 2 to 5 owed).** Its size admitted to its node's room means a bound its
+writes cannot pass. Before, the store refused `size` ("quota size requested but no quota support",
+the local driver's words where its filesystem has no quotas), nothing bounded a directory a share
+serves, and an orchestrator admitted a volume's measured bytes and refused its next session where
+they passed its bound, which a session could still pass while it ran.
+- *Alternatives* (R02; each source read 2026-11-16):
+  - *The host's quotas.* Docker's local driver takes `size` only where it has a quota backend
+    (moby main, `daemon/volume/local/local_unix.go`: `quotaCtl.SetQuota`, else that refusal);
+    `--storage-opt size` is "only available for the btrfs, overlay2, windowsfilter, and zfs
+    storage drivers", overlay2's "only ... if the backing filesystem is xfs and mounted with the
+    pquota mount option" (docs.docker.com, `docker container run`); Podman's `size` only "on the
+    tmpfs and xfs file systems", XFS mounted `prjquota` (podman-volume-create(1)). Root's to set
+    up, and neither APFS nor NTFS has one per directory: refused, as R12 refuses host root.
+  - *A fixed-size disk.* An ext4 of `size` bytes made by shards-ext4 (D190), plugged as D214's
+    disk, as Firecracker's guests have and Fly.io's volumes are ("a volume can be attached to only
+    one Machine", "a slice of an NVMe drive on the same physical server", never shrunk:
+    docs.fly.io/volumes/overview). Exact: its host's use is at most its size, metadata included,
+    and the guest's own ext4 answers df and ENOSPC. Against it here: the volume stops being a
+    directory (D271's plugs, this entry's listing and clearing, `volume inspect`'s mountpoint, a
+    person reading its files on the host); one microVM at a time mounts it, where each member's
+    plug is a share process of its own; image runs plug no disks, mount none in a member and map
+    no owners of one (D214's are a daemon run's, through the CLI, with `pci_slots` asked at boot:
+    a rescan 2.4 ms and a first read 3.1 ms at p50 on HVF, 6.6 and 7.6 on KVM, PM M430); its data
+    sits in the guest's page cache (virtio-blk), where a share's stays its host's, and what that
+    cache holds unwritten is lost with a killed microVM, where a share's request is its host's
+    once answered; blocks freed in the guest stay the host's without discard; and growing it is a
+    resize2fs of a file system made with no blocks kept to grow (D190).
+  - *After the fact.* Kubernetes' kubelet measures a pod's ephemeral storage, and past its limit
+    "sets an eviction signal that triggers Pod eviction" (kubernetes.io, ephemeral storage): this
+    entry's interim, which a session passes while it runs.
+  - *The share's server* (chosen). Every byte a guest writes to a volume reaches its host through
+    it: the server takes no FUSE_WRITEBACK_CACHE at INIT, so a write(2) is a FUSE_WRITE answered
+    before it returns; a DAX write extends no file (fs/fuse/dax.c: "Do not use dax for file
+    extending writes", sent as FUSE_WRITEs), and a plugged share has no window (D214);
+    COPY_FILE_RANGE is ENOSYS. FUSE file systems hold quotas so: CephFS's clients ("cooperative
+    and non-adversarial", "imprecise": "writers will be stopped within tens of seconds of crossing
+    the configured limit"; df "based on quota limit": docs.ceph.com cephfs/quota), JuiceFS's
+    ("regular files are accounted by their file length, aligned to 4 KiB, and each consumes one
+    inode", other files 4 KiB; EDQUOT; df shows the quota; usage synced each second, which
+    "cannot guarantee that the usage data is counted accurately": juicefs.com, guide/quota),
+    GlusterFS's (`quota-deem-statfs`: "the total disk space of the directory is taken as the quota
+    hard limit"; cached sizes let writes past it within a timeout: docs.gluster.org,
+    Directory-Quota). virtiofsd has no such option (README, main) and answers statfs with its
+    host's. Their imprecision is many machines' clients each counting apart; a volume's servers
+    here are all on its host, and one count they share is exact (slice 2).
+- *The measure* (`fs::bound`, the same for a walk and for each request): a name takes one unit,
+  its host file system's allocation unit (statvfs's `f_frsize`; NTFS's cluster), read as the
+  share is bounded; a file but a directory its length in whole units, once however many names it
+  has; each file its guest's extended attributes, their names' and values' bytes, in whole units
+  (the server's own owner attribute, none). A length is what the server sees change; a name and an
+  attribute cost the host what no length shows: a guest's millions of empty files, or attributes
+  of up to 64 KiB each (XATTR_SIZE_MAX, include/uapi/linux/limits.h) and as many as its host file
+  system keeps (ext4 keeps them in its inode and one block, "not possible for this block to
+  contain a pointer to a second", unless made with `ea_inode`: docs.kernel.org ext4 attributes).
+  JuiceFS's, with its host's unit for its 4 KiB. It errs high for a sparse file (a 10 GiB
+  `ftruncate` takes 10 GiB) and for clones; it bounds neither the inode records and entries past
+  a name's unit nor a host's own transients (XFS's speculative preallocation, Btrfs's copies on
+  write), as a host's own quota bounds neither. Its distance from `du` on each host's file
+  system: unmeasured, owed.
+- *Refused past it:* ENOSPC, as a full file system answers (write(2): "no room for the data"),
+  which its statfs then says it is; not EDQUOT, as the guest's mount is the volume, whose own room
+  is gone. A write's bytes past the end the room lets its file reach are not written, a short
+  write as a nearly full disk's, and the next is refused; so are a size grown by SETATTR, a
+  growth by FALLOCATE (all or none), a name (CREATE, MKNOD, MKDIR, SYMLINK with its target's
+  length, LINK, a whiteout) and an attribute grown. FALLOC_FL_KEEP_SIZE is
+  refused EOPNOTSUPP in a bounded share: blocks past a file's length no length shows (fallocate(2):
+  a mode its file system does not take). A file there already is opened still with no room left,
+  O_EXCL refused EEXIST first, as Linux orders them. Never refused: what takes nothing (an
+  overwrite within a file's length, a read, a rename) and what gives back.
+- *Given back:* a name's unit as it is removed; a file's length and attributes with its last
+  name, or, where the guest holds it open, with its last handle (`removed_open`), as its host keeps
+  its blocks until its last descriptor goes: a guest cannot write past its bound by removing what
+  it holds open, and what it writes there meanwhile goes with it; a truncation's whole units, an
+  O_TRUNC's among them; and every file a session held, as its INIT resets it.
+- *Statfs:* blocks and files the bound's units; free and available what is left of it in units,
+  where its host has as much (the host's where it has less); free files the same, a name taking a
+  unit (NTFS counts none: the bound's); its fragment the unit. The guest's df shows the volume's
+  bound and use, as tmpfs's `size=` ("the limit of allocated bytes", docs.kernel.org tmpfs),
+  CephFS's quota df and GlusterFS's deem-statfs show theirs; its `du`, its host's allocation.
+- *The bound* (R03): the caller's request alone: Docker's `--opt size` of a volume (the local
+  driver's option, refused until slice 3) and shards-api's for an agent's volume, Hex's admitted
+  `disk_bytes`. None asked, none of its own: its host's room bounds it, as before. Not held
+  against the host's room, which is Hex's admission's (P6.2); both hold, and statfs says the
+  tighter. No literal: the unit is the host's, ENOSPC and EOPNOTSUPP Linux's.
+- *States* (R04) of a bounded volume: within (a request's whole units fit); near (a write cut
+  short); at (each growth refused; overwrites, reads and what gives back answered); past (its
+  charge over its bound: a bound lowered, or a walk finding more than was asked, such as files
+  written on its host: each growth refused until it gives back below). Across restarts (slice
+  2), its charge kept beside it: clean (its last server's count, written as it ended), held
+  (servers serving it), orphaned (held, none serving: a crash), walked again as it is next served.
+- *Gaps, stated:* until slice 2 each server's charge is its own, and a volume plugged into several
+  members (a share process each, D271) takes its bound in each. A file one server removes that
+  another's guest holds open is given back as it is removed, its server holding nothing of it,
+  and its blocks are its host's until the other lets go. A removed file's pages the guest's DAX
+  window maps stay mapped until its FORGET (D189), at most its window. Changes made on the host
+  directly count from the next walk. A save (D176) keeps no charge: its restore is bounded again
+  (slice 3). A bounded removal reads its file's attributes (an open and a listxattr) and a
+  bounded write stats its file: their costs unmeasured, owed.
+- *Slices:*
+  1. Built here (vmm `devices/virtio/fs/bound.rs`, `server.rs`): the measure's arithmetic and
+     statfs numbers (`Bound`); `Server::bound(limit)`, its host's unit read and its files walked
+     (`charge_of`: a directory at a time, never recursed, a descriptor held for each above the
+     one read); and each request above held to it. Light tests, written, not run (the person's
+     rule of 2026-11-16 leaves every run to ROOT): bound.rs `a_length_takes_its_whole_units`,
+     `a_write_is_cut_where_the_room_ends`, `a_resize_takes_and_gives_whole_units`,
+     `statfs_says_the_bound_and_its_room`; server.rs
+     `a_bounded_share_refuses_what_its_bound_has_no_room_for`,
+     `a_removed_open_files_charge_goes_with_its_last_handle`,
+     `a_bound_walks_names_lengths_once_and_attributes` (Unix).
+  2. One count per volume, beside it in the store, shared by every server serving it, in the
+     states above, on lane p6-fix's holder lock: one lock, each server's shared hold, the first's
+     exclusive try walking an orphaned count and the last's writing it clean, so that no second
+     record of holders is kept. A shared mapping's atomic count against a lock per change:
+     measured first.
+  3. Wiring: the store takes `size` (`validate_options`' refusal goes; opts.json keeps it; changed
+     while none holds it); the share process takes a bound with its share; the daemon's
+     `-v NAME`, api_run's starts and plugs, shards-api's `PlugFrom::Volume` and its volumes'
+     making pass it, an agent's Hex's `disk_bytes`.
+  4. The listing: `HomeVolume` gains its bound and its charge by this measure, which an admission
+     reads; `system df -v` keeps moby's lengths.
+  5. Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
+     `an_agents_volume_refuses_writes_past_its_bound` (a session filling its volume: a write cut
+     short, the next ENOSPC; df's numbers; a removal giving back; the next session's charge
+     kept); and the measure against `du` on APFS, ext4, XFS, Btrfs and NTFS.
+- No wait or cache is added: the charge is the server's state, changed under its lock by the
+  request that changes the files.
 
 **Tests** (light): shards-api's `a_homes_volumes_read_back_as_they_were_answered` (none and some,
 every cut, a trailing byte, another version, a flag that is neither, a hostile count),
