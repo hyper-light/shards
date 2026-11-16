@@ -38,6 +38,7 @@ pub mod host;
 pub mod image;
 mod judge;
 mod native;
+pub mod networks;
 pub mod physical;
 mod progress;
 mod said;
