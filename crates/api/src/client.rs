@@ -1258,26 +1258,14 @@ impl HandshakeError {
             Self::Io {
                 phase: HandshakePhase::Dial,
                 kind,
-                code,
-            } => {
-                matches!(
-                    kind,
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::ConnectionRefused
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                ) || {
-                    #[cfg(windows)]
-                    {
-                        *code == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        let _ = code;
-                        false
-                    }
-                }
-            }
+                ..
+            } => matches!(
+                kind,
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+            ),
             Self::Io {
                 phase: HandshakePhase::Write | HandshakePhase::Read,
                 ..
