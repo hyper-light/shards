@@ -571,7 +571,7 @@ pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, Stri
         connects: false,
         accepts: false,
         unix: Vec::new(),
-        granted: crate::egress::Granted::default(),
+        granted: crate::netplan::Granted::default(),
     };
     e.members.push(kept);
     let joined = (|| {
