@@ -397,13 +397,13 @@ fn nesting(
 /// payload: a member's end (D231), and its own command's readiness under the nesting grant
 /// (D234), each as the guest said it; none for the rest. A readiness that is none is said
 /// on this host's stderr and dropped, as the daemon drops it.
-fn relayed(which: u8, payload: &[u8]) -> Option<(u8, Vec<u8>)> {
+fn relayed(which: u8, payload: &[u8], generation: impl Fn(u32) -> u32) -> Option<(u8, Vec<u8>)> {
     match which {
         kind::MEMBER_ENDED => {
             let e = shards_abi::run::members::Ended::decode(payload)?;
             let ended = wire::MemberEnded {
                 member: e.member,
-                generation: 0,
+                generation: generation(e.member),
                 end: e.end,
             };
             Some((wire::to_client::MEMBER_ENDED, ended.encode()))
@@ -1369,6 +1369,8 @@ enum Ask<'a> {
     Save(wire::SaveAsk),
     Pause(wire::PauseAsk),
     Net(wire::NetAsk),
+    /// A member started again in its microVM (D270 slice 3b).
+    Restart(wire::RestartAsk),
 }
 
 /// The orchestrator's next ask, from what reading its next frame gave (`read`: its kind and
@@ -1408,6 +1410,7 @@ fn judged(which: u8, payload: &[u8]) -> Result<Ask<'_>, AsksEnd> {
         wire::to_host::SAVE => ("SAVE", wire::SaveAsk::decode(payload).map(Ask::Save)),
         wire::to_host::PAUSE => ("PAUSE", wire::PauseAsk::decode(payload).map(Ask::Pause)),
         wire::to_host::NET => ("NET", wire::NetAsk::decode(payload).map(Ask::Net)),
+        wire::to_host::RESTART => ("RESTART", wire::RestartAsk::decode(payload).map(Ask::Restart)),
         other => return Err(broke(format_args!("a frame of kind {other}, which is no ask"))),
     };
     ask.map_err(|e| broke(format_args!("a malformed {what}: {e}")))
@@ -4042,6 +4045,193 @@ mod hosted {
     }
 
     /// Network change `id`'s answer told its owner.
+    /// What came of a restart (D270 slice 3b), told its orchestrator by its ask's id.
+    fn restarted(live: &Live<'_>, id: u32, result: Result<u32, (wire::RestartRefusal, String)>) {
+        if let Err((cause, why)) = &result {
+            super::say(format_args!("a restart refused, {cause:?}: {why}"));
+        }
+        let payload = wire::RestartAnswer { id, result }.encode().or_else(|e| {
+            wire::RestartAnswer {
+                id,
+                result: Err((wire::RestartRefusal::Failed, format!("its answer: {e}"))),
+            }
+            .encode()
+        });
+        if let Ok(payload) = payload {
+            let _ = live.answers.send(wire::to_client::RESTARTED, &[&payload]);
+        }
+    }
+
+    /// What the guest said of a member's start (`MEMBER_STARTED`, D270 slice 3b), kept for the
+    /// restart that waits on it.
+    fn started_told(live: &Live<'_>, payload: &[u8]) {
+        let Ok(answer) = protocol::members::StartAnswer::decode(payload) else {
+            super::say(format_args!("a member's start its guest answered malformed"));
+            return;
+        };
+        lock(&live.generations).started.insert(answer.member, answer);
+        live.generations_moved.notify_all();
+    }
+
+    /// Starts member `ask.member` again (D270 slice 3b): held for its next generation, its
+    /// command asked to end (SIGTERM), its generation's end waited for at most its patience and
+    /// its generation ended at once past that (`MEMBER_KILL`), then its next started, `ask.args`
+    /// after its image's command, in the namespaces, server instance and volumes its
+    /// generations keep, its input its own where it has one: the generation started, or why
+    /// not. One restart of a member at a time.
+    fn restart<'scope, 'env>(
+        live: &'env Live<'env>,
+        ask: &wire::RestartAsk,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> Result<u32, (wire::RestartRefusal, String)> {
+        use wire::RestartRefusal as R;
+        let member = ask.member;
+        if !live.members.iter().any(|m| m.index == member && m.runs) {
+            return Err((R::Unknown, format!("no member {member} runs in this run")));
+        }
+        let generation = {
+            let mut generations = lock(&live.generations);
+            if generations.gone {
+                return Err((R::Failed, "its microVM has gone".into()));
+            }
+            if !generations.restarting.insert(member) {
+                return Err((R::Running, format!("member {member}'s restart is under way")));
+            }
+            generations.started.remove(&member);
+            generations.current.get(&member).copied().unwrap_or(0)
+        };
+        let result = restart_turn(live, ask, generation, scope);
+        lock(&live.generations).restarting.remove(&member);
+        result
+    }
+
+    /// [`restart`]'s turn, its member held as restarting.
+    fn restart_turn<'scope, 'env>(
+        live: &'env Live<'env>,
+        ask: &wire::RestartAsk,
+        generation: u32,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> Result<u32, (wire::RestartRefusal, String)> {
+        use wire::RestartRefusal as R;
+        let member = ask.member;
+        let failed = |why: String| (R::Failed, why);
+        let next = generation
+            .checked_add(1)
+            .ok_or_else(|| (R::Generation, format!("member {member} has no generation past {generation}")))?;
+        // Held, so that its generation's end keeps its server instance and its namespaces.
+        shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &member.to_be_bytes(), &[])
+            .map_err(|e| failed(format!("its VM: {e}")))?;
+        let ended = |g: &Generations| g.ended.contains(&(member, generation)) || g.gone;
+        if !ended(&lock(&live.generations)) {
+            let said = builtin(live, protocol::builtin::SIGNAL, protocol::members::signal_args(member, 15))
+                .map_err(failed)?;
+            // A generation that ended already, between its hold and its signal, is no refusal.
+            if said.status != Some(0) && !ended(&lock(&live.generations)) {
+                return Err(failed(format!(
+                    "its SIGTERM: {}",
+                    String::from_utf8_lossy(&said.err).trim()
+                )));
+            }
+        }
+        if !wait_generations(live, ask.patience, ended) {
+            // Its graceful end outlasted its patience: its generation ended at once, its PID
+            // namespace's reaper killed, its server instance and namespaces kept.
+            let said = builtin(live, protocol::builtin::MEMBER_KILL, protocol::members::kill_args(member))
+                .map_err(failed)?;
+            if said.status != Some(0) && !ended(&lock(&live.generations)) {
+                return Err(failed(format!(
+                    "its kill: {}",
+                    String::from_utf8_lossy(&said.err).trim()
+                )));
+            }
+            if !wait_generations(live, ask.patience, ended) {
+                return Err(failed(format!(
+                    "its generation {generation} did not end within its patience, killed or not"
+                )));
+            }
+        }
+        if lock(&live.generations).gone {
+            return Err(failed("its microVM has gone".into()));
+        }
+        // Its input, where it has one: its next generation's own, its feed waiting for the
+        // connection its guest dials with the token its VM mints.
+        let has_input = lock(&live.feeds).contains_key(&member);
+        let start = protocol::members::Start {
+            member,
+            generation: next,
+            args: ask.args.clone(),
+            env: Vec::new(),
+            workdir: None,
+            components: Vec::new(),
+            input: None,
+        };
+        let mut payload = vec![u8::from(has_input)];
+        payload.extend_from_slice(&start.encode().map_err(|e| failed(format!("its start: {e}")))?);
+        if has_input {
+            lock(&live.feeds).insert(member, Feed::default());
+        }
+        shards_ipc::send(&lock(&live.link), kind::MEMBER_START, &payload, &[])
+            .map_err(|e| failed(format!("its VM: {e}")))?;
+        let answered = |g: &Generations| g.started.contains_key(&member) || g.gone;
+        if !wait_generations(live, ask.patience, answered) {
+            return Err(failed("its guest did not answer its start within its patience".into()));
+        }
+        let answer = lock(&live.generations).started.remove(&member);
+        let Some(answer) = answer else {
+            return Err(failed("its microVM has gone".into()));
+        };
+        if let Some((why, words)) = answer.refused {
+            let words = String::from_utf8_lossy(&words).into_owned();
+            return Err((
+                match why {
+                    protocol::members::StartRefusal::Unknown => R::Unknown,
+                    protocol::members::StartRefusal::Running => R::Running,
+                    protocol::members::StartRefusal::Generation => R::Generation,
+                    protocol::members::StartRefusal::Unsupported => R::Unsupported,
+                    protocol::members::StartRefusal::Failed => R::Failed,
+                },
+                words,
+            ));
+        }
+        lock(&live.generations).current.insert(member, next);
+        if has_input {
+            let started = std::thread::Builder::new()
+                .name("api-run input".into())
+                .spawn_scoped(scope, move || write_input(live, member));
+            if let Err(e) = started {
+                let _ = writeln!(io::stderr(), "shards api-run: member {member}'s input: {e}");
+                end_input(live, member);
+            }
+        }
+        Ok(next)
+    }
+
+    /// Waits until `done` says its generations are as asked, at most `patience`: whether they
+    /// were.
+    fn wait_generations(
+        live: &Live<'_>,
+        patience: std::time::Duration,
+        done: impl Fn(&Generations) -> bool,
+    ) -> bool {
+        let deadline = Instant::now().checked_add(patience);
+        let mut generations = lock(&live.generations);
+        while !done(&generations) {
+            let left = match deadline {
+                Some(at) => match at.checked_duration_since(Instant::now()) {
+                    Some(left) if !left.is_zero() => left,
+                    _ => return false,
+                },
+                None => std::time::Duration::MAX,
+            };
+            generations = live
+                .generations_moved
+                .wait_timeout(generations, left)
+                .map(|(g, _)| g)
+                .unwrap_or_else(|e| e.into_inner().0);
+        }
+        true
+    }
+
     fn net_answered(live: &Live<'_>, id: u32, result: Result<wire::NetChanged, (wire::NetRefusal, String)>) {
         if let Err((cause, why)) = &result {
             super::say(format_args!("a network change refused, {cause:?}: {why}"));
@@ -4189,15 +4379,38 @@ mod hosted {
     #[derive(Default)]
     struct Flows {
         /// The orchestrator's room for each channel, in bytes.
-        room: HashMap<(u32, Channel), u64>,
+        room: HashMap<Key, u64>,
         /// A record's bytes the orchestrator had no room for yet.
-        waiting: HashMap<(u32, Channel), Vec<u8>>,
+        waiting: HashMap<Key, Vec<u8>>,
         /// A credit granted the guest that no record has used yet.
-        granted: HashMap<(u32, Channel), bool>,
+        granted: HashMap<Key, bool>,
         /// The channel has ended.
-        ended: HashMap<(u32, Channel), bool>,
+        ended: HashMap<Key, bool>,
         /// A grant its VM could not take has been said (`take`): once a run.
         ungranted: bool,
+    }
+
+    /// A member's output channel, by its index, its generation (D270) and the channel: each
+    /// generation's its own, so that a record of one that comes after the next started (its
+    /// end and its member's are on two connections, in no order between them) is never the
+    /// next's.
+    type Key = (u32, u32, Channel);
+
+    /// Each member's generations (D270 slice 3b), as its restarts and its guest move them.
+    #[derive(Default)]
+    struct Generations {
+        /// Each member's current generation, by its index: 0 where it never restarted.
+        current: HashMap<u32, u32>,
+        /// The members a restart is under way of.
+        restarting: std::collections::HashSet<u32>,
+        /// The generations whose ends its guest told (`MEMBER_ENDED`), by member and generation.
+        ended: std::collections::HashSet<(u32, u32)>,
+        /// What its guest said of each member's last start asked (`MEMBER_STARTED`).
+        started: HashMap<u32, protocol::members::StartAnswer>,
+        /// Each output stream's generation, fixed as it opened.
+        streams: HashMap<(u32, Channel), u32>,
+        /// Its VM's link has closed: no end or answer comes now.
+        gone: bool,
     }
 
     /// A member's stdin, which its orchestrator writes (plan step 5): its guest's input
@@ -4244,6 +4457,9 @@ mod hosted {
         /// Each input member's stdin, by its index.
         feeds: Mutex<HashMap<u32, Feed>>,
         fed: std::sync::Condvar,
+        /// Its members' generations (D270 slice 3b), and what waits on them told as they move.
+        generations: Mutex<Generations>,
+        generations_moved: std::sync::Condvar,
         capture: Option<Mutex<Stream>>,
         link: Mutex<Stream>,
         /// Each exec's client end, by its number, held until the VM says it has it
@@ -4506,14 +4722,24 @@ mod hosted {
     }
 
     impl Live<'_> {
+        /// Member `member`'s current generation (D270): 0 where it never restarted.
+        fn generation_of(&self, member: u32) -> u32 {
+            lock(&self.generations).current.get(&member).copied().unwrap_or(0)
+        }
+
         /// Grants the guest a record on `key`'s channel where it has none, its room is
         /// not spent, nothing waits of it, and it has not ended: as many bytes as the
         /// orchestrator has room for, past the record's head, within the protocol's
         /// ceiling and at least a record of an errno's (`Credit::decode`'s least).
-        fn grant(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
+        fn grant(&self, flows: &mut Flows, key: Key) -> io::Result<()> {
             let Some(capture) = &self.capture else {
                 return Ok(());
             };
+            // Room for a generation past is no record of its guest's: a member runs one
+            // generation at a time.
+            if key.1 != self.generation_of(key.0) {
+                return Ok(());
+            }
             let room = flows.room.get(&key).copied().unwrap_or(0);
             if room == 0
                 || flows.granted.get(&key).copied().unwrap_or(false)
@@ -4528,7 +4754,7 @@ mod hosted {
                 .clamp(least, u64::from(protocol::MAX_PAYLOAD));
             let credit = managed::Credit {
                 member: key.0,
-                channel: managed_channel(key.1),
+                channel: managed_channel(key.2),
                 capacity,
             }
             .encode()
@@ -4543,24 +4769,19 @@ mod hosted {
         /// Ends `key`'s channel `end`: what waits of it goes first, its room or not, as no
         /// credit after its end could let it go: at most one record's, as `grant` grants the
         /// guest none while anything waits.
-        fn end_channel(
-            &self,
-            flows: &mut Flows,
-            key: (u32, Channel),
-            end: wire::StreamEnd,
-        ) -> io::Result<()> {
+        fn end_channel(&self, flows: &mut Flows, key: Key, end: wire::StreamEnd) -> io::Result<()> {
             flows.ended.insert(key, true);
             let rest = flows.waiting.remove(&key).unwrap_or_default();
             if !rest.is_empty() {
                 self.answers.send(
                     wire::to_client::OUTPUT,
-                    &[&wire::Output::head(key.0, 0, key.1), &rest],
+                    &[&wire::Output::head(key.0, key.1, key.2), &rest],
                 )?;
             }
             let end = wire::OutputEnd {
                 member: key.0,
-                generation: 0,
-                channel: key.1,
+                generation: key.1,
+                channel: key.2,
                 end,
             };
             self.answers.send(wire::to_client::OUTPUT_END, &[&end.encode()])
@@ -4572,7 +4793,7 @@ mod hosted {
         /// rather than its orchestrator waiting for this process's exit to learn it ended.
         fn cut(&self) -> io::Result<()> {
             let mut flows = lock(&self.flows);
-            let known: std::collections::HashSet<(u32, Channel)> = flows
+            let known: std::collections::HashSet<Key> = flows
                 .room
                 .keys()
                 .chain(flows.granted.keys())
@@ -4588,7 +4809,7 @@ mod hosted {
         }
 
         /// Sends what waits of `key`'s channel within the orchestrator's room.
-        fn flush(&self, flows: &mut Flows, key: (u32, Channel)) -> io::Result<()> {
+        fn flush(&self, flows: &mut Flows, key: Key) -> io::Result<()> {
             let room = flows.room.entry(key).or_insert(0);
             let Some(waiting) = flows.waiting.get_mut(&key) else {
                 return Ok(());
@@ -4599,7 +4820,7 @@ mod hosted {
                 *room = room.saturating_sub(n as u64);
                 self.answers.send(
                     wire::to_client::OUTPUT,
-                    &[&wire::Output::head(key.0, 0, key.1), &part],
+                    &[&wire::Output::head(key.0, key.1, key.2), &part],
                 )?;
             }
             Ok(())
@@ -5000,6 +5221,8 @@ mod hosted {
                 flows: Mutex::new(Flows::default()),
                 feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
                 fed: std::sync::Condvar::new(),
+                generations: Mutex::new(Generations::default()),
+                generations_moved: std::sync::Condvar::new(),
                 capture: capture.map(|(ours, _)| Mutex::new(ours)),
                 link: Mutex::new(link),
                 held: Mutex::new(Some(HashMap::new())),
@@ -5622,6 +5845,8 @@ mod hosted {
                 lock(&live.saving).answered(&m.payload);
             } else if m.kind == kind::PAUSED {
                 answered(&live.pause_asks, &m.payload);
+            } else if m.kind == kind::MEMBER_STARTED {
+                started_told(live, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -5650,7 +5875,17 @@ mod hosted {
                 {
                     super::say(format_args!("a member's end its guest told: {e}"));
                 }
-                if let Some((answer, payload)) = super::relayed(m.kind, &m.payload) {
+                // A generation's end, for the restart that waits on it (D270 slice 3b).
+                if m.kind == kind::MEMBER_ENDED
+                    && let Some(ended) = protocol::members::Ended::decode(&m.payload)
+                {
+                    let mut generations = lock(&live.generations);
+                    let current = generations.current.get(&ended.member).copied().unwrap_or(0);
+                    generations.ended.insert((ended.member, current));
+                    drop(generations);
+                    live.generations_moved.notify_all();
+                }
+                if let Some((answer, payload)) = super::relayed(m.kind, &m.payload, |m| live.generation_of(m)) {
                     let _ = live.answers.send(answer, &[&payload]);
                 }
             }
@@ -5664,6 +5899,8 @@ mod hosted {
         *lock(&live.guest_times) = None;
         *lock(&live.rates) = None;
         *lock(&live.pause_asks) = None;
+        lock(&live.generations).gone = true;
+        live.generations_moved.notify_all();
         lock(&live.saving).gone();
         lock(&live.pauses).gone(Instant::now());
         // Socket lanes no answer will come for: their asks hear the VM has gone.
@@ -5725,7 +5962,7 @@ mod hosted {
         use super::{Ask, AsksEnd};
         match ask {
             Ask::Credit(credit) => {
-                let key = (credit.member, credit.channel);
+                let key = (credit.member, credit.generation, credit.channel);
                 let mut flows = lock(&live.flows);
                 let room = flows.room.entry(key).or_insert(0);
                 *room = room.saturating_add(credit.bytes);
@@ -5891,6 +6128,21 @@ mod hosted {
                         live,
                         id,
                         Err((wire::NetRefusal::Network, "no thread to make it on".into())),
+                    );
+                }
+            }
+            // On a thread of its own, as a plug: a member's graceful end may take as long as
+            // its patience (D270 slice 3b).
+            Ask::Restart(ask) => {
+                let id = ask.id;
+                let asked = std::thread::Builder::new()
+                    .name("api-run restart".into())
+                    .spawn_scoped(scope, move || restarted(live, id, restart(live, &ask, scope)));
+                if asked.is_err() {
+                    restarted(
+                        live,
+                        id,
+                        Err((wire::RestartRefusal::Failed, "no thread to restart it on".into())),
                     );
                 }
             }
@@ -6137,7 +6389,7 @@ mod hosted {
         live.fed.notify_all();
         let given = wire::InputRoom {
             member,
-            generation: 0,
+            generation: live.generation_of(member),
             bytes: room,
         };
         let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&given.encode()]);
@@ -6156,7 +6408,7 @@ mod hosted {
         end_input(live, ended.member);
         let told = wire::InputEnded {
             member: ended.member,
-            generation: 0,
+            generation: live.generation_of(ended.member),
             written: ended.written,
             end: match ended.end {
                 managed::InputEnd::Closed => wire::StreamEnd::Closed,
@@ -6182,6 +6434,10 @@ mod hosted {
     /// contract is broken, as said.
     fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), String> {
         let member = given.member;
+        // Bytes for a generation past have no stdin to go to now (D270).
+        if given.generation != live.generation_of(member) {
+            return Ok(());
+        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds
             .get_mut(&member)
@@ -6210,6 +6466,9 @@ mod hosted {
     /// once, so that a writer held by a member that does not read lets go.
     fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), String> {
         let member = end.member;
+        if end.generation != live.generation_of(member) {
+            return Ok(());
+        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds.get_mut(&member).ok_or_else(|| {
             format!("an INPUT_END for member {member}, whose stdin its run did not ask for")
@@ -6286,7 +6545,7 @@ mod hosted {
                     }
                     let room = wire::InputRoom {
                         member,
-                        generation: 0,
+                        generation: live.generation_of(member),
                         bytes: u64::from(len),
                     };
                     let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&room.encode()]);
@@ -6346,7 +6605,24 @@ mod hosted {
             }
             let parsed =
                 managed::Record::decode(&record).map_err(|e| broke(format_args!("a record: {e}")))?;
-            let key = (parsed.member, channel_of(parsed.channel));
+            // Its stream's generation, fixed as it opened (D270): a record of one that comes
+            // after its member's next generation started is still its own's.
+            let channel = channel_of(parsed.channel);
+            let generation = {
+                let mut generations = lock(&live.generations);
+                let current = generations.current.get(&parsed.member).copied().unwrap_or(0);
+                if matches!(parsed.event, managed::Event::Open(_)) {
+                    generations.streams.insert((parsed.member, channel), current);
+                    current
+                } else {
+                    generations
+                        .streams
+                        .get(&(parsed.member, channel))
+                        .copied()
+                        .unwrap_or(current)
+                }
+            };
+            let key = (parsed.member, generation, channel);
             let mut flows = lock(&live.flows);
             flows.granted.insert(key, false);
             let sent = match parsed.event {
@@ -7051,6 +7327,8 @@ mod hosted {
                 flows: Mutex::new(Flows::default()),
                 feeds: Mutex::new(HashMap::new()),
                 fed: std::sync::Condvar::new(),
+                generations: Mutex::new(Generations::default()),
+                generations_moved: std::sync::Condvar::new(),
                 capture: capture.map(Mutex::new),
                 link: Mutex::new(link),
                 held: Mutex::new(Some(HashMap::new())),
@@ -7613,8 +7891,8 @@ mod hosted {
             let live = live(&answers, dir.path(), link, None);
             {
                 let mut flows = lock(&live.flows);
-                flows.room.insert((1, Channel::Stdout), 5);
-                flows.room.insert((1, Channel::Stderr), 4096);
+                flows.room.insert((1, 0, Channel::Stdout), 5);
+                flows.room.insert((1, 0, Channel::Stderr), 4096);
             }
             let record = managed::Record {
                 member: 1,
@@ -9520,20 +9798,20 @@ mod tests {
             wire::Ready::Passed(3),
         ] {
             let said = ready.encode();
-            let (answer, payload) = relayed(kind::WORKLOAD_READY, &said).unwrap();
+            let (answer, payload) = relayed(kind::WORKLOAD_READY, &said, |_| 0).unwrap();
             assert_eq!(answer, wire::to_client::READY);
             assert_eq!(payload, said);
             assert_eq!(wire::ready(&payload), Ok(ready));
         }
         for malformed in [&[0u8; 9][..], &[1, 0, 0, 0, 0, 0, 0, 0, 1], &[2; 8], &[]] {
-            assert_eq!(relayed(kind::WORKLOAD_READY, malformed), None, "{malformed:?}");
+            assert_eq!(relayed(kind::WORKLOAD_READY, malformed, |_| 0), None, "{malformed:?}");
         }
         for end in [
             shards_abi::run::members::End::Exited(143),
             shards_abi::run::members::End::Signaled(15),
         ] {
             let ended = shards_abi::run::members::Ended { member: 1, end }.encode();
-            let (answer, payload) = relayed(kind::MEMBER_ENDED, &ended).unwrap();
+            let (answer, payload) = relayed(kind::MEMBER_ENDED, &ended, |_| 0).unwrap();
             assert_eq!(answer, wire::to_client::MEMBER_ENDED);
             assert_eq!(
                 wire::MemberEnded::decode(&payload),
@@ -9545,7 +9823,7 @@ mod tests {
             );
         }
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
-            assert_eq!(relayed(other, &[1; 9]), None);
+            assert_eq!(relayed(other, &[1; 9], |_| 0), None);
         }
     }
 
