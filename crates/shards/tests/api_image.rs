@@ -35,6 +35,7 @@ use shards_api::image::{
     SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, SwapRefusal,
     SwapWhen, Unused, UpstreamRoot,
 };
+use shards_api::volumes::{ClearCause, VolumeRefusal};
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
 /// own docker config and local store (`common::as_tests_run`'s).
@@ -4157,6 +4158,73 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);
     guest.stop().unwrap();
+}
+
+/// P6.2 (D281): an agent's volume of the home's store, plugged into one session and written
+/// there, is the next session's on that machine: what the first session left in it (the host's
+/// file, written as it ran, and its member's) is there for the next, whose member reads it. It
+/// is listed with the bytes its files take (`shards_api::volumes::volumes`), and cleared with
+/// its files (`clear_volume`): gone from the list and from the home, and asked again, refused
+/// `Unknown`.
+#[test]
+fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-agent-vol-home");
+    let volume = "agent-a.cache";
+    build(&home, "api-agent-vol:1", &["plugged-volumes", "/session/vol"], "");
+    let mut s = spec(&home, "api-agent-vol:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.plug_roots = vec!["/session".into()];
+    let plug = Plug {
+        source: PlugSource::Volume(volume.into()),
+        to: PlugFor::Members(vec![codex()]),
+        at: "/session/vol".into(),
+        read_only: false,
+        exec: true,
+    };
+    let data = home.join("volumes").join(volume).join("_data");
+    let wanted: Vec<String> = [
+        "/session/vol from-host first session",
+        "/session/vol from-member ok",
+        "holding /session/vol",
+    ]
+    .map(String::from)
+    .to_vec();
+    // Its first session: the volume made by its plug, the host's file and its member's written.
+    let first = boot(&home, &s);
+    let lines = lines_of(&*first, Channel::Stdout);
+    ask(&*first, |g| g.plug(&plug, Duration::MAX)).unwrap();
+    std::fs::write(data.join("from-host"), "first session\n").unwrap();
+    said_all(&lines, &wanted);
+    first.stop().unwrap();
+    drop(first);
+    assert_eq!(
+        std::fs::read_to_string(data.join("from-member")).unwrap(),
+        "member\n"
+    );
+    // Its next: the same volume, read by its member as the first session left it.
+    let next = boot(&home, &s);
+    let lines = lines_of(&*next, Channel::Stdout);
+    ask(&*next, |g| g.plug(&plug, Duration::MAX)).unwrap();
+    said_all(&lines, &wanted);
+    next.stop().unwrap();
+    drop(next);
+    let binary = s.binary.as_deref();
+    let listed = shards_api::volumes::volumes(binary, &s.env).unwrap();
+    let found = listed.iter().find(|v| v.name == volume).unwrap();
+    let bytes = u64::try_from("first session\n".len() + "member\n".len()).unwrap();
+    assert_eq!((found.bytes, found.anonymous), (Some(bytes), false));
+    shards_api::volumes::clear_volume(binary, &s.env, volume).unwrap();
+    assert!(!data.exists());
+    let left = shards_api::volumes::volumes(binary, &s.env).unwrap();
+    assert!(left.iter().all(|v| v.name != volume), "{left:?}");
+    assert!(matches!(
+        shards_api::volumes::clear_volume(binary, &s.env, volume),
+        Err(VolumeRefusal::Clear(ClearCause::Unknown, _))
+    ));
 }
 
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked

@@ -37353,6 +37353,81 @@ as do the share and plug tests before it (`a_project_given_its_harness_is_where_
 shards-api's lib 277, the run host's and volumes' 78; clippy on macOS, Linux (x86_64 glibc; init and
 the test guest on aarch64 musl) and Windows x86_64. KVM and WHP are owed.
 
+### D281. An agent's volumes kept on its machine across its sessions: a home's volumes read with their bytes and cleared through shards-api (built; real-VM run owed)
+
+**Asked.** P6.2 (kiln plan 01a1dd2e959772a1b17bc49026448e8a item 2; ROOT's design F2): "a named
+volume kept on the runner's disk, its size admitted (Hex `disk_bytes`), and reused across that
+agent's sessions"; a person sees and clears it. Volumes stay per machine (the person,
+2026-11-14). This is Shards' slice; Hex's (admission, its bound, its wire) and kiln's (the page)
+are theirs.
+
+**On main already.** A volume of a run's home's store, by its name, plugged into a running run's
+members (D271, `PlugSource::Volume`): made where it is not there (`Store::create`), found by its
+name again by the next run of that home, and kept past its run, as only the anonymous volumes a
+run's own `VOLUME`s made go with it (api_run `made`). So an agent's volume is its orchestrator's
+naming of one per agent in that machine's home; nothing of Shards' needs to change for it to
+outlive a session.
+
+**Missing, built here: reading and clearing a home's volumes from shards-api.** An orchestrator
+runs no daemon for its runs (D231), and the store's layout is Shards' own: its admission needs
+each volume's bytes, and its person's page needs them listed and one cleared.
+- *Alternatives.* The daemon's `volume ls` and `system df -v` (Docker's texts, the latter the only
+  one with a volume's size): a daemon started for a home whose runs have none, and words to parse.
+  shards-api reading `volumes/NAME/{opts.json,_data}` itself: a second reader of the store's
+  format and its removal, which would drift from `volumes::Store` (R12). Chosen: an internal
+  command of the binary that holds the store, as D262's `api-check` and D263's `api-build` are:
+  `shards api-volumes list` and `clear NAME`, each answered in one frame on stdout, read by
+  `shards_api::volumes::{volumes, clear_volume}`.
+- *What a volume says* (`HomeVolume`): its name; the bytes its files take, `Store::size`, the
+  measure `system df` gives a volume (moby's `directory.Size`: each file's length, a hard link's
+  once), none where its files could not all be read; when it was made; whether it is anonymous.
+  A file's length over-counts a sparse file and a clone, and leaves out directories' own blocks:
+  the store's existing measure, kept as one; an admission by it errs high for sparse files and
+  clones, never low by more than the directories' blocks.
+- *Clearing* (`clear_volume`): the volume removed with its files, as `volume rm` removes one
+  (`Store::remove`: renamed aside at once, then deleted), under the store's lock; the next plug of
+  its name makes it empty. Refused typed (`VolumeRefusal::Clear`): `Name` (one the store takes no
+  volume by), `Unknown` (none there), `Store` (its files not all removed). Shards keeps no record of
+  which of an orchestrator's runs hold a volume (each plug's share process holds it open), so an
+  orchestrator clears one none of its runs holds, as it knows its own sessions; a daemon's runs'
+  holds stay `volume rm`'s.
+- *The answers' channel*, version 1 of its own (the image channel is untouched): `LISTED` (1), the
+  version, a count, then each volume's name, a flag and its bytes where read, its time made in
+  nanoseconds since the Unix epoch (a u64, past which a time is its most), and its flag; `CLEARED`
+  (2), the version and 0, or the cause (1 to 3) and the store's words. Read whole or refused
+  (`Wire`, `Version`); a count past what its bytes could hold (each volume at least its name's
+  length, a flag, its time and a flag: 14 bytes) allocates nothing. Bounded by the run protocol's
+  `MAX_PAYLOAD`, as every frame is: a list past it is refused, never cut.
+- No other literal; no wait or cache: each call walks every volume's files as it is asked, which
+  is an admission's and a page's cost, never a start's.
+
+**Not built: a volume's bound held as it is written.** Its size admitted to its node's room means
+a bound its writes cannot pass. The store refuses `size` today ("quota size requested but no quota
+support", the local driver's own words where its filesystem has no quotas), and nothing bounds a
+directory a share serves. Until one is decided, an orchestrator admits a volume's measured bytes
+and refuses its next session where they pass its bound, which a session may still pass while it
+runs. The ways to hold it, each owed its R02 research and ROOT's decision: (1) the share server
+holds a byte budget per volume across every share process serving it (a count kept beside the
+volume and taken by each), refusing a write, an extension or an allocation past it (ENOSPC),
+counted by lengths as `Store::size` counts (a DAX write within a file's length changes none);
+(2) a fixed-size disk instead of a directory, as `shards plug disk FILE:PATH --size` makes one
+(D214, an ext4 of D190's mke2fs: its own bound, exact, its host use at most its size), which needs image runs' disk
+plugs, each member's mount of it and its owners mapped to a member's ids; (3) the host's quotas
+(XFS project quotas, root's to set; APFS has none per directory), which R12 and "no host root"
+refuse.
+
+**Tests** (light): shards-api's `a_homes_volumes_read_back_as_they_were_answered` (none and some,
+every cut, a trailing byte, another version, a flag that is neither, a hostile count),
+`a_clearings_answer_reads_back_typed`, `each_call_asks_shards_api_volumes_in_its_home` (a stand-in
+`shards`: its words, its home, an end without an answer, another frame), and
+`a_missing_shards_is_refused_as_not_started`; the binary's `api_volumes`
+`a_volume_is_listed_with_its_bytes_and_cleared_with_its_files` (its bytes each file's once, a
+clearing's files gone, `Unknown` again, `Name` for names the store refuses) and
+`a_home_without_volumes_lists_none`. Real VM, owed (ROOT, HVF, KVM, WHP): api_image.rs
+`an_agents_volume_outlives_its_session_and_is_listed_and_cleared` (a volume plugged into one
+session and written there, read by the next session's member; listed with its files' bytes;
+cleared, gone from the list and the home, `Unknown` again).
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM
