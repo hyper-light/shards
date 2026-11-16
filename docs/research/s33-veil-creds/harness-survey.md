@@ -19,7 +19,7 @@ What the survey asks of each build:
 
 | Harness (version) | Runtime | Its CA, from its build | Pins | Local token checks | Mode |
 |---|---|---|---|---|---|
-| Claude Code (2.1.311) | Bun | `NODE_EXTRA_CA_CERTS` (89), `SSL_CERT_FILE` (33), the system bundle (9); docs: bundled Mozilla roots plus the OS store (f61) | none (f66) | an OIDC library's `at_hash` check is in its bundle ("missing required property at_hash", 7); its own tokens' signatures it does not verify (f52) | injected; whether its sign-in path runs that `at_hash` check is step 8's to settle |
+| Claude Code (2.1.311) | Bun | `NODE_EXTRA_CA_CERTS` (89), `SSL_CERT_FILE` (33), the system bundle (9); docs: bundled Mozilla roots plus the OS store (f61) | none (f66) | an OIDC library's `at_hash` check is in its bundle ("missing required property at_hash", 7); its own tokens' signatures it does not verify (f52) | injected: its Anthropic sign-in runs no `at_hash` check (step 8, D242's question 5); tmpfs-fallback where it signs in through its LLM gateway's OIDC or XAA's IdP login (`at_hash`, f50) or takes Bedrock credentials through `aws login` (DPoP, f49) |
 | Codex (0.167.2) | Rust | `CODEX_CA_CERTIFICATE` (17), `SSL_CERT_FILE` (23), the system bundle (15) (f57) | none | none of its own: its `at_hash` matches are gstreamer's voice library; it verifies no signature (f52) | injected |
 | Gemini CLI (0.68.0) | Node v24.22.3 | `NODE_EXTRA_CA_CERTS` (22), `NODE_USE_SYSTEM_CA` (32) | none | ID-token verification strings (54), no `at_hash` | injected |
 | opencode (2.2.7) | Bun | `NODE_EXTRA_CA_CERTS` (11); its docs: "the extra authorities are added to the runtime trust store when the process starts" (kiln s22 evidence) | none | ID-token strings (28), no `at_hash` | injected |
@@ -38,10 +38,11 @@ APIs' names would not show. ROOT's real runs (step 10) are what confirm a harnes
 
 - **No harness is tmpfs-fallback on its trust:** every build reaches the run's CA through a variable step 2 sets or
   through the system bundle step 2 lays it in, and none pins its provider.
-- **Token checks go to step 8,** which captures a sign-in outside the microVM. Claude Code's bundle carries an OIDC
-  `at_hash` check (f50's hazard). Step 8 settles from its source whether its Anthropic sign-in runs it. Where one does,
-  that harness keeps the real access token's hash consistent, or is listed tmpfs-fallback there with its reason. A
-  provider issuing sender-constrained tokens (DPoP or mTLS-bound) cannot be served by bearer substitution (f49), and
-  step 8 lists any it finds.
+- **Token checks went to step 8,** which captures a sign-in outside the microVM, and settled them from the builds
+  (D242, step 8's questions 5 and 7; STEP8.md). Claude Code's `at_hash` check (f50's hazard) is panva's
+  openid-client's, run by its LLM gateway's OIDC sign-in and XAA's IdP login for MCP servers, never by its Anthropic
+  sign-in, which asks no `openid` scope and reads no ID token: those two paths are tmpfs-fallback. Neither provider's
+  sign-in sends a sender-constrained token (DPoP or mTLS-bound, f49); Claude Code's Bedrock credentials through `aws
+  login` refresh with a DPoP proof, so that path is fallback too. Codex checks no `at_hash`.
 - **A tmpfs value lives in guest memory,** where the guest and every process it starts can read it (f36). That is
   why the fallback is the last resort, revoked at its run's end, and why no harness above is given one.
