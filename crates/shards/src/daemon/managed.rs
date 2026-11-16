@@ -927,20 +927,23 @@ impl Input {
 /// `STDIN` frame, and its end as an empty one, which init writes to the member's stdin
 /// exactly; told each is in the connection, the endpoint takes the next. A record the
 /// connection refuses is not delivered: the member's init tells its input's end, which
-/// [`Outputs::input_ended`] gives the endpoint.
-fn relay_input(input: &Input, relay: &input::Relay) {
+/// [`Outputs::input_ended`] gives the endpoint. `wait` gives the member's input connection
+/// once it has come, none where it will not, and `close` ends it, so that a record held for a
+/// member that does not read lets its relay go: a daemon's run's ([`Input`]) and an
+/// orchestrator's run host's (api_run.rs, D252) alike.
+pub(crate) fn relay_input(relay: &input::Relay, wait: &dyn Fn() -> Option<Stream>, close: &dyn Fn()) {
     let mut guest: Option<Stream> = None;
     loop {
         match relay.next() {
             input::Next::Record { bytes, .. } => {
                 if guest.is_none() {
-                    guest = input.wait();
+                    guest = wait();
                 }
                 let Some(conn) = guest.as_ref() else {
                     continue;
                 };
                 let Ok(len) = u32::try_from(bytes.len()) else {
-                    input.close();
+                    close();
                     continue;
                 };
                 let header = run::header(run::kind::STDIN, len);
@@ -954,15 +957,15 @@ fn relay_input(input: &Input, relay: &input::Relay) {
             }
             input::Next::End => {
                 if guest.is_none() {
-                    guest = input.wait();
+                    guest = wait();
                 }
                 if let Some(conn) = guest.as_ref() {
                     let _ = (&*conn).write_all(&run::header(run::kind::STDIN, 0));
                 }
             }
-            input::Next::Abort(_) => input.close(),
+            input::Next::Abort(_) => close(),
             input::Next::Gone => {
-                input.close();
+                close();
                 return;
             }
         }
@@ -1688,6 +1691,9 @@ impl<D: Disk> Daemon<D> {
                 members: member_lanes,
                 // A daemon's run asks no socket lane (D251): its endpoint refuses each.
                 sockets: _,
+                // A daemon's run starts again whole, under an endpoint of its own: none of its
+                // members' streams has a next generation on this one.
+                generations: _,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
                 let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
@@ -1992,7 +1998,9 @@ impl<D: Disk> Daemon<D> {
             let relaying = Arc::clone(&input);
             std::thread::Builder::new()
                 .name("managed-stdin".into())
-                .spawn_scoped(threads, move || relay_input(&relaying, &relay))?;
+                .spawn_scoped(threads, move || {
+                    relay_input(&relay, &|| relaying.wait(), &|| relaying.close())
+                })?;
             let Some(endpoint) = endpoint else {
                 continue;
             };
@@ -4151,7 +4159,7 @@ mod tests {
         assert_eq!(second.read(&mut byte).unwrap(), 0);
         assert!(input.wait().is_some());
         std::thread::scope(|threads| {
-            let relaying = threads.spawn(|| relay_input(&input, &relay));
+            let relaying = threads.spawn(|| relay_input(&relay, &|| input.wait(), &|| input.close()));
             input.control.abort();
             relaying.join().unwrap();
         });

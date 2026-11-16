@@ -1877,13 +1877,16 @@ fn switch(
 /// Starts each of `domains`, hiding from each the directories of `all` but its own, under
 /// the filter of `filters` it needs, which the host compiles (`domains-seccomp=`, and
 /// `domains-seccomp-none=` for `--processes=none`); none starts without it. Those with a
-/// link are linked once they exist, `pairs` of them allowed to open connections.
+/// link are linked once they exist, `pairs` of them allowed to open connections. A member
+/// that could not enter its working directory fails them all, and is told in `unentered`
+/// for its host (D277).
 pub fn start(
     all: &[Vec<u8>],
     domains: &[Domain],
     pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
     filters: &[Option<Filter>; 2],
     setup: &[Vec<u8>],
+    unentered: &mut Option<shards_abi::run::members::Unentered>,
 ) -> Result<Vec<Started>, String> {
     if domains.is_empty() {
         crate::staged::check(setup, |_| false)?;
@@ -2618,9 +2621,10 @@ pub fn start(
                 }
             }
         }
-        lifecycle
-            .launched()
-            .map_err(|e| format!("{}: its launch: {e}", d.label))?;
+        if let Err(e) = lifecycle.launched() {
+            *unentered = unentered_of(member, &e, &confinement.workdir);
+            return Err(format!("{}: its launch: {e}", d.label));
+        }
         let population_at = format!("{group}/{GEN_LEAF}");
         // Its namespaces, kept for its next generations (D270): none for a member given a
         // port among others (D122), whose listener the chooser holds of this generation alone.
@@ -3378,6 +3382,24 @@ impl Server {
             }
         }
     }
+}
+
+/// Member `member`'s launch that failed as `failure` says, typed for its host where its process
+/// could not enter its working directory, `workdir` (D277): what refuses its run's members to
+/// their orchestrator; none for any other failure, which its words alone say.
+fn unentered_of(
+    member: u32,
+    failure: &crate::managed::Failure,
+    workdir: &CStr,
+) -> Option<shards_abi::run::members::Unentered> {
+    let entering = crate::managed::Doing::Setting(Setting::WorkingDirectory);
+    (failure.step == crate::managed::Step::Setup && failure.doing == Some(entering)).then(|| {
+        shards_abi::run::members::Unentered {
+            member,
+            errno: failure.errno,
+            workdir: workdir.to_bytes().to_vec(),
+        }
+    })
 }
 
 /// Tells its launch on `setup` the step that failed, what it was doing (none for its exec, the
@@ -4268,6 +4290,35 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
+
+    /// D277: a member's launch that failed entering its working directory is told its host
+    /// typed, its index, errno and directory; one that failed any other way, its words alone.
+    #[test]
+    fn a_launch_that_could_not_enter_its_workdir_is_told_typed() {
+        use crate::managed::{Doing, Failure, Step};
+        let failed = |step, doing| Failure {
+            step,
+            errno: libc::ENOENT,
+            doing,
+        };
+        let entering = failed(Step::Setup, Some(Doing::Setting(Setting::WorkingDirectory)));
+        assert_eq!(
+            unentered_of(1, &entering, c"/Users/ada/proj"),
+            Some(shards_abi::run::members::Unentered {
+                member: 1,
+                errno: libc::ENOENT,
+                workdir: b"/Users/ada/proj".to_vec(),
+            })
+        );
+        for other in [
+            failed(Step::Setup, Some(Doing::Setting(Setting::Volumes))),
+            failed(Step::Setup, None),
+            failed(Step::Exec, None),
+            failed(Step::Helper, None),
+        ] {
+            assert_eq!(unentered_of(1, &other, c"/w"), None, "{other}");
+        }
+    }
 
     /// A member's leaves (D270) are directories made beneath its cgroup's and opened, each once:
     /// a second of one name is refused, as mkdir(2) refuses it, so that no leaf is taken over.

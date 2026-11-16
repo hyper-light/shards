@@ -1420,13 +1420,8 @@ impl super::Lanes {
     /// log's source is its host's to know: the run keeps every member's output (D240) and its
     /// command's, whichever streams the endpoint serves.
     fn scoped(&self, ask: &Ask) -> Result<(), Reason> {
-        let (run, generation) = self.execs.run;
-        if ask.run != run {
-            return Err(Reason::Scope);
-        }
-        if ask.generation != generation {
-            return Err(Reason::Stale);
-        }
+        self.in_scope(ask.run, ask.generation)?;
+        let run = ask.run;
         let mut members = self.outputs.iter().filter(|o| o.scope().run == run).peekable();
         let served = members.peek().is_none() || members.any(|o| o.scope().member == ask.member);
         if !served && !matches!(ask.kind, Kind::Log(_)) {

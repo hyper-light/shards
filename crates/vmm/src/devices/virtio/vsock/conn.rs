@@ -540,13 +540,12 @@ impl Conn {
             self.host_writes = HostWrites::Shut;
             self.stream.shut_writes();
         }
-        // Pipes end as the connection drops: their way down closed after every byte, which
-        // their host reads, then the end; their way up closed already ([`Conn::end`]).
+        // Pipes end as the connection drops (none held): their way down closed after every
+        // byte, which their host reads, then the end; their way up closed already
+        // ([`Conn::end`]). A socket is held as `linger` says.
         #[cfg(windows)]
         {
-            if self.stream.socket().is_none() {
-                return None;
-            }
+            self.stream.socket()?;
             self.linger().map(Ended::Lingering)
         }
         #[cfg(not(windows))]
@@ -925,9 +924,8 @@ impl Conn {
     /// once, its reset owed: what its host has not taken yet is held past its end
     /// ([`Conn::end`]). A ring is the guest's memory, drained while its connection lasts.
     fn flush(&mut self) -> io::Result<()> {
-        let n = self
-            .stream
-            .forwarded_at_once(self.tx_buf.flush_to(&mut self.stream)?);
+        let flushed = self.tx_buf.flush_to(&mut self.stream)?;
+        let n = self.stream.forwarded_at_once(flushed);
         self.fwd_cnt += n as u32;
         self.tx_buf.fit(self.exposure() as usize);
         if !self.tx_buf.is_empty() || !self.ring_drained()? {
@@ -938,6 +936,11 @@ impl Conn {
                 };
             }
             return Ok(());
+        }
+        // Both ways over: on Windows its pipes' way up closes first, so that its host's writes
+        // fail at once before its way down's end can say the guest has gone (D272).
+        if self.guest_rcv_closed && self.guest_send_closed {
+            self.stream.end_reads();
         }
         if self.guest_send_closed && self.host_writes == HostWrites::Open {
             self.host_writes = HostWrites::Shut;

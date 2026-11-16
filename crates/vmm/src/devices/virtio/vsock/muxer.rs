@@ -945,13 +945,10 @@ impl Muxer {
                 let h = self.handshakes.swap_remove(i);
                 match &self.rate {
                     Some(to) => {
-                        // Out of the muxer's waits, to be written blocking by its owner; on
-                        // Windows its pipes wait on nothing of the muxer's, their owner's
-                        // write waited for on its own ([`Pipes::write_all_waiting`]).
-                        #[cfg(unix)]
-                        if let Err(e) = super::poll::release(h.stream.raw_socket()) {
-                            debug!("vsock: a host ask's dial kept in the muxer's waits: {e}");
-                        }
+                        // Its owner writes its answer, blocking: neither poll(2) nor kqueue(2)
+                        // sets a mode of a descriptor's, and on Windows its pipes wait on
+                        // nothing of the muxer's, their owner's write waited for on its own
+                        // ([`Pipes::write_all_waiting`], D272).
                         if to.send((h.stream, asked)).is_err() {
                             debug!("vsock: a host ask no one takes any more; its dial closed");
                         }
@@ -2790,9 +2787,6 @@ mod tests {
         host.look() == Paired::Connected
     }
 
-    #[cfg(windows)]
-    use std::io::Read as _;
-
     /// A host program's client of a VM's socket on Windows, as D272's client opens one: its
     /// way down read, its way up written, each a file as `std` opens one.
     #[cfg(windows)]
@@ -2812,9 +2806,10 @@ mod tests {
         }
 
         fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-            self.up
-                .as_mut()
-                .map_or(Err(io::ErrorKind::NotConnected.into()), |up| up.write_all(bytes))
+            match self.up.as_mut() {
+                Some(up) => up.write_all(bytes),
+                None => Err(io::ErrorKind::NotConnected.into()),
+            }
         }
     }
 

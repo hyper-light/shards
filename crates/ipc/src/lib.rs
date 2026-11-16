@@ -794,6 +794,10 @@ pub mod kind {
     /// the handles in the VM of the pair's way down and way up, each a little-endian u64; or
     /// an `ERR`.
     pub const VSOCK_PAIR: u8 = 111;
+    /// A VM → its owner, before its run's [`DONE`]: a member that could not enter its working
+    /// directory as it started, which failed the run (D277), as its guest's
+    /// `WORKDIR_UNENTERED` says it (`shards_abi::run::members::Unentered`).
+    pub const WORKDIR_UNENTERED: u8 = 112;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -2494,9 +2498,9 @@ mod pipe;
 #[cfg(windows)]
 pub use pipe::{
     Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, VSOCK_QUOTA,
-    VsockNames, await_any, await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair,
-    readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_instance, vsock_listen, vsock_open,
-    vsock_pair,
+    VsockConn, VsockListener, VsockNames, await_any, await_streams, byte_pair, end, fill_random, hung_up,
+    input_pair, output_pair, readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_instance,
+    vsock_listen, vsock_open, vsock_pair,
 };
 
 /// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes
