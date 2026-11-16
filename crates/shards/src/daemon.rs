@@ -1507,8 +1507,13 @@ struct Daemon<D: Disk = Real> {
     /// ends.
     joiner_links: Mutex<HashMap<String, (String, UnixStream)>>,
     /// Each user network's members, by its ID: the endpoints of its running microVMs
-    /// (D46).
-    members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
+    /// (D46), their addresses' leases and the network's pairing (D285).
+    members: Mutex<std::collections::BTreeMap<String, networks::Joined>>,
+    /// Its runs' links and names told one member's at a time (D46), so that each network
+    /// process has its tables in the order members came and went: held across their
+    /// answers, and so never with the home's networks lock, which no process holds across
+    /// another's answer (D285).
+    telling: Mutex<()>,
     /// A microVM's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
@@ -2410,6 +2415,7 @@ impl<D: Disk> Daemon<D> {
             noticing: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
+            telling: Mutex::default(),
             events,
             settling: Mutex::default(),
             settled: Condvar::new(),
@@ -15583,6 +15589,92 @@ mod tests {
             );
             say(&vm, kind::DONE, &[0]);
             assert_eq!(ask(), Ok(()));
+        });
+    }
+
+    /// The daemon's runs on a network have their addresses leased from the home's records,
+    /// held while each runs, and the network paired by the daemon from its first run's join
+    /// to its last's leaving (D285): a network another process pairs refuses them by that
+    /// cause, and the daemon's pairing refuses that process.
+    #[test]
+    fn a_networks_runs_are_leased_and_paired_by_one_process() {
+        use crate::networks::leases::{Leases, Refused, hold};
+        let t = Test::new("net-leases");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.4.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            // Another process's pairing, the home's lock let go before the daemon asks.
+            let held = hold(&t.daemon.home).unwrap();
+            let elsewhere = leases.pair(&held).unwrap();
+            drop(held);
+            let id = t.create("member");
+            assert_eq!(
+                t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap_err(),
+                "failed to set up container networking: network n: another process links its members"
+            );
+            drop(elsewhere);
+            let (_, member) = t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap();
+            assert_eq!(member.ip, std::net::Ipv4Addr::new(10, 78, 4, 2));
+            let held = hold(&t.daemon.home).unwrap();
+            assert_eq!(
+                leases.addresses(&held).unwrap(),
+                vec![(member.ip, Some(id.clone()))]
+            );
+            assert_eq!(leases.pair(&held).unwrap_err(), Refused::PairedElsewhere);
+            drop(held);
+            t.daemon.leave_network(&id);
+            let held = hold(&t.daemon.home).unwrap();
+            assert!(
+                leases.addresses(&held).unwrap().is_empty(),
+                "its address was kept"
+            );
+            assert!(leases.pair(&held).is_ok(), "the daemon kept the network paired");
+        });
+    }
+
+    /// A network another process's run holds an address of (D285) is in use, as one of the
+    /// daemon's runs keeps it: `network rm` refuses it by that cause and inspect lists that
+    /// run by its ID and address; its lease let go, the network and its leases go.
+    #[test]
+    fn a_network_with_another_processs_run_on_it_stays() {
+        use crate::networks::leases::{Leases, hold};
+        let t = Test::new("net-elsewhere");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.5.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            let other = "c".repeat(64);
+            let held = hold(&t.daemon.home).unwrap();
+            let lease = leases
+                .take(&held, network.pools.first().unwrap(), None, &other)
+                .unwrap();
+            drop(held);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 1, "{removed:?}");
+            assert!(
+                removed
+                    .2
+                    .contains("shards: cannot remove network n: another process's runs are on it"),
+                "{removed:?}"
+            );
+            let inspected = t.ask(&["network", "inspect", "n"]);
+            assert!(
+                inspected.1.contains(&other) && inspected.1.contains("10.78.5.2/24"),
+                "{inspected:?}"
+            );
+            drop(lease);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 0, "{removed:?}");
+            assert!(
+                !t.daemon
+                    .home
+                    .join("networks")
+                    .join(format!("{}.leases", network.id))
+                    .exists()
+            );
         });
     }
 

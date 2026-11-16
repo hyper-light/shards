@@ -31137,7 +31137,7 @@ microVMs on KVM, HVF and WHP, as D59, D109 and D231 each list theirs. Step 6 who
 
 **Literals.** None here: each built part's are in the entry it names.
 
-### D241. An orchestrator's run: told the room its budget leaves it, its microVM's cost in its stats (D188 and D43 through D231) (built; real-VM validation owed)
+### D241. An orchestrator's run: told the room its budget leaves it, its microVM's cost in its stats (D188 and D43 through D231) (built; its real-VM tests passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex charges each microVM its
 learned use, its envelope the ceiling, and holds the microVMs it runs on a machine to that
@@ -31220,7 +31220,11 @@ held within the least and short of it, no budget answered none) and
 guest time; a member's, none). Record:
 [orchestrator-room-v1](../research/measurements/orchestrator-room-v1/README.md).
 
-**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). D188's give-back at the host's pressure
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). Both passed on HVF and on KVM
+x86-64, in api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor
+point 4124d8c70.
+
+**Owed.** The real-VM tests on WHP and KVM arm64 (ROOT). D188's give-back at the host's pressure
 (`RECLAIM`) for an orchestrator's runs: no run host watches its host's pressure; an orchestrator
 gives one back by telling it a room short of what it holds.
 
@@ -31237,7 +31241,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32644,10 +32648,15 @@ lease answered 503").
       shards.
     - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: 38 of 38 at
       fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
-- *Owed.* ROOT runs the three api_image injector tests on HVF, KVM arm64 and WHP arm64, and CI's matrix on main
-  green. CI on main 1b8d1cddd (run 43876891053) ran them with VMs, each passing, on x86_64 Linux (gnu and musl, KVM)
-  and x86_64 Windows (WHP); its arm64 Linux runners have no /dev/kvm and its macOS runners no nested virtualization,
-  so they skipped there, and its arm64 Windows job did not reach them.
+- *Owed.* ROOT runs the three api_image injector tests on KVM arm64 and WHP arm64, and CI's matrix on main
+  green. PM M605 (2026-11-15, `SHARDS_REQUIRE_VMS=1`) ran them on HVF and on KVM x86-64, each passing, in api_image's
+  whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor point 4124d8c70
+  (`an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_back_masked`,
+  `a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks_again` and
+  `an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside`). CI on main 1b8d1cddd (run
+  43876891053) ran them with VMs, each passing, on x86_64 Linux (gnu and musl, KVM) and x86_64 Windows (WHP); its
+  arm64 Linux runners have no /dev/kvm and its macOS runners no nested virtualization, so they skipped there, and its
+  arm64 Windows job did not reach them. Both ran before HTTP/2's codec moved to its own crate (b35978bf6, below).
 
 **Built: one HTTP/2 in the tree, the injector's and the gateway's client's (R12)** (`crates/http2`, shards-http2:
 `lib.rs`, `hpack.rs`; `crates/net/src/http2.rs`; `crates/gateway/src/h2.rs`, `grpc.rs`; `crates/testguest/src/tls_ask.rs`;
@@ -32820,7 +32829,7 @@ step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or m
 (then bearer substitution cannot serve it, and it is fallback); a measured injector cost
 that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
 
-### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal built, D244; real-VM runs owed)
+### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal built, D244; its three real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed)
 
 **Why.** Plan step 6 (G24, D240): kiln runs a harness's sign-in in its member and shows its
 own screen, so a command run in a member must run as the member does, with a terminal that
@@ -33098,6 +33107,15 @@ member's files by path and by link, and nothing of init's held),
 `a_command_run_in_a_member_has_a_terminal_that_resizes`. Record:
 [member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
 
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). Those three passed on HVF and on
+KVM x86-64, in member_exec's whole runs, 6 of 6 at b8a861356 and at the vendor point 4124d8c70. Still
+owed (ROOT): them on WHP and KVM arm64, and the runs *Owed to ROOT* above that member_exec's tests do
+not make (an exec's `kill -0 1`, `kill -TERM 1` and abstract socket, an exec after its member killed its
+starter, `Refusal::NoStarter`, and confine-11's `shards top vm` and `processes: 2`). M605's unit pass of
+shards-init on adacachy2 (Linux 7.3.3) failed `a_members_top_lists_its_own_processes_alone` 3 of 3 ("the
+member ended before its exec"), with init as at ce5f97ab6 too, which M605 lays to that host (a
+Landlock-confined `execv` of `/bin/sleep`): a green run of it there is owed.
+
 **How it reaches every run.** A command run in a member is the run protocol's exec with
 `in-member=N`, resized by `EXEC_RESIZE`, whoever sends it: the daemon for `shards exec --for`,
 and step 11's exec lanes, each exec a lane of its own whose ask carries it, a `run::Spec` byte
@@ -33107,7 +33125,7 @@ ask. A member's own stdio is attached through step 5's streams (D240).
 
 **A member's own terminal** is D244's.
 
-### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs, and a daemon's since goal 58's step 6; real-VM runs owed)
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs, and a daemon's since goal 58's step 6; its real-VM tests passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
 member must be able to run on a terminal of its own, its owner reading what it shows,
@@ -33178,6 +33196,10 @@ version tests, `session::tests::a_resizes_answer_is_kept_for_its_awaited_ask_alo
 test-release --test member_exec`): `a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner`
 and `a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types`. Record:
 [member-exec-tty-v1](../research/measurements/member-exec-tty-v1/README.md).
+
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). Both passed on HVF and on KVM
+x86-64, in member_exec's whole runs, 6 of 6 at b8a861356 and at the vendor point 4124d8c70. Owed
+(ROOT): both on WHP and KVM arm64.
 
 ### D245. A CPU baseline: the CPU every machine a home moves among gives a guest, told each microVM it starts (decided; built on Hypervisor.framework, KVM arm64 and KVM x86-64; on WHP x86-64 its CPU checked at a move, its baseline researched, not built; real-VM runs owed)
 
@@ -33284,7 +33306,8 @@ M497).
 **Owed** (ROOT). The x86-64 E2E on KVM x86-64; a move told a baseline between two machines of
 different CPUs on KVM x86-64 and on Macs (two-hosts.sh `BASELINE=1`); the arm64 unit tests
 (CI on main); WHP x86-64's move refused at `ready` between two Windows hosts of different
-CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above.
+CPUs (two-hosts.sh on each; none here), and the WHP baseline's deciding runs above. PM M605's
+real-VM batch (HVF and KVM x86-64, 2026-11-15) ran none of them: it ran no `tests/moved.rs`.
 
 **Review migrate-06 (2026-11-13).** KVM's TSC-deadline capability is admitted by the
 baseline's CPUID1.ECX24 before vCPU shaping; shaping may not restore a masked feature.
@@ -33296,7 +33319,7 @@ both macOS feature names and Linux HWCAP spellings. Unknown and multi-register n
 remain checked conservatively, so a partial baseline does not hide an exposed feature.
 [Regression proof, mapped scope and remaining native checks](../research/measurements/migrate/fix-review-2026-11-13.md).
 
-### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; real-VM validation owed)
+### D246. Members held apart by an orchestrator: each member's reach of the names kept, named in its request and held by the run host before the microVM starts (built; its api_image test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, Hex's run and inithex-02's live twin owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 15 (Hex's): a harness Hex launches
 reaches exactly its granted providers and kiln's endpoint. D236 lets an orchestrator keep or
@@ -33390,12 +33413,14 @@ that Agentfile as `agentfile::agentfile` derives it: 443's grant dropped, the pr
 a alone let it, refused as a widening naming b; both let it, passes; red, accepted). Mutation:
 the port range's lower bound made strict (`lo < port`) fails the first.
 
-**Evidence owed** (ROOT, real VMs: KVM, HVF, WHP).
-`cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`:
-members held apart that would reach other than asked, and an undeclared member, refused
-before boot. A boot whose members are held exactly runs, its harness reaching its kept
-provider and the host's service and nothing else, another member none of them: Hex's
-image_grants_real, once Hex vendors this revision.
+**Evidence owed** (ROOT, real VMs).
+`cargo test -p shards --profile test-release --test api_image what_the_image_does_not_grant_is_refused_before_boot`
+on WHP and KVM arm64 (on HVF and KVM x86-64 it passed, PM M605, 2026-11-15,
+`SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at 6a0adfc09, KVM twice, and 32 of 32
+at the vendor point 4124d8c70): members held apart that would reach other than asked, and an
+undeclared member, refused before boot. A boot whose members are held exactly runs, its harness
+reaching its kept provider and the host's service and nothing else, another member none of them:
+Hex's image_grants_real on KVM, HVF and WHP, once Hex vendors this revision.
 
 **What would falsify it.** A member that reaches a kept name its entry does not let it (then
 `named_reach` misses a rule init's netplan follows: a port grant to any address was one,
@@ -33403,12 +33428,13 @@ inithex-02); a run refused where every member's reach is exact (then the narrowi
 the build's `host:port` are written apart).
 
 **Evidence owed for inithex-02** (ROOT, real VMs): the
-`api_image what_the_image_does_not_grant_is_refused_before_boot` run above, and a live twin of
+`api_image what_the_image_does_not_grant_is_refused_before_boot` run above (made on HVF and KVM
+x86-64, PM M605), and a live twin of
 the finding's fixture: a resolves and dials a controlled provider on 443; b, granted 443 to any
 address and let nothing, dials its known address directly. The request letting b nothing is
 refused before boot; with this guard removed it boots and b's dial connects.
 
-### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; real-VM validation owed)
+### D247. An orchestrator's rate: D191's hold told through its run's host, in milli-CPU (built; its real-VM test passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 14: Hex caps each microVM it runs at
 its water-filled share of its fleet's CPU budget each window, in milli-CPU, at least the
@@ -33498,9 +33524,14 @@ Its period (light, version 17): `image::wire`'s `a_runs_rate_period_reads_back_a
 round trip and version 16 refused. Owed (ROOT): its two guard-removal mutants (a period of
 none read back, version 16 taken), and the real-VM test above, which now reads the run's
 period, checks it is its build's hold's, and holds the run to two periods past a quarter
-where it took 100 ms as known.
+where it took 100 ms as known: run since on HVF and KVM x86-64 (below).
 
-**Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`).
+`the_orchestrators_rate_holds_its_run_to_it`, reading its run's period, passed on HVF and on KVM
+x86-64, in api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor
+point 4124d8c70.
+
+**Owed.** The real-VM test on WHP and KVM arm64 (ROOT); the seven guard-removal mutants above,
 these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). How far past
 its rate a VM runs at each rate and vCPU count, measured, as D191 owes for its marks.
 
@@ -33515,7 +33546,7 @@ rate period (Hex `48cafffc7`), at Shards `9975d1f55` (Hex `1969a423`).
 by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
 milli-CPU, held otherwise than before (D191's tests).
 
-### D248. An orchestrator's run host is started holding its three standard streams alone (built; real-VM validation owed)
+### D248. An orchestrator's run host is started holding its three standard streams alone (built; api_image passing on HVF and KVM x86-64, PM M605; on WHP, an SDK run of several images in one process, and Hex's runs owed)
 
 **Why.** "Children get only what they are given" (D26's warm pool, `shards_ipc::spawn`; on
 Windows D195's handle list) held for every child shards starts but one: shards-api started
@@ -33588,7 +33619,9 @@ expected); as built, 10 passed. Clippy for shards-api, all targets, `-D warnings
 Windows leak check is unrun on a host here (CI's Windows legs build and run it).
 
 **Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
-api_image` on HVF and WHP; Hex's image_real on macOS and Windows once Hex vendors this.
+api_image` on WHP; on HVF it passed whole, and on KVM x86-64 (PM M605, 2026-11-15,
+`SHARDS_REQUIRE_VMS=1`: 33 of 33 at 6a0adfc09, KVM twice, and 32 of 32 at the vendor point
+4124d8c70). Hex's image_real on macOS and Windows once Hex vendors this.
 
 **What would falsify it.** A run host that holds a descriptor or handle of its orchestrator's
 it was not given (then `shards_ipc::spawn` leaks to every child shards starts, D26).
@@ -33629,12 +33662,12 @@ so A's member stdin never saw EOF, or A's drain never ended.
   shards-api, shards-registry and shards: clean on macOS; on Windows x86_64 (cargo xwin,
   adas-mac-studio.local) clean for the first three, and shards' one error main's own
   (`daemon/health.rs`'s fields unread on Windows, runs-11), none of this change's.
-- *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` and an SDK
-  run of several images in one process on HVF and WHP; the Windows unit
-  `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
+- *Owed* (ROOT): `cargo test -p shards --profile test-release --test api_image` on WHP (on HVF
+  it passed, PM M605, above), and an SDK run of several images in one process on HVF and WHP; the
+  Windows unit `a_raw_command_line_keeps_its_quotes` and the registry's credential tests on Windows (CI's
   Windows legs).
 
-### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; real-VM validation owed)
+### D249. An orchestrator's run whose command never started ends failed, in its VM's words (built; api_image passing on HVF and KVM x86-64, PM M605, though no test of it ends a run failed; a real-VM run of each failed end, and Hex's, owed)
 
 **Why.** A run's `DONE` (warm.rs `finish`, `joined_finish`) carries the command's status and,
 where the command never started, why not: the words dockerd says for it, after the code dockerd
@@ -33668,7 +33701,11 @@ landed (f176b3e61), 15 passed and that test failed (`Failed(…)` where `Exited(
 expected); as built, passed.
 
 **Evidence owed** (ROOT, real VMs). Hex's image_real (HEX-IMG-3) on KVM once Hex vendors this,
-and `cargo test -p shards --profile test-release --test api_image` on a KVM host.
+and `cargo test -p shards --profile test-release --test api_image` on a KVM host. The latter ran
+(PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`): api_image passed whole on KVM x86-64 and on HVF,
+33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor point 4124d8c70. No test of it
+asserts a `Failed` end, so M605 holds no run whose command never started: that run is owed, with
+Hex's.
 
 **What would falsify it.** A run whose command started ending `Failed` for its `DONE`, or one
 whose command never started ending `Exited`. (Superseded by the amendment below: a started run
@@ -33722,9 +33759,10 @@ one such cause, init's capture EOF race. Typing the failure stops this hiding an
 
 *Evidence owed* (ROOT, real VMs): a run whose init fails after `STARTED`, through
 `cargo test -p shards --profile test-release --test api_image` on HVF and KVM, and Hex's
-image_real once Hex vendors this.
+image_real once Hex vendors this. M605's api_image runs on HVF and KVM x86-64 (above) hold no
+such run.
 
-### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; real-VM validation owed)
+### D250. An orchestrator's run keeps the network its image links its members to, letting nothing past that the request does not keep (built; its real-VM test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and Hex's run, owed)
 
 **Why.** D231's run host gave a run a network only where the request kept something past the
 microVM or published a port. A request keeping nothing past it (Hex's image class's default:
@@ -33774,14 +33812,19 @@ shards and shards-api, all targets, `-D warnings`: clean. Real VMs, committed un
 `api_image::a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` (the Hex
 lead's).
 
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`).
+`a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` passed on HVF and on KVM
+x86-64, in api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor
+point 4124d8c70.
+
 **Evidence owed** (ROOT, real VMs). `cargo test -p shards --profile test-release --test
-api_image a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` on KVM, HVF and
-WHP; Hex's image_real with a box of no grants once Hex vendors this.
+api_image a_run_keeping_nothing_the_image_grants_boots_and_its_harness_runs` on WHP and KVM
+arm64; Hex's image_real with a box of no grants once Hex vendors this.
 
 **What would falsify it.** A member of such a run reaching anything past the microVM (then a
 network process told no policy is not at `DenyAll`), or one killed for its link.
 
-### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; real-VM runs owed)
+### D251. A lane to a socket of a run's own command: the agent-control endpoint's socket lane, carried over vsock by shards-init's relay (built: the endpoint, its controller and its controller's wake, the VM process's leg and init's; the run host's endpoint is D252's; its three nesting tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed)
 
 **Why.** Hex's node runs under shards-init as the run's own command, its PID 1 kept (kiln plan
 01a1cd8e862e7169a074db3d5fa33f3d, step 39; Hex's `docs/design/node-under-shards-init.md` §5).
@@ -34107,7 +34150,7 @@ function"), no time chosen.
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's case (f), `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
-  (with the run host's endpoint, D252), on HVF, KVM x86_64 and WHP.
+  (with the run host's endpoint, D252), on WHP and KVM arm64 (run on HVF and KVM x86_64: below).
 - The lane's throughput and round trip against D238's arm h numbers (control-end's harness).
 - Mutation of the grant's and the name's checks.
 - A cut carried through a real VM (*Its cut through the guest's legs*, built and unit
@@ -34115,7 +34158,8 @@ function"), no time chosen.
   and its half-close still as its way's end, on HVF, KVM and WHP
   (`nesting::a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
   `nesting::a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on`,
-  testguest's `nesting ends`; written, not yet run); and, the muxer being every
+  testguest's `nesting ends`; run since on HVF and KVM x86-64, below, and owed on WHP and KVM
+  arm64); and, the muxer being every
   exec's, engine's and MCP member's, their suites on all three. On WHP: a guest connection
   ended both ways at once with its host still writing now loses the host what it had not
   read (no linger); exec's own end is a half-close first, which keeps M358's hold.
@@ -34129,6 +34173,14 @@ function"), no time chosen.
   CI's Windows legs and run by CI's Windows unit tests; its transport tests are Unix's (their
   workload is an AF_UNIX listener).
 
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). nesting ran whole on HVF and on
+KVM x86-64, 14 of 14 on each at the vendor point 4124d8c70 (KVM three runs);
+`a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`,
+`a_nested_workloads_socket_cut_mid_stream_resets_its_lane_at_the_controller` and
+`a_nested_workloads_half_close_ends_its_way_in_order_while_the_controllers_goes_on` passed in each
+of M605's runs of it, whose failures (KVM, with 4e0b82699) were other tests'. The rest of the list
+above is owed.
+
 **What would falsify it.**
 - A workload reaching a socket outside its root.
 - A lane's bytes reordered or lost.
@@ -34136,7 +34188,7 @@ function"), no time chosen.
 - A lane held past its window.
 - A socket cut short read as `Ok(0)` at the controller, or a half-close read as a cut.
 
-### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built, its members' stdio lanes too; real-VM runs owed)
+### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built, its members' stdio lanes too; its two nesting tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, the stdio lanes' run and its other real-VM runs owed)
 
 **Why.** D238 built the endpoint for a daemon's run that asks for it (`shards.control=true`,
 `bind_agent`), but D231's run host (`shards api-run`) bound none. Hex's node runs on such a run
@@ -34230,8 +34282,11 @@ endpoints bind.
 
 **Evidence owed** (ROOT, real VMs).
 - Hex's cases (f) `nesting::a_nested_workloads_sockets_are_lanes_of_its_orchestrators_controller`
-  and (g) `nesting::an_orchestrators_run_binds_its_own_agent_control_endpoint`, on HVF, KVM x86_64
-  and WHP.
+  and (g) `nesting::an_orchestrators_run_binds_its_own_agent_control_endpoint`, on WHP and KVM
+  arm64. Both passed on HVF and KVM x86_64 (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`): nesting
+  ran whole, 14 of 14 on each at the vendor point 4124d8c70 (KVM three runs), and these two passed
+  in each of M605's runs of it, whose failures (KVM, with 4e0b82699) were other tests'. M605 ran
+  before the members' stdio lanes (amended 2026-11-16, below).
 - The run host's resident and CPU cost with its endpoint, against the daemon's per run (R14).
 
 **What would falsify it.**
@@ -34326,7 +34381,7 @@ lane s17's finding).
   holding its stdio lanes, as the daemon's managed budget holds a run's owned streams (not
   charged here).
 
-### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
+### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 
 **Why.** An orchestrator's run (D231) booted its microVM cold every time, where a daemon's run
 restores its image's template (D25) and takes a warm VM from its pool (D26). Hex boots its node
@@ -34410,7 +34465,7 @@ removal costs that run's boot alone.
 snapshot's state is emptied, Restored, and Booted for a given guest) on HVF, KVM x86_64 and
 WHP; every other `api_image.rs` case, now on the daemon's shape; a daemon run and template
 restore on each OS, since 4a moved the daemon's words; R14's start latency, restored against
-cold.
+cold. The first two ran on HVF and KVM x86-64 since (*Run on real VMs*, below).
 
 **Decided: pools** (`shards_api::image::ImagePools`, plan step 5). The orchestrator owns each
 microVM's life (D231), so its pools live in its process, with shards-api:
@@ -34459,7 +34514,8 @@ tests unchanged.
 
 **Owed** (ROOT, real VMs): `api_image.rs`'s `an_images_next_run_takes_a_warm_host_of_its_pool`
 on HVF, KVM x86_64 and WHP; R14's start of a warm run against a restored one, the warm host's
-resident memory, and its start's time from `WARMED`.
+resident memory, and its start's time from `WARMED`. The test ran on HVF and KVM x86-64 since
+(below).
 
 **Amended: the room** (2026-11-14, with Hex's lead; `ImagePools::new(room, keep)` replaces
 `new(most, keep)`, which is deleted with no legacy path). Hex serves image boxes from these
@@ -34559,7 +34615,8 @@ taking a wait on its host's disk for its own rest (D215: a party waiting in its 
 **Owed** (ROOT, real VMs): both on KVM. On Windows
 the same channel tie holds, but this test's witness (process groups) is Unix's, so Windows is
 unverified. Also owed: `api_image.rs`'s `a_warm_hosts_footprint_is_its_vm_processs_reading`
-(`held().footprints` carries a real reading once asked) on HVF, KVM and WHP.
+(`held().footprints` carries a real reading once asked) on HVF, KVM and WHP. All three ran since
+on KVM x86-64, the footprint test on HVF too (below).
 
 **Decided: a run host's layers end with it** (plan step 17, #73). A run host makes its
 microVM's writable layer's file in its home's `layers` (D190, layers.rs `fresh`), unlinked as
@@ -34605,7 +34662,8 @@ and exits. Each expects the host's gone and another pid's kept. `a_layers_name_s
 
 **Owed** (ROOT, real VMs): `api_image.rs`'s
 `a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, which now also expects no
-`layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP.
+`layers/<host>-*` file once stopped, on HVF, KVM x86_64 and WHP. It ran on HVF and KVM x86-64
+since (below).
 
 **Amended: a run's security is its microVM's, made as it is shaped** (2026-11-14, the start
 path's first cut; PM M593's phase pass). ROOT's timed pass at 8d732fb2d (HVF, a loaded M4 Max)
@@ -34649,6 +34707,19 @@ each compiled for that kernel.
   pool's first run claims: the room sees that claim alone, the taken pool's after the take is
   let go; red with the refill asked at the take). *Owed* (ROOT): the A/B of warm starts, and
   of a burst's second, with and without it.
+
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`; before the amendment below).
+api_image ran whole on HVF and on KVM x86-64 and passed, 33 of 33 at 6a0adfc09 (KVM twice) and 32
+of 32 at the vendor point 4124d8c70, so each api_image case owed above passed on both:
+`an_images_next_run_restores_the_template_its_first_saved`,
+`an_images_next_run_takes_a_warm_host_of_its_pool`,
+`warm_hosts_end_with_the_process_holding_their_pools`,
+`a_warm_hosts_footprint_is_its_vm_processs_reading`,
+`a_stop_mid_boot_ends_the_run_host_and_every_process_of_its_run`, and api_image's other cases
+(its GPU case returns at once where `SHARDS_TEST_GPU` names no GPU, and M605's harness names
+none). Still owed (ROOT): those on WHP and KVM arm64 (Windows' warm hosts' end unverified, as
+above); a daemon run and template restore on each OS; the R14 measures and A/Bs above; and the
+amendment's runs, below.
 
 **Amended: a run host makes its microVM's writable layer beside the rest of its start**
 (2026-11-16, the start path's cut (a)). A start that boots or saves made its layer's file
@@ -34701,7 +34772,7 @@ share process's start, its binaries' check, its network's decision.
   launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
   restore's own).
 
-### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
+### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; its orchestrator's real-VM test passing on HVF and KVM x86-64, PM M605; kiln's side and every other real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
 in-process). ROOT's first call was plain HTTP from the microVM to the runner's loopback
@@ -34957,7 +35028,10 @@ first such run of an orchestrator's is written (`api_image::an_orchestrators_mem
 a harness's `initialize` through its bridge, read exactly by `Execs::mcp`; D238's *A member's
 end, typed*), and shards-api's `control` now re-exports what `Execs::mcp` gives
 (`McpConnection`, `Output`, `Input`, `Got`, `ExecControl`), so that an orchestrator reads a
-connection through shards-api alone (`tests/control_lanes.rs`).
+connection through shards-api alone (`tests/control_lanes.rs`). That run passed on HVF and on KVM
+x86-64 (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`), in api_image's whole runs: 33 of 33 at
+6a0adfc09 (KVM twice) and 32 of 32 at the vendor point 4124d8c70. It is owed on WHP and KVM arm64,
+as is every other run above.
 
 **What would falsify it.** A harness that takes MCP and no stdio server; a byte of an MCP
 connection reaching the microVM's network; a member's connection told to the controller as
@@ -35057,7 +35131,8 @@ the period from the first answer.
   A guest booted `--host-managed`, spinning its one vCPU, asked a quarter CPU on its socket,
   uses no more than a quarter of the time passing, two periods and its VMM's own CPU; its
   vCPU's whole CPU and none hold nothing; each answer's period is its build's hold's; a guest
-  booted without `--host-managed` closes the ask unanswered.
+  booted without `--host-managed` closes the ask unanswered. PM M605's real-VM batch (HVF and
+  KVM x86-64, 2026-11-15) did not run it: its `--test boot` step ran the `shards_api_` tests alone.
 - Guard-removal mutants, each of which must fail its test: the muxer's `rate` gate (none:
   closed), `read_ask`'s word, `held_of`'s asked-or-none, the client's unanswered close as
   `Unsupported`, and vm_run's `--host-managed` flag.
@@ -35069,7 +35144,7 @@ the period from the first answer.
 its own read as a `RATE` line); a managed guest held to a rate whose CPU over a window passes it
 by more than a period's share, its vCPUs' overrun and its VMM's own.
 
-### D256. A member's run-time arguments: its run's flags after its own command, on its command line (built: an orchestrator's runs; real-VM runs owed)
+### D256. A member's run-time arguments: its run's flags after its own command, on its command line (built: an orchestrator's runs; its real-VM test passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 17 launches kiln's harnesses through
 Hex, each a member of its Agentfile's image. A harness runs by its image's command
@@ -35151,8 +35226,10 @@ are none.
   `domains::tests::a_members_command_line_is_its_command_then_its_runs_arguments`.
 
 **Owed** (ROOT).
-- The real-VM test's runs on HVF, KVM and WHP: api_image.rs
-  `a_members_arguments_follow_its_images_command_in_order` (written; built and linted only),
+- The real-VM test's runs on WHP and KVM arm64: api_image.rs
+  `a_members_arguments_follow_its_images_command_in_order`, which passed on HVF and on KVM
+  x86-64 (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at
+  6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70),
   whose harness is the test guest's `argv` mode, writing its command line word by word, each
   with its NUL. Booted through `ImageShards` with `MemberSpec::args` of `--resume`, `s 1` and an
   empty one, its stdout is its program as its image's command names it (argv[0] as given, as runc passes it; the file found by the member's own search, confine-04), its image's options (`argv`,
@@ -35169,7 +35246,7 @@ are none.
 before its own options, or with one split, joined or cut; a request past the bound started
 with its arguments cut.
 
-### D257. One registry of setup keys, and an init refusing an entry of any other before it applies a spec (built; real-VM runs owed)
+### D257. One registry of setup keys, and an init refusing an entry of any other before it applies a spec (built; api_image, nesting and member_exec passing on HVF and KVM x86-64, PM M605; containers, and all four on WHP and KVM arm64, owed)
 
 **Why.** D28 refuses an init of another build by the identity of what the two share: shards-abi's
 sources, hashed as it is built. A spec's setup entries are shared too, but most of their keys
@@ -35247,7 +35324,11 @@ abi's, so D28 already covers them; the literals were the gap (ROOT's go, 2026-11
 **Owed** (ROOT).
 - The broad real-VM suites on HVF, then KVM and WHP: containers, api_image, nesting,
   member_exec. A key the census and the composers' tests missed shows there as a run refused
-  "its setup: a setup entry of key …".
+  "its setup: a setup entry of key …". PM M605 (2026-11-15, `SHARDS_REQUIRE_VMS=1`) ran
+  api_image, nesting and member_exec whole on HVF and KVM x86-64, each passing on both at the
+  vendor point 4124d8c70 (32 of 32, 14 of 14 and 6 of 6; api_image's GPU case returns at once
+  where `SHARDS_TEST_GPU` names no GPU, and M605's harness names none). Owed: containers on all
+  three, and the other three on WHP and KVM arm64.
 - These light tests on Linux and Windows (CI), and `scripts/lint` on the 7 targets.
 
 **What would falsify it.** A spec all of whose keys are registered refused; one holding an
@@ -35255,7 +35336,7 @@ entry of an unregistered key started, applied or silently ignored; a file writin
 setup that the census does not read; an init of another build that accepts a key it has no
 reader for.
 
-### D258. An orchestrator's run ends saying why: its asks' end typed, its VM's failure to serve it told, its end kept once seen, its host's diagnostics whole where asked (built; real-VM runs owed)
+### D258. An orchestrator's run ends saying why: its asks' end typed, its VM's failure to serve it told, its end kept once seen, its host's diagnostics whole where asked (built; its real-VM suites passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, Hex's rerun and the share test's loop owed)
 
 **Why.** Four ways a run for an orchestrator (D231) ended without saying why, three of them
 seen on real runs:
@@ -35362,7 +35443,8 @@ seen on real runs:
       through `keep_diagnostics`, `cargo test -p shards-api --lib -- image::session::tests::`
       passed 37 of 37 there, clippy -D warnings clean; the check's truncation dropped (the
       mutant), it failed at its refusal, `Ok(())` for `Err(Os { PermissionDenied })`. Owed
-      (ROOT): api_image's real-VM tests with a file per boot.
+      (ROOT): api_image's real-VM tests with a file per boot (run on HVF and KVM x86-64 since:
+      PM M605, *Owed* below).
 
 **Literals.** The kind's number, 101: the next free above main's at landing (NET_LEASE 100).
 No other.
@@ -35397,8 +35479,12 @@ No other.
   targets, clean.
 
 **Owed** (ROOT).
-- The real-VM suites on HVF, KVM and WHP: api_image whole, member_exec, and boot.rs
-  `shards_api_*`. Hex's grants rerun, its run's end now saying why.
+- The real-VM suites on WHP and KVM arm64: api_image whole, member_exec, and boot.rs
+  `shards_api_*`. On HVF and KVM x86-64 they passed (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`):
+  at the vendor point 4124d8c70 api_image 32 of 32, member_exec 6 of 6 and `shards_api_` 3 of 3 on
+  each, api_image 33 of 33 at 6a0adfc09 (KVM twice); api_image's GPU case returns at once where
+  `SHARDS_TEST_GPU` names no GPU, and M605's harness names none. Hex's grants rerun, its run's end
+  now saying why.
 - The share test's `Exited(125)` under load, run again in a loop. Its end now names the VM's
   words where its VM could not serve the run, and its home shows its run host's diagnostics.
 - These light tests on Linux and Windows (CI), and `scripts/lint` on every target of the
@@ -35409,7 +35495,7 @@ ended by an orchestrator's broken channel, or by a VM that could not serve it, w
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
 
-### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; real-VM runs owed)
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and step 33's real sessions, owed)
 
 **Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
 harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
@@ -35554,7 +35640,9 @@ carrier: a bundle over origin/main in a blobless clone):
 
 **Owed** (ROOT).
 - `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
-  KVM x86_64, HVF, WHP and, through L1, KVM arm64.
+  WHP and, through L1, KVM arm64. On KVM x86_64 and HVF it passed (PM M605, 2026-11-15,
+  `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at 6a0adfc09, KVM twice, and 32 of
+  32 at the vendor point 4124d8c70).
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
 - These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
@@ -36692,7 +36780,7 @@ apply here.
   - `crates/shards/tests/boot.rs` `two_vcpus_boot_to_their_end_in_this_process` and
     `a_reset_with_no_console_says_its_guests_panic` on an x86-64 KVM host and on WHP.
 
-### D269. An orchestrator's run publishes a port and lets one go as it runs, in its running microVM in place: `ImageGuest::publish` and `unpublish` (built; real-VM runs owed)
+### D269. An orchestrator's run publishes a port and lets one go as it runs, in its running microVM in place: `ImageGuest::publish` and `unpublish` (built; its real-VM test passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC1): a kiln session in a Shards microVM
 exposes and closes ports while it runs, "*without* having to force the user to re-build the
@@ -36756,9 +36844,15 @@ network process: told by number with its socket, a connection taken, let go by n
 bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tests, now over
 `NetControl`.
 
-**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). `crates/shards/tests/api_image.rs`
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
-process pid unchanged, no build and no save across it).
+process pid unchanged, no build and no save across it) passed on HVF and on KVM x86-64, in
+api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at the vendor point
+4124d8c70. On KVM at b8a861356 it had failed in its own search for its VM process: a Linux run
+host starts its VM binary through its own descriptor (`/proc/PID/fd/N`), so the test's match of
+`shards-vm` in a command line found none; 6a0adfc09's test matches the process's `comm` too.
+
+**Owed** (ROOT, real VMs): that test on WHP and KVM arm64.
 
 ### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed)
 
@@ -37162,7 +37256,7 @@ onto a host of shorter reach is refused (`window_kept`) rather than laid out oth
 restore can lay the window anew, a move (the roadmap's 7a) goes only to a host of equal or
 longer reach, which its planner reads of both hosts before it starts.
 
-### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; real-VM runs owed)
+### D271. An orchestrator's volumes in a running run: a host directory or a volume of its home, plugged into the members named beneath the roots its spec grants (built; its real-VM tests passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.2): "Add volumes … If MicroVMs, it adds the
 volume to the microvm(s) for that session, grants the permissions specified, and adds it to the
@@ -37211,12 +37305,18 @@ a volume source, none or one twice refused, `Volume`);
 `session::tests::a_plug_is_for_the_members_that_run_and_rides_the_runs_channel`;
 `api_run::hosted::tests::a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots`.
 
-**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). `crates/shards/tests/api_image.rs`
 `volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays` (rw read and written
 back, ro refusing the member's write with EROFS, a home volume made by its plug, `Outside`,
 `Busy` and `Unknown`; the same `started_from`, the same VM process and unchanged templates
-across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
-`plugged-volumes` mode is new, so the test guests are rebuilt.
+across it) and `a_project_is_plugged_into_the_running_harness` on the new call passed on HVF
+and on KVM x86-64, in api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at
+the vendor point 4124d8c70. On KVM at b8a861356 the volumes test had failed in its own search
+for its VM process, as D269's did (a Linux run host starts its VM binary through
+`/proc/PID/fd/N`); 6a0adfc09's test matches the process's `comm` too.
+
+**Owed** (ROOT, real VMs): both on WHP and KVM arm64; the test guest's `plugged-volumes` mode is
+new, so the test guests are rebuilt.
 
 ### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
 
@@ -37491,7 +37591,7 @@ host's write after the guest's end taken without an error; a process other than 
 opening its pipe; an instance's name taken before its VM's first; a client's write up that
 waits on its read down; a half-close its client doesn't read as its end.
 
-### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
+### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; its real-VM test passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** The person (2026-11-15, plan Phase 6b, P6b.1 AC2): grant and revoke egress
 (destinations, DNS names, MCP endpoints) while a session runs, without a rebuild or a restart
@@ -37555,10 +37655,16 @@ egress change and the grants in every answer) and the `Started` round trips with
 `api_run::hosted::tests::a_runs_grants_change_within_its_images_as_it_goes`; the tell_net tests
 with the ceiling.
 
-**Owed** (ROOT, real VMs, HVF, KVM and WHP): `crates/shards/tests/api_image.rs`
+**Run on real VMs** (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`). `crates/shards/tests/api_image.rs`
 `an_egress_destination_revoked_refuses_the_next_connection_and_granted_back_reaches_again`
-(the same `started_from`, the same VM process and unchanged templates across it; the test
-guest's `reach-each` mode is new, so the test guests are rebuilt). Next (slice 3c): the
+(the same `started_from`, the same VM process and unchanged templates across it) passed on HVF
+and on KVM x86-64, in api_image's whole runs: 33 of 33 at 6a0adfc09 (KVM twice) and 32 of 32 at
+the vendor point 4124d8c70. On KVM at b8a861356 it had failed in its own search for its VM
+process, as D269's did (a Linux run host starts its VM binary through `/proc/PID/fd/N`);
+6a0adfc09's test matches the process's `comm` too.
+
+**Owed** (ROOT, real VMs): that test on WHP and KVM arm64 (the test guest's `reach-each` mode is
+new, so the test guests are rebuilt). Next (slice 3c): the
 person's ceiling (`ImageSpec::egress_ceiling`) and the guest's side, init re-programming a
 member's gate and agentdns live with domains' Landlock TCP rights unhandled, an older domain
 refused typed with the member-restart option (D270's).
@@ -38180,20 +38286,133 @@ each volume's bytes, and its person's page needs them listed and one cleared.
 - No other literal; no wait or cache: each call walks every volume's files as it is asked, which
   is an admission's and a page's cost, never a start's.
 
-**Not built: a volume's bound held as it is written.** Its size admitted to its node's room means
-a bound its writes cannot pass. The store refuses `size` today ("quota size requested but no quota
-support", the local driver's own words where its filesystem has no quotas), and nothing bounds a
-directory a share serves. Until one is decided, an orchestrator admits a volume's measured bytes
-and refuses its next session where they pass its bound, which a session may still pass while it
-runs. The ways to hold it, each owed its R02 research and ROOT's decision: (1) the share server
-holds a byte budget per volume across every share process serving it (a count kept beside the
-volume and taken by each), refusing a write, an extension or an allocation past it (ENOSPC),
-counted by lengths as `Store::size` counts (a DAX write within a file's length changes none);
-(2) a fixed-size disk instead of a directory, as `shards plug disk FILE:PATH --size` makes one
-(D214, an ext4 of D190's mke2fs: its own bound, exact, its host use at most its size), which needs image runs' disk
-plugs, each member's mount of it and its owners mapped to a member's ids; (3) the host's quotas
-(XFS project quotas, root's to set; APFS has none per directory), which R12 and "no host root"
-refuse.
+**Decided (lane vol-bound, 2026-11-16): a volume's bound held as it is written, by the server of
+its share (slice 1 built; 2 to 5 owed).** Its size admitted to its node's room means a bound its
+writes cannot pass. Before, the store refused `size` ("quota size requested but no quota support",
+the local driver's words where its filesystem has no quotas), nothing bounded a directory a share
+serves, and an orchestrator admitted a volume's measured bytes and refused its next session where
+they passed its bound, which a session could still pass while it ran.
+- *Alternatives* (R02; each source read 2026-11-16):
+  - *The host's quotas.* Docker's local driver takes `size` only where it has a quota backend
+    (moby main, `daemon/volume/local/local_unix.go`: `quotaCtl.SetQuota`, else that refusal);
+    `--storage-opt size` is "only available for the btrfs, overlay2, windowsfilter, and zfs
+    storage drivers", overlay2's "only ... if the backing filesystem is xfs and mounted with the
+    pquota mount option" (docs.docker.com, `docker container run`); Podman's `size` only "on the
+    tmpfs and xfs file systems", XFS mounted `prjquota` (podman-volume-create(1)). Root's to set
+    up, and neither APFS nor NTFS has one per directory: refused, as R12 refuses host root.
+  - *A fixed-size disk.* An ext4 of `size` bytes made by shards-ext4 (D190), plugged as D214's
+    disk, as Firecracker's guests have and Fly.io's volumes are ("a volume can be attached to only
+    one Machine", "a slice of an NVMe drive on the same physical server", never shrunk:
+    docs.fly.io/volumes/overview). Exact: its host's use is at most its size, metadata included,
+    and the guest's own ext4 answers df and ENOSPC. Against it here: the volume stops being a
+    directory (D271's plugs, this entry's listing and clearing, `volume inspect`'s mountpoint, a
+    person reading its files on the host); one microVM at a time mounts it, where each member's
+    plug is a share process of its own; image runs plug no disks, mount none in a member and map
+    no owners of one (D214's are a daemon run's, through the CLI, with `pci_slots` asked at boot:
+    a rescan 2.4 ms and a first read 3.1 ms at p50 on HVF, 6.6 and 7.6 on KVM, PM M430); its data
+    sits in the guest's page cache (virtio-blk), where a share's stays its host's, and what that
+    cache holds unwritten is lost with a killed microVM, where a share's request is its host's
+    once answered; blocks freed in the guest stay the host's without discard; and growing it is a
+    resize2fs of a file system made with no blocks kept to grow (D190).
+  - *After the fact.* Kubernetes' kubelet measures a pod's ephemeral storage, and past its limit
+    "sets an eviction signal that triggers Pod eviction" (kubernetes.io, ephemeral storage): this
+    entry's interim, which a session passes while it runs.
+  - *The share's server* (chosen). Every byte a guest writes to a volume reaches its host through
+    it: the server takes no FUSE_WRITEBACK_CACHE at INIT, so a write(2) is a FUSE_WRITE answered
+    before it returns; a DAX write extends no file (fs/fuse/dax.c: "Do not use dax for file
+    extending writes", sent as FUSE_WRITEs), and a plugged share has no window (D214);
+    COPY_FILE_RANGE is ENOSYS. FUSE file systems hold quotas so: CephFS's clients ("cooperative
+    and non-adversarial", "imprecise": "writers will be stopped within tens of seconds of crossing
+    the configured limit"; df "based on quota limit": docs.ceph.com cephfs/quota), JuiceFS's
+    ("regular files are accounted by their file length, aligned to 4 KiB, and each consumes one
+    inode", other files 4 KiB; EDQUOT; df shows the quota; usage synced each second, which
+    "cannot guarantee that the usage data is counted accurately": juicefs.com, guide/quota),
+    GlusterFS's (`quota-deem-statfs`: "the total disk space of the directory is taken as the quota
+    hard limit"; cached sizes let writes past it within a timeout: docs.gluster.org,
+    Directory-Quota). virtiofsd has no such option (README, main) and answers statfs with its
+    host's. Their imprecision is many machines' clients each counting apart; a volume's servers
+    here are all on its host, and one count they share is exact (slice 2).
+- *The measure* (`fs::bound`, the same for a walk and for each request): a name takes one unit,
+  its host file system's allocation unit (statvfs's `f_frsize`; NTFS's cluster), read as the
+  share is bounded; a file but a directory its length in whole units, once however many names it
+  has; each file its guest's extended attributes, their names' and values' bytes, in whole units
+  (the server's own owner attribute, none). A length is what the server sees change; a name and an
+  attribute cost the host what no length shows: a guest's millions of empty files, or attributes
+  of up to 64 KiB each (XATTR_SIZE_MAX, include/uapi/linux/limits.h) and as many as its host file
+  system keeps (ext4 keeps them in its inode and one block, "not possible for this block to
+  contain a pointer to a second", unless made with `ea_inode`: docs.kernel.org ext4 attributes).
+  JuiceFS's, with its host's unit for its 4 KiB. It errs high for a sparse file (a 10 GiB
+  `ftruncate` takes 10 GiB) and for clones; it bounds neither the inode records and entries past
+  a name's unit nor a host's own transients (XFS's speculative preallocation, Btrfs's copies on
+  write), as a host's own quota bounds neither. Its distance from `du` on each host's file
+  system: unmeasured, owed.
+- *Refused past it:* ENOSPC, as a full file system answers (write(2): "no room for the data"),
+  which its statfs then says it is; not EDQUOT, as the guest's mount is the volume, whose own room
+  is gone. A write's bytes past the end the room lets its file reach are not written, a short
+  write as a nearly full disk's, and the next is refused; so are a size grown by SETATTR, a
+  growth by FALLOCATE (all or none), a name (CREATE, MKNOD, MKDIR, SYMLINK with its target's
+  length, LINK, a whiteout) and an attribute grown. FALLOC_FL_KEEP_SIZE is
+  refused EOPNOTSUPP in a bounded share: blocks past a file's length no length shows (fallocate(2):
+  a mode its file system does not take). A file there already is opened still with no room left,
+  O_EXCL refused EEXIST first, as Linux orders them. Never refused: what takes nothing (an
+  overwrite within a file's length, a read, a rename) and what gives back.
+- *Given back:* a name's unit as it is removed; a file's length and attributes with its last
+  name, or, where the guest holds it open, with its last handle (`removed_open`), as its host keeps
+  its blocks until its last descriptor goes: a guest cannot write past its bound by removing what
+  it holds open, and what it writes there meanwhile goes with it; a truncation's whole units, an
+  O_TRUNC's among them; and every file a session held, as its INIT resets it.
+- *Statfs:* blocks and files the bound's units; free and available what is left of it in units,
+  where its host has as much (the host's where it has less); free files the same, a name taking a
+  unit (NTFS counts none: the bound's); its fragment the unit. The guest's df shows the volume's
+  bound and use, as tmpfs's `size=` ("the limit of allocated bytes", docs.kernel.org tmpfs),
+  CephFS's quota df and GlusterFS's deem-statfs show theirs; its `du`, its host's allocation.
+- *The bound* (R03): the caller's request alone: Docker's `--opt size` of a volume (the local
+  driver's option, refused until slice 3) and shards-api's for an agent's volume, Hex's admitted
+  `disk_bytes`. None asked, none of its own: its host's room bounds it, as before. Not held
+  against the host's room, which is Hex's admission's (P6.2); both hold, and statfs says the
+  tighter. No literal: the unit is the host's, ENOSPC and EOPNOTSUPP Linux's.
+- *States* (R04) of a bounded volume: within (a request's whole units fit); near (a write cut
+  short); at (each growth refused; overwrites, reads and what gives back answered); past (its
+  charge over its bound: a bound lowered, or a walk finding more than was asked, such as files
+  written on its host: each growth refused until it gives back below). Across restarts (slice
+  2), its charge kept beside it: clean (its last server's count, written as it ended), held
+  (servers serving it), orphaned (held, none serving: a crash), walked again as it is next served.
+- *Gaps, stated:* until slice 2 each server's charge is its own, and a volume plugged into several
+  members (a share process each, D271) takes its bound in each. A file one server removes that
+  another's guest holds open is given back as it is removed, its server holding nothing of it,
+  and its blocks are its host's until the other lets go. A removed file's pages the guest's DAX
+  window maps stay mapped until its FORGET (D189), at most its window. Changes made on the host
+  directly count from the next walk. A save (D176) keeps no charge: its restore is bounded again
+  (slice 3). A bounded removal reads its file's attributes (an open and a listxattr) and a
+  bounded write stats its file: their costs unmeasured, owed.
+- *Slices:*
+  1. Built here (vmm `devices/virtio/fs/bound.rs`, `server.rs`): the measure's arithmetic and
+     statfs numbers (`Bound`); `Server::bound(limit)`, its host's unit read and its files walked
+     (`charge_of`: a directory at a time, never recursed, a descriptor held for each above the
+     one read); and each request above held to it. Light tests, written, not run (the person's
+     rule of 2026-11-16 leaves every run to ROOT): bound.rs `a_length_takes_its_whole_units`,
+     `a_write_is_cut_where_the_room_ends`, `a_resize_takes_and_gives_whole_units`,
+     `statfs_says_the_bound_and_its_room`; server.rs
+     `a_bounded_share_refuses_what_its_bound_has_no_room_for`,
+     `a_removed_open_files_charge_goes_with_its_last_handle`,
+     `a_bound_walks_names_lengths_once_and_attributes` (Unix).
+  2. One count per volume, beside it in the store, shared by every server serving it, in the
+     states above, on lane p6-fix's holder lock: one lock, each server's shared hold, the first's
+     exclusive try walking an orphaned count and the last's writing it clean, so that no second
+     record of holders is kept. A shared mapping's atomic count against a lock per change:
+     measured first.
+  3. Wiring: the store takes `size` (`validate_options`' refusal goes; opts.json keeps it; changed
+     while none holds it); the share process takes a bound with its share; the daemon's
+     `-v NAME`, api_run's starts and plugs, shards-api's `PlugFrom::Volume` and its volumes'
+     making pass it, an agent's Hex's `disk_bytes`.
+  4. The listing: `HomeVolume` gains its bound and its charge by this measure, which an admission
+     reads; `system df -v` keeps moby's lengths.
+  5. Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
+     `an_agents_volume_refuses_writes_past_its_bound` (a session filling its volume: a write cut
+     short, the next ENOSPC; df's numbers; a removal giving back; the next session's charge
+     kept); and the measure against `du` on APFS, ext4, XFS, Btrfs and NTFS.
+- No wait or cache is added: the charge is the server's state, changed under its lock by the
+  request that changes the files.
 
 **Tests** (light): shards-api's `a_homes_volumes_read_back_as_they_were_answered` (none and some,
 every cut, a trailing byte, another version, a flag that is neither, a hostile count),
@@ -38243,7 +38462,7 @@ plugged it used them.
   api_image.rs `an_agents_volume_outlives_its_session_and_is_listed_and_cleared`, now also
   refused `InUse` while its second session runs, its files kept; cleared once both have ended.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -38351,7 +38570,9 @@ reach past its microVM (b, D278).
    member of a network to every other, and netavark isolates networks from one another and nothing
    within one (src/firewall/nft.rs:266-330). A member joins with its name on the network (one
    member's, whatever its case), the ports it receives (TCP and UDP ranges; each port of its run's
-   address one member's, D122), and the flows it may open (a peer's name and its ports). A flow
+   address one member's, D122), and the flows it may open (a peer's name and its ports), each
+   within its image's grants and its ceiling, as D278 bounds a member's reach past its microVM
+   (ROOT's decision, 2026-11-16): a join asking past both is refused `Widening`, D278's. A flow
    exists where its sender's grant names its receiver and port and its receiver's grant takes that
    port: each network process holds its own guest's side, neither guest trusted with the other's.
    A reply is let by its flow's state, made as its first packet was admitted: dockerd's links let
@@ -38370,10 +38591,28 @@ join until 4 and 5 have landed):
    lowercased; `NameTaken`, `NotAName`); the stale removed at each look (`addresses`, `names`); the
    pairing (`Leases::pair`, `PairedElsewhere`); a network's leases removed with it (`Leases::clear`,
    `InUse`); on `shards_image::store::Locked`, given `try_hold` and `try_share`.
-2. *The daemon's members as leases*: D46's join takes its run's address and names from them (their
-   holder the daemon); `networks::lock` becomes the home's (`hold`); `network inspect` lists every
-   live lease's member; `network rm` refuses a network in use (`InUse`, in dockerd's words: "has
-   active endpoints"); the daemon pairs its runs' networks.
+2. *The daemon's members as leases* (built: `daemon::networks`): D46's join takes its run's
+   addresses from them, IPv4's and, on a network with IPv6 (D99), IPv6's (`Leases::take6`), held by
+   the daemon while the run lasts, each saying the run's ID; an asked one anywhere in the subnet,
+   the range bounding only those given unasked, as libnetwork gives them (moby f78c987a,
+   ipams/defaultipam/address_space.go:350-353, allocator.go:315-319; slice 1 had refused one outside
+   the range, `--ip` beside `--ip-range`), each refusal by its cause in dockerd's words where it has
+   them ("Address already in use", "requested address is out of range": ipamapi/contract.go:35-36).
+   The daemon pairs a network from its first run's join to its last's leaving, under its members'
+   lock, its entry there while, and only while, it pairs; a join where another process pairs it is
+   refused ("network N: another process links its members"). `networks::lock`, a process's `static
+   Mutex`, is gone: its address work is the home's lock's (`hold`), held for file operations alone,
+   and its other, the order in which the daemon tells its network processes their links and names
+   (D46), the daemon's own turn (`telling`), held across their answers and never with the home's
+   lock. `network inspect` lists each live lease of another process's run as a member, its holder's
+   ID and address; `ls`' `dangling` counts them; `network rm` refuses a network in use (`InUse`:
+   "another process's runs are on it") and `prune` keeps it; a network removed, its leases go with
+   it. Names are not leased by the daemon, where this said they would be: a daemon's run answers to
+   its name, aliases, short ID and host name (D46), names Docker's grammar gives `_` and `.`
+   (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`) and that Compose's scaled services share (one alias, each
+   replica's address), which a name lease, one member's host name, cannot hold; and a network the
+   daemon pairs has no other process's run on it, so its names meet none of another's. Name leases
+   are slice 4's members'.
 3. *The network process's networks* (the net crate): `NET_JOIN` (a network's slot, the guest's
    address, prefix and gateway, the ports it receives) and `NET_LEAVE`; `NET_PEER` with its
    network's slot and the ports its guest may open to that peer; each network's names; a table of
@@ -38382,11 +38621,11 @@ join until 4 and 5 have landed):
 4. *The wire, the API and the run host*: `ImageGuest::join(member, &Join, patience)` and
    `leave(member, network, patience)`, `Join { network, name, ingress, egress }`; `NetAsk::Join` and
    `Leave`, refused typed (`NoSuchNetwork`, `AddressTaken`, `NameTaken`, `Exhausted`,
-   `PairedElsewhere`, `Ipv6`); the run host's leases (their holder the run host, its run's ID a
-   microVM ID's form), its network process's and its guest's asks; shards-api's pairings and each
-   run host's links socket; a network made beforehand, with `network create`'s pool and words
-   (`Networks::create`), never by a join. The image channel's version one past main's at landing
-   (43 over today's 42).
+   `PairedElsewhere`, `Ipv6`, `Widening`); the run host's leases (their holder the run host, its
+   run's ID a microVM ID's form), its network process's and its guest's asks; shards-api's pairings
+   and each run host's links socket; a network made beforehand, with `network create`'s pool and
+   words (`Networks::create`), never by a join. The image channel's version one past main's at
+   landing (43 over today's 42).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -38437,6 +38676,10 @@ join until 4 and 5 have landed):
   address in dotted decimal; an address lease says its holder's ID, 64. A lease's record is read no
   further than its kind's longest, so that no file of another's making has a look allocate past
   it.
+- An IPv6 address lease's file is the address's 128 bits as 32 lowercase hex digits, 2 ×
+  `size_of::<u128>()`, four bits a digit: Windows takes no `:` in a file's name (Microsoft,
+  "Naming Files, Paths, and Namespaces"), and one spelling of an address names one file, where
+  IPv6's text forms are many (RFC 5952 §2).
 - A name is a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1, `shards_dns::host_name`: labels of 63
   bytes, 253 in all), lowercased (RFC 4343), so that its file's name fits each supported
   filesystem's 255 bytes. Its file is `@` and the name: Windows takes a base name of `CON`, `PRN`,
@@ -38461,10 +38704,9 @@ may run, never given twice. Two pairers: refused. A home on a network filesystem
 assured, unsupported as for each of the home's other locks (the image store's, the daemon's).
 
 **Questions for ROOT.** kiln's `Change::Connect` carries no ports, which this asks for both ways:
-its shape is kiln's and Hex's, a seam change to route. Whether a member's grants on a shared network
-are bounded by its image or a ceiling, as D278's past the microVM are: as designed, the
-orchestrator's join says them whole, nothing of a shared network leaving the machine's network
-processes.
+its shape is kiln's and Hex's, a seam change to route. Answered (ROOT, 2026-11-16): a member's
+grants on a shared network are bounded by its image's grants and its ceiling, as D278's past its
+microVM are (*What a member reaches*, above).
 
 **Tests** (slice 1, light; written, not run, by the person's word of 2026-11-16: ROOT runs them).
 networks::leases: `addresses_are_the_lowest_free_and_one_let_go_is_the_next_given`,
@@ -38475,6 +38717,17 @@ held by none), `an_address_in_use_or_out_of_range_is_refused_by_its_cause`,
 `the_homes_networks_are_held_against_every_other_open`. Owed (ROOT): `cargo test -p shards
 --profile test-release networks::leases` on macOS, Linux (glibc and musl) and Windows, as flock(2)
 and LockFileEx each hold them; `scripts/lint` on the seven targets.
+
+**Tests** (slice 2, light; written, not run, by the same word). networks::leases:
+`an_asked_address_is_given_anywhere_in_its_subnet`, `ipv6_addresses_are_leased_as_ipv4_ones_are`;
+daemon: `a_networks_runs_are_leased_and_paired_by_one_process`,
+`a_network_with_another_processs_run_on_it_stays`, and D46's
+`an_asked_address_is_free_once_its_holder_has_said_its_end` on the leases. Owed (ROOT): `cargo test
+-p shards --bin shards --profile test-release -- networks:: daemon::tests::a_network
+daemon::tests::an_asked_address daemon::networks::` on macOS, Linux (glibc and musl) and Windows;
+`scripts/lint` on the seven targets; on real VMs (HVF, KVM, WHP), D46's and D99's network E2E on
+the leases: containers.rs `microvms_on_a_network_reach_one_another_by_name` and its `--ip`,
+`--ip6` and `network rm` cases.
 
 ## 4. Start path (≤ 5 ms budget)
 
