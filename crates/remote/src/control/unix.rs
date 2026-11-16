@@ -1134,16 +1134,24 @@ mod tests {
             let listener = listener.try_clone().unwrap();
             move || drop(listener.accept().unwrap())
         });
-        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
+        // A cut promises no byte before it (D251), its `Connected` among them: the workload's
+        // hang-up reaches the controller as its connect's answer where the cut came first (CI
+        // 43950458285, aarch64 musl), else on its lane.
+        let connected = answered!(sockets.connect("files.sock"));
         closer.join().unwrap();
-        let sent = pattern(admission(4).window);
-        let wrote = lane.write_all(&sent).and_then(|()| lane.flush());
-        let mut rest = Vec::new();
-        let read = lane.read_to_end(&mut rest);
-        assert!(
-            wrote.is_err() || read.is_err(),
-            "a workload gone while the controller sent read as an orderly end: wrote {wrote:?}, read {read:?}"
-        );
+        match connected {
+            Err(cut) => assert_eq!(cut, Fault::Revoked),
+            Ok(mut lane) => {
+                let sent = pattern(admission(4).window);
+                let wrote = lane.write_all(&sent).and_then(|()| lane.flush());
+                let mut rest = Vec::new();
+                let read = lane.read_to_end(&mut rest);
+                assert!(
+                    wrote.is_err() || read.is_err(),
+                    "a workload gone while the controller sent read as an orderly end: wrote {wrote:?}, read {read:?}"
+                );
+            }
+        }
 
         let reader = std::thread::spawn(move || {
             let (mut conn, _) = listener.accept().unwrap();
