@@ -36054,8 +36054,8 @@ carrier: a bundle over origin/main in a blobless clone):
   through L1 on KVM arm64, and again on KVM x86_64 with step 33.10's scan. On KVM x86_64 and HVF
   it passed (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at
   6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70). On WHP it passed in 22.49 s
-  with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, main 3d91d54f1 with lane
-  whp-verify's unlanded D272 commit; the scan's README).
+  with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, lane whp-verify's D272 commit
+  over main 3d91d54f1, on main since fe83503c2; the scan's README).
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
 - These light tests on Linux (`scan_test.py`, `guards.py`), and `scripts/lint` on every target.

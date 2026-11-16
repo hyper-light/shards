@@ -346,8 +346,8 @@ finding can take beside it.
 `python` is the Store's alias): the harness's own check passed in 22.49 s, `SHARDS_REQUIRE_VMS=1`,
 built in the shared target `~/.cache/whp-pipes/target`.
 - Its revision: 41d6ea3c2, the commit lane whp-verify's checkout of that target was at (main
-  3d91d54f1 and its unlanded D272 commit, a Windows vsock pipe's events), with 1dfaafff0's
-  s33-leak-scan over it. Building the same commit kept that lane's `shards.exe` in the shared
+  3d91d54f1 and its D272 commit, a Windows vsock pipe's events, on main since fe83503c2), with
+  1dfaafff0's s33-leak-scan over it. Building the same commit kept that lane's `shards.exe` in the shared
   target its own while its own tests ran.
 - At main 3d91d54f1 itself, an earlier run got through the VM's part (the save refused outside
   the home, the save, the echo after) and failed at the scan alone: `python` was the Store's
