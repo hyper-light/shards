@@ -8783,13 +8783,19 @@ mod hosted {
                 Ok((PathBuf::from(host), None))
             }
             wire::PlugFrom::Volume { name, bound } => {
+                use crate::volumes::HoldRefusal as H;
+                let refused = |e: H| match e {
+                    H::Clearing { .. } => (R::Clearing, e.to_string()),
+                    H::Bound { .. } => (R::Bound, e.to_string()),
+                    H::Store(why) => (R::Volume, why),
+                };
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
                 // Held before it is made or found, so that no clearing removes it under the
                 // run, and kept with what the run mounts for its life once taken (D281);
                 // refused at once while a clearing holds it, never waited for.
                 let mut hold = crate::volumes::Holds::default();
-                hold.take(&store, name).map_err(|e| (R::Volume, e))?;
+                hold.take(&store, name).map_err(refused)?;
                 let asked = bound.map(std::num::NonZeroU64::get);
                 {
                     let _held = crate::volumes::lock();
@@ -8806,9 +8812,7 @@ mod hosted {
                 }
                 // Counted with the run, its first holder walking it (D281).
                 let data = store.data(name);
-                let bounded = hold
-                    .count(&store, name, &data, asked)
-                    .map_err(|e| (R::Volume, e))?;
+                let bounded = hold.count(&store, name, &data, asked).map_err(refused)?;
                 lock(&live.volumes_held).extend(hold);
                 Ok((data, bounded))
             }
@@ -9949,10 +9953,26 @@ mod hosted {
                 ))
             );
             assert_eq!(store.get("bounded").unwrap().bound(), Ok(Some(1 << 20)));
+            // Refused typed (R04), its words naming the volume, its bound and the one asked.
+            match source_dir(&live, &volume("bounded", Some(2 << 20)), at) {
+                Err((R::Bound, why)) => assert!(
+                    why.starts_with("volume bounded is served with a bound of 1048576 bytes, not the bound of 2097152 bytes asked"),
+                    "{why}"
+                ),
+                other => panic!("{other:?}"),
+            }
+            // One a clearing holds alone, refused typed at once, never waited for.
+            {
+                let _held = crate::volumes::lock();
+                let none = std::collections::BTreeMap::new();
+                store.create("cleared", &none, &none, "").unwrap();
+            }
+            let clearing = store.alone("cleared").unwrap().unwrap();
             assert!(matches!(
-                source_dir(&live, &volume("bounded", Some(2 << 20)), at),
-                Err((R::Volume, _))
+                source_dir(&live, &volume("cleared", None), at),
+                Err((R::Clearing, _))
             ));
+            drop(clearing);
             let scoped: std::collections::BTreeMap<String, String> =
                 [(crate::volumes::SCOPED.to_string(), "1".to_string())]
                     .into_iter()

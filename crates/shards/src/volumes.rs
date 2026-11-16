@@ -686,9 +686,14 @@ impl Store {
     /// server serves them; a holder that comes as the walk runs waits for it, as the lock
     /// wakes it. So a holder that ended without giving back what it held, however it ended,
     /// leaves no count past the volume's next first holder. Refused where `asked` names a
-    /// bound other than the one its holders serve it with. Callers hold no [`lock`], which
-    /// a change of its bound takes.
-    pub fn count(&self, name: &str, dir: &Path, asked: Option<u64>) -> Result<(Locked, Option<u64>), String> {
+    /// bound other than the one its holders serve it with ([`HoldRefusal::Bound`]). Callers
+    /// hold no [`lock`], which a change of its bound takes.
+    pub fn count(
+        &self,
+        name: &str,
+        dir: &Path,
+        asked: Option<u64>,
+    ) -> Result<(Locked, Option<u64>), HoldRefusal> {
         use shards_vmm::devices::virtio::fs::{bound, server};
         let said = |e: std::io::Error| format!("{}: {e}", self.counts(name).display());
         loop {
@@ -708,10 +713,11 @@ impl Store {
             if let Some(asked) = asked
                 && Some(asked) != limit
             {
-                return Err(format!(
-                    "volume {name} is served with {}: its bound changes only while no run holds it",
-                    limit.map_or("no bound".to_string(), |l| format!("a bound of {l} bytes"))
-                ));
+                return Err(HoldRefusal::Bound {
+                    name: name.to_string(),
+                    limit,
+                    asked,
+                });
             }
             if limit.is_none() || bound::counted(&held).map_err(said)? {
                 return Ok((held, limit));
@@ -1035,14 +1041,53 @@ pub struct Bounded {
     pub count: PathBuf,
 }
 
+/// Why a run's hold or count of a volume was refused (D281), typed for its callers to match
+/// (R04); its words are its `Display`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HoldRefusal {
+    /// A clearing of the volume holds it alone ([`Store::remove_unheld`]: shards-api's
+    /// `clear_volume`, the daemon's `volume rm` or `volume prune`), never waited for: taken
+    /// again once that has answered, it is made anew, empty.
+    Clearing { name: String },
+    /// `asked` is another bound than the one its holders serve it with (`limit`, none for none):
+    /// its bound changes only while no run holds it.
+    Bound {
+        name: String,
+        limit: Option<u64>,
+        asked: u64,
+    },
+    /// Its store's or its files' words.
+    Store(String),
+}
+
+impl std::fmt::Display for HoldRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clearing { name } => write!(f, "volume {name} is being cleared"),
+            Self::Bound { name, limit, asked } => write!(
+                f,
+                "volume {name} is served with {}, not the bound of {asked} bytes asked: its bound changes only while no run holds it",
+                limit.map_or("no bound".to_string(), |l| format!("a bound of {l} bytes"))
+            ),
+            Self::Store(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for HoldRefusal {
+    fn from(why: String) -> Self {
+        Self::Store(why)
+    }
+}
+
 impl Holds {
     /// Volume `name` of `store` held ([`Store::hold`]), once however often its run mounts or
     /// plugs it; refused at once where a clearing of it holds it, never waiting for that.
-    pub fn take(&mut self, store: &Store, name: &str) -> Result<(), String> {
+    pub fn take(&mut self, store: &Store, name: &str) -> Result<(), HoldRefusal> {
         if !self.0.contains_key(name) {
-            let held = store
-                .hold(name)?
-                .ok_or_else(|| format!("volume {name} is being cleared"))?;
+            let held = store.hold(name)?.ok_or_else(|| HoldRefusal::Clearing {
+                name: name.to_string(),
+            })?;
             self.0.insert(
                 name.to_string(),
                 Held {
@@ -1057,26 +1102,29 @@ impl Holds {
     /// Volume `name` of `store`, held, counted as its run's share of it serves `dir`
     /// ([`Store::count`]), once however often its run serves it: its bound in force and its
     /// count file, which each share of it is served with, none where it has no bound; refused
-    /// where `asked` names another bound than the one it is served with.
+    /// where `asked` names another bound than the one it is served with ([`HoldRefusal::Bound`]).
     pub fn count(
         &mut self,
         store: &Store,
         name: &str,
         dir: &Path,
         asked: Option<u64>,
-    ) -> Result<Option<(u64, PathBuf)>, String> {
+    ) -> Result<Option<(u64, PathBuf)>, HoldRefusal> {
         let held = self
             .0
             .get_mut(name)
             .ok_or_else(|| format!("volume {name} is not held"))?;
         let limit = match held.count.as_ref().map(|(_, limit)| *limit) {
-            Some(limit) if asked.is_some_and(|a| Some(a) != limit) => {
-                return Err(format!(
-                    "volume {name} is served with {}: its bound changes only while no run holds it",
-                    limit.map_or("no bound".to_string(), |l| format!("a bound of {l} bytes"))
-                ));
+            Some(limit) => {
+                if let Some(asked) = asked.filter(|a| Some(*a) != limit) {
+                    return Err(HoldRefusal::Bound {
+                        name: name.to_string(),
+                        limit,
+                        asked,
+                    });
+                }
+                limit
             }
-            Some(limit) => limit,
             None => {
                 let (counted, limit) = store.count(name, dir, asked)?;
                 held.count = Some((counted, limit));
@@ -1094,7 +1142,7 @@ impl Holds {
     pub fn found(&mut self, store: &Store, name: &str) -> Result<Option<Volume>, String> {
         match store.get(name) {
             Some(v) if !v.is_anonymous() => {
-                self.take(store, name)?;
+                self.take(store, name).map_err(|e| e.to_string())?;
                 store
                     .get(name)
                     .map(Some)
@@ -2269,7 +2317,12 @@ mod tests {
         assert!(!lock_file(&anonymous).exists(), "no lock file outlives it");
         drop(run);
         let removing = store.alone("agent-a").unwrap().unwrap();
-        assert!(Holds::default().take(&store, "agent-a").is_err());
+        assert_eq!(
+            Holds::default().take(&store, "agent-a"),
+            Err(HoldRefusal::Clearing {
+                name: "agent-a".into()
+            })
+        );
         drop(removing);
         for name in ["agent-a", plugged.as_str()] {
             assert_eq!(store.remove_unheld(name), Ok(()), "{name}");
@@ -2332,8 +2385,16 @@ mod tests {
         assert_eq!(second.count(&store, "agent-a", &data, None).unwrap(), served);
         assert_eq!(counted(), walked + 7, "not walked again while held");
         let refused = second.count(&store, "agent-a", &data, Some(2 << 20)).unwrap_err();
+        assert_eq!(
+            refused,
+            HoldRefusal::Bound {
+                name: "agent-a".into(),
+                limit: Some(1 << 20),
+                asked: 2 << 20,
+            }
+        );
         assert!(
-            refused.contains("changes only while no run holds it"),
+            refused.to_string().contains("changes only while no run holds it"),
             "{refused}"
         );
         drop((first, second));

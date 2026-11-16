@@ -126,9 +126,11 @@ pub use shards_abi::run::nesting::Ready;
 /// ([`PlugFrom::Volume`]'s `bound`, D281), Hex's admitted `disk_bytes`, so that a side that
 /// holds none refuses the run as it is asked, rather than serving its volume unbounded; 48, a
 /// swap whose member, restarted now, could not enter its working directory refused typed
-/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, so that a side that reads no
-/// such refusal refuses the run as it is asked, rather than its swap's answer breaking the
-/// channel.
+/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, and a plug of a volume refused
+/// typed where it is asked another bound than its holders serve it with
+/// ([`PlugRefusal::Bound`]) or a clearing holds it ([`PlugRefusal::Clearing`], D281), so that a
+/// side that reads none of these refusals refuses the run as it is asked, rather than its
+/// answer breaking the channel.
 pub const VERSION: u8 = 48;
 
 /// What the orchestrator's side sends.
@@ -1166,6 +1168,14 @@ pub enum PlugRefusal {
     /// another microVM's engine's, or one an image's Agentfile gives its members elsewhere
     /// (D109).
     Volume = 8,
+    /// A volume asked with another bound than the one its holders serve it with (D281): its
+    /// bound changes only while no run holds it. Its words name the volume, its bound and the
+    /// one asked.
+    Bound = 9,
+    /// A volume a clearing holds alone (D281: shards-api's `clear_volume`, the daemon's
+    /// `volume rm` or `volume prune`), refused at once, never waited for: plugged again once
+    /// that has answered, it is made anew, empty.
+    Clearing = 10,
 }
 
 fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
@@ -1179,6 +1189,8 @@ fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
         6 => PlugRefusal::Unknown,
         7 => PlugRefusal::Busy,
         8 => PlugRefusal::Volume,
+        9 => PlugRefusal::Bound,
+        10 => PlugRefusal::Clearing,
         tag => {
             return Err(WireError::Tag {
                 what: "a plug's refusal",
@@ -4486,13 +4498,28 @@ mod tests {
             Err((PlugRefusal::Unknown, String::new())),
             Err((PlugRefusal::Busy, String::new())),
             Err((PlugRefusal::Volume, "kiln-session: another microVM's".into())),
+            Err((
+                PlugRefusal::Bound,
+                "volume a is served with a bound of 1048576 bytes, not the bound of 2097152 bytes asked"
+                    .into(),
+            )),
+            Err((PlugRefusal::Clearing, "volume a is being cleared".into())),
         ] {
             let answer = PlugAnswer { id: 9, result };
             assert_eq!(PlugAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
+        const {
+            assert!(
+                VERSION >= 48,
+                "the channel's version 48 carries a plug's Bound and Clearing"
+            )
+        };
         assert!(matches!(
-            PlugAnswer::decode(&[0, 0, 0, 9, 1, 9, 0, 0, 0, 0]),
-            Err(WireError::Tag { .. })
+            PlugAnswer::decode(&[0, 0, 0, 9, 1, 11, 0, 0, 0, 0]),
+            Err(WireError::Tag {
+                what: "a plug's refusal",
+                tag: 11,
+            })
         ));
         assert!(matches!(
             PlugAnswer::decode(&[0, 0, 0, 9, 2]),

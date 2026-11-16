@@ -365,8 +365,9 @@ pub enum PlugSource {
     /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run. Its bound
     /// (D281): the bytes its files may take, held as they are written, a write past it refused
     /// ENOSPC in its members, as a full disk refuses one: an agent's admitted `disk_bytes`,
-    /// which the volume is made with, or set to where no run holds it. None for the volume's
-    /// own: none where it was made with none.
+    /// which the volume is made with, or set to where no run holds it, and refused
+    /// ([`PlugRefusal::Bound`]) where one does with another. None for the volume's own: none
+    /// where it was made with none.
     Volume {
         name: String,
         bound: Option<std::num::NonZeroU64>,
@@ -877,7 +878,9 @@ pub trait ImageGuest: Send + Sync {
     /// host path and a session's volumes beneath a root granted for them; each member its own
     /// device, read-only where asked. The plug grants nothing beyond its own path. A member
     /// that is files alone is refused ([`PlugRefusal::Member`]), as is one plugged at `at`
-    /// already; a plug that one member refuses is let go of by those it was given to first.
+    /// already; a plug that one member refuses is let go of by those it was given to first. A
+    /// volume a clearing holds is refused at once ([`PlugRefusal::Clearing`]), and one asked
+    /// another bound than the one its holders serve it with ([`PlugRefusal::Bound`], D281).
     /// Waits at most `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
     fn plug(&self, plug: &Plug, patience: Duration) -> Result<(), ImageRefusal>;
     /// What is plugged in at `at` let go of, in each member it was plugged into: unmounted

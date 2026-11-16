@@ -38710,9 +38710,10 @@ plugged it used them.
   (api_run `source_dir`, `Store::hold`) and keeps it in the run's state (`Live::volumes_held`,
   once per name) until the run ends. A plug the store refuses (a name it takes none by, a scoped
   volume) holds nothing. A plug that comes while a clearing holds the file is refused at once,
-  typed (`PlugRefusal::Volume`, "being cleared"), never waiting for it: its orchestrator plugs it
-  again once its clearing has answered, and the volume is then made anew, empty. The OS lets go
-  of a hold as its process ends, however it ends, so no hold outlives its run.
+  typed (`PlugRefusal::Volume`, "being cleared"; `PlugRefusal::Clearing` since P6-fix-3), never
+  waiting for it: its orchestrator plugs it again once its clearing has answered, and the volume
+  is then made anew, empty. The OS lets go of a hold as its process ends, however it ends, so no
+  hold outlives its run.
 - *The lock file* is `volumes/.NAME.lock`, beside the volume: a name no volume takes (each begins
   with a letter or a digit), which the store's listing passes by and its removals' sweep
   (`.NAME.removing`) never matches. It is never removed, so every hold and every clearing of a
@@ -38824,6 +38825,29 @@ neither removed nor pruned by the daemon.**
   with its volume under its exclusive lock. That is safe only where every hold looks for its
   volume again once held: `Holds::found` does; a plug's `take`, which makes the volume where it
   is not there, does not.
+- *A plug's refusals typed* (ROOT, 2026-11-16, answering vol-bound-2's question 3; R04). A run
+  host's plug of a volume was refused `PlugRefusal::Volume` in words where its bound conflicted
+  and where a clearing held it, as where the store would not give it. Their causes differ, and
+  so do their retries: a bound conflict lasts while any run holds the volume; a clearing lasts
+  until it answers, after which the volume is made anew. So each is typed through the store
+  and the channel:
+  - `volumes::HoldRefusal`, what `Holds::take`, `Holds::count` and `Store::count` refuse:
+    `Clearing { name }` (a clearing holds it alone), `Bound { name, limit, asked }` (asked
+    another bound than its holders serve it with, `limit` none for none), and `Store` (the
+    store's or its files' words). Its words are its `Display`. The daemon's starts and plugs
+    keep saying them (`open_for`, devices.rs `plug_share`).
+  - The image channel's `PlugRefusal::Bound` (9) and `PlugRefusal::Clearing` (10), the run
+    host's `source_dir` answering each by its cause. `Bound`'s words name the volume, its
+    bound and the one asked. `Volume` keeps the store's other refusals. Version 48, with D277's
+    `SwapRefusal::Workdir` (one landing, one version past main's 47).
+  - Tests (written, not run): the run host's
+    `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` (a bound
+    conflict refused `Bound`, its words naming the volume, 1048576 bytes and the 2097152
+    asked; a volume a clearing holds refused `Clearing`); the channel's
+    `plugs_round_trip_and_bad_ones_are_refused` (both round-trip; tag 11 refused); `volumes`'
+    `a_volumes_first_holder_counts_it_and_the_others_share_its_count`
+    (`HoldRefusal::Bound` with its fields) and `a_volume_is_removed_only_where_no_run_holds_it`
+    (`HoldRefusal::Clearing`).
 - Not changed: `volume ls`'s `dangling` and `system df`'s reference counts count the daemon's
   records alone.
 - No literal; no wait: each removal takes the lock or is refused at once.
@@ -38881,7 +38905,8 @@ per change is ROOT's to measure (R14).
     no longer refuses it. A volume whose only option is its size mounts its own files.
   - A volume's bound changes only while none holds it. Its first holder sets the bound it asks
     (opts.json, under the store's lock). One asked while it is held with another is refused
-    ("its bound changes only while no run holds it"; a plug's `PlugRefusal::Volume`).
+    ("its bound changes only while no run holds it"; a plug's `PlugRefusal::Volume`, typed
+    `PlugRefusal::Bound` since P6-fix-3, above).
   - `volumes::open_for` counts each named volume it serves and gives each bounded one's share its
     bound (`Opened::bounds`). The share process takes `--bound SHARE BYTES COUNT-FILE` for each
     bounded share and maps its count (share.rs). The daemon's starts and visits

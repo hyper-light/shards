@@ -873,7 +873,10 @@ impl<D: Disk> Daemon<D> {
             let data = store.data(source);
             // Counted with its run, its first holder walking it; its bound, a named one's alone.
             if !volume.is_anonymous() {
-                if let Some((limit, count)) = held.count(&store, source, &data, None)? {
+                if let Some((limit, count)) = held
+                    .count(&store, source, &data, None)
+                    .map_err(|e| e.to_string())?
+                {
                     bounds.push(crate::volumes::Bounded {
                         share: 0,
                         limit,
