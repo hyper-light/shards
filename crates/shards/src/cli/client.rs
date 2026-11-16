@@ -1123,7 +1123,9 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
             // its home; none other is stopped here, and one of a build from before slots
             // that serves the home is refused, never asked ([`shards_ipc::PreSlotsDaemon`]).
             Ok(slots::Taken::NoDaemon) => {
+                shards_vmm::stage!("stop daemon: no slot offered, awaiting a daemon that stops");
                 await_stopping(here).map_err(NotStopped::Failed)?;
+                shards_vmm::stage!("stop daemon: no daemon holds its stopping lock");
                 return shards_ipc::no_pre_slots_daemon(here).map_err(|e| NotStopped::Failed(e.to_string()));
             }
             Ok(slots::Taken::NoTakeLock) => {
@@ -1144,13 +1146,21 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
             Err(e) => return Err(NotStopped::Failed(format!("asking the daemon to stop: {e}"))),
             Ok(()) => {}
         }
+        shards_vmm::stage!(
+            "stop daemon: daemon {:?} asked to stop",
+            asked.as_ref().map(|a| a.pid)
+        );
         // Its end, which a daemon that took the stop holds back until it has let go of its
         // home (`stoppers`); or RESTART, from one closed already, or one that serves on, its
         // request cut or no descriptor left for it. Neither is word of its exit: a stop its
         // daemon closed for, or one it found closed, waits for that daemon's own.
         match client.recv() {
-            Ok(None) | Err(_) => {}
-            Ok(Some(f)) if f.kind == kind::RESTART => {}
+            Ok(None) | Err(_) => {
+                shards_vmm::stage!("stop daemon: its daemon's connection ended");
+            }
+            Ok(Some(f)) if f.kind == kind::RESTART => {
+                shards_vmm::stage!("stop daemon: its daemon answered RESTART");
+            }
             Ok(Some(f)) => {
                 return Err(NotStopped::Failed(format!(
                     "the daemon answered its stop with message kind {}",
@@ -1159,7 +1169,10 @@ fn stop_at(here: &Path, home: &Path) -> Result<(), NotStopped> {
             }
         }
         drop(client);
-        if await_stopping(here).map_err(NotStopped::Failed)? {
+        shards_vmm::stage!("stop daemon: awaiting its daemon's stopping lock");
+        let closed = await_stopping(here).map_err(NotStopped::Failed)?;
+        shards_vmm::stage!("stop daemon: its stopping lock had, a daemon closed: {closed}");
+        if closed {
             return Ok(());
         }
         // None closed: the daemon asked has exited, or holds its home still, serving on, the
