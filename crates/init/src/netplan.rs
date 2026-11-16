@@ -84,7 +84,13 @@ pub struct Link {
     /// Its IPv6 addresses, on the networks it joins that have IPv6.
     pub addresses6: Vec<Address6>,
     pub hosts: Vec<u8>,
+    /// Every port it may open flows on past the microVM: its port grants to any address
+    /// ([`wide`](Self::wide)), and its destinations' TCP ports ([`named`](Self::named)).
     pub egress: Vec<Egress>,
+    /// Its port grants to any address past the microVM, the image's and its own (D278),
+    /// beside which its destinations open their ports to their hosts alone: what D236's
+    /// `held` tells apart.
+    pub wide: Vec<Egress>,
     /// The ports let in past the microVM to it (D122): those both boundaries open inward
     /// that an `EXPOSE` names it for, or names no one for on a network it is the one
     /// member of (the build refuses any other).
@@ -104,6 +110,24 @@ pub struct Link {
     /// The Unix sockets it is granted (`CONNECT --port=unix:<name>`), each a network, a
     /// name and whether it may make one there (it receives) or only connect to one.
     pub unix: Vec<(String, String, bool)>,
+    /// Its grants past the microVM apart (D278): its image's, the most its host may give it
+    /// past them, and its own its host gives it, which the fields above hold together.
+    pub granted: crate::egress::Granted,
+}
+
+/// Whether `link` joins a network that is not internal: one whose members may be let past
+/// the microVM, so that a member's host may give it grants there as its run goes (D278).
+pub fn outward(spec: &Value, link: &Link) -> bool {
+    spec.get("networks")
+        .map(Value::array)
+        .unwrap_or_default()
+        .iter()
+        .any(|n| {
+            !matches!(n.get("internal"), Some(Value::Bool(true)))
+                && n.get("name")
+                    .and_then(Value::str)
+                    .is_some_and(|name| link.addresses.iter().any(|a| a.network == name))
+        })
 }
 
 /// A remote MCP server's host, lowered, and port, from its URL: the port written, or else
@@ -593,6 +617,7 @@ pub fn plan(
         if let Some(g) = gateway.filter(|_| granted.iter().any(|(h, _)| h == shards_dns::HOST)) {
             hosts.push_str(&format!("{g}\t{}\n", shards_dns::HOST));
         }
+        let wide = egress.clone();
         let mut egress = egress;
         for (_, port) in &granted {
             if !egress.contains(&(6, *port, *port)) {
@@ -606,6 +631,7 @@ pub fn plan(
         if let Some(Some(link)) = links.get_mut(d) {
             link.hosts = [HOSTS, hosts.as_bytes()].concat();
             link.egress = egress;
+            link.wide = wide;
             link.ingress = ingress;
             link.dns = dns;
             link.named = granted;

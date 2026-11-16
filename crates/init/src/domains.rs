@@ -389,8 +389,9 @@ pub type Read = (
 );
 
 /// The directories of every domain the image's normalized Agentfile declares, and those
-/// domains that say how they run; nothing where the image has no Agentfile.
-pub fn read() -> Result<Read, String> {
+/// domains that say how they run, their links with the grants past the microVM the run's
+/// `setup` gives them (D278); nothing where the image has no Agentfile.
+pub fn read(setup: &[Vec<u8>]) -> Result<Read, String> {
     let none = || Ok((Vec::new(), Vec::new(), Vec::new()));
     // The image as built, never the run's root, which the run and `cp` write (D109): what
     // it declares is what the daemon read and checked against the image.
@@ -445,7 +446,26 @@ pub fn read() -> Result<Read, String> {
         let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
         (std::net::Ipv6Addr::from(u128::from(addr) & mask), prefix)
     });
-    let plan = crate::netplan::plan(&spec, &names, own, own6)?;
+    let mut plan = crate::netplan::plan(&spec, &names, own, own6)?;
+    // Each member's grants past the microVM of its own, and the most it may be given, as the
+    // run's host says them (D278).
+    {
+        let members: Vec<u32> = out.iter().map(|d| d.id.saturating_sub(FIRST_ID)).collect();
+        let labels: Vec<String> = out.iter().map(|d| d.label.clone()).collect();
+        let outward: Vec<bool> = plan
+            .links
+            .iter()
+            .map(|l| l.as_ref().is_some_and(|l| crate::netplan::outward(&spec, l)))
+            .collect();
+        crate::egress::at_start(
+            &mut plan.links,
+            &members,
+            &labels,
+            &outward,
+            setup,
+            own.map(|(_, _, gateway)| gateway),
+        )?;
+    }
     for d in &mut out {
         d.mcp = offered(&spec, d, &root);
     }
@@ -500,8 +520,11 @@ pub fn read() -> Result<Read, String> {
         // A resolver only where a grant names one (`--dns`, a remote MCP server): the
         // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
         // what it may ask.
+        // A ceiling that names hosts or any name takes it too, its gate holding its questions
+        // until a grant opens them (D278).
+        let ceiling = link.as_ref().map(|l| &l.granted.ceiling);
         if let Some(l) = &link
-            && (l.dns || !l.named.is_empty())
+            && (l.dns || !l.named.is_empty() || ceiling.is_some_and(|c| c.dns || !c.named.is_empty()))
             && !l.addresses.is_empty()
         {
             d.resolv =
@@ -1521,9 +1544,13 @@ fn gate_of(
 /// Whether `d`'s flows past the microVM, out or in, or its names, cross init's namespace,
 /// which the run's command shares, up the switch's link to eth0 ([`switch`]).
 pub fn uplinked(d: &Domain) -> bool {
-    d.link
-        .as_ref()
-        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.named.is_empty())
+    d.link.as_ref().is_some_and(|l| {
+        !l.egress.is_empty()
+            || !l.ingress.is_empty()
+            || l.dns
+            || !l.named.is_empty()
+            || crate::egress::may_widen(l)
+    })
 }
 
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
@@ -1564,7 +1591,16 @@ fn switch(
         .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.named.is_empty()))
         .map(|(i, _)| i)
         .collect();
-    let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() {
+    // A member that may be given a way past the microVM as the run goes has the uplink from
+    // the start (D278).
+    let widen = |six: bool| {
+        domains.iter().any(|d| {
+            d.link
+                .as_ref()
+                .is_some_and(|l| crate::egress::may_widen(l) && (!six || !l.addresses6.is_empty()))
+        })
+    };
+    let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() && !widen(false) {
         true => None,
         false => {
             let (addr, prefix, gateway) = crate::net::current()
@@ -1617,7 +1653,7 @@ fn switch(
                     (!from.is_empty()).then(|| (from, ranges.clone()))
                 })
                 .collect();
-            let ipv6 = match (crate::net::current6(), from_domain6.is_empty()) {
+            let ipv6 = match (crate::net::current6(), from_domain6.is_empty() && !widen(true)) {
                 (Some((eth0, _, _)), false) => {
                     let mut subnets6: Vec<(std::net::Ipv6Addr, u8)> = Vec::new();
                     for a in domains
@@ -2389,11 +2425,15 @@ pub fn start(
                 None => switch(domains, pairs).map(|s| SWITCH.get_or_init(|| s)),
             };
             let gate = gate_of(domains, pairs, i, link);
+            // Its network namespace kept for its grants' changes as the run goes (D278).
             let linked = switch.and_then(|s| s.attach(i, pid as libc::pid_t, link, &gate));
-            if let Err(e) = linked {
-                // SAFETY: kill(2) of the child just made, which waits for its link.
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-                return Err(format!("{}: its link: {e}", d.label));
+            match linked {
+                Ok(ns) => crate::egress::linked(member, i, &d.label, link, &gate, ns),
+                Err(e) => {
+                    // SAFETY: kill(2) of the child just made, which waits for its link.
+                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                    return Err(format!("{}: its link: {e}", d.label));
+                }
             }
             // SAFETY: write(2) of one byte to the pipe it waits on.
             if unsafe { libc::write(w.as_raw_fd(), b"g".as_ptr().cast(), 1) } != 1 {
