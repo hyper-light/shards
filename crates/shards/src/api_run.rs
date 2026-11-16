@@ -6997,6 +6997,48 @@ mod hosted {
     #[cfg(all(test, unix))]
     #[allow(clippy::unwrap_used)]
     mod tests {
+        /// A descriptor of this process that is a socket bound at `at`, by `/dev/fd` (each open
+        /// descriptor, Linux's and macOS's) and getsockname(2): one the run host, or the network
+        /// process this test stands in for, still holds.
+        fn bound_here(at: std::net::SocketAddr) -> Option<i32> {
+            let fds: Vec<i32> = std::fs::read_dir("/dev/fd")
+                .unwrap()
+                .flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse().ok())
+                .collect();
+            fds.into_iter().find(|&fd| local_address(fd) == Some(at))
+        }
+
+        /// The local address of socket `fd`, or none where it is no IP socket, or no longer open.
+        fn local_address(fd: i32) -> Option<std::net::SocketAddr> {
+            // SAFETY: sockaddr_storage is plain data, valid all zero.
+            let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            // SAFETY: getsockname(2) into storage of the length given.
+            if unsafe { libc::getsockname(fd, (&raw mut storage).cast(), &mut len) } != 0 {
+                return None;
+            }
+            match i32::from(storage.ss_family) {
+                libc::AF_INET => {
+                    // SAFETY: an AF_INET address, as its family says, read from storage that holds it.
+                    let a: libc::sockaddr_in = unsafe { std::ptr::read((&raw const storage).cast()) };
+                    Some(std::net::SocketAddr::from((
+                        std::net::Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr)),
+                        u16::from_be(a.sin_port),
+                    )))
+                }
+                libc::AF_INET6 => {
+                    // SAFETY: an AF_INET6 address, as its family says, read from storage that holds it.
+                    let a: libc::sockaddr_in6 = unsafe { std::ptr::read((&raw const storage).cast()) };
+                    Some(std::net::SocketAddr::from((
+                        std::net::Ipv6Addr::from(a.sin6_addr.s6_addr),
+                        u16::from_be(a.sin6_port),
+                    )))
+                }
+                _ => None,
+            }
+        }
+
         use super::*;
 
         /// The VM binary checked beside a run's making is the one its launch would have checked
@@ -7165,7 +7207,13 @@ mod hosted {
                 let gone = answered(2).unwrap();
                 assert_eq!(gone.changed, vec![bound.clone()]);
                 assert!(gone.published.is_empty());
-                std::net::TcpListener::bind(bound.host).expect("the port let go is free");
+                // Let go of here, by every descriptor of this process: a bind of its port again
+                // would race the tests beside it, whose children hold a copy of every descriptor
+                // of this process, the listener's among them, from their fork to their exec
+                // (CLOEXEC's), 11 to 14 us past this point in 1 of 4 parallel runs (Linux
+                // container, 2026-11-16: no process held it at the failed bind but two forked
+                // `api_run::hosted` children still running this binary).
+                assert_eq!(bound_here(bound.host), None, "the port let go is held here");
                 net_change(
                     &live,
                     wire::NetAsk {
