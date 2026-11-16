@@ -30,10 +30,12 @@ const A: u32 = 0;
 const B: u32 = 1;
 
 /// One test's home: its daemon's, whose identity is the owner every run of it names, and so
-/// the controller its runs' agent-control endpoints pin.
-struct Home {
-    home: common::TempDir,
+/// the controller its runs' agent-control endpoints pin; and the pipe its daemon hears its
+/// host's word through, where its test tells it (`SHARDS_PRESSURE`, D188).
+pub(super) struct Home {
+    pub(super) home: common::TempDir,
     owner: Identity,
+    told: Option<std::ffi::OsString>,
 }
 
 /// What a run's managed metadata says of its agent-control endpoint (daemon/managed.rs): its
@@ -157,26 +159,28 @@ impl Home {
     fn new(name: &str) -> Home {
         let home = common::TempDir::new(name);
         let owner = Identity::load_or_create(&home.join("identity")).unwrap();
-        Home { home, owner }
+        Home {
+            home,
+            owner,
+            told: None,
+        }
     }
 
     /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`).
     #[track_caller]
-    fn command(&self, args: &[&str]) -> common::Run {
-        common::run_shards_env(
-            &[],
-            args,
-            &[
-                ("SHARDS_HOME", self.home.as_os_str()),
-                ("SHARDS_KERNEL", common::kernel().as_os_str()),
-                ("SHARDS_INIT", common::guest_init().as_os_str()),
-            ],
-        )
+    pub(super) fn command(&self, args: &[&str]) -> common::Run {
+        let mut env = vec![
+            ("SHARDS_HOME", self.home.as_os_str()),
+            ("SHARDS_KERNEL", common::kernel().as_os_str()),
+            ("SHARDS_INIT", common::guest_init().as_os_str()),
+        ];
+        env.extend(self.told.as_deref().map(|told| ("SHARDS_PRESSURE", told)));
+        common::run_shards_env(&[], args, &env)
     }
 
     /// Builds `tag`: the tests' own image (never a registry's beyond this host) with agents
     /// `a` and `b`, the test guest each, run with `a_options` and `b_options`.
-    fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str]) {
+    pub(super) fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str]) {
         let context = common::TempDir::new("lanes-ctx");
         let (image, _) = common::served();
         for (name, options) in [("a", a_options), ("b", b_options)] {
@@ -248,15 +252,30 @@ impl Home {
         }
     }
 
-    /// Runs `test` on this home, then stops its daemon whatever happened; a failure of the
-    /// test is the one reported, the stop's beside it.
+    /// Runs `test` on a home of its own, then stops its daemon whatever happened; a failure
+    /// of the test is the one reported, the stop's beside it.
     fn with(name: &str, test: impl FnOnce(&Home)) {
         if common::cannot_run_vms() {
             return;
         }
-        let home = Home::new(name);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&home)));
-        let stopped = home.stop();
+        Home::new(name).within(test);
+    }
+
+    /// [`with`](Self::with), its daemon told its host's word through a pipe of its test's
+    /// (`common::Told`), which `test` is given.
+    pub(super) fn with_told(name: &str, test: impl FnOnce(&Home, &mut common::Told)) {
+        if common::cannot_run_vms() {
+            return;
+        }
+        let mut home = Home::new(name);
+        let mut told = common::Told::new(&home.home);
+        home.told = Some(told.path.clone());
+        home.within(|home| test(home, &mut told));
+    }
+
+    fn within(self, test: impl FnOnce(&Home)) {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&self)));
+        let stopped = self.stop();
         if let Err(error) = result {
             let _ = writeln!(std::io::stderr(), "log lanes cleanup: {stopped:?}");
             std::panic::resume_unwind(error);

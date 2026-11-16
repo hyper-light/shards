@@ -2811,6 +2811,66 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     let _ = driver.join().unwrap();
 }
 
+/// D252: a run's first stdio lanes are charged before its members start, and a run whose run
+/// host has no room for them is refused `Capacity`. The run host is told what its host has
+/// available, as no test may set its host's own: the first line of a file that
+/// `SHARDS_PRESSURE` names (D188's told word). Its image's harness asleep, its stdio served as
+/// its endpoint's lanes (`ControlAsk::stdio`):
+/// - told it has nothing, it is refused `Capacity` at its endpoint's link, which says the link's
+///   bytes;
+/// - told that many, room for its link alone, it is refused `Capacity` at its harness's first
+///   lane, typed before its VM is handed the run, so none of its members starts;
+/// - told the most a u64 counts, it starts.
+#[test]
+fn a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start() {
+    use shards_api::control::Identity;
+    use shards_api::image::ControlAsk;
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-room-home");
+    build(&home, "api-room:1", &["sleep"], "");
+    let hex = Identity::generate().unwrap();
+    // The run, its host told it has `bytes` of memory available.
+    let told = |bytes: u64| {
+        let word = home.join(format!("told-{bytes}"));
+        std::fs::write(&word, format!("available {bytes}\n")).unwrap();
+        let mut s = spec(&home, "api-room:1");
+        s.env.push(("SHARDS_PRESSURE".into(), word.into_os_string()));
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        s.control = Some(ControlAsk {
+            controller: hex.fingerprint(),
+            sockets: None,
+            stdio: true,
+        });
+        s
+    };
+    let refused = |s: &ImageSpec| match booted(&ImageShards::new(), s) {
+        Err(ImageRefusal::Capacity(why)) => why,
+        Err(other) => panic!("refused, but not for its room: {other:?}"),
+        Ok(_) => panic!("started with no room"),
+    };
+    let why = refused(&told(0));
+    let link: u64 = why
+        .split_once("its sockets' queues, ")
+        .and_then(|(_, rest)| rest.split_once(" bytes"))
+        .and_then(|(bytes, _)| bytes.parse().ok())
+        .unwrap_or_else(|| panic!("its link's bytes unsaid: {why}"));
+    let why = refused(&told(link));
+    assert!(why.ends_with("'s first Stdout lane"), "{why}");
+    let guest = boot(&home, &told(u64::MAX));
+    guest.stop().unwrap();
+}
+
 /// A value the guest's memory holds, unique to this test's run: a SHA-256 of `label`, this
 /// process and the time, in hex.
 fn canary(label: &str) -> String {

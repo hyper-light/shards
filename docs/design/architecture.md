@@ -9800,6 +9800,64 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**Amended: a told line says what its host has available** (2026-11-16, ROOT's decision; lane
+charge-seam).
+- *Why.* D252's charges are held to the host's available memory (daemon/managed.rs
+  `Charge::grow`), which no unprivileged process can set. So no real-VM test could give a run
+  room for its link but not for its first lanes (lane phase6-v). ROOT's decision: tell it
+  through this channel (R12), with one reader for the daemon and the run host, and no channel
+  of its own.
+- *The words.* Each told line, its newline apart, is one of two:
+  - empty: the host is short of memory, as before;
+  - `available BYTES`, BYTES in decimal digits alone: the host has BYTES of memory available,
+    in place of its kernel's count (`shards_ipc::host_available`: Linux's `MemAvailable`,
+    macOS's `kern.memorystatus_level`, Windows' `ullAvailPhys`). Every charge is held to it
+    from then on, until a line says another.
+
+  Any other line is refused `InvalidData`: a sign, a CR, a space, a number past a u64, or a
+  line past the longest word. The longest word is 30 bytes (`available ` and the 20 digits of
+  `u64::MAX`); a longer line is refused as it reaches that length rather than held. A line its
+  pipe's end cuts off is `UnexpectedEof`. Before, any line was a short word. Every line
+  written so far was empty (`common::Told::say`, build.rs's and build_windows.rs's), so no
+  writer changes.
+- *One reader* (pressure.rs).
+  - `read_word` reads a line a byte at a time, as before, so that it never takes the next
+    line's bytes.
+  - `heard` keeps an `available` word's bytes as the process's own (`TOLD_AVAILABLE`).
+  - `available()` answers the told bytes where a line has told some, else the kernel's count.
+  - `Charge::grow` measures every charge against `available()`, the daemon's runs' and a run
+    host's alike.
+- *Where it is read.*
+  - The daemon: its watcher, through `Pressure::wait`, which now returns the word
+    (`Word::Short` for every word of its kernel's). It hears an `available` word as it hears a
+    short one, while a microVM runs, since it listens only then (above). It says each in its
+    log: `told the host has N bytes of memory available: every run's charge is held to that`.
+    A test keeps a microVM running and waits for that line before it starts a run.
+  - A run host (`shards api-run`, D231, which shards-api's boot starts): the first line of
+    what `SHARDS_PRESSURE` names in its environment (`ImageSpec::env`), a FIFO, a named pipe
+    or a file. It is read once its request is read and before its run is made
+    (`pressure::first`, in `host`), so that every charge its run makes as it starts is held to
+    it. A pipe no line has reached yet is waited on. The run host says the word in its
+    diagnostics; one it cannot read refuses its run `Cause::Boot`. Later lines are not read: a
+    run host is told once, as its run is made.
+  - A build (`SHARDS_BUILD_PRESSURE`): its watcher reads the word and asks its builders
+    nothing at it, as no builder is charged to a budget.
+- *Literals* (R03): the word's name, `available`; its longest line, 30 bytes, derived from the
+  name and `u64::MAX` (`u64::MAX.ilog10() + 1` digits). No number is chosen.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  - `pressure::words::a_told_line_is_short_or_what_its_host_has_available`: both words, one
+    after another from one pipe; each refused line; a line cut off. It reads only and tells
+    nothing, since the told bytes are the process's, which other unit tests' charges read.
+  - `pressure::tests::a_fifo_tells_its_pressure_a_line_at_a_time`: its words are `Word::Short`.
+  - Real VM: D252's two tests (its amendment of this date).
+- *Owed* (ROOT).
+  - `cargo test --profile test-release -p shards --bin shards -- pressure::`
+  - The told pipe's real-VM tests, whose words are unchanged, on HVF, KVM and WHP:
+    `--test containers -- --exact what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`,
+    `--test engine_ring -- --exact a_give_back_lets_an_idle_slot_go`,
+    `--test build -- --exact a_builder_gives_back_what_it_holds_cold_at_its_builds_word`
+    (Unix), and `--test build_windows` (WHP).
+
 **R03 review memory-06..08, 10 (2026-11-14, implemented; PM M581):** no fixed time
 or level is left in how the host hears its pressure and paces what follows it:
 - *What a pressure is* (memory-07): a PSI trigger's window's stall is pressure once
@@ -9892,7 +9950,8 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   the daemon reads on its passes' pace (memory-06). Where `SHARDS_PRESSURE` names a FIFO (on Windows,
   a named pipe), each line written to it is the host's word in place of its kernel's, as
   `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
-  macOS's or Windows' pressure.
+  macOS's or Windows' pressure. A line may say what the host has available instead (the
+  amendment of 2026-11-16, above).
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -34718,7 +34777,74 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
   - Clippy on the seven targets.
   - Real VM, on HVF, KVM and WHP: a run with stdio lanes whose budget has no room for its first
     generation, refused `Capacity`, its VM never handed the run (no member output, no
-    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once.
+    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once. Both
+    written since (the amendment below).
+
+**Amended: the host's available memory told, and the charges' two real-VM tests written**
+(2026-11-16, ROOT's decision; lane charge-seam).
+- *Why.* The two real-VM tests the amendment above owes could not be written (lane
+  phase6-v). Both charges are held to the host's available memory, which no test can set, and
+  a host with room shows no charge's size. ROOT's decision: a test seam on D188's told channel
+  (R12), read by the same reader in the daemon and in the run host; and a charge made
+  observable only where a test cannot otherwise see that it is charged once.
+- *The seam* (D188's amendment of this date). A told line `available BYTES` sets what
+  `Charge::grow` measures against (`pressure::available`): the told bytes where a line has
+  told some, else the kernel's count.
+  - The daemon hears the line on its watcher while a microVM runs, and logs it.
+  - A run host reads the first line of what its `SHARDS_PRESSURE` names before its run is
+    made.
+
+  No wire changed: the image channel stays at version 51.
+- *Nothing new made observable.* Each refusal already says what its charge asked:
+  - the daemon's, typed `Admission::Insufficient { requested, available }`, which its client
+    is told as `managed output admission: N bytes requested, M available`;
+  - the run host's link's, typed `Cause::Capacity`, which names the link's bytes.
+
+  A test that tells a size reads what the refused step asked, so no field was added.
+- *The tests* (written, not run: the person's rule of 2026-11-16).
+  1. api_image.rs
+     `a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`: an
+     image whose harness sleeps, its stdio as its endpoint's lanes (`ControlAsk::stdio`), its
+     run host told through a file.
+     - Told 0: refused `ImageRefusal::Capacity` at its link, which names the link's bytes, L.
+     - Told L, room for its link alone: refused `Capacity` at its harness's first lane
+       (`member N's first Stdout lane`), by `charge_first` before `hand_over`, so its VM is
+       never handed the run and none of its members starts.
+     - Told `u64::MAX`: it starts.
+  2. managed_output
+     `endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`:
+     log_lanes's image of agents `a` and `b` (its `Home`, now shared and given a told pipe),
+     with a plain microVM kept running so that the daemon's watcher listens.
+     - Told 0: a run asking `shards.control=true` and owning `a`'s output is refused at its
+       reservation, which says its bytes, R.
+     - Told R: that run, and one owning no output, are each refused at their endpoint with
+       nothing left, and each says the same charge. It is the link (`HANDSHAKE_BYTES` ×
+       `control::CONNECTIONS`, and a datagram each way) and the kernel queues of three
+       sockets. The test reads those queues from an endpoint of one stream it binds itself
+       (step 5's: its driver's served socket and wake, and its control's waker, all bound on
+       loopback by the same `net::Driver::bind_bounded`).
+     - A waker charged twice where an output is owned, or not at all where none is (as before
+       lane charge-2), makes one of the two charges differ by one socket's queues.
+     - Told `u64::MAX`: the run starts.
+- *Literals* (R03). Every number the tests use is D252's own or read on the host:
+  - RFC 8446 §4's largest handshake message (`HANDSHAKE_BYTES`, 16,777,219), D238's two
+    connections (`control::CONNECTIONS`) and D180's datagram (`DATAGRAM_BYTES`, 65,527), one
+    each way (`link_bytes`);
+  - the sockets' queues, as the OS where the test runs reports them (`getsockopt`);
+  - every other size is what a refusal said;
+  - 0 is no room at all, and `u64::MAX` the most a told word can say, room for any charge.
+- *On Windows.* The daemon's told pipe is a named pipe (`common::Told`). The run host's told
+  word is a file, read the same way on every OS.
+- *Owed* (ROOT), on HVF (macOS arm64), KVM (Linux amd64) and WHP (Windows), with
+  `SHARDS_REQUIRE_VMS=1`:
+  - `cargo test --profile test-release -p shards --bin shards -- pressure:: daemon::managed:: api_run::`
+  - `cargo test --profile test-release -p shards --test api_image -- --exact
+    a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`
+  - `cargo test --profile test-release -p shards --test managed_output -- --exact
+    endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`
+  - `cargo test --profile test-release -p shards --test managed_output log_lanes` (its `Home`
+    changed)
+  - `scripts/lint` (the seven targets).
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 

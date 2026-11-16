@@ -32,7 +32,7 @@ use std::sync::mpsc;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::pressure::{Pressure, Saying};
+use crate::pressure::{Pressure, Saying, Word};
 
 use super::builder::{Answer, Giver};
 
@@ -114,8 +114,16 @@ fn start(plain: bool) -> Option<(mpsc::Sender<Giver>, mpsc::Sender<Woke>)> {
                 if let Some(took) = *ACTED.lock().unwrap_or_else(PoisonError::into_inner) {
                     pressure.acted(took);
                 }
-                if pressure.wait().is_err() || heard.send(Woke::Pressure(pressure.repeat())).is_err() {
-                    return;
+                match pressure.wait() {
+                    Ok(Word::Short) => {
+                        if heard.send(Woke::Pressure(pressure.repeat())).is_err() {
+                            return;
+                        }
+                    }
+                    // What its host has available, which no builder is charged to (D252): no
+                    // word of pressure.
+                    Ok(Word::Available(_)) => {}
+                    Err(_) => return,
                 }
             }
         })
