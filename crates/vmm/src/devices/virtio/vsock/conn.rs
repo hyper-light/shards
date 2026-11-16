@@ -540,13 +540,12 @@ impl Conn {
             self.host_writes = HostWrites::Shut;
             self.stream.shut_writes();
         }
-        // Pipes end as the connection drops: their way down closed after every byte, which
-        // their host reads, then the end; their way up closed already ([`Conn::end`]).
+        // Pipes end as the connection drops (none held): their way down closed after every
+        // byte, which their host reads, then the end; their way up closed already
+        // ([`Conn::end`]). A socket is held as `linger` says.
         #[cfg(windows)]
         {
-            if self.stream.socket().is_none() {
-                return None;
-            }
+            self.stream.socket()?;
             self.linger().map(Ended::Lingering)
         }
         #[cfg(not(windows))]

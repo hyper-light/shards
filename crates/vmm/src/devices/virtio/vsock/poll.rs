@@ -104,29 +104,6 @@ fn millis(timeout: Option<Duration>) -> libc::c_int {
     })
 }
 
-/// Lets socket `fd` go from the waits of this module's, so that whoever it is handed to may
-/// have it block. On Windows a wait associates each socket with its event (WSAEventSelect),
-/// which holds the socket non-blocking: setting it blocking fails WSAEINVAL until the
-/// association is cleared, "by calling WSAEventSelect with the lNetworkEvents parameter
-/// equal to zero" (WSAEventSelect, Microsoft's Winsock reference). Elsewhere nothing:
-/// neither poll(2) nor kqueue(2) sets a mode of a descriptor's.
-#[cfg(windows)]
-pub fn release(fd: RawSocket) -> io::Result<()> {
-    use windows_sys::Win32::Networking::WinSock::{SOCKET_ERROR, WSAEventSelect, WSAGetLastError};
-    // SAFETY: a socket of the caller's, associated with no event and no network events.
-    if unsafe { WSAEventSelect(fd, 0, 0) } == SOCKET_ERROR {
-        // SAFETY: a getter of this thread's last Winsock error.
-        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
-    }
-    Ok(())
-}
-
-/// [`release`] where no wait sets a mode of a socket's: nothing to let go of.
-#[cfg(not(windows))]
-pub fn release(_fd: RawSocket) -> io::Result<()> {
-    Ok(())
-}
-
 /// Waits for a worker's sockets. It keeps what its waits need between them: on macOS
 /// one kqueue, whose registrations follow the interests (audit D06, PM M57).
 pub struct Poller {
@@ -338,49 +315,38 @@ impl Poller {
     }
 }
 
-/// What the sockets' thread-pool wait posts with: the port.
-#[cfg(windows)]
-struct Post {
-    port: windows_sys::Win32::Foundation::HANDLE,
-}
-
 /// A thread-pool wait on the sockets' event that posts [`SOCKETS`] to the port each time it
 /// is set and the event signalled, as shards_ipc's poller's waits post its streams'.
 #[cfg(windows)]
 struct SocketWait {
     wait: windows_sys::Win32::System::Threading::PTP_WAIT,
-    /// Read by its callback, which the wait outlives.
-    post: Box<Post>,
 }
 
-/// Posts the sockets' packet to the port.
+/// Posts the sockets' packet to the port, its wait's context.
 #[cfg(windows)]
 unsafe extern "system" fn posted(
     _: windows_sys::Win32::System::Threading::PTP_CALLBACK_INSTANCE,
-    context: *mut core::ffi::c_void,
+    port: *mut core::ffi::c_void,
     _: windows_sys::Win32::System::Threading::PTP_WAIT,
     _: u32,
 ) {
-    // SAFETY: the Post the wait was made with, which outlives the wait.
-    let post = unsafe { &*context.cast::<Post>() };
-    // SAFETY: a port its poller keeps open while the wait lives; no OVERLAPPED.
-    unsafe {
-        windows_sys::Win32::System::IO::PostQueuedCompletionStatus(post.port, 0, SOCKETS, std::ptr::null())
-    };
+    // SAFETY: the port the wait was made with, which its poller keeps open while the wait
+    // lives (`Poller::drop`, `watch`); no OVERLAPPED.
+    unsafe { windows_sys::Win32::System::IO::PostQueuedCompletionStatus(port, 0, SOCKETS, std::ptr::null()) };
 }
 
 #[cfg(windows)]
 impl SocketWait {
+    /// A wait that posts to `port`, which outlives it.
     fn new(port: windows_sys::Win32::Foundation::HANDLE) -> io::Result<SocketWait> {
         use windows_sys::Win32::System::Threading::CreateThreadpoolWait;
-        let post = Box::new(Post { port });
-        let context: *const Post = &*post;
-        // SAFETY: a wait whose callback reads `post`, which lives as long as it does.
-        let wait = unsafe { CreateThreadpoolWait(Some(posted), context.cast_mut().cast(), std::ptr::null()) };
+        // SAFETY: a wait whose callback posts to `port`, its context, which its poller keeps
+        // open as long as the wait lives.
+        let wait = unsafe { CreateThreadpoolWait(Some(posted), port, std::ptr::null()) };
         if wait == 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(SocketWait { wait, post })
+        Ok(SocketWait { wait })
     }
 
     /// Waits once for `event` to be signalled, which posts the packet.
@@ -399,7 +365,7 @@ impl Drop for SocketWait {
             CloseThreadpoolWait, SetThreadpoolWait, WaitForThreadpoolWaitCallbacks,
         };
         // SAFETY: our wait: unset, its callbacks waited out, those not begun cancelled, and
-        // closed, before its Post goes.
+        // closed, before its port can go.
         unsafe {
             SetThreadpoolWait(self.wait, std::ptr::null_mut(), std::ptr::null());
             WaitForThreadpoolWaitCallbacks(self.wait, 1);
@@ -441,7 +407,9 @@ impl Poller {
         self.own = None;
     }
 
-    /// The port its waits take packets from.
+    /// The port its waits take packets from, which a test's pipes are attached to as the
+    /// device's are to its waker's.
+    #[cfg(test)]
     pub fn port(&self) -> windows_sys::Win32::Foundation::HANDLE {
         self.port
     }
@@ -781,10 +749,8 @@ mod tests {
         let port = poller.port();
         let post = |key| {
             // SAFETY: the poller's port, open while it lives, and no OVERLAPPED.
-            assert_ne!(
-                unsafe { PostQueuedCompletionStatus(port, 0, key, std::ptr::null()) },
-                0
-            );
+            let posted = unsafe { PostQueuedCompletionStatus(port, 0, key, std::ptr::null()) };
+            assert_ne!(posted, 0, "{}", io::Error::last_os_error());
         };
         post(9);
         post(6);
