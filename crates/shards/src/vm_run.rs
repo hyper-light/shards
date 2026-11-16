@@ -3621,7 +3621,18 @@ fn supervise(
             report("the guest stopped before its template was saved");
             ExitCode::FAILURE
         }
-        ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
+        ExitReason::PowerOff | ExitReason::Stopped => {
+            // Its guest's control ended unannounced, and this VM ended it: its guest's last words
+            // are why, quoted as a reset's are.
+            if console == Console::Discard && crate::workload::capture::control_ended() {
+                let said = handle.console_said();
+                report(format!(
+                    "its guest's control ended{}",
+                    last_said(&said.lines, said.report)
+                ));
+            }
+            ExitCode::SUCCESS
+        }
         ExitReason::Reset => {
             let said = if console == Console::Discard {
                 let said = handle.console_said();
@@ -3638,6 +3649,14 @@ fn supervise(
         }
         ExitReason::Error(e) => {
             report(e);
+            // Its guest's last words, where no one read its console: why it stopped, as often as not.
+            if console == Console::Discard {
+                let said = handle.console_said();
+                report(format!(
+                    "its console's last lines{}",
+                    last_said(&said.lines, said.report)
+                ));
+            }
             ExitCode::FAILURE
         }
     }

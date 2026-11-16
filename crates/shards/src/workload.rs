@@ -863,6 +863,9 @@ pub fn serve(
     // unannounced, ended the run's connection here, which its relay failed for: why, in
     // place of that end (capture.rs `ENDED_RUN`).
     let status = status.map_err(|e| capture::ended_run().unwrap_or(e));
+    if status.is_err() {
+        capture::guest_failed();
+    }
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();

@@ -5312,6 +5312,8 @@ impl Workload {
                     break 'relay;
                 }
             }
+            // Let go once every channel has ended and nothing of it is in flight, but for a member
+            // held for its next generation (D270): its channels open again on this connection.
             if self
                 .capture
                 .as_ref()
@@ -5319,7 +5321,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.stdout.terminal() && d.stderr.terminal())
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && !d.held)
             {
                 self.capture = None;
             }

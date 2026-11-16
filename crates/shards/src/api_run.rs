@@ -4564,6 +4564,11 @@ mod hosted {
         if lock(&live.generations).gone {
             return Err(failed("its microVM has gone".into()));
         }
+        if !last_output_ended(live, member, generation, ask.patience) {
+            return Err(failed(format!(
+                "its generation {generation}'s output did not end within its patience: is it read?"
+            )));
+        }
         // Its input, where it has one: its next generation's own, its feed waiting for the
         // connection its guest dials with the token its VM mints.
         let has_input = lock(&live.feeds).contains_key(&member);
@@ -4871,6 +4876,45 @@ mod hosted {
 
     /// Waits until `done` says its generations are as asked, at most `patience`: whether they
     /// were.
+    /// Waits at most `patience` for every channel of member `member`'s generation `generation`
+    /// that its guest was given a credit for to end (D270 slice 3b), then seals it: no credit
+    /// goes to it after. Whether they all ended. Its records come in the order its init sent
+    /// them, and its next generation's channels open on the streams its last's ended on, so
+    /// a next started before then would find its last's stream still open on a channel (its
+    /// relay refusing the next's open, and every member's output with it). A channel no credit
+    /// went to was never opened: nothing of it waits.
+    fn last_output_ended(
+        live: &Live<'_>,
+        member: u32,
+        generation: u32,
+        patience: std::time::Duration,
+    ) -> bool {
+        let deadline = Instant::now().checked_add(patience);
+        let mut flows = lock(&live.flows);
+        loop {
+            let open = [Channel::Stdout, Channel::Stderr].into_iter().any(|channel| {
+                let key = (member, generation, channel);
+                flows.granted.contains_key(&key) && !flows.ended.get(&key).copied().unwrap_or(false)
+            });
+            if !open {
+                flows.sealed.insert((member, generation));
+                return true;
+            }
+            let left = match deadline {
+                Some(at) => match at.checked_duration_since(Instant::now()) {
+                    Some(left) if !left.is_zero() => left,
+                    _ => return false,
+                },
+                None => std::time::Duration::MAX,
+            };
+            flows = live
+                .flows_moved
+                .wait_timeout(flows, left)
+                .map(|(f, _)| f)
+                .unwrap_or_else(|e| e.into_inner().0);
+        }
+    }
+
     fn wait_generations(
         live: &Live<'_>,
         patience: std::time::Duration,
@@ -5171,6 +5215,9 @@ mod hosted {
         granted: HashMap<Key, bool>,
         /// The channel has ended.
         ended: HashMap<Key, bool>,
+        /// The generations no credit goes to now, by member and generation (D270 slice 3b): a
+        /// restart's last, once every channel of it its guest was given a credit for ended.
+        sealed: std::collections::HashSet<(u32, u32)>,
         /// A grant its VM could not take has been said (`take`): once a run.
         ungranted: bool,
     }
@@ -5268,6 +5315,8 @@ mod hosted {
         /// followed to its end ([`Shares::end`]).
         ends: Ends,
         flows: Mutex<Flows>,
+        /// Told as a channel ends, for a restart that waits on its last generation's output.
+        flows_moved: std::sync::Condvar,
         /// Each input member's stdin, by its index.
         feeds: Mutex<HashMap<u32, Feed>>,
         fed: std::sync::Condvar,
@@ -5570,7 +5619,7 @@ mod hosted {
             };
             // Room for a generation past is no record of its guest's: a member runs one
             // generation at a time.
-            if key.1 != self.generation_of(key.0) {
+            if key.1 != self.generation_of(key.0) || flows.sealed.contains(&(key.0, key.1)) {
                 return Ok(());
             }
             let room = flows.room.get(&key).copied().unwrap_or(0);
@@ -5604,6 +5653,7 @@ mod hosted {
         /// guest none while anything waits.
         fn end_channel(&self, flows: &mut Flows, key: Key, end: wire::StreamEnd) -> io::Result<()> {
             flows.ended.insert(key, true);
+            self.flows_moved.notify_all();
             let rest = flows.waiting.remove(&key).unwrap_or_default();
             if !rest.is_empty() {
                 self.answers.send(
@@ -6052,6 +6102,7 @@ mod hosted {
                 answers,
                 ends: Ends::kept_in(home),
                 flows: Mutex::new(Flows::default()),
+                flows_moved: std::sync::Condvar::new(),
                 feeds: Mutex::new(plan.inputs.iter().map(|m| (*m, Feed::default())).collect()),
                 fed: std::sync::Condvar::new(),
                 generations: Mutex::new(Generations::default()),
@@ -8192,6 +8243,7 @@ mod hosted {
                 answers,
                 ends: Ends::kept_in(home),
                 flows: Mutex::new(Flows::default()),
+                flows_moved: std::sync::Condvar::new(),
                 feeds: Mutex::new(HashMap::new()),
                 fed: std::sync::Condvar::new(),
                 generations: Mutex::new(Generations::default()),
@@ -9235,6 +9287,120 @@ mod hosted {
                     Err((wire::RestartRefusal::Running, _))
                 ));
             });
+        }
+
+        /// D270 slice 3b: a restart starts its member's next generation once every channel of its
+        /// last that its guest was given a credit for has ended, and not before: no start is asked
+        /// of its VM while either is open; once both ended it is, and its next starts. Then its last
+        /// is sealed, no credit going to it whatever room its orchestrator gives it; a channel
+        /// that never ends within the patience is said so. Taking `last_output_ended` out of the
+        /// restart asks the start while its last's output is open.
+        #[test]
+        fn a_restart_starts_its_next_generation_once_its_lasts_output_has_ended() {
+            use protocol::members::{Start, StartAnswer};
+            use std::os::fd::AsRawFd as _;
+            let dir = shards_testdir::TempDir::new("api-restart-out").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let (capture, _guest_capture) = Stream::pair().unwrap();
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let live = Live {
+                members: &members,
+                ..live(&answers, dir.path(), link, Some(capture))
+            };
+            // Its orchestrator's room on both of generation 0's channels: a credit to its guest for each.
+            let room = |generation, channel| {
+                let mut flows = lock(&live.flows);
+                let key = (1, generation, channel);
+                flows.room.insert(key, 4096);
+                live.grant(&mut flows, key).unwrap();
+                flows.granted.get(&key).copied().unwrap_or(false)
+            };
+            assert!(room(0, Channel::Stdout) && room(0, Channel::Stderr));
+            let end = |channel| {
+                let mut flows = lock(&live.flows);
+                flows.granted.insert((1, 0, channel), false);
+                live.end_channel(&mut flows, (1, 0, channel), wire::StreamEnd::Closed)
+                    .unwrap();
+            };
+            // Whether its VM was asked anything within `ms`.
+            let asked_within = |ms| {
+                let mut fd = libc::pollfd {
+                    fd: vm.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one pollfd of a descriptor this test holds open.
+                unsafe { libc::poll(&mut fd, 1, ms) == 1 }
+            };
+            std::thread::scope(|scope| {
+                let guest = scope.spawn(|| {
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::MEMBER_HOLD);
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::EXEC_RUN);
+                    let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                    shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    lock(&live.generations).ended.insert((1, 0));
+                    live.generations_moved.notify_all();
+                    assert!(
+                        !asked_within(200),
+                        "its next asked while its last's output is open"
+                    );
+                    end(Channel::Stdout);
+                    assert!(
+                        !asked_within(100),
+                        "its next asked while its last's stderr is open"
+                    );
+                    end(Channel::Stderr);
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::MEMBER_START);
+                    let start = Start::decode(&m.payload[1..]).unwrap();
+                    assert_eq!((start.member, start.generation), (1, 1));
+                    let answer = StartAnswer {
+                        member: 1,
+                        generation: 1,
+                        refused: None,
+                    };
+                    started_told(&live, &answer.encode().unwrap());
+                });
+                let ask = wire::RestartAsk {
+                    id: 1,
+                    member: 1,
+                    args: Vec::new(),
+                    patience: std::time::Duration::from_secs(60),
+                };
+                assert_eq!(restart(&live, &ask, scope), Ok(1));
+                guest.join().unwrap();
+            });
+            assert!(lock(&live.flows).sealed.contains(&(1, 0)), "its last sealed");
+            assert!(room(1, Channel::Stdout), "its next's channels are given credits");
+            // A generation whose channel never ends: not sealed, and said so within its patience.
+            let mut flows = lock(&live.flows);
+            flows.granted.insert((1, 1, Channel::Stdout), true);
+            drop(flows);
+            assert!(!last_output_ended(
+                &live,
+                1,
+                1,
+                std::time::Duration::from_millis(50)
+            ));
+            assert!(!lock(&live.flows).sealed.contains(&(1, 1)));
+            // One whose channels got no credit: nothing waits, and none goes to it after.
+            assert!(last_output_ended(&live, 1, 7, std::time::Duration::ZERO));
+            let mut flows = lock(&live.flows);
+            flows.room.insert((1, 7, Channel::Stderr), 4096);
+            lock(&live.generations).current.insert(1, 7);
+            live.grant(&mut flows, (1, 7, Channel::Stderr)).unwrap();
+            assert!(
+                !flows.granted.contains_key(&(1, 7, Channel::Stderr)),
+                "a sealed generation's credit went"
+            );
         }
 
         /// D238, D252, D254: an orchestrator's run hosts its own lanes as the daemon hosts its

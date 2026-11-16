@@ -884,6 +884,8 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // ask: held for the guest's signal connection.
             kind::MEMBER_HOLD if matches!(from, From::Daemon(_)) => {
                 if let Some(hold) = shards_abi::run::members::Hold::decode(&message.payload) {
+                    // Its channels' ends end no capture while it is held (capture.rs `done`).
+                    workload::capture::hold(hold.member, hold.held);
                     let _ = workload::hold_member(to, hold);
                 }
             }
@@ -2177,6 +2179,15 @@ pub fn member_ended(link: &Link, ended: &[u8]) {
 /// Gives the run's owner what came of a member's next generation (D270 slice 3b), as its guest
 /// said it (`MEMBER_STARTED`).
 pub fn member_started(link: &Link, answer: &[u8]) {
+    // Its next generation's channels open again at its owner's credit, which its owner gives
+    // once it hears this answer: told the capture's relay first (capture.rs `started`).
+    if let Ok(said) = shards_abi::run::members::StartAnswer::decode(answer) {
+        if said.refused.is_none() {
+            workload::capture::started(said.member);
+        } else {
+            workload::capture::hold(said.member, false);
+        }
+    }
     let _ = to_daemon(&link.daemon, kind::MEMBER_STARTED, answer, &[]);
 }
 

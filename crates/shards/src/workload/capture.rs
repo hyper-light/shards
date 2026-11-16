@@ -191,6 +191,7 @@ impl Control {
         if let Err(e) = &result {
             *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
                 Some(format!("its managed control ended: {e}"));
+            CONTROL_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
             super::end_guest(boundary);
         }
         result
@@ -443,6 +444,80 @@ pub fn next_input(member: u32, owner: shards_ipc::Stream) -> Result<[u8; run::TO
 /// its control was refused or ended unannounced ([`Control::supervise`]), said whole.
 static ENDED_RUN: Mutex<Option<String>> = Mutex::new(None);
 
+/// Its guest's managed control ended unannounced, and this VM ended its guest for it: what its
+/// end quotes its console for (vm_run.rs), as a reset's does, its guest's last words being why.
+static CONTROL_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether its guest's managed control ended unannounced ([`CONTROL_ENDED`]), or its run failed
+/// as its guest stopped ([`guest_failed`]).
+pub fn control_ended() -> bool {
+    CONTROL_ENDED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Its run failed as its guest stopped, its command not ended (workload.rs): its end quotes its
+/// console too ([`CONTROL_ENDED`]).
+pub fn guest_failed() {
+    CONTROL_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A run's members held for their next generation, and the channels of those whose next
+/// generation started, waiting for its owner's credit to open them again (D270 slice 3b), as
+/// its owner and its guest said them: a member held for its next generation ends no capture as
+/// its channels end, and its next generation's channels open as new streams. One run's per VM
+/// process. Locked after a relay's ledger, never before it.
+struct Generations {
+    held: std::collections::BTreeSet<u32>,
+    reopening: std::collections::BTreeSet<(u32, u8)>,
+}
+
+static GENERATIONS: Mutex<Generations> = Mutex::new(Generations {
+    held: std::collections::BTreeSet::new(),
+    reopening: std::collections::BTreeSet::new(),
+});
+
+fn generations() -> std::sync::MutexGuard<'static, Generations> {
+    GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Its owner held member `member` for its next generation, or let it go (`MEMBER_HOLD`).
+pub fn hold(member: u32, held: bool) {
+    let mut g = generations();
+    if held {
+        g.held.insert(member);
+    } else {
+        g.held.remove(&member);
+    }
+}
+
+/// Member `member`'s next generation started (its guest's `MEMBER_STARTED`, unrefused): held no
+/// more, its channels open again at its owner's next credit of each.
+pub fn started(member: u32) {
+    let mut g = generations();
+    g.held.remove(&member);
+    for channel in [Channel::Stdout, Channel::Stderr] {
+        g.reopening.insert((member, channel as u8));
+    }
+}
+
+/// Whether a relay whose flows are `streams` is done: every channel admitted has ended, and no
+/// member is held for, or has started, a next generation whose channels are still to open.
+fn done(streams: &[[Flow; 2]], g: &Generations) -> bool {
+    g.held.is_empty()
+        && g.reopening.is_empty()
+        && streams.iter().all(|pair| {
+            pair.iter()
+                .all(|slot| matches!(slot.credit, Credit::Inactive) || slot.stream.terminal())
+        })
+}
+
+/// Whether a credit of its owner's for `slot`, member `member`'s channel `channel` that has
+/// ended, opens it again as its next generation's (D270 slice 3b): taken from `g` where so.
+fn reopened(slot: &Flow, member: u32, channel: Channel, g: &mut Generations) -> bool {
+    matches!(slot.credit, Credit::Closed)
+        && slot.stream.terminal()
+        && g.reopening.remove(&(member, channel as u8))
+}
+
 /// Why the run's managed capture ended its run, where it did ([`ENDED_RUN`]), taken: for its
 /// serve to say, in place of the end of the run's connection it caused.
 pub fn ended_run() -> Option<String> {
@@ -546,7 +621,22 @@ fn credits(
                 let slot = flow(&mut flows, credit.member, credit.channel)?;
                 match slot.credit {
                     Credit::Waiting => {
+                        // A channel its member's last generation never opened, opening as its
+                        // next's (D270 slice 3b): nothing of the last's is to come on it.
+                        if slot.stream == StreamState::New {
+                            generations()
+                                .reopening
+                                .remove(&(credit.member, credit.channel as u8));
+                        }
                         slot.credit = Credit::Granted(capacity);
+                        break;
+                    }
+                    // Its member's next generation's channel, opening (D270 slice 3b).
+                    Credit::Closed if reopened(slot, credit.member, credit.channel, &mut generations()) => {
+                        *slot = Flow {
+                            credit: Credit::Granted(capacity),
+                            stream: StreamState::New,
+                        };
                         break;
                     }
                     Credit::Forwarding => {
@@ -619,10 +709,7 @@ fn records(
             } else {
                 Credit::Waiting
             };
-            flows.streams.iter().all(|pair| {
-                pair.iter()
-                    .all(|slot| matches!(slot.credit, Credit::Inactive) || slot.stream.terminal())
-            })
+            done(&flows.streams, &generations())
         };
         ledger.changed.notify_all();
         if done {
