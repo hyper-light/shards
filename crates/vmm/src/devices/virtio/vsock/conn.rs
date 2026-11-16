@@ -937,6 +937,11 @@ impl Conn {
             }
             return Ok(());
         }
+        // Both ways over: on Windows its pipes' way up closes first, so that its host's writes
+        // fail at once before its way down's end can say the guest has gone (D272).
+        if self.guest_rcv_closed && self.guest_send_closed {
+            self.stream.end_reads();
+        }
         if self.guest_send_closed && self.host_writes == HostWrites::Open {
             self.host_writes = HostWrites::Shut;
             // The host reads EOF, on Windows once its pipes' write under way has finished.

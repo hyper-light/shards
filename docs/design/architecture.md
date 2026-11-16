@@ -37026,7 +37026,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S4 built, S5 owed; Windows tests and WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37275,6 +37275,16 @@ written, not run):
   `shards_api`'s stream tests over pipes (`pair`), `a_streams_socket_is_handed_over` taking its
   pipes, the inheritability check on the way down's handle; client.rs's rate stand-in on a
   `VsockListener`.
+
+**S5, built** (crates/shards/tests/vsock.rs on pipes; to be run on WHP, jupiter, by ROOT):
+- Its host ports are `host_port`s, its raw dials `vsock_dial`s, its streams `VsockStream`s:
+  each test runs on every host as written, Windows' over pipes.
+- `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`: on Windows a host's write
+  after the guest's end, which it read after every byte, fails at once, ERROR_NO_DATA (232),
+  for the close (`C`) and the cut (`X`) alike. Red on AF_UNIX, where it was taken and went
+  nowhere (M358); green on pipes, as the device closes a connection's way up before its way
+  down's end can be read: as the connection ends (`Conn::end`), and where the guest's one
+  SHUTDOWN ends both ways at once and its way down closes in the same turn (`Conn::flush`).
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
