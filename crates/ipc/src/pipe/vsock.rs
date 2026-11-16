@@ -282,8 +282,6 @@ impl VsockListener {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::io::{Read as _, Write as _};
-
     use super::*;
 
     /// A pair's file says its two names, the way down's first, and is read back as written;

@@ -8583,11 +8583,19 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     refusal of an exec of a round's word is that round's answer too, nothing given, queued
     with every answer (`Answered`, `refuse_word`): as a state alone, reset as the word's
     next exec began, a round whose groups' thread looked only after its give-back began
-    lost it, waited on that give-back, and the next member's pass opened no round (CI run
-    43876891053 at 1b8d1cddd, macOS and three Windows jobs: the member that joined was told
-    its room twice, `16 != 15`). A round its answers finished is judged before the pass that
-    follows, so that pass opens the next where its group is still short. An answer or
-    refusal wakes the existing groups condvar. No new bound, reader or cache.
+    lost it and waited on that give-back. A round its answers finished is judged before the
+    pass that follows, so that pass opens the next where its group is still short. A round
+    asks the members it began with: one joining while it runs is told its room at each
+    pass, and asked to give back by the round after. The test had its second member's join
+    open round 2, true while passes waited out a 2 s pressure window; on D215's pace
+    (2275e3829) the pass after round 1's verdict comes first and opens round 2 with the
+    first member alone, so the second was told its room twice, `16 != 15` (`ROOM` where
+    `RECLAIM` was due; CI run 43876891053 at 1b8d1cddd, macOS and three Windows jobs, and
+    adas-mac-studio.local-2 at 4999d113a, after the queued refusal, 3 of 3). A thread now
+    plays the second's guest whichever round asks it, and the first's give-back brings its
+    group within its max, so the round after, ended by the first's unanswered room, stops
+    nothing. An answer or refusal wakes the existing groups condvar. No new bound, reader
+    or cache.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
@@ -31245,7 +31253,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a key yet (its sign-ins it does, below); the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's); kiln granting each isolated Claude Code and Codex launch its person's sign-in on every runner, through its server's one broker, built (kiln main c5f3d5b36: 54a38d288, 70d70c69d), what crosses a runner's link wiped once used, a session restored before its server's word granted its sign-in once that's known, and a harness swapped into its microVM granted its sign-in or refused (kiln main d7c57d0cb); the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31968,10 +31976,18 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   `SimSecrets` and kiln's store alike (`cp_t8_3_kilns_lessors_pass_hexs_lease_contract`); its server gives them to its
   own runner, whose sandbox carries each launch's credential grants, by reference with their placeholders, to
   `ShardsImage::credentials` (458a8df23, b2fc6cebb).
-- *Owed.* No kiln harness launch grants a credential yet: `sandbox::isolated::launch_of` gives `credentials:
-  Vec::new()`, its harness signing in natively, its tokens in the microVM, until step 8's capture reaches kiln; kiln's
-  sandbox gives Hex no sign-in grant (`ShardsImage::sign_ins`); a kiln runner other than the server's own holds no
-  broker and refuses a granted launch (`hexvm::NO_BROKER`). ROOT's real runs (step 10).
+- *Built since* (kiln main c5f3d5b36, read 2026-11-16). kiln's sandbox gives Hex each isolated Claude Code and Codex
+  launch's sign-in (`ShardsImage::sign_ins`, through `hexvm::sign_ins_of`; 54a38d288), granted where its runner's
+  microVMs lease credentials and a broker answers; a kiln runner other than the server's own leases from its server's
+  one broker over its link (`secrets::lessor::Remote`, named feature `secrets.leases`; 54a38d288), refused
+  (`hexvm::NO_BROKER`) only where it has no link to ask over; and an agent can't ask that broker through its runner's
+  socket (70d70c69d). Since (kiln main d7c57d0cb): what crosses a runner's link is wiped once used (its words made the
+  size they come to, its frames in the net thread's outbox; hyper-transport's own buffers are its own), a launch
+  before its server's word on `secrets.leases` (a restored session) waits for it and is granted its sign-in, and a
+  harness swapped into its microVM is granted its sign-in or refused, typed.
+- *Owed.* No kiln harness launch grants a key (a credential other than a sign-in) yet: `sandbox::isolated::launch_of`
+  gives `credentials: Vec::new()`. ROOT: kiln's build, clippy and the tests these landings wrote, none run; the real
+  runs (step 10), on the server's own runner and on another.
 
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
@@ -32330,12 +32346,14 @@ a 503 in the guest. No Shards code changes in this slice.
   the rotated access token kept under its reference; a revocation keeping the sign-in; refusals by kind (a name
   naming no provider, never captured, refused 400, unavailable 503 with no token in its words); two refreshes at
   once one call to the provider. Pure tests of the bodies, the token response's reading and the answer.
-- *Owed.* kiln granting a run's sign-ins: its sandbox carrying them to `ShardsImage::sign_ins` (name and CLI from
-  one value), and staging a later run's CLI file with the captured placeholders, inert ID token and scope. The
-  broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each refresh, which
-  nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy (`-D warnings`)
-  and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether platform.claude.com answers
-  a refresh asking the captured scope as it answers Claude Code's.
+- *Built since* (kiln main c5f3d5b36: 54a38d288). kiln grants a run's sign-in through its sandbox to
+  `ShardsImage::sign_ins`, its name and CLI from one value (`Provider::grant`); a later run is granted the
+  placeholders its CLI's file in its person's volume holds (`.credentials.json`, `auth.json`), so they stand for the
+  sign-in again: the file is kept there with what the capture gave it, never staged.
+- *Owed.* The broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each
+  refresh, which nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy
+  (`-D warnings`) and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether
+  platform.claude.com answers a refresh asking the captured scope as it answers Claude Code's.
 
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
@@ -32800,11 +32818,13 @@ at a sign-in's token host), and whether its token host is apart from the hosts i
   as a profile and its `SignInCli` (Gemini CLI, goose's Google sign-in; Hex's lead for Hex); a placeholder form per
   provider (pi); a second sign-in name per harness (goose).
 
-**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
-the network process telling its run host of a capture, a refresh and a revocation, the run host its
-orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
-(its harness built, D259), the injector's measured cost (its harness built, step 10's second part), and a real sign-in of each
-CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** ROOT's real-VM runs on KVM, HVF and WHP with a
+whole-guest-memory leak scan (its harness built, D259), the injector's measured cost (its harness built, step 10's
+second part), and a real sign-in of each CLI surviving a refresh answered outside (step 8), on the kiln server's own
+runner and on another. Built since: kiln's broker answering the sign-ins' words (step 8's third slice, kiln main
+bd2565641; the network process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, and the injector capturing and answering outside, its second), and kiln granting each isolated launch
+its person's sign-in on every runner (kiln main c5f3d5b36, d7c57d0cb). Step 6's own owed items are its block's,
 above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
@@ -37675,8 +37695,21 @@ finds nothing.
   then the end, then the host's write refused, 232), `a_rates_pipes_are_answered_by_its_owner`,
   `a_client_gone_with_its_way_down_alone_lets_the_next_in`; shards_ipc `pipe::vsock::tests`
   `a_pairs_file_says_its_two_names`, `a_pair_is_opened_by_its_file`,
-  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dial its AF_UNIX
-  listener run on Unix alone now; their Windows counterparts are the three above.
+  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dialled its AF_UNIX
+  listener or read a handshake off a socket pair run on both now, their assertions shared and
+  their dial each OS's (lane whp-tests; Windows forms written, not run): a dial taken once its
+  pair is whole (`dialled`), a handshake's stream a listening pair's pipes (`host_stream`), a
+  client's bytes looked at before a read (`arrived`), and a read that does not wait a peek of
+  the way down (`read_now`): `handshake_lines_are_bounded_by_the_protocols_words`,
+  `handshakes_arrive_in_pieces_and_leave_later_data_unread`,
+  `past_its_slots_a_dial_is_refused_at_once`,
+  `a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it`,
+  `an_unanswered_request_gives_its_slot_up_longest_first` and
+  `a_hosts_request_its_guest_answers_late_is_connected`. On Unix alone still: the two rate
+  tests, whose owner answers a socket by a blocking write (Windows' counterpart
+  `a_rates_pipes_are_answered_by_its_owner`, its answer a waited write), and
+  `past_its_descriptors_a_dial_is_refused_at_once` (EMFILE: Windows' listener takes a dial
+  by the handles its pair already holds).
 
 **S3, built** (the grants: `shards` grant_ask.rs, grant_answer.rs, vm_run.rs; Windows tests
 written, not run):
@@ -37727,12 +37760,17 @@ written, not run):
   `host_port_accept`. `vsock_connect` and `echo` ride them, `echo`'s writer sharing its stream
   (a pipe's end is one handle, whose close alone is its end for its peer). boot.rs's managed
   rate test dials by `vsock_dial`.
-- *Owed on Windows*: fixtures that stand in for a guest's socket with AF_UNIX listeners run on
-  Unix alone now, their Windows forms on pipes owed: `shards_api`'s `borrowed_tests`
-  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) and
-  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`. On pipes a dial to a pair
-  another client holds waits to its deadline (D272's order), never refused as a full backlog
-  is: that test's Windows form expects the dial's expiry.
+- *Fixtures that stand in for a guest's socket* run on both (lane whp-tests; Windows forms
+  written, not run): `shards_api`'s `borrowed_tests`
+  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) on
+  client.rs tests' stand-in listener (`stand_in_listener`, `next_dial`: a socket, or a
+  `VsockListener` and its `PipeDial`), a listener no dial reached one whose pair a dial that
+  waits for nothing opens (`undialed`), and a fixture's end each free way of its pair opened
+  (`redial`), as an attempt may hold its way down alone; and
+  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`, its full listener on Windows
+  a pair another client holds. On pipes such a dial waits to its deadline (D272's order), never
+  refused as a full backlog is, so its expiry there is the answer, asked again; on Unix an
+  expiry is a patience the dial did not fit in, asked again with more.
 - *Tests* (Windows, written, not run): shards_ipc `a_listener_lets_its_clients_in_one_after_another`;
   `shards_api`'s stream tests over pipes (`pair`), `a_streams_socket_is_handed_over` taking its
   pipes, the inheritability check on the way down's handle; client.rs's rate stand-in on a

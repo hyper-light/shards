@@ -1,11 +1,7 @@
 //! Focused synthetic-muxer checks. Actual VM/lifecycle/platform campaigns belong to root.
+use super::tests::{Dial, StandIn, next_dial, stand_in_listener};
 use super::*;
 use std::sync::mpsc;
-
-#[cfg(windows)]
-use shards_afunix::{UnixListener, UnixStream};
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 
 fn identity(path: PathBuf) -> Identity {
     let pid = std::process::id();
@@ -24,6 +20,40 @@ fn request(stream: &mut impl io::Read, port: u32) {
     assert_eq!(bytes, expected.as_bytes());
 }
 
+/// Whether no dial has reached `listener`, at `path`: a socket's accept, made non-blocking,
+/// finds none queued; on Windows its pair is free, as a dial that waits for nothing opens it
+/// (`shards_ipc::vsock_open` to now), where one a client has opened, gone since or not, is busy.
+#[cfg(unix)]
+fn undialed(listener: &StandIn, _path: &Path) -> bool {
+    listener.set_nonblocking(true).unwrap();
+    listener
+        .accept()
+        .is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock)
+}
+
+#[cfg(windows)]
+fn undialed(_listener: &StandIn, path: &Path) -> bool {
+    shards_ipc::vsock_open(path, Some(Instant::now())).is_ok()
+}
+
+/// Dials `path` once more, so that a fixture's accept ends wherever it waits: a socket's
+/// connect; on Windows each way of the pair its file names opened where no client holds it,
+/// and closed at once, waiting for neither, as an attempt may have opened its way down alone.
+#[cfg(unix)]
+fn redial(path: &Path) {
+    drop(std::os::unix::net::UnixStream::connect(path));
+}
+
+#[cfg(windows)]
+fn redial(path: &Path) {
+    let Ok(names) = shards_ipc::VsockNames::read(path) else {
+        return;
+    };
+    let down = std::fs::OpenOptions::new().read(true).open(&names.down);
+    let up = std::fs::OpenOptions::new().write(true).open(&names.up);
+    drop((down, up));
+}
+
 #[path = "contract.rs"]
 mod contract;
 
@@ -39,11 +69,11 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(name: &str, then: impl FnOnce(UnixStream) + Send + 'static) -> Fixture {
+    fn new(name: &str, then: impl FnOnce(Dial) + Send + 'static) -> Fixture {
         let dir = shards_testdir::TempDir::new(name).unwrap();
-        let listener = UnixListener::bind(dir.join("v")).unwrap();
+        let mut listener = stand_in_listener(&dir.join("v"));
         let server = std::thread::spawn(move || {
-            let (mut peer, _) = listener.accept().unwrap();
+            let mut peer = next_dial(&mut listener);
             let mut asked = [0; "CONNECT 1234\n".len()];
             // A dial whose patience ran out before its CONNECT was whole, or the end's own.
             if peer.read_exact(&mut asked).is_ok() && asked == *b"CONNECT 1234\n" {
@@ -58,7 +88,7 @@ impl Fixture {
     }
 
     fn end(self) {
-        drop(UnixStream::connect(self.path()));
+        redial(&self.path());
         self.server.join().unwrap();
     }
 }
@@ -80,8 +110,7 @@ fn sooner(result: &Result<Box<dyn Stream>, Refusal>) -> bool {
 #[test]
 fn changed_identity_is_rejected_before_dial() {
     let dir = shards_testdir::TempDir::new("nb-id").unwrap();
-    let listener = UnixListener::bind(dir.join("v")).unwrap();
-    listener.set_nonblocking(true).unwrap();
+    let listener = stand_in_listener(&dir.join("v"));
     let mut id = identity(dir.join("v"));
     let observed = id.started;
     id.started = id.started.wrapping_add(1);
@@ -91,15 +120,15 @@ fn changed_identity_is_rejected_before_dial() {
             failure: crate::ProcessFailure::DifferentStart { observed: actual } })
             if pid == id.pid && expected_started == id.started && actual == observed));
     }
-    assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    assert!(undialed(&listener, &dir.join("v")));
 }
 
 #[test]
 fn exact_bytes_clone_and_half_close() {
     let dir = shards_testdir::TempDir::new("nb-bytes").unwrap();
-    let listener = UnixListener::bind(dir.join("v")).unwrap();
+    let mut listener = stand_in_listener(&dir.join("v"));
     let server = std::thread::spawn(move || {
-        let (mut peer, _) = listener.accept().unwrap();
+        let mut peer = next_dial(&mut listener);
         request(&mut peer, u32::MAX);
         peer.write_all(b"OK 4294967295\n\0\xff\n").unwrap();
         let mut bytes = [0; 3];
@@ -213,9 +242,9 @@ fn malformed_and_closed_replies_remain_typed() {
         b"",
     ] {
         let dir = shards_testdir::TempDir::new("nb-reply").unwrap();
-        let listener = UnixListener::bind(dir.join("v")).unwrap();
+        let mut listener = stand_in_listener(&dir.join("v"));
         let server = std::thread::spawn(move || {
-            let (mut peer, _) = listener.accept().unwrap();
+            let mut peer = next_dial(&mut listener);
             request(&mut peer, 1234);
             peer.write_all(reply).unwrap();
         });
