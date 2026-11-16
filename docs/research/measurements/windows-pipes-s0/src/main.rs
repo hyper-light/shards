@@ -9,7 +9,26 @@
 //! - (b) what one such instance costs its spawner: CreateNamedPipeW alone, and with its
 //!   handing in (DuplicateHandle, `Suspended::give`), n p50 p90 p99 max;
 //! - (c) when an overlapped write of 1 MiB to a pipe of 64 KiB completes while its reader
-//!   takes 64 KiB every 10 ms, and what a CancelIoEx partway leaves its reader.
+//!   takes 64 KiB every 10 ms, and what a CancelIoEx partway leaves its reader;
+//! - (d) a half-close over a message-type pipe, as `shards_ipc`'s pipes make one (a
+//!   zero-byte message): what a client reading in byte mode, as a host program's does, reads
+//!   of "abc", a zero-byte message and "def"; whether it writes on after; and what it reads and
+//!   writes once the server has closed;
+//! - (e) vsock's pattern: bytes, then a zero-byte message, and nothing more that way, read by
+//!   `std::fs::File` in byte mode on a thread of its own (each read's result waited for two
+//!   seconds at most, a read still waiting said so): whether it reads the bytes, then
+//!   `Ok(0)`, and then writes on;
+//! - (f) (d) and (e) again, read by `std::fs::File` once its end is put in message read mode
+//!   (SetNamedPipeHandleState, PIPE_READMODE_MESSAGE), as a client could set it at its open:
+//!   whether "abc", a zero-byte message and "def" read as `Ok(3)`, `Ok(0)`, `Ok(3)`, and the
+//!   vsock pattern's zero-byte message as `Ok(0)` with the client writing on after;
+//! - (g) in that mode, what a read of a message larger than its buffer gives through std
+//!   (ReadFile's ERROR_MORE_DATA), and what of the message is left to read after it;
+//! - (h) a pipe each way for one connection, as std opens each (synchronous, byte mode): the
+//!   client's write the other way while a read of the way to it waits (a synchronous handle's
+//!   I/O goes one at a time, so a client's write on the handle a read waits on waits behind it:
+//!   (e) and (f) cancel such a read, CancelSynchronousIo, to go on), and the server's close of
+//!   the way to it as its end there, the client still writing.
 //!
 //! Run as `windows-pipes-s0` (the parent); it starts itself as `windows-pipes-s0 child …`.
 
@@ -40,8 +59,8 @@ mod win {
     use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_IO_INCOMPLETE, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError,
-        HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        CloseHandle, ERROR_IO_INCOMPLETE, ERROR_MORE_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+        GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -53,10 +72,11 @@ mod win {
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
         ReadFile, WriteFile,
     };
-    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::IO::{CancelIoEx, CancelSynchronousIo, GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe,
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE,
+        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        PeekNamedPipe, SetNamedPipeHandleState,
     };
     use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, OpenProcessToken};
 
@@ -377,6 +397,11 @@ mod win {
         let code = child.wait().map_err(|e| format!("its child's end: {e}"))?;
         println!("S0 parent: its child exited {code}");
         pended(&tag)?;
+        half_close(&tag)?;
+        half_close_last(&tag, false)?;
+        message_mode(&tag)?;
+        half_close_last(&tag, true)?;
+        two_pipes(&tag)?;
         drop(container);
         let _ = std::fs::remove_dir_all(&records);
         Ok(())
@@ -441,6 +466,364 @@ mod win {
         std::thread::sleep(Duration::from_secs(4));
         drop((global, local));
         Ok(())
+    }
+
+    /// A message-type pipe's server end named `name`, one instance.
+    fn message_server(name: &str) -> Result<OwnedHandle, String> {
+        let w = wide(name);
+        // SAFETY: a NUL-terminated name; default security.
+        let h = unsafe {
+            CreateNamedPipeW(
+                w.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                BUFFER,
+                BUFFER,
+                0,
+                null(),
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(format!("its server: {}", last()));
+        }
+        // SAFETY: a handle the call made, owned from here on.
+        Ok(unsafe { OwnedHandle::from_raw_handle(h as RawHandle) })
+    }
+
+    /// What a std read said: its bytes, or its error's kind and code.
+    fn said(r: std::io::Result<usize>, buf: &[u8]) -> String {
+        match r {
+            Ok(n) => format!("Ok({n}) {:?}", String::from_utf8_lossy(&buf[..n])),
+            Err(e) => format!("Err({:?}, os {:?})", e.kind(), e.raw_os_error()),
+        }
+    }
+
+    /// (d) A half-close over a message-type pipe, as `shards_ipc`'s pipes make one: read by a
+    /// client in byte mode through ReadFile itself, then through `std::fs::File`, as a host
+    /// program reads; a message larger than the reader's buffer among them.
+    fn half_close(tag: &str) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let long = [b'x'; 100];
+        // Through ReadFile itself.
+        let name = format!(r"\\.\pipe\s0-half-{tag}");
+        let server = message_server(&name)?;
+        let client = client(&name).map_err(|e| format!("its client: {e}"))?;
+        println!(
+            "S0 half: server writes \"abc\" {:?}, a zero-byte message {:?}, \"def\" {:?}, 100 bytes {:?}",
+            write(&server, b"abc"),
+            write(&server, b""),
+            write(&server, b"def"),
+            write(&server, &long)
+        );
+        let mut buf = [0u8; 16];
+        for i in 0..6 {
+            let got =
+                read(&client, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+            println!("S0 half: ReadFile, byte mode, read {i}: {got:?}");
+        }
+        let mut rest = 0usize;
+        while available(&client) > 0 {
+            rest += read(&client, &mut buf).map_err(|e| format!("reading: {e}"))? as usize;
+        }
+        println!("S0 half: ReadFile: {rest} more bytes after them");
+        println!(
+            "S0 half: ReadFile's client writes on: {:?}",
+            write(&client, b"up")
+        );
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 half: the server reads it: {got:?}");
+        drop(server);
+        println!(
+            "S0 half: once the server has closed, ReadFile's client reads {:?} and writes {:?}",
+            read(&client, &mut buf),
+            write(&client, b"late")
+        );
+        // Through std::fs::File, opened by the pipe's name for reading and writing.
+        let name = format!(r"\\.\pipe\s0-half-std-{tag}");
+        let server = message_server(&name)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|e| format!("std's open: {e}"))?;
+        let wrote = (
+            write(&server, b"abc"),
+            write(&server, b""),
+            write(&server, b"def"),
+            write(&server, &long),
+        );
+        println!("S0 half std: server writes {wrote:?}");
+        for i in 0..6 {
+            let r = file.read(&mut buf);
+            println!("S0 half std: File::read {i}: {}", said(r, &buf));
+        }
+        let mut rest = Vec::new();
+        while available_client(&file) > 0 {
+            let r = file.read(&mut buf).map_err(|e| format!("reading: {e}"))?;
+            rest.extend_from_slice(&buf[..r]);
+        }
+        println!("S0 half std: {} more bytes after them", rest.len());
+        println!(
+            "S0 half std: File writes on: {:?}",
+            file.write(b"up").map_err(|e| e.kind())
+        );
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 half std: the server reads it: {got:?}");
+        drop(server);
+        let r = file.read(&mut buf);
+        println!(
+            "S0 half std: once the server has closed, File::read {} and File::write {:?}",
+            said(r, &buf),
+            file.write(b"late").map_err(|e| (e.kind(), e.raw_os_error()))
+        );
+        Ok(())
+    }
+
+    /// (e) Bytes, then a zero-byte message, and nothing more that way; read in byte mode, or
+    /// (f) with the client's end in message read mode.
+    fn half_close_last(tag: &str, message: bool) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let label = if message { "S0 msg last" } else { "S0 last" };
+        let name = format!(r"\\.\pipe\s0-last-{}-{tag}", u8::from(message));
+        let server = message_server(&name)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|e| format!("std's open: {e}"))?;
+        if message {
+            println!(
+                "{label}: the client's end in message read mode: {:?}",
+                read_mode_message(&file)
+            );
+        }
+        let mut writer = file.try_clone().map_err(|e| format!("its clone: {e}"))?;
+        println!(
+            "{label}: server writes \"abc\" {:?}, then a zero-byte message {:?}, then nothing",
+            write(&server, b"abc"),
+            write(&server, b"")
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut reader = file;
+        let reading = std::thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            for _ in 0..3 {
+                let r = reader.read(&mut buf);
+                let end = !matches!(r, Ok(n) if n > 0);
+                if tx.send(said(r, &buf)).is_err() || end {
+                    return;
+                }
+            }
+        });
+        let mut waiting = false;
+        for i in 0..3 {
+            match rx.recv_timeout(Duration::from_secs(2)) {
+                Ok(r) => println!("{label}: File::read {i}: {r}"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    println!("{label}: File::read {i}: still waiting after 2 s");
+                    waiting = true;
+                    break;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    println!("{label}: its reader ended");
+                    break;
+                }
+            }
+        }
+        if waiting {
+            // The handle's I/O goes one at a time (a synchronous file object's), so the client's
+            // write would wait behind the read that waits: that read cancelled first, as a client
+            // would its own.
+            // SAFETY: the reading thread's handle, which lives until it is joined below.
+            let cancelled = unsafe { CancelSynchronousIo(reading.as_raw_handle()) };
+            let e = if cancelled == 0 { last() } else { 0 };
+            println!(
+                "{label}: its waiting read cancelled (CancelSynchronousIo {cancelled}, error {e}): {:?}",
+                rx.recv_timeout(Duration::from_secs(2))
+                    .map_err(|e| format!("{e:?}"))
+            );
+        }
+        println!(
+            "{label}: the client writes on: {:?}",
+            writer.write(b"up").map_err(|e| e.kind())
+        );
+        let mut buf = [0u8; 16];
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("{label}: the server reads it: {got:?}");
+        // A read still waiting ends with the server's close.
+        drop(server);
+        while let Ok(r) = rx.recv_timeout(Duration::from_secs(2)) {
+            println!("{label}: once the server has closed: File::read {r}");
+        }
+        let _ = reading.join();
+        Ok(())
+    }
+
+    /// (h) A pipe each way for one connection, each end as std opens it: the way to the client
+    /// read on a thread of its own while the client writes the other way, then closed by the
+    /// server as the end of that way.
+    fn two_pipes(tag: &str) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let (down, up) = (
+            format!(r"\\.\pipe\s0-down-{tag}"),
+            format!(r"\\.\pipe\s0-up-{tag}"),
+        );
+        let server_down = server(&down, None, false, true).map_err(|e| format!("its down server: {e}"))?;
+        let server_up = server(&up, None, false, true).map_err(|e| format!("its up server: {e}"))?;
+        let mut reader = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&down)
+            .map_err(|e| format!("std's open of the way down: {e}"))?;
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&up)
+            .map_err(|e| format!("std's open of the way up: {e}"))?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reading = std::thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            loop {
+                let r = reader.read(&mut buf);
+                let end = !matches!(r, Ok(n) if n > 0);
+                if tx.send(said(r, &buf)).is_err() || end {
+                    return;
+                }
+            }
+        });
+        println!(
+            "S0 two: server writes \"abc\" down: {:?}",
+            write(&server_down, b"abc")
+        );
+        println!(
+            "S0 two: File::read down: {:?}",
+            rx.recv_timeout(Duration::from_secs(2))
+                .map_err(|e| format!("{e:?}"))
+        );
+        // Its next read waits for more: the client writes up meanwhile.
+        std::thread::sleep(Duration::from_millis(100));
+        let t = Instant::now();
+        let wrote = writer.write(b"up").map_err(|e| e.kind());
+        println!(
+            "S0 two: the client writes up while its read down waits: {wrote:?} in {} us",
+            t.elapsed().as_micros()
+        );
+        let mut buf = [0u8; 16];
+        let got =
+            read(&server_up, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 two: the server reads it up: {got:?}");
+        drop(server_down);
+        println!(
+            "S0 two: once the server has closed the way down, File::read down: {:?}",
+            rx.recv_timeout(Duration::from_secs(2))
+                .map_err(|e| format!("{e:?}"))
+        );
+        println!(
+            "S0 two: the client writes up after it: {:?}",
+            writer.write(b"more").map_err(|e| e.kind())
+        );
+        let got =
+            read(&server_up, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 two: the server reads it up: {got:?}");
+        drop(server_up);
+        println!(
+            "S0 two: once the server has closed the way up too, the client writes: {:?}",
+            writer.write(b"late").map_err(|e| (e.kind(), e.raw_os_error()))
+        );
+        let _ = reading.join();
+        Ok(())
+    }
+
+    /// Puts a client's end of a pipe in message read mode, as a client could at its open.
+    fn read_mode_message(file: &std::fs::File) -> Result<(), u32> {
+        let mode = PIPE_READMODE_MESSAGE;
+        // SAFETY: a pipe handle the File owns; the mode read from a local, the other two left as they are.
+        if unsafe { SetNamedPipeHandleState(file.as_raw_handle(), &raw const mode, null(), null()) } == 0 {
+            Err(last())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// (f) (d)'s messages read by `std::fs::File` in message read mode, and (g) a message larger
+    /// than its buffer among them.
+    fn message_mode(tag: &str) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let long = [b'x'; 100];
+        let name = format!(r"\\.\pipe\s0-msg-{tag}");
+        let server = message_server(&name)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|e| format!("std's open: {e}"))?;
+        println!(
+            "S0 msg: the client's end in message read mode: {:?}",
+            read_mode_message(&file)
+        );
+        let wrote = (
+            write(&server, b"abc"),
+            write(&server, b""),
+            write(&server, b"def"),
+            write(&server, &long),
+        );
+        println!("S0 msg: server writes {wrote:?}");
+        let mut buf = [0u8; 16];
+        for i in 0..6 {
+            let r = file.read(&mut buf);
+            println!("S0 msg: File::read {i}: {}", said(r, &buf));
+        }
+        let mut rest = Vec::new();
+        let mut more = 0u32;
+        let mut refused = None;
+        while available_client(&file) > 0 {
+            match file.read(&mut buf) {
+                Ok(n) => rest.extend_from_slice(&buf[..n]),
+                Err(e) if e.raw_os_error() == Some(ERROR_MORE_DATA as i32) => more += 1,
+                Err(e) => {
+                    refused = Some((e.kind(), e.raw_os_error()));
+                    break;
+                }
+            }
+        }
+        println!(
+            "S0 msg: {} more bytes after them as Ok, {more} reads answered ERROR_MORE_DATA, {} left unread{}",
+            rest.len(),
+            available_client(&file),
+            refused
+                .map(|r| format!(", a read refused {r:?}"))
+                .unwrap_or_default()
+        );
+        println!(
+            "S0 msg: File writes on: {:?}",
+            file.write(b"up").map_err(|e| e.kind())
+        );
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 msg: the server reads it: {got:?}");
+        drop(server);
+        let r = file.read(&mut buf);
+        println!(
+            "S0 msg: once the server has closed, File::read {} and File::write {:?}",
+            said(r, &buf),
+            file.write(b"late").map_err(|e| (e.kind(), e.raw_os_error()))
+        );
+        Ok(())
+    }
+
+    /// What a std File's pipe holds for it now.
+    fn available_client(file: &std::fs::File) -> u32 {
+        let mut n = 0u32;
+        // SAFETY: a pipe handle the File owns; no bytes copied, its count read.
+        unsafe {
+            PeekNamedPipe(
+                file.as_raw_handle(),
+                null_mut(),
+                0,
+                null_mut(),
+                &raw mut n,
+                null_mut(),
+            )
+        };
+        n
     }
 
     /// (c) A pended write: 1 MiB to a pipe of 64 KiB, its reader taking 64 KiB every 10 ms;

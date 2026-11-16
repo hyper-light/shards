@@ -25702,3 +25702,45 @@ the counts are a process's, not a thread's. n is one run of each child.
   merged on its light checks and the HVF build; pending checks below. R16: not applicable.
 - **Unrun or owed.** Linux (glibc, musl) and Windows: CI's at the merge. The build test on KVM and WHP: CI's
   backends.
+
+### M609. A byte-mode client's half-close over named pipes, and its read and write at once (D272's S0b)
+
+- **Question.** A guest's SHUTDOWN(SEND) is its host's end-of-stream with the host's own
+  writes still open (D251), and a pipe has no half-close. Can one pipe carry one to a client
+  that reads as a host program does, `std::fs::File` in byte mode (Hex's): a zero-byte message
+  (as `shards_ipc`'s pipes end one), the client's end in message read mode, or else a pipe
+  each way? And can such a client write while its read waits?
+- **Method.** `docs/research/measurements/windows-pipes-s0`, cases (d) to (h), release build.
+  (d) and (e) at shards 032de097a on hex-winvm (Windows Server 2025 build 26100.32230, nested)
+  and jupiter (Windows 11 Pro 10.0.26200); (e) to (h) at 4c80962cc on jupiter, 2026-11-15.
+  Message-type pipes for (d) to (g), as `shards_ipc` makes them; byte-type for (h); 64 KiB
+  each way; each client read 16 bytes at a time; a read's answer waited for 2 s at most.
+- **Found:**
+  - (d), both hosts alike: the server writes "abc", a zero-byte message, "def" and 100 bytes;
+    ReadFile in byte mode reads "abcdefxxxxxxxxxx", then 16 bytes at a time, and `std` the
+    same: the zero-byte message is no boundary. The client writes on (2 bytes, read by the
+    server). After the server's close, ReadFile answers 109 (ERROR_BROKEN_PIPE) and `std`
+    `Ok(0)`; writes fail, 232 (ERROR_NO_DATA).
+  - (e), both hosts alike: "abc", a zero-byte message, nothing more: `std` reads "abc", then
+    its next read is still waiting after 2 s. With that read waiting, the client's write on
+    the same handle (a `try_clone`) waited for ever: the harness hung there on both hosts at
+    032de097a until killed. At 4c80962cc the waiting read is cancelled first
+    (CancelSynchronousIo on its thread: 1); it answers 995 (ERROR_OPERATION_ABORTED, `std`'s
+    TimedOut), and the write then goes (`Ok(2)`).
+  - (f), its client's end set to PIPE_READMODE_MESSAGE (SetNamedPipeHandleState: done):
+    "abc" `Ok(3)`, the zero-byte message `Ok(0)`, "def" `Ok(3)`; with nothing after the
+    zero-byte message, `Ok(3)` then `Ok(0)`, and the client writes on (`Ok(2)`).
+  - (g), in message read mode, the 100-byte message read 16 bytes at a time: six reads
+    answered ERROR_MORE_DATA (234) as errors and one `Ok(4)`: 96 of its 100 bytes reached
+    the caller only as errors, which `std`'s `Read` gives without their count.
+  - (h), a pipe each way, each end a `std` file of its own: the client's write up while its
+    read down waited: `Ok(2)` in 9 us; the server's close of the way down: its read `Ok(0)`;
+    its writes up after it: `Ok(4)`, read by the server; after the server's close of the way
+    up too: 232.
+- **Consequence (D272).** A connection is a pipe each way, its half-close the close of the
+  way down: a zero-byte message is no end to a byte-mode reader, message read mode loses a
+  stream's bytes past a read's buffer, and any one synchronous handle makes a client's write
+  wait behind its own read.
+- **Owed.** (f) to (h) on hex-winvm, nested under KVM on adacachy2, once its file system has
+  room to allocate again (it has 1 MiB unallocated, 2026-11-15).
+

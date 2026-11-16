@@ -36462,7 +36462,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe (decided 2026-11-15; S0 measured, S1-S5 owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -36477,19 +36477,21 @@ own IPC (Docker's engine listens on `\\.\pipe\docker_engine`), and shards' daemo
 speaks over them (D195).
 
 **Decided** (ROOT, on the `ends` evidence).
-- *A connection's host side* on Windows is a byte-mode named pipe instance; its VM's
-  listener a pipe of a per-VM name no one guesses (`random_hex`, as `shards_ipc`'s pipes),
+- *A connection's host side* on Windows is two byte-mode named pipe instances, one each way
+  (S0b, below): its client reads the way down and writes the way up; its VM's
+  listener a pair of pipes of a per-VM name no one guesses (`random_hex`, as `shards_ipc`'s pipes),
   each instance granted its owning user alone (pipe.rs `attributes`) and refusing remote
   clients, the first made with FILE_FLAG_FIRST_PIPE_INSTANCE, so that no other process holds
   the name before it.
 - *Found by path* (the filesystem rule): the home keeps a file at today's socket path that
-  names the pipe; a client reads it, then opens the pipe by that name.
+  names the pair; a client reads it, then opens each pipe by its name.
 - *Made by the spawner* (M603). A VM process confined as D141 confines it can make no pipe
   its user can open (`\\.\pipe\` refused, error 5; its `\\.\pipe\LOCAL\` its own namespace)
   and open none of its user's (error 5): its spawner makes each instance and hands it in, as
   it binds the VM's listener and dials its ports today (M203). An instance made and handed in
-  costs p50 3-7 us, p99 31-43 (M603), beside the grants round trip a dial already takes.
-  The VM asks its spawner for the next instance as each client connects to the last.
+  costs p50 3-7 us, p99 31-43 (M603), beside the grants round trip a dial already takes; a
+  connection's two come in one such round trip. The VM asks its spawner for the next pair as
+  each client connects to the last.
   - *Guest connections to host ports*: a port's listener is a pipe of its own; the spawner
     opens its client end and hands it in, as `dial_for` does a socket today.
 - *Writes* (M549: a pipe says nothing of its outbound room). A connection writes through
@@ -36500,14 +36502,30 @@ speaks over them (D195).
   transferred where its reader had taken 196,608 (M603).
 - *Reads*: overlapped reads into the connection's own buffer, their completions through an
   I/O completion port (as `shards_ipc::Poller`), which waits on any number of them.
-- *Ends*: the guest's end closes the instance's handle once its bytes are all in the pipe;
-  its client reads them, then ERROR_BROKEN_PIPE, and its writes fail at once.
+- *Ends*: the guest's SHUTDOWN(SEND) closes the way down's handle once its bytes are all in
+  that pipe: its client reads them, then ERROR_BROKEN_PIPE (`std`'s `Ok(0)`), and writes on up
+  (M609 (h)). Its whole end closes the way up's too: the client's writes then fail at once,
+  ERROR_NO_DATA.
 
-**Owed before S1** (R02): a byte-mode client's half-close. The guest's SHUTDOWN(SEND) is its
-host's end-of-stream with the host's own writes still open (D251); a pipe has no half-close,
-and `shards_ipc`'s pipes send a zero-byte message in message mode for one (pipe.rs). Whether a
-client reading in byte mode (a host program's `std::fs::File`, Hex's) reads that message as
-its end-of-stream, and writes on after it, is to be measured (windows-pipes-s0, next).
+**A pipe each way** (S0b, M609; R02's evidence before S1). The guest's SHUTDOWN(SEND) is its
+host's end-of-stream with the host's own writes still open (D251), and a pipe has no
+half-close. The ways one pipe could carry one were measured and fail for a client that reads
+as host programs do, `std::fs::File` (Hex's):
+- *A zero-byte message* (as `shards_ipc`'s pipes end one, pipe.rs): a byte-mode reader takes
+  no end from it. The bytes either side of it run together ("abc", then "def", read as
+  "abcdef"), and a read after it waits (M609 (d), (e): Windows Server 2025 and Windows 11).
+- *The client's end in message read mode* (SetNamedPipeHandleState): the zero-byte message
+  reads as `Ok(0)`, but `std` gives a message longer than its read's buffer as ERROR_MORE_DATA
+  errors, its bytes lost to the caller: 96 of a 100-byte message's (M609 (g)). A stream's
+  client bounds no message.
+- *One handle for both ways* fails whatever its mode: `std` opens a pipe for synchronous I/O,
+  and a synchronous file object's I/O goes one at a time, so a client's write waits behind
+  its own read that waits for bytes, for ever (M609 (e): it hung on both hosts until its read
+  was cancelled, CancelSynchronousIo, error 995). A client reading a guest's output while it
+  writes its input, as Hex's does, would deadlock.
+With a pipe each way, each end a file object of its own, the client's write up while its read
+down waited went in 9 us, the server's close of the way down was its read's end, and its
+writes up went on (M609 (h)).
 
 **Slices** (each red first where it changes behaviour): S1, a Windows vsock connection type
 in vmm (an instance, its pended read and write and the buffers they own) beside Unix's; S2,
@@ -36518,13 +36536,16 @@ first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host writ
 guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
-pipe's name and open it (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION), in
-place of an AF_UNIX connect; the line protocol over it (`CONNECT <port>`, `RATE`, `USE`) is
-unchanged. A client that dials through `shards_api` takes it with its pin.
+pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
+reading the way down and writing the way up, each a byte-mode file as `std` opens one (no
+mode to set, nothing to cancel), in place of an AF_UNIX connect; the line protocol over them
+(`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through `shards_api` takes
+it with its pin.
 
 **What would falsify it.** A guest byte its host never read where it read on to its end; a
 host's write after the guest's end taken without an error; a process other than its user's
-opening its pipe; an instance's name taken before its VM's first.
+opening its pipe; an instance's name taken before its VM's first; a client's write up that
+waits on its read down; a half-close its client doesn't read as its end.
 
 ### D273. An orchestrator's run's grants past its microVM changed as it runs, within its image's: `ImageGuest::grant_egress` and `revoke_egress`, its network process's rule table under its image's ceiling (built: within the image's grants; past them owed with the guest's side; real-VM runs owed)
 
