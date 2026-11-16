@@ -3461,6 +3461,8 @@ mod tests {
             sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
             timed: false,
+            #[cfg(unix)]
+            links: None,
         }
     }
 
@@ -3772,6 +3774,8 @@ mod tests {
             sign_ins: Mutex::new(Vec::new()),
             said_to: Mutex::new(None),
             timed: false,
+            #[cfg(unix)]
+            links: None,
         };
         let info = |index, name: &str| MemberInfo {
             index,

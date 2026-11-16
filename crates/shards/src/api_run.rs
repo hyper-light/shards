@@ -9599,6 +9599,10 @@ mod hosted {
         Ok(())
     }
 
+    /// A bounded volume's bound, in bytes, and its count file (D281), as its hold counts it
+    /// ([`crate::volumes::Holds::count`]).
+    type PlugBound = (u64, PathBuf);
+
     /// The host directory a plug gives (D271): the one named, absolute; or the data of the
     /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
     /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
@@ -9609,7 +9613,7 @@ mod hosted {
         live: &Live<'_>,
         from: &wire::PlugFrom,
         at: &str,
-    ) -> Result<(PathBuf, Option<(u64, PathBuf)>), (wire::PlugRefusal, String)> {
+    ) -> Result<(PathBuf, Option<PlugBound>), (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
         match from {
             wire::PlugFrom::Host(host) => {
@@ -9662,7 +9666,7 @@ mod hosted {
         live: &Live<'_>,
         member: u32,
         host: &Path,
-        bound: Option<&(u64, PathBuf)>,
+        bound: Option<&PlugBound>,
         at: &str,
         read_only: bool,
         exec: bool,
