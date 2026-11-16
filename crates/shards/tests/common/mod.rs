@@ -2438,6 +2438,16 @@ impl Patience {
         Patience::on(Party::client(client, Some(home)), std::panic::Location::caller())
     }
 
+    /// [`client`](Self::client) of several clients: a wait on what they bring about
+    /// together, as a run's client writes what a follower of its log reads.
+    #[track_caller]
+    pub fn clients(clients: &[u32], home: &Path) -> Patience {
+        Patience::on(
+            Party::with(Members::Clients(clients.to_vec()), Some(home)),
+            std::panic::Location::caller(),
+        )
+    }
+
     /// Patience with this test's own microVMs, where no home's daemon serves them.
     #[track_caller]
     pub fn own() -> Patience {
@@ -3579,9 +3589,9 @@ const VM_PROCESS: &str = "shards-vm";
 /// Whose processes a [`Party`]'s are, besides its home's daemon and what descends from it.
 #[derive(Clone)]
 enum Members {
-    /// A client and what descends from it: a command [`run_command`] runs, or a `run
+    /// Clients and what descends from them: a command [`run_command`] runs, or a `run
     /// --kernel` or `restore` (the VM process on Unix, its starter on Windows).
-    Client(u32),
+    Clients(Vec<u32>),
     /// This test's own VM processes, by the IDs their starts gave ([`OwnVm`]: `run
     /// --kernel`'s and `restore`'s [`Vm`], warm.rs' warm VM) and what descends from them: a
     /// [`Patience`]'s, and a guest's stream's ([`Following`]).
@@ -3645,7 +3655,7 @@ pub struct Looked {
 impl Party {
     /// The party of client `client`, whose home is `home` where it has one.
     pub fn client(client: u32, home: Option<&Path>) -> Party {
-        Party::with(Members::Client(client), home)
+        Party::with(Members::Clients(vec![client]), home)
     }
 
     /// The party of this test's own VM processes, and of `home`'s daemon where it has one.
@@ -3707,13 +3717,13 @@ impl Party {
     fn members(&mut self) -> (Vec<u32>, std::collections::BTreeSet<u32>) {
         let listed = match &self.members {
             Members::Machine => Vec::new(),
-            Members::Client(_) if cfg!(windows) => Vec::new(),
-            Members::Client(_) | Members::Own | Members::Started => processes(),
+            Members::Clients(_) if cfg!(windows) => Vec::new(),
+            Members::Clients(_) | Members::Own | Members::Started => processes(),
             #[cfg(unix)]
             Members::Groups(_) => processes(),
         };
         let own = match &self.members {
-            Members::Client(client) => vec![*client],
+            Members::Clients(clients) => clients.clone(),
             Members::Own => own_vms(),
             Members::Machine => Vec::new(),
             Members::Started => listed
@@ -4012,7 +4022,10 @@ impl Party {
     /// Who it is, for a wait's account of itself.
     fn named(&self) -> String {
         let who = match &self.members {
-            Members::Client(c) => format!("client {c}"),
+            Members::Clients(c) => match c.as_slice() {
+                [one] => format!("client {one}"),
+                many => format!("clients {many:?}"),
+            },
             Members::Own => "this test's own VM processes".to_string(),
             Members::Machine => "a machine of this test's process".to_string(),
             Members::Started => "the processes this test's process started".to_string(),

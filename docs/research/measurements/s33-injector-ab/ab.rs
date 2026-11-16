@@ -257,6 +257,47 @@ fn least_n() -> usize {
     (1..).find(|&n| interval(n, QUANTILE).is_some()).unwrap()
 }
 
+/// Do: hold the statistics each series' line rests on to their sources, apart from the sums
+/// `interval` makes. Expect: sampling starts where the p99 first has an upper bound, the
+/// largest sample, at ⌈ln(tail) / ln(0.99)⌉ = 368 samples, `tail` being half of
+/// 1 - CONFIDENCE, as X(n) lies above the p99 with probability 1 - 0.99^n at most (Le Boudec
+/// 2010, Theorem 2.1); each round's interval is the narrowest whose tails are each within
+/// `tail`, by binomial terms taken down from 0.99^n where `interval` sums up in logs;
+/// quantiles are nearest-rank; and the arms take turns going first.
+#[test]
+fn the_statistics_each_line_reports_hold_to_their_sources() {
+    let tail = (1.0 - CONFIDENCE) / 2.0;
+    let first = (tail.ln() / QUANTILE.ln()).ceil() as usize;
+    assert_eq!((least_n(), first), (368, 368));
+    assert_eq!(interval(first - 1, QUANTILE), None);
+    assert_eq!(interval(first, QUANTILE).map(|(_, k)| k), Some(first));
+    for n in std::iter::successors(Some(first), |n| Some(n * 2)).take(6) {
+        // P(Binomial(n, 0.99) = i), from i = n down.
+        let mut pmf = vec![0f64; n + 1];
+        pmf[n] = QUANTILE.powi(i32::try_from(n).unwrap());
+        for i in (1..=n).rev() {
+            pmf[i - 1] = pmf[i] * i as f64 / (n + 1 - i) as f64 * (1.0 - QUANTILE) / QUANTILE;
+        }
+        let cdf = |i: usize| pmf[..=i].iter().sum::<f64>();
+        let (j, k) = interval(n, QUANTILE).unwrap();
+        assert!(
+            cdf(j - 1) <= tail && tail < cdf(j),
+            "n {n}: X({j}) is not the highest lower bound"
+        );
+        assert!(
+            1.0 - tail <= cdf(k - 1) && (k == 1 || cdf(k - 2) < 1.0 - tail),
+            "n {n}: X({k}) is not the lowest upper bound"
+        );
+    }
+    let x: Vec<u64> = (1..=368).collect();
+    assert_eq!([0.50, 0.90, QUANTILE].map(|q| quantile(&x, q)), [184, 332, 365]);
+    assert_eq!(quantile(&[7], QUANTILE), 7);
+    assert_eq!(
+        (0..4).map(order).collect::<Vec<_>>(),
+        [[0, 1], [1, 0], [0, 1], [1, 0]]
+    );
+}
+
 /// Why sampling stopped (R04).
 #[derive(Debug, Clone, Copy)]
 enum Stop {

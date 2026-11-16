@@ -985,13 +985,20 @@ fn a_builders_memory_in_a_new_home_is_all_it_may_have() {
         .stderr(std::process::Stdio::piped());
     let mut built = cmd.spawn().unwrap();
     // What the VM process was given to boot with and to plug to, in MiB, as its spawner
-    // started it (`--memory`, `--memory-max`).
+    // started it (`--memory`, `--memory-max`): its command line from /proc on Linux, whose
+    // `ps` may be Alpine's BusyBox one, which takes no `-p` and said nothing (CI's musl
+    // jobs); as `ps` shows it elsewhere.
     let given = |vm: u32| {
-        let ps = std::process::Command::new("ps")
-            .args(["-o", "args=", "-p", &vm.to_string()])
-            .output()
-            .unwrap();
-        let args = String::from_utf8_lossy(&ps.stdout).into_owned();
+        let args = if cfg!(target_os = "linux") {
+            let line = std::fs::read(format!("/proc/{vm}/cmdline")).unwrap_or_default();
+            String::from_utf8_lossy(&line).replace('\0', " ")
+        } else {
+            let ps = std::process::Command::new("ps")
+                .args(["-o", "args=", "-p", &vm.to_string()])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&ps.stdout).into_owned()
+        };
         let after = |flag: &str| {
             let words: Vec<&str> = args.split_whitespace().collect();
             words
