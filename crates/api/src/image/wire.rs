@@ -108,8 +108,11 @@ pub use shards_abi::run::nesting::Ready;
 /// [`SwapAsk`], [`SwapAnswer`]), so that a side that swaps none refuses the run as it is asked;
 /// 41, whether a share's or a plug's files may be run from it (D279: [`ShareAt::exec`],
 /// [`PlugAsk::exec`]), so that a side that mounts none `noexec` refuses the run as it is asked,
-/// rather than running what its orchestrator said may not be run.
-pub const VERSION: u8 = 41;
+/// rather than running what its orchestrator said may not be run; 42, a member's working
+/// directory that no mount given it as it starts holds, refused as the run is asked
+/// ([`Cause::Workdir`], D277), so that its orchestrator is told so typed, rather than the
+/// member's start failing in its guest.
+pub const VERSION: u8 = 42;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -832,6 +835,9 @@ pub enum Cause {
     /// A warm run host's microVM is another request's than the run's (D253's pools): the run
     /// is its orchestrator's to start on a host of its own.
     Unfit = 5,
+    /// A member's working directory that no mount given it as it starts holds (D277): it
+    /// could not start there. Appended in version 42.
+    Workdir = 6,
 }
 
 /// A member's bytes.
@@ -3713,6 +3719,7 @@ impl Refused {
             3 => Cause::Boot,
             4 => Cause::Unsupported,
             5 => Cause::Unfit,
+            6 => Cause::Workdir,
             tag => {
                 return Err(WireError::Tag {
                     what: "a refusal's cause",
@@ -5066,11 +5073,23 @@ mod tests {
                 "cut at {cut}"
             );
         }
-        let refused = Refused {
-            cause: Cause::Widening,
-            why: "egress 22/tcp: the image grants none".into(),
-        };
-        assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
+        for (cause, why) in [
+            (Cause::Widening, "egress 22/tcp: the image grants none"),
+            (
+                Cause::Workdir,
+                "Harness codex: /Users/ada/proj: no share given it there",
+            ),
+        ] {
+            let refused = Refused {
+                cause,
+                why: why.into(),
+            };
+            assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
+        }
+        assert!(matches!(
+            Refused::decode(&[7, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 7, .. })
+        ));
         let mut out = Output::head(3, 2, Channel::Stderr).to_vec();
         out.extend_from_slice(b"\xff\x00no newline");
         assert_eq!(

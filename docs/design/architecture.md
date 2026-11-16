@@ -37154,6 +37154,36 @@ narrowed to its own member, taken; widened to another, refused); the image chann
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
 `give_members` not called, and the first test fails as kiln's launch did.
 
+**Amended (P6.1, kiln plan 01a1dd2e959772a1b17bc49026448e8a item 1, 2026-11-16): a working
+directory no share given its member holds is refused at boot, typed.** Before, such a member's
+start failed in its guest (`entering its working directory`, errno 2, D240), which reached its
+orchestrator as `ImageRefusal::Host("the run ended before it started: …")`: words, and a
+contract break the run host did not commit. Now the run host refuses it as the run is asked,
+before its VM is handed the run (`api_run::workdirs_held`, after `give_members`): a member's
+`MemberSpec::workdir` stands where a mount its init gives it as it starts holds it, read from
+the very entries init reads (`given_at_start`, as domains.rs `given_share`): a directory for
+domains (`domains`), to the members it names alone where it names any (`member=N`), and where
+the image's `VOLUME` lies there, only as its Agentfile's `FOR` gives it (`volume_gives`), so the
+image's own volume made there counts as a share given there does. Else `Cause::Workdir` (6, the
+image channel's version 42), `ImageRefusal::Workdir(words)`, the words naming the member and the
+directory. Held lexically (`holds`: the path, or beneath it by a whole component): a workdir and
+a share's `at` are both absolute and plain (`workdir_ok`, `mounts::clean`), and init mounts a
+share at its `at` as written. Refused with it: a workdir in the image's own tree, which no share
+holds: a member's workdir is its run's project (D240), and an image's own directory is its
+config's `run.workdir`, given by naming none. Not checked: that the directory is there within
+the share (the host's view of it is no guest's: a link there leads elsewhere in each), which its
+start still says as before. No literal; no wait or cache touched. **Tests**: the run host's
+`a_members_workdir_stands_only_in_a_mount_given_it` (given by name, at and beneath; the image's
+volume given by its `FOR`, and with no `VOLUME` rule there; refused at a share given no member or
+another, a file shared alone, a volume whose `FOR` names another, a path that only begins with
+the share's name, and with nothing mounted; a member the image declares not, `Image`); the
+channel's round trip of cause 6 and its refusal of 7; shards-api's
+`refusals_come_typed_in_their_hosts_words`. Real VM, owed (ROOT, HVF, KVM, WHP): api_image.rs
+`a_members_workdir_in_no_share_given_it_is_refused_at_boot` (its project shared and given no
+member, given at another path, and not shared: each `Workdir`); its control is
+`a_project_given_its_harness_is_where_it_works`, whose harness reads its project by a relative
+name as its first instruction (P6.1's "member whose command is ls in its workdir").
+
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 
 **Why.** The person (2026-11-15): connect and disconnect harnesses, agents and MCP servers

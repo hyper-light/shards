@@ -517,6 +517,57 @@ fn a_share_given_no_member_is_the_runs_alone() {
     assert_ended(&*guest, MemberEnd::Exited(0));
 }
 
+/// P6.1: a member whose working directory no share given it as it starts holds is refused
+/// typed at boot (`Workdir`, D277), before anything of the run starts: its project shared and
+/// given no member, given another path, or not shared at all. Its control, the same project
+/// given it, starts in it: `a_project_given_its_harness_is_where_it_works`.
+#[test]
+fn a_members_workdir_in_no_share_given_it_is_refused_at_boot() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-unheld-home");
+    let proj = TempDir::new("api-unheld-proj");
+    let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
+    let at = real.to_str().unwrap().to_owned();
+    build(&home, "api-unheld:1", &["files", "hello.txt"], "");
+    let started_in = |shares: Vec<ImageShare>, workdir: &str| {
+        let mut s = spec(&home, "api-unheld:1");
+        s.shares = shares;
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: Some(workdir.into()),
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        booted(&ImageShards::new(), &s).map(|_| ())
+    };
+    let share = |members| ImageShare {
+        host: real.clone(),
+        at: at.clone(),
+        read_only: false,
+        exec: true,
+        members,
+    };
+    for (shares, workdir) in [
+        (vec![share(None)], at.clone()),
+        (
+            vec![share(Some(PlugFor::Members(vec![codex()])))],
+            format!("{at}-elsewhere"),
+        ),
+        (Vec::new(), at.clone()),
+    ] {
+        match started_in(shares, &workdir) {
+            Err(ImageRefusal::Workdir(why)) => assert!(why.contains(&workdir), "{why}"),
+            other => panic!("{workdir}: {other:?}"),
+        }
+    }
+}
+
 /// A share given a member the image declares none of, or one of files alone, is refused by its
 /// run host, by what (D277), before any member starts; where the image's own `VOLUME` lies, a
 /// share may narrow whom it reaches (its harness, which the `VOLUME` is for), and is refused as
