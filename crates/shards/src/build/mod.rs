@@ -304,18 +304,48 @@ impl Progress {
         }
     }
 
-    /// `event` told to shards-api, where this build's progress goes there (D263): a frame on
-    /// stdout, which carries nothing else in such a build. A client gone ends the build with
-    /// its group (`shards_api::Builds`), so a write it refuses is let go of.
+    /// `event` told to shards-api, where this build's progress goes there (D263).
     fn tell(&self, event: shards_api::BuildEvent) {
+        self.send(|| shards_api::builds::wire::event(&event));
+    }
+
+    /// What a policy's decision said as it refused one of the build's sources, told to
+    /// shards-api, which refuses the build in its words (D263).
+    fn tell_policy(&self, said: &[String]) {
+        self.send(|| shards_api::builds::wire::policy(said));
+    }
+
+    /// The lines of the Agentfile the build's error is at, each of its excerpt's ranges, told
+    /// to shards-api (D263). Lines count from 1, as the excerpt's do: a range from 0 is none.
+    fn tell_at(&self, locations: &[shards_agentfile::instructions::Location]) {
+        let lines: Vec<std::ops::RangeInclusive<u32>> = locations
+            .iter()
+            .flatten()
+            .filter(|&&(first, _)| first > 0)
+            .map(|&(first, last)| told_line(first)..=told_line(last.max(first)))
+            .collect();
+        if !lines.is_empty() {
+            self.send(|| shards_api::builds::wire::at(&lines));
+        }
+    }
+
+    /// `frame` on stdout, where this build's progress goes to shards-api: stdout carries
+    /// nothing else in such a build. A client gone ends the build with its group
+    /// (`shards_api::Builds`), so a write it refuses is let go of.
+    fn send<E>(&self, frame: impl FnOnce() -> Result<Vec<u8>, E>) {
         if !self.events {
             return;
         }
-        if let Ok(frame) = shards_api::builds::wire::event(&event) {
+        if let Ok(frame) = frame() {
             let mut out = std::io::stdout().lock();
             let _ = out.write_all(&frame).and_then(|()| out.flush());
         }
     }
+}
+
+/// A line's number as shards-api tells it: no Agentfile has more lines than a u32 counts.
+fn told_line(line: usize) -> u32 {
+    u32::try_from(line).unwrap_or(u32::MAX)
 }
 
 /// A step's number as shards-api tells it: no build has more steps than a u32 counts.
@@ -2177,10 +2207,14 @@ fn proxy_provenance(
 }
 
 /// buildx's main: each message of a policy's refusal, before the error
-/// (policysession.DenyMessages).
-fn policy_said(messages: &[String]) {
-    for m in messages.iter().filter(|m| !m.is_empty()) {
+/// (policysession.DenyMessages); a decision's told to shards-api too (D263).
+fn policy_said(progress: &Progress, r: &policy::Refused) {
+    let said: Vec<String> = r.messages.iter().filter(|m| !m.is_empty()).cloned().collect();
+    for m in &said {
         let _ = writeln!(std::io::stderr(), "Policy: {m}");
+    }
+    if r.denied() {
+        progress.tell_policy(&said);
     }
 }
 
@@ -3212,7 +3246,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             policy_step.close();
         }
         progress.borrow().recap();
-        policy_said(&r.messages);
+        policy_said(&progress.borrow(), &r);
         format!("failed to build: {e}")
     };
     let beside_local = fetched_dockerfile.is_none();
@@ -3535,12 +3569,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
             progress.borrow().recap();
             if let Some(r) = refusal {
-                policy_said(&r.messages);
+                policy_said(&progress.borrow(), &r);
             }
             let mut out = String::new();
             for loc in &e.location {
                 out.push_str(&excerpt(&name, &text, loc));
             }
+            progress.borrow().tell_at(&e.location);
             let _ = write!(std::io::stderr(), "{out}");
             print_warnings(&e.warnings, quiet, debug, &name, &text);
             return Err(format!("failed to build: failed to solve: {message}"));
@@ -3884,6 +3919,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             for loc in &meta.locations {
                 epilogue.push_str(&excerpt(&dockerfile_name, &text, loc));
             }
+            p.tell_at(&meta.locations);
             *p.epilogue.borrow_mut() = epilogue;
             format!("failed to build: failed to solve: {stage}{why}")
         };

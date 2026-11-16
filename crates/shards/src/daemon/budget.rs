@@ -876,12 +876,19 @@ impl<D: Disk> Daemon<D> {
         // budget): never less than the least room a run goes on in, however short.
         let before = self.answers.room.seen();
         let told_at = Instant::now();
+        shards_vmm::stage!("container {id}: telling its microVM its budget's room, {told:?} bytes");
         let quiet = self.exec_waiting(
             &id,
             &spec,
             None,
             1 << 12,
             Wait::WhileRuns(pid, &self.answers.room),
+        );
+        shards_vmm::stage!(
+            "container {id}: its budget's room told after {:?}, its status {:?}, cut {}",
+            told_at.elapsed(),
+            quiet.as_ref().ok().map(|q| q.status),
+            quiet.as_ref().is_ok_and(|q| q.cut.is_some())
         );
         super::reclaim::said_if_long(
             &id,
