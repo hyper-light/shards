@@ -37735,7 +37735,7 @@ for its VM process, as D269's did (a Linux run host starts its VM binary through
 **Owed** (ROOT, real VMs): both on WHP and KVM arm64; the test guest's `plugged-volumes` mode is
 new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; run on WHP 2026-11-16, two faults found and fixed, below; xwin clippy of S3-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37895,8 +37895,8 @@ finds nothing.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
-- *Slots*: a connection holds two handles on Windows (`HELD_PER_CONNECTION`), a served
-  port's one.
+- *Slots*: a connection holds two pipes on Windows, and an event each (the WHP run, below):
+  four handles (`HELD_PER_CONNECTION`), a served port's one.
 - *The pipes' conventions* are shards_ipc's (`pipe/vsock.rs`), every party's: names of 64
   random bits (`VsockNames::fresh`); the path's file, the way down's name and the way up's,
   each with a newline, read within two names' bytes (256 characters each, CreateNamedPipeW,
@@ -38012,6 +38012,40 @@ written, not run):
   nowhere (M358); green on pipes, as the device closes a connection's way up before its way
   down's end can be read: as the connection ends (`Conn::end`), and where the guest's one
   SHUTDOWN ends both ways at once and its way down closes in the same turn (`Conn::flush`).
+
+**The first WHP run** (lane whp-verify; jupiter, Windows 10.0.26200.9974; main 3d91d54f1):
+shards_ipc `pipe::vsock::tests` (4) and shards_api's `client::borrowed_tests` and full-listener
+dial (13, 2 ignored as written) passed; of shards_vmm's `platform::windows_pipes` and
+`devices::virtio::vsock` tests one failed and four hung, and the vsock E2E hung, each found here:
+- *A call's end on the device's port* (fixed). `muxer::tests`
+  `a_host_programs_pipes_reach_its_guest_and_end_with_it`, `a_rates_pipes_are_answered_by_its_owner`
+  and `a_client_gone_with_its_way_down_alone_lets_the_next_in` hung, each in GetOverlappedResult
+  (cdb: from `Conn::end` and from drops of `Pipes`), as did `vsock::tests::a_refused_worker_leaves_the_device_whole`,
+  and so did the E2E's VM process, its `virtio-vsock` thread there. `settle` cancelled a call and waited for its end on its handle,
+  the OVERLAPPED naming no event; a handle associated with a completion port has such a call's
+  end written, and the handle set, only as its packet is taken from the port, and the device's
+  worker, the one thread that takes it, was the thread waiting. Measured
+  (docs/research/measurements/vsock-pipes-port-cancel): a cancelled read's 3 s wait timed out
+  after 4.7 s still under way, its packet in the port; with no port, or with an event named,
+  it ended in 1.3 us at most. Each call's OVERLAPPED now names a manual-reset event of its own
+  (`platform::windows_pipes::Call`, shards_ipc's `Event`), which a ReadFile or WriteFile resets
+  as it begins and its end sets, its packet still the port's; `settle` and
+  `write_all_waiting` wait on it. A connection then holds four handles on Windows, two pipes and
+  an event each (`HELD_PER_CONNECTION`), a listening pair five.
+- *A wait a packet ends with nothing ready* (fixed). `poll::tests::a_wait_wakes_for_data_that_comes_while_it_waits`
+  failed: its wait for a socket's data returned after 292.6 us with nothing ready. A packet only
+  says to look, and one came that left nothing ready. Which one is unmeasured; the sockets'
+  event is set by network events no interest waits for (FD_WRITE as a socket is associated
+  anew, WSAEventSelect), and the thread-pool wait one wait sets is left set into the next. The
+  Windows wait now goes on for the time left past a packet that leaves nothing ready, as
+  poll(2)'s does: it ends as an interest is ready, as its waker wakes it, or as its timeout
+  passes.
+- *After both* (jupiter, the fix on main f8f95832f): shards_vmm's 62 passed, the five above
+  among them; shards_ipc's 4 and shards_api's 13 (2 ignored) passed again; and every test of
+  crates/shards/tests/vsock.rs passed on WHP, none skipped (`SHARDS_REQUIRE_VMS=1`): first
+  `a_guest_that_ends_its_stream_gives_its_host_every_byte_first` (34.8 s, the host's write after
+  each end refused at once, 232), then the other five, the two restores among them. Unmeasured
+  still: `VSOCK_QUOTA` over WHP's pipes, and a connection's cost in its four handles.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
