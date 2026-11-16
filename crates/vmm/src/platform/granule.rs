@@ -300,10 +300,15 @@ mod tests {
         assert_eq!(step, Duration::from_nanos(15_625_000));
         let mut failing = [0u64, 0].into_iter();
         assert!(clock_step(|| failing.next().ok_or_else(|| io::Error::other("gone"))).is_err());
-        // This host's thread clock moves, and its step is no longer than the spin took.
+        // This host's thread clock moves, and its step is no longer than the spin took: a spin
+        // of this test's own, as the process's step is spun once a process, by whichever of
+        // its callers comes first (another test's `measure`, a hold's), and then only read.
+        let clock = crate::platform::ThreadClock::current().unwrap();
         let began = Instant::now();
-        let step = measure_clock().unwrap();
+        let step = clock_step(|| clock.read()).unwrap();
         assert!(!step.is_zero() && step <= began.elapsed(), "{step:?}");
-        assert_eq!(super::step().clock, Some(step));
+        let kept = measure_clock().unwrap();
+        assert!(!kept.is_zero(), "{kept:?}");
+        assert_eq!(super::step().clock, Some(kept));
     }
 }

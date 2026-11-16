@@ -787,6 +787,17 @@ pub mod kind {
     /// `MEMBER_STARTED` says it (`shards_abi::run::members::StartAnswer`), or the VM's own
     /// refusal in that shape where it could not give the guest the start.
     pub const MEMBER_STARTED: u8 = 110;
+    /// VM → its spawner, on its grants link (Windows), empty: its vsock listener's next pair
+    /// of pipes (D272), asked as a client has opened both ways of the last; answered after
+    /// its grants are sealed (`SEALED`), as its dials are, and only to a VM granted a vsock
+    /// path, whose first pair's names the next is made under. Answered with a `GRANTED` of
+    /// the handles in the VM of the pair's way down and way up, each a little-endian u64; or
+    /// an `ERR`.
+    pub const VSOCK_PAIR: u8 = 111;
+    /// A VM → its owner, before its run's [`DONE`]: a member that could not enter its working
+    /// directory as it started, which failed the run (D277), as its guest's
+    /// `WORKDIR_UNENTERED` says it (`shards_abi::run::members::Unentered`).
+    pub const WORKDIR_UNENTERED: u8 = 112;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -2486,9 +2497,10 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
-    await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair, readable_raw, recv,
-    recv_by, recv_judged, send, send_judged,
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, VSOCK_QUOTA,
+    VsockConn, VsockListener, VsockNames, await_any, await_streams, byte_pair, end, fill_random, hung_up,
+    input_pair, output_pair, readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_instance,
+    vsock_listen, vsock_open, vsock_pair,
 };
 
 /// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes

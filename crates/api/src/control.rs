@@ -21,6 +21,12 @@
 //!   member's harness makes to its MCP bridge ([`PendingMcp`]), a [`McpConnection`]: the
 //!   harness's bytes, as records ([`Output`], [`Got`]); the controller's to it ([`Input`]); and
 //!   its end ([`ExecControl`]).
+//! - **Its members' stdio** (D252, D238), where the run's control asked for it
+//!   (`ControlAsk::stdio`): each running member's stdout and stderr and each stdin its spec asks
+//!   for, each generation's own (D270), a lane each, as [`member_output`] and [`member_input`]
+//!   name them in [`Subscriptions`]. An output's records are its guest's capture records whole
+//!   (`shards_abi::run::managed::Record`), as a daemon's run's owner reads them; a stdin's are
+//!   the bytes its member reads.
 
 pub use shards_remote::control::exec::{Admissions, Unstarted, Unsteered};
 pub use shards_remote::control::{
@@ -30,10 +36,13 @@ pub use shards_remote::control::{
     Subscriptions, exec,
 };
 pub use shards_remote::identity::{Fingerprint, Identity};
-pub use shards_remote::managed::Reason;
+pub use shards_remote::managed::input::Scope as InputScope;
+pub use shards_remote::managed::{Admitted, Reason, RunId, Scope};
 
 use shards_abi::run::CHUNK;
-use shards_remote::managed::{Admitted, DATA_HEAD, DATAGRAM_BYTES, input};
+use shards_remote::managed::{DATA_HEAD, DATAGRAM_BYTES, input};
+
+use crate::image::wire::Channel;
 
 /// The most one TLS handshake message is on an agent-control connection: RFC 8446 §4,
 /// Handshake's uint24 length and its four-byte type/length head.
@@ -69,6 +78,40 @@ pub fn exec_admissions() -> exec::Admissions {
     }
 }
 
+/// The run an orchestrator's run's endpoint names (D252): the zero run, as its asks and its
+/// socket lanes name it there.
+const ORCHESTRATED: RunId = RunId([0; 32]);
+
+/// Member `member`'s generation `generation`'s `channel` (D270: 0 its first, each restart's one
+/// more), as an orchestrator's run's endpoint serves it where its control asked for its
+/// members' stdio (`ControlAsk::stdio`, D252): its scope, in the zero run, and what its run host
+/// admits it, an exec's output's ([`exec_admissions`]). A controller's
+/// [`Subscriptions::outputs`] names both with the cursor its lane opens at.
+pub fn member_output(member: u32, generation: u32, channel: Channel) -> (Scope, Admitted) {
+    let channel = match channel {
+        Channel::Stdout => shards_abi::run::managed::Channel::Stdout,
+        Channel::Stderr => shards_abi::run::managed::Channel::Stderr,
+    };
+    let scope = Scope {
+        run: ORCHESTRATED,
+        generation: u64::from(generation),
+        member,
+        channel,
+    };
+    (scope, exec_admissions().output)
+}
+
+/// Member `member`'s generation `generation`'s stdin, as [`member_output`] names its outputs,
+/// admitted as an exec's stdin is; for [`Subscriptions::inputs`].
+pub fn member_input(member: u32, generation: u32) -> (InputScope, Admitted) {
+    let scope = InputScope {
+        run: ORCHESTRATED,
+        generation: u64::from(generation),
+        member,
+    };
+    (scope, exec_admissions().input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,5 +135,33 @@ mod tests {
             assert_eq!(link.handshake_bytes, 16_777_219);
             assert_eq!(link.datagram_bytes, DATAGRAM_BYTES);
         }
+    }
+
+    /// D252: an orchestrator's member streams are named in the zero run its asks name, by the
+    /// member's generation, each admitted as an exec's stream of its kind is.
+    #[test]
+    fn an_orchestrated_members_streams_are_named_in_the_zero_run_by_generation() {
+        let (out, admitted) = member_output(2, 3, Channel::Stderr);
+        assert_eq!(
+            out,
+            Scope {
+                run: RunId([0; 32]),
+                generation: 3,
+                member: 2,
+                channel: shards_abi::run::managed::Channel::Stderr,
+            }
+        );
+        assert_eq!(admitted.record_bytes, exec_admissions().output.record_bytes);
+        assert_eq!(admitted.transport_bytes, exec_admissions().output.transport_bytes);
+        let (stdin, admitted) = member_input(2, 0);
+        assert_eq!(
+            stdin,
+            InputScope {
+                run: RunId([0; 32]),
+                generation: 0,
+                member: 2,
+            }
+        );
+        assert_eq!(admitted.record_bytes, INPUT_ROOM);
     }
 }

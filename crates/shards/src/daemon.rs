@@ -10276,18 +10276,42 @@ mod tests {
     }
 
     /// A process that does nothing for `secs` seconds and ends, standing in for a VM or a
-    /// network process: `sleep` on Unix; on Windows cmd's pings of the loopback, a second
-    /// apart (`ping -n`'s first answers at once).
+    /// network process: `sleep` on Unix; on Windows this test binary running `asleep` alone.
+    /// cmd's pings of the loopback stood in there before, and ping wakes its thread pool
+    /// between its echoes: a judge's looks a W* of 100 ms apart found its cycles grown, and
+    /// its pool's threads switched, in every other window, so a handoff or a join share
+    /// waiting on it went unrefused for 10 s and a network process of it unended (CI runs
+    /// 43748291795 and 43876891053, x86_64 Windows, `SHARDS_JUDGE_TRACE`).
     fn sleeper(secs: u64) -> shards_ipc::Child {
+        let secs = secs.to_string();
         #[cfg(unix)]
-        let (program, args) = (PathBuf::from("/bin/sleep"), vec![secs.to_string()]);
+        let started = shards_ipc::spawn(Path::new("/bin/sleep"), &[OsStr::new(&secs)], &[], false);
         #[cfg(windows)]
-        let (program, args) = (
-            Path::new(&std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe"),
-            vec!["/c".to_string(), format!("ping -n {} 127.0.0.1 >nul", secs + 1)],
+        let started = shards_ipc::spawn_with(
+            &std::env::current_exe().unwrap(),
+            &[
+                "daemon::tests::asleep",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ]
+            .map(OsStr::new),
+            &[],
+            false,
+            &[("SHARDS_ASLEEP", OsStr::new(&secs))],
         );
-        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        shards_ipc::spawn(&program, &args, &[], false).unwrap()
+        started.unwrap()
+    }
+
+    /// [`sleeper`]'s process on Windows: asleep for the seconds its `SHARDS_ASLEEP` says.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a process of its own for sleeper, which runs it"]
+    fn asleep() {
+        let Some(secs) = std::env::var("SHARDS_ASLEEP").ok().and_then(|s| s.parse().ok()) else {
+            return;
+        };
+        std::thread::sleep(Duration::from_secs(secs));
     }
 
     /// A starting VM progresses by more CPU than an idle microVM takes in as long (PM M357):

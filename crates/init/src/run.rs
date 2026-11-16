@@ -289,6 +289,7 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
         let declared = declared.map_or_else(|| crate::domains::read(&spec.setup), Ok);
+        let mut unentered = None;
         match declared.and_then(|(all, domains, pairs)| {
             workload.capture = crate::capture::Capture::prepare(
                 &spec.setup,
@@ -311,7 +312,7 @@ pub fn main(device: &str, template: bool) -> ! {
             {
                 return Err("a member's input is asked for where no managed output is".into());
             }
-            crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
+            crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup, &mut unentered)
         }) {
             Ok(domains) if domains.is_empty() => {}
             Ok(domains) => match crate::domains::Memory::watch() {
@@ -328,6 +329,11 @@ pub fn main(device: &str, template: bool) -> ! {
             Err(e) => {
                 // SAFETY: kill(2) of the workload, our own child: the run fails whole.
                 unsafe { libc::kill(workload.pid, libc::SIGKILL) };
+                // A member that could not enter its working directory, told typed before the
+                // words that fail the run (D277).
+                if let Some(told) = unentered {
+                    let _ = send(&conn, kind::WORKDIR_UNENTERED, &told.encode());
+                }
                 return Err(setup_failed(e));
             }
         }
