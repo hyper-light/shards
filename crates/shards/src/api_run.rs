@@ -669,77 +669,25 @@ fn give_members(
     Ok(())
 }
 
-/// Each member's working directory refused where no mount given it as it starts holds it
-/// (D277), `mounts` as [`give_members`] told them: the member could not enter it, as the
-/// image's own tree holds no project of its run's (D240) and a plug lands after it starts
-/// (D235).
-fn workdirs_held(
-    request: &wire::Request,
+/// What the orchestrator is told of a member its guest could not start in its working
+/// directory (D277; init's `entering its working directory`), `told` as its guest said it:
+/// `Workdir`, naming the member as the image declares it, the directory and the errno.
+fn workdir_refused(
     members: &[wire::MemberInfo],
-    mounts: &[(String, Vec<u8>)],
-    volumes: &[crate::agentfile::AgentVolume],
-) -> Result<(), No> {
-    for m in &request.members {
-        let Some(w) = &m.workdir else { continue };
-        let info = members
-            .iter()
-            .find(|i| i.kind == m.kind && i.name == m.name)
-            .ok_or_else(|| {
-                No(
-                    Cause::Image,
-                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
-                )
-            })?;
-        let held = mounts
-            .iter()
-            .any(|(dest, entry)| holds(dest, w) && given_at_start(entry, dest, info, volumes));
-        if !held {
-            return Err(No(
-                Cause::Workdir,
-                format!(
-                    "{:?} {}: {w}: no share given it as it starts holds it; share its project there and give it the member (ImageShare::members)",
-                    m.kind, m.name
-                ),
-            ));
-        }
+    told: &shards_abi::run::members::Unentered,
+) -> wire::Refused {
+    let who = members.iter().find(|m| m.index == told.member).map_or_else(
+        || format!("member {}", told.member),
+        |m| format!("{:?} {}", m.kind, m.name),
+    );
+    wire::Refused {
+        cause: Cause::Workdir,
+        why: format!(
+            "{who}: {}: errno {}: its guest could not enter it as it started",
+            String::from_utf8_lossy(&told.workdir),
+            told.errno
+        ),
     }
-    Ok(())
-}
-
-/// Whether `path` is `top` or lies beneath it, each absolute and plain.
-fn holds(top: &str, path: &str) -> bool {
-    path.strip_prefix(top)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || top.ends_with('/'))
-}
-
-/// Whether the mount whose setup entry is `entry`, at `dest`, is given member `info` as it
-/// starts, as init's `given_share` reads it (domains.rs): a directory its members are given
-/// (`domains`), to those it names alone where it names any (`member=N`, D277), and where the
-/// image's `VOLUME` lies there, only as its Agentfile gives it (D109).
-fn given_at_start(
-    entry: &[u8],
-    dest: &str,
-    info: &wire::MemberInfo,
-    volumes: &[crate::agentfile::AgentVolume],
-) -> bool {
-    let mut parts = entry.splitn(4, |&b| b == 0);
-    let (Some(_), Some(_), Some(flags), Some(only)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    let flags: Vec<&[u8]> = flags.split(|&b| b == b',').collect();
-    if !only.is_empty() || !flags.contains(&&b"domains"[..]) {
-        return false;
-    }
-    let index = info.index.to_string();
-    let named: Vec<&[u8]> = flags.iter().filter_map(|f| f.strip_prefix(b"member=")).collect();
-    let by_name = named.is_empty() || named.contains(&index.as_bytes());
-    let by_volume = volumes
-        .iter()
-        .find(|v| v.paths.iter().any(|p| shards_cmdline::mounts::clean(p) == dest))
-        .is_none_or(|v| volume_gives(v, info.kind, &info.name));
-    by_name && by_volume
 }
 
 /// The members `request` asks `asked` of, by their declared index, ascending: each one of the
@@ -3185,10 +3133,10 @@ mod hosted {
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let shaped = shape(request, &home, &mut checking)?;
+        let (shaped, layering) = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
-        launch_and_serve(answers, input, &home, plan, checking)
+        launch_and_serve(answers, input, &home, plan, checking, layering)
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
@@ -3340,7 +3288,13 @@ mod hosted {
         Ok(Secured { filters, domains })
     }
 
-    fn shape(request: &wire::Request, home: &Path, checking: &mut Checking) -> Result<Shaped, No> {
+    /// Its microVM, shaped of `request` ([`Shaped`]); and its writable layer, its making begun
+    /// beside the rest of its start once its way is known ([`Layering`]).
+    fn shape(
+        request: &wire::Request,
+        home: &Path,
+        checking: &mut Checking,
+    ) -> Result<(Shaped, Layering), No> {
         let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
@@ -3470,12 +3424,18 @@ mod hosted {
         };
         let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
         super::step(format_args!("its microVM shaped"));
+        let template = microvm.template.as_ref().map(|t| t.dir.as_path());
+        let layering = Layering::begin(
+            home,
+            super::way_of(template, shards_vmm::snapshot::exists),
+            prepared.layer,
+        );
         // Before its run asks, where its host is warm (D253): never on a warm run's way.
         let secured = secure(agentfile.as_ref(), &run, &microvm);
         super::step(format_args!(
             "its security made: its guest's kernel read, its filters compiled"
         ));
-        Ok(Shaped {
+        let shaped = Shaped {
             run,
             prepared,
             agentfile,
@@ -3493,7 +3453,8 @@ mod hosted {
             server,
             microvm,
             secured,
-        })
+        };
+        Ok((shaped, layering))
     }
 
     /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
@@ -3556,7 +3517,6 @@ mod hosted {
             .map(|a| a.volumes.as_slice())
             .unwrap_or_default();
         super::give_members(&mut opened.mounts, &given, volumes)?;
-        super::workdirs_held(request, &members, &opened.mounts, volumes)?;
         let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
             .map_err(no(Cause::Request))?;
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
@@ -3915,6 +3875,104 @@ mod hosted {
         }
     }
 
+    /// Its writable layer's file (D190), made on a thread of its own from the moment its
+    /// microVM is shaped, beside the rest of its start up to its VM's launch, which needs
+    /// nothing of it, so that its making, file system work alone, is off that way: for the way
+    /// its microVM was then to start ([`super::way_of`]), as a launch that way makes one
+    /// ([`layer_for`]). Its first launch takes it where that launch is of the same way. A
+    /// launch of another way (its template saved or removed meanwhile, or its restore failed)
+    /// makes its own, as one does where no thread could be started; the thread of one not
+    /// taken is let go of, and its file goes as that thread ends, its result dropped with it
+    /// (std's thread `Packet`), or, where its host ends first, by its orchestrator's hand
+    /// (D253's `clear_layers`).
+    enum Layering {
+        /// On its thread, made for a start of `way`.
+        Making {
+            way: super::Way,
+            thread: std::thread::JoinHandle<Result<Option<crate::daemon::LayerFile>, String>>,
+        },
+        /// None to take: taken, let go of, or no thread started for it.
+        Gone,
+    }
+
+    impl Layering {
+        /// Its making begun on a thread of its own, for a start of way `way` in `home` whose
+        /// layer holds `holds` bytes where it boots; [`Gone`](Self::Gone) where no thread could
+        /// be started.
+        fn begin(home: &Path, way: super::Way, holds: u64) -> Layering {
+            let (home, making) = (home.to_path_buf(), way.clone());
+            let thread = std::thread::Builder::new()
+                .name("api-run layer".into())
+                .spawn(move || {
+                    let began = Instant::now();
+                    let layer = layer_for(&home, &making, holds);
+                    if let Ok(made) = &layer {
+                        super::step(format_args!(
+                            "its writable layer {} on its own thread, in {} us",
+                            layer_said(made.as_ref()),
+                            began.elapsed().as_micros()
+                        ));
+                    }
+                    layer
+                });
+            match thread {
+                Ok(thread) => Layering::Making { way, thread },
+                Err(_) => Layering::Gone,
+            }
+        }
+
+        /// Its layer for a launch of way `way`, taken once: what its thread made, waited for,
+        /// where it was made for that way; else none, its thread let go of, for its launch to
+        /// make its own.
+        fn taken(&mut self, way: &super::Way) -> Option<Result<Option<crate::daemon::LayerFile>, String>> {
+            match std::mem::replace(self, Layering::Gone) {
+                Layering::Making {
+                    way: made_for,
+                    thread,
+                } if made_for == *way => Some(
+                    thread
+                        .join()
+                        .unwrap_or_else(|_| Err("its writable layer: its making ended unanswered".into())),
+                ),
+                _ => None,
+            }
+        }
+    }
+
+    /// The writable layer's file a start of way `way` is given (D190): made empty, holding
+    /// `holds` bytes, for a boot or a save; for a restore, a clone of its template's where its
+    /// template keeps one, else none.
+    fn layer_for(
+        home: &Path,
+        way: &super::Way,
+        holds: u64,
+    ) -> Result<Option<crate::daemon::LayerFile>, String> {
+        let dir = match way {
+            super::Way::Boot | super::Way::Save { .. } => {
+                return crate::daemon::LayerFile::made(home, holds).map(Some);
+            }
+            super::Way::Restore { dir } => dir,
+        };
+        let layered = shards_vmm::snapshot::has_layer(dir)
+            .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
+            .unwrap_or(false);
+        if !layered {
+            return Ok(None);
+        }
+        let generation = shards_vmm::snapshot::generation(dir)?;
+        crate::daemon::LayerFile::for_restore(home, &generation).map(Some)
+    }
+
+    /// What a writable layer is, as a start's steps say it: a clone of its template's, made,
+    /// or none.
+    fn layer_said(layer: Option<&crate::daemon::LayerFile>) -> &'static str {
+        match layer {
+            Some(l) if l.cloned_of().is_some() => "cloned",
+            Some(_) => "made",
+            None => "none",
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
@@ -3922,11 +3980,13 @@ mod hosted {
     /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
     /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
     /// ready one's, or the one's whose start failed last. Its VM process's binary is
-    /// `checking`'s, checked beside its run's making.
+    /// `checking`'s, checked beside its run's making, and its writable layer `layering`'s, made
+    /// beside it.
     fn launch(
         home: &Path,
         plan: &Launch<'_>,
         checking: Checking,
+        layering: Layering,
         reported: &mut Option<Vec<u8>>,
     ) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
@@ -3964,6 +4024,7 @@ mod hosted {
                 plan,
                 vm: &vm,
                 ends: &ends,
+                layering,
                 #[cfg(windows)]
                 job: &job,
                 reported: None,
@@ -4004,6 +4065,8 @@ mod hosted {
         plan: &'a Launch<'a>,
         vm: &'a Path,
         ends: &'a Ends,
+        /// Its writable layer, made beside its run's making for its first launch's way.
+        layering: Layering,
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
         /// What its last VM wrote of its GPU report (D233), read once that VM was ready or
@@ -4064,19 +4127,23 @@ mod hosted {
                 _ => None,
             };
             super::step(format_args!("its network decided"));
-            // Its writable layer (D190): made empty of the run's size for a boot, a clone of its
-            // template's for a restore where its template keeps one.
-            let (mut args, layer) = match way {
+            // Its writable layer (D190): the one made beside its run's making for this way
+            // (`Layering`), else made now.
+            let (layer, beside) = match self.layering.taken(way) {
+                Some(made) => (made?, ", taken from its thread"),
+                None => (layer_for(self.home, way, plan.prepared.layer)?, ""),
+            };
+            super::step(format_args!(
+                "its writable layer {}{beside}",
+                layer_said(layer.as_ref())
+            ));
+            let mut args = match way {
                 super::Way::Boot | super::Way::Save { .. } => {
                     let save = match way {
                         super::Way::Save { fresh, .. } => Some(fresh.as_path()),
                         _ => None,
                     };
-                    let layer = crate::daemon::LayerFile::made(self.home, plan.prepared.layer)?;
-                    (
-                        crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK),
-                        Some(layer),
-                    )
+                    crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK)
                 }
                 super::Way::Restore { dir } => {
                     // Its backing files as the VM saving its template recorded them: resolved.
@@ -4092,29 +4159,9 @@ mod hosted {
                         server: server.as_deref(),
                         emulator: emulator.as_deref(),
                     };
-                    let layered = shards_vmm::snapshot::has_layer(dir)
-                        .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
-                        .unwrap_or(false);
-                    let layer = if layered {
-                        let generation = shards_vmm::snapshot::generation(dir)?;
-                        Some(crate::daemon::LayerFile::for_restore(self.home, &generation)?)
-                    } else {
-                        None
-                    };
-                    (
-                        crate::run::restore_args(dir, &backings, cfg.gpu, crate::launch::LINK),
-                        layer,
-                    )
+                    crate::run::restore_args(dir, &backings, cfg.gpu, crate::launch::LINK)
                 }
             };
-            super::step(format_args!(
-                "its writable layer {}",
-                match (way, &layer) {
-                    (super::Way::Restore { .. }, Some(l)) if l.cloned_of().is_some() => "cloned",
-                    (_, Some(_)) => "made",
-                    (_, None) => "none",
-                }
-            ));
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
             // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
@@ -4544,6 +4591,21 @@ mod hosted {
         generations.started.insert(answer.member, answer);
         drop(generations);
         live.generations_moved.notify_all();
+    }
+
+    /// A member its guest could not start in its working directory (D277), refused typed to its
+    /// orchestrator as its members start (`REFUSED`, `Cause::Workdir`), before the run's end its
+    /// guest's words fail; one told malformed said on this host's stderr alone.
+    fn unentered(live: &Live<'_>, payload: &[u8]) {
+        let Some(told) = protocol::members::Unentered::decode(payload) else {
+            super::say(format_args!(
+                "a working directory its guest could not enter, told malformed"
+            ));
+            return;
+        };
+        if let Ok(refused) = super::workdir_refused(live.members, &told).encode() {
+            let _ = live.answers.send(wire::to_client::REFUSED, &[&refused]);
+        }
     }
 
     /// Starts member `ask.member` again (D270 slice 3b): held for its next generation, its
@@ -5465,6 +5527,9 @@ mod hosted {
         /// A plug/unplug's ownership turn, held through device and guest completion;
         /// replies never need this lock. The mounted registry stays readable meanwhile.
         plug_turn: Mutex<()>,
+        /// Each volume of its home it plugged, by name, held for its life (D281): a clearing
+        /// of one is refused while it runs.
+        volumes_held: Mutex<HashMap<String, shards_image::store::Locked>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -6263,13 +6328,14 @@ mod hosted {
         home: &Path,
         plan: Plan,
         checking: Checking,
+        layering: Layering,
     ) -> Result<(), No> {
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
         let mut reported = None;
-        let launched = launch(home, &plan.launch(), checking, &mut reported);
+        let launched = launch(home, &plan.launch(), checking, layering, &mut reported);
         // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
         // VM did not start.
         if let Some(frame) = reported
@@ -6311,8 +6377,8 @@ mod hosted {
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let mut shaped = shape(exemplar, &home, &mut checking)?;
-        let mut launched = match launch(&home, &shaped.launch(), checking, &mut None) {
+        let (mut shaped, layering) = shape(exemplar, &home, &mut checking)?;
+        let mut launched = match launch(&home, &shaped.launch(), checking, layering, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -6591,6 +6657,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -7270,6 +7337,8 @@ mod hosted {
                 answered(&live.pause_asks, &m.payload);
             } else if m.kind == kind::MEMBER_STARTED {
                 started_told(live, &m.payload);
+            } else if m.kind == kind::WORKDIR_UNENTERED {
+                unentered(live, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -8504,17 +8573,27 @@ mod hosted {
             wire::PlugFrom::Volume(name) => {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
-                let _held = crate::volumes::lock();
-                let (volume, _) = store
-                    .create(
-                        name,
-                        &std::collections::BTreeMap::new(),
-                        &std::collections::BTreeMap::new(),
-                        "",
-                    )
-                    .map_err(|e| (R::Volume, e))?;
-                crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
-                    .map_err(|e| (R::Volume, e))?;
+                // Held before it is made or found, so that no clearing removes it under the
+                // run, and kept for the run's life once taken (D281); refused at once while a
+                // clearing holds it, never waited for.
+                let hold = store
+                    .hold(name)
+                    .map_err(|e| (R::Volume, e))?
+                    .ok_or_else(|| (R::Volume, format!("volume {name} is being cleared")))?;
+                {
+                    let _held = crate::volumes::lock();
+                    let (volume, _) = store
+                        .create(
+                            name,
+                            &std::collections::BTreeMap::new(),
+                            &std::collections::BTreeMap::new(),
+                            "",
+                        )
+                        .map_err(|e| (R::Volume, e))?;
+                    crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
+                        .map_err(|e| (R::Volume, e))?;
+                }
+                lock(&live.volumes_held).entry(name.clone()).or_insert(hold);
                 Ok(store.data(name))
             }
         }
@@ -8847,6 +8926,66 @@ mod hosted {
             assert_eq!(none.taken(), (crate::helpers::vm(), false));
         }
 
+        /// Do: begin a writable layer's making beside a run's, for a boot and for a save, and
+        /// take each for a launch of its way, then again; begin one for a restore of a template
+        /// that holds no snapshot and take it; take one never begun. Expect: each made on its
+        /// thread as its launch makes one: an ext4 file system in the home's `layers`, its file
+        /// the length of a launch's own of that size, gone with its handle; the restore's none;
+        /// each taken once; one never begun none, for its launch to make its own.
+        #[test]
+        fn a_layer_made_beside_a_runs_making_is_its_launchs_own() {
+            let home = shards_testdir::TempDir::new("api-layer").unwrap();
+            let holds = 64 << 20;
+            let own = crate::daemon::LayerFile::made(home.path(), holds).unwrap();
+            let own_len = std::fs::metadata(&own.args()[1]).unwrap().len();
+            drop(own);
+            let template = home.path().join("t");
+            let save = super::super::Way::Save {
+                fresh: super::super::fresh_of(&template),
+                dir: template.clone(),
+            };
+            for way in [super::super::Way::Boot, save] {
+                let mut layering = Layering::begin(home.path(), way.clone(), holds);
+                let layer = layering.taken(&way).unwrap().unwrap().unwrap();
+                assert_eq!(layer_said(Some(&layer)), "made");
+                let path = PathBuf::from(&layer.args()[1]);
+                assert_eq!(
+                    path.parent(),
+                    Some(home.path().join(shards_ipc::LAYERS).as_path())
+                );
+                assert_eq!(std::fs::metadata(&path).unwrap().len(), own_len);
+                let mut magic = [0u8; 2];
+                let file = std::fs::File::open(&path).unwrap();
+                shards_vmm::platform::read_exact_at(&file, &mut magic, 1024 + 0x38).unwrap();
+                assert_eq!(u16::from_le_bytes(magic), 0xEF53);
+                assert!(layering.taken(&way).is_none());
+                drop(layer);
+                assert!(!path.exists());
+            }
+            let restore = super::super::Way::Restore { dir: template };
+            let mut layering = Layering::begin(home.path(), restore.clone(), holds);
+            assert!(layering.taken(&restore).unwrap().unwrap().is_none());
+            assert!(Layering::Gone.taken(&super::super::Way::Boot).is_none());
+        }
+
+        /// Do: take a layer made beside a run's making for a boot for a launch that saves, then
+        /// for one that boots. Expect: none each time: a launch of another way makes its own, and
+        /// the one let go of is no later launch's.
+        #[test]
+        fn a_layer_made_for_another_way_is_no_launchs() {
+            let mut layering = Layering::Making {
+                way: super::super::Way::Boot,
+                thread: std::thread::spawn(|| Ok(None)),
+            };
+            let template = PathBuf::from("t");
+            let save = super::super::Way::Save {
+                fresh: super::super::fresh_of(&template),
+                dir: template,
+            };
+            assert!(layering.taken(&save).is_none());
+            assert!(layering.taken(&super::super::Way::Boot).is_none());
+        }
+
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
         /// with no bound of its own waits: what it answered, or why not.
         macro_rules! answered {
@@ -8888,6 +9027,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
@@ -9407,7 +9547,9 @@ mod hosted {
         /// directory as named; a relative one refused (`Request`); the volume made, its data
         /// directory in the home, and the same one taken again; a bad name and a scoped
         /// volume refused (`Volume`); each root granted once, after its host's, and one of
-        /// init's own refused.
+        /// init's own refused. D281: the volume plugged held by the run while it lives, no
+        /// clearing taking it alone, and let go of with it; the scoped one it was refused, not
+        /// held.
         #[test]
         fn a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots() {
             use wire::PlugRefusal as R;
@@ -9451,6 +9593,10 @@ mod hosted {
                 source_dir(&live, &wire::PlugFrom::Volume("scoped".into()), at),
                 Err((R::Volume, _))
             ));
+            assert!(store.alone("sessions").unwrap().is_none());
+            assert!(store.alone("scoped").unwrap().is_some());
+            drop(live);
+            assert!(store.alone("sessions").unwrap().is_some());
             let own = vec![b"plug-root=/Users".to_vec()];
             assert_eq!(
                 granted_roots(own.clone(), &["/session".into(), "/Users".into()]).unwrap(),
@@ -11469,83 +11615,29 @@ mod tests {
         }
     }
 
-    /// A member's working directory stands only where a mount given it as it starts holds it
-    /// (D277), as init gives mounts (`given_share`): a share given it by name, at or beneath
-    /// its path, or the image's `VOLUME` its Agentfile gives it there; refused `Workdir` at a
-    /// share given no member or another, a file shared alone, the volume's where its `FOR` names
-    /// another, a path that only begins with a share's name, and where nothing is mounted.
+    /// D277: a member its guest could not start in its working directory is refused its
+    /// orchestrator typed `Workdir`, naming the member as the image declares it, the directory
+    /// and the errno, as its guest told them; one of an index the image declares not, by it.
     #[test]
-    fn a_members_workdir_stands_only_in_a_mount_given_it() {
-        use shards_agentfile::agentfile::{Scope, TargetKind};
-        let entry = |dest: &str, flags: &str, only: &str| {
-            (
-                dest.to_string(),
-                format!("volume=shards0\0{dest}\0{flags}\0{only}").into_bytes(),
-            )
+    fn a_member_its_guest_could_not_start_in_its_workdir_is_refused_typed() {
+        let told = |member| shards_abi::run::members::Unentered {
+            member,
+            errno: 2,
+            workdir: b"/Users/ada/proj".to_vec(),
         };
-        let at = |workdir: &str| {
-            let mut s = stage(wire::MemberKind::Harness, "codex");
-            s.workdir = Some(workdir.into());
-            request(vec![s])
-        };
-        let for_whom = |names: &[&str]| crate::agentfile::AgentVolume {
-            name: None,
-            paths: vec!["/work/".into()],
-            scoped: true,
-            scope: Scope {
-                kind: Some(TargetKind::Harness),
-                names: names.iter().map(|n| n.as_bytes().to_vec()).collect(),
-            },
-        };
-        let given = [entry("/Users/ada/proj", "domains,member=1", "")];
-        for workdir in ["/Users/ada/proj", "/Users/ada/proj/sub"] {
-            assert!(
-                workdirs_held(&at(workdir), &members(), &given, &[]).is_ok(),
-                "{workdir}"
-            );
-        }
-        let volume = [entry("/work", "domains,own,copy", "")];
-        assert!(workdirs_held(&at("/work/src"), &members(), &volume, &[for_whom(&["codex"])]).is_ok());
-        assert!(workdirs_held(&at("/work"), &members(), &volume, &[]).is_ok());
-        for (mounts, workdir, volumes) in [
-            (&given[..], "/Users/ada/project", Vec::new()),
-            (
-                &[entry("/Users/ada/proj", "", "")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (
-                &[entry("/Users/ada/proj", "domains,member=0", "")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (
-                &[entry("/Users/ada", "domains,member=1", "proj")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (&volume[..], "/work", vec![for_whom(&["claude"])]),
-            (&[][..], "/Users/ada/proj", Vec::new()),
-        ] {
-            assert!(
-                matches!(
-                    workdirs_held(&at(workdir), &members(), mounts, &volumes),
-                    Err(No(Cause::Workdir, why)) if why.contains(workdir) && why.contains("codex")
-                ),
-                "{workdir} {mounts:?}"
-            );
-        }
-        // None given, none held; and a member the image does not declare is refused as such.
-        let mut none = stage(wire::MemberKind::Harness, "codex");
-        none.workdir = None;
-        assert!(workdirs_held(&request(vec![none]), &members(), &[], &[]).is_ok());
-        let mut stranger = stage(wire::MemberKind::Harness, "nobody");
-        stranger.workdir = Some("/w".into());
-        assert!(matches!(
-            workdirs_held(&request(vec![stranger]), &members(), &[], &[]),
-            Err(No(Cause::Image, _))
-        ));
-        assert!(holds("/", "/anything") && holds("/a", "/a") && !holds("/a", "/ab"));
+        let refused = workdir_refused(&members(), &told(1));
+        assert_eq!(refused.cause, Cause::Workdir);
+        assert_eq!(
+            refused.why,
+            "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started"
+        );
+        let stranger = workdir_refused(&members(), &told(9));
+        assert_eq!(stranger.cause, Cause::Workdir);
+        assert!(
+            stranger.why.starts_with("member 9: /Users/ada/proj: errno 2"),
+            "{}",
+            stranger.why
+        );
     }
 
     /// A member's run-time arguments (D256) are staged after its other entries, one

@@ -60,7 +60,9 @@ use windows_sys::Win32::System::Threading::{
 use crate::{Judge, MAX_FDS, MAX_PAYLOAD, Window};
 
 mod poll;
+mod vsock;
 pub use poll::{ExitWatch, Poller};
+pub use vsock::{VSOCK_QUOTA, VsockNames, vsock_instance, vsock_listen, vsock_open, vsock_pair};
 
 /// The longest message a [`Stream`] carries ([`send`]): its header, the most payload a
 /// message may carry, and a value for each of the most handles one gives. Its pairs' window
@@ -874,6 +876,22 @@ impl Pipe {
     /// writers have gone and it holds none.
     pub fn held(&self) -> io::Result<usize> {
         Ok(available(self.raw(), None)?.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)))
+    }
+
+    /// [`held`](Pipe::held), its writers' end told apart: `None` once they have gone and it
+    /// holds none, which a read then says as its end.
+    pub fn peek(&self) -> io::Result<Option<usize>> {
+        Ok(available(self.raw(), None)?.map(|n| usize::try_from(n).unwrap_or(usize::MAX)))
+    }
+
+    /// A read into `buf`, as `Read` reads, by `deadline`: `TimedOut` where it passed with
+    /// nothing read, the read cancelled; with none, as long as its writers write nothing.
+    pub fn read_by(&self, buf: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
+        match self.read_within(buf, &[], deadline) {
+            Called::Done(done) => done,
+            Called::Late => Err(io::ErrorKind::TimedOut.into()),
+            Called::Cancelled => Err(io::ErrorKind::Interrupted.into()),
+        }
     }
 
     /// All of `buf` written, or the error that cut it short; waiting no longer than `cancels`
