@@ -31194,7 +31194,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins built, step 8's third slice, on a kiln branch for ROOT to land; the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins built, step 8's third slice, on kiln main, its build and tests ROOT's; the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32173,8 +32173,8 @@ record docs/research/s33-veil-creds/STEP8.md).
 - *Owed.* Step 8's third slice: kiln's `RunLessor` answering `capture`, `refresh` and `revoked` from its broker, and
   Hex forwarding the three. ROOT: the real sign-ins (below).
 
-**Built: step 8's third slice, kiln's run lessor answering a run's sign-ins from its broker** (kiln branch
-`p/inject-signin-kiln` 4672dbd14 on kiln main c3188458e, ROOT's to land: `crates/kiln/src/secrets/lessor.rs`,
+**Built: step 8's third slice, kiln's run lessor answering a run's sign-ins from its broker** (kiln main
+bd2565641, its commits 4672dbd14 and 07b0962b9: `crates/kiln/src/secrets/lessor.rs`,
 `broker.rs`, `signin.rs`; kiln plan 01a1d2b88be57304b972761e2a5c6781 step 8; research f47, f53, f55, f63, f64; record
 docs/research/s33-veil-creds/STEP8.md). Hex already forwarded the three asks to its orchestrator's lessor
 (`hex_api::lease::Lessor`, Hex's C8, vendored in kiln at Hex e19198bd); kiln's took their defaults, `Unanswered`,
@@ -32214,7 +32214,8 @@ a 503 in the guest. No Shards code changes in this slice.
   response read within 4 MiB, the window the run's injector reads the same provider's responses within
   (`tcp::TO_GUEST`, question 3). The request's 30 s timeout is kiln-http's default (`DEFAULT_TIMEOUT`), which is
   Claude Code's own refresh's (`timeout:30000`, offset 242103577). No learned value.
-- *Tests* (kiln `secrets::`, light, no VM; their runs in STEP8.md). Through Hex's seam, over `SimSecrets` and
+- *Tests* (kiln `secrets::`, light, no VM; written and not run: the person's rule of 2026-11-16 holds lanes to no
+  builds or tests, and ROOT builds and runs them). Through Hex's seam, over `SimSecrets` and
   kiln's store, against one local stand-in for both token endpoints (`ci::integrations::endpoint`'s override):
   a capture kept and its access token leased by reference; each provider asked exactly its CLI's body (Claude
   Code's with the captured scope); the answer holding placeholders and no token, its five or three fields alone;
@@ -32224,9 +32225,9 @@ a 503 in the guest. No Shards code changes in this slice.
 - *Owed.* kiln granting a run's sign-ins: its sandbox carrying them to `ShardsImage::sign_ins` (name and CLI from
   one value), and staging a later run's CLI file with the captured placeholders, inert ID token and scope. The
   broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each refresh, which
-  nothing passes on, as the network process writes the sign-in's own. kiln's gate (Linux tests; clippy on Linux,
-  macOS and Windows). ROOT: the real sign-ins and refreshes (step 10), and whether platform.claude.com answers a
-  refresh asking the captured scope as it answers Claude Code's.
+  nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy (`-D warnings`)
+  and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether platform.claude.com answers
+  a refresh asking the captured scope as it answers Claude Code's.
 
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
