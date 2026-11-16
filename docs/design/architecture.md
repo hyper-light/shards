@@ -31194,7 +31194,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31506,9 +31506,9 @@ VM failing. On the orchestrator's side
   next frame read whole (red before the wipe and with it removed, STEP4.md).
 - *Owed (ROOT).* A real run with a credential grant through `shards api-run` (KVM x86_64, HVF,
   WHP): the lease asked on first use and released at each end, with the run host's diagnostics
-  saying each and no value. That needs the injector (step 3), the first caller of
-  `Leases::ask`; until it lands, nothing in a run asks. Hex's vendored shards-api takes
-  `ImageSpec::lessor` (step 6). The daemon's runs have no credential grants: their lease relay
+  saying each and no value. The injector (step 3) asks it now (`Leases::ask`), and Hex's image
+  class gives each granted run its `ImageSpec::lessor` (step 6, on Hex's main). The daemon's
+  runs have no credential grants: their lease relay
   and a move's release there are owed by the first change that gives a daemon's run grants.
   No step brings them: not this plan's ten, nor the 39 of kiln plan
   01a1cd8e862e7169a074db3d5fa33f3d, whose harness runs are all an orchestrator's, through
@@ -31571,8 +31571,10 @@ Owed: none beyond CI on main.
   placeholders; two refreshes at once make one call to the provider. Every broker test runs over
   `SimSecrets` and `KilnSecrets` alike, each guard removed in turn failing its test. clippy
   `-D warnings` clean.
-- *Owed.* Hex answering a run's lease asks from the broker, and telling it of a move (step 6);
-  Shards' run host asking them (step 4). ROOT's real runs (step 10).
+- *Owed.* ROOT's real runs (step 10). Built since: Shards' run host asking (step 4), and Hex
+  answering a run's asks from the broker through kiln's lessors (step 6). A move told to the
+  broker (`Broker::moved`) has no caller: an orchestrator's run, every run Hex boots, moves
+  nowhere (step 4).
 
 **Built: step 3's first slice, each grant's placeholder** (kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 3; research f27, f32, f33, f60; record
@@ -31642,8 +31644,9 @@ stands (above, "Who"), so it must know which placeholder stands for which creden
   bad ones refused. `shards_net`: the grants' codec round-trips them and refuses one past two
   bytes; the network process takes a run's grants with their placeholders checked again. Each
   of 9 guards removed in turn fails its test (`scripts/step3-reds.py`).
-- *Owed.* Hex fills each grant's placeholder as it stages the credential into its member (step
-  6), with its vendored shards-api at version 22.
+- *Built since.* Hex carries each grant's placeholder (Hex 1d60abada, its vendored Shards at
+  image channel 23), and kiln's sandbox passes it to Hex (kiln b2fc6cebb). No kiln harness
+  launch grants a credential yet (step 6, below).
 
 **Built: step 3's second slice, the injector** (`crates/net/src/inject.rs`, its handoff in
 `tcp.rs` and `lib.rs`; research f16, f20, f21, f26, f27, f32–f34, f42–f44, f56, f65; record
@@ -31871,7 +31874,7 @@ docs/research/s33-veil-creds/STEP3.md).
 **Built: step 6, Hex fills a harness VM's credential grants and answers its leases from kiln's broker** (kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 6; docs/research/s33-veil-creds/STEP6.md). Hex boots harness images through
 shards-api (D231) and is their orchestrator; kiln is Hex's.
-- *Hex* (a local branch given to the Hex lead, on its main cf535152 at Shards 740fa372; nothing pushed; Hex's
+- *Hex* (built on its main cf535152 at Shards 740fa372, merged to Hex's main by its lead, 29284333; Hex's
   docs/design/credential-grants.md): a box's credential grants ride its image class's spec (`ShardsImage::credentials`,
   each `{member, reference, toward}`), its durable record and its node's wire, and `inspect` shows every one
   (`BoxInfo::credentials`). One check (`check_credentials`) refuses, typed, a grant that could not be filled in exactly
@@ -31893,9 +31896,10 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   channel of its own (256 random bits in a key fingerprint's form, which names no other run), each lease given back
   alone (`Broker::release_lease`), the run's end revoking the rest (`RunLessor::ended`).
 - *Since 740fa372:* step 3's injector moved the grant to `shards_dns::credential` and gave it its member's
-  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it carries each grant's
-  placeholder (kiln mints it where it stages the credential into its member) and drops the one-credential-per-host
-  rule, which Shards holds by placeholder (`Refused::Shared`).
+  `placeholder`, filling a value only where that placeholder stands. Hex's re-vendor past it (1d60abada, Shards
+  db4168345) carries each grant's placeholder, which its launch's maker mints (kiln), and dropped the
+  one-credential-per-host rule, which Shards holds by placeholder (`Refused::Shared`; Hex's
+  `w33_two_credentials_toward_one_host_are_taken_each_by_its_own_placeholder`).
 - *Literals.* A reference's grammar is the store's (1 to 512 of A-Za-z0-9/_+=.@-, Secrets Manager's, as kiln-seams'
   `check_name` keeps it); a life of none is the u64 of nanoseconds this entry's channel carries at its most; 256 random
   bits are a key fingerprint's form (D238). No learned value enters this step.
@@ -31906,10 +31910,17 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   stops, an ungranted host passed bare, a grant beyond its egress or on a node with no lessors refused before any
   record, the wire both ways, the lease contract), the record's and the release's removal each failing its test, and
   clippy clean for Linux, macOS and Windows.
-- *Owed.* The Hex lead's merge and re-vendor (past 740fa372: placeholders); kiln's implementation of Hex's lease seam
-  over `secrets::lessor` once kiln vendors that Hex, and its sandbox's grants carried to `ShardsImage::credentials`;
-  a remote node's lessors (a node reached over its wire has none, and refuses grants `Unconfigured`); ROOT's real runs
-  (step 10).
+- *Built since* (each on its repository's main, read 2026-11-16). Hex: its image runtime takes its orchestrator's
+  lessors (`ImageRuntime::leasing`, be3935f2b); a node reached over its wire leases a box's credentials from the
+  connection that created it (credential-grants.md C7, 9b208bff1); a run's sign-in asks go to its lessor (C8,
+  9e83d4cff). kiln: its lessors are Hex's lease seam (80f1270b6, red 69383e5bd), held to Hex's lease contract over
+  `SimSecrets` and kiln's store alike (`cp_t8_3_kilns_lessors_pass_hexs_lease_contract`); its server gives them to its
+  own runner, whose sandbox carries each launch's credential grants, by reference with their placeholders, to
+  `ShardsImage::credentials` (458a8df23, b2fc6cebb).
+- *Owed.* No kiln harness launch grants a credential yet: `sandbox::isolated::launch_of` gives `credentials:
+  Vec::new()`, its harness signing in natively, its tokens in the microVM, until step 8's capture reaches kiln; kiln's
+  sandbox gives Hex no sign-in grant (`ShardsImage::sign_ins`); a kiln runner other than the server's own holds no
+  broker and refuses a granted launch (`hexvm::NO_BROKER`). ROOT's real runs (step 10).
 
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
@@ -31919,9 +31930,10 @@ checks, with no vendor CLI run. Every build reaches the run's CA, through a vari
 `SSL_CERT_DIR` for goose and Antigravity; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` for Codex) or through the system
 bundle step 2 lays it in (Devin's alone). None carries a pinning API's names. So no harness is tmpfs-fallback on its
 trust, and each is injected. Claude Code's bundle carries an OIDC `at_hash` check, the hazard of a placeholder access
-token beside a real ID token; whether its Anthropic sign-in runs it is step 8's to settle from its source, as are
-sender-constrained tokens. A string found says the build carries the code, not that every path runs it; ROOT's real
-runs (step 10) confirm each harness's trust of the run's CA.
+token beside a real ID token; step 8 settled it from its source (its first slice's questions 5 and 7, below): its
+Anthropic sign-in never runs it, while the LLM gateway's and XAA's sign-ins, which do, and Bedrock's `aws login`, whose
+refresh carries a DPoP proof, are tmpfs-fallback. A string found says the build carries the code, not that every
+path runs it; ROOT's real runs (step 10) confirm each harness's trust of the run's CA.
 
 **Built: step 10's first part, the leak scan's harness (D259, docs/research/measurements/
 s33-leak-scan).**
@@ -32488,8 +32500,10 @@ lease answered 503").
       shards.
     - shards-api's `upstream_roots`, `a_grants_fields`, `image::wire::tests` and `image::tests`: 38 of 38 at
       fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
-- *Owed.* ROOT runs the three api_image injector tests on KVM, HVF and WHP (the first runs on HVF and WHP), and CI's
-  matrix on main.
+- *Owed.* ROOT runs the three api_image injector tests on HVF, KVM arm64 and WHP arm64, and CI's matrix on main
+  green. CI on main 1b8d1cddd (run 43876891053) ran them with VMs, each passing, on x86_64 Linux (gnu and musl, KVM)
+  and x86_64 Windows (WHP); its arm64 Linux runners have no /dev/kvm and its macOS runners no nested virtualization,
+  so they skipped there, and its arm64 Windows job did not reach them.
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
@@ -32504,7 +32518,8 @@ are bounded by `shards_dns`'s RFC 1035/1123 rules (a label 63 bytes, a name 253)
 The channel version `8` is a sequence number, not a tuned value. A placeholder's format is
 not fixed here. It is minted where a credential is given to a member: by the orchestrator
 for a value it stages into a member (carried to the injector with the run's grants), and by
-the injector for a token it captures at sign-in. It exists before the value's lease, which
+the orchestrator's broker for a sign-in's tokens the injector captures (step 8; kiln's: a visible
+marker and 256 random bits, step 5). It exists before the value's lease, which
 is asked just in time at its first use. Its format is derived where it is minted: Codex's own
 egress broker keeps over 128 bits of randomness after a visible marker, and a sentinel the
 same length as the value is another option (Claude Code's sandbox mask does this). The
