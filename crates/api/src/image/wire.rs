@@ -111,8 +111,11 @@ pub use shards_abi::run::nesting::Ready;
 /// rather than running what its orchestrator said may not be run; 42, a member's working
 /// directory that no mount given it as it starts holds, refused as the run is asked
 /// ([`Cause::Workdir`], D277), so that its orchestrator is told so typed, rather than the
-/// member's start failing in its guest.
-pub const VERSION: u8 = 42;
+/// member's start failing in its guest; 43, whether the run's agent-control endpoint serves its
+/// members' stdio as its lanes ([`ControlAsk::stdio`], D252), where it asks for an endpoint, so
+/// that a side that serves none refuses the run as it is asked, rather than its orchestrator
+/// dialing lanes no endpoint serves while its members' output waits on a channel none reads.
+pub const VERSION: u8 = 43;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -680,6 +683,12 @@ pub struct ControlAsk {
     pub controller: [u8; 32],
     /// The run's socket directory and what it admits of lanes to it; none, and none.
     pub sockets: Option<SocketGrant>,
+    /// Its members' stdio served as lanes of the endpoint (D252, D238), each generation's
+    /// (D270), in place of this channel: every running member's stdout and stderr, and each
+    /// stdin its spec asks for, as `shards_api::control::member_output` and `member_input`
+    /// name them. This channel then carries none of their bytes: its orchestrator gives them
+    /// no room, and its run host says only each output's end on it. Appended in version 43.
+    pub stdio: bool,
 }
 
 /// The one directory of the run's own command's sockets its controller may reach (D251), and
@@ -2372,6 +2381,11 @@ impl Request {
         for share in &self.shares {
             w.u8(u8::from(share.exec));
         }
+        // Whether its endpoint serves its members' stdio, where it asks for one, appended in
+        // version 43 (D252).
+        if let Some(control) = &self.control {
+            w.u8(u8::from(control.stdio));
+        }
         w.done()
     }
 
@@ -2492,7 +2506,7 @@ impl Request {
         // Each member's reach of the names kept, appended in version 12 (D246).
         egress.members = r.reach()?;
         // The run's agent-control endpoint, appended in version 15 (D252).
-        let control = if r.flag()? {
+        let mut control = if r.flag()? {
             let controller = r.array::<32>()?;
             let sockets = if r.flag()? {
                 Some(SocketGrant {
@@ -2503,7 +2517,11 @@ impl Request {
             } else {
                 None
             };
-            Some(ControlAsk { controller, sockets })
+            Some(ControlAsk {
+                controller,
+                sockets,
+                stdio: false,
+            })
         } else {
             None
         };
@@ -2632,6 +2650,10 @@ impl Request {
         // Whether each share's files may be run from it, appended in version 41 (D279).
         for share in &mut shares {
             share.exec = r.flag()?;
+        }
+        // Whether its endpoint serves its members' stdio, appended in version 43 (D252).
+        if let Some(control) = control.as_mut() {
+            control.stdio = r.flag()?;
         }
         r.end()?;
         Ok(Request {
@@ -6247,6 +6269,7 @@ mod tests {
             control: Some(ControlAsk {
                 controller: [1; 32],
                 sockets: None,
+                stdio: false,
             }),
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
@@ -6529,6 +6552,7 @@ mod tests {
             Some(ControlAsk {
                 controller: [9u8; 32],
                 sockets: None,
+                stdio: false,
             }),
             Some(ControlAsk {
                 controller: [9u8; 32],
@@ -6537,11 +6561,36 @@ mod tests {
                     lanes: 8,
                     window: 65_536,
                 }),
+                stdio: false,
+            }),
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: None,
+                stdio: true,
             }),
         ] {
             let request = asked(control);
             assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
         }
+        // Its members' stdio asked (version 43): the request's last byte, read as a flag, and
+        // one of another value refused by type, never read as a default.
+        let stdio = asked(Some(ControlAsk {
+            controller: [9u8; 32],
+            sockets: None,
+            stdio: true,
+        }))
+        .encode()
+        .unwrap();
+        assert_eq!(stdio.last(), Some(&1));
+        let mut bad = stdio.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert!(matches!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        ));
         // None asked: one byte past v13's encoding, its absence.
         let none = asked(None).encode().unwrap();
         assert_eq!(none.last(), Some(&0));

@@ -1044,6 +1044,9 @@ pub(super) struct Session {
     members: Vec<MemberInfo>,
     /// Where its agent-control endpoint is bound (D252), where it asked for one.
     control: Option<wire::ControlAt>,
+    /// Its endpoint serves its members' stdio as lanes (`ControlAsk::stdio`, D252): this
+    /// channel carries none of it, so no pipe takes it.
+    stdio: bool,
     outputs: Mutex<HashMap<(u32, u32, Channel), io::PipeReader>>,
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
@@ -1158,7 +1161,10 @@ impl Begun {
         *lock(&self.shared.sign_ins) = request.sign_ins.clone();
         {
             let mut state = lock(&self.shared.state);
-            state.asked_inputs = State::asking(&request.members).asked_inputs;
+            // A stdin its run's endpoint serves (D252) is no flow of this channel's.
+            if !request.control.as_ref().is_some_and(|c| c.stdio) {
+                state.asked_inputs = State::asking(&request.members).asked_inputs;
+            }
             if request.gpu_report.is_some() {
                 state.report = Report::Awaited;
             }
@@ -1379,6 +1385,7 @@ impl Begun {
             host,
             members: started.members,
             control: started.control,
+            stdio: request.control.as_ref().is_some_and(|c| c.stdio),
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
@@ -1628,8 +1635,11 @@ impl Session {
             .map_err(|(refused, _)| refused)
     }
 
-    /// Its running members' outputs ([`pumped`]).
+    /// Its running members' outputs ([`pumped`]), where its endpoint serves none of them.
     fn pump_outputs(&self) -> Result<(), ImageRefusal> {
+        if self.stdio {
+            return Ok(());
+        }
         let pumped = pumped(&self.shared, &self.members, 0)?;
         lock(&self.outputs).extend(pumped);
         Ok(())
@@ -1704,6 +1714,9 @@ impl Session {
         let info = self.members.iter().find(|m| m.index == index).ok_or_else(|| {
             ImageRefusal::Host(format!("a swap started member {index}, which the run has not"))
         })?;
+        if self.stdio {
+            return Ok(());
+        }
         let pumped = pumped(&self.shared, std::slice::from_ref(info), generation)?;
         lock(&self.outputs).extend(pumped);
         let mut state = lock(&self.shared.state);
@@ -1717,6 +1730,15 @@ impl Session {
 /// A member's channel, by its index, its generation and the channel, and the pipe its bytes
 /// come out of ([`pumped`]).
 type Pumped = ((u32, u32, Channel), io::PipeReader);
+
+/// `what` asked of a run whose endpoint serves its members' stdio (`ControlAsk::stdio`, D252):
+/// its lanes carry it (`shards_api::control::member_output`, `member_input`), never a pipe.
+fn served_on_lanes(what: &'static str) -> ImageRefusal {
+    ImageRefusal::Spec {
+        what,
+        why: "the run's agent-control endpoint serves its members' stdio as its lanes".into(),
+    }
+}
 
 /// A pipe for each of `members`' running members' channels, and the thread that fills it as
 /// its bytes come, the host granted room for its first [`AHEAD`] bytes and for as many more as
@@ -2854,6 +2876,9 @@ impl ImageGuest for Session {
         channel: Channel,
     ) -> Result<io::PipeReader, ImageRefusal> {
         let index = self.index(member)?.index;
+        if self.stdio {
+            return Err(served_on_lanes("a member's output"));
+        }
         lock(&self.outputs)
             .remove(&(index, generation, channel))
             .ok_or_else(|| ImageRefusal::Spec {
@@ -2866,6 +2891,9 @@ impl ImageGuest for Session {
 
     fn take_input(&self, member: &MemberName, generation: u32) -> Result<io::PipeWriter, ImageRefusal> {
         let index = self.index(member)?.index;
+        if self.stdio {
+            return Err(served_on_lanes("a member's stdin"));
+        }
         {
             let mut state = lock(&self.shared.state);
             let flow = state
@@ -2959,7 +2987,11 @@ impl ImageGuest for Session {
         let index = info.index;
         let generation = self.shared.restart(index, args, patience)?;
         // Its generation's channels, pumped and given their room as its first's were, and its
-        // stdin's flow, where it has one, kept as its first's was.
+        // stdin's flow, where it has one, kept as its first's was: none where its endpoint
+        // serves them (D252), its lanes then the generation's.
+        if self.stdio {
+            return Ok(generation);
+        }
         let pumped = pumped(&self.shared, std::slice::from_ref(info), generation)?;
         lock(&self.outputs).extend(pumped);
         let mut state = lock(&self.shared.state);

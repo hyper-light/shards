@@ -277,7 +277,9 @@ pub struct ImageSpec {
     /// The run's agent-control endpoint (D238, D252), bound by its host for this run alone,
     /// its key the run's own, made after its restore and held by the endpoint alone; it takes
     /// [`ControlAsk::controller`]'s key alone, and serves lanes to the run's own command's
-    /// sockets where [`ControlAsk::sockets`] grants them (D251). None: no endpoint.
+    /// sockets where [`ControlAsk::sockets`] grants them (D251), and its members' stdio where
+    /// [`ControlAsk::stdio`] asks it (D252): then [`ImageGuest::take_output`] and
+    /// [`ImageGuest::take_input`] give none of it. None: no endpoint.
     pub control: Option<ControlAsk>,
     /// The host GPUs the run's VM renders on, each by its exact identity (D232, as
     /// [`crate::GuestSpec::gpu_devices`] names them), bound by its VM process; under the
@@ -2049,6 +2051,7 @@ mod tests {
                 lanes,
                 window,
             }),
+            stdio: false,
         };
         for (dir, lanes, window) in [
             ("run/hex/channel", 8, 65_536),
@@ -2077,6 +2080,14 @@ mod tests {
         s.control = Some(ControlAsk {
             controller: [1u8; 32],
             sockets: None,
+            stdio: false,
+        });
+        assert_eq!(request(&s).unwrap().control, s.control);
+        // Its members' stdio served as the endpoint's lanes (D252), carried whole.
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+            stdio: true,
         });
         assert_eq!(request(&s).unwrap().control, s.control);
     }
@@ -2097,6 +2108,7 @@ mod tests {
         s.control = Some(ControlAsk {
             controller: [1u8; 32],
             sockets: None,
+            stdio: false,
         });
         assert!(request(&s).unwrap().members[0].mcp);
     }
