@@ -31201,7 +31201,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32191,6 +32191,62 @@ record docs/research/s33-veil-creds/STEP8.md).
   `Debug`.
 - *Owed.* Step 8's third slice: kiln's `RunLessor` answering `capture`, `refresh` and `revoked` from its broker, and
   Hex forwarding the three. ROOT: the real sign-ins (below).
+
+**Built: step 8's third slice, kiln's run lessor answering a run's sign-ins from its broker** (kiln main
+bd2565641, its commits 4672dbd14 and 07b0962b9: `crates/kiln/src/secrets/lessor.rs`,
+`broker.rs`, `signin.rs`; kiln plan 01a1d2b88be57304b972761e2a5c6781 step 8; research f47, f53, f55, f63, f64; record
+docs/research/s33-veil-creds/STEP8.md). Hex already forwarded the three asks to its orchestrator's lessor
+(`hex_api::lease::Lessor`, Hex's C8, vendored in kiln at Hex e19198bd); kiln's took their defaults, `Unanswered`,
+a 503 in the guest. No Shards code changes in this slice.
+- *Capture.* kiln's lessor keeps the tokens through step 5's broker (`sign-ins/<sign_in>/access` and `/refresh`,
+  marked placeholders of 256 random bits) and now the scope they were granted beside them (`/scope`), which Claude
+  Code asks again at each refresh; it answers the access token's reference and the placeholders. The inert ID token
+  is not kept: no kiln path stages a CLI's file yet.
+- *Which provider.* A refresh names the sign-in alone (`REFRESH`; `Lessor::refresh(sign_in, key)`), so kiln reads
+  the provider from the name it gave the sign-in: `claude/…` is Claude Code's, `codex/…` Codex's (kiln's harness
+  kinds, its `accounts.rs`). A name naming neither is refused `Denied` at capture, nothing kept, so nothing is kept
+  that could not be refreshed. The grant kiln makes must name the CLI its name says. Considered: the CLI carried in
+  the capture and refresh asks (Shards' image channel, Hex's wire and trait: three repositories' versions for a
+  fact the orchestrator chose when it granted the sign-in); a record kiln keeps as it grants a sign-in, which no
+  kiln path does yet (owed below).
+- *The refresh, the broker's alone* (question 1). Made under the broker's `Turn` (one at a time for a sign-in across
+  every run, step 5) with kiln's own HTTP client, as each CLI's build makes it. Claude Code 2.1.311 posts JSON
+  `grant_type`, `refresh_token`, `client_id` and `scope` to `https://platform.claude.com/v1/oauth/token` (offsets
+  238938203, 242103577). Codex rust-v0.167.2 posts JSON `client_id`, `grant_type` and `refresh_token` to
+  `https://auth.openai.com/oauth/token` (login/src/oauth/client.rs:97-113; auth/manager.rs:230, 1863). A 200's
+  tokens are kept under the same references, so the VM's placeholders stay (question 2). A scope its response
+  leaves out keeps the one asked (RFC 6749 §5.1), and a refresh token it leaves out keeps the old one (§6). A 400 or
+  401 (§5.2's error response) is `Denied`, which the injector answers `invalid_grant` so the CLI signs in anew.
+  Anything else is `Unavailable` (503). Its words are the provider's `error` and `error_description`, with any that
+  repeat the refresh token left out, as a 503's words reach the guest's body.
+- *The answer.* The token response the CLI reads, built from what the broker kept: `access_token` and
+  `refresh_token` placeholders; `token_type` `Bearer` (RFC 6749 §5.1; both providers' tokens are RFC 6750 bearer
+  tokens, question 7); `expires_in` from the access token's kept end; and `scope`. These are what Claude Code's
+  refresh reads (`{access_token:G,refresh_token:j=e,expires_in:Q}=H`, `H.scope`, offset 242103577) and what Codex's
+  reads (`id_token`, `access_token`, `refresh_token`, each kept only where it comes: manager.rs:1758-1766). Nothing
+  else of the provider's response passes. The network process reads the broker's placeholders as the tokens, so a
+  token repeated in an unread field would pass it unseen. Codex's new ID token is left out, and it keeps the inert
+  one its capture gave. A scope that repeats a token is refused. Left out: `refresh_token_expires_in`, which Claude
+  Code reads as unknown when absent.
+- *Revocation* (question 6). Said in kiln's log with the run and the sign-in; the tokens kept.
+- *Literals.* The two client ids and token endpoints, each its CLI's build's (above). `Bearer`, RFC 6750's. A token
+  response read within 4 MiB, the window the run's injector reads the same provider's responses within
+  (`tcp::TO_GUEST`, question 3). The request's 30 s timeout is kiln-http's default (`DEFAULT_TIMEOUT`), which is
+  Claude Code's own refresh's (`timeout:30000`, offset 242103577). No learned value.
+- *Tests* (kiln `secrets::`, light, no VM; written and not run: the person's rule of 2026-11-16 holds lanes to no
+  builds or tests, and ROOT builds and runs them). Through Hex's seam, over `SimSecrets` and
+  kiln's store, against one local stand-in for both token endpoints (`ci::integrations::endpoint`'s override):
+  a capture kept and its access token leased by reference; each provider asked exactly its CLI's body (Claude
+  Code's with the captured scope); the answer holding placeholders and no token, its five or three fields alone;
+  the rotated access token kept under its reference; a revocation keeping the sign-in; refusals by kind (a name
+  naming no provider, never captured, refused 400, unavailable 503 with no token in its words); two refreshes at
+  once one call to the provider. Pure tests of the bodies, the token response's reading and the answer.
+- *Owed.* kiln granting a run's sign-ins: its sandbox carrying them to `ShardsImage::sign_ins` (name and CLI from
+  one value), and staging a later run's CLI file with the captured placeholders, inert ID token and scope. The
+  broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each refresh, which
+  nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy (`-D warnings`)
+  and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether platform.claude.com answers
+  a refresh asking the captured scope as it answers Claude Code's.
 
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
@@ -36800,7 +36856,7 @@ back, ro refusing the member's write with EROFS, a home volume made by its plug,
 across it) and `a_project_is_plugged_into_the_running_harness` on the new call; the test guest's
 `plugged-volumes` mode is new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1 built, S2-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -36873,12 +36929,56 @@ and `OwnedSocket` types become handles) and the tests' helpers; S5, the vsock te
 first `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`'s host write after the
 guest's close failing at once on Windows: red on AF_UNIX, green on pipes.
 
+**S1, built** (`shards_vmm::platform::Pipes`, platform/windows_pipes.rs): a connection's two
+server ends. Reads: one overlapped ReadFile at a time into the connection's own buffer, kept
+under way while nothing read is held, so that its client's next bytes or its end finish it
+(`Reading`: under way, holding, ended, failed). Writes: one overlapped WriteFile at a time of
+bytes copied from the caller (no reference into guest memory), the connection's until it
+finishes (`Writing`: idle, under way, closing, shut, failed), their count said by `look` as it
+finishes, so that a caller counts the guest's bytes forwarded only then and the guest's credit
+bounds what it holds. `shut_down` closes the way down once its write under way has finished,
+never DisconnectNamedPipe, which drops what its client has not read. A connection dropped
+cancels its calls and waits for them (GetOverlappedResult) before their OVERLAPPEDs and buffers
+go. `look` reads each call's OVERLAPPED without waiting (GetOverlappedResult, bWait 0): whatever
+tells of a finish (S2's completion port, a test's loop) only makes it look, and a stale telling
+finds nothing.
+- *Its one size* (R03): the read buffer is the way up's inbound quota, read back from the
+  instance (GetNamedPipeInfo): a read takes at most what the pipe holds. The quota is its
+  maker's, S3's spawner's; an instance of none is refused. No literal.
+- *Tests* (Windows, no VM): `platform::windows_pipes::tests`, seven, over real byte-mode
+  instances and clients opened as `std` opens a file, as Hex's are: a write past the pipe under
+  way until its reader takes it, its count said once; the client's bytes in order, a line a
+  byte at a time leaving what follows it held, then its end; the way down shut as the client's
+  end, its writes up going on (M609 (h)); a shut behind a write under way; the whole end failing
+  the client's write up at once, ERROR_NO_DATA, after every byte down; the client's write up
+  while its read down waits; a drop with both calls under way.
+- *For S2*, found building S1: a completion port's packet comes once, so the poller takes each
+  connection's readiness from `readable` and `writable` before it waits (one already ready
+  waits for nothing); one key per connection, never reused, so that a packet of a connection
+  gone names none; the waker a posted packet. `Conn` counts the guest's bytes forwarded at
+  `look`'s count, its `send_host` check counting `in_flight` with `tx_buf`, and not the
+  `OK <port>` line's bytes. The device's served ports are AF_UNIX pairs on Windows (`serve`'s
+  `UnixStream::pair`, `VsockHost`'s `ports` and `rate` senders of `UnixStream`): pipe pairs
+  (`shards_ipc::pipe::byte_pair`) keep one kind of host end there. A connection holds two
+  handles where `slots` counts one.
+- *For S2 and S3*, found reading the grants: a pair is two names opened one after the other,
+  so two clients dialling at once could each open one instance of the same pair, one its way
+  down and the other its way up, and each be served the other's stream. None can where every
+  client opens its way down first, as Hex's must (a client's change, below), and the VM holds
+  one pair unconnected at a time, asking its spawner for the next only once both of the last
+  are connected: a second client waits on the way down (ERROR_PIPE_BUSY, WaitNamedPipeW) until
+  the first holds its way up too. A pair whose way down's client goes before its way up is
+  connected (a read of no bytes on the way down, ERROR_BROKEN_PIPE) is dropped and replaced,
+  so that a client that dies there stops no other. The same holds of a host port's own pair,
+  which the spawner opens for its VM's dial (S3).
+
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
-reading the way down and writing the way up, each a byte-mode file as `std` opens one (no
-mode to set, nothing to cancel), in place of an AF_UNIX connect; the line protocol over them
-(`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through `shards_api` takes
-it with its pin.
+its way down first and then its way up, each waited for while busy (ERROR_PIPE_BUSY,
+WaitNamedPipeW), reading the way down and writing the way up, each a byte-mode file as `std`
+opens one (no mode to set, nothing to cancel), in place of an AF_UNIX connect; the line
+protocol over them (`CONNECT <port>`, `RATE`, `USE`) is unchanged. A client that dials through
+`shards_api` takes it with its pin.
 
 **What would falsify it.** A guest byte its host never read where it read on to its end; a
 host's write after the guest's end taken without an error; a process other than its user's

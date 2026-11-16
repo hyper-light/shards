@@ -28,6 +28,10 @@ pub use windows::*;
 #[cfg(windows)]
 mod windows_files;
 #[cfg(windows)]
+mod windows_pipes;
+#[cfg(windows)]
+pub use windows_pipes::Pipes;
+#[cfg(windows)]
 mod windows_process;
 #[cfg(windows)]
 mod windows_watch;
