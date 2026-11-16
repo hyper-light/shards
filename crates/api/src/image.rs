@@ -1812,7 +1812,10 @@ mod tests {
         s.shares[0].members = Some(PlugFor::Members(Vec::new()));
         assert_eq!(refused(s), "a share's members");
         let mut s = spec();
-        s.shares[0].members = Some(PlugFor::Members(vec![MemberName::harness("codex"), MemberName::harness("codex")]));
+        s.shares[0].members = Some(PlugFor::Members(vec![
+            MemberName::harness("codex"),
+            MemberName::harness("codex"),
+        ]));
         assert_eq!(refused(s), "a share's members");
         for (asked, carried) in [
             (None, None),

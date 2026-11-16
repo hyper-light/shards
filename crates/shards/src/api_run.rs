@@ -539,7 +539,10 @@ fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Resul
                         .ok_or_else(|| {
                             No(
                                 Cause::Image,
-                                format!("{}: {:?} {}: the image declares no such member", share.at, n.kind, n.name),
+                                format!(
+                                    "{}: {:?} {}: the image declares no such member",
+                                    share.at, n.kind, n.name
+                                ),
                             )
                         })?;
                     if !info.runs {
@@ -558,7 +561,10 @@ fn share_members(request: &wire::Request, members: &[wire::MemberInfo]) -> Resul
         if found.is_empty() {
             return Err(No(
                 Cause::Image,
-                format!("{}: given to every member that runs, and none of the image's runs", share.at),
+                format!(
+                    "{}: given to every member that runs, and none of the image's runs",
+                    share.at
+                ),
             ));
         }
         found.sort_unstable_by_key(|m| m.index);
@@ -590,16 +596,26 @@ fn volume_gives(v: &crate::agentfile::AgentVolume, kind: wire::MemberKind, name:
 /// the most it is given: a share there may narrow whom it reaches, refused as a widening for a
 /// member its `FOR` gives it none. Refused for a file shared alone, which no member stands in a
 /// directory for.
-fn give_members(mounts: &mut [(String, Vec<u8>)], given: &[Given], volumes: &[crate::agentfile::AgentVolume]) -> Result<(), No> {
+fn give_members(
+    mounts: &mut [(String, Vec<u8>)],
+    given: &[Given],
+    volumes: &[crate::agentfile::AgentVolume],
+) -> Result<(), No> {
     for g in given {
         let at = &g.at;
         let dest = shards_cmdline::mounts::clean(at);
         let Some((_, entry)) = mounts.iter_mut().find(|(d, _)| *d == dest) else {
-            return Err(No(Cause::Request, format!("{at}: no share there to give its members")));
+            return Err(No(
+                Cause::Request,
+                format!("{at}: no share there to give its members"),
+            ));
         };
         let parts: Vec<&[u8]> = entry.splitn(4, |&b| b == 0).collect();
         let [head, point, flags, only] = parts.as_slice() else {
-            return Err(No(Cause::Boot, format!("{at}: its share's setup entry is not one")));
+            return Err(No(
+                Cause::Boot,
+                format!("{at}: its share's setup entry is not one"),
+            ));
         };
         if !only.is_empty() {
             return Err(No(
@@ -623,7 +639,10 @@ fn give_members(mounts: &mut [(String, Vec<u8>)], given: &[Given], volumes: &[cr
                 }
             }
         } else if !head.starts_with(b"volume=") {
-            return Err(No(Cause::Boot, format!("{at}: its share's setup entry is not one")));
+            return Err(No(
+                Cause::Boot,
+                format!("{at}: its share's setup entry is not one"),
+            ));
         }
         let mut words: Vec<Vec<u8>> = flags
             .split(|&b| b == b',')
@@ -633,7 +652,11 @@ fn give_members(mounts: &mut [(String, Vec<u8>)], given: &[Given], volumes: &[cr
         if !image_volume {
             words.push(b"domains".to_vec());
         }
-        words.extend(g.members.iter().map(|(m, _, _)| format!("member={m}").into_bytes()));
+        words.extend(
+            g.members
+                .iter()
+                .map(|(m, _, _)| format!("member={m}").into_bytes()),
+        );
         let (nul, joined): (&[u8], Vec<u8>) = (b"\0", words.join(&b','));
         let told = [*head, nul, *point, nul, joined.as_slice(), nul, *only].concat();
         *entry = told;
@@ -3085,7 +3108,10 @@ mod hosted {
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
         // The shares it gives members as they start (D277), told in their entries.
         let given = super::share_members(request, &members)?;
-        let volumes = agentfile.as_ref().map(|a| a.volumes.as_slice()).unwrap_or_default();
+        let volumes = agentfile
+            .as_ref()
+            .map(|a| a.volumes.as_slice())
+            .unwrap_or_default();
         super::give_members(&mut opened.mounts, &given, volumes)?;
         let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
             .map_err(no(Cause::Request))?;

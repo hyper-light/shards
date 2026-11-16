@@ -692,7 +692,10 @@ fn actor_exec(fd: OwnedFd) -> Result<(), Failure> {
         };
         // What it was doing, where it told it in the same write; none where it ended there.
         let mut told = [0; 2];
-        let doing = setup.read_exact(&mut told).ok().and_then(|()| Doing::decode(told));
+        let doing = setup
+            .read_exact(&mut told)
+            .ok()
+            .and_then(|()| Doing::decode(told));
         return Err(Failure { doing, ..failure });
     }
     Ok(())
@@ -1160,7 +1163,10 @@ mod tests {
         for unknown in [[0, 1], [3, 1], [1, 0], [2, u8::MAX]] {
             assert_eq!(
                 actor_exec(written(&told(unknown))),
-                Err(Failure { doing: None, ..failure })
+                Err(Failure {
+                    doing: None,
+                    ..failure
+                })
             );
         }
     }

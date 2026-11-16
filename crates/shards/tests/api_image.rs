@@ -464,10 +464,23 @@ fn a_project_given_its_harness_is_where_it_works() {
             .and_then(|l| l.split(' ').nth(3))
             .map(str::to_owned)
     };
-    assert!(said.contains("hello.txt file") && said.contains("= from the project\\n"), "{said}");
-    assert!(said.contains(&format!("{file} file")), "its project at its host path: {said}");
-    assert!(said.contains("/plugins/p/plugin.md file") && said.contains("= a plugin\\n"), "{said}");
-    assert_eq!(owner("hello.txt"), owner("/tmp"), "its project's files its own, as its scratch is: {said}");
+    assert!(
+        said.contains("hello.txt file") && said.contains("= from the project\\n"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("{file} file")),
+        "its project at its host path: {said}"
+    );
+    assert!(
+        said.contains("/plugins/p/plugin.md file") && said.contains("= a plugin\\n"),
+        "{said}"
+    );
+    assert_eq!(
+        owner("hello.txt"),
+        owner("/tmp"),
+        "its project's files its own, as its scratch is: {said}"
+    );
 }
 
 /// A share given no member stays the run's own root's (D277; a member's default deny, D59):
@@ -533,7 +546,10 @@ fn a_share_given_no_member_of_its_image_is_refused() {
         Err(ImageRefusal::Image(why)) => assert!(why.contains("files alone"), "{why}"),
         other => panic!("{other:?}"),
     }
-    assert!(given("/work", codex()).is_ok(), "its harness, whom the VOLUME there is for");
+    assert!(
+        given("/work", codex()).is_ok(),
+        "its harness, whom the VOLUME there is for"
+    );
     match given("/theirs", codex()) {
         Err(ImageRefusal::Widening(why)) => assert!(why.contains("VOLUME") && why.contains("codex"), "{why}"),
         other => panic!("{other:?}"),

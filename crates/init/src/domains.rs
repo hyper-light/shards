@@ -2794,7 +2794,14 @@ fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, doing: Option<crat
 
 /// A domain's first process, before its program.
 fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, setup: RawFd) -> ! {
-    let fail = |out, s: Setting| -> ! { fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Setting(s))) };
+    let fail = |out, s: Setting| -> ! {
+        fail(
+            out,
+            setup,
+            crate::managed::Step::Setup,
+            Some(crate::managed::Doing::Setting(s)),
+        )
+    };
     let null = std::ptr::null::<libc::c_char>();
     let nil = std::ptr::null::<libc::c_void>();
     let tmpfs = c"tmpfs".as_ptr();
@@ -3111,11 +3118,23 @@ fn child(d: &Domain, p: &Prepared, c: &Confinement, stdout: RawFd, out: RawFd, s
 fn exec_child(p: &Prepared, c: &Confinement) -> ! {
     let setup = libc::STDERR_FILENO + 1;
     let out = libc::STDERR_FILENO;
-    let fail = |out, s: Setting| -> ! { fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Setting(s))) };
+    let fail = |out, s: Setting| -> ! {
+        fail(
+            out,
+            setup,
+            crate::managed::Step::Setup,
+            Some(crate::managed::Doing::Setting(s)),
+        )
+    };
     // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
     unsafe {
         if let Err(step) = rules(c, RULESET_FD).and_then(|()| confine(c, RULESET_FD)) {
-            crate::domains::fail(out, setup, crate::managed::Step::Setup, Some(crate::managed::Doing::Confining(step)));
+            crate::domains::fail(
+                out,
+                setup,
+                crate::managed::Step::Setup,
+                Some(crate::managed::Doing::Confining(step)),
+            );
         }
         // As the member (confine-02): it starts in no directory it could not enter itself,
         // as a command run in it does (crate::enter).
@@ -3852,7 +3871,12 @@ mod tests {
     #[test]
     fn a_share_given_members_is_theirs_alone() {
         let entry = |flags: &str| [b"volume=shards0\0/proj\0".as_slice(), flags.as_bytes(), b"\0"].concat();
-        let given_to = |flags: &str| shares_of(&[entry(flags)]).into_iter().next().and_then(|s| s.members);
+        let given_to = |flags: &str| {
+            shares_of(&[entry(flags)])
+                .into_iter()
+                .next()
+                .and_then(|s| s.members)
+        };
         assert_eq!(given_to("domains,member=1,member=3"), Some(vec![1, 3]));
         assert_eq!(given_to("domains"), None);
         let member = |m: u32, volumes: Vec<VolumeRule>| Domain {
