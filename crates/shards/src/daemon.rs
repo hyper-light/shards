@@ -14318,10 +14318,14 @@ mod tests {
     /// its kill acknowledged, and whose give-back then follows its VM's liveness (the
     /// give-back's kind cold) is still asked by the round opened next, not counted as one
     /// that gave nothing. Here `a` (600 MiB, under a high of 500 and a max of 1000) has its
-    /// room refused in round 1 and its give-back held; `b` (500 MiB) joins, opening round 2,
-    /// and gives nothing; `a` then gives 1 MiB back in round 2. Red with the room's refusal
-    /// left standing through the give-back: round 2 counted `a` as nothing given, its group
-    /// past its max, and OOM-killed `a` before its round-2 word came.
+    /// room refused in round 1 and its give-back held, and the pass after round 1's verdict
+    /// opens round 2; `b` (500 MiB) joins, its group past its max, and gives nothing
+    /// whenever asked (a round asks the members it began with: one joining it is told its
+    /// room at each pass until the round after asks it); `a` then gives 100 MiB back in
+    /// round 2, its group within its max again, so the round after, its room to `a`
+    /// unanswered, stops nothing. Red with the room's refusal left standing through the
+    /// give-back: round 2 counted `a` as nothing given, its group past its max, and
+    /// OOM-killed `a` before its round-2 word came.
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_refused_room_is_not_the_next_rounds_verdict() {
@@ -14344,7 +14348,7 @@ mod tests {
                     .unwrap()
                     .builtin
             };
-            let (a, _a_run, a_vm, _) = running_under(t, "first", "g", mib(600));
+            let (a, _a_run, a_vm, a_pid) = running_under(t, "first", "g", mib(600));
             // Round 1: its room never answered, refused by its own judge, the kill answered.
             let room = heard_whole(&a_vm);
             assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
@@ -14356,37 +14360,40 @@ mod tests {
             // Its give-back of round 1, held: its kind cold, it follows liveness alone.
             let give = heard_whole(&a_vm);
             assert_eq!(builtin(&give), shards_abi::run::builtin::RECLAIM);
-            let (b, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
+            let (_, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
             let _ends = Ends {
                 held: None,
                 vms: vec![(&a_vm, 0), (&b_vm, 0)],
             };
-            // Round 2: b gives nothing.
-            for (said, what) in [
-                (&b"0"[..], shards_abi::run::builtin::ROOM),
-                (b"0 0\n", shards_abi::run::builtin::RECLAIM),
-            ] {
-                let m = heard_whole(&b_vm);
-                assert_eq!(builtin(&m), what);
-                answer_exec(&m, said, 0);
-            }
-            t.until("b's give-back taken", |d| !d.watching.giving(&b));
-            // a's give-back of round 1 answered, then its words of round 2: 1 MiB given back.
-            answer_exec(&give, b"0 0\n", 0);
-            drop(give);
-            for (said, what) in [
-                (&b"0"[..], shards_abi::run::builtin::ROOM),
-                (b"1048576 0\n", shards_abi::run::builtin::RECLAIM),
-            ] {
-                let m = heard_whole(&a_vm);
-                assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
-                answer_exec(&m, said, 0);
-            }
-            t.until("a's give-back taken", |d| !d.watching.giving(&a));
-            assert!(
-                !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
-                "a, asked in round 2 and giving back, was OOM-killed"
-            );
+            // b's room, told at the pass that took it in: its group past its max before a's
+            // give-back is answered. Its words from there on a thread that plays its guest.
+            let room = heard_whole(&b_vm);
+            assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
+            answer_exec(&room, b"0", 0);
+            drop(room);
+            let done = AtomicBool::new(false);
+            std::thread::scope(|s| {
+                let _done = Done(&done);
+                s.spawn(|| answering(&b_vm, &done));
+                // a's give-back of round 1 answered, then its words of round 2: 100 MiB given
+                // back, which its VM process holds no more.
+                t.daemon.groups.play(a_pid, mib(500));
+                answer_exec(&give, b"0 0\n", 0);
+                drop(give);
+                for (said, what) in [
+                    (&b"0"[..], shards_abi::run::builtin::ROOM),
+                    (b"104857600 0\n", shards_abi::run::builtin::RECLAIM),
+                ] {
+                    let m = heard_whole(&a_vm);
+                    assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
+                    answer_exec(&m, said, 0);
+                }
+                t.until("a's give-back taken", |d| !d.watching.giving(&a));
+                assert!(
+                    !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
+                    "a, asked in round 2 and giving back, was OOM-killed"
+                );
+            });
         });
     }
 
