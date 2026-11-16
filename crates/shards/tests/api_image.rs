@@ -2715,6 +2715,7 @@ fn on_endpoint<T: Send>(guest: &dyn ImageGuest, what: &str, call: impl FnOnce() 
 /// under a control ask of the orchestrator's key, `codex` with an MCP bridge (D254) its harness
 /// writes MCP's `initialize` into, `claude` asleep; its controller dials the run's endpoint
 /// subscribed to exec lanes.
+/// - **The report.** Its link's report names `codex`'s MCP bridge, `mcp:N`, and no other.
 /// - **The MCP connection.** `Execs::mcp(codex)` carries the harness's `initialize`, exactly.
 /// - **The signals.** TERM to `codex`'s command ends it `Signaled(15)`, never `Exited(143)`;
 ///   KILL to `claude`'s, `Signaled(9)`: on its lane (`exec::End`) and on the image channel
@@ -2727,8 +2728,8 @@ fn on_endpoint<T: Send>(guest: &dyn ImageGuest, what: &str, call: impl FnOnce() 
 #[test]
 fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_its_endpoint() {
     use shards_api::control::{
-        Controller, Fault, Got, Identity, McpConnection, Member, MemberControl, Subscriptions, Unsteered,
-        exec, exec_admissions,
+        Controller, Fault, Got, Granted, Identity, McpConnection, Member, MemberControl, Subscriptions,
+        Unsteered, exec, exec_admissions,
     };
     use shards_api::image::ControlAsk;
     if cannot_run_vms() {
@@ -2783,6 +2784,17 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     .unwrap();
     let driver = std::thread::spawn(move || controller.run());
     let execs = dialed.execs.expect("exec lanes subscribed");
+    let mut link = dialed.link;
+    let lanes = on_endpoint(&*guest, "its link's report", || {
+        link.report().map(|report| report.lanes.clone())
+    })
+    .unwrap();
+    let bridges: Vec<String> = lanes
+        .iter()
+        .filter(|lane| matches!(lane, Granted::Mcp(_)))
+        .map(Granted::name)
+        .collect();
+    assert_eq!(bridges, [format!("mcp:{codex_at}")], "{lanes:?}");
     // The harness's connection to its bridge, held for the controller until it asks.
     let said = on_endpoint(&*guest, "codex's MCP connection", || {
         // Its end held while its records are read: an ExecControl let go before its exit is
