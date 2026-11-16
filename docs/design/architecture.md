@@ -37124,7 +37124,9 @@ and its run host, image channel version 40; built, its real-VM tests owed with s
   a restart's (shards-api makes its pumps and input flow as it answers). Refused
   `ImageRefusal::Swap(SwapRefusal, words)`: `Unknown` (no member runs at that path), `Artifact`
   (no such artifact here, one unread, or no sha256 digest), `Kind` (another kind than its path's),
-  `Platform`, `Asks`, `Device` (no bus, slot or room in its microVM), `Running`, `Failed`.
+  `Platform`, `Asks`, `Device` (no bus, slot or room in its microVM), `Running`, `Failed`; now,
+  where its member's next generation could not enter its working directory, `Workdir`, which
+  shards-api refuses as `ImageRefusal::Workdir` (D277, amended P6-fix-3; image channel 46).
 - *The image channel*: `SWAP` (49), `SWAPPED` (50).
 - *Its run host*: the artifact checked as a build checks one it takes (`agent::checked`), its
   content its only layer, built into an EROFS root once, which the store keeps by its chain; its
@@ -38095,7 +38097,7 @@ directory is refused typed too.**
   - shards-api (session `restart_refused`): `restart` is refused `ImageRefusal::Workdir`, the
     first generation's refusal, rather than `ImageRefusal::Restart`.
   - Unchanged: a swap now (D270 slice 4) whose restart is so refused stays `SwapRefusal::Failed`,
-    its words naming `Workdir`.
+    its words naming `Workdir`. Typed since (amended below, P6-fix-3).
 - No literal: 6 is each enum's next value; no wait or cache touched.
 - **Tests** (written, not run: the person's rule of 2026-11-16). abi
   `a_next_generation_that_could_not_enter_its_workdir_is_answered_typed`; the run host's
@@ -38104,7 +38106,36 @@ directory is refused typed too.**
   `a_restart_round_trips_and_its_malformed_answers_are_refused` (`Workdir` round-trips; tag 7
   refused). Owed (ROOT): init's Linux suite and musl clippy (domains.rs, run.rs); a real-VM run
   (HVF, KVM, WHP) of a member that removes its own working directory and is restarted, refused
-  `ImageRefusal::Workdir` with errno 2, which no test yet makes.
+  `ImageRefusal::Workdir` with errno 2, which no test yet makes. Written since (P6-fix-3, below).
+
+**Amended (P6-fix-3, 2026-11-16, ROOT's decision): a swap that restarts its member now is refused
+typed too.**
+- *Before.* A swap now (D270 slice 4) whose restart was refused `RestartRefusal::Workdir`
+  answered `SwapRefusal::Failed`, with `Workdir` only in its words ("its member's restart,
+  Workdir: …").
+- *Decided: the restart's cause carried.*
+  - The image channel: `SwapRefusal::Workdir` (9, appended).
+  - The run host (api_run `swap`) answers its restart's `Workdir` as `Workdir`, as it answers its
+    `Running` as `Running`. The words are the restart's (`workdir_refused`): the member as the
+    image declares it, the directory and the errno. Its member has ended whole, as after the
+    restart.
+  - shards-api (session `swap_refused`): `swap` and `restore` are refused `ImageRefusal::Workdir`,
+    as `restart` is, rather than `ImageRefusal::Swap`.
+  - The image channel's version is 46: a side of 45 reads no swap refusal 9.
+- No literal: 9 is the enum's next value; no wait or cache touched.
+- **Tests** (written, not run: the person's rule of 2026-11-16):
+  - The channel's `a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused`: `Workdir`
+    round-trips; tag 10 is refused.
+  - The run host's `a_swap_whose_restart_could_not_enter_its_workdir_is_refused_typed`: a swap now
+    whose stand-in guest refuses the member's next generation `Workdir` is refused `Workdir`, the
+    member, the directory and errno 2 in its words; its member let go, at generation 0.
+  - shards-api's `a_swap_whose_workdir_could_not_be_entered_is_refused_as_one`.
+  - Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
+    `a_member_whose_workdir_is_gone_is_refused_workdir_as_it_starts_again`, P6-fix-2's owed run. A
+    harness starts in its project's subdirectory, shared and given it, and removes it (the test
+    guest's `fs rmdir:DIR trap:TERM`; `fs` gains `trap:SIG`). Restarted, it is refused
+    `ImageRefusal::Workdir`, naming the directory and errno 2, its first generation having ended
+    on its SIGTERM (`got 15`). On a run of its own, a swap now (`restore`) is refused the same.
 
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 

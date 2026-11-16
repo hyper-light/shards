@@ -481,8 +481,9 @@ pub enum ImageRefusal {
     /// A member's working directory ([`MemberSpec::workdir`], else its image's) its guest
     /// could not enter as it started (D277), so none of its run's members runs: told as they
     /// start, after the boot, to [`ImageGuest::wait_member`]; or as its next generation started
-    /// (D270), which its [`ImageGuest::restart`] is refused with, its member ended whole. Its
-    /// run host's words name the member, the directory and the errno.
+    /// (D270), which its [`ImageGuest::restart`] is refused with, and a swap that restarted it
+    /// now ([`ImageGuest::swap`], [`ImageGuest::restore`]), its member ended whole. Its run
+    /// host's words name the member, the directory and the errno.
     Workdir(String),
 }
 
@@ -757,7 +758,8 @@ pub trait ImageGuest: Send + Sync {
     /// as [`restart`](Self::restart) restarts it. Answers every member's component as its host
     /// holds them after it ([`ComponentAt`]), and, now, the member's index and the generation
     /// started, whose output, input and end are taken by it ([`Swapped`]); refused as
-    /// [`ImageRefusal::Swap`].
+    /// [`ImageRefusal::Swap`], and, now, as [`ImageRefusal::Workdir`] where its member's next
+    /// generation could not enter its working directory (D277), its member then ended whole.
     fn swap(
         &self,
         at: &str,

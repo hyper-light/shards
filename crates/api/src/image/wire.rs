@@ -119,8 +119,11 @@ pub use shards_abi::run::nesting::Ready;
 /// none reads; 45, a restart's next generation that could not enter its working directory
 /// refused typed ([`RestartRefusal::Workdir`], D277), as 43 refuses a first generation's, so
 /// that a side that reads no such refusal refuses the run as it is asked, rather than its
-/// restart's answer breaking the channel.
-pub const VERSION: u8 = 45;
+/// restart's answer breaking the channel; 46, a swap whose member, restarted now, could not
+/// enter its working directory refused typed ([`SwapRefusal::Workdir`], D277), as 45 refuses a
+/// restart's, so that a side that reads no such refusal refuses the run as it is asked, rather
+/// than its swap's answer breaking the channel.
+pub const VERSION: u8 = 46;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1440,6 +1443,10 @@ pub enum SwapRefusal {
     Running = 7,
     /// Its swap failed, in its guest's or its host's words.
     Failed = 8,
+    /// Its member, restarted now, could not enter its working directory as its next generation
+    /// started (D277), as [`RestartRefusal::Workdir`] refuses a restart: its run host's words
+    /// name the member, the directory and the errno. Its member then ended whole.
+    Workdir = 9,
 }
 
 /// What a swap did (D270 slice 4): every member's component after it, and, where its member was
@@ -3469,6 +3476,7 @@ impl SwapAnswer {
                     6 => SwapRefusal::Device,
                     7 => SwapRefusal::Running,
                     8 => SwapRefusal::Failed,
+                    9 => SwapRefusal::Workdir,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a swap's refusal",
@@ -5306,6 +5314,7 @@ mod tests {
             SwapRefusal::Device,
             SwapRefusal::Running,
             SwapRefusal::Failed,
+            SwapRefusal::Workdir,
         ] {
             let answer = SwapAnswer {
                 id: 1,
@@ -5313,11 +5322,12 @@ mod tests {
             };
             assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
         }
+        const { assert!(VERSION >= 46, "the channel's version 46 carries a swap's Workdir") };
         assert!(matches!(
-            SwapAnswer::decode(&[0, 0, 0, 1, 1, 9, 0, 0, 0, 0]),
+            SwapAnswer::decode(&[0, 0, 0, 1, 1, 10, 0, 0, 0, 0]),
             Err(WireError::Tag {
                 what: "a swap's refusal",
-                ..
+                tag: 10,
             })
         ));
     }

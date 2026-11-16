@@ -253,6 +253,16 @@ fn restart_refused(cause: wire::RestartRefusal, why: String) -> ImageRefusal {
 /// refused and why.
 type Swapped = Result<wire::Swapped, (wire::SwapRefusal, String)>;
 
+/// What a swap its host refused (D270 slice 4) is refused as: [`ImageRefusal::Workdir`] where its
+/// member, restarted now, could not enter its working directory, as a restart's is (D277);
+/// [`ImageRefusal::Swap`] by its cause otherwise.
+fn swap_refused(cause: wire::SwapRefusal, why: String) -> ImageRefusal {
+    match cause {
+        wire::SwapRefusal::Workdir => ImageRefusal::Workdir(why),
+        cause => ImageRefusal::Swap(cause, why),
+    }
+}
+
 /// A network change's outcome as its host said it (D269): made, or refused and why.
 type NetAnswered = Result<wire::NetChanged, (wire::NetRefusal, String)>;
 
@@ -904,7 +914,7 @@ impl Shared {
             .and_then(|()| {
                 self.wait(waited, |s| {
                     if let Some(answer) = s.swaps.get_mut(&id).and_then(Option::take) {
-                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Swap(cause, why)));
+                        return Some(answer.map_err(|(cause, why)| swap_refused(cause, why)));
                     }
                     if let Some(end) = &s.end {
                         return Some(Err(ImageRefusal::Ended(end.clone())));
@@ -4491,6 +4501,22 @@ mod tests {
         assert_eq!(
             restart_refused(wire::RestartRefusal::Failed, "its exec: ENOENT".into()),
             ImageRefusal::Restart(wire::RestartRefusal::Failed, "its exec: ENOENT".into())
+        );
+    }
+
+    /// D277 for a swap now (D270 slice 4): one its host refused as its member's next generation
+    /// could not enter its working directory is refused `Workdir`, as a restart's is, in its
+    /// host's words; any other is the swap's own refusal.
+    #[test]
+    fn a_swap_whose_workdir_could_not_be_entered_is_refused_as_one() {
+        let words = "Harness codex: /w: errno 2: its guest could not enter it as it started";
+        assert_eq!(
+            swap_refused(wire::SwapRefusal::Workdir, words.into()),
+            ImageRefusal::Workdir(words.into())
+        );
+        assert_eq!(
+            swap_refused(wire::SwapRefusal::Running, "under way".into()),
+            ImageRefusal::Swap(wire::SwapRefusal::Running, "under way".into())
         );
     }
 

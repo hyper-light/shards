@@ -5044,6 +5044,9 @@ mod hosted {
                 };
                 let generation = restart(live, &again, scope).map_err(|(cause, why)| match cause {
                     wire::RestartRefusal::Running => (R::Running, why),
+                    // In the restart's words (`workdir_refused`): the member, the directory
+                    // and the errno.
+                    wire::RestartRefusal::Workdir => (R::Workdir, why),
                     _ => (R::Failed, format!("its member's restart, {cause:?}: {why}")),
                 })?;
                 super::step(format_args!(
@@ -10123,6 +10126,76 @@ mod hosted {
                 (R::Failed, "its exec: ENOENT".into())
             );
             assert_eq!(start_refused(&members, S::Running, b"under way").0, R::Running);
+        }
+
+        /// D277 for a swap now (D270 slice 4): a swap that restarts its member at once, whose next
+        /// generation its guest refused as it could not enter its working directory (gone: errno
+        /// 2), is refused `Workdir` in its restart's words: the member as its image declares it,
+        /// the directory and the errno. Its restart let go of its member, at generation 0 still.
+        #[test]
+        fn a_swap_whose_restart_could_not_enter_its_workdir_is_refused_typed() {
+            use protocol::members::{Start, StartAnswer, Unentered};
+            let dir = shards_testdir::TempDir::new("api-swap-workdir").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let live = Live {
+                members: &members,
+                ..live(&answers, dir.path(), link, None)
+            };
+            std::thread::scope(|scope| {
+                // Its VM and its guest: its member held, its SIGTERM taken, its generation ended,
+                // its next refused as its working directory is gone, then let go.
+                let guest = scope.spawn(|| {
+                    let hold = |held| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        let hold = protocol::members::Hold { member: 1, held };
+                        assert_eq!((m.kind, m.payload), (kind::MEMBER_HOLD, hold.encode().to_vec()));
+                    };
+                    hold(true);
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::EXEC_RUN);
+                    let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                    let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                    assert_eq!(
+                        (spec.builtin, spec.argv),
+                        (protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15))
+                    );
+                    let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                    shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    lock(&live.generations).ended.insert((1, 0));
+                    live.generations_moved.notify_all();
+                    let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                    assert_eq!(m.kind, kind::MEMBER_START);
+                    let start = Start::decode(&m.payload[1..]).unwrap();
+                    assert_eq!((start.member, start.generation), (1, 1));
+                    let gone = Unentered {
+                        member: 1,
+                        errno: 2,
+                        workdir: b"/work/proj".to_vec(),
+                    };
+                    started_told(&live, &StartAnswer::unentered(1, &gone).encode().unwrap());
+                    hold(false);
+                });
+                let ask = wire::SwapAsk {
+                    id: 1,
+                    change: wire::SwapChange::Restore {
+                        at: "/harness/codex".into(),
+                    },
+                    when: wire::SwapWhen::Now,
+                    patience: std::time::Duration::from_secs(60),
+                };
+                let (why, words) = swap(&live, &ask, scope).unwrap_err();
+                assert_eq!(why, wire::SwapRefusal::Workdir, "{words}");
+                assert!(words.starts_with("Harness codex: /work/proj: errno 2"), "{words}");
+                guest.join().unwrap();
+                assert_eq!(live.generation_of(1), 0);
+            });
         }
 
         /// D270 slice 3b: a restart starts its member's next generation once every channel of its

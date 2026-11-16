@@ -4496,6 +4496,74 @@ fn a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own() {
     guest.stop().unwrap();
 }
 
+/// D277 for a member's next generation (D270 slices 3b and 4): a harness that removed its own
+/// working directory as it ran (its project's subdirectory, shared and given it) is refused
+/// `Workdir` as it starts again, naming the directory and errno 2: by its restart, and by a swap
+/// that restarts it now (its image's own component given back). Each on a run of its own, as a
+/// refused restart ends its member whole.
+#[test]
+fn a_member_whose_workdir_is_gone_is_refused_workdir_as_it_starts_again() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-gone-home");
+    let proj = TempDir::new("api-gone-proj");
+    let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
+    let at = guest_at(&real);
+    let workdir = format!("{at}/work");
+    let removal = format!("rmdir:{workdir}");
+    build(&home, "api-gone:1", &["fs", &removal, "trap:TERM"], "");
+    let patience = Duration::from_secs(60);
+    // A run whose harness starts in its working directory, removes it, and says it is ready.
+    let gone = || {
+        std::fs::create_dir(real.join("work")).unwrap();
+        let mut s = spec(&home, "api-gone:1");
+        s.shares = vec![ImageShare {
+            host: real.clone(),
+            at: at.clone(),
+            read_only: false,
+            exec: true,
+            members: Some(PlugFor::Members(vec![codex()])),
+        }];
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: Some(workdir.clone()),
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        let guest = boot(&home, &s);
+        let stdout = BufReader::new(guest.take_output(&codex(), 0, Channel::Stdout).unwrap());
+        let (first, line) = line_within(&*guest, stdout);
+        assert_eq!(
+            line, "ready\n",
+            "its working directory removed, it waits for its SIGTERM"
+        );
+        assert!(!real.join("work").exists(), "removed by its harness");
+        // Its output's reader kept, so that its generation's last line (`got 15`) has room to
+        // end before its next starts.
+        (guest, first)
+    };
+    let refused_workdir = |what: &str, answer: Result<(), ImageRefusal>| match answer {
+        Err(ImageRefusal::Workdir(why)) => {
+            assert!(why.contains(&workdir) && why.contains("errno 2"), "{what}: {why}");
+        }
+        other => panic!("{what}: {other:?}"),
+    };
+    let (guest, first) = gone();
+    let restarted = ask(&*guest, |g| g.restart(&codex(), &[], patience));
+    refused_workdir("its restart", restarted.map(|_| ()));
+    assert_eq!(rest_within(&*guest, first), "got 15\n", "it ended on its SIGTERM");
+    drop(guest);
+    let (guest, first) = gone();
+    let swapped = ask(&*guest, |g| g.restore("/harness/codex", SwapWhen::Now, patience));
+    refused_workdir("its swap now", swapped.map(|_| ()));
+    assert_eq!(rest_within(&*guest, first), "got 15\n", "it ended on its SIGTERM");
+}
+
 /// D278 b3: a member given, as its run runs, a destination its ceiling allows and its image
 /// does not grant reaches it; given its image's grants back, its next connection is refused and
 /// every one after; a reach past its ceiling is refused typed (`Widening`), and one of a member
