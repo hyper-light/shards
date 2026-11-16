@@ -30245,8 +30245,9 @@ stream:
   SHA256-HEX` in place of a line per stream, and `shards port` lists `agent-control/udp`.
 
 Other runs keep step 5's endpoints, so nothing landed changes until a run asks. The budget the
-scope reserves is step 5's for every stream. It holds the one endpoint, whose handshake and
-datagram buffers are one connection's, not one per stream.
+scope reserves charges each stream its own buffers, as step 5's do. Its one endpoint's handshake
+and datagram buffers are charged once per connection it holds as it binds (`link_bytes`, D252's
+amendment of 2026-11-16), not once per stream.
 
 *Exec lanes* (`control::exec`; ROOT chose design (B), 2026-11-13). A command run in a member is a
 lane of its own, and its stdout, stderr and stdin are step 5's streams on lanes of their own, as a
@@ -30575,7 +30576,8 @@ copied):
   `Fault::Unsteered` is the refusal its controller matches.
 - *Its budget*: the run host's own (`Charge`, held to the host's available memory as the daemon's
   managed budget is), which its execs, its MCP connections and its member lanes are charged to,
-  and each of its members' stdio streams its endpoint serves (D252, amended 2026-11-16).
+  and each of its members' stdio streams its endpoint serves, and its endpoint's link once per
+  connection as it binds (D252, amended 2026-11-16).
   No new literal: a payload's size is its number's eight bytes, its flags' one and its spec's
   encoded length.
 
@@ -30605,8 +30607,8 @@ stdio lanes, against the daemon's:
 | A generation not its stream's | refused `Stale` | refused `Stale`: one past, let go, or one not started |
 | A stream revoked | refused `Closed` | refused `Closed`: cut before its end, sealed with no credit, a failed restart's |
 | Its member ended | its end: an output's `Finished`, a stdin's `InputEnded` | the same |
-| Its charge | the daemon's budget, each stream's `output_bytes` or `input_bytes` as its run starts, held for the run | its run host's budget, the same accounting as each stream is made, a past generation's given back once over |
-| No room for it | the run refused as it starts (`Admission::Insufficient`) | the stream let go (`no_room`), each lane to it refused `Capacity` |
+| Its charge | the daemon's budget: each stream's own buffers (`output_bytes`, `input_bytes`) as its run starts, its endpoint's link (`link_bytes`, once per connection) as it binds, held for the run | its run host's budget, the same accounting: its endpoint's link as it binds, each stream's own buffers as it is made, a past generation's given back once over |
+| No room for it | the run refused as it starts (`Admission::Insufficient`) | a first generation's stream let go (`no_room`), each lane to it refused `Capacity`; a restart's next generation refused `Capacity` before it starts; its endpoint's link, the run not started (`Cause::Boot`) |
 
 An ask (exec, member, MCP, log, socket) names the endpoint's run and its generation, or any
 generation whose streams it serves (`Lanes::in_scope`), as a controller names its first
@@ -34407,11 +34409,12 @@ orch-stdio-2).
 - *What each stream is charged.* The daemon's own account, now one function of each kind in
   daemon/managed.rs, which the daemon's reservation and the run host both call (R12). An output,
   `output_bytes`: its record twice (its VM process's capture worker's and its host's), what its
-  endpoint sends of it unacknowledged, a TLS handshake's crypto, its control frame and a datagram
-  each way, each as its admission says, and its host's record of it; then `storage_excess`, what
-  its record's allocation holds past that, once it is made. A stdin, `input_bytes`: its record,
-  its taken frames, what its endpoint holds of its owner's stream (a record's head, the record
-  and an end), a handshake's crypto, a datagram each way and its host's record of it. Its
+  endpoint sends of it unacknowledged and its control frame, each as its admission says, and its
+  host's record of it; then `storage_excess`, what its record's allocation holds past that, once
+  it is made. A stdin, `input_bytes`: its record, its taken frames, what its endpoint holds of its
+  owner's stream (a record's head, the record and an end) and its host's record of it. The TLS
+  handshake and datagrams of the connection it rides are its endpoint's, charged once per
+  connection (the amendment below; this one charged them per stream). Its
   admission is what its endpoint admits it (`member_output`, `member_input`: `exec_admissions`);
   its host's record is its entry in the run host's map of them, as the daemon's is its `Output`
   or `Input`. Each is held by the daemon's guard (`execs::Held`, now generic over how it holds
@@ -34433,8 +34436,10 @@ orch-stdio-2).
   guest is credited none of that output; its stdin's relay finds it gone and ends its member's
   input connection, so its member reads its end. The run, its other streams and their lanes go
   on. The daemon refuses its run whole where its streams have no room (`Admission::Insufficient`
-  as it starts); a run host's streams come and go with its members' generations, so each is
-  refused alone. No wire changes: the image channel stays at version 44.
+  as it starts); a run host's streams come and go with its members' generations, so each of a
+  first generation's is refused alone, and a restart's next generation is refused whole before
+  it starts (the amendment below). This amendment changed no wire: the image channel stayed at
+  version 44.
 - *Literals.* None new (R03): the daemon's bound and derivation apply.
 - *Not counted* (owed to ROOT, R14). The run host's capture reader reads each record into a
   buffer of its own and copies it into its lane's: a third record while one is in flight, where
@@ -34442,12 +34447,11 @@ orch-stdio-2).
   daemon serves its streams on one credit worker. And its endpoint's own socket queues, which
   the daemon charges a run's endpoint (`kernel_buffer_bytes`) and the run host's endpoint holds
   with or without stdio, uncharged before this amendment too.
-- *Counted past what is held* (owed to ROOT, R03/R14). Each stream is charged a TLS handshake's
-  crypto (RFC 8446's bound, 16 MiB) and a datagram each way, as each of step 5's endpoints of one
-  stream had a connection of its own; an agent-control endpoint's streams share its one
-  connection, whose transport admits the most any stream does (`control::Endpoint::bind`), not
-  their sum. The daemon's runs' endpoints are charged so too; this amendment applies its account
-  as asked, and leaves its derivation for an agent-control endpoint to ROOT.
+- *Counted past what is held* (resolved by the amendment below). Each stream was charged a TLS
+  handshake's crypto (RFC 8446's bound, 16 MiB) and a datagram each way, as each of step 5's
+  endpoints of one stream had a connection of its own, where an agent-control endpoint's streams
+  share its connection, whose transport admits the most any stream does
+  (`control::Endpoint::bind`), not their sum.
 - *Tested* (unit, written, not run: the person's rule of 2026-11-16).
   `daemon::managed::terminal_tests::a_streams_charge_is_what_its_admission_holds_and_its_hosts_record`
   (each account's parts, and none past a u64); shards-remote
@@ -34463,6 +34467,97 @@ orch-stdio-2).
   api_run::`), clippy on the seven targets;
   a real-VM run of a harness's stdio under a budget with no room (its lanes refused `Capacity`)
   and with room (charged, and given back across a restart), on HVF, KVM and WHP.
+
+**Amended: a link charged once per connection, a restart with no room refused** (2026-11-16,
+ROOT's two decisions; lane lane-charge).
+- *Why.* The account above charged every stream a TLS handshake's crypto, 16,777,219 bytes, and
+  a datagram each way, 65,527 bytes each, as each of step 5's endpoints of one stream was a
+  connection of its own. An agent-control endpoint's lanes share its connection, whose transport
+  admits the largest handshake and datagram any of its streams admits, not their sum
+  (`control::Endpoint::bind`). So N lanes reserved N × 16,908,273 bytes of link, where their
+  endpoint holds two connections' at most, and a small host could refuse lanes it had room for.
+  And a restart whose
+  next generation had no room still started it: that generation's lanes were refused `Capacity`,
+  none credited its output, and its member blocked once its pipe filled.
+- *Decided (ROOT).*
+  1. A handshake is charged once per connection, as the connection's place is made: as its
+     endpoint binds, before its driver makes any connection. Each lane is charged its own buffers
+     alone. The basis is unchanged: D180's and D238's ceiling, RFC 8446 §4's largest handshake
+     message, now charged per connection (R03: no new number). The daemon's runs and the run
+     host are charged alike, by the same functions (R12).
+  2. A restart whose next generation's lanes cannot be charged is refused, typed `Capacity`,
+     before that generation starts.
+- *A link's charge* (`link_bytes`, daemon/managed.rs). It has two parts, each as the endpoint's
+  link admits it (`control::Endpoint::link`: the most its streams admitted, or the cited link
+  where it serves no stream):
+  - a handshake's crypto for each connection the endpoint holds at once;
+  - a datagram each way: its driver's send queue (`DriverLimits::queued_datagram_bytes`) and its
+    receive buffer, one of each per driver, not per lane.
+
+  The connections an endpoint holds at once:
+  - an agent-control endpoint: `control::CONNECTIONS`, two (D238: the one it serves, and the one
+    that replaces it, each with its own TLS state while both are open). Now public.
+  - an endpoint of one stream: `managed::CONNECTIONS`, one (`max_incoming(1)`). Now named where
+    its driver's limits use it.
+
+  A lane, `output_bytes` or `input_bytes`, is charged its records, its window, its control frame
+  and its host's record of it, nothing of its link. On one agent-control endpoint, N lanes cost
+  N lane charges and one link: 2 × 16,777,219 + 2 × 65,527 = 33,685,492 bytes. Under the account
+  above, the same N lanes cost N × 16,908,273 bytes on top of their lane charges.
+- *Where it is charged.*
+  - The daemon, as its run starts: each stream's own buffers in its reservation; its agent-control
+    endpoint's link with its kernel queues as `bind_agent` returns; each of step 5's endpoints'
+    link with its kernel queues as it binds, one connection each. A stream the daemon drains
+    itself has no endpoint, and is charged no link.
+  - The run host: its endpoint's link as `bind_control` returns, before its driver runs
+    (`charge_link`), held while the run is served. With no room, the run does not start: its
+    endpoint could not be made (`Cause::Boot`), as with any endpoint that could not be bound.
+    The link is charged whatever its endpoint serves: socket lanes, execs, MCP connections and
+    stdio alike. Before this, the run host charged no link unless it served stdio.
+- *A restart with no room* (R04). `Stdio::join` charges each of the next generation's streams as
+  it makes them. A stream with no room is let go (`no_room`, its lanes refused `Capacity`), and
+  the join is refused `RestartRefusal::Capacity` before `MEMBER_START` is sent, so the generation
+  never starts. Every stream of that generation is made first, so all its lanes answer alike.
+  The restart's refusal then runs as any refused restart's does:
+  - its hold is let go, so the end its last generation had ends its member whole;
+  - the next generation's streams are revoked (`abort_generation`), and what any of them held of
+    the budget is given back at once, as their buffers go with them.
+
+  The image channel's version 46 appends the refusal (tag 7), so a side that reads none refuses
+  the run as it is asked. shards-api surfaces it as
+  `ImageRefusal::Restart(RestartRefusal::Capacity, _)`. A swap that restarts its member now
+  (`SwapWhen::Now`) maps it to `SwapRefusal::Failed`, with its words, as it maps every restart
+  refusal but `Running`. A first generation's streams are made while its members already run, so
+  each keeps the per-stream refusal above.
+- *Literals.* None new (R03): RFC 8446 §4's bound (D180, D238); D238's `CONNECTIONS`; one
+  connection for an endpoint of one stream; D180's datagram. The refusal's tag is the next free
+  one.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  - `daemon::managed::terminal_tests::a_streams_charge_is_what_its_admission_holds_and_its_hosts_record`:
+    each lane's charge has none of its link, and a larger handshake or datagram charges a lane no
+    more; a link's charge is one handshake per connection and a datagram each way; none past a
+    u64.
+  - shards-remote `control::tests::lanes::its_windows_are_its_streams_own_summed`: an endpoint
+    tells the link it was bound with, the cited one where it serves no stream, the most its
+    streams admitted otherwise.
+  - `api_run::hosted::tests::an_orchestrators_endpoint_is_charged_its_link_once_whatever_lanes_it_carries`:
+    the same charge with three member streams or none, given back whole.
+  - `api_run::hosted::tests::a_restart_whose_next_generation_has_no_room_is_refused_capacity_before_it_starts`:
+    the restart refused `Capacity`; its VM asked to hold the member, then to let it go, and never
+    asked to start its next generation; the first generation's charge given back as the next
+    joined; the next generation's never held; the budget whole after the run.
+  - shards-api `image::wire::tests::a_restart_round_trips_and_its_malformed_answers_are_refused`:
+    `Capacity` round-trips, and tag 8 is refused.
+- *Not counted* (owed to ROOT, R14), as the amendment above left it: the run host's endpoint's
+  socket queues, which the daemon charges with its link (`kernel_buffer_bytes`).
+- *Owed* (ROOT).
+  - The suites: `cargo test --profile test-release -p shards-remote --lib -- control:: managed::`,
+    `cargo test --profile test-release -p shards-api --lib -- image::wire::`, and
+    `cargo test --profile test-release -p shards --lib -- daemon::managed:: api_run::`.
+  - Clippy on the seven targets.
+  - A real-VM restart of a harness whose next generation has no room (refused `Capacity`, its
+    member ended, nothing of its next generation started), and a daemon's agent-control run's
+    budget with several owned streams (one link), on HVF, KVM and WHP.
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 

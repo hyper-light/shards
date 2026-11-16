@@ -443,18 +443,16 @@ impl Drop for Charge {
 
 /// What a run's host is charged for one member output its endpoint serves, by D180's ledger
 /// (docs/research/measurements/managed-output/admission.md): its record twice, its VM process's
-/// capture worker's and its host's; what the endpoint sends of it unacknowledged; a TLS
-/// handshake's crypto; its control frame; a datagram each way, each as `admitted` admits it;
-/// and `host`, its host's own record of it. A daemon's run's owned output and an orchestrator's
-/// run's member output (api_run.rs, D252) alike. None where it overflows.
+/// capture worker's and its host's; what the endpoint sends of it unacknowledged; its control
+/// frame, each as `admitted` admits it; and `host`, its host's own record of it. Its own buffers
+/// alone: the connection it rides is charged once, as its endpoint binds ([`link_bytes`]). A
+/// daemon's run's owned output and an orchestrator's run's member output (api_run.rs, D252)
+/// alike. None where it overflows.
 pub(crate) fn output_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
     [
         admitted.record_bytes,
         admitted.record_bytes,
-        admitted.handshake_bytes,
         shards_remote::managed::CONTROL_BYTES,
-        admitted.datagram_bytes,
-        admitted.datagram_bytes,
         host,
     ]
     .into_iter()
@@ -465,25 +463,28 @@ pub(crate) fn output_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
 
 /// What a run's host is charged for one member stdin its endpoint serves, as [`output_bytes`]
 /// counts an output: its one record; what the endpoint sends unacknowledged (its taken frames);
-/// what it holds of its owner's stream, a record's head, the record and an end; a TLS
-/// handshake's crypto; a datagram each way; and `host`, its host's own record of it. None where
-/// it overflows.
+/// what it holds of its owner's stream, a record's head, the record and an end; and `host`, its
+/// host's own record of it. Its own buffers alone, as an output's. None where it overflows.
 pub(crate) fn input_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
     let owners = input::RECORD_HEAD
         .checked_add(admitted.record_bytes)?
         .checked_add(input::END_BYTES)?;
-    [
-        admitted.record_bytes,
-        owners,
-        admitted.handshake_bytes,
-        admitted.datagram_bytes,
-        admitted.datagram_bytes,
-        host,
-    ]
-    .into_iter()
-    .try_fold(admitted.transport_bytes, |sum, n| {
-        sum.checked_add(u64::try_from(n).ok()?)
-    })
+    [admitted.record_bytes, owners, host]
+        .into_iter()
+        .try_fold(admitted.transport_bytes, |sum, n| {
+            sum.checked_add(u64::try_from(n).ok()?)
+        })
+}
+
+/// What a run's host is charged for an endpoint's link, whatever lanes it carries, as it binds
+/// the endpoint (D252): a TLS handshake's crypto for each of the `connections` it holds at once
+/// (D180's ceiling, RFC 8446 §4's largest handshake message), and a datagram each way, its
+/// driver's, as `admitted` admits them. None where it overflows.
+pub(crate) fn link_bytes(admitted: &Admitted, connections: usize) -> Option<u64> {
+    let handshakes = admitted.handshake_bytes.checked_mul(connections)?;
+    [handshakes, admitted.datagram_bytes, admitted.datagram_bytes]
+        .into_iter()
+        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
 }
 
 /// What output `producer`'s record holds past the `record` bytes it was admitted, its
@@ -1709,14 +1710,18 @@ impl<D: Disk> Daemon<D> {
             }
             let exec_admitted = exec_admissions();
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted, mcps)?;
-            // One driver's socket, and the waker every stream's control shares.
+            // One driver's socket, and the waker every stream's control shares; and its link,
+            // each connection's handshake once, whatever lanes it carries (D252).
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
             if let Some((_, control)) = served.outputs.first() {
                 kernel = kernel
                     .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
                     .ok_or_else(|| io::Error::other("agent control kernel queue overflow"))?;
             }
-            charge.grow(kernel)?;
+            let held = link_bytes(&endpoint.link(), control::CONNECTIONS)
+                .and_then(|link| link.checked_add(kernel))
+                .ok_or_else(|| io::Error::other("agent control link overflow"))?;
+            charge.grow(held)?;
             let control::Served {
                 outputs: served_outputs,
                 inputs: served_inputs,
@@ -1746,6 +1751,11 @@ impl<D: Disk> Daemon<D> {
                 member_lanes,
             ));
         } else {
+            // Each stream's endpoint is a connection of its own, its handshake its own (D252).
+            let output_link = link_bytes(&admitted, shards_remote::managed::CONNECTIONS)
+                .ok_or_else(|| io::Error::other("capture link overflow"))?;
+            let input_link = link_bytes(&input_admitted, shards_remote::managed::CONNECTIONS)
+                .ok_or_else(|| io::Error::other("input link overflow"))?;
             for &member in owned {
                 for channel in [Channel::Stdout, Channel::Stderr] {
                     let scope = Scope {
@@ -1756,12 +1766,13 @@ impl<D: Disk> Daemon<D> {
                     };
                     let (endpoint, producer, control) =
                         Endpoint::bind(&identity, key, scope, admitted).map_err(Failure::Endpoint)?;
-                    let kernel = endpoint
+                    let held = endpoint
                         .kernel_buffer_bytes()
                         .map_err(io::Error::other)?
                         .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                        .and_then(|kernel| kernel.checked_add(output_link))
                         .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
-                    charge.grow(kernel)?;
+                    charge.grow(held)?;
                     let excess = storage_excess(&producer, capacity)?;
                     if excess > 0 {
                         charge.grow(excess)?;
@@ -1777,12 +1788,13 @@ impl<D: Disk> Daemon<D> {
                 };
                 let (endpoint, relay, control) = input::Endpoint::bind(&identity, key, scope, input_admitted)
                     .map_err(Failure::Endpoint)?;
-                let kernel = endpoint
+                let held = endpoint
                     .kernel_buffer_bytes()
                     .map_err(io::Error::other)?
                     .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                    .and_then(|kernel| kernel.checked_add(input_link))
                     .ok_or_else(|| io::Error::other("input kernel queue overflow"))?;
-                charge.grow(kernel)?;
+                charge.grow(held)?;
                 staged_inputs.push((scope, endpoint.address, Some(endpoint), relay, control));
             }
         }
@@ -3008,10 +3020,11 @@ mod terminal_tests {
     }
 
     /// D252: one account of a member stream an endpoint serves, a daemon's run's and an
-    /// orchestrator's run host's alike: an output's record twice, its window, a handshake's
-    /// crypto, its control frame, a datagram each way and its host's record of it; a stdin's
-    /// record, its taken frames, what it holds of its owner's stream, a handshake's crypto, a
-    /// datagram each way and its host's record of it; none where they overflow.
+    /// orchestrator's run host's alike, its own buffers alone: an output's record twice, its
+    /// window, its control frame and its host's record of it; a stdin's record, its taken
+    /// frames, what it holds of its owner's stream and its host's record of it. Its endpoint's
+    /// link apart, once whatever lanes it carries: a handshake's crypto for each connection it
+    /// holds, and a datagram each way. None where they overflow.
     #[test]
     fn a_streams_charge_is_what_its_admission_holds_and_its_hosts_record() {
         let admitted = Admitted {
@@ -3020,16 +3033,26 @@ mod terminal_tests {
             handshake_bytes: 1000,
             datagram_bytes: 7,
         };
-        let control = shards_remote::managed::CONTROL_BYTES as u64;
-        assert_eq!(
-            output_bytes(&admitted, 50),
-            Some(113 + 2 * 100 + 1000 + control + 2 * 7 + 50)
-        );
+        let frame = shards_remote::managed::CONTROL_BYTES as u64;
+        assert_eq!(output_bytes(&admitted, 50), Some(113 + 2 * 100 + frame + 50));
         let owners = (input::RECORD_HEAD + 100 + input::END_BYTES) as u64;
+        assert_eq!(input_bytes(&admitted, 50), Some(113 + 100 + owners + 50));
         assert_eq!(
-            input_bytes(&admitted, 50),
-            Some(113 + 100 + owners + 1000 + 2 * 7 + 50)
+            link_bytes(&admitted, shards_remote::managed::CONNECTIONS),
+            Some(1000 + 2 * 7)
         );
+        assert_eq!(
+            link_bytes(&admitted, control::CONNECTIONS),
+            Some(2 * 1000 + 2 * 7)
+        );
+        // A lane holds none of its link: a larger handshake or datagram charges it no more.
+        let larger = Admitted {
+            handshake_bytes: 2000,
+            datagram_bytes: 9,
+            ..admitted
+        };
+        assert_eq!(output_bytes(&larger, 50), output_bytes(&admitted, 50));
+        assert_eq!(input_bytes(&larger, 50), input_bytes(&admitted, 50));
         let past = Admitted {
             transport_bytes: u64::MAX,
             ..admitted
@@ -3038,9 +3061,11 @@ mod terminal_tests {
         assert_eq!(input_bytes(&past, 0), None);
         let unbounded = Admitted {
             record_bytes: usize::MAX,
+            handshake_bytes: usize::MAX,
             ..admitted
         };
         assert_eq!(input_bytes(&unbounded, 0), None);
+        assert_eq!(link_bytes(&unbounded, 2), None);
     }
 
     #[test]

@@ -743,7 +743,9 @@ pub trait ImageGuest: Send + Sync {
     /// namespaces, server instance and volumes its generations keep, its input its own where it
     /// has one: the generation started, whose output, input and end are taken by it. Refused
     /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
-    /// way, one that starts once (a member given a port among others, D122); and as
+    /// way, one that starts once (a member given a port among others, D122), and one whose next
+    /// generation's stdio lanes its run host's budget had no room for (`Capacity`, D252), that
+    /// generation never started and its member then ended whole; and as
     /// [`ImageRefusal::Workdir`] where its next generation could not enter its working directory
     /// (D277), its member then ended whole.
     fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)

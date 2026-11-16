@@ -119,8 +119,11 @@ pub use shards_abi::run::nesting::Ready;
 /// none reads; 45, a restart's next generation that could not enter its working directory
 /// refused typed ([`RestartRefusal::Workdir`], D277), as 43 refuses a first generation's, so
 /// that a side that reads no such refusal refuses the run as it is asked, rather than its
-/// restart's answer breaking the channel.
-pub const VERSION: u8 = 45;
+/// restart's answer breaking the channel; 46, a restart whose next generation's stdio lanes its
+/// run host's budget has no room for refused typed before that generation starts
+/// ([`RestartRefusal::Capacity`], D252), so that a side that reads no such refusal refuses the
+/// run as it is asked, as 45 does.
+pub const VERSION: u8 = 46;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1375,6 +1378,10 @@ pub enum RestartRefusal {
     /// [`Cause::Workdir`] refuses a first generation that could not: its run host's words name
     /// the member, the directory and the errno.
     Workdir = 6,
+    /// Its run host's budget had no room for its next generation's stdio lanes (D252), which
+    /// its endpoint serves where its run's control asked for them: that generation was not
+    /// started, its member let go as any refused restart's is. Appended in version 46.
+    Capacity = 7,
 }
 
 /// A restart's outcome, by its ask's id: the generation started, or why not.
@@ -3522,6 +3529,7 @@ impl RestartAnswer {
                     4 => RestartRefusal::Unsupported,
                     5 => RestartRefusal::Failed,
                     6 => RestartRefusal::Workdir,
+                    7 => RestartRefusal::Capacity,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a restart's refusal",
@@ -5345,13 +5353,17 @@ mod tests {
                 RestartRefusal::Workdir,
                 "Harness codex: /Users/ada/proj: errno 2".to_owned(),
             )),
+            Err((
+                RestartRefusal::Capacity,
+                "no room for its generation 1's stdio lanes".to_owned(),
+            )),
         ] {
             let answer = RestartAnswer { id: 9, result };
             assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
         assert!(matches!(
-            RestartAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
-            Err(WireError::Tag { tag: 7, .. })
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 8, .. })
         ));
         assert!(matches!(
             RestartAnswer::decode(&[0, 0, 0, 9, 2]),
