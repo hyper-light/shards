@@ -90,6 +90,9 @@ impl TryFrom<u32> for Reason {
 
 pub const ALPN: &[u8] = b"shards-managed-output/1";
 pub const DATAGRAM_BYTES: usize = crate::net::DATAGRAM;
+/// How many connections an endpoint of one stream holds: its owner's one (`max_incoming(1)`),
+/// whose handshake its host's budget holds as it binds (D252).
+pub const CONNECTIONS: usize = 1;
 
 const FRAME_HEAD: usize = size_of::<u8>() + size_of::<u32>();
 const OFFSET_BYTES: usize = size_of::<u64>();
@@ -822,7 +825,7 @@ impl Endpoint {
             Some(config),
             handler,
             DriverLimits {
-                connections: 1,
+                connections: CONNECTIONS,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
             },

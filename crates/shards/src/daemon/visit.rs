@@ -148,7 +148,15 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
             prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent, false, false)?;
+            let link = self.start_shares(
+                threads,
+                id,
+                &opened.dirs,
+                &opened.bounds,
+                &prepared.parent,
+                false,
+                false,
+            )?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
             (link, opened.held)
         } else {

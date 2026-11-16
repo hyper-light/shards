@@ -7,7 +7,9 @@
 //! them the home's private directory, where a run restored from a save keeps the files its
 //! guest held that no path reaches (D176); and each share's mode (`ro` or `rw`) and the one
 //! name of it shared (empty for all of it) as arguments. It sends the VM a connection for each share (`kind::SHARE_ENDS`), answers
-//! each on a thread of its own, and exits once they have all closed, as its VM ends.
+//! each on a thread of its own, and exits once they have all closed, as its VM ends. A
+//! bounded volume's share is held to its bound (D281) in the count its volume's count file
+//! keeps, which every share process serving the volume maps ([`BOUND`]).
 //!
 //! `shards share --join` serves a microVM's join share instead (D119): the connection its
 //! VM asks it on as descriptor 3, the daemon's as descriptor 4, an empty directory, the
@@ -33,6 +35,7 @@ use std::io::Write as _;
 use std::os::fd::{FromRawFd as _, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 
@@ -45,10 +48,12 @@ type Link = shards_ipc::Stream;
 
 use shards_vmm::devices::virtio::fs::{answer, headroom::Headroom, server::Server};
 
-/// A share: its mode and its one name, if it is a file alone.
+/// A share: its mode, its one name, if it is a file alone, and its bound with its volume's
+/// count file, if it is a bounded volume's (D281).
 struct Given {
     read_only: bool,
     only: Option<CString>,
+    bound: Option<(u64, PathBuf)>,
 }
 
 /// Whether `args`, those after `share`, begin with `--moved`, taken out: its shares are
@@ -72,6 +77,78 @@ pub(crate) const MOVED: &str = "--moved";
 /// on Unix 5 + n, past the home's private directory; on Windows 5 + 2n, past each share's
 /// stream; as records its guest's init takes as they are (`run::builtin::NOTICE`).
 pub(crate) const NOTICES: &str = "--notices";
+
+/// The flag before a share process's shares that bounds one of them (D281), after
+/// [`MOVED`] and [`NOTICES`]: its three arguments the share's place among them, the bytes its
+/// files may take, and its volume's count file, which its server maps. One for each bounded
+/// share.
+pub(crate) const BOUND: &str = "--bound";
+
+/// The [`BOUND`] flags a share process is started with for `bounds` (D281), each a bounded
+/// volume's share by its place among that process's shares.
+pub(crate) fn bound_args<'a>(
+    bounds: impl Iterator<Item = (usize, &'a crate::volumes::Bounded)>,
+) -> Vec<OsString> {
+    bounds
+        .flat_map(|(place, b)| {
+            [
+                OsString::from(BOUND),
+                OsString::from(place.to_string()),
+                OsString::from(b.limit.to_string()),
+                b.count.clone().into_os_string(),
+            ]
+        })
+        .collect()
+}
+
+/// The bounds [`BOUND`] gives before the shares, taken out with it: each share's place, its
+/// bytes and its count file.
+fn take_bounds(args: &mut Vec<OsString>) -> Result<Vec<(usize, u64, PathBuf)>, String> {
+    let mut bounds = Vec::new();
+    while args.first().is_some_and(|a| a == BOUND) {
+        let rest = args.split_off(args.len().min(4));
+        let taken = std::mem::replace(args, rest);
+        let [_, share, bytes, count] = <[OsString; 4]>::try_from(taken)
+            .map_err(|_| "share: --bound takes a share, its bytes and its count file".to_string())?;
+        let number = |a: &OsString, what: &str| {
+            a.to_str()
+                .and_then(|t| t.parse::<u64>().ok())
+                .ok_or_else(|| format!("share: --bound: {what} {a:?}"))
+        };
+        let share = usize::try_from(number(&share, "share")?)
+            .map_err(|_| "share: --bound: a share past this machine's count".to_string())?;
+        bounds.push((share, number(&bytes, "bytes")?, PathBuf::from(count)));
+    }
+    Ok(bounds)
+}
+
+/// The shares `args` give, those after `share` once [`MOVED`] and [`NOTICES`] are taken
+/// out: [`BOUND`]'s bounds given to the shares they name, then each share's mode and name.
+fn given(args: &mut Vec<OsString>) -> Result<Vec<Given>, String> {
+    let bounds = take_bounds(args)?;
+    let mut given = parse(args)?;
+    for (share, bytes, count) in bounds {
+        let g = given
+            .get_mut(share)
+            .ok_or_else(|| format!("share: --bound: no share {share}"))?;
+        g.bound = Some((bytes, count));
+    }
+    Ok(given)
+}
+
+/// `server` held to `bytes` (D281), charged in the count its volume's count file `count`
+/// keeps, mapped for as long as this process serves it, as every server of the volume maps
+/// it.
+fn bound(server: &Server, bytes: u64, count: &Path) -> Result<(), String> {
+    let said = |e: std::io::Error| format!("{}: {e}", count.display());
+    let file = std::fs::File::options()
+        .read(true)
+        .write(true)
+        .open(count)
+        .map_err(said)?;
+    let charge = shards_vmm::devices::virtio::fs::bound::mapped(&file).map_err(said)?;
+    server.bound(bytes, charge)
+}
 
 /// The tags [`NOTICES`] names before the shares, taken out with it: none where it is not
 /// there; an error where it names none.
@@ -149,7 +226,11 @@ fn parse(args: &[OsString]) -> Result<Vec<Given>, String> {
                 }
                 bytes => Some(CString::new(bytes).map_err(|_| format!("share: name {name:?}"))?),
             };
-            Ok(Given { read_only, only })
+            Ok(Given {
+                read_only,
+                only,
+                bound: None,
+            })
         })
         .collect()
 }
@@ -201,7 +282,7 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let moved = take_moved(&mut args);
-    let given = match parse(&args) {
+    let given = match given(&mut args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
     };
@@ -229,6 +310,9 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
                 .map_err(|e| format!("share {i}'s stream: {e}"))?;
             let server = Server::with_budget(dir, g.read_only, g.only, budget)
                 .map_err(|e| format!("share {i}: {e}"))?;
+            if let Some((bytes, count)) = &g.bound {
+                bound(&server, *bytes, count).map_err(|e| format!("share {i}: its bound: {e}"))?;
+            }
             if moved {
                 server.restores_moved();
             }
@@ -302,7 +386,7 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let moved = take_moved(&mut args);
-    let given = match parse(&args) {
+    let given = match given(&mut args) {
         Ok(given) => given,
         Err(e) => return failed(&e),
     };
@@ -397,6 +481,11 @@ pub fn share(args: impl Iterator<Item = OsString>) -> ExitCode {
         };
         match Server::with_budget(dir, g.read_only, g.only, budget) {
             Ok(server) => {
+                if let Some((bytes, count)) = &g.bound
+                    && let Err(e) = bound(&server, *bytes, count)
+                {
+                    return failed(&format!("share {i}: its bound: {e}"));
+                }
                 server.keep_ghosts_in(kept);
                 if moved {
                     server.restores_moved();
@@ -679,6 +768,28 @@ mod tests {
         assert!(parse(&args[..3]).is_err());
         let bad: Vec<OsString> = ["rw", "a/b"].iter().map(OsString::from).collect();
         assert!(parse(&bad).is_err());
+    }
+
+    /// D281: each bound before the shares goes to the share it names, with its bytes and its
+    /// count file; the others take none; one cut short, one of no number and one naming no
+    /// share are refused.
+    #[test]
+    fn bounds_go_to_the_shares_they_name() {
+        let args = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };
+        let mut all = args(&["--bound", "1", "4096", "/h/volumes/.v.charge", "ro", "", "rw", ""]);
+        let shares = given(&mut all).unwrap();
+        assert!(shares[0].bound.is_none());
+        assert_eq!(
+            shares[1].bound,
+            Some((4096, PathBuf::from("/h/volumes/.v.charge")))
+        );
+        for bad in [
+            &["--bound", "0", "4096"][..],
+            &["--bound", "0", "lots", "/c", "rw", ""],
+            &["--bound", "1", "4096", "/c", "rw", ""],
+        ] {
+            assert!(given(&mut args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     /// A joiner's volumes are served while its link is open, a malformed one refused and

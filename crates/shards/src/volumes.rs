@@ -573,11 +573,22 @@ impl Volume {
     pub fn is_anonymous(&self) -> bool {
         self.anonymous || self.labels.contains_key(ANONYMOUS)
     }
+
+    /// What its files may take (D281): its `size` option's bytes, read as the local driver
+    /// reads it (go-units' RAMInBytes); none where it has none, or one of no bytes.
+    pub fn bound(&self) -> Result<Option<u64>, String> {
+        let Some(size) = self.options.get("size") else {
+            return Ok(None);
+        };
+        let bytes = shards_cmdline::resources::ram_in_bytes(size)?;
+        Ok(u64::try_from(bytes).ok().filter(|b| *b > 0))
+    }
 }
 
 /// The local driver's validateOpts (daemon/volume/local/local_unix.go): `type`, `o`,
-/// `device` and `size`, `device` and `type` given together and with `o`; a size wants
-/// quotas, which shards' volumes have none of, and is refused.
+/// `device` and `size`, `device` and `type` given together and with `o`. A size is the
+/// volume's bound, which the servers of its shares hold as its files are written (D281),
+/// where the local driver wants its host's quotas and refuses one without them.
 pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
     for k in opts.keys() {
         if !matches!(k.as_str(), "type" | "o" | "device" | "size") {
@@ -585,10 +596,7 @@ pub fn validate_options(opts: &BTreeMap<String, String>) -> Result<(), String> {
         }
     }
     if let Some(size) = opts.get("size") {
-        let bytes = shards_cmdline::resources::ram_in_bytes(size)?;
-        if bytes > 0 {
-            return Err("quota size requested but no quota support".into());
-        }
+        shards_cmdline::resources::ram_in_bytes(size)?;
     }
     // mandatoryOpts, a Go map: whichever is missing first; each check names one.
     for (opt, required) in [
@@ -648,6 +656,125 @@ impl Store {
     /// never waiting for that run to end.
     pub fn alone(&self, name: &str) -> Result<Option<Locked>, String> {
         self.locking(name, Locked::try_hold)
+    }
+
+    /// Where volume `name`'s count is kept (D281): `.NAME.charge`, beside its lock file, a
+    /// name no volume takes and no removal's. Never removed, so that every holder of the
+    /// name counts in one file.
+    fn counts(&self, name: &str) -> PathBuf {
+        self.root.join(format!(".{name}.charge"))
+    }
+
+    /// Volume `name`'s count file, made where missing, opened to be mapped.
+    fn count_file(&self, name: &str) -> Result<std::fs::File, String> {
+        let path = self.counts(name);
+        std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Volume `name`, held ([`Holds`]), counted for a run whose share of it serves `dir`
+    /// (D281), beside every other run that does: its count file held shared for the hold's
+    /// life, and its bound in force. Its first holder, which finds none other holding it (an
+    /// exclusive try, never waited for), sets the bound `asked` names where it is another,
+    /// and walks `dir` for what its files take where it is bounded, writing that before any
+    /// server serves them; a holder that comes as the walk runs waits for it, as the lock
+    /// wakes it. So a holder that ended without giving back what it held, however it ended,
+    /// leaves no count past the volume's next first holder. Refused where `asked` names a
+    /// bound other than the one its holders serve it with. Callers hold no [`lock`], which
+    /// a change of its bound takes.
+    pub fn count(&self, name: &str, dir: &Path, asked: Option<u64>) -> Result<(Locked, Option<u64>), String> {
+        use shards_vmm::devices::virtio::fs::{bound, server};
+        let said = |e: std::io::Error| format!("{}: {e}", self.counts(name).display());
+        loop {
+            if let Some(alone) = Locked::try_hold(self.count_file(name)?).map_err(said)?
+                && self.bound_to(name, asked)?.is_some()
+            {
+                let opened =
+                    shards_vmm::platform::open_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                let walked = server::charge_of_dir(opened).map_err(|e| format!("volume {name}: {e}"))?;
+                bound::store(&alone, walked).map_err(said)?;
+            }
+            let held = Locked::shared(self.count_file(name)?).map_err(said)?;
+            let limit = self
+                .get(name)
+                .ok_or_else(|| format!("get {name}: no such volume"))?
+                .bound()?;
+            if let Some(asked) = asked
+                && Some(asked) != limit
+            {
+                return Err(format!(
+                    "volume {name} is served with {}: its bound changes only while no run holds it",
+                    limit.map_or("no bound".to_string(), |l| format!("a bound of {l} bytes"))
+                ));
+            }
+            if limit.is_none() || bound::counted(&held).map_err(said)? {
+                return Ok((held, limit));
+            }
+            // Its walker ended before it wrote what it found: walked again.
+        }
+    }
+
+    /// What volume `v`'s files take by its bound's measure (D281), as its listing reads it:
+    /// the count its servers share, where a run holds it bounded; else walked now. A named
+    /// one none holds is walked holding its count file alone, the count written as a first
+    /// holder writes it, so that a holder that waited meanwhile finds it counted; an
+    /// anonymous one, which keeps no count file, is walked alone.
+    pub fn charge(&self, v: &Volume) -> Result<u64, String> {
+        use shards_vmm::devices::virtio::fs::{bound, server};
+        let name = v.name.as_str();
+        let walk = || -> Result<u64, String> {
+            let data = self.data(name);
+            let dir =
+                shards_vmm::platform::open_dir(&data).map_err(|e| format!("{}: {e}", data.display()))?;
+            server::charge_of_dir(dir).map_err(|e| format!("volume {name}: {e}"))
+        };
+        if v.is_anonymous() {
+            return walk();
+        }
+        let said = |e: std::io::Error| format!("{}: {e}", self.counts(name).display());
+        match Locked::try_hold(self.count_file(name)?).map_err(said)? {
+            Some(alone) => {
+                let walked = walk()?;
+                bound::store(&alone, walked).map_err(said)?;
+                Ok(walked)
+            }
+            None => {
+                let file = self.count_file(name)?;
+                if v.bound()?.is_some() && bound::counted(&file).map_err(said)? {
+                    bound::load(&file).map_err(said)
+                } else {
+                    walk()
+                }
+            }
+        }
+    }
+
+    /// Volume `name`'s bound: `asked` where it names another, its options written so under
+    /// [`lock`], by its first holder, as none other holds it; else its own.
+    fn bound_to(&self, name: &str, asked: Option<u64>) -> Result<Option<u64>, String> {
+        let own = self
+            .get(name)
+            .ok_or_else(|| format!("get {name}: no such volume"))?
+            .bound()?;
+        match asked {
+            Some(asked) if Some(asked) != own => {
+                let _held = lock();
+                let mut v = self
+                    .get(name)
+                    .ok_or_else(|| format!("get {name}: no such volume"))?;
+                v.options.insert("size".into(), asked.to_string());
+                let text = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
+                durably(&self.root.join(name), "opts.json", &text)
+                    .map_err(|e| format!("volume {name}: {e}"))?;
+                Ok(Some(asked))
+            }
+            _ => Ok(own),
+        }
     }
 
     /// Volume `name`'s lock file ([`holders`](Self::holders)), made where missing, as `take`
@@ -849,7 +976,26 @@ impl Store {
 /// and an orchestrator's alike. A clearing of one is refused while it is held; each is let go
 /// of as this drops, or as its process ends, however it ends.
 #[derive(Debug, Default)]
-pub struct Holds(BTreeMap<String, Locked>);
+pub struct Holds(BTreeMap<String, Held>);
+
+/// A run's hold of one volume (D281): its lock file shared, so that no clearing removes it;
+/// and once its run serves it, its count file shared, with the bound it is served with
+/// ([`Store::count`]).
+#[derive(Debug)]
+struct Held {
+    _volume: Locked,
+    count: Option<(Locked, Option<u64>)>,
+}
+
+/// What a share of a bounded volume is served with (D281): its place among the shares its
+/// share process is given, the bytes its files may take, and its count file, which the share
+/// process maps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bounded {
+    pub share: usize,
+    pub limit: u64,
+    pub count: PathBuf,
+}
 
 impl Holds {
     /// Volume `name` of `store` held ([`Store::hold`]), once however often its run mounts or
@@ -859,9 +1005,47 @@ impl Holds {
             let held = store
                 .hold(name)?
                 .ok_or_else(|| format!("volume {name} is being cleared"))?;
-            self.0.insert(name.to_string(), held);
+            self.0.insert(
+                name.to_string(),
+                Held {
+                    _volume: held,
+                    count: None,
+                },
+            );
         }
         Ok(())
+    }
+
+    /// Volume `name` of `store`, held, counted as its run's share of it serves `dir`
+    /// ([`Store::count`]), once however often its run serves it: its bound in force and its
+    /// count file, which each share of it is served with, none where it has no bound; refused
+    /// where `asked` names another bound than the one it is served with.
+    pub fn count(
+        &mut self,
+        store: &Store,
+        name: &str,
+        dir: &Path,
+        asked: Option<u64>,
+    ) -> Result<Option<(u64, PathBuf)>, String> {
+        let held = self
+            .0
+            .get_mut(name)
+            .ok_or_else(|| format!("volume {name} is not held"))?;
+        let limit = match held.count.as_ref().map(|(_, limit)| *limit) {
+            Some(limit) if asked.is_some_and(|a| Some(a) != limit) => {
+                return Err(format!(
+                    "volume {name} is served with {}: its bound changes only while no run holds it",
+                    limit.map_or("no bound".to_string(), |l| format!("a bound of {l} bytes"))
+                ));
+            }
+            Some(limit) => limit,
+            None => {
+                let (counted, limit) = store.count(name, dir, asked)?;
+                held.count = Some((counted, limit));
+                limit
+            }
+        };
+        Ok(limit.map(|l| (l, store.counts(name))))
     }
 
     /// Volume `name` of `store` as it is there, held as [`take`](Self::take) holds it where it
@@ -882,10 +1066,20 @@ impl Holds {
         }
     }
 
-    /// `other`'s holds, this run's from now.
+    /// `other`'s holds, this run's from now: a count of one it holds already, kept where it
+    /// has none.
     pub fn extend(&mut self, other: Holds) {
         for (name, held) in other.0 {
-            self.0.entry(name).or_insert(held);
+            match self.0.entry(name) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(held);
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    if e.get().count.is_none() {
+                        e.get_mut().count = held.count;
+                    }
+                }
+            }
         }
     }
 
@@ -1288,13 +1482,15 @@ fn register_into(
 
 /// A microVM's mount points, opened for a start: each shared directory, read-only or not,
 /// and its one name where a file is bound alone; the guest's setup entry for each mount
-/// point, by its destination; and the named volumes among them, held from before they were
-/// opened (D281), which its starter keeps with its run until the run ends.
+/// point, by its destination; the named volumes among them, held from before they were
+/// opened (D281), which its starter keeps with its run until the run ends; and the bound
+/// each bounded one's share is served with, by its place in `dirs`.
 #[derive(Debug, Default)]
 pub struct Opened {
     pub dirs: Vec<(shards_ipc::fd::OwnedFd, bool, std::ffi::OsString)>,
     pub mounts: Vec<(String, Vec<u8>)>,
     pub held: Holds,
+    pub bounds: Vec<Bounded>,
 }
 
 /// Opens `points` for a start, its first where `first`: a `-v` bind's missing source made,
@@ -1372,11 +1568,27 @@ pub fn open_for(
                 .map_err(|e| format!("error while mounting volume '{}': {e}", p.source))?,
             _ => None,
         };
+        // Its bound (D281), held in one count with every other run's: a named volume's, which
+        // a count file outlives as its lock file does.
+        let bound = volume
+            .as_ref()
+            .map(Volume::bound)
+            .transpose()
+            .map_err(|e| format!("error while mounting volume '{}': {e}", p.source))?
+            .flatten();
+        let named = volume.as_ref().is_some_and(|v| !v.is_anonymous());
+        if bound.is_some() && !named {
+            return Err(format!(
+                "error while mounting volume '{}': a bound (size) is held for a named volume alone",
+                p.source
+            ));
+        }
         // A local volume made with options mounts what they say (the local driver's
-        // mount): a host directory bound (`o=bind`, its `device`) is shared as a bind is.
+        // mount): a host directory bound (`o=bind`, its `device`) is shared as a bind is. Its
+        // size is its bound, whatever it mounts.
         let device;
         let source = match volume.map(|v| v.options) {
-            Some(opts) if !opts.is_empty() => {
+            Some(opts) if opts.keys().any(|k| k != "size") => {
                 let bound = opts
                     .get("o")
                     .is_some_and(|o| o.split(',').any(|f| f == "bind" || f == "rbind"));
@@ -1472,6 +1684,26 @@ pub fn open_for(
             if p.kind == "volume" && source == Path::new(&p.source) {
                 flags.push("own");
             }
+        }
+        // A named volume counted with its run (D281): its first holder walks it; a bounded
+        // one's share is served with its bound and its count file.
+        if named
+            && let Some((limit, count)) = opened
+                .held
+                .count(store, &p.name, dir, None)
+                .map_err(|e| format!("error while mounting volume '{}': {e}", p.source))?
+        {
+            if !only.is_empty() {
+                return Err(format!(
+                    "error while mounting volume '{}': a file alone is served no bound",
+                    p.source
+                ));
+            }
+            opened.bounds.push(Bounded {
+                share: opened.dirs.len(),
+                limit,
+                count,
+            });
         }
         let kind = if p.domains_only { "domain-volume" } else { "volume" };
         let i = opened.dirs.len();
@@ -1966,5 +2198,111 @@ mod tests {
         assert!(refused.contains("volume agent-a is being cleared"), "{refused}");
         drop(clearing);
         assert!(open(&points, true, &store).unwrap().held.holds("agent-a"));
+    }
+
+    /// D281: a volume's `size` is its bound, read as the local driver reads it; none where it
+    /// has none or one of no bytes; one the local driver cannot read is refused as it is.
+    #[test]
+    fn a_volumes_size_is_its_bound() {
+        let with = |size: &str| BTreeMap::from([("size".to_string(), size.to_string())]);
+        assert!(validate_options(&with("10G")).is_ok());
+        assert_eq!(validate_options(&with("ten")).unwrap_err(), "invalid size: 'ten'");
+        let v = |options: BTreeMap<String, String>| Volume {
+            options,
+            ..Volume::default()
+        };
+        assert_eq!(v(with("10G")).bound().unwrap(), Some(10 << 30));
+        assert_eq!(v(with("4096")).bound().unwrap(), Some(4096));
+        assert_eq!(v(with("0")).bound().unwrap(), None);
+        assert_eq!(v(BTreeMap::new()).bound().unwrap(), None);
+    }
+
+    /// D281: a volume's first holder walks it and writes its count before any server serves
+    /// it; a holder beside it takes that count as its servers left it, walking nothing; once
+    /// none holds it, the next first holder walks it again, so that what a holder left behind
+    /// lasts no longer. Its bound is set by a first holder that asks another, and refused to
+    /// one that asks another while it is held.
+    #[test]
+    fn a_volumes_first_holder_counts_it_and_the_others_share_its_count() {
+        use shards_vmm::devices::virtio::fs::bound;
+        use std::sync::atomic::Ordering;
+        let dir = shards_testdir::TempDir::new("vol-count").unwrap();
+        let store = Store::new(dir.path());
+        let sized = BTreeMap::from([("size".to_string(), "1M".to_string())]);
+        {
+            let _held = lock();
+            store.create("agent-a", &BTreeMap::new(), &sized, "").unwrap();
+        }
+        let data = store.data("agent-a");
+        std::fs::write(data.join("f"), [1u8; 10]).unwrap();
+        let counted = || bound::load(&store.count_file("agent-a").unwrap()).unwrap();
+        let mut first = Holds::default();
+        first.take(&store, "agent-a").unwrap();
+        let served = first.count(&store, "agent-a", &data, None).unwrap();
+        assert_eq!(served, Some((1 << 20, store.counts("agent-a"))));
+        let walked = counted();
+        assert!(walked > 10, "a name and its length in whole units: {walked}");
+        // What a server charges since stays: a second holder walks nothing.
+        let server = bound::mapped(&store.count_file("agent-a").unwrap()).unwrap();
+        server.fetch_add(7, Ordering::Relaxed);
+        let mut second = Holds::default();
+        second.take(&store, "agent-a").unwrap();
+        assert_eq!(second.count(&store, "agent-a", &data, None).unwrap(), served);
+        assert_eq!(counted(), walked + 7, "not walked again while held");
+        let refused = second.count(&store, "agent-a", &data, Some(2 << 20)).unwrap_err();
+        assert!(
+            refused.contains("changes only while no run holds it"),
+            "{refused}"
+        );
+        drop((first, second));
+        // None holds it: its next first holder walks it, and sets the bound it asks.
+        let mut next = Holds::default();
+        next.take(&store, "agent-a").unwrap();
+        let asked = next.count(&store, "agent-a", &data, Some(2 << 20)).unwrap();
+        assert_eq!(asked.map(|(limit, _)| limit), Some(2 << 20));
+        assert_eq!(counted(), walked, "walked again");
+        assert_eq!(
+            store.get("agent-a").unwrap().options["size"],
+            (2u64 << 20).to_string()
+        );
+    }
+
+    /// D281: a start's bounded named volume is served with its bound and its count file, at
+    /// its place among the start's shares; one without a bound with none; an anonymous one's
+    /// size is refused, as no count file is kept for it.
+    #[test]
+    fn a_starts_bounded_volume_is_served_with_its_bound() {
+        let dir = shards_testdir::TempDir::new("vol-bounds").unwrap();
+        let store = Store::new(dir.path());
+        let none = BTreeMap::new();
+        let sized = BTreeMap::from([("size".to_string(), "64k".to_string())]);
+        let anonymous = {
+            let _held = lock();
+            store.create("plain", &none, &none, "").unwrap();
+            store.create("sized", &none, &sized, "").unwrap();
+            store.create("", &none, &sized, "").unwrap().0.name
+        };
+        let point = |name: &str, dest: &str| MountPoint {
+            kind: "volume".into(),
+            name: name.into(),
+            source: store.data(name).to_string_lossy().into_owned(),
+            destination: dest.into(),
+            rw: true,
+            ..MountPoint::default()
+        };
+        let opened = open(&[point("plain", "/a"), point("sized", "/b")], true, &store).unwrap();
+        assert_eq!(
+            opened.bounds,
+            vec![Bounded {
+                share: 1,
+                limit: 64 << 10,
+                count: dir.path().join(ROOT).join(".sized.charge"),
+            }]
+        );
+        let refused = open(&[point(&anonymous, "/c")], true, &store).unwrap_err();
+        assert!(
+            refused.contains("a bound (size) is held for a named volume alone"),
+            "{refused}"
+        );
     }
 }

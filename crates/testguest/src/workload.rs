@@ -59,6 +59,7 @@ pub fn main() -> ! {
         "cat" => cat(),
         "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
         "plugged-volumes" => crate::plugged::volumes(args.get(1..).unwrap_or_default()),
+        "plugged-bound" => crate::plugged::bound(args.get(1..).unwrap_or_default()),
         "inotify" => crate::watch::main(arg(1)),
         // The steps of names differing in case alone in DIR, each its result (D235).
         "case" => {

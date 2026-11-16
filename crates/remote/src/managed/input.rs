@@ -579,7 +579,7 @@ impl Endpoint {
             Some(config),
             service,
             DriverLimits {
-                connections: 1,
+                connections: super::CONNECTIONS,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
             },

@@ -225,7 +225,10 @@ impl<D: Disk> Daemon<D> {
     /// ([`Followers::end`]): a test's daemon's, as its scope ends. A run whose VM said its
     /// end, or whose VM's socket its test closed, ends as the loop would have ended it, and
     /// lets go of what it held: the exec connections handed its VM and not taken (M24),
-    /// whose askers, threads of the daemon's, wait until they close.
+    /// whose askers, threads of the daemon's, wait until they close. One whose end has not
+    /// come lets go of them all the same, as its daemon's exit would: nothing takes its VM's
+    /// word from here on, and a socket its test closed still reads as open while a child
+    /// another test's thread spawns holds a copy of it, until that child's exec (PM M134).
     #[cfg(test)]
     pub(super) fn take_left(&self) {
         let f = &self.followers;
@@ -234,6 +237,8 @@ impl<D: Disk> Daemon<D> {
             if self.take_messages(&id, &inbox) {
                 let _ = f.poller.remove(&lock(&inbox).socket.stream);
                 lock(&f.runs).remove(&token);
+            } else {
+                lock(&inbox).execs_in_flight.clear();
             }
         }
     }
