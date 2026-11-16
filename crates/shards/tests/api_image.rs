@@ -5248,11 +5248,17 @@ fn a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once() {
 
 /// D285 slice 6, D122 amended by lane xnet-s5b: a UDP port its image's `EXPOSE` contests,
 /// given its run's two harnesses on one of its own networks, each answering it, and granted in
-/// on a network shared by runs to each of them, b and c, from run A's `a`. One of them holds
-/// the port for eth0's own clients (the chooser's, by which listened first), and that holder
-/// answers one published on the host, before and after; a's datagrams to b and to c over the
-/// shared network are each answered by its member, the holder and the one that holds it not:
-/// a shared flow is the grant's, in zone 0 both ways, never the holder's.
+/// on a network shared by runs from run A's `a` to one of them at a time. Which of them holds
+/// the port for eth0's own clients (the chooser's, by which listened first) is learned from
+/// the members' own word: the holder alone is sent the datagrams of a client of the port
+/// published on the host (D122's ports reader, `shards read ports` and `Bound::to`, names
+/// every candidate, never the holder). The holder granted alone: a's datagrams over the shared
+/// network reach the holder, answered, and never the other. The holder's grant taken back and
+/// the other granted alone: a's datagrams reach the other, answered, and never the holder: a
+/// flow to the run's address on a shared network is its grant's member's, the chooser choosing
+/// for eth0's own address alone. Never both at once, which the run's one address there would
+/// not tell apart (D285 item 5: each port of the run's address one member's). The holder
+/// answers eth0's own clients still.
 #[test]
 fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not() {
     if cannot_run_vms() {
@@ -5313,7 +5319,8 @@ fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not()
     let c_said = lines_of_member(&*run_b, &claude, Channel::Stdout);
     said_all(&b_said, &["ready".to_string()]);
     said_all(&c_said, &["ready".to_string()]);
-    // eth0's own client, the port published on the host: answered by the port's holder.
+    // eth0's own client, the port published on the host: answered by the port's holder, whose
+    // word names it, each of its datagrams of 3 bytes.
     let bound = run_b.published().first().cloned().expect("a bound port");
     let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     client.connect(bound.host).unwrap();
@@ -5331,6 +5338,16 @@ fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not()
         }
     };
     assert!(held("before").ends_with(" who"));
+    let mut members = [(codex(), "b", b_said), (claude.clone(), "c", c_said)];
+    let holding = which_says(&[&members[0].2, &members[1].2], |l| {
+        l.starts_with("datagram from ") && l.ends_with(" 3")
+    });
+    // The holder first, then the other.
+    members.swap(0, holding);
+    let [
+        (holder, holder_name, holder_said),
+        (other, other_name, other_said),
+    ] = members;
     let grant = |name: &str, peer: &str, way: Way| NetworkGrant {
         name: name.into(),
         peer: peer.into(),
@@ -5340,7 +5357,7 @@ fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not()
         way,
     };
     let mut a_at = None;
-    for peer in ["b", "c"] {
+    for peer in [holder_name, other_name] {
         let on = ask(&*run_a, |g| {
             g.connect(&codex(), "team", &grant("a", peer, Way::Out), Duration::MAX)
         })
@@ -5348,23 +5365,70 @@ fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not()
         a_at = Some(address_on("team", &on));
     }
     let a_at = a_at.unwrap();
-    for (member, name) in [(codex(), "b"), (claude.clone(), "c")] {
-        ask(&*run_b, |g| {
-            g.connect(&member, "team", &grant(name, "a", Way::In), Duration::MAX)
-        })
-        .unwrap();
-    }
-    // a's datagrams to each, over the shared network: each answered, by its member.
-    for (peer, said) in [("b", &b_said), ("c", &c_said)] {
-        let a_said = again(&*run_a, &codex(), &["udp-each", &format!("{peer}:{port}")]);
+    let from_a = format!("datagram from {a_at}:");
+    // a's datagrams to `name` over the shared network, each holding `bytes`: answered, and
+    // `said` the member's word of one.
+    let reached = |name: &str, bytes: &str, said: &std::sync::mpsc::Receiver<String>| {
+        let a_said = again(&*run_a, &codex(), &["udp-each", &format!("{name}:{port}"), bytes]);
         first_said(&a_said, |l| l.starts_with("udp ") && !l.starts_with("udp error"));
-        first_said(said, |l| l.starts_with(&format!("datagram from {a_at}:")));
-    }
+        let len = format!(" {}", bytes.len());
+        first_said(said, |l| l.starts_with(&from_a) && l.ends_with(&len));
+    };
+    // The holder granted alone: a's datagrams of 1 byte reach it.
+    let holder_in = grant(holder_name, "a", Way::In);
+    ask(&*run_b, |g| g.connect(&holder, "team", &holder_in, Duration::MAX)).unwrap();
+    reached(holder_name, "?", &holder_said);
+    // Its grant taken back, the other granted alone: a's datagrams of 2 bytes reach the other.
+    ask(&*run_b, |g| {
+        g.disconnect(&holder, "team", &holder_in, Duration::MAX)
+    })
+    .unwrap();
+    ask(&*run_b, |g| {
+        g.connect(&other, "team", &grant(other_name, "a", Way::In), Duration::MAX)
+    })
+    .unwrap();
+    reached(other_name, "??", &other_said);
+    // The holder granted in on that port too, while the other is: refused, the run's address
+    // there having one member for each port, nothing told.
+    assert!(matches!(
+        ask(&*run_b, |g| g.connect(&holder, "team", &holder_in, Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Unheld, _))
+    ));
     // The holder answers eth0's own clients still.
     assert!(held("after").ends_with(" who"));
     run_a.stop().unwrap();
     run_b.stop().unwrap();
+    // Neither reached by a's datagrams while the other alone was granted.
+    let none_of = |said: &std::sync::mpsc::Receiver<String>, len: &str| {
+        let len = format!(" {len}");
+        let got: Vec<String> = said
+            .try_iter()
+            .filter(|l| l.starts_with(&from_a) && l.ends_with(&len))
+            .collect();
+        assert!(got.is_empty(), "{got:?}");
+    };
+    none_of(&other_said, "1");
+    none_of(&holder_said, "2");
     assert_eq!(networks.remove("team"), Ok(()));
+}
+
+/// Which of `said`'s line channels, each a member's, says a line `wanted` takes, where one
+/// member alone can: its index; waited for as long as its run goes on (`Patience` of what this
+/// test started). Each channel holds every line its member said, so that a look finds what was
+/// said before it.
+#[track_caller]
+fn which_says(said: &[&std::sync::mpsc::Receiver<String>], wanted: impl Fn(&str) -> bool) -> usize {
+    let mut patience = Patience::started();
+    loop {
+        for (i, rx) in said.iter().enumerate() {
+            if rx.try_iter().any(|line| wanted(&line)) {
+                patience.done();
+                return i;
+            }
+        }
+        assert!(patience.holds(), "no member said the line waited for");
+        std::thread::sleep(patience.next_look());
+    }
 }
 
 /// An OSI artifact of `kind` (`agent`, `harness`) built of the test guest (`bin/codex`), a
