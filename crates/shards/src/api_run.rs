@@ -3133,10 +3133,10 @@ mod hosted {
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let shaped = shape(request, &home, &mut checking)?;
+        let (shaped, layering) = shape(request, &home, &mut checking)?;
         let made = shaped.made.clone();
         let plan = plan(request, ready_by, shaped).inspect_err(|_| end(&home, None, &made))?;
-        launch_and_serve(answers, input, &home, plan, checking)
+        launch_and_serve(answers, input, &home, plan, checking, layering)
     }
 
     /// The request as `shards run` would have asked it of a daemon: the image, its own
@@ -3288,7 +3288,13 @@ mod hosted {
         Ok(Secured { filters, domains })
     }
 
-    fn shape(request: &wire::Request, home: &Path, checking: &mut Checking) -> Result<Shaped, No> {
+    /// Its microVM, shaped of `request` ([`Shaped`]); and its writable layer, its making begun
+    /// beside the rest of its start once its way is known ([`Layering`]).
+    fn shape(
+        request: &wire::Request,
+        home: &Path,
+        checking: &mut Checking,
+    ) -> Result<(Shaped, Layering), No> {
         let mut run = as_run(request, None);
         let say = |line: &str| {
             let _ = writeln!(io::stderr(), "{line}");
@@ -3418,12 +3424,18 @@ mod hosted {
         };
         let (opened, server, microvm) = rest().inspect_err(|_| end(home, None, &made))?;
         super::step(format_args!("its microVM shaped"));
+        let template = microvm.template.as_ref().map(|t| t.dir.as_path());
+        let layering = Layering::begin(
+            home,
+            super::way_of(template, shards_vmm::snapshot::exists),
+            prepared.layer,
+        );
         // Before its run asks, where its host is warm (D253): never on a warm run's way.
         let secured = secure(agentfile.as_ref(), &run, &microvm);
         super::step(format_args!(
             "its security made: its guest's kernel read, its filters compiled"
         ));
-        Ok(Shaped {
+        let shaped = Shaped {
             run,
             prepared,
             agentfile,
@@ -3441,7 +3453,8 @@ mod hosted {
             server,
             microvm,
             secured,
-        })
+        };
+        Ok((shaped, layering))
     }
 
     /// The run `request`, its deadline `ready_by`, of its microVM `shaped`: its members'
@@ -3862,6 +3875,104 @@ mod hosted {
         }
     }
 
+    /// Its writable layer's file (D190), made on a thread of its own from the moment its
+    /// microVM is shaped, beside the rest of its start up to its VM's launch, which needs
+    /// nothing of it, so that its making, file system work alone, is off that way: for the way
+    /// its microVM was then to start ([`super::way_of`]), as a launch that way makes one
+    /// ([`layer_for`]). Its first launch takes it where that launch is of the same way. A
+    /// launch of another way (its template saved or removed meanwhile, or its restore failed)
+    /// makes its own, as one does where no thread could be started; the thread of one not
+    /// taken is let go of, and its file goes as that thread ends, its result dropped with it
+    /// (std's thread `Packet`), or, where its host ends first, by its orchestrator's hand
+    /// (D253's `clear_layers`).
+    enum Layering {
+        /// On its thread, made for a start of `way`.
+        Making {
+            way: super::Way,
+            thread: std::thread::JoinHandle<Result<Option<crate::daemon::LayerFile>, String>>,
+        },
+        /// None to take: taken, let go of, or no thread started for it.
+        Gone,
+    }
+
+    impl Layering {
+        /// Its making begun on a thread of its own, for a start of way `way` in `home` whose
+        /// layer holds `holds` bytes where it boots; [`Gone`](Self::Gone) where no thread could
+        /// be started.
+        fn begin(home: &Path, way: super::Way, holds: u64) -> Layering {
+            let (home, making) = (home.to_path_buf(), way.clone());
+            let thread = std::thread::Builder::new()
+                .name("api-run layer".into())
+                .spawn(move || {
+                    let began = Instant::now();
+                    let layer = layer_for(&home, &making, holds);
+                    if let Ok(made) = &layer {
+                        super::step(format_args!(
+                            "its writable layer {} on its own thread, in {} us",
+                            layer_said(made.as_ref()),
+                            began.elapsed().as_micros()
+                        ));
+                    }
+                    layer
+                });
+            match thread {
+                Ok(thread) => Layering::Making { way, thread },
+                Err(_) => Layering::Gone,
+            }
+        }
+
+        /// Its layer for a launch of way `way`, taken once: what its thread made, waited for,
+        /// where it was made for that way; else none, its thread let go of, for its launch to
+        /// make its own.
+        fn taken(&mut self, way: &super::Way) -> Option<Result<Option<crate::daemon::LayerFile>, String>> {
+            match std::mem::replace(self, Layering::Gone) {
+                Layering::Making {
+                    way: made_for,
+                    thread,
+                } if made_for == *way => Some(
+                    thread
+                        .join()
+                        .unwrap_or_else(|_| Err("its writable layer: its making ended unanswered".into())),
+                ),
+                _ => None,
+            }
+        }
+    }
+
+    /// The writable layer's file a start of way `way` is given (D190): made empty, holding
+    /// `holds` bytes, for a boot or a save; for a restore, a clone of its template's where its
+    /// template keeps one, else none.
+    fn layer_for(
+        home: &Path,
+        way: &super::Way,
+        holds: u64,
+    ) -> Result<Option<crate::daemon::LayerFile>, String> {
+        let dir = match way {
+            super::Way::Boot | super::Way::Save { .. } => {
+                return crate::daemon::LayerFile::made(home, holds).map(Some);
+            }
+            super::Way::Restore { dir } => dir,
+        };
+        let layered = shards_vmm::snapshot::has_layer(dir)
+            .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
+            .unwrap_or(false);
+        if !layered {
+            return Ok(None);
+        }
+        let generation = shards_vmm::snapshot::generation(dir)?;
+        crate::daemon::LayerFile::for_restore(home, &generation).map(Some)
+    }
+
+    /// What a writable layer is, as a start's steps say it: a clone of its template's, made,
+    /// or none.
+    fn layer_said(layer: Option<&crate::daemon::LayerFile>) -> &'static str {
+        match layer {
+            Some(l) if l.cloned_of().is_some() => "cloned",
+            Some(_) => "made",
+            None => "none",
+        }
+    }
+
     /// The run's processes, started as the daemon starts a run's VM (launch.rs): its share
     /// process, ended where its VM does not start; then its network process, denying all
     /// until its policy comes, and its VM, the way its template says (D253, `super::started`):
@@ -3869,11 +3980,13 @@ mod hosted {
     /// each is made in a job of this process's that ends them as it ends (D141, D197). Where
     /// it asks for its GPU report (D233), `reported` is what its last VM wrote of it: the
     /// ready one's, or the one's whose start failed last. Its VM process's binary is
-    /// `checking`'s, checked beside its run's making.
+    /// `checking`'s, checked beside its run's making, and its writable layer `layering`'s, made
+    /// beside it.
     fn launch(
         home: &Path,
         plan: &Launch<'_>,
         checking: Checking,
+        layering: Layering,
         reported: &mut Option<Vec<u8>>,
     ) -> Result<Launched, No> {
         let boot = |e: String| No(Cause::Boot, e);
@@ -3911,6 +4024,7 @@ mod hosted {
                 plan,
                 vm: &vm,
                 ends: &ends,
+                layering,
                 #[cfg(windows)]
                 job: &job,
                 reported: None,
@@ -3951,6 +4065,8 @@ mod hosted {
         plan: &'a Launch<'a>,
         vm: &'a Path,
         ends: &'a Ends,
+        /// Its writable layer, made beside its run's making for its first launch's way.
+        layering: Layering,
         #[cfg(windows)]
         job: &'a shards_ipc::GroupJob,
         /// What its last VM wrote of its GPU report (D233), read once that VM was ready or
@@ -4011,19 +4127,23 @@ mod hosted {
                 _ => None,
             };
             super::step(format_args!("its network decided"));
-            // Its writable layer (D190): made empty of the run's size for a boot, a clone of its
-            // template's for a restore where its template keeps one.
-            let (mut args, layer) = match way {
+            // Its writable layer (D190): the one made beside its run's making for this way
+            // (`Layering`), else made now.
+            let (layer, beside) = match self.layering.taken(way) {
+                Some(made) => (made?, ", taken from its thread"),
+                None => (layer_for(self.home, way, plan.prepared.layer)?, ""),
+            };
+            super::step(format_args!(
+                "its writable layer {}{beside}",
+                layer_said(layer.as_ref())
+            ));
+            let mut args = match way {
                 super::Way::Boot | super::Way::Save { .. } => {
                     let save = match way {
                         super::Way::Save { fresh, .. } => Some(fresh.as_path()),
                         _ => None,
                     };
-                    let layer = crate::daemon::LayerFile::made(self.home, plan.prepared.layer)?;
-                    (
-                        crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK),
-                        Some(layer),
-                    )
+                    crate::run::boot_args(cfg, rootfs, save, crate::launch::LINK)
                 }
                 super::Way::Restore { dir } => {
                     // Its backing files as the VM saving its template recorded them: resolved.
@@ -4039,29 +4159,9 @@ mod hosted {
                         server: server.as_deref(),
                         emulator: emulator.as_deref(),
                     };
-                    let layered = shards_vmm::snapshot::has_layer(dir)
-                        .map_err(|e| super::say(format_args!("reading the template {}: {e}", dir.display())))
-                        .unwrap_or(false);
-                    let layer = if layered {
-                        let generation = shards_vmm::snapshot::generation(dir)?;
-                        Some(crate::daemon::LayerFile::for_restore(self.home, &generation)?)
-                    } else {
-                        None
-                    };
-                    (
-                        crate::run::restore_args(dir, &backings, cfg.gpu, crate::launch::LINK),
-                        layer,
-                    )
+                    crate::run::restore_args(dir, &backings, cfg.gpu, crate::launch::LINK)
                 }
             };
-            super::step(format_args!(
-                "its writable layer {}",
-                match (way, &layer) {
-                    (super::Way::Restore { .. }, Some(l)) if l.cloned_of().is_some() => "cloned",
-                    (_, Some(_)) => "made",
-                    (_, None) => "none",
-                }
-            ));
             args.extend(layer.iter().flat_map(crate::daemon::LayerFile::args));
             let argv: Vec<&OsStr> = args.iter().map(OsString::as_os_str).collect();
             // Its GPU report's pipe (D233), its write end the VM's alone once it is launched.
@@ -5859,13 +5959,14 @@ mod hosted {
         home: &Path,
         plan: Plan,
         checking: Checking,
+        layering: Layering,
     ) -> Result<(), No> {
         super::say(format_args!(
             "prepared {}, {} vCPUs, {} MiB; starting its VM",
             plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
         ));
         let mut reported = None;
-        let launched = launch(home, &plan.launch(), checking, &mut reported);
+        let launched = launch(home, &plan.launch(), checking, layering, &mut reported);
         // Its VM's GPU report (D233), relayed before its start, or before its refusal where its
         // VM did not start.
         if let Some(frame) = reported
@@ -5907,8 +6008,8 @@ mod hosted {
     ) -> Result<(), No> {
         let mut checking = Checking::begin();
         let home = shards_ipc::home().map_err(no(Cause::Boot))?;
-        let mut shaped = shape(exemplar, &home, &mut checking)?;
-        let mut launched = match launch(&home, &shaped.launch(), checking, &mut None) {
+        let (mut shaped, layering) = shape(exemplar, &home, &mut checking)?;
+        let mut launched = match launch(&home, &shaped.launch(), checking, layering, &mut None) {
             Ok(launched) => launched,
             Err(e) => {
                 end(&home, None, &shaped.made);
@@ -8343,6 +8444,66 @@ mod hosted {
                 networked: false,
             };
             assert_eq!(none.taken(), (crate::helpers::vm(), false));
+        }
+
+        /// Do: begin a writable layer's making beside a run's, for a boot and for a save, and
+        /// take each for a launch of its way, then again; begin one for a restore of a template
+        /// that holds no snapshot and take it; take one never begun. Expect: each made on its
+        /// thread as its launch makes one: an ext4 file system in the home's `layers`, its file
+        /// the length of a launch's own of that size, gone with its handle; the restore's none;
+        /// each taken once; one never begun none, for its launch to make its own.
+        #[test]
+        fn a_layer_made_beside_a_runs_making_is_its_launchs_own() {
+            let home = shards_testdir::TempDir::new("api-layer").unwrap();
+            let holds = 64 << 20;
+            let own = crate::daemon::LayerFile::made(home.path(), holds).unwrap();
+            let own_len = std::fs::metadata(&own.args()[1]).unwrap().len();
+            drop(own);
+            let template = home.path().join("t");
+            let save = super::super::Way::Save {
+                fresh: super::super::fresh_of(&template),
+                dir: template.clone(),
+            };
+            for way in [super::super::Way::Boot, save] {
+                let mut layering = Layering::begin(home.path(), way.clone(), holds);
+                let layer = layering.taken(&way).unwrap().unwrap().unwrap();
+                assert_eq!(layer_said(Some(&layer)), "made");
+                let path = PathBuf::from(&layer.args()[1]);
+                assert_eq!(
+                    path.parent(),
+                    Some(home.path().join(shards_ipc::LAYERS).as_path())
+                );
+                assert_eq!(std::fs::metadata(&path).unwrap().len(), own_len);
+                let mut magic = [0u8; 2];
+                let file = std::fs::File::open(&path).unwrap();
+                shards_vmm::platform::read_exact_at(&file, &mut magic, 1024 + 0x38).unwrap();
+                assert_eq!(u16::from_le_bytes(magic), 0xEF53);
+                assert!(layering.taken(&way).is_none());
+                drop(layer);
+                assert!(!path.exists());
+            }
+            let restore = super::super::Way::Restore { dir: template };
+            let mut layering = Layering::begin(home.path(), restore.clone(), holds);
+            assert!(layering.taken(&restore).unwrap().unwrap().is_none());
+            assert!(Layering::Gone.taken(&super::super::Way::Boot).is_none());
+        }
+
+        /// Do: take a layer made beside a run's making for a boot for a launch that saves, then
+        /// for one that boots. Expect: none each time: a launch of another way makes its own, and
+        /// the one let go of is no later launch's.
+        #[test]
+        fn a_layer_made_for_another_way_is_no_launchs() {
+            let mut layering = Layering::Making {
+                way: super::super::Way::Boot,
+                thread: std::thread::spawn(|| Ok(None)),
+            };
+            let template = PathBuf::from("t");
+            let save = super::super::Way::Save {
+                fresh: super::super::fresh_of(&template),
+                dir: template,
+            };
+            assert!(layering.taken(&save).is_none());
+            assert!(layering.taken(&super::super::Way::Boot).is_none());
         }
 
         /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller

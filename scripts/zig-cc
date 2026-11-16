@@ -2,14 +2,30 @@
 # zig as the C compiler for $ZIG_TARGET, for linting Linux targets from any host
 # (scripts/lint) and for the C that musl builds carry (crates/shards/build.rs). cc-rs passes
 # clang's --target with Rust's triple, which zig does not parse, so that is dropped and zig
-# gets its own. Unoptimized (cc-rs's -O0, a dev profile's), zig cc turns on UBSan, whose
+# gets its own. zig cc reads -march as its -mcpu, a CPU model's name and then features (zig
+# 0.16.0's src/clang_options.zon), so it refused aws-lc-sys's NEON SHA3 probe,
+# -march=armv8.4-a+sha3, as "unknown CPU: 'armv8.4'", and arm64 guests' AWS-LC left out its
+# SHA3 Keccak (CI run 43876891053). An Arm -march of a version and plain extensions is said in
+# zig's words, the baseline CPU with that version's feature (baseline+v8_4a+sha3); any other
+# is left to zig. Unoptimized (cc-rs's -O0, a dev profile's), zig cc turns on UBSan, whose
 # runtime zig links only when it is the linker; rust-lld links these, so it is left off, as
 # every optimized build has it. Only the pinned zig compiles (scripts/zig-pin), else none.
 . "$(dirname "$0")/zig-pin"
 zig=$(zig_pinned) || exit 1
 for arg do
 	shift
-	case $arg in --target=*) continue ;; esac
+	case $arg in
+		--target=*) continue ;;
+		-march=armv*-a | -march=armv*-a+*)
+			version=${arg#-march=armv}
+			extensions=${version#*-a}
+			version=${version%%-a*}
+			case $version$extensions in
+				*[!0-9.+a-z]*) ;;
+				*) arg="-mcpu=baseline+v$(printf %s "$version" | tr . _)a$extensions" ;;
+			esac
+			;;
+	esac
 	set -- "$@" "$arg"
 done
 exec "$zig" cc -target "$ZIG_TARGET" -fno-sanitize=undefined "$@"

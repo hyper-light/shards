@@ -58,8 +58,27 @@ pub fn uptime_us() -> u128 {
 /// before the epoch.
 pub fn began_unix_us() -> Option<u128> {
     let up = uptime_us();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_micros();
+    let now = unix_us()?;
     now.checked_sub(up)
+}
+
+/// The wall clock now, in microseconds since the Unix epoch: what lines up lines of
+/// processes whose [`uptime_us`] each count from their own start. None where the clock
+/// reads before the epoch.
+pub fn unix_us() -> Option<u128> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_micros())
+}
+
+/// Writes `what`, a stage of a daemon's stop or of a run's end (the `stage!` macro), at
+/// `info` with the wall clock ([`unix_us`]).
+pub fn stage(what: std::fmt::Arguments<'_>) {
+    match unix_us() {
+        Some(us) => write(Level::Info, format_args!("stage at {us} us: {what}")),
+        None => write(Level::Info, format_args!("stage at an unread wall clock: {what}")),
+    }
 }
 
 pub fn write(level: Level, args: std::fmt::Arguments<'_>) {
@@ -98,3 +117,15 @@ macro_rules! warn { ($($arg:tt)*) => { $crate::log!($crate::log::Level::Warn, $(
 macro_rules! info { ($($arg:tt)*) => { $crate::log!($crate::log::Level::Info, $($arg)*) }; }
 #[macro_export]
 macro_rules! debug { ($($arg:tt)*) => { $crate::log!($crate::log::Level::Debug, $($arg)*) }; }
+/// A stage of a daemon's stop, of a run's end or of its budget's word, said at
+/// `SHARDS_LOG=info` with the wall clock, which lines up a client's, its daemon's and their
+/// VM processes' lines (D275's stall: what a `stop daemon` waited on). Its arguments are
+/// evaluated only then: below `info`, an atomic's load.
+#[macro_export]
+macro_rules! stage {
+    ($($arg:tt)*) => {
+        if $crate::log::enabled($crate::log::Level::Info) {
+            $crate::log::stage(format_args!($($arg)*));
+        }
+    };
+}

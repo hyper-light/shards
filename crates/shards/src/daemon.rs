@@ -2547,6 +2547,8 @@ impl<D: Disk> Daemon<D> {
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
         let mut spare = no_reserve();
+        // What a closed daemon's exit last waited on, as its stages say it (`stage!`).
+        let mut exit_waits: Option<String> = None;
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
@@ -2616,6 +2618,24 @@ impl<D: Disk> Daemon<D> {
                 && !held
                 && lock(&self.runs).is_empty()
                 && self.engine.open.load(Ordering::SeqCst) == 0;
+            if closed && shards_vmm::log::enabled(shards_vmm::log::Level::Info) {
+                let waits = format!(
+                    "{} requests in hand, its slots {}, {} runs, {} engine connections, {}",
+                    self.busy.load(Ordering::SeqCst),
+                    if held { "held" } else { "let go of" },
+                    lock(&self.runs).len(),
+                    self.engine.open.load(Ordering::SeqCst),
+                    if relays.is_empty() {
+                        "no relays"
+                    } else {
+                        "relays open"
+                    }
+                );
+                if exit_waits.as_ref() != Some(&waits) {
+                    shards_vmm::stage!("daemon closed, its exit waiting on {waits}");
+                    exit_waits = Some(waits);
+                }
+            }
             let idle = quiet && lock(&self.last).elapsed() >= self.idle;
             if !closed && (self.stopping.load(Ordering::SeqCst) || idle) {
                 self.close();
@@ -2628,6 +2648,7 @@ impl<D: Disk> Daemon<D> {
                 if !relays.is_empty() {
                     continue;
                 }
+                shards_vmm::stage!("daemon closed and quiet: exiting");
                 self.leave_slots();
                 self.exit();
             }
@@ -3029,7 +3050,9 @@ impl<D: Disk> Daemon<D> {
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
     fn finish(&self) {
+        shards_vmm::stage!("daemon finishing");
         self.managed.close();
+        shards_vmm::stage!("daemon finishing: its managed runs closed");
         let _ = std::fs::remove_file(self.home.join(shards_ipc::PID));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
         let state = lock(&self.state);
@@ -3042,11 +3065,15 @@ impl<D: Disk> Daemon<D> {
         // next to delete (musl CI 39297260869). Then what it last knew of its microVMs is
         // what the next daemon reads, and the files its runs asked for are made.
         self.await_removals();
+        shards_vmm::stage!("daemon finishing: its removals done");
         self.await_recorded();
+        shards_vmm::stage!("daemon finishing: its records written");
         self.await_made();
+        shards_vmm::stage!("daemon finishing: the files its runs asked for made");
         // Each parent's spawner ended, and the leaves made in delegated cgroups removed
         // once empty (D183, slice 2).
         self.parents.close();
+        shards_vmm::stage!("daemon finishing: its parents' spawners ended");
         log("exiting");
         // A home being removed is removed whole, once nothing more is written in it: what
         // this daemon made in it as the removal went kept it before (rmdir(2): ENOTEMPTY),
@@ -3078,6 +3105,7 @@ impl<D: Disk> Daemon<D> {
             let _ = held.unlock();
         }
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING_LOCK));
+        shards_vmm::stage!("daemon finished: its home and its stopping lock let go of");
         lock(&self.stoppers).clear();
     }
 
@@ -4199,8 +4227,13 @@ impl<D: Disk> Daemon<D> {
             });
         let shares = match shared {
             Ok(link) => link,
+            // A start already refused keeps that refusal, which the setup's follows from:
+            // `--network container:NAME` of none is "No such container", not the setup's
+            // word on that container's shared memory (ad8308bb8, CI run 43876891053).
             Err(e) => {
-                start = network::Start::Fails(e);
+                if !matches!(start, network::Start::Fails(_)) {
+                    start = network::Start::Fails(e);
+                }
                 None
             }
         };
@@ -5803,7 +5836,16 @@ impl<D: Disk> Daemon<D> {
         let Some(first) = aside.first() else {
             return;
         };
+        let ids = || {
+            aside
+                .iter()
+                .map(|r| r.container.id.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        shards_vmm::stage!("the removal of {}: set aside", ids());
         let synced = first.sync(&self.disk);
+        shards_vmm::stage!("the removal of {}: their directory synced: {synced:?}", ids());
         for removal in &aside {
             let id = &removal.container.id;
             match &synced {
@@ -5817,9 +5859,11 @@ impl<D: Disk> Daemon<D> {
             self.end_shares(&removal.container.id);
         }
         self.delete_aside(&aside);
+        shards_vmm::stage!("the removal of {}: their files deleted", ids());
         for removal in aside.iter().filter(|r| r.container.auto_remove) {
             self.drop_anonymous(&removal.container);
         }
+        shards_vmm::stage!("the removal of {}: done", ids());
     }
 
     /// Deletes what `removals` set aside, on Windows once no record of them is being
@@ -7079,6 +7123,14 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
+        shards_vmm::stage!(
+            "container {id}: its end heard, {}",
+            if done.is_some() {
+                "its DONE"
+            } else {
+                "its VM ended with none"
+            }
+        );
         // Its owners' channels end now; what the daemon drains of its members goes on to its
         // capture's end, which its end is told after (D240).
         let capturing = self.managed.end(id);
@@ -7215,6 +7267,7 @@ impl<D: Disk> Daemon<D> {
                 }
             });
             lock(&self.runs).remove(id);
+            shards_vmm::stage!("container {id}: its end told, out of the daemon's runs");
             lock(&self.health).remove(id);
             lock(&self.paused).remove(id);
             // What it held of its budget the others it held are told is theirs (D188).
@@ -7460,6 +7513,7 @@ impl<D: Disk> Daemon<D> {
     /// 3c2e3cd3's CI).
     fn step_aside<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, why: &str) {
         log(format!("stepping aside: {why}"));
+        shards_vmm::stage!("daemon stepping aside: {why}");
         self.close();
         self.stopping.store(true, Ordering::SeqCst);
         for (_, booting) in lock(&self.booting).drain() {
@@ -7470,6 +7524,10 @@ impl<D: Disk> Daemon<D> {
         // Runs waiting their turn to boot look at `stopping` again.
         self.boots.wake();
         self.stop_runs(threads);
+        shards_vmm::stage!(
+            "daemon closed, the stop of its {} runs begun",
+            lock(&self.runs).len()
+        );
         self.end_clients();
         // Runs waiting for a warm VM look at `stopping` again; the lock orders the wakeup
         // after their last look.
@@ -7560,6 +7618,10 @@ impl<D: Disk> Daemon<D> {
                     // A signal Linux has no number for cannot be sent: SIGKILL at once.
                     (None, _) => (Some(now), None),
                 };
+                shards_vmm::stage!(
+                    "container {id}: its stop begun as the daemon stops, its SIGKILL due in {:?}",
+                    kill.map(|at| at.saturating_duration_since(now))
+                );
                 stops.insert(
                     id,
                     Stop {
@@ -7579,6 +7641,7 @@ impl<D: Disk> Daemon<D> {
                     Some(teardown) => {
                         if teardown.goes_on().is_some() {
                             // Its guest still at its end: another slice.
+                            shards_vmm::stage!("container {id}: its guest's teardown goes on: another slice");
                             stop.next = self
                                 .ends
                                 .slice(ends::End::Teardown)
@@ -7605,6 +7668,7 @@ impl<D: Disk> Daemon<D> {
                             .socket
                             .send(&self.answers.run_send, kind::SIGNAL, &9u32.to_be_bytes(), &[])
                             .is_ok();
+                        shards_vmm::stage!("container {id}: SIGKILL sent as the daemon stops: {sent}");
                         let wait = if sent {
                             self.ends.slice(ends::End::Teardown)
                         } else {

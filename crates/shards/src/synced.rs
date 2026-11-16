@@ -866,19 +866,34 @@ pub(crate) fn held_to_copies(words: &[String], secrets: usize) -> Result<(), Not
 /// name no path but within `copies`, the client's copies here, once [`placed`] (remote-09):
 /// each a path beneath them, no part of it `..` or a prefix, as Windows' paths read one too; a
 /// secret's or an agent's a descriptor the build was given (`/dev/fd/N`); a policy's file a
-/// name within its context.
+/// name within its context. A relative path on either side is taken as this process opens
+/// it, from its working directory (`std::path::absolute`, on Unix lexical: it follows no link
+/// and keeps `..`): on Unix the machine places a client's copies beneath `.`, the home its
+/// daemon entered (runs-02), where `copies` is `shards_ipc::home`'s, absolute, and a relative
+/// path is beneath no absolute one (CI run 43876891053: every build through a context
+/// refused). Windows' homes stay absolute, and its paths as they are.
 pub(crate) fn held_within(words: &[String], copies: &Path) -> Result<(), NotHeld> {
+    let from_here = |path: &Path| {
+        if path.is_absolute() {
+            Some(path.to_path_buf())
+        } else {
+            std::path::absolute(path).ok()
+        }
+    };
+    let copies = from_here(copies).unwrap_or_else(|| copies.to_path_buf());
     let given = |path: &str| {
         path.strip_prefix("/dev/fd/")
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     };
     let beneath = |path: &str| {
-        Path::new(path).strip_prefix(copies).is_ok_and(|rest| {
-            rest.components().all(|c| match c {
-                std::path::Component::Normal(n) => {
-                    n.to_str().is_some_and(|n| name_alone(n, cfg!(windows)).is_ok())
-                }
-                _ => false,
+        from_here(Path::new(path)).is_some_and(|path| {
+            path.strip_prefix(&copies).is_ok_and(|rest| {
+                rest.components().all(|c| match c {
+                    std::path::Component::Normal(n) => {
+                        n.to_str().is_some_and(|n| name_alone(n, cfg!(windows)).is_ok())
+                    }
+                    _ => false,
+                })
             })
         })
     };
@@ -1494,6 +1509,40 @@ mod tests {
                 "{words}"
             );
         }
+    }
+
+    /// CI run 43876891053: on Unix a machine's daemon keeps its home as `.`, the directory it
+    /// entered (runs-02), and places a client's build beneath `./synced/CLIENT`, where the
+    /// build's own check names the copies absolute (`shards_ipc::home`): the same directories
+    /// from this process's working directory, held; a part `..` still refused. Before
+    /// `held_within` took relative paths from here, every build through a context was.
+    #[test]
+    fn a_build_placed_beneath_a_relative_home_is_held_within_its_absolute_copies() {
+        let copies = Path::new(".").join("synced").join("alice");
+        let copy = copies.join("ab".repeat(32));
+        let agents = BTreeMap::new();
+        let places = Places {
+            context: &copy.join("context"),
+            dockerfile: &copy.join("dockerfile"),
+            out: &copy.join("out"),
+            copies: &copies,
+            agents: &agents,
+        };
+        let placed = |s: &str| {
+            s.split(' ')
+                .map(|w| placed(&w.replace("NUL", "\0"), &places).into_string().unwrap())
+                .collect::<Vec<String>>()
+        };
+        let absolute = std::path::absolute(&copies).unwrap();
+        let sent = "build --file=NULdockerfile/Dockerfile --output=type=tar,dest=NULout/0 NULcontext";
+        assert_eq!(held_within(&placed(sent), &absolute), Ok(()));
+        assert_eq!(
+            held_within(
+                &placed("build --iidfile=NULout/../../../identity NULcontext"),
+                &absolute
+            ),
+            Err(NotHeld::Outside("iidfile"))
+        );
     }
 
     /// remote-02: a build file's name a client sends is one file's of the copy as this

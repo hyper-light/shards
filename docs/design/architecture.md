@@ -5337,6 +5337,8 @@ directive makes.
 [--endpoint=URL] [--region=R] [--path-style] [--version-id=V] [--credentials=aws-default]
 <name> FROM <source>`.
 - An http(s) source needs `--checksum`: the content behind a URL changes without notice.
+  Bytes that hash to another are refused, `digest mismatch GOT: WANT`
+  (`a_directives_source_serving_other_bytes_than_its_pin_is_refused`).
 - An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
   S3; the bytes are hashed either way.
 - `--endpoint`, `--region`, `--path-style`, `--version-id` and `--credentials` go only with
@@ -5441,6 +5443,8 @@ Agentfile directive's source is its own grant.
   (D101) is how a build refuses an `ADD`'s hosts.
 - Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
   `a_git_source_opens_only_the_remotes_it_grants`,
+  `a_git_sources_redirect_elsewhere_is_refused_until_granted` (a smart-HTTP advertisement
+  redirected to another origin: refused naming both, nothing sent there; followed once granted),
   `a_granted_fetch_is_refused_a_redirect_it_does_not_name`,
   `a_skill_from_a_redirecting_source_is_fetched_once_granted`; real VMs:
   `a_skill_from_a_redirecting_source_builds_once_granted`.
@@ -31201,7 +31205,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31952,8 +31956,53 @@ s33-leak-scan).**
   save's files, a disk image and each member's environment as given, and looks for each value
   in its UTF-8, UTF-16LE and base64 forms. It counts the run's placeholders as no leak, lists
   the bring-up's credential shapes that no value explains, and never prints a value.
-- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README); step 10's second part, the
-  injector's A/B latency harness, is another lane's.
+- *Owed.* ROOT's runs of it on KVM, HVF and WHP (its README).
+
+**Built: step 10's second part, the injector's A/B harness (docs/research/measurements/
+s33-injector-ab, 6cb1213f2; kept in step with the injector by 529838116 and b6814785d).**
+- *What it measures.* ab.rs drives the injector in-process, as step 3's tests do. It is
+  compiled into shards-net's unit tests as ignored tests (`inject::ab`), so it needs no VM.
+  - `request`: a Messages-shaped request carrying its placeholder, through the injector
+    (`*.inject`: the host granted, the value filled in) against the same bytes with no grant
+    (`*.direct`), on a new connection each sample (`connect.*`) and on a kept one
+    (`request.*`). The arms take turns going first, AB then BA.
+  - `ca`: the run's CA, each sample three fresh processes started as a VM's network process
+    starts: its key, the CA, the upstream verifier, a leaf minted first and second, and a
+    process's first and second connection, injected against direct.
+  - `gzip`: f70's cost, a body gzip-coded against the same body identity-coded, through the
+    injector, from one TLS record's plaintext (2^14 bytes) doubling to 2^26, with the bytes
+    each puts on the wire.
+- *What each line says.* A series' n, p50, p90, p99 and max, and its p99's distribution-free
+  95% interval (Le Boudec 2010, Theorem 2.1). A header names the host, its OS, the revision,
+  its CPUs and its load average; `S33_AB_OUT` keeps every raw sample. Sampling starts at the
+  fewest samples with an interval and doubles n until every p99 falls within its previous
+  round's, and the line says why it stopped (`Stop`: stable, `S33_AB_N`, or `S33_AB_BUDGET_S`
+  with its p99s still moving). It never waits for quiet: `S33_AB_LOAD=cpus` keeps a busy
+  thread on each CPU.
+- *Literals* (R03). `QUANTILE`, 0.99, is the tail the person's rule holds first-class, and
+  `CONFIDENCE`, 0.95, the conventional two-sided level. The first n, 368, follows from them:
+  ⌈ln(0.025) / ln(0.99)⌉, the fewest samples whose largest lies above the p99 with
+  probability 0.975, so the first round's upper end is its largest sample. `RECORD`,
+  2^14 + 256 + 5 bytes, is a TLS record's most (RFC 8446 §5.2). The gzip sweep runs from one
+  record's plaintext (§5.1) to the largest power of two within the Messages API's 128 MB
+  request limit. Level 6 is zlib's default; Claude Code's own level is unverified, so
+  `S33_AB_GZIP_LEVEL` and `S33_AB_BODY` take the real level and a captured body. No literal
+  reaches production: ab.rs is compiled into tests alone.
+- *Not counted* (its README). The lease's round trip to the run host and kiln's broker; the
+  audit line's write; tcp.rs's segments and the guest's virtio path, which a real microVM's
+  two arms would both cross; Bun's BoringSSL, as the guest is rustls.
+- *Its statistics held to their sources.* `the_statistics_each_line_reports_hold_to_their_sources`
+  is an ordinary unit test. It holds the first n to 368 and to its closed form, and the first
+  round's upper end to the largest sample. It holds each round's interval up to n = 11776 to
+  binomial terms summed apart from `interval`'s own: the narrowest whose tails are each within
+  2.5%. It holds the quantiles to nearest rank and the arms to their turns.
+- *Owed* (ROOT). That test's first run, with its five guard removals (the harness's README):
+  under the person's rule of 2026-11-16 the lane that wrote it ran nothing. The harness's
+  runs with `--release`, quiet and under load, on each OS and architecture the network
+  process runs on (on macOS through launchd-run.sh); their numbers in PM, and any miss of
+  R08's target recorded. Not measured here: Claude Code reading the bundle
+  `NODE_EXTRA_CA_CERTS` names as it starts, which step 2 owes and which needs Claude Code
+  itself.
 
 **Built: step 8's first slice, the sign-in profiles** (`crates/net/src/signin.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 8; research f16, f43, f47, f49, f50, f52–f55, f63, f64; record
@@ -32622,7 +32671,7 @@ lane inject-h2 of kiln plan 01a1d2b88be57304b972761e2a5c6781 step 7).
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
 orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
-(its harness built, D259), the injector's measured cost (step 10), and a real sign-in of each
+(its harness built, D259), the injector's measured cost (its harness built, step 10's second part), and a real sign-in of each
 CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
 above.
 
@@ -34409,6 +34458,57 @@ each compiled for that kernel.
   let go; red with the refill asked at the take). *Owed* (ROOT): the A/B of warm starts, and
   of a burst's second, with and without it.
 
+**Amended: a run host makes its microVM's writable layer beside the rest of its start**
+(2026-11-16, the start path's cut (a)). A start that boots or saves made its layer's file
+(D190, `LayerFile::made`) on its way, after `its network decided` and before `launching its
+VM`, and a restore made its clone of its template's (`LayerFile::for_restore`) there too.
+`made` is a sparse file of the run's size (10 GiB unless `--storage-opt size`) whose ext4 file
+system `shards_ext4::format` writes as metadata alone (the superblock and its copies with
+their descriptor tables, the bitmaps it must, the first inode table block, the root and
+lost+found, the journal's superblock), so what it costs is its file system's work, under
+whatever contention, not bytes: ROOT's phase passes on a loaded Studio put `its writable layer
+made` at 18–320 ms; on a quiet one it is unmeasured. Nothing of the start between its
+microVM's shape and its VM's launch needs it: its security's making, its run's planning, its
+share process's start, its binaries' check, its network's decision.
+- *Decided.* `shape` begins its making on a thread of its own (`api_run.rs` `Layering`) once
+  its microVM is shaped, for the way that microVM is then to start (`way_of`: a boot, a save,
+  or a restore of its template), as a launch that way makes it (`layer_for`, which a launch
+  making its own calls too). Its launch still decides its way as it starts, and takes the
+  thread's layer, waiting for it, where the two are one way. Where they differ (its template
+  saved or removed meanwhile by another run, or a restore that failed and boots instead) the
+  launch makes its own and the thread is let go of: its file goes as the thread ends, its
+  result dropped with it (Rust std `thread/lifecycle.rs`, `impl Drop for Packet`: an
+  unjoined thread's result is dropped there), or, where the run host ends first, by its
+  orchestrator (`clear_layers`, above), as a file its host made before its microVM held it
+  always was. A plan refused lets it go alike. A warm host shapes too, so its VM is ready
+  sooner; a warm run's way had no layer on it before either.
+- *States* (R04): `Layering::Making { way, thread }` from its start; `Gone` once taken or let
+  go of, or where no thread could be started, whose launch makes its own.
+- *Considered.* (1) The way decided once, as the microVM is shaped, the launch taking it: one
+  read of the template fewer, but a template saved in between would have the run boot and save
+  (seconds) where it could restore (milliseconds), and one removed would have it restore
+  nothing, fail and boot. (2) Joining a thread let go of: its file gone at once, but the rest of
+  its making then on the launch's way, the cost this cut takes off it. (3) Beginning it at the
+  run host's first step: the way is unknown until the microVM names its template, and a layer
+  made for a run that restores is file system work beside its restore, the hottest kind.
+- *Literals:* none.
+- *Timed* (`SHARDS_TIMING`): its thread says `its writable layer made|cloned|none on its own
+  thread, in US us` as it ends; its launch says `its writable layer made|cloned|none, taken
+  from its thread` (without the suffix where it made its own) after `its network decided`,
+  the gap between those two its wait.
+- *Tested* (unit; written, not run): `a_layer_made_beside_a_runs_making_is_its_launchs_own`
+  (a boot's and a save's layer made on its thread as a launch makes one: ext4, in `layers`,
+  the length of a launch's own of that size, gone with its handle; a restore of a template
+  holding no snapshot none; each taken once; none where none was begun) and
+  `a_layer_made_for_another_way_is_no_launchs` (a boot's is no save's, nor its own way's once
+  let go of; red with the way's check removed).
+- *Owed* (ROOT): those tests and their mutation; `api_image.rs` on HVF, KVM x86_64 and WHP,
+  every start kind; and the A/B, the revision before this against this, on a quiet Studio
+  through `launchd-run.sh` (`docs/research/measurements/image-start-ab/ab.py`, PM M593).
+- *What would refuse it:* an A/B in which Booted's or Saved's boot span does not fall by the
+  launch's former wait, or Restored's or Warm's rises (the thread's file system work beside a
+  restore's own).
+
 ### D254. kiln's MCP rides the agent-control link: a stdio bridge in the harness's member, one lane of the link per connection, no network grant (decided; its asks built at the endpoint and the controller, the member's listener and bridge and its VM's hand-off built; the runs' asking and the run hosts' pairing built, the daemon's and an orchestrator's; kiln's side and every real-VM run owed)
 
 **Why.** A harness kiln drives in a microVM calls kiln's MCP server (kiln serves `/api/mcp`
@@ -35909,6 +36009,76 @@ caller's home and store, and secrets and SSH by reference as the CLI takes them 
     `api-build`, and none left once `Builds` is dropped mid-build (its group killed).
   - A Windows run of the stand-in tests (they are Unix shell stand-ins) and of `build_real`.
 
+#### Refusals in the build's words: a policy's, and the lines (P4.4, 2026-11-16)
+
+**Asked.** Phase 4's P4.4 (kiln plan 01a1dd2e…): a build error comes back typed in shards'
+words; a syntax error refused with its line; a build a policy refuses, in the policy's words.
+
+**Found.** `shards build image` prints, with its error, what the API lost. A policy's deny
+messages (buildx's `Policy: …` lines, policysession.DenyMessages) went to `api-build`'s
+stderr, so the refusal carried only BuildKit's `… not allowed by policy: action DENY`, as a
+`Step` of the policies' step. The excerpt at the error's lines (BuildKit's solver/errdefs Source
+ranges) went there too. A syntax error's line could be found only by reading
+`dockerfile parse error on line N` out of the message, and a located error that does not name
+its line in its words could not be found at all.
+
+**Decided.**
+- *Two answers before the end*, told where the CLI prints the same. `POLICY` (6) carries a
+  policy decision's messages. It is told only for a decision (`Refused::denied`), as buildx fails
+  its policies' step only for a denial; a policy's own error stays the build's error, in its
+  words. `AT` (7) carries the lines of the Agentfile the error is at: each range of each of its
+  locations, first and last. It is told for a plan's error (parsing included) and for a failed
+  step's source map.
+- *The refusal, typed.* `BuildRefusal::Policy { said, lines, message }` is new. A policy's
+  refusal is the build's whatever step it failed. `Step` and `Failed` gain `lines`
+  (`Failed(String)` becomes `Failed { message, lines }`). The lines are a field of each
+  refusal, not a variant of their own: a base's failed pull or a policy's own error is located
+  at its `FROM` without the text being at fault. `Policy` is said as buildx says it: each
+  `Policy: …`, then the error.
+- *The channel's version, 1 to 2.* A host refuses a request of another version, so no side is
+  sent an answer it does not read. FAILED's layout is unchanged: each side reads the other's
+  refusal of its version.
+- *`Builds::env`*: variables of the build's process over this one's, `home`'s `SHARDS_HOME`
+  last, as `ImageSpec::env` gives a run host's. A `SecretSource::Env` is read from there.
+  An orchestrator that holds a person's secret (P4.6: credentials chosen from their secrets) can
+  give it to one build without writing it to a file or setting it in its own environment,
+  which `std::env::set_var` (unsafe in Rust 2024) does not do soundly while other threads run.
+- Rejected: callers reading the line out of the message (R04: callers match fields, not text);
+  a stream of the excerpt's text (presentation, which the caller renders from `lines`).
+
+**Literals.**
+
+| Literal | Source |
+|---|---|
+| answer kinds 6 and 7 | the channel's next names after FAILED (5) |
+| version 2 | the channel's version, one past main's (D263) |
+| 4 and 8, least item sizes | a message's length prefix; a range's two u32s. They bound a hostile count before anything is allocated, as the request's lists are bounded |
+| a line past `u32::MAX` told as `u32::MAX` | no Agentfile has more lines than a u32 counts, as a step's index is told (`told_index`) |
+
+**Evidence.**
+- Unit (`shards-api` `builds::`): `every_answer_reads_back_as_it_was_told` (POLICY and AT read
+  back; a range whose last line precedes its first, and counts past their bytes, refused);
+  `a_syntax_error_is_refused_at_its_line`; `a_build_a_policy_refused_is_refused_in_the_policys_words`
+  (said as buildx says it); `a_failed_step_is_refused_by_its_number_and_name` (with its line);
+  `a_builds_variables_reach_its_host_and_its_home_comes_last`.
+- Light, a real `shards` and no VM (`build_real.rs`, `SHARDS_API_BUILD=1`):
+  `a_build_refused_comes_back_typed_in_its_words`, a syntax error refused `Failed` at line 2 and
+  an `Agentfile.rego` that trusts nothing refused `Policy` with its message. The broken COPY is
+  refused at its line 2. On adas-mac-studio.local (macOS arm64) at af07ec039 with a debug
+  `shards` (kiln run r47): 3 passed. The syntax error: `… dockerfile parse error on line 2:
+  unknown instruction: FOO (did you mean FROM?)`, lines `[2..=2]`. The policy: said
+  `["no source is trusted here"]`, `… source "local://dockerfile" not allowed by policy: action
+  DENY`. The broken COPY: `[1/1] COPY missing /missing`, lines `[2..=2]`. shards-api's unit tests
+  there: 280 passed, 9 ignored; `scripts/check-development-policy` passed.
+- **Owed** (ROOT):
+  - `api_image.rs` `an_image_built_through_the_api_boots_by_its_digest` (built through
+    `Builds`, booted by its `sha256:` ID as an `ImageSpec`'s image) on HVF, KVM and WHP.
+  - `cargo test -p shards --profile test-release --lib build::` (this slice's `mod.rs`, D54's new
+    git and http tests). Its debug-profile run in r47 exited 101 with no test-result line and no
+    failed test named. Its cause is unread.
+  - clippy of `shards-api` and `shards` at the revision that fixed r47's
+    `single_range_in_vec_init` in these tests.
+
 ### D264. A guest's end has no deadline: what its host has not taken is held past it, within the window it had (built; real-VM runs owed)
 
 **Why.** The vsock device gave a connection whose guest had ended both ways 2 s to hand its
@@ -37183,6 +37353,31 @@ with no room the domains' `memory.current` counts their page cache, which `MemAv
 as reclaimable too. Reverted from this revision; until it returns, a member past an
 orchestrator's room is throttled at the run's hold, as before.
 
+**The reproduction read (2026-11-16, p/member-share-trace).** R09's run (adacachy2, 4dfa731b1 with
+4e0b82699, `--test nesting` three times: run 1 red) failed
+`a_granted_workload_still_reaches_no_host_port_over_vsock` and
+`a_granted_workload_cannot_detach_its_device_program`, whose runs start no domain and were told no
+`ROOM`: their homes' whole `daemon.log` has no budget word, which `tell_room_now` writes as a
+budget first holds a microVM. With no domain `reshare` and `domains::start` return before any
+share, and with no room told `plug::cap()` is `u64::MAX`, so `most_within` is `most` and the
+pluggable report is the one before: nothing those runs did changed. Each stop was refused in
+`Home::drop` 28.9 ms into its wait, the two at once, past a W* of 8.96 ms. The run left the
+daemon's runs as its end was told, under the lock its client is told it under (`tell_end`), so the
+stop waited on its daemon's exit, whose waits in `finish` are the `--rm` run's removal (its
+directory's sync and its files' deletion, `complete_batch`), the records (`await_recorded`) and the
+files made (`await_made`): the host's file system's work, in which neither the client nor the
+daemon runs. A judge's record is kept per checkout
+(`target/judge-records`) and learns from each answer, so later runs of one tree pass (runs 2 and
+3), which the comparisons above did not hold equal. The daemon started in the home after
+(1886439) was the refusal's own `ps -a` (`stacks_of`). So the stall is a judged stop waiting on
+its daemon's durable file-system work on that host (its btrfs device wholly allocated), not on
+the share: to be shown by A/B runs from one restored record. Each stage is said with the wall
+clock at `SHARDS_LOG=info` (`shards_vmm::stage!`; below `info`, an atomic's load): the stop
+client's slot, ask, answer and stopping lock; the daemon's stepping aside, each run's stop, its
+end heard and told, what a closed daemon's exit waits on and each wait of `finish`; each
+removal's set-aside, sync and deletion; each `ROOM` word told and answered. The guest's own end
+is already said there (its markers, `WORKLOAD_EXITED`, `POWERING_OFF`).
+
 **Verified.** E2E (api_image.rs): `a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug`
 (4631b27d9: a harness at the least envelope holds four times its boot memory a page at a time,
 its kernel's `MemTotal` is the host's memory, and one allocation past all of it is refused at
@@ -37380,7 +37575,12 @@ plugin. `a_share_given_no_member_is_the_runs_alone` (its default deny),
 narrowed to its own member, taken; widened to another, refused); the image channel's
 `each_shares_members_ride_the_request_last`; shards-api's spec refusals; init's
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
-`give_members` not called, and the first test fails as kiln's launch did.
+`give_members` not called, and the first test fails as kiln's launch did. Where a test's
+directory is no guest path as it is, the first two tests share it beneath `/work` by its name,
+as kiln shares a Windows project (its `isolated::guest_path`), and take its plug roots as kiln
+does (`plug_root_of`): Linux keeps them in `/tmp`, each domain's scratch, which no share may be
+at or under (D139) and no plug root may be (`plug::root_name`), and Windows' are `C:\` paths
+(CI run 43876891053 refused the Linux runs' `/tmp` plug root).
 
 **Amended (P6.1, kiln plan 01a1dd2e959772a1b17bc49026448e8a item 1, 2026-11-16; corrected the
 same day by ROOT's decision): a working directory its guest cannot enter is refused typed, by its

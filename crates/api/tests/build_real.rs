@@ -2,8 +2,9 @@
 //! its runner runs where `SHARDS_API_BUILD=1`, `SHARDS_BIN` naming the `shards` to build with.
 //! Its Agentfile copies a file into `scratch`, so no base image is pulled and no builder
 //! microVM boots: what it holds to is the API's path, the request, the events, the image's
-//! ID in the caller's home's store, and a failing step refused by its number. A component
-//! (D270) is built alone the same way, from a pinned http source this test serves.
+//! ID in the caller's home's store, a failing step refused by its number and line, and a
+//! syntax error and a policy's refusal typed in their words. A component (D270) is built alone
+//! the same way, from a pinned http source this test serves.
 
 #![allow(
     clippy::unwrap_used,
@@ -38,8 +39,8 @@ fn an_agentfile_builds_through_the_api_into_the_callers_home() {
     std::fs::write(context.join("Broken"), "FROM scratch\nCOPY missing /missing\n").unwrap();
     let home = dir.path().join("home");
     let builds = Builds {
-        binary: None,
         home: Some(home.clone()),
+        ..Builds::default()
     };
     let spec = BuildSpec {
         context: context.clone(),
@@ -73,9 +74,61 @@ fn an_agentfile_builds_through_the_api_into_the_callers_home() {
         ..spec
     };
     match builds.build(&broken, &mut |_| {}) {
-        Err(BuildRefusal::Step { name, message, .. }) => {
+        Err(BuildRefusal::Step {
+            name, message, lines, ..
+        }) => {
             println!("refused at {name:?}: {message}");
             assert!(name.contains("COPY missing"), "{name}");
+            assert_eq!(lines, [std::ops::RangeInclusive::new(2, 2)], "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// What the build refuses comes back typed, in its words (P4.4): an Agentfile it cannot read at
+/// its line, and a build its policy (`Agentfile.rego` beside it, D101) refuses in the policy's
+/// own words. Neither pulls an image or boots a builder microVM.
+#[test]
+fn a_build_refused_comes_back_typed_in_its_words() {
+    if !asked() {
+        return;
+    }
+    let dir = shards_testdir::TempDir::new("api-build-refused").unwrap();
+    let builds = Builds {
+        home: Some(dir.path().join("home")),
+        ..Builds::default()
+    };
+    let context = |name: &str, agentfile: &str| {
+        let context = dir.path().join(name);
+        std::fs::create_dir_all(&context).unwrap();
+        std::fs::write(context.join("hello"), "hello\n").unwrap();
+        std::fs::write(context.join("Agentfile"), agentfile).unwrap();
+        context
+    };
+    let spec = |context| BuildSpec {
+        context,
+        ..BuildSpec::default()
+    };
+    let syntax = spec(context("syntax", "FROM scratch\nFOO bar\nCOPY hello /hello\n"));
+    match builds.build(&syntax, &mut |_| {}) {
+        Err(BuildRefusal::Failed { message, lines }) => {
+            println!("refused: {message}, at {lines:?}");
+            assert!(message.contains("dockerfile parse error on line 2"), "{message}");
+            assert_eq!(lines, [std::ops::RangeInclusive::new(2, 2)], "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let policed = context("policed", "FROM scratch\nCOPY hello /hello\n");
+    std::fs::write(
+        policed.join("Agentfile.rego"),
+        "package docker\n\ndefault allow := false\n\ndeny_msg contains msg if {\n\tnot allow\n\tmsg := \"no source is trusted here\"\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+    )
+    .unwrap();
+    match builds.build(&spec(policed), &mut |_| {}) {
+        Err(BuildRefusal::Policy { said, message, .. }) => {
+            println!("refused: {said:?}: {message}");
+            assert_eq!(said, ["no source is trusted here"]);
+            assert!(message.contains("not allowed by policy"), "{message}");
         }
         other => panic!("{other:?}"),
     }
@@ -170,8 +223,8 @@ fn a_component_builds_alone_from_its_directives_pinned_source() {
     ]);
     let port = serve(archive.clone());
     let builds = Builds {
-        binary: None,
         home: Some(dir.path().join("home")),
+        ..Builds::default()
     };
     let spec = ComponentSpec {
         kind: ComponentKind::Harness,
@@ -196,7 +249,9 @@ fn a_component_builds_alone_from_its_directives_pinned_source() {
         ..spec.clone()
     };
     match builds.component(&unpinned, &mut |_| {}) {
-        Err(BuildRefusal::Failed(message)) => assert!(message.contains("--checksum"), "{message}"),
+        Err(BuildRefusal::Failed { message, .. }) => {
+            assert!(message.contains("--checksum"), "{message}")
+        }
         other => panic!("{other:?}"),
     }
     let path = ComponentSpec {
@@ -205,7 +260,9 @@ fn a_component_builds_alone_from_its_directives_pinned_source() {
         ..spec
     };
     match builds.component(&path, &mut |_| {}) {
-        Err(BuildRefusal::Failed(message)) => assert!(message.contains("context path"), "{message}"),
+        Err(BuildRefusal::Failed { message, .. }) => {
+            assert!(message.contains("context path"), "{message}")
+        }
         other => panic!("{other:?}"),
     }
 }
