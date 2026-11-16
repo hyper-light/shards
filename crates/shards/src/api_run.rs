@@ -8098,8 +8098,12 @@ mod hosted {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
                 // Held before it is made or found, so that no clearing removes it under the
-                // run, and kept for the run's life once taken (D281).
-                let hold = store.hold(name).map_err(|e| (R::Volume, e))?;
+                // run, and kept for the run's life once taken (D281); refused at once while a
+                // clearing holds it, never waited for.
+                let hold = store
+                    .hold(name)
+                    .map_err(|e| (R::Volume, e))?
+                    .ok_or_else(|| (R::Volume, format!("volume {name} is being cleared")))?;
                 {
                     let _held = crate::volumes::lock();
                     let (volume, _) = store

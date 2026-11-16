@@ -122,8 +122,9 @@ mod tests {
         assert_eq!(left, ["agent-b"]);
     }
 
-    /// D281: a volume a run holds (its plug's hold, `Store::hold`) is refused its clearing
-    /// `InUse` at once, its files kept; once that hold is let go of, it is cleared.
+    /// D281: a volume a run holds (its plug's hold, `Store::hold`), by one run or two, is refused
+    /// its clearing `InUse` at once, its files kept; once every hold is let go of, it is cleared.
+    /// A hold asked while a clearing holds it is refused at once.
     #[test]
     fn a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go() {
         let dir = shards_testdir::TempDir::new("api-volumes").unwrap();
@@ -133,10 +134,16 @@ mod tests {
             let _held = crate::volumes::lock();
             store.create("agent-a", &none, &none, "").unwrap();
         }
-        let run = store.hold("agent-a").unwrap();
+        let run = store.hold("agent-a").unwrap().unwrap();
+        let other = store.hold("agent-a").unwrap().unwrap();
         assert!(matches!(clear(&store, "agent-a"), Err((ClearCause::InUse, _))));
         assert!(store.data("agent-a").exists());
         drop(run);
+        assert!(matches!(clear(&store, "agent-a"), Err((ClearCause::InUse, _))));
+        drop(other);
+        let clearing = store.alone("agent-a").unwrap().unwrap();
+        assert!(store.hold("agent-a").unwrap().is_none());
+        drop(clearing);
         assert_eq!(clear(&store, "agent-a"), Ok(()));
         assert!(!store.data("agent-a").exists());
         assert!(every(&store).is_empty(), "a hold's file is no volume");

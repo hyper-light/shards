@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use shards_cmdline::mounts::{self, Mount, clean};
+use shards_image::store::Locked;
 
 /// A mount point of a microVM, in the shape `inspect`'s `Mounts` answers
 /// (volumemounts.MountPoint, D38).
@@ -634,20 +635,36 @@ impl Store {
     }
 
     /// Volume `name` held for a run that plugs it (D281), beside every other run's hold: its
-    /// lock file taken shared (flock(2), LockFileEx on Windows), made where missing, the
-    /// store's directory with it, once a clearing of it under way has ended. Let go of as it
+    /// lock file, made where missing with the store's directory, taken shared (flock(2),
+    /// LockFileEx on Windows); none at once where a clearing of it holds it. Let go of as it
     /// drops, or as its process ends, however it ends.
-    pub fn hold(&self, name: &str) -> Result<shards_image::store::Locked, String> {
+    pub fn hold(&self, name: &str) -> Result<Option<Locked>, String> {
         crate::networks::make_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
-        let path = self.holders(name);
-        shards_image::store::Locked::shared(&path).map_err(|e| format!("{}: {e}", path.display()))
+        self.locking(name, Locked::try_share)
     }
 
     /// Volume `name` held alone for its clearing (D281): none at once where a run holds it,
     /// never waiting for that run to end.
-    pub fn alone(&self, name: &str) -> Result<Option<shards_image::store::Locked>, String> {
+    pub fn alone(&self, name: &str) -> Result<Option<Locked>, String> {
+        self.locking(name, Locked::try_hold)
+    }
+
+    /// Volume `name`'s lock file ([`holders`](Self::holders)), made where missing, as `take`
+    /// takes it.
+    fn locking(
+        &self,
+        name: &str,
+        take: fn(std::fs::File) -> std::io::Result<Option<Locked>>,
+    ) -> Result<Option<Locked>, String> {
         let path = self.holders(name);
-        shards_image::store::Locked::try_exclusive(&path).map_err(|e| format!("{}: {e}", path.display()))
+        let said = |e: std::io::Error| format!("{}: {e}", path.display());
+        let file = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(said)?;
+        take(file).map_err(said)
     }
 
     /// The local driver's validateName.
