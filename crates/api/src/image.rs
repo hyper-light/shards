@@ -161,8 +161,10 @@ pub struct MemberSpec {
     pub env: Vec<(String, Secret)>,
     pub files: Vec<MemberFile>,
     /// Its working directory, absolute and plain: the project path it works in, which must be
-    /// there as it starts (D231); none for its image's (its config's `run.workdir`, in its
-    /// directory).
+    /// there as it starts (D231): at or beneath a share given it as it starts
+    /// ([`ImageShare::members`], or the image's `VOLUME` there for it), else the run is refused
+    /// [`ImageRefusal::Workdir`] before anything of it starts (D277). None for its image's (its
+    /// config's `run.workdir`, in its directory).
     pub workdir: Option<String>,
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
@@ -474,6 +476,10 @@ pub enum ImageRefusal {
     Restart(RestartRefusal, String),
     /// A component's swap its host refused (D270 slice 4), by why.
     Swap(SwapRefusal, String),
+    /// A member's working directory ([`MemberSpec::workdir`]) that no share or volume given it
+    /// as it starts holds (D277), so it could not start there: its run host's words name the
+    /// member and the directory.
+    Workdir(String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -512,6 +518,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Net(cause, why) => write!(f, "the run's network: {cause:?}: {why}"),
             Self::Restart(cause, why) => write!(f, "a member's restart: {cause:?}: {why}"),
             Self::Swap(cause, why) => write!(f, "a component's swap: {cause:?}: {why}"),
+            Self::Workdir(why) => write!(f, "a member's working directory: {why}"),
         }
     }
 }

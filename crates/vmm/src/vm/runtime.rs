@@ -22,6 +22,7 @@ use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
 use crate::{debug, info, platform, warn};
+use shards_abi::run::members::KEY_LEN;
 use shards_ipc::device::Refusal;
 
 /// Ok when this host can run VMs; otherwise, why not.
@@ -81,6 +82,78 @@ pub struct Handle {
     memory: Arc<GuestMemory>,
 }
 
+/// Plugs component `key`'s image `file` into the machine of `control` and `memory` (D270):
+/// at its components' window's first free range and its bus's first free slot, or, where a
+/// snapshot kept it (`at`, slice 5), back at that range and place. Its function is one a
+/// snapshot keeps ([`Window::saves`](crate::devices::pci::hotplug::Window::saves)), by `key`:
+/// refused for a key of another length than its digest's hex, which no snapshot's decoding
+/// would read back.
+pub(crate) fn plug_component(
+    control: &Control,
+    memory: &Arc<GuestMemory>,
+    file: std::fs::File,
+    key: &str,
+    at: Option<&pmem::Kept>,
+) -> Result<super::Plugged, Refusal> {
+    if key.len() != KEY_LEN {
+        return Err(Refusal::InvalidRequest(format!(
+            "a component's key of {} bytes: a component is keyed by its digest's {KEY_LEN} hex digits",
+            key.len()
+        )));
+    }
+    let plugs = control.plugs().ok_or(Refusal::NoBus)?;
+    let window = plugs.components.clone().ok_or_else(|| {
+        Refusal::Unsupported("this microVM has no components' window to map a component in".into())
+    })?;
+    let region = Arc::new(pmem::Region::of_file(file, "a component's image").map_err(Refusal::Host)?);
+    let len = region.len() as u64;
+    let gpa = match at {
+        None => window.place(&region, key)?,
+        Some(kept) if kept.len != len => {
+            return Err(Refusal::Host(format!(
+                "component {key}'s image is {len} bytes, not the {} its snapshot kept",
+                kept.len
+            )));
+        }
+        Some(kept) => window.place_at(&region, key, kept.gpa)?,
+    };
+    // Its pages reached by its machine's other devices as the guest names them, as a
+    // boot's pmem files' are (D189's device DMA).
+    // SAFETY: the region stays mapped while the window holds it, which it does until the
+    // unplug takes it back here first (`unplug`).
+    let given = unsafe { memory.give_plugged(gpa, region.host(), region.len()) }.map_err(Refusal::Host);
+    let device: Box<dyn crate::devices::virtio::VirtioDevice> = Box::new(pmem::Pmem::new(region, gpa));
+    let guest = memory.clone();
+    let make = move |slot: &crate::devices::pci::hotplug::Slot| {
+        let f = crate::devices::virtio::pci::VirtioPci::new(device, guest, slot.emulated_msi())?;
+        Ok(Arc::new(f) as Arc<dyn crate::devices::pci::hotplug::Plugged>)
+    };
+    let plugged = given.and_then(|()| match at {
+        None => plugs.hotplug.plug(make),
+        Some(kept) => plugs.hotplug.plug_at(kept.devfn, make),
+    });
+    match plugged {
+        Ok(devfn) => {
+            window.held_by(gpa, devfn);
+            plugs.hotplug.saves(devfn);
+            Ok(super::Plugged {
+                devfn,
+                address: super::guest_address((devfn >> 3, devfn & 7)),
+                size: None,
+                steps: Vec::new(),
+                region: Some((gpa, len)),
+            })
+        }
+        Err(refused) => {
+            memory.take_plugged(gpa);
+            if let Err(e) = window.release_at(gpa) {
+                warn!("a component's range at {gpa:#x}, its plug refused, stays mapped: {e}");
+            }
+            Err(refused)
+        }
+    }
+}
+
 impl Handle {
     /// Plugs `device` into its PCI bus's first free slot (D214), on virtio's PCI
     /// transport: an error where it has no slots, or none free.
@@ -117,47 +190,17 @@ impl Handle {
         })
     }
 
-    /// Plugs a component's EROFS image into the running machine (D270): a read-only
+    /// Plugs component `key`'s EROFS image into the running machine (D270): a read-only
     /// virtio-pmem function, its region `file` mapped at a free range of its components'
     /// window, which every VM of its host mapping the same file shares in its page cache, as
     /// an image's root is shared (D15). Its guest finds it as its init rescans its PCI bus,
-    /// and maps its files from the host's pages (DAX). Refused where the machine has no
-    /// window, no free slot, or no free range as long as the file
-    /// ([`Refusal::NoRoom`]).
-    pub fn plug_pmem(&self, file: std::fs::File) -> Result<super::Plugged, Refusal> {
-        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
-        let window = plugs.components.clone().ok_or_else(|| {
-            Refusal::Unsupported("this microVM has no components' window to map a component in".into())
-        })?;
-        let region = Arc::new(pmem::Region::of_file(file, "a component's image").map_err(Refusal::Host)?);
-        let gpa = window.place(&region)?;
-        let len = region.len() as u64;
-        // Its pages reached by its machine's other devices as the guest names them, as a
-        // boot's pmem files' are (D189's device DMA).
-        // SAFETY: the region stays mapped while the window holds it, which it does until the
-        // unplug takes it back here first (`unplug`).
-        let given =
-            unsafe { self.memory.give_plugged(gpa, region.host(), region.len()) }.map_err(Refusal::Host);
-        let device = pmem::Pmem::new(region, gpa);
-        match given.and_then(|()| self.plug(Box::new(device))) {
-            Ok(devfn) => {
-                window.held_by(gpa, devfn);
-                Ok(super::Plugged {
-                    devfn,
-                    address: super::guest_address((devfn >> 3, devfn & 7)),
-                    size: None,
-                    steps: Vec::new(),
-                    region: Some((gpa, len)),
-                })
-            }
-            Err(refused) => {
-                self.memory.take_plugged(gpa);
-                if let Err(e) = window.release_at(gpa) {
-                    warn!("a component's range at {gpa:#x}, its plug refused, stays mapped: {e}");
-                }
-                Err(refused)
-            }
-        }
+    /// and maps its files from the host's pages (DAX). A snapshot keeps it by `key`, and a
+    /// restore given its image by that key plugs it back where it was (D270 slice 5).
+    /// Refused where the machine has no window, no free slot, or no free range as long as
+    /// the file ([`Refusal::NoRoom`]), and for a key of another length than a digest's hex
+    /// ([`Refusal::InvalidRequest`]).
+    pub fn plug_pmem(&self, file: std::fs::File, key: &str) -> Result<super::Plugged, Refusal> {
+        plug_component(&self.control, &self.memory, file, key, None)
     }
 
     /// Plugs a shared directory into the running machine (D214): virtio-fs, mounted by
@@ -744,6 +787,7 @@ impl Handle {
             join: parts.join,
             swap: self.control.swap().map(|w| &**w),
             init: self.control.guest_abi(),
+            components: self.control.plugs().and_then(|p| p.components.clone()),
         };
         if !sh.snapshot.wait_parked(&|| sh.exiting()) {
             return Err("the microVM has stopped".into());
@@ -1543,6 +1587,7 @@ pub fn restore_reported(
             io: cfg.io_limit,
             layer: layer.as_ref(),
             window_heads: window_heads.as_ref(),
+            components: &cfg.components,
         },
         working_set.unwrap_or_default(),
         report,
@@ -1920,6 +1965,7 @@ impl Coordinator {
             join: self.join,
             swap: self.control.swap().map(|w| &**w),
             init: self.control.guest_abi(),
+            components: self.control.plugs().and_then(|p| p.components.clone()),
         }
     }
 
@@ -2062,6 +2108,8 @@ struct Cut<'a> {
     swap: Option<&'a pmem::SwapWindow>,
     /// The contract its guest's init announced, which its snapshot records (D176).
     init: Option<u64>,
+    /// Its components' window (D270), whose components its snapshot keeps (slice 5).
+    components: Option<Arc<pmem::Components>>,
 }
 
 impl Cut<'_> {
@@ -2102,6 +2150,13 @@ impl Cut<'_> {
         Ok(Some(Snapshot {
             config: self.config.clone(),
             plugged: self.memory.plugged_runs(),
+            // Each component plugged into it (D270 slice 5), read with its devices quiet,
+            // which a restore plugs back.
+            components: self
+                .components
+                .as_deref()
+                .map(pmem::Components::kept)
+                .unwrap_or_default(),
             // Its memory's save says them.
             data: None,
             arch,
@@ -2216,6 +2271,7 @@ mod tests {
                 component_window_mib: 0,
             },
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),

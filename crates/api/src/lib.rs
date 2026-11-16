@@ -44,6 +44,7 @@ mod said;
 pub mod sim;
 mod stream;
 mod taken;
+pub mod volumes;
 #[cfg(test)]
 mod while_runs;
 
