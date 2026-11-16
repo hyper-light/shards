@@ -403,8 +403,6 @@ pub trait Recipient {
     fn give(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> std::io::Result<usize>;
     /// Its handle `value`, duplicated into this process.
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle>;
-    /// Its process ID, which a socket is shared with.
-    fn id(&self) -> u32;
 }
 
 #[cfg(windows)]
@@ -416,10 +414,6 @@ impl Recipient for shards_ipc::Child {
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
         shards_ipc::Child::take(self, value)
     }
-
-    fn id(&self) -> u32 {
-        shards_ipc::Child::id(self)
-    }
 }
 
 #[cfg(windows)]
@@ -430,10 +424,6 @@ impl Recipient for shards_ipc::Process {
 
     fn take(&self, value: usize) -> std::io::Result<std::os::windows::io::OwnedHandle> {
         shards_ipc::Process::take(self, value)
-    }
-
-    fn id(&self) -> u32 {
-        shards_ipc::Process::id(self)
     }
 }
 
@@ -789,10 +779,6 @@ mod windows_tests {
             use std::os::windows::io::{BorrowedHandle, RawHandle};
             // SAFETY: a value this test's own process gave, open while it asks.
             unsafe { BorrowedHandle::borrow_raw(value as RawHandle) }.try_clone_to_owned()
-        }
-
-        fn id(&self) -> u32 {
-            std::process::id()
         }
     }
 

@@ -4890,6 +4890,30 @@ Open:
 - Egress grants for a network (AGENTFILE_ARCH §4.6 `NETWORK --egress`), with the
   Agentfile.
 
+**Amended (lane xnet-s6, 2026-11-16, ROOT's decision): NXDOMAIN, not REFUSED.** A question no
+table of the network process holds and no grant lets past the microVM (a name the network does
+not hold, a peer no link reaches, an `enable_icc` false network's among them, a name past the
+network; D59's ungranted names; a shared network's, D285) is answered at once NXDOMAIN
+(`shards_dns::denied`), by UDP and by TCP (D79's relay), where it was REFUSED, as the agents'
+resolver answers one since D278's amendment of the same day. musl's stub drops REFUSED: "Only
+accept positive or negative responses; retry immediately on server failure, and ignore all other
+codes such as refusal" (src/network/res_msend.c, its `switch` on the RCODE: 0 and 3 kept, 2 sent
+again, the rest `continue`), so a member's lookup of a name its network refused waited out
+musl's timeout (`RES_TIMEOUT`, 5 s) and ended EAI_AGAIN (lookup_name.c `name_from_dns`), where
+NXDOMAIN ends it at once, EAI_NONAME; glibc ends either at once (resolv/res_send.c `send_dg`).
+The answer carries no SOA, so that no resolver caches it past a grant that names the name later
+(RFC 2308 §5). REFUSED stays for what is no query of one question.
+- *Literals* (R03): NXDOMAIN, 3, and REFUSED, 5: RFC 1035 §4.1.1's RCODEs.
+- *Tests* (written, not run, by the person's word of 2026-11-16): shards-dns
+  `a_responses_addresses_are_read` (a question no grant names: NXDOMAIN, its ID and question
+  kept; one of two questions: REFUSED), `tcp_questions_go_on_whole_and_only_as_granted` and
+  `tcp_refusals_wait_for_an_answer_to_end_and_answers_are_learned` (by TCP); containers.rs
+  `a_networks_options_are_what_its_microvms_do` (a peer no link reaches: `dnsttl rcode 3`) and
+  `microvms_on_a_network_reach_one_another_by_name` (`example.com`: rcode 3). Owed (ROOT):
+  `cargo test -p shards-dns --profile test-release`; on real VMs (HVF, KVM, WHP), `cargo test -p
+  shards --profile test-release --test containers -- a_networks_options_are_what_its_microvms_do
+  microvms_on_a_network_reach_one_another_by_name`.
+
 ### Every action makes an image a microVM first (D47)
 
 `shards run vm IMAGE` has made a microVM of a container image as it pulls it since D25:
@@ -39333,7 +39357,7 @@ named ones are.**
     image with a `VOLUME`, `shards volume prune -f` while it runs passing its volume by, its
     files kept; the volume and its lock file gone once the run ends.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 5, a network's leases held across processes, the daemon's runs on them, the network process's switch, the API, wire and run host, and the guest's side, built; slice 6, a network made and removed by shards-api and a run's names withdrawn as its link ends, built, its real-VM tests written and owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -39500,7 +39524,8 @@ join until 4 and 5 have landed):
    its guest's asks; shards-api's pairings and each run host's links socket; a network made
    beforehand, with `network create`'s pool and words (`Networks::create`), never by a join. The
    image channel's version one past main's at landing (built: version 50, *Slice 4, built* below;
-   `AddressTaken` arises from no join, which asks no address; `Networks::create` is not built).
+   `AddressTaken` arises from no join, which asks no address; `Networks::create`, and its removal,
+   built by slice 6, *Slice 6, built* below).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -39511,7 +39536,7 @@ join until 4 and 5 have landed):
    `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`: A's client reaches
    B's server's port once both have joined; refused on another port, the other way, and from B's
    other member; reset and refused once A leaves; a run host killed, its address given to the next
-   join.
+   join (written as built, *Slice 6, built* below).
 - IPv6 on a shared network (D99's) comes after: a network with IPv6 is refused (`Ipv6`) until then.
 - Docker's `network connect` of a running microVM (D46's open item) can come of slice 3's table,
   Docker's networks keeping Docker's reach; a microVM's second network is then eth0's second
@@ -39542,8 +39567,9 @@ join until 4 and 5 have landed):
   without it: its gate shut, its open flows reset; then `NET_PEER_GRANT`; then `NET_JOIN` without
   it as its name goes, or, the run's last member's, `NET_LEAVE`, dropping the run's links, as its
   address and pairing go) → none. A run's end lets every lease go with its host and every link
-  with its network process; shards-api tells the network's other runs their names without it at
-  the network's next change.
+  with its network process; each other run's network process withdraws its names as its link
+  there closes, and shards-api tells the network's other runs their members without it once its
+  host is reaped (slice 6; slice 4 waited for the network's next change).
 - *A flow* (slice 3), per link: none → (its first packet admitted: a TCP SYN or a UDP datagram, its
   sender's grant and its receiver's both taking it, each at its own end) **open** → (a TCP RST, or a
   FIN each way) none; **open** → (idle past its timer) none; its link dropped, every flow of it
@@ -39822,7 +39848,7 @@ and `image::session::links`; the run host's `connect_live`, `disconnect_live`, `
   run's host asked; each other run of the process's on the network told its members again
   (`Rejoin`); then, the run new to it, a link made with each. A run that has ended is let go of at
   its network's next change: its link ended with its network process, so nothing reaches it, its
-  name answered meanwhile.
+  name answered meanwhile (slice 6: at once, *Slice 6, built*).
 - *Pairing across processes* (`Leases::pair_as`): an orchestrator's run hosts hold a network's
   pairing together, each a lease `pairers/HOLDER` saying its orchestrator's token, refused
   `PairedElsewhere` while the daemon pairs the network or another orchestrator's run host holds
@@ -39862,7 +39888,7 @@ and `image::session::links`; the run host's `connect_live`, `disconnect_live`, `
   the standard streams (POSIX's 0 to 2); the token's 64 hex digits, slice 1's ID form. Nothing
   else: names' 253 bytes are slice 5's `HOST_MOST`.
 - *Not built*: `Networks::create` of shards-api's own (a network is made through the daemon's
-  `network create` until it is); `AddressTaken` (no join asks an address).
+  `network create` until it is; built by slice 6); `AddressTaken` (no join asks an address).
 - *Unmeasured* (R14, ROOT's): a connect's round trips (its host's leases, `NET_JOIN`,
   `NET_PEER_GRANT`, its guest's exec, then each other run's `Rejoin` and each link's two asks); the
   reservation's duplicates, one per link to come at each control message.
@@ -39894,6 +39920,105 @@ macOS, Linux (glibc and musl) and Windows (the links' Windows arm: cargo-xwin, j
   among them, has its questions taken by its gate and the switch from its start, each answered at
   once, a name nothing grants it NXDOMAIN, where its gate held them until a grant opened them and
   each lookup waited out its stub's timeout (D278's amendment of this day).
+
+**Slice 6, built** (lane xnet-s6, 2026-11-16; written, neither built nor run, by the person's word
+of that day: ROOT builds and runs it). shards-api `networks`; `shards api-networks`
+(`api_networks.rs`); `networks::made`, the daemon's path moved there; the net crate's `shared.rs`
+and `lib.rs`; shards-api `image::session::links` and `session::watch`; the test guest's
+`ask-trap`, `dnsttl-each`, `udp-each`, `resolve-took` and `ask`'s bytes; api_image.rs's tests.
+- *A network made and removed by an orchestrator* (item 4's `Networks::create`): shards-api's
+  `networks::Networks { binary, env }`, `create(name)`, the network's ID, and `remove(name)`, each
+  asking `shards api-networks create|remove NAME` (one of `cli::INTERNAL`), which answers one frame
+  on stdout (`CREATED` 1, `REMOVED` 2, version 1), as `shards api-volumes` answers (D281), with no
+  daemon. What kiln and Hex need and no more: a network by its name, `network create NAME`'s
+  defaults (a bridge network of IPv4, its subnet the lowest of dockerd's pools free of the home's
+  networks and the host's), and its removal by that name.
+- *One path, the daemon's* (R12): `network create`'s whole path is `networks::made::create(home,
+  bridge, &Create)`, moved from the daemon unchanged in its order and words (docker/cli's checks,
+  `consolidate` and `ipam_errors`; then dockerd's; the record kept under the home's networks lock,
+  slice 1's `leases::hold`); its ask typed (`Create`: the daemon builds it of its flags;
+  `Create::named` is `network create NAME`'s). `made::all(home, bridge)` is the home's networks with
+  dockerd's predefined ones, `bridge` the default network's its caller elected: the daemon's at its
+  start; `shards api-networks`' as `api-run` elects its runs' (`bridge::elected_here`, D31), so that
+  a network made keeps clear of the subnet its runs' eth0 is on, which a join there would refuse
+  `Overlaps` (slice 5). `made::remove(home, held, networks, n)` is `network rm`'s and `prune`'s:
+  refused while networks take their settings from it, else its leases cleared (slice 1's
+  `Leases::clear`: refused while a lease lives or a process pairs it) and then its record;
+  `made::remove_named(home, name)`, the orchestrator's, finds it by its name alone, never by an
+  ID's beginning as `network rm` does, so that a name whose network has gone names no other
+  network. The daemon says each refusal as before: the CLI's checks bare, the rest after
+  `shards: `; its own runs named before `remove`, as before.
+- *Refusals* (R04): shards-api `NetworkRefusal::Create(CreateCause, words)`: `Name` (1: none, or
+  one of shards' own), `Exists` (2: its caller's to take as made), `Pool` (3), `Host` (4: the
+  home's files, its lock, the host's random source); `NetworkRefusal::Remove(RemoveCause, words)`:
+  `Unknown` (1), `Shards` (2), `InUse` (3: a run of any process on it, the daemon's runs' address
+  leases among them, a process pairing it, networks made from it; refused at once, never waited
+  for), `Host` (4); `Start`, `Os`, `Ended`, `Version` and `Wire`, as `VolumeRefusal`'s. The seam's:
+  `made::Unmade` (`Flags`, `Name`, `Exists`, `Settings`, `Pool`, `Host`) and `made::Kept`
+  (`Unknown`, `Shards`, `InUse`, `Host`); a name alone meets no `Flags` or `Settings`, which
+  `shards api-networks` would fail on, saying it on its stderr (`Ended`).
+- *A run's names withdrawn as its link ends* (slice 4's let-go at the next change, ROOT's
+  decision): a network process whose link to another run closes at its far end (its end read, or
+  a read or write broken: that run ended, or left the network) withdraws, at once, every name and
+  alias at that run's address from the network's names (`shared::Networks::unlinked`, from
+  `Stack::peer_gone`), the closed link the evidence. None is answered there again until a link to
+  that address comes (`Networks::linked`, at `NET_LINK`), whatever a join names meanwhile, as one
+  told before that run's leases went may; a join without the address forgets its mark, so that a
+  run joining there later is answered. The table is made again from its join's list in its order,
+  names before aliases, so that an address's PTR answers a member's name. Its own drops (a newer
+  link in an older's place, a join without the peer, its leaving) withdraw nothing: no far end
+  closed. The guest's resolver answers from the guest's own tables (slice 5), so shards-api tells
+  the other runs too, at once: once an ended run's host is reaped (`session::watch`), its leases
+  gone with it (their own drop, or the kernel's at its end), the run is let go of on each of the
+  process's shared networks and each other run there told its members again (`links::host_gone`;
+  slice 4's `Rejoin`, whole, from the leases), each waiting with no clock until its host answers,
+  its run ends or its host is gone, outside a change's turn (`TURN`), as each telling is whole and
+  the last read of the leases stands. The closed link's run gives its leases back as its host
+  ends; the others' tellings, looking under the home's lock, remove a stale one's file.
+- *Literals* (R03): `networks::VERSION` 1, a new answer's first; the frame kinds 1 and 2 and the
+  causes' bytes from 1 (0 a success's), each answer's own, as `api-volumes`'. Nothing else: the
+  pools, checks and words are `network create`'s (D46), moved unchanged. The tests' own:
+  `DIAL_MS`, 4000, past a SYN's first two retransmissions (RFC 6298 §2.1's initial RTO of 1 s,
+  doubled at each, §5.5); 2500 ms, musl's first retry of a question (`timeout / attempts`,
+  res_msend.c, 5 s and 2 its resolv.conf defaults).
+- *Unmeasured* (R14, ROOT's): a create's and a remove's cost (a process started, the home's
+  lock, a store's walk); the other runs' tellings as a run ends, one `Rejoin` each.
+
+**Tests** (slice 6; written, not run). Light: shards-api `networks`
+`a_makings_answer_reads_back_typed`, `a_removals_answer_reads_back_typed`,
+`each_call_asks_shards_api_networks_in_its_home`, `a_missing_shards_is_refused_as_not_started`;
+`image::session::links` `a_run_whose_host_has_gone_is_let_go_and_the_others_told_at_once`;
+`networks::made` `ipam_configs_are_consolidated` (moved from the daemon),
+`a_network_is_made_by_its_name_and_removed_once_no_run_holds_it`,
+`a_removal_by_name_never_takes_a_network_by_its_ids_beginning`; `api_networks`
+`a_network_is_made_and_removed_by_its_name_alone`; the net crate's shared.rs
+`a_runs_names_go_with_its_link` and lib.rs `a_runs_names_are_withdrawn_as_its_link_ends`. Real
+VMs, api_image.rs: `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`
+(the network made with `Networks::create`, a second refused `Exists`; a reaching b by name on P,
+its bytes echoed, b's server seeing a's address; no flow to b on P + 1, where b listens; none
+from b to a on P, where a listens; a name nobody granted answered NXDOMAIN; a's connections to b
+on P refused from the first after b's grant there is taken back, b kept on the network by its
+grant on P + 2; b's name answered to a no more once run B has ended; the network's removal
+refused `InUse` while run A holds it, made once A has ended, then `Unknown`);
+`a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once` (a ceiling of ports
+alone: musl's lookup ends EAI_NONAME, "Name does not resolve", before musl's first retry);
+`a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not` (an `EXPOSE`d UDP
+port two harnesses answer, published; a's datagrams over the shared network answered by each of
+them, one holding the port and one not, and the published port answered by its holder before and
+after). Owed (ROOT), at this slice's landing:
+- `cargo test -p shards-api --profile test-release networks:: image::session::links::`;
+  `cargo test -p shards --bin shards --profile test-release -- networks::made api_networks
+  daemon::networks`; `cargo test -p shards-net --profile test-release shared
+  a_runs_names_are_withdrawn_as_its_link_ends`; `cargo test -p shards-dns --profile test-release`;
+  on macOS, Linux (glibc and musl) and Windows (shared.rs's there; lib.rs's test is Unix's).
+- Real VMs on HVF, KVM and WHP: `cargo test -p shards --profile test-release --test api_image --
+  members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted
+  a_ceiling_members_lookup_of_a_name_nothing_grants_is_answered_at_once
+  a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not`; D46's again, its
+  resolver's answers now NXDOMAIN (D46's amendment of this day): `cargo test -p shards --profile
+  test-release --test containers -- a_networks_options_are_what_its_microvms_do
+  microvms_on_a_network_reach_one_another_by_name`.
+- `scripts/lint` on the seven targets (the test guest through its musl targets).
 
 ## 4. Start path (≤ 5 ms budget)
 
