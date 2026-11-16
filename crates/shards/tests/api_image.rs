@@ -4172,8 +4172,8 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
 /// there, is the next session's on that machine: what the first session left in it (the host's
 /// file, written as it ran, and its member's) is there for the next, whose member reads it. It
 /// is listed with the bytes its files take (`shards_api::volumes::volumes`), and cleared with
-/// its files (`clear_volume`): gone from the list and from the home, and asked again, refused
-/// `Unknown`.
+/// its files (`clear_volume`) once no session holds it: refused `InUse` while one runs, then
+/// gone from the list and from the home, and asked again, refused `Unknown`.
 #[test]
 fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
     if cannot_run_vms() {
@@ -4213,11 +4213,17 @@ fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
         std::fs::read_to_string(data.join("from-member")).unwrap(),
         "member\n"
     );
-    // Its next: the same volume, read by its member as the first session left it.
+    // Its next: the same volume, read by its member as the first session left it, and held by
+    // it: its clearing refused while it runs, its files kept (D281).
     let next = boot(&home, &s);
     let lines = lines_of(&*next, Channel::Stdout);
     ask(&*next, |g| g.plug(&plug, Duration::MAX)).unwrap();
     said_all(&lines, &wanted);
+    assert!(matches!(
+        shards_api::volumes::clear_volume(s.binary.as_deref(), &s.env, volume),
+        Err(VolumeRefusal::Clear(ClearCause::InUse, _))
+    ));
+    assert!(data.join("from-member").exists());
     next.stop().unwrap();
     drop(next);
     let binary = s.binary.as_deref();

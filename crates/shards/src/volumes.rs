@@ -625,6 +625,31 @@ impl Store {
         self.root.join(name).join("_data")
     }
 
+    /// Where volume `name`'s holders hold it (D281): a lock file beside it, `.NAME.lock`, a
+    /// name no volume takes (each begins with a letter or a digit) and no removal's
+    /// (`.NAME.removing`). Never removed, so that every hold and every clearing of the name
+    /// lock one file.
+    fn holders(&self, name: &str) -> PathBuf {
+        self.root.join(format!(".{name}.lock"))
+    }
+
+    /// Volume `name` held for a run that plugs it (D281), beside every other run's hold: its
+    /// lock file taken shared (flock(2), LockFileEx on Windows), made where missing, the
+    /// store's directory with it, once a clearing of it under way has ended. Let go of as it
+    /// drops, or as its process ends, however it ends.
+    pub fn hold(&self, name: &str) -> Result<shards_image::store::Locked, String> {
+        crate::networks::make_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        let path = self.holders(name);
+        shards_image::store::Locked::shared(&path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Volume `name` held alone for its clearing (D281): none at once where a run holds it,
+    /// never waiting for that run to end.
+    pub fn alone(&self, name: &str) -> Result<Option<shards_image::store::Locked>, String> {
+        let path = self.holders(name);
+        shards_image::store::Locked::try_exclusive(&path).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     /// The local driver's validateName.
     pub(crate) fn valid(name: &str) -> Result<(), String> {
         if name.chars().count() == 1 {

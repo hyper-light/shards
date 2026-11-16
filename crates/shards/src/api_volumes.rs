@@ -1,8 +1,8 @@
 //! `shards api-volumes`: a home's volumes as shards-api reads and clears them
 //! (docs/design/architecture.md D281; `shards_api::volumes`): `list`, each volume of the home's
 //! store and the bytes its files take, as `system df` counts them; `clear NAME`, the volume
-//! removed with its files, as `volume rm` removes one. Each answered in one frame on stdout.
-//! Not for people to run.
+//! removed with its files, as `volume rm` removes one, once no run holds it. Each answered in
+//! one frame on stdout. Not for people to run.
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -51,13 +51,31 @@ fn every(store: &Store) -> Vec<HomeVolume> {
         .collect()
 }
 
-/// Volume `name` removed from `store` with its files, under the store's lock, as `volume rm`
-/// removes one; refused by why.
+/// Volume `name` removed from `store` with its files, as `volume rm` removes one: held alone
+/// (`Store::alone`), refused `InUse` at once where a run that plugged it holds it (D281), then
+/// under the store's lock; refused by why.
 fn clear(store: &Store, name: &str) -> Result<(), (ClearCause, String)> {
     Store::valid(name).map_err(|e| (ClearCause::Name, format!("{name}: {e}")))?;
-    let _held = crate::volumes::lock();
+    let unknown = || (ClearCause::Unknown, format!("get {name}: no such volume"));
+    // Looked for first, so that no hold's file is made for a volume that is not there.
     if store.get(name).is_none() {
-        return Err((ClearCause::Unknown, format!("get {name}: no such volume")));
+        return Err(unknown());
+    }
+    let _alone = store
+        .alone(name)
+        .map_err(|e| (ClearCause::Store, e))?
+        .ok_or_else(|| {
+            (
+                ClearCause::InUse,
+                format!(
+                    "remove {name}: volume is in use: a run that plugged it holds it, or another clearing"
+                ),
+            )
+        })?;
+    let _held = crate::volumes::lock();
+    // Another clearing may have taken it while this one waited for none.
+    if store.get(name).is_none() {
+        return Err(unknown());
     }
     store.remove(name).map_err(|e| (ClearCause::Store, e))
 }
@@ -102,6 +120,26 @@ mod tests {
         }
         let left: Vec<String> = every(&store).into_iter().map(|v| v.name).collect();
         assert_eq!(left, ["agent-b"]);
+    }
+
+    /// D281: a volume a run holds (its plug's hold, `Store::hold`) is refused its clearing
+    /// `InUse` at once, its files kept; once that hold is let go of, it is cleared.
+    #[test]
+    fn a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go() {
+        let dir = shards_testdir::TempDir::new("api-volumes").unwrap();
+        let store = Store::new(dir.path());
+        let none = std::collections::BTreeMap::new();
+        {
+            let _held = crate::volumes::lock();
+            store.create("agent-a", &none, &none, "").unwrap();
+        }
+        let run = store.hold("agent-a").unwrap();
+        assert!(matches!(clear(&store, "agent-a"), Err((ClearCause::InUse, _))));
+        assert!(store.data("agent-a").exists());
+        drop(run);
+        assert_eq!(clear(&store, "agent-a"), Ok(()));
+        assert!(!store.data("agent-a").exists());
+        assert!(every(&store).is_empty(), "a hold's file is no volume");
     }
 
     /// A home with no volume yet lists none.

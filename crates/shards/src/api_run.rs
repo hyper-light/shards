@@ -5408,6 +5408,9 @@ mod hosted {
         /// A plug/unplug's ownership turn, held through device and guest completion;
         /// replies never need this lock. The mounted registry stays readable meanwhile.
         plug_turn: Mutex<()>,
+        /// Each volume of its home it plugged, by name, held for its life (D281): a clearing
+        /// of one is refused while it runs.
+        volumes_held: Mutex<HashMap<String, shards_image::store::Locked>>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -6183,6 +6186,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -7992,17 +7996,23 @@ mod hosted {
             wire::PlugFrom::Volume(name) => {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
-                let _held = crate::volumes::lock();
-                let (volume, _) = store
-                    .create(
-                        name,
-                        &std::collections::BTreeMap::new(),
-                        &std::collections::BTreeMap::new(),
-                        "",
-                    )
-                    .map_err(|e| (R::Volume, e))?;
-                crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
-                    .map_err(|e| (R::Volume, e))?;
+                // Held before it is made or found, so that no clearing removes it under the
+                // run, and kept for the run's life once taken (D281).
+                let hold = store.hold(name).map_err(|e| (R::Volume, e))?;
+                {
+                    let _held = crate::volumes::lock();
+                    let (volume, _) = store
+                        .create(
+                            name,
+                            &std::collections::BTreeMap::new(),
+                            &std::collections::BTreeMap::new(),
+                            "",
+                        )
+                        .map_err(|e| (R::Volume, e))?;
+                    crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
+                        .map_err(|e| (R::Volume, e))?;
+                }
+                lock(&live.volumes_held).entry(name.clone()).or_insert(hold);
                 Ok(store.data(name))
             }
         }
@@ -8376,6 +8386,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::new(HashMap::new()),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
@@ -8894,7 +8905,9 @@ mod hosted {
         /// directory as named; a relative one refused (`Request`); the volume made, its data
         /// directory in the home, and the same one taken again; a bad name and a scoped
         /// volume refused (`Volume`); each root granted once, after its host's, and one of
-        /// init's own refused.
+        /// init's own refused. D281: the volume plugged held by the run while it lives, no
+        /// clearing taking it alone, and let go of with it; the scoped one it was refused, not
+        /// held.
         #[test]
         fn a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots() {
             use wire::PlugRefusal as R;
@@ -8938,6 +8951,10 @@ mod hosted {
                 source_dir(&live, &wire::PlugFrom::Volume("scoped".into()), at),
                 Err((R::Volume, _))
             ));
+            assert!(store.alone("sessions").unwrap().is_none());
+            assert!(store.alone("scoped").unwrap().is_some());
+            drop(live);
+            assert!(store.alone("sessions").unwrap().is_some());
             let own = vec![b"plug-root=/Users".to_vec()];
             assert_eq!(
                 granted_roots(own.clone(), &["/session".into(), "/Users".into()]).unwrap(),

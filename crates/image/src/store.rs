@@ -114,13 +114,37 @@ impl Locked {
     /// `LockFileEx`'s exclusive lock) by this and no other open of it, in any process,
     /// until the lock returned drops.
     pub fn exclusive(path: &Path) -> std::io::Result<Locked> {
-        let file = File::options()
+        let file = Self::open(path)?;
+        file.lock()?;
+        Ok(Locked(file))
+    }
+
+    /// The file at `path`, made where missing, held shared (flock(2)'s `LOCK_SH`,
+    /// `LockFileEx`'s shared lock) with every other shared hold of it, in any process, once no
+    /// exclusive one holds it, until the lock returned drops.
+    pub fn shared(path: &Path) -> std::io::Result<Locked> {
+        let file = Self::open(path)?;
+        file.lock_shared()?;
+        Ok(Locked(file))
+    }
+
+    /// [`exclusive`](Self::exclusive) where no other open of the file holds it, in any process;
+    /// none at once where one does, never waiting for it.
+    pub fn try_exclusive(path: &Path) -> std::io::Result<Option<Locked>> {
+        let file = Self::open(path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Locked(file))),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e),
+        }
+    }
+
+    fn open(path: &Path) -> std::io::Result<File> {
+        File::options()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(path)?;
-        file.lock()?;
-        Ok(Locked(file))
+            .open(path)
     }
 }
 
@@ -3455,6 +3479,24 @@ mod tests {
             "the collection outlasted its drop"
         );
         drop(copy);
+    }
+
+    /// Shared holds of one file stand together, and keep an exclusive one out at once, never
+    /// waited for; once they all drop it is taken, and it keeps the next out in turn. Two opens
+    /// of one process exclude each other as two processes' do (flock(2), LockFileEx).
+    #[test]
+    fn shared_holds_keep_an_exclusive_one_out_until_they_drop() {
+        let dir = temp("shared-holds");
+        let path = dir.join("held.lock");
+        let first = Locked::shared(&path).unwrap();
+        let second = Locked::shared(&path).unwrap();
+        assert!(Locked::try_exclusive(&path).unwrap().is_none());
+        drop(first);
+        assert!(Locked::try_exclusive(&path).unwrap().is_none());
+        drop(second);
+        let alone = Locked::try_exclusive(&path).unwrap();
+        assert!(alone.is_some());
+        assert!(Locked::try_exclusive(&path).unwrap().is_none());
     }
 
     #[test]

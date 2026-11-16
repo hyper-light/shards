@@ -37631,14 +37631,13 @@ each volume's bytes, and its person's page needs them listed and one cleared.
 - *Clearing* (`clear_volume`): the volume removed with its files, as `volume rm` removes one
   (`Store::remove`: renamed aside at once, then deleted), under the store's lock; the next plug of
   its name makes it empty. Refused typed (`VolumeRefusal::Clear`): `Name` (one the store takes no
-  volume by), `Unknown` (none there), `Store` (its files not all removed). Shards keeps no record of
-  which of an orchestrator's runs hold a volume (each plug's share process holds it open), so an
-  orchestrator clears one none of its runs holds, as it knows its own sessions; a daemon's runs'
-  holds stay `volume rm`'s.
-- *The answers' channel*, version 1 of its own (the image channel is untouched): `LISTED` (1), the
+  volume by), `Unknown` (none there), `Store` (its files not all removed), `InUse` (a run that
+  plugged it holds it: amended below). A daemon's runs' holds stay `volume rm`'s.
+- *The answers' channel*, version 2 of its own (the image channel is untouched): `LISTED` (1), the
   version, a count, then each volume's name, a flag and its bytes where read, its time made in
   nanoseconds since the Unix epoch (a u64, past which a time is its most), and its flag; `CLEARED`
-  (2), the version and 0, or the cause (1 to 3) and the store's words. Read whole or refused
+  (2), the version and 0, or the cause (1 to 4) and the store's words. Version 2 appended `InUse`
+  (4). Read whole or refused
   (`Wire`, `Version`); a count past what its bytes could hold (each volume at least its name's
   length, a flag, its time and a flag: 14 bytes) allocates nothing. Bounded by the run protocol's
   `MAX_PAYLOAD`, as every frame is: a list past it is refused, never cut.
@@ -37671,6 +37670,40 @@ clearing's files gone, `Unknown` again, `Name` for names the store refuses) and
 `an_agents_volume_outlives_its_session_and_is_listed_and_cleared` (a volume plugged into one
 session and written there, read by the next session's member; listed with its files' bytes;
 cleared, gone from the list and the home, `Unknown` again).
+
+**Amended (P6-fix, 2026-11-16, ROOT's decision "track holders with file locks"): a volume a run
+holds is refused its clearing.** `clear_volume` could remove a volume's files while a run that
+plugged it used them.
+- *Holders.* Each run that plugs a volume of its home holds it for its life: its run host, which
+  owns the run's plugs, takes the volume's lock file shared before it makes or finds it
+  (api_run `source_dir`, `Store::hold`) and keeps it in the run's state (`Live::volumes_held`,
+  once per name) until the run ends. A plug the store refuses (a name it takes none by, a scoped
+  volume) holds nothing. The OS lets go of a hold as its process ends, however it ends, so no
+  hold outlives its run.
+- *The lock file* is `volumes/.NAME.lock`, beside the volume: a name no volume takes (each begins
+  with a letter or a digit), which the store's listing passes by and its removals' sweep
+  (`.NAME.removing`) never matches. It is never removed, so every hold and every clearing of a
+  name lock one file. A file removed and made again would let a hold of the old one and a
+  clearing of the new one each think itself alone.
+- *Clearing* (`api_volumes::clear`, `Store::alone`) takes the lock alone without waiting, once
+  the volume is found: refused `ClearCause::InUse` (4) at once where any hold stands, its files
+  kept, never waiting for that run to end. It then removes the volume under the store's lock,
+  looked for again in case another clearing took it meanwhile (`Unknown`). A plug that comes
+  while a clearing holds the file waits for it, then makes the volume anew, empty.
+- *The seam* (R12): `shards_image::store::Locked`, the store's lock file that unlocks before it
+  closes (PM M244), gains `shared` and `try_exclusive` beside `exclusive`: std's `File::lock_shared`
+  and `try_lock`, flock(2) on Unix and LockFileEx on Windows. One process's two opens exclude each
+  other as two processes' do.
+- The answers' channel is version 2 (`InUse` appended). No literal; no wait added but a plug's on
+  a clearing under way, an event wait on its lock.
+- **Tests** (written, not run: the person's rule of 2026-11-16 leaves every run to ROOT after the
+  merge): shards-image `shared_holds_keep_an_exclusive_one_out_until_they_drop`; the binary's
+  `api_volumes` `a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go`; the run host's
+  `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` (the volume held
+  while its run lives, let go of with it; the refused scoped one not held); shards-api
+  `a_clearings_answer_reads_back_typed` (`InUse` among the causes). Real VM, owed (ROOT):
+  api_image.rs `an_agents_volume_outlives_its_session_and_is_listed_and_cleared`, now also
+  refused `InUse` while its second session runs, its files kept; cleared once both have ended.
 
 ## 4. Start path (≤ 5 ms budget)
 
