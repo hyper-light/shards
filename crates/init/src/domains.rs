@@ -524,10 +524,13 @@ pub fn read(setup: &[Vec<u8>]) -> Result<Read, String> {
         // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
         // what it may ask.
         // A ceiling that names hosts or any name takes it too, its gate holding its questions
-        // until a grant opens them (D278).
+        // until a grant opens them (D278); so does one of ports, within which a grant on a
+        // network shared by runs gives it its peers' names there (D285).
         let ceiling = link.as_ref().map(|l| &l.granted.ceiling);
         if let Some(l) = &link
-            && (l.dns || !l.named.is_empty() || ceiling.is_some_and(|c| c.dns || !c.named.is_empty()))
+            && (l.dns
+                || !l.named.is_empty()
+                || ceiling.is_some_and(|c| c.dns || !c.named.is_empty() || !c.ports.is_empty()))
             && !l.addresses.is_empty()
         {
             d.resolv =
