@@ -634,7 +634,7 @@ impl super::Lanes {
         let socket = match reply {
             Reply::Unreached(errno) => {
                 self.sockets.lanes.swap_remove(at);
-                self.answer(io, conn, stream, &unreached(errno));
+                self.answer(io, conn, stream, &unreached(errno), false);
                 return;
             }
             Reply::Connected(socket) => socket,
@@ -970,6 +970,7 @@ mod tests {
                 inputs: &[],
                 execs: None,
                 sockets: Some(sockets),
+                bridges: &[],
             },
         )
         .unwrap();
@@ -1497,6 +1498,7 @@ mod tests {
                 inputs: &[],
                 execs: Some(exec_admissions(RECORD)),
                 sockets: Some(admission(1)),
+                bridges: &[],
             },
         )
         .unwrap();
@@ -1722,6 +1724,7 @@ mod tests {
                 inputs: &[],
                 execs: None,
                 sockets: None,
+                bridges: &[],
             },
         )
         .unwrap();

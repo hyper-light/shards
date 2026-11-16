@@ -6734,7 +6734,8 @@ mod hosted {
                 (Some(ask), Some(agent)) => {
                     let key = control_key(premade.take()).map_err(boot)?;
                     let (outputs, inputs) = first_streams(agent).map_err(boot)?;
-                    let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs).map_err(boot)?;
+                    let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
+                        .map_err(boot)?;
                     super::step(format_args!("its agent-control endpoint bound"));
                     Some(bound)
                 }
@@ -7061,10 +7062,11 @@ mod hosted {
 
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
     /// its microVM's own key `key`, which it takes, and the controller's key the one it admits;
-    /// serving the run's socket lanes where its ask grants them (D251), its execs, its
-    /// members' MCP connections (D254) and its members' own lanes, their streams admitted as
-    /// `execs` says, and its members' stdio streams `outputs` and `inputs` (their first
-    /// generation's, [`first_streams`]), each admitted as shards-api names it to its controller
+    /// serving the run's socket lanes where its ask grants them (D251), its execs, the MCP
+    /// connections (D254) of the members its request gave a bridge (`bridges`, which its report
+    /// names) and its members' own lanes, their streams admitted as `execs` says, and its
+    /// members' stdio streams `outputs` and `inputs` (their first generation's,
+    /// [`first_streams`]), each admitted as shards-api names it to its controller
     /// (`member_output`, `member_input`), as a daemon's run's endpoint serves its owned ones
     /// (daemon/managed.rs `bind_agent`).
     pub(super) fn bind_control(
@@ -7073,6 +7075,7 @@ mod hosted {
         execs: shards_remote::control::exec::Admissions,
         outputs: &[Key],
         inputs: &[u32],
+        bridges: &[u32],
     ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
         let ControlKey(vm) = key;
         let sockets = ask
@@ -7104,6 +7107,7 @@ mod hosted {
                 inputs: &stdins,
                 execs: Some(execs),
                 sockets,
+                bridges,
             },
         )
         .map_err(|e| format!("its agent-control endpoint: {e}"))
@@ -10364,7 +10368,7 @@ mod hosted {
         fn an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs() {
             use shards_remote::control::exec::{Unstarted, Unsteered};
             use shards_remote::control::{
-                Controller, Fault, Got, McpConnection, Member, MemberControl, Subscriptions,
+                Controller, Fault, Got, Granted, McpConnection, Member, MemberControl, Subscriptions,
             };
             use std::io::Read as _;
             let dir = shards_testdir::TempDir::new("api-lanes").unwrap();
@@ -10397,7 +10401,7 @@ mod hosted {
                 stdio: false,
             };
             let (endpoint, served) =
-                bind_control(ControlKey::made().unwrap(), &ask, admissions, &[], &[]).unwrap();
+                bind_control(ControlKey::made().unwrap(), &ask, admissions, &[], &[], &[1]).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             std::thread::scope(|scope| {
@@ -10421,7 +10425,7 @@ mod hosted {
                         shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
                     }
                 });
-                let (controller, dialed) = Controller::dial(
+                let (controller, mut dialed) = Controller::dial(
                     &kiln,
                     key,
                     address,
@@ -10434,6 +10438,14 @@ mod hosted {
                 )
                 .unwrap();
                 let driver = scope.spawn(move || controller.run());
+                // Its endpoint's report names member 1's bridge, which its request gave it, among
+                // its lanes, beside both ends' TLS (D254).
+                let report = dialed.link.report().unwrap();
+                let lanes: Vec<String> = report.lanes.iter().map(Granted::name).collect();
+                assert_eq!(lanes, ["control", "exec", "log:run", "mcp:1"]);
+                for end in [report.link.controller, report.link.endpoint] {
+                    assert_eq!(end.suite_name(), Some("TLS13_AES_256_GCM_SHA384"), "{end:?}");
+                }
                 let execs = dialed.execs.as_ref().unwrap();
                 agent.stands(Begun::Started);
                 let Member::Running(MemberControl {
@@ -10615,8 +10627,15 @@ mod hosted {
                 sockets: None,
                 stdio: true,
             };
-            let (endpoint, served) =
-                bind_control(ControlKey::made().unwrap(), &ask, admissions, &outputs, &inputs).unwrap();
+            let (endpoint, served) = bind_control(
+                ControlKey::made().unwrap(),
+                &ask,
+                admissions,
+                &outputs,
+                &inputs,
+                &[],
+            )
+            .unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let (stdout0, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
             let (files_alone, _) = shards_api::control::member_output(0, 0, Channel::Stdout);
@@ -13198,13 +13217,13 @@ mod tests {
         };
         let execs = shards_api::control::exec_admissions();
         let (first, served) =
-            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[]).unwrap();
+            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
         // Its execs, its members' MCP connections and its members' own lanes (D254, D238).
         assert!(served.execs.is_some() && served.members.is_some());
         let (second, _) =
-            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[]).unwrap();
+            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
     }
 
@@ -13226,14 +13245,21 @@ mod tests {
         );
         let (made, made_other) = (one.fingerprint(), other.fingerprint());
         assert_ne!(made, made_other, "two warm hosts share one key");
-        let (endpoint, _) =
-            hosted::bind_control(hosted::control_key(Some(one)).unwrap(), &ask, execs, &[], &[]).unwrap();
+        let (endpoint, _) = hosted::bind_control(
+            hosted::control_key(Some(one)).unwrap(),
+            &ask,
+            execs,
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             endpoint.fingerprint, made,
             "its endpoint took another key than its host made"
         );
         let (own, _) =
-            hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs, &[], &[]).unwrap();
+            hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert!(
             own.fingerprint != made && own.fingerprint != made_other,
             "a run whose host made none bound with another's"
@@ -13261,6 +13287,7 @@ mod tests {
             hosted::ControlKey::made().unwrap(),
             &ask,
             shards_api::control::exec_admissions(),
+            &[],
             &[],
             &[],
         )
