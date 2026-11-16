@@ -39,7 +39,7 @@ MUTATIONS = [
     (
         "the control connection is its own protocol",
         CONTROL,
-        "pub const ALPN: &[u8] = b\"shards-control/1\";",
+        "pub const ALPN: &[u8] = b\"shards-control/2\";",
         "pub const ALPN: &[u8] = tls::ALPN;",
         "control::tests::a_peer_of_another_protocol_is_refused",
     ),

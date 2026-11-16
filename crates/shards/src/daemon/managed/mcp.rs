@@ -116,7 +116,7 @@ enum Unpaired {
 struct Paired<'a> {
     conn: Stream,
     first: First,
-    _charged: Held<'a>,
+    _charged: Held<&'a Charge>,
 }
 
 impl Bridges {
@@ -294,7 +294,7 @@ impl Bridges {
                 return Ok(Paired {
                     conn: c.conn,
                     first: c.first,
-                    _charged: Held::of(&self.charge, c.charged),
+                    _charged: Held::of(&*self.charge, c.charged),
                 });
             }
             if gone.load(Ordering::Acquire) {
