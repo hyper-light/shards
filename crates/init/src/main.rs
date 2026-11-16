@@ -23,6 +23,8 @@ mod dnsrelay;
 #[cfg(target_os = "linux")]
 mod domains;
 #[cfg(target_os = "linux")]
+mod egress;
+#[cfg(target_os = "linux")]
 mod emulate;
 #[cfg(target_os = "linux")]
 mod engine;

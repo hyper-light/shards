@@ -561,12 +561,17 @@ pub fn join(id: u32, asked: &Asked, published: &[Egress]) -> Result<Joined, Stri
             Reach::Nowhere => Vec::new(),
             _ => crate::links::EVERY_PORT.to_vec(),
         },
+        wide: match reach {
+            Reach::Nowhere => Vec::new(),
+            _ => crate::links::EVERY_PORT.to_vec(),
+        },
         ingress: Vec::new(),
         dns,
         named: Vec::new(),
         connects: false,
         accepts: false,
         unix: Vec::new(),
+        granted: crate::egress::Granted::default(),
     };
     e.members.push(kept);
     let joined = (|| {

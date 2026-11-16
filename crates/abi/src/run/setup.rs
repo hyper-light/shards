@@ -50,6 +50,8 @@ pub const KEYS: &[&[u8]] = &[
     b"member",
     b"member-accepts",
     b"member-arg",
+    b"member-ceiling",
+    b"member-egress",
     b"member-ends",
     b"member-env",
     b"member-file",
@@ -160,8 +162,8 @@ mod tests {
     /// registered: what the guest and the host share of setup is here (D28).
     #[test]
     fn every_entry_this_crate_makes_is_registered() {
-        use super::super::{managed, mcp, members, nesting, plug, socket, trust};
-        let constants: [&[u8]; 25] = [
+        use super::super::{egress, managed, mcp, members, nesting, plug, socket, trust};
+        let constants: [&[u8]; 27] = [
             members::ENV_KEY,
             members::FILE_KEY,
             members::WORKDIR_KEY,
@@ -187,6 +189,8 @@ mod tests {
             trust::HOST_KEY,
             plug::ROOT_KEY,
             crate::ring::SPEC,
+            egress::EGRESS_KEY,
+            egress::CEILING_KEY,
         ];
         for c in constants {
             assert!(registered(key(c)), "{:?}", c.escape_ascii());
@@ -204,6 +208,8 @@ mod tests {
             socket::grant(b"/run/s").unwrap(),
             trust::ca(b"-----BEGIN CERTIFICATE-----").unwrap(),
             trust::host(b"api.example.com").unwrap(),
+            egress::entry(egress::EGRESS_KEY, 0, &egress::Grants::default()),
+            egress::entry(egress::CEILING_KEY, 0, &egress::Grants::default()),
         ];
         assert_eq!(check(&made), Ok(()));
     }

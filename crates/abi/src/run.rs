@@ -8,6 +8,7 @@
 
 use alloc::vec::Vec;
 
+pub mod egress;
 pub mod managed;
 pub mod mcp;
 pub mod members;
@@ -797,6 +798,21 @@ pub mod builtin {
     /// asked to end ([`SIGNAL`]'s SIGTERM) that its judged wait found stalled. Exit status as
     /// [`SIGNAL`]'s.
     pub const MEMBER_KILL: u8 = 24;
+    /// A member's own grants past the microVM made what its host says as the run goes (D278;
+    /// shards-init egress.rs), its arguments [`egress::args`](super::egress::args)': its
+    /// index, then each of its grants as they are to stand, whole. Init holds them within what
+    /// the member's image and its ceiling ([`egress::CEILING_KEY`](super::egress::CEILING_KEY))
+    /// let it, and every member's as D236's `held` holds them apart; answered with nothing.
+    pub const EGRESS: u8 = 25;
+    /// [`EGRESS`]'s exit status where a grant passes what the member's image and its ceiling
+    /// let it: EACCES's number (include/uapi/asm-generic/errno-base.h), a permission refused.
+    pub const EGRESS_PAST: u8 = 13;
+    /// [`EGRESS`]'s exit status where the run's members, this one's grants made so, could not
+    /// be held apart (D236's `held`): EOPNOTSUPP's number (include/uapi/asm-generic/errno.h).
+    pub const EGRESS_UNHELD: u8 = 95;
+    /// [`EGRESS`]'s exit status where no member of that index runs linked past the microVM:
+    /// ENOENT's number (errno-base.h), as [`SIGNAL_UNKNOWN`] says it of one.
+    pub const EGRESS_UNKNOWN: u8 = 2;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every
