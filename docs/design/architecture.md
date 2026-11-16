@@ -36263,7 +36263,7 @@ bind after; `Unknown`, `Widening`, `NoNetwork`); the lease and sign-in relay tes
 `a_port_published_live_answers_and_is_gone_after_unpublish` (the run's `started_from` and VM
 process pid unchanged, no build and no save across it).
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1, 2 and 3a built: the component build, its image plugged in and mapped DAX, and a member's next generation in init; its host side, swap and saves following)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 4 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, and a swap by digest; saves following)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -36512,8 +36512,8 @@ and guest stood in) and its relay of a killed end; the lanes'
 `a_members_lanes_follow_its_generations`; init's hold and let-go of no member; shards-api lib,
 the run host's, the VM process's and ipc's suites.
 
-**Owed (ROOT)**: the E2E tests on HVF, KVM and WHP: api_image.rs's
-`a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own` (written: a `trap
+**Owed (ROOT)**: the E2E tests on KVM and WHP (on HVF they pass: the real-VM runs below): api_image.rs's
+`a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own` (a `trap
 TERM` member restarted twice, each generation ready on output of its own and ended `got 15`,
 exited 0, told before its restart answers; its VM processes, `started_from` and templates
 unchanged); a SIGTERM trap's flushed file whole after its restart; a member killed past its
@@ -36557,7 +36557,7 @@ and its run host, image channel version 40; built, its real-VM tests owed with s
 **Tests** (slice 4b, light, Linux in a container): `a_component_fits_its_member_within_its_platform_and_grants`
 (another platform, a port or destination past the image's and the ceiling's, a volume of none and
 one given another member: refused typed) and `an_image_runs_slots_hold_a_swaps_old_and_new_and_its_plugs`.
-Real-VM, owed to ROOT (api_image.rs): `a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own`,
+Real-VM (api_image.rs), passing on HVF (below), KVM and WHP owed: `a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own`,
 `a_harness_swapped_at_its_next_start_runs_its_component_once_restarted` and
 `a_swap_that_cannot_be_made_is_refused_typed_and_its_member_runs_on` (the test guest's `say-trap`
 says what its directory holds at each generation's start).
@@ -36568,6 +36568,47 @@ says what its directory holds at each generation's start).
 now: plugged, mounted, laid at its member's restart, wanted and held; a restore at its next start:
 held, nothing let go; the restart past it: nothing laid, then unmounted and unplugged; `Unknown`
 and `Artifact`, nothing asked).
+
+**Real-VM runs (ROOT, HVF on this Mac, 2026-11-16), and what they found.** api_image.rs's slice
+3b and 4 tests found five faults the light tests could not reach, each fixed at its root:
+- *A start's clone* (slice 3a). (1) clone3(2) refuses `CLONE_PARENT` with an exit signal (Linux
+  7.2-rc4 kernel/fork.c:3008-3010, `clone3_args_valid`; such a child takes its parent's group
+  leader's, :2439-2446): it is asked with none. (2) A `CLONE_INTO_CGROUP` child of a cgroup that
+  was ever `cgroup.kill`ed is killed at birth: `cgroup_css_set_fork` takes the kill sequence
+  before it sets the destination (kernel/cgroup/cgroup.c:6780-6783, set at :6846), so from the
+  parent's cgroup, and `cgroup_post_fork` kills a child whose destination's differs (:6978-6983,
+  :7019); a member's `gen/` leaf is killed at each generation's end. So the start's helper clones
+  with no cgroup, its child waiting on a pipe, writes the child's PID into the leaf's
+  `cgroup.procs` and then lets it go: on every kernel, whatever a later one fixes. (3) The guest
+  mounts cgroup2 `nsdelegate` (init run.rs), under which a move by `cgroup.procs` is refused
+  ENOENT unless both cgroups are visible from the mover's cgroup namespace (cgroup.c:5350-5354):
+  the helper stays in init's, and the child joins its member's kept cgroup namespace once moved.
+  (4) The new generation's starter's room in `pids.max` (D243's `with_starter`) is given back.
+- *A component's programs* (slices 2 and 4): the components' window mapped each image read-only
+  and never executable (HVF's `Perms::R`), so a harness run from its component faulted at its
+  first instruction (EC 0x20, ESR 0x8200000f: an instruction abort, a permission fault). The
+  window maps through `Slots::map_programs`, read-only and executable on every backend: HVF
+  `RX`; WHP `Read | Execute`, on arm64 `MAP_READ | MAP_EXECUTE`; KVM a read-only slot, which its
+  stage 2 makes executable at an exec fault on arm64 (arch/arm64/kvm/mmu.c:1995-1996) and x86
+  maps `ACC_ALL` with only `map_writable` cleared (arch/x86/kvm/mmu/mmu.c:4629, :4851).
+- *Output across a restart* (slice 3b). (1) Init let its capture connection go once every
+  member's channels had ended, which a held member's do before its next generation starts: it
+  keeps it while any member is held. (2) A generation's last record, its end, takes one more
+  credit, whose round trip raced its member's end and its next start, which come on another
+  connection, so a next opened on a channel whose last stream was still open (its VM's relay
+  refusing it, and every member's output with it): the run host now asks the next start once
+  every channel of the last that was given a credit has ended (records come in the order init
+  sent them, so init's last streams have all ended when it opens the next's), and seals the last,
+  no credit going to it after; one not read to its end within the restart's patience fails the
+  restart, saying so. (3) The VM's relay keeps a held member's capture open and opens each next
+  generation's channel as a stream of its own.
+- *Seeing it*: a run whose guest stopped or failed with its console discarded says its console's
+  last lines (vm_run.rs), which showed the instruction abort.
+- *Its runs* (the hot-swap land branch, b21a3e570, with PM M611's launch of the tests' copy): on HVF,
+  api_image's 13 image tests (the restart, the swaps now, at the next start and refused, D278 b3's
+  two, and the image runs before them) passed, member_exec 6 and managed_output 29; clippy on macOS,
+  Linux (x86_64 glibc, aarch64 musl for init) and Windows (x86_64, and arm64 for the VMM); shards-api's
+  lib 276, the run host's 76, the VM process's workload 42, the VMM's pmem 13. KVM and WHP are owed.
 
 **A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
 as its host's address reach when its microVM is made, and is kept with its save, so a restore
@@ -37113,7 +37154,7 @@ narrowed to its own member, taken; widened to another, refused); the image chann
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
 `give_members` not called, and the first test fails as kiln's launch did.
 
-### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (slice b1, the guest: built; b2, its host and API: built; b3, its real-VM test, owed)
+### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 
 **Why.** The person (2026-11-15): connect and disconnect harnesses, agents and MCP servers
 *individually*, live, with no rebuild or restart. D273 changed a run's grants as it goes, but
@@ -37217,13 +37258,15 @@ abi's `IMAGE` item; the run host's `a_members_own_reach_changes_in_its_guest_and
 refused by the guest as unheld: the union put back, `Unheld`; past the member's ceiling:
 `Widening`, nothing told; `Unknown`).
 
-**Owed.** b3 (ROOT, HVF, KVM and WHP as runners allow): api_image.rs's
-`a_members_own_reach_given_and_taken_back_holds_in_its_running_microvm` (written: a harness its
+**Real-VM runs** (ROOT, HVF, 2026-11-16, the hot-swap land branch b21a3e570): both of b3's tests below
+pass. **Owed**: the same on KVM and WHP. b3: api_image.rs's
+`a_members_own_reach_given_and_taken_back_holds_in_its_running_microvm` (a harness its
 image links past its microVM on a network that opens nothing out, its ceiling the host itself at
 a listener's port; refused until given, reaching once given, refused from its first refusal on
 once given its image's back, `Widening` past its ceiling, `Image` for a member of files alone;
-in place). Also owed: an open TCP connection of a member narrowed reset, not stalled (a mode of
-the test guest that holds one open and says how it ended).
+in place), and `a_members_open_connection_is_reset_as_its_reach_is_taken_back` (an open TCP
+connection of a member narrowed reset, not stalled: a mode of the test guest that holds one open and
+says how it ended).
 
 ## 4. Start path (≤ 5 ms budget)
 
