@@ -1386,6 +1386,32 @@ pub fn version_of(entry: &str) -> &str {
     entry
 }
 
+/// Which file `file` is, and which of its versions: its device and inode, its length, and
+/// its times of last write and of last change (fstat(2)). A write to it changes its write
+/// and change times, and a file renamed over its name is another inode; a change time no
+/// call of a program's can set (utimensat(2) sets the others, and the change time to now).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    written: (i64, i64),
+    changed: (i64, i64),
+}
+
+/// [`FileIdentity`] of the file `file` holds open.
+pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = file.metadata()?;
+    Ok(FileIdentity {
+        dev: meta.dev(),
+        ino: meta.ino(),
+        len: meta.len(),
+        written: (meta.mtime(), meta.mtime_nsec()),
+        changed: (meta.ctime(), meta.ctime_nsec()),
+    })
+}
+
 /// The name `name`'s newest version goes by in the directory `dir` holds open: `name`, as a
 /// write here replaces the file there (windows_files.rs `newest_in`).
 pub fn newest_in(_dir: &File, name: &str) -> io::Result<String> {
@@ -1589,6 +1615,12 @@ pub fn deallocate(file: &File, offset: u64, len: u64) -> io::Result<()> {
 /// that are multiples of it: its block (statvfs(3)'s f_frsize), of which a part at either
 /// end of a range is zeroed instead (fallocate(2)).
 pub fn deallocation_unit(path: &std::path::Path) -> io::Result<u64> {
+    allocation_unit(path)
+}
+
+/// The unit the file system holding `path` allocates a file's bytes in: its fundamental
+/// block (statvfs(3)'s f_frsize, "file system fragment size"), one at least.
+pub fn allocation_unit(path: &std::path::Path) -> io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a path with NUL"))?;
@@ -2689,10 +2721,80 @@ pub fn launched(pid: u32) -> Option<bool> {
     }
 }
 
+/// The name a VM process gives its main thread as its own code begins ([`launch_over`]).
+#[cfg(target_os = "macos")]
+const LAUNCHED: &std::ffi::CStr = c"shards-vm";
+
+/// Says this process's launch is over, as the first act of its own code: its main thread
+/// named [`LAUNCHED`]. A macOS launch is its host's work before that code runs (PM M166:
+/// amfid and syspolicyd assess its executable, secinitd sets up its App Sandbox in
+/// libsystem's initializers), through which its one thread waits asleep, running nothing,
+/// neither runnable nor stopped: its process alone tells no launch its host is slow to
+/// admit from a stall, and a judge of it reads this ([`in_launch`]). Call it on the main
+/// thread.
+#[cfg(target_os = "macos")]
+pub fn launch_over() -> io::Result<()> {
+    // SAFETY: pthread_setname_np(3) names the calling thread, from a NUL-terminated name
+    // shorter than MAXTHREADNAMESIZE (64).
+    let code = unsafe { libc::pthread_setname_np(LAUNCHED.as_ptr()) };
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(code))
+    }
+}
+
+/// Whether process `pid` is still in its launch: no thread of it named as [`launch_over`]
+/// names one (`PROC_PIDTHREADINFO`'s `pth_name`, sys/proc_info.h). None where its threads
+/// cannot be read, as of a process gone.
+#[cfg(target_os = "macos")]
+pub fn in_launch(pid: u32) -> Option<bool> {
+    // sys/proc_info.h: a process's threads' handles, a uint64_t each.
+    const PROC_PIDLISTTHREADS: libc::c_int = 6;
+    let id = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: a zeroed proc_taskinfo is a valid out-parameter, which proc_pidinfo fills up
+    // to its size.
+    let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = libc::c_int::try_from(size_of::<libc::proc_taskinfo>()).ok()?;
+    // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `task`.
+    if unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTASKINFO, 0, (&raw mut task).cast(), size) } != size {
+        return None;
+    }
+    // As many as its task counts now, and one more, as a thread may start meanwhile.
+    let count = usize::try_from(task.pti_threadnum).ok()?.checked_add(1)?;
+    let mut handles: Vec<u64> = Vec::new();
+    handles.try_reserve_exact(count).ok()?;
+    handles.resize(count, 0);
+    let bytes = libc::c_int::try_from(count.checked_mul(size_of::<u64>())?).ok()?;
+    // SAFETY: proc_pidinfo(3) writes at most `bytes` bytes, the handles' own, into them.
+    let got = unsafe { libc::proc_pidinfo(id, PROC_PIDLISTTHREADS, 0, handles.as_mut_ptr().cast(), bytes) };
+    handles.truncate(usize::try_from(got).ok()? / size_of::<u64>());
+    let size = libc::c_int::try_from(size_of::<libc::proc_threadinfo>()).ok()?;
+    let named = handles.iter().any(|&handle| {
+        // SAFETY: a zeroed proc_threadinfo is a valid out-parameter, as above.
+        let mut info: libc::proc_threadinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: proc_pidinfo(3) writes at most `size` bytes into `info`.
+        let read =
+            unsafe { libc::proc_pidinfo(id, libc::PROC_PIDTHREADINFO, handle, (&raw mut info).cast(), size) };
+        read == size
+            && info
+                .pth_name
+                .iter()
+                .map(|&c| c as u8)
+                .take_while(|&b| b != 0)
+                .eq(LAUNCHED.to_bytes().iter().copied())
+    });
+    Some(!named)
+}
+
 /// [`Usage`] of process `pid`, as the kernel keeps it: macOS's proc_pidinfo
 /// (PROC_PIDTASKINFO), its times in Mach absolute-time units converted by the timebase,
-/// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's /proc/PID/stat (utime, stime, in clock
-/// ticks, and its faults), /proc/PID/statm (resident pages) and /proc/PID/status (`RssAnon`).
+/// and proc_pid_rusage (RUSAGE_INFO_V2); Linux's CPU-time clock of the process
+/// ([`cpu_clock_ns`], in ns), /proc/PID/stat (its faults), /proc/PID/statm (resident pages)
+/// and /proc/PID/status (`RssAnon`). Not /proc's utime and stime: each is its share of the
+/// same runtime cut down to a clock tick (fs/proc/array.c `do_task_stat`, `nsec_to_clock_t`),
+/// so their sum fell up to two ticks short of the time its threads' own clocks had read
+/// (#77: 3.85 s beside a vCPU's 3.87 s).
 pub fn process_usage(pid: u32) -> io::Result<Usage> {
     #[cfg(target_os = "macos")]
     {
@@ -2734,16 +2836,11 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         // Fields after the command, which may hold spaces, in parentheses.
         let rest = stat.rsplit_once(')').map(|(_, r)| r).unwrap_or_default();
         let fields: Vec<&str> = rest.split_whitespace().collect();
-        let tick = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok()).unwrap_or(0);
-        // utime and stime are the stat line's 14th and 15th fields: 12th and 13th after
-        // the command.
-        let ticks = tick(11).saturating_add(tick(12));
+        let count = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok()).unwrap_or(0);
         // minflt and majflt, the 10th and 12th.
-        let faults = tick(7).saturating_add(tick(9));
-        // SAFETY: sysconf(3) reads a constant.
-        let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
-            .unwrap_or(100)
-            .max(1);
+        let faults = count(7).saturating_add(count(9));
+        let pid = libc::pid_t::try_from(pid).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let cpu_ns = cpu_clock_ns(pid, CpuClockOf::Process)?;
         let statm = std::fs::read_to_string(format!("/proc/{pid}/statm"))?;
         let pages: u64 = statm
             .split_whitespace()
@@ -2759,10 +2856,54 @@ pub fn process_usage(pid: u32) -> io::Result<Usage> {
         Ok(Usage {
             resident: pages.saturating_mul(page_size()? as u64),
             footprint: anon_kib.saturating_mul(1024),
-            cpu_ns: ticks.saturating_mul(1_000_000_000 / hz),
+            cpu_ns,
             faults,
         })
     }
+}
+
+/// Whose CPU-time clock [`cpu_clock_ns`] reads.
+#[cfg(not(target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuClockOf {
+    /// A process's, its every thread's runtime, those gone too (kernel/sched/cputime.c
+    /// `thread_group_cputime`), of any process this one can name.
+    Process,
+    /// A thread's, of this process alone (kernel/time/posix-cpu-timers.c `lookup_task`).
+    Thread,
+}
+
+/// The nanoseconds of CPU time process or thread `id` has had, as the scheduler counts its
+/// runtime (kernel/sched/core.c `task_sched_runtime`, which first adds what a running task
+/// has run since its last update). Its clock is named as glibc's `clock_getcpuclockid` and
+/// `pthread_getcpuclockid` and musl's name it, by the kernel's encoding of a CPU clock
+/// (include/linux/posix-timers_types.h: the ID's complement above three bits, bit 2 a
+/// thread's, `CPUCLOCK_SCHED` = 2 below it), without the `clock_getres` both libraries
+/// check it with, which the VM process's seccomp filter does not allow.
+#[cfg(not(target_os = "macos"))]
+fn cpu_clock_ns(id: libc::pid_t, of: CpuClockOf) -> io::Result<u64> {
+    const SCHED: libc::clockid_t = 2;
+    const THREAD: libc::clockid_t = 4;
+    let kind = match of {
+        CpuClockOf::Process => SCHED,
+        CpuClockOf::Thread => THREAD | SCHED,
+    };
+    let clock = (!id)
+        .checked_mul(8)
+        .map(|high| high | kind)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: a clock ID, which the kernel refuses (EINVAL) where it names no task it lets
+    // this process read, and a timespec to write.
+    if unsafe { libc::clock_gettime(clock, &raw mut t) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let secs = u64::try_from(t.tv_sec).map_err(io::Error::other)?;
+    let nanos = u64::try_from(t.tv_nsec).map_err(io::Error::other)?;
+    Ok(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
 }
 
 /// Nanoseconds of `ticks` of mach_absolute_time(3)'s clock, by its timebase
@@ -2801,6 +2942,11 @@ pub fn mach_ns(ticks: u128) -> u64 {
 /// says it in clock ticks (fs/proc/array.c, `do_task_stat`: field 43, `nsec_to_clock_t(gtime)`),
 /// sysconf's _SC_CLK_TCK a second: USER_HZ, 100, so 10 ms steps. Its file is opened and read
 /// each time, one page at most: nothing is held between reads.
+///
+/// A tick charged whole may hold more than the thread ran: such a count read 3.87 s of a
+/// thread whose process had run 3.85 s (#77). A thread's time in its guest is part of its
+/// runtime, so what this says is never more than the thread's own CPU-time clock, read after
+/// its stat ([`guest_within`]): its process's clock, read later, then holds it.
 #[cfg(target_os = "linux")]
 pub fn thread_guest_ns(tid: libc::pid_t) -> io::Result<u64> {
     use std::io::Read as _;
@@ -2826,9 +2972,18 @@ pub fn thread_guest_ns(tid: libc::pid_t) -> io::Result<u64> {
     // SAFETY: sysconf(3) reads a constant.
     let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
         .ok()
-        .filter(|&hz| hz != 0)
+        .and_then(std::num::NonZeroU64::new)
         .ok_or_else(|| io::Error::other("this host says no clock tick rate"))?;
-    Ok(u64::try_from(u128::from(ticks) * 1_000_000_000 / u128::from(hz)).unwrap_or(u64::MAX))
+    let ran = cpu_clock_ns(tid, CpuClockOf::Thread)?;
+    Ok(guest_within(ticks, hz, ran))
+}
+
+/// `ticks` of guest time at `hz` a second, in nanoseconds, never more than the `ran`
+/// nanoseconds its thread has run in all ([`thread_guest_ns`]).
+#[cfg(any(target_os = "linux", test))]
+fn guest_within(ticks: u64, hz: std::num::NonZeroU64, ran: u64) -> u64 {
+    let ns = u128::from(ticks).saturating_mul(1_000_000_000) / u128::from(hz.get());
+    u64::try_from(ns).unwrap_or(u64::MAX).min(ran)
 }
 
 /// Room for a thread's /proc stat line, read whole in one read: a page, the buffer seq_file
@@ -2974,9 +3129,8 @@ mod usage_tests {
     fn a_process_is_measured_as_it_runs() {
         let me = std::process::id();
         let before = process_usage(me).unwrap();
-        // CPU time, spent here until it shows (10 s at most): Linux counts it in clock
-        // ticks (proc(5), `utime`), so work shorter than one may not; the work is opaque to
-        // the optimizer, which would otherwise fold the loop away.
+        // CPU time, spent here until it shows (10 s at most); the work is opaque to the
+        // optimizer, which would otherwise fold the loop away.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut after = process_usage(me).unwrap();
         let mut x = 0u64;
@@ -3026,6 +3180,53 @@ mod usage_tests {
             None,
             "short, and not text"
         );
+    }
+
+    /// A count of whole ticks says no more than its thread ran: #77's 387 ticks of a thread
+    /// that had run 3.85 s say 3.85 s; under that, the ticks' own time.
+    #[test]
+    fn guest_time_is_never_more_than_its_thread_ran() {
+        let hz = |n| std::num::NonZeroU64::new(n).unwrap();
+        assert_eq!(guest_within(387, hz(100), 3_850_000_000), 3_850_000_000);
+        assert_eq!(guest_within(385, hz(100), 3_870_000_001), 3_850_000_000);
+        assert_eq!(guest_within(u64::MAX, hz(1), u64::MAX), u64::MAX, "saturates");
+    }
+
+    /// The process's CPU time is its clock's, to the nanosecond: between two readings of
+    /// its own CPU-time clock, where /proc's ticks fell short of the first by up to two.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_processs_cpu_time_is_its_clocks() {
+        let clock = || {
+            let mut t = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // SAFETY: this process's CPU-time clock, and a timespec to write.
+            let r = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &raw mut t) };
+            assert_eq!(r, 0);
+            u64::try_from(t.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap()
+        };
+        let before = clock();
+        let read = process_usage(std::process::id()).unwrap().cpu_ns;
+        let after = clock();
+        assert!(before <= read && read <= after, "{before} <= {read} <= {after}");
+    }
+
+    /// A thread's CPU-time clock read by its ID is the one its pthread names, from any thread
+    /// of the process; a thread of no process here has none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_threads_cpu_time_is_read_by_its_id() {
+        let own = ThreadClock::current().unwrap();
+        // SAFETY: gettid(2) has no preconditions.
+        let tid = unsafe { libc::gettid() };
+        let before = own.read().unwrap();
+        let read = cpu_clock_ns(tid, CpuClockOf::Thread).unwrap();
+        let after = own.read().unwrap();
+        assert!(before <= read && read <= after, "{before} <= {read} <= {after}");
+        // pid 1 is a process of its own, never a thread of this one.
+        assert!(cpu_clock_ns(1, CpuClockOf::Thread).is_err());
     }
 
     /// A thread that has run no guest has none, read from another thread; and its own line is
@@ -3093,29 +3294,112 @@ mod usage_tests {
         assert_eq!(mach_ns(u128::MAX), u64::MAX);
     }
 
-    /// A thread's clock, read from another thread, counts what it spins: about no more
-    /// than the wall time, and on a host that lets it run, a share of it.
+    /// The runtime the kernel has charged a thread, read apart from its [`ThreadClock`]: on
+    /// Linux its schedstat's first field, the scheduler's `se.sum_exec_runtime`, which leaves
+    /// out the part of a run under way that the clock counts (Documentation/scheduler/
+    /// sched-stats.rst; kernel/sched/core.c, `task_sched_runtime`); on macOS
+    /// thread_info(THREAD_BASIC_INFO)'s user and system times, in microseconds
+    /// (mach/thread_info.h).
+    #[cfg(target_os = "linux")]
+    fn charged_ns(tid: libc::pid_t) -> u64 {
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/schedstat")).unwrap();
+        stat.split_ascii_whitespace().next().unwrap().parse().unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn charged_ns(port: libc::mach_port_t) -> u64 {
+        // SAFETY: zeroed plain data, which thread_info fills.
+        let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let mut count = libc::THREAD_BASIC_INFO_COUNT;
+        // SAFETY: a port of a live thread of this process; a buffer of `count` words.
+        let r = unsafe {
+            libc::thread_info(
+                port,
+                libc::THREAD_BASIC_INFO as libc::thread_flavor_t,
+                (&raw mut info).cast(),
+                &raw mut count,
+            )
+        };
+        assert_eq!(r, libc::KERN_SUCCESS);
+        let ns = |t: libc::time_value_t| {
+            u64::try_from(t.seconds).unwrap() * 1_000_000_000 + u64::try_from(t.microseconds).unwrap() * 1_000
+        };
+        ns(info.user_time) + ns(info.system_time)
+    }
+
+    /// Wall time in nanoseconds in the timebase each kernel charges runtime by, which no time
+    /// service slews: CLOCK_MONOTONIC_RAW on Linux (clock_gettime(2)), CLOCK_UPTIME_RAW,
+    /// mach_absolute_time's, on macOS.
+    fn raw_ns() -> u64 {
+        #[cfg(target_os = "macos")]
+        let id = libc::CLOCK_UPTIME_RAW;
+        #[cfg(not(target_os = "macos"))]
+        let id = libc::CLOCK_MONOTONIC_RAW;
+        let mut t = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: a system clock, and a timespec to write.
+        assert_eq!(unsafe { libc::clock_gettime(id, &raw mut t) }, 0);
+        u64::try_from(t.tv_sec).unwrap() * 1_000_000_000 + u64::try_from(t.tv_nsec).unwrap()
+    }
+
+    /// A thread's clock, read from another thread, counts what it runs: it never falls; it
+    /// never says more than the wall time since before its thread began; and read after the
+    /// kernel's own count of its runtime, it says at least as much, so it grows across a span
+    /// in which the kernel saw its thread run. The thread spins until the kernel's count passes
+    /// the clock's first reading, however long a loaded host takes to run it.
     #[test]
     fn a_threads_clock_counts_what_it_runs() {
         use std::sync::atomic::{AtomicBool, Ordering};
+        /// Stops the spinner as it drops, a failed assertion's unwinding too, so the scope
+        /// joins it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel();
+        let born = raw_ns();
         std::thread::scope(|s| {
             s.spawn(|| {
-                tx.send(ThreadClock::current().unwrap()).unwrap();
+                let clock = ThreadClock::current().unwrap();
+                #[cfg(target_os = "linux")]
+                // SAFETY: gettid(2) has no preconditions.
+                let id = unsafe { libc::gettid() };
+                #[cfg(target_os = "macos")]
+                let id = clock.0;
+                tx.send((clock, id)).unwrap();
                 while !stop.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
             });
-            let clock = rx.recv().unwrap();
-            let (t0, before) = (std::time::Instant::now(), clock.read().unwrap());
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let spun = clock.read().unwrap() - before;
-            let wall = u64::try_from(t0.elapsed().as_nanos()).unwrap();
-            stop.store(true, Ordering::Relaxed);
-            // A read may lag what its thread has run by what it ran since its last tick.
-            assert!(spun <= wall + wall / 10, "{spun} ns of CPU in {wall} ns");
-            assert!(spun >= wall / 10, "{spun} ns of CPU in {wall} ns");
+            let _stop = Stop(&stop);
+            let (clock, id) = rx.recv().unwrap();
+            let read = |last: u64| {
+                let ns = clock.read().unwrap();
+                let lived = raw_ns() - born;
+                assert!(ns >= last, "its clock fell from {last} to {ns} ns");
+                assert!(ns <= lived, "{ns} ns of CPU in {lived} ns of its life");
+                ns
+            };
+            let first = read(0);
+            let mut last = first;
+            loop {
+                let charged = charged_ns(id);
+                last = read(last);
+                assert!(
+                    last >= charged,
+                    "its clock says {last} ns, after its kernel charged {charged}"
+                );
+                if charged > first {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+            assert!(last > first, "{first} ns, then {last}");
         });
     }
 
@@ -3248,6 +3532,38 @@ mod launched_tests {
         }
         assert_eq!(suspended, Some(false));
         assert_eq!(launched(std::process::id()), Some(true));
+    }
+
+    /// A process is in its launch until a thread of it says the launch is over
+    /// ([`launch_over`]), as a VM process's main thread does first (PM M166): a sleeper that
+    /// never says so is in it for ever; this process, once a thread of it has said so, is
+    /// not; a process gone is unread.
+    #[test]
+    fn a_process_is_in_its_launch_until_a_thread_of_it_says_it_is_over() {
+        let mut asleep = std::process::Command::new("/bin/sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let sleeper = in_launch(asleep.id());
+        let _ = asleep.kill();
+        let _ = asleep.wait();
+        assert_eq!(sleeper, Some(true));
+        assert_eq!(in_launch(asleep.id()), None, "gone");
+        // The thread that says so lives until it has been read.
+        let (named, read) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
+        let now = std::thread::scope(|s| {
+            let (said, done) = (named.0, read.1);
+            s.spawn(move || {
+                launch_over().unwrap();
+                said.send(()).unwrap();
+                let _ = done.recv();
+            });
+            named.1.recv().unwrap();
+            let now = in_launch(std::process::id());
+            drop(read.0);
+            now
+        });
+        assert_eq!(now, Some(false));
     }
 }
 

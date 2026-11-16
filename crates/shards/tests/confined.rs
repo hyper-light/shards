@@ -12,9 +12,10 @@
 mod common;
 
 use std::ffi::OsStr;
-use std::time::{Duration, Instant};
 
-use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served, test_guest, vm_run};
+use common::{
+    Patience, TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served, test_guest, vm_run,
+};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree, WAIT_OBJECT_0};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::Isolation::{CreateAppContainerProfile, DeleteAppContainerProfile};
@@ -29,8 +30,6 @@ use windows_sys::Win32::System::Threading::{
     ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy,
     ProcessSystemCallDisablePolicy, WaitForSingleObject,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A handle, closed as it drops.
 struct Handle(HANDLE);
@@ -187,9 +186,9 @@ fn the_vm_process_is_confined() {
         "--memory".as_ref(),
         "256".as_ref(),
         "--cmdline".as_ref(),
-        "console=ttyS0 quiet shards_test=idle".as_ref(),
+        "console=hvc0 quiet shards_test=idle".as_ref(),
     ]);
-    vm.wait_for("SHARDS-TEST READY", TIMEOUT);
+    vm.wait_for("SHARDS-TEST READY");
     let cli = vm.id();
     let process = open(vm_process(cli));
     assert!(in_job(&process), "in a Job");
@@ -306,12 +305,20 @@ fn the_network_process_is_confined() {
         assert_eq!(mitigation(&process, policy) & bits, bits, "{what}");
     }
 
-    // Its VM ended, it ends, and its profile's record goes with it.
+    // Its VM ended, it ends, and its profile's record goes with it: each a state its home's
+    // daemon comes to, waited on as it works.
     let removed = shards(&["rm", "-f", "net"]);
     assert_eq!(removed.status, Some(0), "{removed}");
-    // SAFETY: the process's handle.
-    let waited = unsafe { WaitForSingleObject(process.0, 20_000) };
-    assert_eq!(waited, WAIT_OBJECT_0, "the network process outlived its VM");
+    let mut patience = Patience::of(&home);
+    loop {
+        let left = u32::try_from(patience.next_look().as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: the process's handle.
+        if unsafe { WaitForSingleObject(process.0, left) } == WAIT_OBJECT_0 {
+            break;
+        }
+        assert!(patience.holds(), "the network process outlived its VM");
+    }
+    patience.done();
     let records = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap())
         .join("shards")
         .join("containers");
@@ -325,15 +332,12 @@ fn the_network_process_is_confined() {
             .filter(|n| n.starts_with(&prefix))
             .collect()
     };
-    let deadline = Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(&home);
     while !left().is_empty() {
-        assert!(
-            Instant::now() < deadline,
-            "its profile's record left: {:?}",
-            left()
-        );
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(patience.holds(), "its profile's record left: {:?}", left());
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     let stopped = shards(&["stop", "daemon"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
@@ -351,7 +355,7 @@ fn two_vcpus_boot_to_their_end_with_their_console() {
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
-    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.cmdline = "console=hvc0 panic=-1".into();
     cfg.console = Console::Stdout;
     // Its whole console kept: this test reads it as it goes (D12).
     cfg.said = usize::MAX;
@@ -360,11 +364,10 @@ fn two_vcpus_boot_to_their_end_with_their_console() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::Reset),
-        None => panic!(
-            "two vCPUs with their console did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after",
-            common::DAEMON_QUIET
-        ),
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(refused) => {
+            panic!("two vCPUs with their console did not reach their end in this process: {refused}")
+        }
     }
 }

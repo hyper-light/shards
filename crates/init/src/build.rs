@@ -144,9 +144,6 @@ struct Builder {
     /// The step's SSH agent sockets, listened on here and relayed to the host while it
     /// runs: each mount's listener, the agent's id and the host's token for it.
     ssh: Vec<(std::os::unix::net::UnixListener, Vec<u8>, [u8; 16])>,
-    /// Whether the builder's memory is plugged as the build needs it (D133): then each
-    /// step has a cgroup of its own, under the build's, as runc gives each container one.
-    plugging: bool,
     /// What the process that grows its memory says, a line at a time: said in the output
     /// of the step that runs as it comes, which is the step its memory is short for.
     notes: Option<OwnedFd>,
@@ -209,22 +206,26 @@ fn serve() -> io::Result<()> {
         return Err(os_err("chroot"));
     }
     std::env::set_current_dir("/")?;
-    let notes = match plug {
-        Some(plug) => {
-            // What its host's budget leaves the build (D188), shared by the grower and the
-            // give-back's answerer this process forks, as a run's init shares it.
-            if let Err(e) = crate::plug::make_cap() {
-                let _ = writeln!(io::stderr(), "shards-init: {e}; its build is held to no budget");
-            }
-            plug.raise_limits()?;
-            // What it may still plug, reported where its kernel reports it (D149), as a
-            // build on a host sees the host's memory: before its grower, which reads it.
-            crate::plug::open_pluggable();
-            crate::plug::report_pluggable()?;
-            Some(plug.hold()?)
-        }
-        None => None,
-    };
+    // What the guest needs as its build is held, for its host to learn its next builder's
+    // boot (memory-15): with memory to plug or not, before its grower or its build takes any.
+    if let Err(e) = crate::plug::note_startup() {
+        let _ = writeln!(io::stderr(), "shards-init: {e}; its build's needs go unrecorded");
+    }
+    // What its host's budget leaves the build (D188), shared by the grower and the
+    // give-back's answerer this process forks, as a run's init shares it: every builder's,
+    // with memory to plug or not.
+    if let Err(e) = crate::plug::make_cap() {
+        let _ = writeln!(io::stderr(), "shards-init: {e}; its build is held to no budget");
+    }
+    if let Some(plug) = plug {
+        plug.raise_limits()?;
+        // What it may still plug, reported where its kernel reports it (D149), as a
+        // build on a host sees the host's memory: before its grower, which reads it.
+        crate::plug::open_pluggable();
+        crate::plug::report_pluggable()?;
+    }
+    // Every builder's build in its own cgroup, held at the memory it has where it plugs.
+    let notes = crate::plug::hold_build(plug)?;
     swap_on()?;
     loopback_up()?;
     // A builder with a network: eth0 as the host named it, which a step with the default
@@ -249,7 +250,6 @@ fn serve() -> io::Result<()> {
         writing: None,
         serial: 0,
         ssh: Vec::new(),
-        plugging: plug.is_some(),
         notes,
         caches: crate::caches::Caches::default(),
     };
@@ -281,9 +281,13 @@ fn serve() -> io::Result<()> {
                 send(&b.conn, kind::EMULATED, why.as_bytes())?;
             }
             kind::NEEDS => {
-                let said = match crate::plug::needed() {
-                    Ok((need, killed)) => format!("{need} {killed}"),
-                    Err(e) => e.to_string(),
+                // Every builder's, a cold one's too, booted with all it may have
+                // (memory-15): its build's cgroup counts what it held either way. All four
+                // words or none: a need with no start is never said (D133).
+                let said = match (crate::plug::needed(), crate::plug::startup_said()) {
+                    (Ok((need, killed)), Some(start)) => format!("{need} {killed} {start}"),
+                    (Ok(_), None) => "its guest's start was not noted".to_owned(),
+                    (Err(e), _) => e.to_string(),
                 };
                 send(&b.conn, kind::NEEDED, said.as_bytes())?;
             }
@@ -625,7 +629,7 @@ impl Builder {
             | libc::CLONE_NEWCGROUP;
         // A cgroup of its own it starts in, whose namespace is rooted there, as a
         // container's is: its limits, and its devices (D44).
-        let cgroup = step_cgroup(&step.cgroup, self.plugging, &step_devices(step)?)?;
+        let cgroup = step_cgroup(&step.cgroup, &step_devices(step)?)?;
         let mut args = crate::domains::CloneArgs {
             flags: flags as u64,
             exit_signal: libc::SIGCHLD as u64,
@@ -1705,32 +1709,20 @@ fn step_devices(step: &Step) -> io::Result<Vec<u8>> {
 /// builder's `steps`, which BuildKit's default device rules confine once, made so by the
 /// first step, for a step of those rules; under `devices`, which none confine, for one of
 /// its own, which its program confines alone (a cgroup's programs and its parents' must
-/// all allow an access). Under the build's cgroup where the builder's memory is `plugging`
-/// (D133), whose `memory.high` holds it. The controllers its files need are enabled on the
-/// way down. A swap file absent, as where the kernel has no swap, is skipped for "max" or
-/// "0", as runc skips it (D64).
-fn step_cgroup(
-    files: &[(Vec<u8>, Vec<u8>)],
-    plugging: bool,
-    program: &[u8],
-) -> io::Result<Option<(OwnedFd, PathBuf)>> {
+/// all allow an access). Under the build's cgroup, made as the builder starts
+/// ([`crate::plug::hold_build`]), whose `memory.high` holds it where the builder plugs
+/// memory (D133), and whose counts are its build's needs either way (memory-15). The
+/// controllers its files need are enabled on the way down. A swap file absent, as where
+/// the kernel has no swap, is skipped for "max" or "0", as runc skips it (D64).
+fn step_cgroup(files: &[(Vec<u8>, Vec<u8>)], program: &[u8]) -> io::Result<Option<(OwnedFd, PathBuf)>> {
     use std::os::unix::fs::OpenOptionsExt;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     /// The parents BuildKit's default device rules confine already.
     static CONFINED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
     let default = shards_devcgroup::compile(&shards_devcgroup::build_step(&[], false)).map_err(err)?;
-    let root = Path::new("/sys/fs/cgroup");
-    // The builder's own cgroup2, mounted by its first step.
-    crate::plug::mount_cgroups()?;
-    let base = if plugging {
-        PathBuf::from(crate::plug::BUILD)
-    } else {
-        root.to_path_buf()
-    };
     let own = program != default.as_slice();
-    let steps = base.join(if own { "devices" } else { "steps" });
+    let steps = Path::new(crate::plug::BUILD).join(if own { "devices" } else { "steps" });
     let enable = |dir: &Path| std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset");
-    enable(root).map_err(|e| err(format!("enabling the builder's cgroup controllers: {e}")))?;
     match std::fs::create_dir(&steps) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}

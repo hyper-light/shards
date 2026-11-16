@@ -1,0 +1,15 @@
+diff --git a/crates/shards/src/grant_ask.rs b/crates/shards/src/grant_ask.rs
+index d7ab81a94..a2becb8e1 100644
+--- a/crates/shards/src/grant_ask.rs
++++ b/crates/shards/src/grant_ask.rs
+@@ -314,9 +314,7 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
+ /// and had no vsock path left them open).
+ #[cfg(windows)]
+ pub fn obtain_sealed(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
+-    obtain(link, wanted)?;
+-    shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
+-        .map_err(|e| format!("sealing its grants: {e}"))
++    obtain(link, wanted)
+ }
+ 
+ /// A file the spawner duplicated into this process, and the path it found it at: the

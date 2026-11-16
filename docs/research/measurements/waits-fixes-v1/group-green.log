@@ -1,0 +1,75 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/waits-carrier-d9bfdf79f0/waits.bundle
+ * branch              p/fix-waits-v1 -> FETCH_HEAD
+Previous HEAD position was bb799b90 waits-01: reproduce a pending member word judged as a failed pass
+HEAD is now at 8168e33f waits-01: judge group words by their own typed exec refusal
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-waits-v1/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.71s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 7 tests
+test daemon::groups::tests::a_cpu_budget_of_every_cpu_holds_nothing ... ok
+test daemon::groups::tests::a_group_is_named_as_a_file_of_the_home_alone ... ok
+test daemon::groups::tests::memory_budgets_read_as_the_kernel_reads_them ... ok
+test daemon::groups::tests::cpu_budgets_read_as_the_kernel_reads_them ... ok
+test daemon::groups::tests::an_ask_behind_a_word_keeps_its_newest_room_and_any_give_back ... ok
+test daemon::groups::tests::a_group_is_made_once_and_kept_as_its_user_left_it ... ok
+shards daemon 93858: group pending: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB
+test daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 883 filtered out; finished in 0.02s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 1 test
+shards daemon 93864: group one: its microVMs hold 1100 MiB, 100 MiB past its budget of 1000 MiB: each told so, and asked to give back what it holds cold
+shards daemon 93864: group two: its microVMs hold 300 MiB, 100 MiB past its budget of 200 MiB: each told so, and asked to give back what it holds cold
+shards daemon 93864: container c583cfddd622681998ca1397e332e51c6082e172ad70f400b39f84bc6fc62d85: a process ended for want of memory: its group two held 100 MiB past its memory.max of 200 MiB, 300 MiB of it this microVM's, and gave nothing back
+shards daemon 93864: container 0637207f16c7f75a5b01c150f516437074c56bd2edb635d6d1ab3d555f5d6bc4: a process ended for want of memory: its group one held 100 MiB past its memory.max of 1000 MiB, 600 MiB of it this microVM's, and gave nothing back
+shards daemon 93864: container 0637207f16c7f75a5b01c150f516437074c56bd2edb635d6d1ab3d555f5d6bc4: a process ended for want of memory: its group one held 100 MiB past its memory.max of 1000 MiB, 600 MiB of it this microVM's, and gave nothing back
+shards daemon 93864: container 0637207f16c7f75a5b01c150f516437074c56bd2edb635d6d1ab3d555f5d6bc4: telling its microVM its group's room: its microVM ran no CPU in 20ms past the slowest answer seen (20ms), 22.112625ms into the wait (the least a microVM ran and still answered: 0ns in 20ms), and so it was ended
+shards daemon 93864: group one: its microVMs hold 500 MiB, within its budget of 1000 MiB again
+test daemon::tests::a_member_that_never_answers_holds_up_no_other_member_or_group ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 889 filtered out; finished in 0.06s
+
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/g121-tmp/fix-waits-v1/src/crates/abi)
+    Checking typenum v1.20.1
+    Checking cfg-if v1.0.5
+   Compiling jobserver v0.1.35
+    Checking zeroize v1.9.0
+    Checking cpufeatures v0.3.1
+    Checking memchr v2.8.3
+   Compiling cc v1.5.1
+    Checking hybrid-array v0.4.15
+    Checking const-oid v0.10.2
+    Checking zlib-rs v0.6.8
+    Checking crypto-common v0.2.2
+   Compiling cmake v0.1.58
+    Checking block-buffer v0.12.1
+    Checking digest v0.11.3

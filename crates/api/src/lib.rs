@@ -28,10 +28,13 @@ use std::net::Shutdown;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+pub mod builds;
 mod client;
+mod command;
 pub mod conformance;
 pub mod control;
 pub mod demand;
+pub mod host;
 pub mod image;
 mod judge;
 mod native;
@@ -41,6 +44,7 @@ mod said;
 pub mod sim;
 mod stream;
 mod taken;
+pub mod volumes;
 #[cfg(test)]
 mod while_runs;
 
@@ -48,14 +52,22 @@ mod while_runs;
 #[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
 mod proc_allocation;
 
-pub use client::{
-    ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
-    pause, prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
+pub use builds::{
+    BuildEvent, BuildRefusal, BuildSecret, BuildSpec, BuildSsh, Builds, ComponentKind, ComponentSpec, Pinned,
+    S3Source, SecretSource, StepEnd,
 };
-pub use judge::{Found, Judge, Rate, Record, Seen, Stall};
-pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
+pub use client::{
+    ConfiguredShards, ManagedEnded, ManagedGuest, ManagedUse, ManagedUsed, Shards, attach_managed,
+    boot_managed, connect_borrowed, connect_borrowed_before, connect_prepared, final_use_file, pause,
+    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at, vm_process_file,
+};
+pub use host::{CheckRefusal, HostCheck, Unusable, host_check};
+pub use judge::{Found, Judge, Rate, Rated, Record, Seen, Span, Stall};
+pub use native::{
+    ImageIdentity, NativeBoot, NativeImages, NativeStartup, release_app_containers, verify_native_image,
+};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
-pub use progress::{Awaited, Follow, Followed, Unfollowed, Watch};
+pub use progress::{Awaited, Bound, Follow, Followed, Unfollowed, Watch, runnable_threads};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,8 +115,30 @@ pub struct PreparedBoot {
     output_bytes: usize,
     runtime_paths: Option<RuntimePaths>,
     gpu_devices: Vec<PhysicalGpu>,
-    gpu_report: Option<([u8; 16], std::time::Instant)>,
+    gpu_report: Option<([u8; 16], Until)>,
     startup: native::Inputs,
+}
+
+/// How long a managed launch's GPU report is waited on (D233): the create's own budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Until {
+    /// By this instant, a finite create budget: a take that reaches it is refused
+    /// `GpuProbe(Pending)`.
+    At(std::time::Instant),
+    /// No clock: until the report comes or its VM process ends, followed by its native
+    /// receipt's end (`TerminalScope::Released`) as every managed wait follows it (D215). A take
+    /// that its VM process's end finds waiting is refused `GpuProbe(Ended)`.
+    Released,
+}
+
+impl Until {
+    /// Its instant, where it has one.
+    pub fn instant(self) -> Option<std::time::Instant> {
+        match self {
+            Self::At(at) => Some(at),
+            Self::Released => None,
+        }
+    }
 }
 
 /// Pure immutable request. The final native launcher separately owns and renders
@@ -113,7 +147,7 @@ pub struct PreparedBoot {
 pub struct GpuReportRequest<'a> {
     scope: [u8; 16],
     selected: &'a [PhysicalGpu],
-    deadline: std::time::Instant,
+    until: Until,
 }
 
 impl GpuReportRequest<'_> {
@@ -123,8 +157,8 @@ impl GpuReportRequest<'_> {
     pub fn selected(&self) -> &[PhysicalGpu] {
         self.selected
     }
-    pub fn deadline(&self) -> std::time::Instant {
-        self.deadline
+    pub fn until(&self) -> Until {
+        self.until
     }
 }
 
@@ -156,9 +190,10 @@ impl PreparedBoot {
         Ok(self)
     }
 
-    /// Bind a private renderer report to the original native scope and finite
-    /// absolute create budget. No channel or foreign process is created here.
-    pub fn with_gpu_report(mut self, scope: [u8; 16], deadline: std::time::Instant) -> Result<Self, Refusal> {
+    /// Bind a private renderer report to the original native scope and the create's
+    /// budget, `until` ([`Until`]): an instant, or none but its VM process's end. No channel
+    /// or foreign process is created here.
+    pub fn with_gpu_report(mut self, scope: [u8; 16], until: Until) -> Result<Self, Refusal> {
         if self.gpu_report.is_some() {
             return Err(Refusal::GpuProbe(GpuProbeError::ReportTaken));
         }
@@ -169,17 +204,17 @@ impl PreparedBoot {
         if self.gpu_devices.is_empty() {
             return Err(Refusal::GpuProbe(GpuProbeError::Empty));
         }
-        if std::time::Instant::now() >= deadline {
+        if until.instant().is_some_and(|at| std::time::Instant::now() >= at) {
             return Err(Refusal::GpuProbe(GpuProbeError::Pending));
         }
-        self.gpu_report = Some((scope, deadline));
+        self.gpu_report = Some((scope, until));
         Ok(self)
     }
 
     pub fn gpu_report_request(&self) -> Option<GpuReportRequest<'_>> {
-        self.gpu_report.map(|(scope, deadline)| GpuReportRequest {
+        self.gpu_report.map(|(scope, until)| GpuReportRequest {
             scope,
-            deadline,
+            until,
             selected: &self.gpu_devices,
         })
     }
@@ -327,13 +362,13 @@ pub struct Share {
     pub read_only: bool,
 }
 
-/// What boots guests on this host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    Kvm,
-    HypervisorFramework,
-    WindowsHypervisorPlatform,
-}
+/// What boots guests on a host.
+pub use shards_abi::host::Backend;
+/// The console shards' guests have (D261), and the kernel argument that names it
+/// (`console=hvc0`), the first of every default command line of shards': an orchestrator's
+/// own command line takes [`CONSOLE`] rather than a console of its own (a UART, which no
+/// shards guest has).
+pub use shards_abi::{CONSOLE, GUEST_CONSOLE};
 
 /// How a guest ended: shards-vmm's `ExitReason`, but `Snapshotted`, which no guest booted
 /// here asks for.
@@ -370,6 +405,9 @@ pub enum ProcessOperation {
     CpuClock,
     /// macOS: mach_timebase_info(3), which converts a VM process's CPU times.
     MachTimebase,
+    /// macOS: sysctl(3) of `kern.clockrate`, the clock tick in whose steps a VM process's
+    /// CPU times show.
+    ClockRate,
     /// Windows: CreateToolhelp32Snapshot, a snapshot of the system's processes.
     Snapshot,
     /// Windows: Process32FirstW or Process32NextW, a snapshot's processes.
@@ -563,7 +601,8 @@ pub enum Refusal {
         expected_started: u64,
         failure: ProcessFailure,
     },
-    /// A finite borrowed connection failed without acquiring the guest's lifetime.
+    /// A borrowed connection ([`connect_borrowed`], [`connect_borrowed_before`]) failed
+    /// without acquiring the guest's lifetime.
     Borrowed { port: u32, failure: BorrowFailure },
     /// A post-boot connection resource could not be allocated.
     Allocation { what: &'static str },
@@ -574,7 +613,8 @@ pub enum Refusal {
     /// Preparation failed before any native owner launches a process.
     Launch(LaunchError),
     /// A managed guest's own I/O failed, typed, without allocating diagnostic text: its
-    /// output's and observer's setup, or its rate's exchange on its vsock socket (D255).
+    /// output's and observer's setup, or its rate's or use's exchange on its vsock socket
+    /// (D255, D260).
     ManagedIo {
         operation: &'static str,
         kind: io::ErrorKind,
@@ -595,6 +635,46 @@ pub enum Refusal {
     /// words: its microVM not started, its governor's thread not made, or an answer none of
     /// the rate's protocol's (`shards_abi::rate`).
     Rate(String),
+    /// A managed guest's VM process answered its use (D260) with none of the protocol's
+    /// words, by what broke it (`shards_abi::rate::read_used`).
+    HostUse(shards_abi::rate::UseBroken),
+    /// [`release_app_containers`] deleted nothing, and why.
+    Release(ReleaseRefusal),
+    /// A managed guest's VM process is not named yet, or its record is broken
+    /// ([`ManagedGuest::vm_process`]).
+    VmProcess(VmProcessRefusal),
+}
+
+/// Why [`ManagedGuest::vm_process`] names no VM process (D233's VM process): where its
+/// process has gone, it is [`Refusal::Process`] or [`Refusal::Ended`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmProcessRefusal {
+    /// On Windows, no record names the VM process ([`vm_process_file`]): its `shards` has not
+    /// started it yet, as it writes the record before that process runs; a launch whose
+    /// record could not be written ends. No other cause is read into it.
+    Unrecorded,
+    /// Its record names no process as `PID START` does.
+    Broken,
+}
+
+/// Why [`release_app_containers`] deleted no AppContainer profile of a managed VM's (D141).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseRefusal {
+    /// The end given was short of [`TerminalScope::Released`]: a process of the VM's may still
+    /// run in one of its profiles.
+    ScopeLive,
+    /// A record of the VM's `shards` is held, as only a live process holds one: the VM's own
+    /// `shards`, a process given its pid since, or a spawner sweeping the records that moment.
+    Held,
+}
+
+impl std::fmt::Display for ReleaseRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ScopeLive => "the VM's scope is not released: its processes may still run in its profiles",
+            Self::Held => "a record of its profiles is held by a live process",
+        })
+    }
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -610,6 +690,15 @@ pub struct Identity {
     pub started: u64,
     /// Where its vsock is reached (`--vsock`'s socket).
     pub vsock: PathBuf,
+}
+
+/// A managed guest's VM process, the confined process its VMM runs in and its guest's RAM is
+/// committed to (D233's VM process): by its pid and its start, as [`Identity`] names the
+/// process launched, counted as [`Identity::started`] counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VmProcess {
+    pub pid: u32,
+    pub started: u64,
 }
 
 impl std::fmt::Display for Refusal {
@@ -642,18 +731,46 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
+            Refusal::Stalled(stall) if let (Some(rate), Some(least)) = (stall.rate(), stall.least()) => {
+                write!(
+                    f,
+                    "the guest's VM process ran too slowly to be answering: {:?} into the wait, {:?} \
+                 of CPU in the {:?} it was seen to run, below the least a VM process ran here and \
+                 still answered ({:?} in {:?}) and more than any answer took ({:?}), past the \
+                 slowest answer seen ({:?})",
+                    stall.waited(),
+                    rate.cpu,
+                    rate.over,
+                    least.cpu,
+                    least.over,
+                    stall.most().unwrap_or_default(),
+                    stall.slowest()
+                )
+            }
             Refusal::Stalled(stall) => write!(
                 f,
                 "the guest's VM process stalled: {:?} into the wait it ran no CPU in {:?}, past the \
-                 slowest answer seen ({:?}); the least a VM process ran here and still answered was \
-                 {:?} in {:?}",
+                 slowest answer seen ({:?}); {}",
                 stall.waited(),
                 stall.over(),
                 stall.slowest(),
-                stall.least().cpu,
-                stall.least().over
+                stall.least().map_or_else(
+                    || "no answer of its kind had its CPU read".to_string(),
+                    |least| format!(
+                        "the least a VM process ran here and still answered was {:?} in {:?}",
+                        least.cpu, least.over
+                    )
+                )
             ),
             Refusal::Rate(why) => write!(f, "the guest's rate: {why}"),
+            Refusal::HostUse(broken) => write!(f, "the guest's use: its VM process answered {broken}"),
+            Refusal::Release(why) => write!(f, "the VM's AppContainers: {why}"),
+            Refusal::VmProcess(VmProcessRefusal::Unrecorded) => {
+                f.write_str("the guest's VM process is not recorded yet")
+            }
+            Refusal::VmProcess(VmProcessRefusal::Broken) => {
+                f.write_str("the guest's VM process's record names no process")
+            }
         }
     }
 }
@@ -676,9 +793,27 @@ impl std::error::Error for Refusal {
 /// a socket's own receive timeout, which leaves a Winsock connection indeterminate (PM M207);
 /// and a read on macOS waits in poll(2), which sees a peer's half-close that a waiting
 /// read can sleep through (PM M236).
+///
+/// Two threads share one stream without a second handle: `&dyn Stream` reads and writes, as
+/// std's `&TcpStream` does ([`read_shared`](Stream::read_shared)). One that owns it can take its
+/// socket ([`into_socket`](Stream::into_socket)).
 pub trait Stream: Read + Write + Send + Sync {
-    /// Another handle to the same connection.
+    /// Another handle to the same connection. Not inheritable by a child process, as no
+    /// socket of a stream is: on Windows a duplicate socket would be, WSASocketW keeping no
+    /// WSA_FLAG_NO_HANDLE_INHERIT for it, so its inheritance is cleared as it is made (PM
+    /// M582). A second thread needs none: it reads and writes through `&dyn Stream`.
     fn try_clone(&self) -> io::Result<Box<dyn Stream>>;
+    /// A read through a shared reference, waiting as [`Read::read`] does: what `&dyn Stream`'s
+    /// `Read` does, so one thread reads while another writes, with no second handle.
+    fn read_shared(&self, buf: &mut [u8]) -> io::Result<usize>;
+    /// A write through a shared reference, waiting as [`Write::write`] does: what
+    /// `&dyn Stream`'s `Write` does.
+    fn write_shared(&self, buf: &[u8]) -> io::Result<usize>;
+    /// The connection's socket, owned by its caller from here: a Unix stream socket's
+    /// descriptor, close-on-exec; on Windows shards' AF_UNIX socket, not inheritable. It is
+    /// left non-blocking, as every stream's is (its timeouts were this value's own polls, and
+    /// go with it), still shared by any clone.
+    fn into_socket(self: Box<Self>) -> OwnedSocket;
     /// The OS handle under it, for a caller that waits in its own event loop (epoll, kqueue,
     /// IOCP) rather than in a read: readable when a read won't wait, writable when a write
     /// won't, both once the connection has ended. Borrowed: it stays the stream's, open for as
@@ -715,6 +850,28 @@ pub trait Stream: Read + Write + Send + Sync {
 pub type Handle<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
 pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
+
+/// The OS handle under a [`Stream`], owned ([`Stream::into_socket`]).
+#[cfg(unix)]
+pub type OwnedSocket = std::os::fd::OwnedFd;
+#[cfg(windows)]
+pub type OwnedSocket = std::os::windows::io::OwnedSocket;
+
+impl Read for &(dyn Stream + '_) {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_shared(buf)
+    }
+}
+
+impl Write for &(dyn Stream + '_) {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_shared(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// What boots guests.
 pub trait Guests: Send + Sync {

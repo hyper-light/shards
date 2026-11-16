@@ -129,12 +129,13 @@ fn invalid_mode(mode: &str) -> String {
 const PROPAGATIONS: [&str; 6] = ["private", "rprivate", "slave", "rslave", "shared", "rshared"];
 
 /// linuxValidMountMode: rw or ro, a label, a propagation, `nocopy` and a consistency,
-/// each once at most.
+/// each once at most; and, past Docker's, Podman's `exec` or `noexec` (D279: whether its
+/// files may be run from it), once at most, which Docker's daemon refuses as an invalid mode.
 fn valid_mode(mode: &str) -> bool {
     if mode.is_empty() {
         return true;
     }
-    let mut counts = [0u32; 5];
+    let mut counts = [0u32; 6];
     for o in mode.split(',') {
         let slot = if matches!(o, "rw" | "ro") {
             0
@@ -146,6 +147,8 @@ fn valid_mode(mode: &str) -> bool {
             3
         } else if matches!(o, "consistent" | "cached" | "delegated") {
             4
+        } else if matches!(o, "exec" | "noexec") {
+            5
         } else {
             return false;
         };
@@ -524,8 +527,9 @@ pub const SCOPED: &str = "vnd.osi.agentfile.scoped";
 
 /// Refuses a run's own mount of volume `v` at `dest` where an image's Agentfile scoped
 /// it ([`SCOPED`]), unless the run's own image's Agentfile names it there: a stand-in
-/// for its own volume (D109).
-fn scoped_to(
+/// for its own volume (D109). An orchestrator's plug of it into a running run is a mount of
+/// the run's own, refused alike (D271).
+pub(crate) fn scoped_to(
     v: &Volume,
     dest: &str,
     agent_volumes: Option<&[crate::agentfile::AgentVolume]>,
@@ -1350,6 +1354,11 @@ pub fn open_for(
         if !p.rw {
             flags.push("ro");
         }
+        // Its files refused execution (`-v …:noexec`, D279): each mount of it `noexec`, the
+        // run's own and each of its domains'. Read from its mode, which a run keeps.
+        if p.mode.split(',').any(|o| o == "noexec") && !flags.contains(&"noexec") {
+            flags.push("noexec");
+        }
         if p.kind == "volume" && p.copy_data && first {
             flags.push("copy");
         }
@@ -1448,16 +1457,19 @@ mod tests {
                 name: Some("data".into()),
                 paths: vec!["/data".into()],
                 scoped: true,
+                scope: Default::default(),
             },
             AgentVolume {
                 name: Some("shared".into()),
                 paths: vec!["/shared".into()],
                 scoped: false,
+                scope: Default::default(),
             },
             AgentVolume {
                 name: None,
                 paths: vec!["/scratch".into()],
                 scoped: true,
+                scope: Default::default(),
             },
         ];
         let none = |_: &str| Ok(Vec::new());
@@ -1709,6 +1721,10 @@ mod tests {
         );
         let n = ok("name:/data:nocopy");
         assert!(!n.copy_data);
+        // Past Docker's (D279): Podman's `noexec`, kept in its mode, as a run keeps it; `exec`.
+        let x = ok("/host:/ctr:ro,noexec");
+        assert_eq!((x.rw, x.mode.as_str()), (false, "ro,noexec"));
+        assert_eq!(ok("/host:/ctr:exec").mode, "exec");
         let a = ok("/anon");
         assert_eq!((a.kind.as_str(), a.name.as_str()), ("volume", ""));
         for (raw, said) in [
@@ -1717,6 +1733,7 @@ mod tests {
             ("/a:/b:/c:/d", "invalid volume specification: '/a:/b:/c:/d'"),
             ("/a:/b:nope", "invalid mode: nope"),
             ("/a:/b:ro,rw", "invalid mode: ro,rw"),
+            ("/a:/b:exec,noexec", "invalid mode: exec,noexec"),
             (
                 "/a:/",
                 "invalid volume specification: '/a:/': invalid mount config for type \"bind\": invalid specification: destination can't be '/'",

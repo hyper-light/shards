@@ -344,6 +344,8 @@ fn owner_of(fd: BorrowedHandle<'_>) -> Result<Option<Vec<u8>>, Errno> {
 }
 
 pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, false)?;
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
         return owner_of(borrow(fd));
     }
@@ -356,6 +358,8 @@ pub(super) fn fget_xattr(fd: host::Raw, name: &CStr) -> Result<Option<Vec<u8>>, 
 }
 
 pub(super) fn fset_xattr(fd: host::Raw, name: &CStr, value: &[u8], flags: u32) -> Result<(), Errno> {
+    #[cfg(test)]
+    super::owner_fault(name, true)?;
     if name.to_bytes() == OWNER_XATTR.as_bytes() {
         return set_owner(fd, &Owner::parse(value).ok_or(EINVAL)?);
     }
@@ -488,6 +492,13 @@ pub(super) fn set_times(
             ntfs::set_times(opened.as_handle(), of(atime), of(mtime))
         }
     }
+}
+
+/// [`open_beneath`]'s directory for search alone: on Windows none. A file's mode refuses
+/// the server nothing there ([`MODES_REFUSE_OPENS`]), so no directory is one it may walk
+/// through and not list; one whose ACL refuses it its listing stays refused (EACCES).
+pub(super) fn search_beneath(_dir: host::Raw, _names: &[CString]) -> Result<host::Owned, Errno> {
+    Err(EACCES)
 }
 
 /// The directory `names` leads to beneath `dir`, opened one component at a time, never

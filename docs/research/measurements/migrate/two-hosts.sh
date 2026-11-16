@@ -354,7 +354,7 @@ listen)
 	if [ -f "$HOME_THERE/mover.invite" ]; then
 		echo "listening again at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
 	else
-		there invite client --name mover --output "$HOME_THERE/mover.invite"
+		there invite client --name mover --output "$HOME_THERE/mover.invite" --valid 10m
 		echo "listening at $ADDR: $(machine "$HOME_THERE"), shards $(there version 2>/dev/null | head -1)"
 	fi
 	base64 < "$HOME_THERE/mover.invite" | tr -d '\n'
@@ -381,7 +381,7 @@ invite)
 	for _ in $(seq "${COUNT:-1}"); do
 		# Unique, as two asked within a second are.
 		name="e2e$(date +%s)$RANDOM"
-		there invite client --name "$name" --output "$HOME_THERE/$name.invite" >&2
+		there invite client --name "$name" --output "$HOME_THERE/$name.invite" --valid 10m >&2
 		base64 < "$HOME_THERE/$name.invite" | tr -d '\n'
 		echo
 	done

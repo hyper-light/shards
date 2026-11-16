@@ -36,6 +36,7 @@ use crate::arch::aarch64::state::Power;
 use crate::arch::aarch64::{Entry, esr, layout, sysreg};
 use crate::devices::get_le;
 use crate::snapshot::codec::{DecodeError, Reader, Writer};
+use shards_abi::host::Unusable;
 
 pub use self::vpci::Assigned;
 pub use crate::arch::aarch64::state::VcpuState;
@@ -109,30 +110,22 @@ fn capability(code: u32) -> Result<[u64; 8]> {
 
 /// Ok when this host can run VMs: WHP is there, a hypervisor runs, and its arm64 API is the
 /// released one.
-pub fn check_host() -> std::result::Result<(), String> {
+pub fn check_host() -> std::result::Result<(), Unusable> {
     if !ffi::loaded() {
-        return Err(
-            "the Windows Hypervisor Platform is not on this host: turn on the optional feature \
-             \"Windows Hypervisor Platform\" (HypervisorPlatform) and restart"
-                .into(),
-        );
+        return Err(Unusable::WhpOff);
     }
-    let says = |e: Error| format!("asking the Windows Hypervisor Platform: {e}");
+    let says = |e: Error| Unusable::Unasked(format!("asking the Windows Hypervisor Platform: {e}"));
     let present = capability(CAP_HYPERVISOR_PRESENT).map_err(says)?;
     if present.first().is_none_or(|w| w & 1 == 0) {
-        return Err(
-            "no hypervisor runs on this host: virtualization is off in its firmware, or Windows started \
-             without Hyper-V"
-                .into(),
-        );
+        return Err(Unusable::NoHypervisor);
     }
     let features = capability(CAP_FEATURES).map_err(says)?;
     if features.first().is_none_or(|w| w & FEATURE_ARM64_SUPPORT == 0) {
-        return Err(
+        return Err(Unusable::Lacks(
             "this Windows' hypervisor platform is the pre-release arm64 one of Windows 11 24H2 builds \
              before 26100.3915: update Windows"
                 .into(),
-        );
+        ));
     }
     Ok(())
 }
@@ -845,12 +838,22 @@ impl Window {
 pub struct DeviceSlots(Arc<Partition>);
 
 impl DeviceSlots {
-    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
-    /// `writable`, never executable.
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest and
+    /// executable: a component's programs, which its member runs through DAX (D270).
     ///
     /// # Safety
     /// `host..host+len` must stay mapped in this process until unmapped here or the VM is
     /// destroyed.
+    pub unsafe fn map_programs(&self, _i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // SAFETY: forwarded caller contract.
+        unsafe { self.0.map(host, gpa, len, MAP_READ | MAP_EXECUTE) }
+    }
+
+    /// Maps `len` bytes of host memory at `host` at `gpa`, read-only to the guest unless
+    /// `writable`, never executable.
+    ///
+    /// # Safety
+    /// As for [`map_programs`](Self::map_programs).
     pub unsafe fn map(&self, _i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let flags = if writable { MAP_READ | MAP_WRITE } else { MAP_READ };
         // SAFETY: forwarded caller contract.
@@ -908,7 +911,7 @@ impl Vm {
     }
 
     fn made(config: VmConfig, assign: bool) -> Result<Vm> {
-        check_host().map_err(Error::Guest)?;
+        check_host().map_err(|e| Error::Guest(e.into()))?;
         if config.el2 {
             return Err(Error::Guest(NO_EL2.into()));
         }
@@ -1174,6 +1177,11 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): nothing to tell. Its guest
+    /// reads the arch timer, which ran on through the pause, and WHP's arm64 partitions offer
+    /// no paravirtual clock with a stopped flag a watchdog reads.
+    pub fn went_on(&self) {}
+
     /// Populates each `(gpa, len)` ahead of the guest, for reading or writing (making the
     /// private copies of snapshot pages). M414 exercised both kinds on arm64; the advice
     /// is the same WHvAdviseGpaRange operation as on x86_64.

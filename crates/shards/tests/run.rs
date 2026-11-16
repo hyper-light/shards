@@ -12,11 +12,9 @@ use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The host's wall clock, in nanoseconds since the Unix epoch.
 fn now_ns() -> u128 {
@@ -69,6 +67,7 @@ fn restore(template: &Path, options: &[&str], command: &[&str]) -> Output {
 }
 
 /// Runs shards with `args`, `stdin` as its input, and a timeout.
+#[track_caller]
 fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
     let mut child = common::command()
         .args(args)
@@ -94,22 +93,17 @@ fn shards_with(args: &[&OsStr], stdin: &[u8]) -> Output {
         err.read_to_string(&mut s).unwrap();
         s
     });
-    // Within TIMEOUT, or past it while its VM process runs (D209): `run --kernel` is it on
+    // While its VM process runs (D209, `common::Heard::running`): `run --kernel` is it on
     // Unix, and starts it on Windows.
-    let start = Instant::now();
-    let mut ran = common::Ran::of(child.id());
+    let mut heard = common::Heard::running(child.id());
     let status = loop {
         if let Some(st) = child.try_wait().unwrap() {
+            heard.answered();
             break st;
         }
-        // Asked each pass, so that each slice of its VM process's is judged as it comes.
-        let running = ran.lately();
-        if start.elapsed() > TIMEOUT && !running {
+        if let Err(refused) = heard.look(true) {
             let _ = child.kill();
-            panic!(
-                "shards did not exit within {TIMEOUT:?}, nor its VM process run for {:?} after",
-                common::DAEMON_QUIET
-            );
+            panic!("shards did not exit: {refused}");
         }
         std::thread::sleep(Duration::from_millis(2));
     };
@@ -509,31 +503,40 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
         .spawn()
         .unwrap();
     // A regression fails the test instead of hanging it: its child, only reaped after
-    // `done`, ended outright once past TIMEOUT its VM process has run nothing for
-    // DAEMON_QUIET (D209).
+    // `done`, ended outright once its wait is refused, its VM process having run nothing over
+    // a whole window past the slowest such run seen (D209, `common::Heard::running`). Judged
+    // while its guest works for itself: until its command says `ready`, and from the last
+    // signal to its end. Not between, where it waits idle for the signals this test paces:
+    // there a guest that runs nothing is not stuck.
     let pid = i32::try_from(child.id()).unwrap();
-    let mut ran = common::Ran::of(child.id());
+    let vm = child.id();
     let (done, watch) = std::sync::mpsc::channel::<()>();
-    std::thread::spawn(move || {
-        let start = Instant::now();
-        loop {
-            // Asked each pass, so that each slice of its VM process's is judged as it comes.
-            let running = ran.lately();
-            match watch.recv_timeout(Duration::from_secs(1)) {
-                Ok(()) => return,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if start.elapsed() < TIMEOUT || running => {}
-                // Past its patience, or the test gone without saying it is done.
-                Err(_) => {
-                    common::kill_now(pid);
-                    return;
-                }
-            }
+    let watchdog = std::thread::spawn(move || {
+        let refused = heed(&watch, common::Heard::running(vm))
+            .and_then(|()| {
+                watch
+                    .recv()
+                    .map_err(|_| "the test ended as it signalled".to_string())
+            })
+            .and_then(|()| heed(&watch, common::Heard::running(vm)))
+            .err();
+        if refused.is_some() {
+            common::kill_now(pid);
         }
+        refused
     });
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut ready = String::new();
     out.read_line(&mut ready).unwrap();
-    assert_eq!(ready, "ready\n");
+    let _ = done.send(());
+    if ready != "ready\n" {
+        drop(done);
+        let status = child.wait().unwrap();
+        panic!(
+            "{ready:?} for its first line, ended {status}; its watch: {:?}",
+            watchdog.join().unwrap()
+        );
+    }
     for (i, &signal) in signals.iter().enumerate() {
         if i > 0 {
             std::thread::sleep(Duration::from_millis(500));
@@ -549,16 +552,38 @@ fn signaled_ignoring(image: &Path, command: &[&str], signals: &[Signal], ignorin
             common::interrupt(&child);
         }
     }
+    let _ = done.send(());
     let mut rest = Vec::new();
     out.read_to_end(&mut rest).unwrap();
     let mut stderr = String::new();
     child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
     let status = child.wait().unwrap().code();
     let _ = done.send(());
+    // Its watch's refusal, which ended it, said where its status is read.
+    if let Some(refused) = watchdog.join().unwrap() {
+        stderr.push_str(&format!("\n--- its watch refused it\n{refused}"));
+    }
     Output {
         status,
         stdout: rest,
         stderr,
+    }
+}
+
+/// Judges `heard`'s guest until the test says on `said` that what it waits for came: refused,
+/// what its wait says of itself; the test gone without saying, that.
+fn heed(said: &std::sync::mpsc::Receiver<()>, mut heard: common::Heard<'_>) -> Result<(), String> {
+    loop {
+        match said.recv_timeout(heard.next_look()) {
+            Ok(()) => {
+                heard.answered();
+                return Ok(());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => heard.look(true)?,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("the test ended without saying its wait's answer came".into());
+            }
+        }
     }
 }
 

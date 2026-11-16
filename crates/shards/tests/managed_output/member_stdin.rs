@@ -4,7 +4,7 @@
 //! harness speaking a stdio protocol answers its adapter. Written for ROOT to run (real-VM
 //! suites are the coordinator's): `cargo test -p shards --test managed_output member_stdin`.
 use super::*;
-use crate::managed_capture::{InputHeard, InputWriter};
+use crate::managed_capture::{InputHeard, InputWriter, Until};
 use shards_abi::run::managed::InputEnd;
 use shards_remote::managed::input::Said;
 
@@ -22,7 +22,8 @@ fn input() -> Vec<u8> {
 }
 
 /// Reads the observer's next record, which must be its channel's end at `wire`.
-fn ended(observer: &Observer, wire: u64, until: Instant) {
+#[track_caller]
+fn ended(observer: &Observer, wire: u64, until: Until<'_>) {
     observer.sender.send(Command::Handler(Ask::Ack(wire))).unwrap();
     match observer.next(until) {
         Event::Record(offset, bytes) => {
@@ -41,14 +42,16 @@ fn a_members_stdin_is_its_owners_stream_exact_paced_resumed_and_ended_as_its_own
     let mut fixture = Fixture::new();
     fixture.stdin = Some("harness:driver");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let until = Instant::now() + WITHIN;
+        // Its observers' and writers' waits judged on its home (D209).
+        let home = fixture.home.to_path_buf();
+        let until = Until::Judged(&home);
         fixture.start_with_options(
             &["managed-capture", "agent"],
             &["managed-capture", "driver", "echo"],
             "",
             None,
             None,
-            until,
+            Bound::Judged,
         );
         let metadata = fixture.metadata.as_ref().unwrap();
         let address = metadata.endpoints[&(2, 0)];
@@ -61,7 +64,7 @@ fn a_members_stdin_is_its_owners_stream_exact_paced_resumed_and_ended_as_its_own
         );
         let input = input();
         let half = input.len() / 2;
-        let observer = fixture.observe(2, Channel::Stdout, None, false, until);
+        let observer = fixture.observe(2, Channel::Stdout, None, false, Bound::Judged);
         let metadata = fixture.metadata.as_ref().unwrap();
         let reading = &fixture.observers[observer];
         let (mut writer, (_, wire)) = beside(
@@ -81,19 +84,19 @@ fn a_members_stdin_is_its_owners_stream_exact_paced_resumed_and_ended_as_its_own
             || reading.exact(declared_label(2), &input, until),
         );
         // The run's own command's output is its own meanwhile.
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         // Its owner's end: every byte in the member's stdin, which then reads its end.
         assert_eq!(
             writer.end(0, until).unwrap(),
             (input.len() as u64, InputEnd::Closed)
         );
         ended(&fixture.observers[observer], wire, until);
-        let errors = fixture.observe(2, Channel::Stderr, None, false, until);
+        let errors = fixture.observe(2, Channel::Stderr, None, false, Bound::Judged);
         let said = format!("driver\0echo-end {}", input.len());
         let (_, wire) = fixture.observers[errors].exact(declared_label(2), said.as_bytes(), until);
         ended(&fixture.observers[errors], wire, until);
     }));
-    let stopped = fixture.shutdown(Instant::now() + WITHIN);
+    let stopped = fixture.shutdown(Bound::Judged);
     if let Err(error) = result {
         let _ = writeln!(std::io::stderr(), "owner cleanup: {stopped:?}");
         std::panic::resume_unwind(error);
@@ -111,7 +114,8 @@ fn a_member_that_ends_ends_its_input_and_its_owner_hears_how() {
     let mut fixture = Fixture::new();
     fixture.stdin = Some("harness:driver");
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let until = Instant::now() + WITHIN;
+        let home = fixture.home.to_path_buf();
+        let until = Until::Judged(&home);
         // The harness writes its bytes and ends, never reading its stdin.
         fixture.start_with_options(
             &["managed-capture", "agent"],
@@ -119,7 +123,7 @@ fn a_member_that_ends_ends_its_input_and_its_owner_hears_how() {
             "",
             None,
             None,
-            until,
+            Bound::Judged,
         );
         fixture.consume(2, "harness", Channel::Stdout);
         fixture.consume(2, "harness", Channel::Stderr);
@@ -146,7 +150,7 @@ fn a_member_that_ends_ends_its_input_and_its_owner_hears_how() {
             }
         );
     }));
-    let stopped = fixture.shutdown(Instant::now() + WITHIN);
+    let stopped = fixture.shutdown(Bound::Judged);
     if let Err(error) = result {
         let _ = writeln!(std::io::stderr(), "owner cleanup: {stopped:?}");
         std::panic::resume_unwind(error);

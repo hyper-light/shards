@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use codec::{DecodeError, Reader, Writer};
+use shards_abi::run::members::KEY_LEN;
 
 use crate::hv::Touch;
 use crate::memory::GuestMemory;
@@ -101,20 +102,37 @@ const MAGIC: [u8; 8] = *b"SHRDSNAP";
 /// 28: and its PCI bus's slots for devices plugged in as it runs, 0 for none (D214): a
 ///     template's machine has them empty, its restored runs' to plug into.
 /// 29: and its immutable native GPU selection, rejoined before a restored guest runs.
-const VERSION: u32 = 29;
-const VERSION_WITH_GPU_SELECTION: u32 = 29;
-/// Layout accepted by the previous pinned reader. Adding native selectors does
-/// not change the mapping of an existing format28 DAX window.
-const VERSION_WITH_CURRENT_WINDOWS: u32 = 28;
-/// The oldest format this build reads too where the machine has no DAX windows: for such
-/// a machine each since says what this one says, but for 27's runs of data, which a state
-/// before it holds none of (its restore maps its RAM from the file whole), so that a
-/// microVM saved by shards 0.6.0 (24) restores (D176).
-const VERSION_WITHOUT_WINDOWS: u32 = 24;
-/// The first format whose state says which runs of its RAM hold data.
-const VERSION_WITH_DATA: u32 = 27;
-/// The first format whose state says how many PCI slots its machine has (D214).
-const VERSION_WITH_SLOTS: u32 = 28;
+/// 30: and, after its head, who saved it: the shards version ([`SAVED_BY`]) and the
+///     contract its guest's init announced ([`shards_abi::IDENTITY`] of that build), which a
+///     resume compares with this build's before its guest runs ([`resumable`], D176). A
+///     state of any format before it names neither, and is refused, never read.
+/// 31: its console is virtio-console, the first of its virtio devices (hvc0), and it has
+///     no 16550 UART: a guest saved in 30 has its 8250 driver bound to a COM1 (x86-64) or
+///     UART (arm64) this machine no longer has, and is refused ([`ResumeRefused::OlderMachine`]).
+/// 32: and a pvpanic device among its MMIO devices (devices/pvpanic.rs), its state whether
+///     its guest's kernel said it panicked.
+/// 33: its saver records whether its guest's init announced a contract at all, and the
+///     contract only where it did: a guest that runs no shards-init (a test guest, a
+///     `--init` of the user's own) announces none, which 30-32 wrote as contract 0 and a
+///     resume refused as another init's (D176).
+/// 34: an x86-64 machine has no i8042 among its port devices and resets through its FADT's
+///     reset register (D268): a guest saved in 33 has a FADT without one and its machine an
+///     i8042 this machine no longer has, and is refused ([`ResumeRefused::OlderMachine`]).
+/// 35: and its components' window's length in MiB, 0 for none (D270): guest addresses past
+///     its DAX windows that a guest saved in 34 had no window at, and is refused
+///     ([`ResumeRefused::OlderMachine`]).
+/// 36: and the components plugged into it as it ran (D270 slice 5), each its function's place
+///     on its bus, its range of its components' window and its key, which a restore plugs
+///     back from its image before its devices' state is put back.
+const VERSION: u32 = 36;
+/// The first format whose state says who saved it ([`decode_saved_by`]).
+const VERSION_WITH_SAVER: u32 = 30;
+/// The version of shards this build is (crates/shards/Cargo.toml, by build.rs): what a
+/// state it writes says it was saved by.
+pub const SAVED_BY: &str = env!("SHARDS_VERSION");
+/// The longest version a state's saver record may name: SemVer 2.0.0 sets no bound, so
+/// this is the bound a generation's name has, which no version shards gives itself nears.
+const MAX_SAVED_BY: usize = MAX_NAME;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
@@ -140,9 +158,66 @@ const HEAD: usize = MAGIC.len() + 4 + 4 + std::env::consts::ARCH.len() + 4 + MAX
 /// of its RAM, its vCPUs' registers, its devices' queues and a share's tables), each a
 /// small part of it (D176's decoders bound each), and the bytes of the files its guest
 /// holds open on a share that no path reaches, which alone nothing of the machine bounds:
-/// a save of more is refused, as a save past 64 MiB was.
-pub(crate) fn most_state(memory_mib: u64) -> u64 {
-    memory_mib.saturating_mul(1 << 20)
+/// a save of more is refused, as a save past 64 MiB was. None where that RAM is more bytes
+/// than a u64 counts: no machine's.
+pub(crate) fn most_state(memory_mib: u64) -> Option<u64> {
+    memory_mib.checked_mul(1 << 20)
+}
+
+/// Why a state file is refused before more than its head is read: each of its bounds, the
+/// machine its head claims and the host that reads it (migrate-04). A state is read whole,
+/// so its length is what its read allocates: none of these lets a head that claims a
+/// machine of any size, or a file of holes as long as it likes, have more allocated than
+/// this host has to give.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateRefused {
+    /// Its head claims a machine whose RAM, `memory_mib` MiB, is more bytes than a u64
+    /// counts.
+    PastAnyMachine { memory_mib: u64 },
+    /// Longer than a state of the machine its head claims holds ([`most_state`]).
+    PastItsMachine { len: u64, most: u64 },
+    /// Longer than this host can hold now ([`platform::holdable_known`]): what it has
+    /// available, else all its memory. The head's claim is the file's own, so this is the
+    /// bound that is not.
+    PastHost { len: u64, holdable: u64 },
+    /// The host says neither what memory it has available nor what it has.
+    HostMemoryUnknown,
+}
+
+impl std::fmt::Display for StateRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StateRefused::PastAnyMachine { memory_mib } => {
+                write!(
+                    f,
+                    "a state of a machine of {memory_mib} MiB, more than any machine has"
+                )
+            }
+            StateRefused::PastItsMachine { len, most } => write!(
+                f,
+                "a state of {len} bytes, more than its machine's {most} bytes of memory keep"
+            ),
+            StateRefused::PastHost { len, holdable } => write!(
+                f,
+                "a state of {len} bytes, more than this host's {holdable} bytes of memory hold now"
+            ),
+            StateRefused::HostMemoryUnknown => {
+                write!(
+                    f,
+                    "this host says neither its memory nor what of it it has available"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for StateRefused {}
+
+impl StateRefused {
+    /// The refusal `e` carries, where [`read_state`]'s bound refused it.
+    pub fn of(e: &io::Error) -> Option<&StateRefused> {
+        e.get_ref().and_then(|e| e.downcast_ref())
+    }
 }
 /// A generation's name as [`fresh_name`] makes it, at its longest: `g-`, then the time's
 /// nanoseconds, this process's ID and a count, in hex, each of at most its type's digits.
@@ -173,9 +248,6 @@ fn most_data_runs(memory_mib: u64) -> Option<usize> {
     let ram = memory_mib.checked_mul(1 << 20)?;
     usize::try_from(ram.div_ceil(crate::memory::DATA_BLOCK as u64)).ok()
 }
-/// How often a reader looks again at `current` for a generation a newer write removed
-/// between its look and its open.
-const READ_ATTEMPTS: usize = 8;
 
 /// What restore needs to rebuild the machine the snapshot came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,6 +305,11 @@ pub struct MachineConfig {
     /// Its PCI bus's slots for devices plugged in as it runs (D214), 0 for none: empty in
     /// every snapshot, as a machine with a device plugged in saves none.
     pub pci_slots: u8,
+    /// The length of its components' window in MiB (D270), 0 for none: guest addresses past
+    /// its DAX windows where a read-only pmem function plugged into one of its slots maps a
+    /// component's image, as its guest's addresses fitted it; empty in every snapshot, as
+    /// its slots are.
+    pub component_window_mib: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +318,9 @@ pub struct Snapshot {
     /// The memory a virtio-mem device had plugged, `(gpa, len)` run by run in the order of
     /// their addresses, whose bytes follow the RAM's in the memory file (D176).
     pub plugged: Vec<(u64, u64)>,
+    /// The components plugged into it as it ran (D270 slice 5), in the order of their places:
+    /// what a restore plugs back from each one's image, which its restorer is given by key.
+    pub components: Vec<crate::devices::virtio::pmem::Kept>,
     /// The runs of the memory file's RAM that hold data, `(offset, len)` in order, each of
     /// whole [`DATA_BLOCK`](crate::memory::DATA_BLOCK)s but at a region's end
     /// ([`GuestMemory::save`]): what a restore maps from the file, the rest zeros (D151).
@@ -251,6 +331,10 @@ pub struct Snapshot {
     pub arch: Vec<u8>,
     /// The device bus's state.
     pub devices: Vec<u8>,
+    /// The contract its guest's init announced (the control page's [`shards_abi::control::ABI`]),
+    /// none where it had announced none: what its state records beside the shards that saved
+    /// it, for a resume to compare before its guest runs ([`resumable`], D176).
+    pub init: Option<u64>,
 }
 
 /// A generation, pinned: its state decoded and its memory file held open. Its files are
@@ -495,16 +579,6 @@ fn path_from(bytes: &[u8]) -> codec::Result<PathBuf> {
 }
 
 fn encode(s: &Snapshot, generation: &str, identities: &[Identity]) -> Result<Vec<u8>, String> {
-    encode_as(s, generation, identities, VERSION)
-}
-
-/// [`encode`] in format `version`, this one's or one before it that this build reads.
-fn encode_as(
-    s: &Snapshot,
-    generation: &str,
-    identities: &[Identity],
-    version: u32,
-) -> Result<Vec<u8>, String> {
     crate::vm::gpu_selection::check_selection(&s.config.gpu_devices).map_err(|error| error.to_string())?;
     if s.config.gpu.is_none() && !s.config.gpu_devices.is_empty() {
         return Err("native GPU selection requires the snapshot's GPU device".into());
@@ -528,11 +602,16 @@ fn encode_as(
         .collect::<Result<Vec<_>, String>>()?;
     let mut w = Writer::default();
     MAGIC.iter().for_each(|&b| w.u8(b));
-    w.u32(version);
+    w.u32(VERSION);
     w.bytes(std::env::consts::ARCH.as_bytes());
     w.bytes(generation.as_bytes());
     w.u32(s.config.vcpus);
     w.u64(s.config.memory_mib);
+    w.bytes(SAVED_BY.as_bytes());
+    w.bool(s.init.is_some());
+    if let Some(init) = s.init {
+        w.u64(init);
+    }
     w.seq(&disks, |w, (path, read_only)| {
         w.bytes(path);
         w.bool(*read_only);
@@ -549,35 +628,31 @@ fn encode_as(
     w.bool(s.config.reporting);
     w.bool(s.config.gpu.is_some());
     w.u64(s.config.gpu.unwrap_or(0));
-    if version >= VERSION_WITH_GPU_SELECTION {
-        w.seq(&s.config.gpu_devices, |w, device| {
-            use crate::vm::gpu_selection::PhysicalGpu;
-            match device {
-                PhysicalGpu::Pci {
-                    domain,
-                    bus,
-                    device,
-                    function,
-                } => {
-                    w.u8(0);
-                    w.u32(*domain);
-                    w.u8(*bus);
-                    w.u8(*device);
-                    w.u8(*function);
-                }
-                PhysicalGpu::MetalRegistry(id) => {
-                    w.u8(1);
-                    w.u64(*id);
-                }
-                PhysicalGpu::Luid(id) => {
-                    w.u8(2);
-                    w.u64(*id);
-                }
+    w.seq(&s.config.gpu_devices, |w, device| {
+        use crate::vm::gpu_selection::PhysicalGpu;
+        match device {
+            PhysicalGpu::Pci {
+                domain,
+                bus,
+                device,
+                function,
+            } => {
+                w.u8(0);
+                w.u32(*domain);
+                w.u8(*bus);
+                w.u8(*device);
+                w.u8(*function);
             }
-        });
-    } else if !s.config.gpu_devices.is_empty() {
-        return Err("an older snapshot format cannot retain exact GPU selection".into());
-    }
+            PhysicalGpu::MetalRegistry(id) => {
+                w.u8(1);
+                w.u64(*id);
+            }
+            PhysicalGpu::Luid(id) => {
+                w.u8(2);
+                w.u64(*id);
+            }
+        }
+    });
     w.u64(s.config.swap_mib);
     w.u64(s.config.share_window_mib);
     w.u64(s.config.layer_mib);
@@ -585,16 +660,19 @@ fn encode_as(
         w.u64(*gpa);
         w.u64(*len);
     });
-    if version >= VERSION_WITH_SLOTS {
-        w.u8(s.config.pci_slots);
-    }
-    if version >= VERSION_WITH_DATA {
-        w.bool(s.data.is_some());
-        w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
-            w.u64(*at);
-            w.u64(*len);
-        });
-    }
+    w.u8(s.config.pci_slots);
+    w.u64(s.config.component_window_mib);
+    w.seq(&s.components, |w, k| {
+        w.u8(k.devfn);
+        w.u64(k.gpa);
+        w.u64(k.len);
+        w.bytes(k.key.as_bytes());
+    });
+    w.bool(s.data.is_some());
+    w.seq(s.data.as_deref().unwrap_or_default(), |w, (at, len)| {
+        w.u64(*at);
+        w.u64(*len);
+    });
     w.bytes(&s.arch);
     w.bytes(&s.devices);
     Ok(w.into_bytes())
@@ -617,7 +695,9 @@ pub fn decodes(bytes: &[u8]) -> bool {
 }
 
 /// A state's head, as far as its RAM's size: its format, its generation's name, its vCPUs
-/// and its RAM in MiB.
+/// and its RAM in MiB. Laid out so in every format a shards since 0.6.0 wrote: what bounds
+/// a state's read ([`state_most`]) and tells [`resumable`] its format. Its format is its
+/// caller's to accept: a restore's [`decode`] this build's alone.
 fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     let mut magic = [0u8; 8];
     for b in &mut magic {
@@ -627,11 +707,6 @@ fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
         return Err(DecodeError("not a shards snapshot".into()));
     }
     let version = r.u32()?;
-    if !(VERSION_WITHOUT_WINDOWS..=VERSION).contains(&version) {
-        return Err(DecodeError(format!(
-            "snapshot format {version}; this shards reads {VERSION}"
-        )));
-    }
     // Any name the input holds, as it is only compared.
     let arch = r.bytes(usize::MAX)?;
     if arch != std::env::consts::ARCH.as_bytes() {
@@ -647,23 +722,73 @@ fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     Ok((version, generation, r.u32()?, r.u64()?))
 }
 
-/// The most the state whose first [`HEAD`] bytes are `head` may hold ([`most_state`]):
-/// what [`platform::read_beneath_by`] reads a state by.
-fn state_most(head: &[u8]) -> io::Result<u64> {
-    decode_head(&mut Reader::new(head))
-        .map(|(_, _, _, memory_mib)| most_state(memory_mib))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+/// The most the state of `len` bytes whose first [`HEAD`] bytes are `head` may hold, on a
+/// host that can hold `holdable` bytes now: what [`platform::read_beneath_by`] reads a
+/// state by. Its length is refused past the machine its head claims ([`most_state`]) and
+/// past the host, whose bound is the one the file does not say.
+fn state_most(head: &[u8], len: u64, holdable: Option<u64>) -> io::Result<u64> {
+    let refused = |r: StateRefused| io::Error::new(io::ErrorKind::InvalidData, r);
+    let (_, _, _, memory_mib) = decode_head(&mut Reader::new(head))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let most = most_state(memory_mib).ok_or_else(|| refused(StateRefused::PastAnyMachine { memory_mib }))?;
+    if len > most {
+        return Err(refused(StateRefused::PastItsMachine { len, most }));
+    }
+    let holdable = holdable.ok_or_else(|| refused(StateRefused::HostMemoryUnknown))?;
+    if len > holdable {
+        return Err(refused(StateRefused::PastHost { len, holdable }));
+    }
+    Ok(len)
 }
 
 /// The state file of generation `name` in `dir`, none where it is gone: refused past its
-/// machine's RAM before more than its head is read.
+/// machine's RAM and past what this host can hold now before more than its head is read.
 fn read_state(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
-    platform::read_beneath_by(dir, &[name, STATE], HEAD, state_most)
+    read_state_within(dir, name, platform::holdable_known())
 }
 
+/// [`read_state`] on a host that can hold `holdable` bytes now.
+fn read_state_within(dir: &Path, name: &str, holdable: Option<u64>) -> io::Result<Option<Vec<u8>>> {
+    platform::read_beneath_by(dir, &[name, STATE], HEAD, |head, len| {
+        state_most(head, len, holdable)
+    })
+}
+
+/// A state of this build's format, as a restore reads it: one of any other is refused
+/// ([`resumable`] says why, typed, before a resume reads it).
 fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let mut r = Reader::new(bytes);
     let (version, generation, vcpus, memory_mib) = decode_head(&mut r)?;
+    if version != VERSION {
+        return Err(DecodeError(format!(
+            "snapshot format {version}; this shards reads {VERSION}"
+        )));
+    }
+    decode_saved_by(&mut r)?;
+    let init = decode_init(&mut r)?;
+    let mut decoded = decode_body(r, generation, vcpus, memory_mib)?;
+    decoded.snapshot.init = init;
+    Ok(decoded)
+}
+
+/// Which shards saved a state of format 30 or later, after its head.
+fn decode_saved_by(r: &mut Reader<'_>) -> codec::Result<String> {
+    let by = std::str::from_utf8(r.bytes(MAX_SAVED_BY)?)
+        .map_err(|_| DecodeError("a saver's version that is not UTF-8".into()))?;
+    Ok(by.to_string())
+}
+
+/// The contract a state of this build's format says its guest's init announced, after its
+/// saver's version: none where its guest runs no shards-init.
+fn decode_init(r: &mut Reader<'_>) -> codec::Result<Option<u64>> {
+    match r.bool()? {
+        true => Ok(Some(r.u64()?)),
+        false => Ok(None),
+    }
+}
+
+/// A state's body, after its head and its saver.
+fn decode_body(mut r: Reader<'_>, generation: String, vcpus: u32, memory_mib: u64) -> codec::Result<Decoded> {
     let path = platform::PATH_MOST;
     let disks = r.seq(VIRTIO_SLOTS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
     let pmem = r.seq(VIRTIO_SLOTS.saturating_sub(disks.len()), 4, |r| {
@@ -700,7 +825,7 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let reporting = r.bool()?;
     let has_gpu = r.bool()?;
     let gpu_window = r.u64()?;
-    let gpu_devices = if version >= VERSION_WITH_GPU_SELECTION {
+    let gpu_devices = {
         use crate::vm::gpu_selection::{self, PhysicalGpu};
         let devices = r.seq(gpu_selection::MAX_PHYSICAL_GPUS, 8, |r| {
             Ok(match r.u8()? {
@@ -720,29 +845,30 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
             return Err(DecodeError("GPU selectors without a GPU device".into()));
         }
         devices
-    } else {
-        Vec::new()
     };
     let swap_mib = r.u64()?;
     let share_window_mib = r.u64()?;
-    // Whose windows were laid out otherwise (D189).
-    if version < VERSION_WITH_CURRENT_WINDOWS && share_window_mib > 0 && (shares > 0 || join_share) {
-        return Err(DecodeError(format!(
-            "snapshot format {version} of a machine with DAX windows; this shards reads {VERSION}"
-        )));
-    }
     let layer_mib = r.u64()?;
     let past = |what: &str| DecodeError(format!("{what} past what a guest addresses"));
     let plugged_most = most_plugged_runs(hotplug_mib).ok_or_else(|| past("memory to plug"))?;
     let plugged = r.seq(plugged_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
-    let pci_slots = if version >= VERSION_WITH_SLOTS { r.u8()? } else { 0 };
-    let data = if version >= VERSION_WITH_DATA {
+    let pci_slots = r.u8()?;
+    let component_window_mib = r.u64()?;
+    // One for each slot at most, each its place, range, and key with its length.
+    let components = r.seq(usize::from(pci_slots), 1 + 8 + 8 + 4 + KEY_LEN, |r| {
+        let (devfn, gpa, len) = (r.u8()?, r.u64()?, r.u64()?);
+        let key = std::str::from_utf8(r.bytes(KEY_LEN)?)
+            .ok()
+            .filter(|key| key.len() == KEY_LEN)
+            .ok_or_else(|| DecodeError(format!("a component's key that is not {KEY_LEN} bytes of UTF-8")))?
+            .to_owned();
+        Ok(crate::devices::virtio::pmem::Kept { devfn, gpa, len, key })
+    })?;
+    let data = {
         let said = r.bool()?;
         let data_most = most_data_runs(memory_mib).ok_or_else(|| past("guest memory"))?;
         let runs = r.seq(data_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
         said.then_some(runs)
-    } else {
-        None
     };
     let arch_state = r.bytes(usize::MAX)?.to_vec();
     let devices = r.bytes(usize::MAX)?.to_vec();
@@ -768,11 +894,14 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
                 share_window_mib,
                 layer_mib,
                 pci_slots,
+                component_window_mib,
             },
             plugged,
+            components,
             data,
             arch: arch_state,
             devices,
+            init: None,
         },
         generation,
         identities,
@@ -1165,6 +1294,129 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
     platform::sync_dir(&generation).map_err(|e| at(&e))
 }
 
+/// Why a user's snapshot (a saved run, D176, or a directory `shards restore` was given)
+/// does not resume in this build (R04). Its guest's init is frozen in its memory as it was
+/// saved, and speaks the contract of the shards that saved it; shards-init and the shards
+/// that drives it ship as one binary (D36), so an init of another contract is refused
+/// before its guest runs, never spoken to. Its volumes and image are not the snapshot's,
+/// and stay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeRefused {
+    /// Saved by shards `saved_by`, whose guest's shards-init announced `init_abi`, where this
+    /// build's speaks `ours`. A guest that runs no shards-init has no init contract to break,
+    /// and is not refused for it.
+    OlderInit {
+        saved_by: String,
+        init_abi: u64,
+        ours: u64,
+    },
+    /// Saved in format `format`, before 30: by a shards that recorded no saver, whose
+    /// init's contract cannot be read before its guest runs; and none of those builds' is
+    /// this one's, whose format records it.
+    Unrecorded { format: u32 },
+    /// Saved by shards `saved_by` in format `format`, from 30 on and before this build's:
+    /// its guest's drivers are bound to a machine this build no longer makes (31: its
+    /// console a 16550 UART, now virtio-console; 32: no pvpanic device; 34: no i8042 on
+    /// x86-64, whose FADT names a reset register), or (32) its saver's record says its
+    /// init's contract as this build no longer reads it, so its guest cannot run on. Only
+    /// its saver's version is read of it.
+    OlderMachine { format: u32, saved_by: String },
+    /// Saved in format `format`, past this build's: by a newer shards.
+    Newer { format: u32 },
+    /// It has no state to read, or its state could not be read: why.
+    Unreadable(String),
+}
+
+impl std::fmt::Display for ResumeRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const AGAIN: &str = "start it again from its image; its volumes are kept, its memory's state is not";
+        match self {
+            ResumeRefused::OlderInit {
+                saved_by,
+                init_abi,
+                ours,
+            } => write!(
+                f,
+                "this microVM was saved by shards {saved_by}, whose shards-init (contract \
+                 {init_abi:016x}) cannot continue in this shards (contract {ours:016x}): {AGAIN}"
+            ),
+            ResumeRefused::Unrecorded { format } => write!(
+                f,
+                "this microVM was saved by {} (snapshot format {format}), whose shards-init \
+                 cannot continue in this shards: {AGAIN}",
+                released_in(*format)
+            ),
+            ResumeRefused::OlderMachine { format, saved_by } => write!(
+                f,
+                "this microVM was saved by shards {saved_by} (snapshot format {format}), whose \
+                 machine this shards no longer makes: {AGAIN}"
+            ),
+            ResumeRefused::Newer { format } => write!(
+                f,
+                "this microVM was saved by a newer shards (snapshot format {format}; this \
+                 shards reads {VERSION}): resume it with that shards"
+            ),
+            ResumeRefused::Unreadable(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for ResumeRefused {}
+
+/// The shards a state of `format` before 30 was saved by, as its releases' tags name them
+/// (`git show v0.6.0:crates/vmm/src/snapshot/mod.rs`: 24; v0.7.0's: 28); a format between
+/// them or after 0.7.0's was only a build of main's.
+fn released_in(format: u32) -> String {
+    match format {
+        24 => "shards 0.6.0".into(),
+        28 => "shards 0.7.0".into(),
+        _ => "an earlier shards".into(),
+    }
+}
+
+/// Whether the snapshot in `dir`, a user's, resumes in this build: its state's head and
+/// saver read, none of the rest, and nothing written. Asked by every resume before
+/// anything restores it or its guest runs (the daemon's, a move's, `shards restore`'s).
+pub fn resumable(dir: &Path) -> Result<(), ResumeRefused> {
+    let generation = generation(dir).map_err(ResumeRefused::Unreadable)?;
+    let name = generation
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| ResumeRefused::Unreadable(format!("{}: a generation with no name", dir.display())))?
+        .to_string();
+    let state = generation.join(STATE);
+    let at = |e: &dyn std::fmt::Display| ResumeRefused::Unreadable(format!("{}: {e}", state.display()));
+    let bytes = read_state(dir, &name)
+        .map_err(|e| at(&e))?
+        .ok_or_else(|| at(&"gone"))?;
+    saver_refused(&bytes).map_err(|e| e.unwrap_or_else(|e| at(&e)))
+}
+
+/// [`resumable`] of a state's bytes: a refusal, or why its head or saver do not decode.
+fn saver_refused(bytes: &[u8]) -> Result<(), Result<ResumeRefused, DecodeError>> {
+    let mut r = Reader::new(bytes);
+    let (format, ..) = decode_head(&mut r).map_err(Err)?;
+    if format < VERSION_WITH_SAVER {
+        return Err(Ok(ResumeRefused::Unrecorded { format }));
+    }
+    if format > VERSION {
+        return Err(Ok(ResumeRefused::Newer { format }));
+    }
+    let saved_by = decode_saved_by(&mut r).map_err(Err)?;
+    if format < VERSION {
+        return Err(Ok(ResumeRefused::OlderMachine { format, saved_by }));
+    }
+    let init = decode_init(&mut r).map_err(Err)?;
+    if let Some(init_abi) = init.filter(|&abi| abi != shards_abi::IDENTITY) {
+        return Err(Ok(ResumeRefused::OlderInit {
+            saved_by,
+            init_abi,
+            ours: shards_abi::IDENTITY,
+        }));
+    }
+    Ok(())
+}
+
 /// [`fill`] for the last of a live move (D176 part 7): none of its memory, whose pages
 /// written since the move's last round go in the move's stream as its last round, which
 /// the other machine lays over what the rounds sent and puts in this file's place; the
@@ -1204,7 +1456,11 @@ pub fn layout(dir: &Path) -> Result<(u64, Vec<(u64, u64)>), String> {
         .ok_or_else(|| at(&"gone"))?;
     let decoded = decode(&bytes).map_err(|e| at(&e))?;
     Ok((
-        decoded.snapshot.config.memory_mib.saturating_mul(1 << 20),
+        most_state(decoded.snapshot.config.memory_mib).ok_or_else(|| {
+            at(&StateRefused::PastAnyMachine {
+                memory_mib: decoded.snapshot.config.memory_mib,
+            })
+        })?,
         decoded.snapshot.plugged,
     ))
 }
@@ -1218,15 +1474,19 @@ fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
             Identity::of(path).map_err(|e| format!("{}: {e}", path.display()))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let state = encode(snap, name, &identities)?;
-    // No more than a restore reads (D176): a share's tables, with the bytes of the files its
-    // guest holds that no path reaches, are what grows it.
-    let most = most_state(snap.config.memory_mib);
+    bounded(encode(snap, name, &identities)?, snap.config.memory_mib)
+}
+
+/// `state`, of a machine of `memory_mib`, where it is no more than a restore reads (D176):
+/// a share's tables, with the bytes of the files its guest holds that no path reaches, are
+/// what grows it.
+fn bounded(state: Vec<u8>, memory_mib: u64) -> Result<Vec<u8>, String> {
+    let most =
+        most_state(memory_mib).ok_or_else(|| StateRefused::PastAnyMachine { memory_mib }.to_string())?;
     if state.len() as u64 > most {
         return Err(format!(
-            "the machine's state is {} bytes, more than a snapshot of its {} MiB of memory keeps ({most})",
+            "the machine's state is {} bytes, more than a snapshot of its {memory_mib} MiB of memory keeps ({most})",
             state.len(),
-            snap.config.memory_mib
         ));
     }
     Ok(state)
@@ -1450,19 +1710,42 @@ pub fn backing_named(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
 /// Reads the generation `dir` points at, pinned.
 pub fn read(dir: &Path) -> Result<Pinned, String> {
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", dir.display());
-    let mut gone = String::new();
-    for _ in 0..READ_ATTEMPTS {
-        let name = current(dir).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => at(&"no snapshot here"),
-            _ => at(&format!("{CURRENT}: {e}")),
-        })?;
-        match open(dir, &name) {
+    pointed_open(
+        || {
+            current(dir).map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => at(&"no snapshot here"),
+                _ => at(&format!("{CURRENT}: {e}")),
+            })
+        },
+        |name| open(dir, name),
+    )
+    .map_err(|gone| at(&gone))
+}
+
+/// Opens the generation `current` names with `open`, looking at `current` again as long as
+/// each generation it found gone was replaced: a newer write pointed at another between the
+/// look and the open, then removed it. No count (migrate-10): each look again follows a
+/// writer's whole publication, its generation named anew (`fresh_name`: its time, process and
+/// count), and the reader opens the first that stays put for one look's length. A pointer that
+/// still names the generation found gone is no replacement, and is refused as that.
+fn pointed_open<T>(
+    mut current: impl FnMut() -> Result<String, String>,
+    mut open: impl FnMut(&str) -> Result<T, Open>,
+) -> Result<T, String> {
+    let mut name = current()?;
+    loop {
+        match open(&name) {
             Ok(pinned) => return Ok(pinned),
-            Err(Open::Gone(e)) => gone = e,
             Err(Open::Bad(e)) => return Err(e),
+            Err(Open::Gone(e)) => {
+                let now = current()?;
+                if now == name {
+                    return Err(format!("its pointer names generation {name}, which is gone: {e}"));
+                }
+                name = now;
+            }
         }
     }
-    Err(at(&format!("its generations kept being replaced: {gone}")))
 }
 
 fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
@@ -1721,11 +2004,14 @@ mod tests {
                 share_window_mib: 0,
                 layer_mib: 0,
                 pci_slots: 0,
+                component_window_mib: 0,
             },
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: vec![marker, 2, 3],
             devices: vec![9; 100],
+            init: None,
         }
     }
 
@@ -1759,10 +2045,9 @@ mod tests {
         assert_eq!(decoded.snapshot.config.hotplug_mib, 2048);
     }
 
-    /// Physical selectors are immutable snapshot state; old formats cannot
-    /// silently serialize a selected guest as the legacy all-device renderer.
+    /// Physical selectors are immutable snapshot state.
     #[test]
-    fn physical_gpu_selection_survives_snapshot_and_refuses_old_encoding() {
+    fn physical_gpu_selection_survives_snapshot() {
         use crate::vm::gpu_selection::PhysicalGpu;
         let ids = vec![Identity::default(); 3];
         let mut snap = sample(&nowhere(), 1);
@@ -1781,19 +2066,9 @@ mod tests {
             decode(&bytes).unwrap().snapshot.config.gpu_devices,
             snap.config.gpu_devices
         );
-        assert!(encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).is_err());
         for cut in 0..bytes.len() {
             assert!(decode(&bytes[..cut]).is_err());
         }
-        snap.config.gpu_devices.clear();
-        snap.config.share_window_mib = 1;
-        let old = encode_as(&snap, "g-1", &ids, VERSION_WITH_CURRENT_WINDOWS).unwrap();
-        let restored = decode(&old).unwrap();
-        assert!(restored.snapshot.config.gpu_devices.is_empty());
-        assert_eq!(
-            restored.snapshot.config.share_window_mib,
-            snap.config.share_window_mib
-        );
     }
 
     #[test]
@@ -1826,39 +2101,99 @@ mod tests {
         assert!(decode(&short).unwrap_err().0.contains("2 identities for 3"));
     }
 
-    /// A state of the formats before this one, back to shards 0.6.0's, reads as it was
-    /// written where its machine has no DAX windows; one with windows, laid out otherwise
-    /// then, is refused, as is any older format (D189, D176).
+    /// A resume reads a state's head and saver alone, before its guest runs: one saved by a
+    /// build whose init announced this build's contract resumes, and so does one whose guest
+    /// runs no shards-init and announced none; one whose init announced another is refused
+    /// naming the shards that saved it; one of a format before 30, which records no saver
+    /// (shards 0.7.0's 28 among them), or past this build's, is refused by its format, of
+    /// 30 to 32 by its machine, its saver's version alone read. Red before the saver's
+    /// record, where only the guest's own first message after its restore found its init
+    /// another's; and red with format 32's record (none written as contract 0), where every
+    /// save of a guest of the user's own init was refused as another init's.
     #[test]
-    fn a_state_of_the_formats_before_reads_where_its_machine_has_no_dax_windows() {
+    fn a_resume_refuses_a_saved_init_of_another_contract_naming_its_saver() {
         let ids = vec![Identity::default(); 3];
-        let as_of = |snap: &Snapshot, version: u32| encode_as(snap, "g-1", &ids, version).unwrap();
-        for version in VERSION_WITHOUT_WINDOWS..VERSION {
-            let snap = sample(&nowhere(), 1);
-            assert_eq!(
-                decode(&as_of(&snap, version)).unwrap().snapshot,
-                snap,
-                "{version}"
-            );
-        }
-        let as_before = |snap: &Snapshot| as_of(snap, VERSION_WITHOUT_WINDOWS);
-        let mut snap = sample(&nowhere(), 1);
-        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
-        // A length for windows, but no share to give one: none.
-        snap.config.shares = 0;
-        snap.config.join_share = false;
-        snap.config.share_window_mib = 64;
-        assert_eq!(decode(&as_before(&snap)).unwrap().snapshot, snap);
-        snap.config.join_share = true;
-        let e = decode(&as_before(&snap)).unwrap_err();
-        assert!(e.0.contains("with DAX windows"), "{e:?}");
+        let as_saved = |init: Option<u64>| {
+            let snap = Snapshot {
+                init,
+                ..sample(&nowhere(), 1)
+            };
+            encode(&snap, "g-1", &ids).unwrap()
+        };
+        let ours = as_saved(Some(shards_abi::IDENTITY));
+        assert_eq!(saver_refused(&ours), Ok(()));
+        assert_eq!(decode(&ours).unwrap().snapshot.init, Some(shards_abi::IDENTITY));
+        let older = shards_abi::IDENTITY ^ 1;
+        let refused = |bytes: &[u8]| saver_refused(bytes).unwrap_err().unwrap();
+        let other = refused(&as_saved(Some(older)));
         assert_eq!(
-            decode(&encode(&snap, "g-1", &ids).unwrap()).unwrap().snapshot,
-            snap
+            other,
+            ResumeRefused::OlderInit {
+                saved_by: SAVED_BY.to_string(),
+                init_abi: older,
+                ours: shards_abi::IDENTITY,
+            }
         );
-        let mut older = as_before(&sample(&nowhere(), 1));
-        older[8..12].copy_from_slice(&(VERSION_WITHOUT_WINDOWS - 1).to_le_bytes());
-        assert!(decode(&older).unwrap_err().0.contains("this shards reads"));
+        let said = other.to_string();
+        assert!(said.contains(&format!("saved by shards {SAVED_BY}")), "{said}");
+        assert!(
+            said.contains("start it again from its image; its volumes are kept"),
+            "{said}"
+        );
+        let no_init = as_saved(None);
+        assert_eq!(saver_refused(&no_init), Ok(()));
+        assert_eq!(decode(&no_init).unwrap().snapshot.init, None);
+        // The record says which: none its flag alone, a contract its flag and its 8 bytes.
+        assert_eq!(ours.len(), no_init.len() + 8);
+        let with_format = |format: u32| {
+            let mut bytes = ours.clone();
+            bytes[8..12].copy_from_slice(&format.to_le_bytes());
+            bytes
+        };
+        let machine = refused(&with_format(30));
+        assert_eq!(
+            machine,
+            ResumeRefused::OlderMachine {
+                format: 30,
+                saved_by: SAVED_BY.to_string()
+            }
+        );
+        assert!(
+            machine
+                .to_string()
+                .contains("whose machine this shards no longer makes"),
+            "{machine}"
+        );
+        // 33's x86-64 machine reset through an i8042 that 34's has not (D268).
+        assert_eq!(
+            refused(&with_format(33)),
+            ResumeRefused::OlderMachine {
+                format: 33,
+                saved_by: SAVED_BY.to_string()
+            }
+        );
+        let released = refused(&with_format(28));
+        assert_eq!(released, ResumeRefused::Unrecorded { format: 28 });
+        assert!(
+            released.to_string().contains("saved by shards 0.7.0"),
+            "{released}"
+        );
+        assert_eq!(
+            refused(&with_format(VERSION + 1)),
+            ResumeRefused::Newer { format: VERSION + 1 }
+        );
+        // A restore reads none but this build's format.
+        let e = decode(&with_format(VERSION - 1)).unwrap_err();
+        assert!(e.0.contains(&format!("snapshot format {};", VERSION - 1)), "{e}");
+        // Cut within its saver's version, after a head of the generation "g-1".
+        let head = MAGIC.len() + 4 + 4 + std::env::consts::ARCH.len() + 4 + 3 + 4 + 8;
+        let mut cut_short = ours.clone();
+        cut_short.truncate(head + 4 + 1);
+        assert!(saver_refused(&cut_short).unwrap_err().is_err());
+        // Cut within its init's contract, after the flag that says it has one.
+        let mut cut_init = ours.clone();
+        cut_init.truncate(head + 4 + SAVED_BY.len() + 1 + 4);
+        assert!(saver_refused(&cut_init).unwrap_err().is_err());
     }
 
     /// Backing files are named by absolute path (audit A18).
@@ -1889,6 +2224,39 @@ mod tests {
         assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_err());
         snap.config.hotplug_mib = 2;
         assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_ok());
+    }
+
+    /// D270 slice 5: a state keeps each component plugged into its machine, by its function's
+    /// place, its range of the window and its key, a digest's hex digits as its owner keys it
+    /// ([`KEY_LEN`]); no more of them than its machine has slots, and no key of another length.
+    #[test]
+    fn a_state_keeps_its_components_no_more_than_its_slots() {
+        let ids = vec![Identity::default(); 3];
+        let mut snap = sample(&nowhere(), 1);
+        snap.config.pci_slots = 1;
+        snap.config.component_window_mib = 64;
+        let kept = |key: String| crate::devices::virtio::pmem::Kept {
+            devfn: 3 << 3,
+            gpa: 1 << 36,
+            len: 2 << 20,
+            key,
+        };
+        snap.components = vec![kept("0123456789abcdef".repeat(KEY_LEN / 16))];
+        let decoded = decode(&encode(&snap, "g-1", &ids).unwrap()).unwrap();
+        assert_eq!(decoded.snapshot.components, snap.components);
+        snap.config.pci_slots = 0;
+        assert!(
+            decode(&encode(&snap, "g-1", &ids).unwrap()).is_err(),
+            "past its slots"
+        );
+        snap.config.pci_slots = 1;
+        for len in [KEY_LEN - 1, KEY_LEN + 1] {
+            snap.components = vec![kept("a".repeat(len))];
+            assert!(
+                decode(&encode(&snap, "g-1", &ids).unwrap()).is_err(),
+                "a key of {len} bytes"
+            );
+        }
     }
 
     #[test]
@@ -1985,9 +2353,9 @@ mod tests {
             "the head of the longest name ends with the RAM's size"
         );
         assert_eq!((vcpus, memory_mib), (4, 1));
-        assert_eq!(state_most(head).unwrap(), 1 << 20);
-        assert_eq!(most_state(512), 512 << 20);
-        assert_eq!(most_state(u64::MAX), u64::MAX);
+        assert_eq!(state_most(head, 1 << 20, Some(u64::MAX)).unwrap(), 1 << 20);
+        assert_eq!(most_state(512), Some(512 << 20));
+        assert_eq!(most_state(u64::MAX), None);
         // A state of another architecture says so, whatever its name's length.
         let arch = std::env::consts::ARCH.as_bytes();
         let at = MAGIC.len() + 4;
@@ -1996,7 +2364,7 @@ mod tests {
             at..at + 4 + arch.len(),
             [&7u32.to_le_bytes()[..], b"riscv64"].concat(),
         );
-        let e = state_most(&foreign[..HEAD]).unwrap_err();
+        let e = state_most(&foreign[..HEAD], HEAD as u64, Some(u64::MAX)).unwrap_err();
         assert!(e.to_string().contains("snapshot of a riscv64 guest"), "{e}");
 
         let mut full = sample(&nowhere(), 1);
@@ -2036,6 +2404,13 @@ mod tests {
             let e = read_state(&dir, &name).unwrap_err();
             assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
             assert!(read_state(&dir, "g-gone").unwrap().is_none());
+            assert_eq!(
+                StateRefused::of(&e),
+                Some(&StateRefused::PastItsMachine {
+                    len: (1 << 20) + 1,
+                    most: 1 << 20
+                })
+            );
 
             let files = Scratch::new("most-save");
             snap = sample(&files.0, 1);
@@ -2100,6 +2475,41 @@ mod tests {
             (p.snapshot.arch[0], first[0])
         }
 
+        /// migrate-10: a reader looks again as long as each generation it found gone was
+        /// replaced by a newer one, however many in a row, and reads the one that stays; a
+        /// pointer still naming a generation that is gone is refused as that, not looked at
+        /// again on a count.
+        #[test]
+        fn a_reader_follows_every_replacement_and_refuses_a_pointer_to_a_gone_generation() {
+            let replaced = 10;
+            let mut looked = 0u32;
+            let read = pointed_open(
+                || {
+                    looked += 1;
+                    Ok(format!("g-{looked:x}"))
+                },
+                |name| {
+                    if name == format!("g-{:x}", replaced + 1) {
+                        Ok(name.to_string())
+                    } else {
+                        Err(Open::Gone(format!("{name}: gone")))
+                    }
+                },
+            );
+            assert_eq!(read, Ok(format!("g-{:x}", replaced + 1)));
+            let mut looks = 0u32;
+            let stale = pointed_open(
+                || {
+                    looks += 1;
+                    Ok("g-a".to_string())
+                },
+                |name: &str| Err::<String, _>(Open::Gone(format!("{name}: gone"))),
+            );
+            assert_eq!(looks, 2, "a pointer that did not move was looked at again");
+            let why = stale.unwrap_err();
+            assert!(why.contains("g-a, which is gone"), "{why}");
+        }
+
         fn generations(dir: &Path) -> Vec<String> {
             let mut names: Vec<String> = fs::read_dir(dir)
                 .unwrap()
@@ -2108,6 +2518,112 @@ mod tests {
                 .collect();
             names.sort();
             names
+        }
+
+        /// migrate-04: a state's head claims its machine, and so the most the state holds,
+        /// but the file is its sender's: a head that claims a machine of more bytes than a
+        /// u64 counts, or a sparse file longer than the host can hold now, is refused typed
+        /// from its head and length alone, before its whole is allocated (the refusal comes
+        /// from the bound `read_beneath_by` asks before it reads), whatever its RAM's claim.
+        #[test]
+        fn a_forged_states_head_has_no_more_allocated_than_the_host_holds() {
+            let dir = shards_testdir::TempDir::new("snap-forged").unwrap();
+            // The longest name, so that the head is HEAD long and ends with the RAM's MiB.
+            let name = format!("g-{}", "a".repeat(MAX_NAME - 2));
+            fs::create_dir(dir.join(&name)).unwrap();
+            let snap = sample(&nowhere(), 1);
+            let ids: [Identity; 3] = std::array::from_fn(|_| Identity::default());
+            let state = encode(&snap, &name, &ids).unwrap();
+            let forged = |memory_mib: u64, len: u64| {
+                let mut bytes = state[..HEAD].to_vec();
+                bytes[HEAD - 8..].copy_from_slice(&memory_mib.to_le_bytes());
+                let file = fs::File::create(dir.join(&name).join(STATE)).unwrap();
+                std::io::Write::write_all(&mut &file, &bytes).unwrap();
+                // Holes past the head, as a move's sparse FILE lays them (daemon/moves.rs).
+                file.set_len(len).unwrap();
+            };
+            let refusal = |holdable: Option<u64>| {
+                let e = read_state_within(&dir, &name, holdable).unwrap_err();
+                assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
+                StateRefused::of(&e).cloned()
+            };
+            // RAM of u64::MAX MiB: no machine's, so no bound of its.
+            forged(u64::MAX, 1 << 20);
+            assert_eq!(
+                refusal(Some(u64::MAX)),
+                Some(StateRefused::PastAnyMachine { memory_mib: u64::MAX })
+            );
+            // A machine as large as RAM may be, and a state longer than the host can hold.
+            forged(u64::MAX >> 20, 1 << 20);
+            assert_eq!(
+                refusal(Some(64 << 10)),
+                Some(StateRefused::PastHost {
+                    len: 1 << 20,
+                    holdable: 64 << 10
+                })
+            );
+            assert_eq!(refusal(None), Some(StateRefused::HostMemoryUnknown));
+            // Each way in reads it by the same bound: a move's relocation of what it placed
+            // (daemon/moves.rs `adopt`), a restore's read, and the names of its files.
+            forged(u64::MAX, 1 << 20);
+            fs::write(dir.join(CURRENT), &name).unwrap();
+            let past = "more than any machine has";
+            let e = relocate(&dir, &|p| Some(p.to_path_buf())).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            let e = read(&dir).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            let e = backing_named(&dir).unwrap_err();
+            assert!(e.contains(past), "{e}");
+            forged(u64::MAX >> 20, 1 << 20);
+            // Within both, it is read (and is then no state its decoder takes).
+            assert_eq!(
+                read_state_within(&dir, &name, Some(1 << 20))
+                    .unwrap()
+                    .unwrap()
+                    .len(),
+                1 << 20
+            );
+        }
+
+        /// [`resumable`] reads a user's snapshot directory's state and writes nothing: one
+        /// saved with this build's init resumes, as does one whose guest runs none, one saved with another's or of an older
+        /// format is refused typed and left as it was, and a directory with no snapshot is
+        /// unreadable.
+        #[test]
+        fn resumable_refuses_another_init_and_leaves_the_snapshot() {
+            let s = Scratch::new("resumable");
+            let dir = s.0.join("snap");
+            let saved = |init: Option<u64>| {
+                write(
+                    &dir,
+                    &Snapshot {
+                        init,
+                        ..sample(&s.0, 1)
+                    },
+                    &ram(1),
+                )
+                .unwrap();
+                dir.join(current(&dir).unwrap()).join(STATE)
+            };
+            saved(Some(shards_abi::IDENTITY));
+            assert_eq!(resumable(&dir), Ok(()));
+            saved(None);
+            assert_eq!(resumable(&dir), Ok(()));
+            let state = saved(Some(shards_abi::IDENTITY ^ 1));
+            let before = fs::read(&state).unwrap();
+            assert!(matches!(
+                resumable(&dir),
+                Err(ResumeRefused::OlderInit { ref saved_by, .. }) if saved_by == SAVED_BY
+            ));
+            let mut older = before.clone();
+            older[8..12].copy_from_slice(&28u32.to_le_bytes());
+            fs::write(&state, &older).unwrap();
+            assert_eq!(resumable(&dir), Err(ResumeRefused::Unrecorded { format: 28 }));
+            assert_eq!(fs::read(&state).unwrap(), older, "written");
+            assert!(matches!(
+                resumable(&s.0.join("none")),
+                Err(ResumeRefused::Unreadable(_))
+            ));
         }
 
         /// A generation prepared for a VM that writes only what it is handed (D30, D176):

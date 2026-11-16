@@ -1,0 +1,83 @@
+2eaa81b9c
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 2389f0afb Merge latest main before builder compile gate
+HEAD is now at 2eaa81b9c Merge fresh main before retrying builder landing
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/net)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.54s
+
+3626722b6
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 2eaa81b9c Merge fresh main before retrying builder landing
+HEAD is now at 3626722b6 Merge main after the green builder compile gate
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.62s
+
+e4997bad6
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was 3626722b6 Merge main after the green builder compile gate
+HEAD is now at e4997bad6 Merge concurrent main after the disjoint helper landing
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/net)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 27.43s
+
+e2744a6fb
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was e4997bad6 Merge concurrent main after the disjoint helper landing
+HEAD is now at e2744a6fb Merge main after the current credential compile check
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 27.89s

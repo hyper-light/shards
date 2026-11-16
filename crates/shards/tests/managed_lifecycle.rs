@@ -2,11 +2,7 @@
 
 mod common;
 
-use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-use std::time::Duration;
-
-// The existing supplied-startup fixture's build/run guard (tests/build.rs, D54).
-const TIMEOUT: Duration = Duration::from_secs(120);
+use common::{Following, Patience, TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
 /// Coordinator source-fault campaign; the committed production build has no fault switch.
 #[test]
@@ -35,7 +31,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         ("harness", "healthy", "managed-lifecycle-challenge"),
     ] {
         std::fs::create_dir(ctx.join(directory)).unwrap();
-        common::program_copy(common::test_guest(), &ctx.join(directory).join("probe"));
+        shards_testdir::program_copy(common::test_guest(), &ctx.join(directory).join("probe")).unwrap();
         let path = if directory == "faulty" {
             "/bad/result"
         } else {
@@ -104,7 +100,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         observed.contains("agent faulty: quarantined after population observation errno 21"),
         "{observed}"
     );
-    challenge_healthy(&env, &reports, port);
+    challenge_healthy(&env, &home, &reports, port);
     let facts = std::fs::read_to_string(faulty.join("result")).expect("faulty actor never ran");
     eprintln!("post-quarantine exact challenge answered; exiting actor facts:\n{facts}");
     let top = run_shards_env(&["top"], &["tenant-fault", "-o", "pid,comm"], &env);
@@ -119,7 +115,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     );
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    vm.wait_exit_following(TIMEOUT);
+    vm.wait_exit_following();
 }
 
 #[test]
@@ -147,12 +143,7 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         (
             "agent",
             "reaper",
-            serde_json::json!([
-                "managed-reap",
-                "/probe/result",
-                rounds.to_string(),
-                TIMEOUT.as_millis().to_string()
-            ]),
+            serde_json::json!(["managed-reap", "/probe/result", rounds.to_string()]),
         ),
         (
             "harness",
@@ -161,7 +152,7 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         ),
     ] {
         std::fs::create_dir(ctx.join(name)).unwrap();
-        common::program_copy(common::test_guest(), &ctx.join(name).join("probe"));
+        shards_testdir::program_copy(common::test_guest(), &ctx.join(name).join("probe")).unwrap();
         let manifest = serde_json::json!({"entrypoint": "probe", "options": options});
         std::fs::write(ctx.join(name).join(format!("{kind}.json")), manifest.to_string()).unwrap();
     }
@@ -200,13 +191,8 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         ],
         &env_text,
     );
-    assert_eq!(published(&reports, "result.started", TIMEOUT), b"started");
-    let report = String::from_utf8(published(
-        &reports,
-        "result",
-        TIMEOUT.checked_add(TIMEOUT).unwrap(),
-    ))
-    .unwrap();
+    assert_eq!(published(&home, &reports, "result.started"), b"started");
+    let report = String::from_utf8(published(&home, &reports, "result")).unwrap();
     eprintln!("actual orphan-reaping results:\n{report}");
     assert!(!report.contains("failure"), "{report}");
     assert_eq!(report.lines().count(), rounds, "{report}");
@@ -220,35 +206,46 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         &env,
     );
     assert_eq!(after.status, Some(0), "{after}");
-    challenge_healthy(&env, &healthy, port);
+    challenge_healthy(&env, &home, &healthy, port);
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    vm.wait_exit_following(TIMEOUT);
+    vm.wait_exit_following();
 }
 
-fn published(directory: &std::path::Path, name: &str, within: Duration) -> Vec<u8> {
+/// The file `name` in `directory` once a guest of `home`'s daemon has published it, waited
+/// for while that daemon and its microVMs go on ([`Patience`], its kind its call site): a
+/// refusal says what the guest's report had said by then (`name` with `.pending`).
+#[track_caller]
+fn published(home: &std::path::Path, directory: &std::path::Path, name: &str) -> Vec<u8> {
     let root = shards_vmm::platform::open_dir(directory).unwrap();
     let changed = shards_vmm::platform::FileWatch::new(&root).unwrap();
-    let deadline = std::time::Instant::now() + within;
+    let mut patience = Patience::of(home);
     loop {
         changed.clear();
         match std::fs::read(directory.join(name)) {
-            Ok(bytes) => return bytes,
+            Ok(bytes) => {
+                patience.done();
+                return bytes;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => panic!("reading {name}: {error}"),
         }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        assert!(!left.is_zero(), "no publication of {name}");
-        wait_changed(&changed, left);
+        assert!(
+            patience.holds(),
+            "no publication of {name}; its report said {:?}",
+            std::fs::read_to_string(directory.join(format!("{name}.pending")))
+        );
+        wait_changed(&changed, patience.next_look());
     }
 }
 
+#[track_caller]
 fn fault_observed(home: &std::path::Path) -> String {
     use std::io::Read as _;
     let directory = shards_vmm::platform::open_dir(home).unwrap();
     let mut changed = shards_vmm::platform::FileWatch::new(&directory).unwrap();
     let mut log = None;
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::of(home);
     let mut observed = String::new();
     loop {
         changed.clear();
@@ -271,18 +268,19 @@ fn fault_observed(home: &std::path::Path) -> String {
                 || line.contains("shared boundary:")
                 || line.contains("reboot: Power down")
         }) {
+            patience.done();
             return line.to_string();
         }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
         assert!(
-            !left.is_zero(),
+            patience.holds(),
             "no tenant fault observation in daemon console log:\n{observed}"
         );
-        wait_changed(&changed, left);
+        wait_changed(&changed, patience.next_look());
     }
 }
 
-fn wait_changed(changed: &shards_vmm::platform::FileWatch, left: Duration) {
+/// Waits for a change `changed` sees, at most `left`.
+fn wait_changed(changed: &shards_vmm::platform::FileWatch, left: std::time::Duration) {
     #[cfg(unix)]
     shards_ipc::await_any_within(&[changed.fd()], Some(left)).unwrap();
     #[cfg(windows)]
@@ -312,6 +310,7 @@ enum Admission {
     Refused,
 }
 
+#[track_caller]
 fn supplied_agent(processes: Option<u64>, admission: Admission) {
     use std::io::Write as _;
     if cannot_run_vms() {
@@ -327,7 +326,7 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
     ];
     let ctx = TempDir::new("managed-life-context");
     std::fs::create_dir(ctx.join("agent")).unwrap();
-    common::program_copy(common::test_guest(), &ctx.join("agent/probe"));
+    shards_testdir::program_copy(common::test_guest(), &ctx.join("agent/probe")).unwrap();
     std::fs::write(
         ctx.join("agent/agent.json"),
         br#"{"entrypoint":"probe","options":["managed-lifecycle","/probe/result"]}"#,
@@ -365,7 +364,6 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
         ],
         "managed-life",
         ("lifecycle-ready", 1),
-        TIMEOUT,
     );
     if matches!(admission, Admission::Refused) {
         assert_eq!(ran.status, Some(125), "{ran}");
@@ -405,14 +403,22 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
     }
 }
 
-fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path, port: u16) {
+/// The healthy harness's echo of a challenge through the port its run publishes, its answer
+/// read as a stream `home`'s daemon carries to its guest ([`Following::of_home`]).
+#[track_caller]
+fn challenge_healthy(
+    env: &[(&str, &std::ffi::OsStr)],
+    home: &std::path::Path,
+    reports: &std::path::Path,
+    port: u16,
+) {
     use std::io::{Read as _, Write as _};
     let challenge = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos()
         .to_be_bytes();
-    assert_eq!(published(reports, "ready", TIMEOUT), b"ready");
+    assert_eq!(published(home, reports, "ready"), b"ready");
     let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env);
     assert_eq!(ports.status, Some(0), "{ports}");
     let host_port: u16 = ports
@@ -424,13 +430,13 @@ fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path
         .and_then(|port| port.parse().ok())
         .unwrap_or_else(|| panic!("no published challenge port: {ports}"));
     let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
-    let mut socket = std::net::TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
-    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
-    socket.set_write_timeout(Some(TIMEOUT)).unwrap();
+    let mut socket = std::net::TcpStream::connect(address).unwrap();
     socket.write_all(&challenge).unwrap();
     socket.shutdown(std::net::Shutdown::Write).unwrap();
     let mut reply = [0u8; size_of::<u128>()];
-    socket.read_exact(&mut reply).unwrap();
+    let mut answer = Following::of_home(&socket, home);
+    answer.read_exact(&mut reply).unwrap();
+    answer.answered();
     assert_eq!(reply, challenge);
     assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
 }

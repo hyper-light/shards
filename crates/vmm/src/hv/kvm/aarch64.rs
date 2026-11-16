@@ -66,7 +66,7 @@ const ID_REGS: &[u16] = &[
 /// where KVM sizes no VM's, as every VM then has (api.rst 4.2, KVM_CREATE_VM).
 pub fn max_ipa_bits() -> Result<u32> {
     let bits = kvm()
-        .map_err(Error::Guest)?
+        .map_err(|e| Error::Guest(e.into()))?
         .check_extension(sys::CAP_ARM_VM_IPA_SIZE)
         .map_err(call("KVM_CHECK_EXTENSION"))?;
     Ok(if bits > 0 { bits.unsigned_abs() } else { 40 })
@@ -291,7 +291,7 @@ pub struct Vm {
 impl Vm {
     pub fn new(config: VmConfig) -> Result<Vm> {
         install_kick_handler()?;
-        let kvm = kvm().map_err(Error::Guest)?;
+        let kvm = kvm().map_err(|e| Error::Guest(e.into()))?;
         let has = |cap| {
             kvm.check_extension(cap)
                 .map(|n| n > 0)
@@ -572,6 +572,12 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): nothing to tell. arm64 has no
+    /// kvmclock: its guest reads the arch timer, whose counter ran on through the pause
+    /// (CNTVCT less a constant offset), and KVM's paravirtual time (KVM_ARM_VCPU_PVTIME)
+    /// carries stolen time alone, with no stopped flag a watchdog reads.
+    pub fn went_on(&self) {}
+
     pub fn kicker(&self) -> Kicker {
         self.kicker.clone()
     }

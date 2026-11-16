@@ -12,7 +12,7 @@ use crate::arch::aarch64::{self, Entry, boot, layout};
 use crate::devices::control::Control;
 use crate::devices::power::Power;
 use crate::devices::rtc::Pl031;
-use crate::devices::serial::Serial;
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus};
@@ -207,7 +207,8 @@ pub struct Machine {
     pub vm: hv::Vm,
     pub memory: Arc<GuestMemory>,
     pub bus: Bus,
-    pub serial: Arc<Serial>,
+    /// Its console, hvc0: what it said, and its input.
+    pub console: Arc<ConsolePort>,
     pub control: Arc<Control>,
     /// Device-raised power events; on arm64 power management is PSCI, so none do yet.
     pub power: Arc<Power>,
@@ -433,7 +434,7 @@ fn ram_ranges(ram: u64) -> Result<[(u64, usize); 1], String> {
 struct Assembled {
     vm: hv::Vm,
     bus: MmioBus,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     vmgenid: VmGenId,
     gic_dist_size: u64,
@@ -447,6 +448,8 @@ struct Assembled {
     gpu_window: Option<u64>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// Its components' window's length in MiB, as its guest's addresses fit it (D270).
+    component_window_mib: u64,
     /// Its PCI host bridge, where it has a PCI bus (D153).
     pci: Option<boot::PciBridge>,
     /// Each pmem region at its guest address, which mapped working sets record.
@@ -460,8 +463,7 @@ struct Assembled {
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
-    console: Console,
-    said: usize,
+    console: super::ConsoleSetup,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -525,6 +527,8 @@ fn assemble(
     let (windows, top, share_window_mib) =
         super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
+    // Its components' window past them (D270), which its slots' pmem functions map in.
+    let (component_window, top, component_window_mib) = super::component_layout(config, top, reach)?;
     let pmem: Vec<(u64, u64)> = regions
         .iter()
         .map(|(region, gpa)| (*gpa, region.len() as u64))
@@ -569,6 +573,8 @@ fn assemble(
     if let Some(heads) = &window_heads {
         super::map_window_heads(&vm, heads)?;
     }
+    // Its components' window (D270): nothing of it mapped until a pmem function is plugged.
+    let components = super::components(&vm, component_window, config.pci_slots)?;
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
     let swap = super::swap_window(&vm, swap_at)?;
@@ -640,8 +646,9 @@ fn assemble(
     let swap_device = swap
         .clone()
         .map(|w| Box::new(pmem::Pmem::swap(w)) as Box<dyn crate::devices::virtio::VirtioDevice>);
-    let last = gpu
-        .into_iter()
+    let (console_device, console) = console.device()?;
+    let last = std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
+        .chain(gpu)
         .chain(hotplug)
         .chain(reporting)
         .chain(swap_device)
@@ -680,15 +687,11 @@ fn assemble(
             iommu: iommu_at == Some(i),
         });
     }
-    let serial = Arc::new(Serial::new(
-        super::console_out(console)?,
-        Arc::new(GicLine {
-            gic: gic.clone(),
-            intid: SPI_INTID_BASE + layout::SPI_UART,
-        }),
-        said,
-    ));
-    bus.insert(layout::UART, 0x1000, serial.clone())?;
+    bus.insert(
+        layout::PVPANIC,
+        0x1000,
+        Arc::new(crate::devices::pvpanic::PvPanic::new(console.clone())),
+    )?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
     let control = Arc::new(Control::default());
     control.on_disks(disk_sizes);
@@ -740,6 +743,7 @@ fn assemble(
                 unpinnable: super::unpinnable(config),
                 #[cfg(target_os = "linux")]
                 vfio: vm.vfio_host(),
+                components: components.clone(),
             });
         }
         boot::PciBridge {
@@ -770,7 +774,7 @@ fn assemble(
     Ok(Assembled {
         vm,
         bus,
-        serial,
+        console,
         control,
         vmgenid,
         gic_dist_size: gp.dist_size,
@@ -780,6 +784,7 @@ fn assemble(
         pmem,
         gpu_window,
         share_window_mib,
+        component_window_mib,
         pci,
         #[cfg(any(hv = "kvm", hv = "whp"))]
         pmem_regions: regions
@@ -861,12 +866,12 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
             io: cfg.io_limit,
             layer: layer.as_ref(),
             window_heads: None,
+            components: &[],
         };
         let a = assemble(
             &memory,
             &config,
-            cfg.console,
-            cfg.said,
+            super::ConsoleSetup::booted(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -883,8 +888,10 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
     debug!("kernel and initrd copied");
     // Its GPU's window as the guest sees it, which a snapshot keeps for a restore (D150).
     config.gpu = a.gpu_window;
-    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps.
+    // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps, and
+    // its components' window's.
     config.share_window_mib = a.share_window_mib;
+    config.component_window_mib = a.component_window_mib;
     let mut rng_seed = [0u8; 64];
     platform::fill_random(&mut rng_seed).map_err(|e| format!("host entropy: {e}"))?;
     let cmdline = super::kernel_cmdline(cfg);
@@ -916,7 +923,7 @@ pub fn build_reported(cfg: &Config, report: Option<&mut super::GpuReportTo<'_>>)
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: Arc::new(Power::default()),
         finish: a.vmgenid,
@@ -1084,6 +1091,7 @@ pub fn restore(
     said: usize,
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
+    report: Option<&mut super::GpuReportTo<'_>>,
 ) -> Result<Machine, String> {
     super::check_hosts(snap, hosts)?;
     let state = decode_state(&snap.arch)?;
@@ -1101,15 +1109,14 @@ pub fn restore(
         snap,
         plug_at(ram),
     )?);
-    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
-    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
+    // A machine saves no snapshot with functions on its PCI bus but its components' (D270
+    // slice 5), which are plugged back below: it has the slots its snapshot's had (D214).
     let a = assemble(
         &memory,
         &snap.config,
-        console,
-        said,
+        super::ConsoleSetup::restored(console, said),
         hosts,
-        snap.config.gpu.map(|saw| super::MachineGpu { saw, report: None }),
+        snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {
             slots: snap.config.pci_slots,
             ..super::Pci::default()
@@ -1120,7 +1127,9 @@ pub fn restore(
         vm: a.vm.for_restore(state.counter).map_err(|e| e.to_string())?,
         ..a
     };
+    super::window_kept(a.component_window_mib, &snap.config)?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
+    super::replug_components(&a.control, &memory, snap, hosts.components)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))
@@ -1147,7 +1156,7 @@ pub fn restore(
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: Arc::new(Power::default()),
         finish: a.vmgenid,

@@ -16,7 +16,6 @@ use std::ffi::OsString;
 use std::hash::{BuildHasher as _, RandomState};
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -100,19 +99,22 @@ impl ConfiguredShards {
         &self.paths
     }
 
-    /// Its client's runtime directories and nothing inherited, but on Windows the system
-    /// root the OS reports. Without it Winsock loads no provider: its catalog names them as
-    /// `%SystemRoot%\system32\…`, expanded in the process's own environment, so WSAStartup
-    /// fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens no socket, its vsock's
-    /// included (seen on Windows 11 26200; Hex's own Windows launches pass it too).
-    fn environment(&self, command: &mut Command) -> Result<(), Refusal> {
-        command
-            .env_clear()
-            .env("SHARDS_CACHE", self.paths.cache())
-            .env("SHARDS_HOME", self.paths.home());
+    /// The whole environment its `shards` is given: its client's runtime directories, and on
+    /// Windows the system root the OS reports. Without it Winsock loads no provider: its
+    /// catalog names them as `%SystemRoot%\system32\…`, expanded in the process's own
+    /// environment, so WSAStartup fails with WSAEPROVIDERFAILEDINIT (10106) and `shards` opens
+    /// no socket, its vsock's included (seen on Windows 11 26200; Hex's own Windows launches
+    /// pass it too). On Windows the spawn adds this process's LOCALAPPDATA, as it does for
+    /// every child it gives an environment of its own (`shards_ipc::spawn_in`).
+    fn environment(&self) -> Result<Vec<(&'static str, OsString)>, Refusal> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut env = vec![
+            ("SHARDS_CACHE", argument_copy(self.paths.cache().as_os_str())?),
+            ("SHARDS_HOME", argument_copy(self.paths.home().as_os_str())?),
+        ];
         #[cfg(windows)]
-        command.env("SystemRoot", system_root()?);
-        Ok(())
+        env.push(("SystemRoot", system_root()?));
+        Ok(env)
     }
 }
 
@@ -307,6 +309,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             report_cleanup: ReportCleanup::Complete,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -406,10 +409,6 @@ fn launch(
     // its own to say, after shards' end, where shards' words end.
     let piped = |e: io::Error| Refusal::Boot(format!("a pipe for shards' output: {e}"));
     let (output, writer) = io::pipe().map_err(piped)?;
-    let (stdout, stderr) = (
-        writer.try_clone().map_err(piped)?,
-        writer.try_clone().map_err(piped)?,
-    );
     let marker = end_mark();
     let probe_keep = probe
         .map(|bound| {
@@ -434,16 +433,8 @@ fn launch(
         scratch.resize(bound, 0);
         probe_scratch = Some(scratch);
     }
-    let mut command = Command::new(&binary);
-    if let Some(environment) = environment {
-        environment.environment(&mut command)?;
-    }
-    let child = command
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr)
-        .spawn()
+    let env = environment.map(ConfiguredShards::environment).transpose()?;
+    let child = spawn_shards(&binary, &args, env.as_deref(), &writer)
         .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
     // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
     let shared = Arc::new(Shared {
@@ -461,6 +452,7 @@ fn launch(
             report_cleanup: ReportCleanup::Complete,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -477,16 +469,12 @@ fn launch(
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
         report: Mutex::new(None),
     });
-    #[cfg(unix)]
-    let process = Process::Booted(child.id());
-    // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
-    let child = Arc::new(Mutex::new(child));
-    #[cfg(windows)]
+    // Shared: the watcher, which outlives this call, reaps it; the guest kills it.
+    let child = Arc::new(child);
     let process = Process::Booted(child.clone());
     let started = start_threads(&shared, &child, output, writer);
     if let Err(e) = started {
-        let mut child = lock(&child);
-        let _ = child.kill();
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
         let _ = child.wait();
         return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
     }
@@ -498,6 +486,45 @@ fn launch(
         records: &progress::RECORDS,
         _dir: Some(dir),
     })
+}
+
+/// Starts `binary` (found as [`shards_ipc::on_path`] finds a name alone) with `args`, its
+/// stdout and stderr `output`, its stdin none, and `env` alone for its environment where
+/// given, else this process's. By `shards_ipc`'s spawn, which gives it those three alone
+/// (D248): std's would hand it whatever another thread of this process made in that moment
+/// and had not yet marked close-on-exec (macOS: no SOCK_CLOEXEC, no
+/// POSIX_SPAWN_CLOEXEC_DEFAULT in std), another run's input or output among them, for as
+/// long as this `shards` runs.
+fn spawn_shards(
+    binary: &Path,
+    args: &[OsString],
+    env: Option<&[(&'static str, OsString)]>,
+    output: &io::PipeWriter,
+) -> io::Result<shards_ipc::Child> {
+    let found = shards_ipc::on_path(binary, None)?;
+    let null = shards_ipc::null()?;
+    let args: Vec<&std::ffi::OsStr> = args.iter().map(OsString::as_os_str).collect();
+    #[cfg(unix)]
+    let fds = {
+        use std::os::fd::AsFd as _;
+        [(null.as_fd(), 0), (output.as_fd(), 1), (output.as_fd(), 2)]
+    };
+    #[cfg(windows)]
+    let fds = {
+        use std::os::windows::io::AsHandle as _;
+        [
+            (null.as_handle(), 0),
+            (output.as_handle(), 1),
+            (output.as_handle(), 2),
+        ]
+    };
+    match env {
+        Some(env) => {
+            let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (*k, v.as_os_str())).collect();
+            shards_ipc::spawn_in(&found, &args, &fds, false, &env)
+        }
+        None => shards_ipc::spawn(&found, &args, &fds, false),
+    }
 }
 
 /// `shards run --kernel …` for `spec`, its vsock at `vsock`, its console's last `said` bytes
@@ -863,7 +890,7 @@ struct State {
     /// How shards ended, with its last words, once reaped.
     ended_as: String,
     /// Its exit status, as the watcher reaped it.
-    status: Option<Result<std::process::ExitStatus, String>>,
+    status: Option<Result<i32, String>>,
     /// Pending None -> native completion or failed observer; never a release ledger.
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
@@ -874,6 +901,9 @@ struct State {
     /// The period a managed guest's governor holds a rate over, as its VM process said it
     /// with its last rate's answer (D255); none until one.
     rate_period: Option<Duration>,
+    /// A managed guest's final use (D260), read from its record once it has ended, kept as
+    /// first read.
+    final_use: Option<crate::image::FinalUse>,
 }
 
 #[derive(Debug)]
@@ -907,11 +937,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// to exit.
 fn start_threads(
     shared: &Arc<Shared>,
-    child: &Arc<Mutex<Child>>,
+    child: &Arc<shards_ipc::Child>,
     output: io::PipeReader,
     writer: io::PipeWriter,
 ) -> io::Result<()> {
-    let exit = Exit::of(child)?;
+    let exit = Exit { child: child.clone() };
     let drainer = shared.clone();
     std::thread::Builder::new()
         .name("shards-api-drain".into())
@@ -981,77 +1011,19 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
 /// The process's exit, awaited without reaping it, so that its pid stays its own (and a
 /// signal sent to it reaches no other process) until [`State::exited`] says it has gone.
 struct Exit {
-    #[cfg(unix)]
-    pid: libc::id_t,
-    #[cfg(windows)]
-    handle: std::os::windows::io::OwnedHandle,
     /// The process, reaped once it has exited, under the state's lock.
-    child: Arc<Mutex<Child>>,
+    child: Arc<shards_ipc::Child>,
 }
 
 impl Exit {
-    fn of(child: &Arc<Mutex<Child>>) -> io::Result<Exit> {
-        let process = lock(child);
-        #[cfg(unix)]
-        return Ok(Exit {
-            pid: process.id(),
-            child: child.clone(),
-        });
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsHandle as _;
-            Ok(Exit {
-                handle: process.as_handle().try_clone_to_owned()?,
-                child: child.clone(),
-            })
-        }
-    }
-
-    /// Waits for the process to exit.
-    fn awaited(&self) -> io::Result<()> {
-        #[cfg(unix)]
-        loop {
-            // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: waitid(2) of our own child into `info`; WNOWAIT leaves it unreaped.
-            let r = unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    self.pid,
-                    &raw mut info,
-                    libc::WEXITED | libc::WNOWAIT,
-                )
-            };
-            if r == 0 {
-                return Ok(());
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle as _;
-            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-            use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
-            // SAFETY: a process handle this value owns.
-            if unsafe { WaitForSingleObject(self.handle.as_raw_handle(), INFINITE) } == WAIT_OBJECT_0 {
-                Ok(())
-            } else {
-                Err(io::Error::last_os_error())
-            }
-        }
-    }
-
     /// Waits for the process to exit, then for its last words, and says how it ended. Its
     /// words end at the end mark this writes after its exit: the drain reaches the mark
     /// through what is in the pipe ahead of it, which is finite, with no clock.
     fn watch(self, shared: &Shared, writer: io::PipeWriter) {
-        let awaited = self.awaited();
+        let awaited = self.child.ended();
         // What it ran by its end, read while it is a zombie, before it is reaped below.
         #[cfg(unix)]
-        let ended_cpu = progress::ran_by_end(self.pid, None);
+        let ended_cpu = progress::ran_by_end(self.child.id(), None);
         #[cfg(windows)]
         let ended_cpu = None;
         let mut tail = finish_drain(shared, writer);
@@ -1070,7 +1042,7 @@ impl Exit {
         }
         // Reaped under the state's lock as `exited` is set, so no signal sent while it is
         // false reaches another process, and none is left a zombie, dropped or not.
-        state.status = Some(lock(&self.child).wait().map_err(|e| e.to_string()));
+        state.status = Some(self.child.wait().map_err(|e| e.to_string()));
         state.observed_exited = state.status.as_ref().is_some_and(Result::is_ok);
         state.said = said;
         state.ended_cpu = ended_cpu;
@@ -1110,13 +1082,9 @@ struct ShardsGuest {
 
 /// A guest's VM process, as this client has it.
 enum Process {
-    /// Booted here, this process's child, by its pid: its watcher reaps it.
-    #[cfg(unix)]
-    Booted(u32),
-    /// Booted here, this process's child: ended through it, as Windows sends a process no
-    /// signal; its watcher reaps it.
-    #[cfg(windows)]
-    Booted(Arc<Mutex<Child>>),
+    /// Booted here, this process's child: killed through it while unreaped; its watcher
+    /// reaps it.
+    Booted(Arc<shards_ipc::Child>),
     /// Taken back, by what it was taken back by: another's child.
     Taken(Taken),
 }
@@ -1139,13 +1107,13 @@ impl ShardsGuest {
                 .clone()
                 .unwrap_or_else(|| Err("no status reaped".into()));
             state.ended_as = match &status {
-                Ok(status) => said(&format!("shards {status}"), &state.said),
+                Ok(status) => said(&format!("shards exit status: {status}"), &state.said),
                 Err(e) => format!("shards: {e}"),
             };
             state.end = Some(match status {
                 _ if state.stopping => End::Stopped,
-                Ok(status) if status.code() == Some(0) => End::PowerOff,
-                Ok(status) if status.code() == Some(3) => End::Reset,
+                Ok(0) => End::PowerOff,
+                Ok(3) => End::Reset,
                 _ => End::Failed(state.ended_as.clone()),
             });
         }
@@ -1180,19 +1148,12 @@ impl ShardsGuest {
         }
         match &self.process {
             Process::Taken(taken) => taken.process.kill(),
-            #[cfg(unix)]
-            Process::Booted(pid) => {
-                if let Ok(pid) = libc::pid_t::try_from(*pid) {
-                    // SAFETY: kill(2) of our own child, unreaped while `exited` is false.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
-            }
-            // Windows sends a process no signal: shards' daemon ends a VM's process as its
-            // Job's (shards_ipc `Child::kill`), and `run --kernel`'s VM, in a Job that ends with
-            // it (cli/mod.rs `vm`), ends as it does.
-            #[cfg(windows)]
+            // Unreaped while `exited` is false, and the child's own lock holds off its reap.
+            // On Windows, which sends a process no signal, it is ended: shards' daemon ends a
+            // VM's process as its Job's, and `run --kernel`'s VM, in a Job that ends with it
+            // (cli/mod.rs `vm`), ends as it does.
             Process::Booted(child) => {
-                let _ = lock(child).kill();
+                let _ = child.kill(shards_ipc::signal::SIGKILL);
             }
         }
     }
@@ -1213,7 +1174,7 @@ impl ShardsGuest {
                 failure,
             };
             let root = match &self.process {
-                Process::Booted(child) => lock(child).as_handle().try_clone_to_owned(),
+                Process::Booted(child) => child.as_handle().try_clone_to_owned(),
                 Process::Taken(taken) => taken.process.duplicate(),
             }
             .map_err(|e| {
@@ -1224,7 +1185,9 @@ impl ShardsGuest {
             })?;
             Followed::of(root, identity.pid, identity.started).map_err(process)?
         };
-        Follow::begin(self.records.of(awaited), followed).map_err(Refusal::from)
+        // A guest's boot to its first listener, a connect and its end are its own work's,
+        // the user's: judged by stillness alone (D215's `Bound`).
+        Follow::begin(self.records.of(awaited), followed, crate::Bound::Stillness).map_err(Refusal::from)
     }
 }
 
@@ -1237,19 +1200,15 @@ fn said(what: &str, said: &str) -> String {
     }
 }
 
-/// The wait before dialing again, `p = sqrt(2 c w)`: pacing that balances one dial's cost `c`
-/// against the waiting so far `w`, both measured as this connect runs.
+/// The wait before dialing again, `p = sqrt(2 c w)` (`shards_abi::pace`, shared with the
+/// VMM's and the guest's looks): pacing that balances one dial's cost `c` against the
+/// waiting so far `w`, both measured as this connect runs.
 ///
 /// - `c` is the last refused dial's own work, its connect and its ask, measured each dial;
 ///   not its wait for the guest's answer, which costs this thread nothing (a muxer holding a
 ///   request for a guest whose vsock is not up yet waits seconds). On HVF (M464) 5.5 µs at
 ///   p50 to a socket not bound yet.
 /// - `w` is how long this connect has waited so far, and stands for the wait still to come.
-/// - Pausing `p` between dials, a wait of `w` takes `w / p` dials, `c w / p` of dialing; and a
-///   guest that starts to listen at a uniform moment within a pause is reached `p / 2` late on
-///   average. Both are seconds, of this thread and of its caller.
-/// - Their sum `f(p) = c w / p + p / 2` is least where `f'(p) = -c w / p² + 1 / 2 = 0`, that
-///   is `p² = 2 c w`: `p = sqrt(2 c w)`.
 ///
 /// So a few dials go out early and fewer as the wait grows: at 150 ms waited, 1.3 ms with a
 /// 5.5 µs dial and 3.6 ms with a 44 µs one, which dialing holds 0.4% and 1.2% of. A dial to a
@@ -1258,15 +1217,7 @@ fn said(what: &str, said: &str) -> String {
 /// Any wait that looks for its answer, each look a cost of its own, is paced the same way
 /// (`c` its look's cost): shards' engine ring E2E looks at a guest's pinned pages so
 /// (crates/shards/tests/engine_ring.rs, D230).
-pub fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
-    let product = dialed
-        .as_nanos()
-        .checked_mul(waited.as_nanos())
-        .and_then(|p| p.checked_mul(2))
-        .unwrap_or(u128::MAX);
-    let nanos = u64::try_from(product.isqrt()).unwrap_or(u64::MAX);
-    Duration::from_nanos(nanos).min(left)
-}
+pub use shards_abi::pace::pause;
 
 /// Why a handshake failed: worth asking again, or not.
 enum Attempt {
@@ -1337,13 +1288,16 @@ impl HandshakeError {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum HandshakeWait {
+enum HandshakeWait<'a> {
     Ready,
     Until(Instant),
     Unbounded,
+    /// No clock, and each wait also on the end of a held process (a borrowed connect's), which
+    /// ends the handshake `Closed`: its caller refuses it as that end.
+    Watched(stream::Exit<'a>),
 }
 
-fn remaining(wait: HandshakeWait, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
+fn remaining(wait: HandshakeWait<'_>, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
     match wait {
         HandshakeWait::Until(at) => {
             let left = at.saturating_duration_since(Instant::now());
@@ -1353,7 +1307,16 @@ fn remaining(wait: HandshakeWait, phase: HandshakePhase) -> Result<Option<Durati
                 Ok(Some(left))
             }
         }
-        HandshakeWait::Ready | HandshakeWait::Unbounded => Ok(None),
+        HandshakeWait::Ready | HandshakeWait::Unbounded | HandshakeWait::Watched(_) => Ok(None),
+    }
+}
+
+/// A watched step's I/O, or `Closed` where the held process ended first.
+fn watched(step: io::Result<Option<usize>>) -> Result<io::Result<usize>, HandshakeError> {
+    match step {
+        Ok(Some(n)) => Ok(Ok(n)),
+        Ok(None) => Err(HandshakeError::Closed),
+        Err(e) => Ok(Err(e)),
     }
 }
 
@@ -1404,7 +1367,7 @@ fn owned_handshake_error(error: HandshakeError) -> Attempt {
 fn handshake_until(
     vsock: &Path,
     port: u32,
-    wait: HandshakeWait,
+    wait: HandshakeWait<'_>,
     cost: &mut Duration,
 ) -> Result<Socket, HandshakeError> {
     use HandshakePhase::{ClearTimeouts, Dial, Read, Write};
@@ -1413,7 +1376,9 @@ fn handshake_until(
     let connected = match wait {
         HandshakeWait::Ready => stream::connect_nowait(vsock),
         HandshakeWait::Until(at) => stream::connect_until(vsock, Some(at)),
-        HandshakeWait::Unbounded => stream::connect_until(vsock, None),
+        // Unix's connect never waits on its listener; Windows' ends as afunix.sys ends it, and
+        // a VM process's end closes the listener it dials.
+        HandshakeWait::Unbounded | HandshakeWait::Watched(_) => stream::connect_until(vsock, None),
     };
     // A dial its deadline passed in is expired, as a write's and a read's are, whatever the
     // dial said: Windows' connect waits for its connection to complete, to the deadline, and
@@ -1434,6 +1399,7 @@ fn handshake_until(
     while !ask.is_empty() {
         let sent = match wait {
             HandshakeWait::Ready => s.write_nowait(ask),
+            HandshakeWait::Watched(exit) => watched(s.write_watched(ask, exit))?,
             _ => {
                 Stream::set_write_timeout(&s, remaining(wait, Write)?)
                     .map_err(|source| HandshakeError::io(Write, source))?;
@@ -1457,6 +1423,7 @@ fn handshake_until(
             .ok_or(HandshakeError::Reply(ReplyError::TooLong))?;
         let read = match wait {
             HandshakeWait::Ready => s.read_nowait(byte),
+            HandshakeWait::Watched(exit) => watched(s.read_watched(byte, exit))?,
             _ => {
                 Stream::set_read_timeout(&s, remaining(wait, Read)?)
                     .map_err(|source| HandshakeError::io(Read, source))?;
@@ -1496,10 +1463,12 @@ fn handshake_until(
 /// Zero patience makes one readiness-only attempt: connect and every handshake
 /// operation must complete without waiting. Pending or interrupted I/O returns
 /// its typed phase/cause and closes the connection. Positive patience starts one
-/// deadline before identity validation; unrepresentable patience returns Bounds
-/// before identity or dial. There is one dial and no retry. Dropping the returned stream
-/// closes only that connection. The supplied identity/socket remain trusted input;
-/// matching a PID/start is not authentication of the socket's peer.
+/// deadline before identity validation; unrepresentable patience (`Duration::MAX`
+/// included) returns Bounds before identity or dial: a connect with no clock is
+/// [`connect_borrowed_before`]'s, with no deadline. There is one dial and no retry.
+/// Dropping the returned stream closes only that connection. The supplied
+/// identity/socket remain trusted input; matching a PID/start is not authentication
+/// of the socket's peer.
 ///
 /// Synchronous OS calls and scheduling are not hard real-time bounded. Readiness
 /// waits use the original deadline, and late completion is refused.
@@ -1509,25 +1478,59 @@ pub fn connect_borrowed(
     patience: Duration,
 ) -> Result<Box<dyn Stream>, Refusal> {
     let began = Instant::now();
+    if patience.is_zero() {
+        return borrowed(identity, port, HandshakeWait::Ready);
+    }
+    let deadline = began
+        .checked_add(patience)
+        .filter(|_| patience != Duration::MAX)
+        .ok_or_else(|| {
+            message(format_args!("{}", BorrowFailure::DeadlineOverflow))
+                .map(|why| Refusal::Bounds {
+                    what: "patience",
+                    why,
+                })
+                .unwrap_or(Refusal::Allocation {
+                    what: "connection diagnostic",
+                })
+        })?;
+    borrowed(identity, port, HandshakeWait::Until(deadline))
+}
+
+/// Connect to a running guest without acquiring its lifetime, by `deadline`, or with none.
+///
+/// `Some(at)`: [`connect_borrowed`]'s positive patience, to the caller's instant: each
+/// handshake step waits to it, and an answer completed at or past it is refused
+/// `Borrowed { failure: Expired }`, its socket closed. An instant already past expires
+/// before the dial.
+///
+/// `None`: no clock. Its one dial's handshake waits for the guest's `OK`, and an `OK` that
+/// comes however late is taken. It ends only at that `OK`, at the end of the connection
+/// (`Borrowed { failure: Channel(..) }`), or at the end of the identity's VM process, which it
+/// waits on as it waits on the socket, through the process held by its pid and start before
+/// the dial (a pidfd on Linux, a kqueue with its exit registered on macOS, a process handle on
+/// Windows): refused `Process { failure: ProcessFailure::Exited }`, whatever the connection
+/// said as it ended. A pid that names another process (another start) is refused
+/// `DifferentStart` before the dial, never followed.
+///
+/// Either way there is one dial and no retry, and the identity and socket remain trusted
+/// input, as [`connect_borrowed`]'s.
+pub fn connect_borrowed_before(
+    identity: &Identity,
+    port: u32,
+    deadline: Option<Instant>,
+) -> Result<Box<dyn Stream>, Refusal> {
+    borrowed(
+        identity,
+        port,
+        deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until),
+    )
+}
+
+/// A borrowed connect's one dial, its handshake waiting as `wait` says, `Unbounded` waiting
+/// on the held process's end too (`Watched`).
+fn borrowed(identity: &Identity, port: u32, wait: HandshakeWait<'_>) -> Result<Box<dyn Stream>, Refusal> {
     let refused = |failure| Refusal::Borrowed { port, failure };
-    let wait = if patience.is_zero() {
-        HandshakeWait::Ready
-    } else {
-        let deadline = began
-            .checked_add(patience)
-            .filter(|_| patience != Duration::MAX)
-            .ok_or_else(|| {
-                message(format_args!("{}", BorrowFailure::DeadlineOverflow))
-                    .map(|why| Refusal::Bounds {
-                        what: "patience",
-                        why,
-                    })
-                    .unwrap_or(Refusal::Allocation {
-                        what: "connection diagnostic",
-                    })
-            })?;
-        HandshakeWait::Until(deadline)
-    };
     let process_failure = |failure| Refusal::Process {
         pid: identity.pid,
         expected_started: identity.started,
@@ -1537,8 +1540,18 @@ pub fn connect_borrowed(
     let held = crate::taken::Held::find(identity.pid, identity.started).map_err(process_failure)?;
     #[cfg(windows)]
     let held = borrowed_windows::Held::find(identity.pid, identity.started).map_err(process_failure)?;
+    let wait = match wait {
+        HandshakeWait::Unbounded => HandshakeWait::Watched(held.exit()),
+        wait => wait,
+    };
     let mut cost = Duration::ZERO;
     let stream = handshake_until(&identity.vsock, port, wait, &mut cost).map_err(|cause| {
+        // With no clock, the held process's end is the refusal, whatever the channel said of it.
+        if matches!(wait, HandshakeWait::Watched(_))
+            && let Err(failure) = held.check()
+        {
+            return process_failure(failure);
+        }
         refused(match cause {
             HandshakeError::Io {
                 kind: io::ErrorKind::OutOfMemory,
@@ -1569,7 +1582,7 @@ mod borrowed_tests;
 mod spawns;
 
 #[cfg(windows)]
-mod borrowed_windows {
+pub(crate) mod borrowed_windows {
     use crate::{ProcessFailure, ProcessOperation};
     use std::io;
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
@@ -1588,10 +1601,11 @@ mod borrowed_windows {
         }
     }
 
-    pub(super) struct Held(OwnedHandle);
+    #[derive(Debug)]
+    pub(crate) struct Held(OwnedHandle);
 
     impl Held {
-        pub(super) fn find(pid: u32, expected: u64) -> Result<Self, ProcessFailure> {
+        pub(crate) fn find(pid: u32, expected: u64) -> Result<Self, ProcessFailure> {
             // SAFETY: only query/synchronize access; non-inheritable and no termination right.
             let handle =
                 unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
@@ -1608,6 +1622,12 @@ mod borrowed_windows {
             }
             held.check()?;
             Ok(held)
+        }
+
+        /// What its end is waited on through beside a socket: the handle, signalled once
+        /// its process has exited.
+        pub(crate) fn exit(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+            std::os::windows::io::AsHandle::as_handle(&self.0)
         }
 
         pub(super) fn check(&self) -> Result<(), ProcessFailure> {
@@ -1644,6 +1664,146 @@ fn managed_marker() -> Result<Vec<u8>, Refusal> {
         .map_err(|()| Refusal::Launch(crate::LaunchError::Allocation))
 }
 
+/// A managed guest's use of its host (D260), as one sample read it: what its vCPUs have run of
+/// its guest and what its VM process has used, an image run's [`Microvm`](crate::image::Microvm)
+/// (D241), read by its VM process after `asked` and before `answered`, so that two samples'
+/// window is known within their asks' spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedUse {
+    pub microvm: crate::image::Microvm,
+    pub asked: Instant,
+    pub answered: Instant,
+}
+
+/// A managed guest's end and what its microVM used in all (D260's final use), as its VM process
+/// recorded it once its machine was down ([`final_use_file`]), the same form as an image run's
+/// ([`RunEnded`](crate::image::RunEnded)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedEnded {
+    pub end: End,
+    pub final_use: crate::image::FinalUse,
+}
+
+/// What [`ManagedGuest::host_use`] answers: a sample while the guest runs, or its end and its
+/// final use once it has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedUsed {
+    Running(ManagedUse),
+    Ended(ManagedEnded),
+}
+
+/// The file a managed guest's final use is recorded in (D260): beside its vsock socket
+/// `vsock`, its name the socket's and `.used`, in the directory its launcher made for the
+/// guest, which goes with it. Written whole, by rename, before its VM process exits, by its
+/// keeper (`shards final-use` on Unix, the CLI that waits for its VM on Windows): the VM
+/// process, confined, writes no file.
+pub fn final_use_file(vsock: &Path) -> PathBuf {
+    let mut name = vsock.as_os_str().to_owned();
+    name.push(".used");
+    PathBuf::from(name)
+}
+
+/// The file a managed guest's VM process is named in on Windows (D233's VM process): beside its
+/// vsock socket `vsock`, its name the socket's and `.vm`, in the directory its launcher made
+/// for the guest. Its `shards` writes it whole, by rename, while the VM process it starts is
+/// still suspended, so it is in place before that process runs: `PID START\n`, as a home's
+/// PID files name a process (`shards_ipc::Named`), its start as [`Identity::started`] counts
+/// it. On Linux and macOS no file is written: the launched `shards` becomes the VM process in
+/// place (exec), its pid and start its own.
+pub fn vm_process_file(vsock: &Path) -> PathBuf {
+    let mut name = vsock.as_os_str().to_owned();
+    name.push(".vm");
+    PathBuf::from(name)
+}
+
+/// The longest record [`vm_process_file`] holds: a u32's decimal, a space, a u64's, a newline.
+#[cfg(any(windows, test))]
+const VM_PROCESS_MOST: usize =
+    shards_abi::rate::decimal_digits(u32::MAX as u64) + 1 + shards_abi::rate::decimal_digits(u64::MAX) + 1;
+
+/// The VM process a managed guest's record at `vsock` names ([`vm_process_file`]), read up to
+/// its longest and a byte past it, so a longer one is broken without being read whole.
+#[cfg(any(windows, test))]
+pub(crate) fn read_vm_process(vsock: &Path) -> Result<crate::VmProcess, Refusal> {
+    let file = match std::fs::File::open(vm_process_file(vsock)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded));
+        }
+        Err(e) => return Err(managed_io("the VM process's record", e)),
+    };
+    let most = VM_PROCESS_MOST
+        .checked_add(1)
+        .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(most)
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    io::Read::read_to_end(
+        &mut io::Read::take(file, u64::try_from(most).unwrap_or(u64::MAX)),
+        &mut bytes,
+    )
+    .map_err(|e| managed_io("the VM process's record", e))?;
+    vm_process_named(&bytes).ok_or(Refusal::VmProcess(crate::VmProcessRefusal::Broken))
+}
+
+/// The process a record's bytes name: `PID START\n`, both decimal digits alone, neither zero
+/// (no process has either).
+#[cfg(any(windows, test))]
+fn vm_process_named(bytes: &[u8]) -> Option<crate::VmProcess> {
+    let line = bytes.strip_suffix(b"\n")?;
+    let at = line.iter().position(|b| *b == b' ')?;
+    let (pid, started) = (line.get(..at)?, line.get(at.checked_add(1)?..)?);
+    fn digits(word: &[u8]) -> Option<&str> {
+        (!word.is_empty() && word.iter().all(u8::is_ascii_digit))
+            .then(|| std::str::from_utf8(word).ok())
+            .flatten()
+    }
+    let pid: u32 = digits(pid)?.parse().ok()?;
+    let started: u64 = digits(started)?.parse().ok()?;
+    (pid != 0 && started != 0).then_some(crate::VmProcess { pid, started })
+}
+
+/// The final use a managed guest's record says (D260), its read `read`: its parts as its VM
+/// process told them, an answer none of the protocol's typed by what breaks it; none where
+/// there is no record, its VM killed (`stopping`, its stop asked) or ended without it.
+fn final_use_of(read: io::Result<Vec<u8>>, stopping: bool) -> Result<crate::image::FinalUse, Refusal> {
+    use crate::image::{FinalUse, Unused};
+    let bytes = match read {
+        Ok(bytes) => bytes,
+        Err(_) if stopping => return Ok(FinalUse::Unread(Unused::Killed)),
+        Err(_) => return Ok(FinalUse::Unread(Unused::Untold)),
+    };
+    let used = match shards_abi::rate::read_used(&bytes) {
+        Ok(used) => used,
+        Err(broken) => return Ok(FinalUse::Unread(Unused::Broken(broken))),
+    };
+    let words = |why: &str| managed_words(format_args!("{why}"));
+    Ok(FinalUse::Read(crate::image::Microvm {
+        guest: match used.guest {
+            Ok(times) => Ok(times),
+            Err(why) => Err(words(why)?),
+        },
+        host: match used.host {
+            Ok(host) => Ok(host),
+            Err(why) => Err(words(why)?),
+        },
+    }))
+}
+
+/// A managed guest's record of its final use ([`final_use_file`]), read whole up to the
+/// longest use answer and a byte past it, so that a longer one reads as broken
+/// (`UseBroken::Long`) without being read whole.
+fn read_final_use(vsock: &Path) -> io::Result<Vec<u8>> {
+    let file = std::fs::File::open(final_use_file(vsock))?;
+    let most = u64::try_from(shards_abi::rate::ANSWER_MOST)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut io::Read::take(file, most), &mut bytes)?;
+    Ok(bytes)
+}
+
 /// The existing API protocol around a receipt the native owner already owns.
 pub struct ManagedGuest {
     process: crate::ManagedReceipt,
@@ -1661,10 +1821,9 @@ fn managed_shared(
     recovered: bool,
     report: Option<crate::physical::report::Receiver>,
 ) -> Result<triomphe::Arc<Shared>, Refusal> {
-    let report_cleanup = if report.is_some() {
-        ReportCleanup::Observing
-    } else {
-        ReportCleanup::Complete
+    let report_cleanup = match report {
+        Some(_) => ReportCleanup::Observing,
+        None => ReportCleanup::Complete,
     };
     let mut bytes = VecDeque::new();
     bytes
@@ -1693,6 +1852,7 @@ fn managed_shared(
             report_cleanup,
             ended_cpu: None,
             rate_period: None,
+            final_use: None,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -1832,6 +1992,15 @@ fn watch_managed(
         Ok(_) => Err(Refusal::Launch(crate::LaunchError::Observer)),
         Err(why) => Err(why),
     };
+    // An observation that failed is said at once: a take under way holds the report, which
+    // the cleanup below waits for, until the VM process it waits on itself ends.
+    if let Err(why) = &observed {
+        let mut state = lock(&shared.state);
+        if state.managed.is_none() {
+            state.managed = Some(Err(why.clone()));
+        }
+        shared.changed.notify_all();
+    }
     finish_managed_report(&shared);
     let said = match writer {
         Some(writer) => lossy_output(finish_drain(&shared, writer).bytes.make_contiguous()),
@@ -1871,15 +2040,14 @@ pub fn boot_managed(
     plan: crate::PreparedBoot,
     launcher: &mut dyn crate::ManagedLauncher,
 ) -> Result<ManagedGuest, Refusal> {
-    let (report, gpu_report) = match plan.gpu_report_request() {
+    let (opened, gpu_report) = match plan.gpu_report_request() {
         Some(request) => {
             let request = crate::physical::report::Request::copy_from(request)?;
-            let (receiver, writer) = crate::physical::report::Receiver::new(request)?;
-            (Some(receiver), Some(writer))
+            let (opened, writer) = crate::physical::report::Opened::new(request)?;
+            (Some(opened), Some(writer))
         }
         None => (None, None),
     };
-    let shared = managed_shared(plan.output_bytes, false, report)?;
     let drain_name = owned_text("shards-api-managed-drain")?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let (output, writer) = io::pipe().map_err(|e| managed_io("output pipe", e))?;
@@ -1908,6 +2076,24 @@ pub fn boot_managed(
         process.stop()?;
         return Err(Refusal::Launch(crate::LaunchError::Observer));
     }
+    // The report's take waits on the launched process itself, held from here (D233).
+    let report = match opened
+        .map(|opened| crate::physical::report::Vm::of(identity).map(|vm| opened.follow(vm)))
+        .transpose()
+    {
+        Ok(report) => report,
+        Err(why) => {
+            process.stop()?;
+            return Err(why);
+        }
+    };
+    let shared = match managed_shared(plan.output_bytes, false, report) {
+        Ok(shared) => shared,
+        Err(why) => {
+            process.stop()?;
+            return Err(why);
+        }
+    };
     lock(&shared.state).managed_ports = plan.ports;
     let drainer = shared.clone();
     if let Err(error) = std::thread::Builder::new()
@@ -1944,9 +2130,17 @@ pub fn attach_managed(
 }
 
 impl ManagedGuest {
-    /// Transfer the one private report within the original create deadline.
+    /// Transfer the one private report, by the create's deadline where
+    /// [`with_gpu_report`](crate::PreparedBoot::with_gpu_report) named one ([`Until::At`]) and
+    /// within `patience` (`Duration::MAX`: none of the caller's). With neither
+    /// ([`Until::Released`] and `Duration::MAX`) it waits until the report comes or its VM
+    /// process ends, as its kernel says, on the process held from its launch: refused
+    /// `GpuProbe(Ended)` where it ended first.
     /// A timeout/EOF/error never proves VM or helper termination. Recovery must
     /// use its already persisted canonical report; it cannot recreate this pipe.
+    ///
+    /// [`Until::At`]: crate::Until::At
+    /// [`Until::Released`]: crate::Until::Released
     pub fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, Refusal> {
         let mut report = self.shared.report.try_lock().map_err(|error| match error {
             std::sync::TryLockError::WouldBlock => Refusal::GpuProbe(crate::GpuProbeError::Pending),
@@ -2002,7 +2196,13 @@ impl ManagedGuest {
             .then(|| Instant::now().checked_add(patience))
             .flatten();
         let asked = rate.map_or(0, std::num::NonZeroU64::get);
-        let line = match rate_exchange(&self.process.identity()?.vsock, asked, deadline, patience) {
+        let line = match host_exchange(
+            &self.process.identity()?.vsock,
+            Exchange::Rate,
+            shards_abi::rate::ask(asked).as_bytes(),
+            deadline,
+            patience,
+        ) {
             Ok(line) => line,
             // Its process gone as it was asked: its end, which says why.
             Err(refused) => return Err(gone()?.unwrap_or(refused)),
@@ -2017,6 +2217,136 @@ impl ManagedGuest {
     /// the guest's own period and copies no number: none until a rate has been answered.
     pub fn rate_period(&self) -> Option<Duration> {
         lock(&self.shared.state).rate_period
+    }
+
+    /// What its vCPUs have run of its guest and its VM process has used of its host (D260), as
+    /// an image run's stats carry it (`ImageGuest::stats`' `microvm`, D241): each vCPU's guest
+    /// time as its hypervisor counts it (KVM's thread, HVF's `hv_vcpu_get_exec_time`, WHP's
+    /// run-time counter), then its VM process's own use (`platform::process_usage`), read by
+    /// that process in that order, so that [`Microvm::vmm_ns`](crate::image::Microvm::vmm_ns),
+    /// its VMM's own CPU time, is never less than none. Each part is its reading or its VM
+    /// process's words of why not.
+    ///
+    /// Asked on its vsock socket (`USE`, `shards_abi::rate`), as [`rate`](Self::rate) is,
+    /// waiting at most `patience` (`Duration::MAX`: until it answers or the guest ends).
+    /// Refused as [`Refusal::HostUse`] where its answer is none of the protocol's;
+    /// [`Refusal::Unsupported`] (`what: "host use"`) where its VM process takes no use (one
+    /// not booted `--host-managed`, or a shards before D260) or does not answer within
+    /// `patience`; [`Refusal::ManagedIo`] where its socket fails; and [`Refusal::Ended`] once
+    /// the guest has ended.
+    pub fn host_use(&self, patience: Duration) -> Result<ManagedUsed, Refusal> {
+        let gone = || {
+            self.end(&mut lock(&self.shared.state))
+                .map(|end| end.map(Refusal::Ended))
+        };
+        if let Some(ended) = self.ended()? {
+            return Ok(ManagedUsed::Ended(ended));
+        }
+        let deadline = (patience != Duration::MAX)
+            .then(|| Instant::now().checked_add(patience))
+            .flatten();
+        let asked = Instant::now();
+        let answer = match host_exchange(
+            &self.process.identity()?.vsock,
+            Exchange::Use,
+            shards_abi::rate::USE_ASK,
+            deadline,
+            patience,
+        ) {
+            Ok(answer) => answer,
+            Err(refused) => {
+                return match self.ended()? {
+                    Some(ended) => Ok(ManagedUsed::Ended(ended)),
+                    None => Err(gone()?.unwrap_or(refused)),
+                };
+            }
+        };
+        let answered = Instant::now();
+        let used = shards_abi::rate::read_used(&answer).map_err(Refusal::HostUse)?;
+        let words = |why: &str| managed_words(format_args!("{why}"));
+        let microvm = crate::image::Microvm {
+            guest: match used.guest {
+                Ok(times) => Ok(times),
+                Err(why) => Err(words(why)?),
+            },
+            host: match used.host {
+                Ok(host) => Ok(host),
+                Err(why) => Err(words(why)?),
+            },
+        };
+        Ok(ManagedUsed::Running(ManagedUse {
+            microvm,
+            asked,
+            answered,
+        }))
+    }
+
+    /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it comes),
+    /// with what its microVM used in all (D260's final use), as its VM process recorded it
+    /// before it exited ([`final_use_file`]): [`Unused::Killed`](crate::image::Unused::Killed)
+    /// where its stop came first and nothing was recorded, `Untold` where it ended without one.
+    pub fn wait_ended(&self, timeout: Duration) -> Result<Option<ManagedEnded>, Refusal> {
+        if Guest::wait_for(self, timeout)?.is_none() {
+            return Ok(None);
+        }
+        self.ended()
+    }
+
+    /// Its end and its final use, once it has ended: its record read the first time, and kept.
+    fn ended(&self) -> Result<Option<ManagedEnded>, Refusal> {
+        let mut state = lock(&self.shared.state);
+        let Some(end) = self.end(&mut state)? else {
+            return Ok(None);
+        };
+        let final_use = match &state.final_use {
+            Some(used) => used.clone(),
+            None => {
+                let stopping = state.stopping;
+                drop(state);
+                let used = final_use_of(read_final_use(&self.process.identity()?.vsock), stopping)?;
+                state = lock(&self.shared.state);
+                state.final_use.get_or_insert(used).clone()
+            }
+        };
+        drop(state);
+        Ok(Some(ManagedEnded { end, final_use }))
+    }
+
+    /// Its VM process (D233's VM process): the confined process its VMM runs in, which holds
+    /// its guest's RAM, by its pid and its start, so that its caller reads that process as the
+    /// VMM's and never one given its pid since. On Linux and macOS it is the process its
+    /// launcher started ([`identity`](Guest::identity)'s), which became the VM process in
+    /// place (exec), its pid and start kept through it; on Windows it is that `shards`'s
+    /// child, read from its record ([`vm_process_file`]). One VM process serves a guest for
+    /// its life: none restarts or replaces it.
+    ///
+    /// Each answer is checked against the process as its OS holds it now: refused
+    /// [`Refusal::Ended`] once the guest has ended; [`Refusal::Process`] where the process
+    /// named has gone (`Exited`) or its pid is another's (`DifferentStart`); on Windows
+    /// [`Refusal::VmProcess`] where its `shards` has not recorded it yet (`Unrecorded`) or its
+    /// record is broken (`Broken`), and [`Refusal::ManagedIo`] where it cannot be read.
+    pub fn vm_process(&self) -> Result<crate::VmProcess, Refusal> {
+        if let Some(end) = self.end(&mut lock(&self.shared.state))? {
+            return Err(Refusal::Ended(end));
+        }
+        let identity = self.process.identity()?;
+        #[cfg(unix)]
+        let named = crate::VmProcess {
+            pid: identity.pid,
+            started: identity.started,
+        };
+        #[cfg(windows)]
+        let named = read_vm_process(&identity.vsock)?;
+        let failed = |failure| Refusal::Process {
+            pid: named.pid,
+            expected_started: named.started,
+            failure,
+        };
+        #[cfg(unix)]
+        crate::taken::Held::find(named.pid, named.started).map_err(failed)?;
+        #[cfg(windows)]
+        borrowed_windows::Held::find(named.pid, named.started).map_err(failed)?;
+        Ok(named)
     }
 
     /// The room a budget leaves the guest, as an image run's (`ImageGuest::room`, D188, D241):
@@ -2185,16 +2515,44 @@ impl Drop for ManagedGuest {
     }
 }
 
-/// One rate asked of the VM process listening at `vsock`, and its answer's line, its newline
-/// last (D255, `shards_abi::rate`): one dial, its ask, then the line read a byte at a time to
-/// its newline or the longest answer, each within `deadline` (none: no clock), its caller's
-/// `patience`.
-fn rate_exchange(
+/// What a host client asks of a managed guest's VM process on its vsock socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exchange {
+    /// Its rate (D255): its answer one line.
+    Rate,
+    /// Its use (D260): its answer all its VM process says before closing the connection.
+    Use,
+}
+
+impl Exchange {
+    fn what(self) -> &'static str {
+        match self {
+            Self::Rate => "rate",
+            Self::Use => "host use",
+        }
+    }
+
+    /// Whether `answer` is whole before its connection closes.
+    fn whole(self, answer: &[u8]) -> bool {
+        match self {
+            Self::Rate => answer.contains(&b'\n'),
+            Self::Use => false,
+        }
+    }
+}
+
+/// One ask of the VM process listening at `vsock` (D255, D260, `shards_abi::rate`), and its
+/// answer: one dial, `ask`, then what it answers until its answer is whole or its connection
+/// closes, or past the longest answer, which its reader refuses; each within `deadline`
+/// (none: no clock), its caller's `patience`. Read as it comes, its buffer grown fallibly.
+fn host_exchange(
     vsock: &Path,
-    milli: u64,
+    exchange: Exchange,
+    ask: &[u8],
     deadline: Option<Instant>,
     patience: Duration,
 ) -> Result<Vec<u8>, Refusal> {
+    let what = exchange.what();
     let failed = |operation| {
         move |e: io::Error| Refusal::ManagedIo {
             operation,
@@ -2204,7 +2562,7 @@ fn rate_exchange(
     };
     let late = || {
         managed_words(format_args!("no answer within {patience:?}"))
-            .map(|why| Refusal::Unsupported { what: "rate", why })
+            .map(|why| Refusal::Unsupported { what, why })
     };
     let left = || match deadline {
         None => Ok(None),
@@ -2218,49 +2576,45 @@ fn rate_exchange(
     let mut s = match stream::connect_until(vsock, deadline) {
         Ok(s) => s,
         Err(e) if timed_out(&e) => return Err(late()?),
-        Err(e) => return Err(failed("rate's dial")(e)),
+        Err(e) => return Err(failed("host ask's dial")(e)),
     };
-    Stream::set_write_timeout(&s, left()?).map_err(failed("rate's ask"))?;
-    if let Err(e) = s.write_all(shards_abi::rate::ask(milli).as_bytes()) {
+    Stream::set_write_timeout(&s, left()?).map_err(failed("host ask"))?;
+    if let Err(e) = s.write_all(ask) {
         return Err(if timed_out(&e) {
             late()?
         } else {
-            failed("rate's ask")(e)
+            failed("host ask")(e)
         });
     }
-    let mut line = Vec::new();
-    loop {
-        Stream::set_read_timeout(&s, left()?).map_err(failed("rate's answer"))?;
-        let mut byte = [0u8; 1];
-        match s.read(&mut byte) {
-            Ok(0) => {
+    let most = shards_abi::rate::ANSWER_MOST.saturating_add(1);
+    let mut answer = Vec::new();
+    while !exchange.whole(&answer) && answer.len() < most {
+        Stream::set_read_timeout(&s, left()?).map_err(failed("host ask's answer"))?;
+        answer.try_reserve(1).map_err(|_| Refusal::Allocation {
+            what: "a host ask's answer",
+        })?;
+        let at = answer.len();
+        answer.resize(answer.capacity().min(most), 0);
+        let read = s.read(answer.get_mut(at..).unwrap_or_default());
+        answer.truncate(at.saturating_add(*read.as_ref().unwrap_or(&0)));
+        match read {
+            Ok(0) if at == 0 => {
                 return Err(Refusal::Unsupported {
-                    what: "rate",
+                    what,
                     why: managed_words(format_args!(
-                        "its VM process closed the ask unanswered: it takes no rate from its \
-                         host's clients (one not booted --host-managed, or a shards before D255)"
+                        "its VM process closed the ask unanswered: it takes no {what} from its \
+                         host's clients (one not booted --host-managed, or a shards before it)"
                     ))?,
                 });
             }
-            Ok(_) => {
-                line.try_reserve(1).map_err(|_| Refusal::Allocation {
-                    what: "a rate's answer",
-                })?;
-                line.extend_from_slice(&byte);
-                if byte == *b"\n" {
-                    return Ok(line);
-                }
-                if line.len() >= shards_abi::rate::ANSWER_MOST {
-                    return Err(Refusal::Rate(managed_words(format_args!(
-                        "its VM process answered past the longest answer, no line"
-                    ))?));
-                }
-            }
+            Ok(0) => break,
+            Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) if timed_out(&e) => return Err(late()?),
-            Err(e) => return Err(failed("rate's answer")(e)),
+            Err(e) => return Err(failed("host ask's answer")(e)),
         }
     }
+    Ok(answer)
 }
 
 /// A managed guest's refusal's words, allocated as its path allocates: fallibly.
@@ -2575,12 +2929,14 @@ impl Guest for ShardsGuest {
             return Err(refusal);
         }
         #[cfg(unix)]
-        let (pid, started) = (*booted, crate::taken::started(*booted));
+        let (pid, started) = (booted.id(), crate::taken::started(booted.id()));
         #[cfg(windows)]
         let (pid, started) = {
-            use std::os::windows::io::AsRawHandle as _;
-            let child = lock(booted);
-            (child.id(), crate::taken::created(child.as_raw_handle()))
+            use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+            (
+                booted.id(),
+                crate::taken::created(booted.as_handle().as_raw_handle()),
+            )
         };
         drop(state);
         Ok(Identity {
@@ -2634,6 +2990,98 @@ impl Drop for ShardsGuest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Child, Command, Stdio};
+
+    /// Do start `shards` the SDK's way ([`spawn_shards`]), again and again, while four threads make
+    /// input pairs (`shards_ipc::input_pair`: a socketpair that std makes, then marks
+    /// close-on-exec, on macOS) and let them go. Expect: no child holds a socket, as none was
+    /// given one; each says so from its own descriptor table. Red with std's `Command` in
+    /// `spawn_shards`'s place (control-04: one SDK process's run B's `shards` holding run A's input
+    /// or output): on macOS 14 to 26 of the 64 children held pairs' ends in each of six
+    /// runs (D248, control-04).
+    #[cfg(unix)]
+    #[test]
+    fn a_started_shards_holds_no_socket_another_thread_was_making() {
+        use std::io::BufRead as _;
+        use std::sync::atomic::AtomicBool;
+        let stop = AtomicBool::new(false);
+        let me = std::env::current_exe().unwrap();
+        let args = [
+            "--exact",
+            "client::tests::sockets_held_report",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ]
+        .map(OsString::from);
+        let env = [("SHARDS_API_SOCKETS_HELD", OsString::from("1"))];
+        // Sets `stop` as the scope's body ends, by a panic too, so the makers end and the
+        // scope joins them: a failed check fails the test rather than hanging it.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let held: Vec<String> = std::thread::scope(|scope| {
+            let _stop = Stop(&stop);
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        drop(shards_ipc::input_pair(1).unwrap());
+                    }
+                });
+            }
+            let mut held = Vec::new();
+            for _ in 0..64 {
+                let (said, output) = io::pipe().unwrap();
+                let child = spawn_shards(&me, &args, Some(&env), &output).unwrap();
+                drop(output);
+                // Read to libtest's last line, not to the pipe's end: a std child another test
+                // of this binary starts meanwhile can hold the write end (the race tested).
+                let mut out = Vec::new();
+                for l in io::BufReader::new(said).lines().map_while(Result::ok) {
+                    let last = l.starts_with("test result:");
+                    out.push(l);
+                    if last {
+                        break;
+                    }
+                }
+                assert_eq!(child.wait().unwrap(), 0, "{out:#?}");
+                // After libtest's own `test … ... ` on the same line.
+                let line = out
+                    .iter()
+                    .find_map(|l| l.get(l.find("sockets-held ")?..))
+                    .unwrap_or_else(|| panic!("no report: {out:#?}"))
+                    .to_string();
+                if !line.starts_with("sockets-held 0 ") {
+                    held.push(line);
+                }
+            }
+            held
+        });
+        assert!(
+            held.is_empty(),
+            "children held sockets they were never given: {held:?}"
+        );
+    }
+
+    /// [`a_started_shards_holds_no_socket_another_thread_was_making`]'s child: says how many
+    /// sockets it holds, from its own descriptor table (macOS's /dev/fd, Linux's
+    /// /proc/self/fd through it), the directory's own descriptor not one.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "the child a_started_shards_holds_no_socket_another_thread_was_making runs"]
+    fn sockets_held_report() {
+        use std::os::unix::fs::FileTypeExt as _;
+        assert!(std::env::var_os("SHARDS_API_SOCKETS_HELD").is_some());
+        let held = std::fs::read_dir("/dev/fd")
+            .unwrap()
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok())
+            .filter(|&fd| std::fs::metadata(format!("/dev/fd/{fd}")).is_ok_and(|m| m.file_type().is_socket()))
+            .collect::<Vec<_>>();
+        println!("sockets-held {} {held:?}", held.len());
+    }
     use crate::{Disk, Share};
 
     #[derive(Default)]
@@ -2737,15 +3185,31 @@ mod tests {
         coordinate_stop: bool,
         socket: PathBuf,
     ) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
-        let here = std::env::current_dir().unwrap();
-        let root = here.ancestors().last().unwrap();
-        let plan = prepare_boot(&spec(), &root.join("model").join("never-executed"), &socket, 0).unwrap();
-        let native = triomphe::Arc::try_new(ModelNative {
-            identity: Identity {
+        managed_model_as(
+            coordinate_stop,
+            Identity {
                 pid: 42,
                 started: 7,
                 vsock: socket,
             },
+        )
+    }
+    /// [`managed_model`] whose native receipt names `identity`.
+    fn managed_model_as(
+        coordinate_stop: bool,
+        identity: Identity,
+    ) -> (ManagedGuest, triomphe::Arc<ModelNative>) {
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let plan = prepare_boot(
+            &spec(),
+            &root.join("model").join("never-executed"),
+            &identity.vsock,
+            0,
+        )
+        .unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity,
             state: Mutex::new(NativeState::default()),
             changed: Condvar::new(),
             coordinate_stop,
@@ -2754,6 +3218,400 @@ mod tests {
         .unwrap();
         let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
         (guest, native)
+    }
+
+    /// A managed guest whose plan asks for its GPU report with no clock ([`crate::Until::Released`]),
+    /// its VM process a stand-in ([`waiter`], waiting `until`) that its stand-in native receipt
+    /// names, which holds the report's writer: the test takes it from the receipt to hold as
+    /// another process would. And the report its VM process would write.
+    fn reported_model(
+        until: &str,
+    ) -> (
+        ManagedGuest,
+        triomphe::Arc<ModelNative>,
+        Child,
+        io::PipeWriter,
+        crate::physical::GpuReport,
+    ) {
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let vm = waiter(until);
+        let identity = Identity {
+            pid: vm.id(),
+            started: crate::taken::started(vm.id()).unwrap(),
+            vsock: root.join("model").join("native").join("v"),
+        };
+        let (guest, native, writer, report) = reported_model_as(identity);
+        (guest, native, vm, writer, report)
+    }
+
+    /// [`reported_model`] whose stand-in receipt names `identity`, a live process of the test's.
+    fn reported_model_as(
+        identity: Identity,
+    ) -> (
+        ManagedGuest,
+        triomphe::Arc<ModelNative>,
+        io::PipeWriter,
+        crate::physical::GpuReport,
+    ) {
+        use crate::physical::{GpuProbe, GpuReport, ResolvedGpu};
+        let here = std::env::current_dir().unwrap();
+        let root = here.ancestors().last().unwrap();
+        let selected = crate::PhysicalGpu::MetalRegistry(7);
+        let mut spec = spec();
+        spec.gpu = true;
+        spec.gpu_devices = vec![selected];
+        let scope = [0x5a; 16];
+        let plan = prepare_boot(
+            &spec,
+            &root.join("model").join("never-executed"),
+            &identity.vsock,
+            0,
+        )
+        .unwrap()
+        .with_gpu_report(scope, crate::Until::Released)
+        .unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity,
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop: false,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .unwrap();
+        let guest = boot_managed(plan, &mut ModelLauncher(native.clone())).unwrap();
+        let writer = native
+            .state
+            .lock()
+            .unwrap()
+            .io
+            .as_mut()
+            .unwrap()
+            .gpu_report
+            .take()
+            .unwrap();
+        let report = GpuReport {
+            scope,
+            probe: GpuProbe {
+                devices: vec![ResolvedGpu {
+                    physical: selected,
+                    uuid: [4; 16],
+                    pci: None,
+                    luid: Some(7u64.to_be_bytes()),
+                    name: None,
+                    device_local_bytes: None,
+                }],
+                host_visible_bytes: 1,
+            },
+        };
+        (guest, native, writer, report)
+    }
+
+    /// D233 on Windows: the launched `shards` (the receipt's identity) is the VM process's
+    /// keeper, not the VM process, which it starts as its child and names in its record. A
+    /// keeper that ends first, its VM process still running, is no VM's end: a take with no
+    /// clock goes on waiting on the VM process its record names, and takes the report that
+    /// process writes after its keeper has gone, never `Ended`.
+    #[cfg(windows)]
+    #[test]
+    fn a_report_with_no_clock_outlives_its_vm_processs_keeper() {
+        use std::io::Write as _;
+        let dir = shards_testdir::TempDir::new("d233-keeper").unwrap();
+        let vsock = dir.join("v");
+        let mut keeper = waiter("stdin");
+        let identity = Identity {
+            pid: keeper.id(),
+            started: crate::taken::started(keeper.id()).unwrap(),
+            vsock: vsock.clone(),
+        };
+        // Not named yet as the launch returns: the take follows the keeper.
+        let (guest, native, mut writer, report) = reported_model_as(identity);
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        // The keeper names its VM process, as `shards` does before it resumes it, then ends
+        // first, the VM process still running.
+        let mut vm = waiter("ended");
+        let started = crate::taken::started(vm.id()).unwrap();
+        std::fs::write(vm_process_file(&vsock), format!("{} {started}\n", vm.id())).unwrap();
+        drop(keeper.stdin.take());
+        assert!(keeper.wait().unwrap().success());
+        // The VM process writes its report after its keeper has gone.
+        writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Ok(report)
+        );
+        vm.kill().unwrap();
+        vm.wait().unwrap();
+        native.publish(crate::TerminalScope::Released);
+    }
+
+    /// D233, Hex's decision 9: a report asked with no clock is waited on until its VM process
+    /// ends, as its kernel says on the process held from its launch, not by its writer's close:
+    /// the writer still held elsewhere, the take answers `Ended`, typed, once the VM process
+    /// has exited, and not before.
+    #[test]
+    fn a_report_with_no_clock_is_refused_ended_as_its_vm_process_ends() {
+        let (guest, native, mut vm, writer, _) = reported_model("stdin");
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        // No clock of its own: nothing answers while the VM process lives, however long the
+        // least wait this host keeps is.
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        // Its stdin ended, it exits; its exit, reaped, a fact waited for as such. Then the
+        // take, woken by its kernel, answers at once: looked at each millisecond (poll(2)'s
+        // unit), never found blocked twice.
+        drop(vm.stdin.take());
+        assert!(vm.wait().unwrap().success());
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Err(Refusal::GpuProbe(crate::GpuProbeError::Ended))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(writer);
+    }
+
+    /// D233: a report asked with no clock whose VM process is killed outright (SIGKILL,
+    /// TerminateProcess) wakes from its kernel alone: its native receipt says nothing of the
+    /// end before the take answers `Ended`, so no signal of the watcher's (D233's first event
+    /// and end pipe, whose failure left such a take unwoken) has any part in it.
+    #[test]
+    fn a_report_with_no_clock_wakes_as_its_vm_process_is_killed() {
+        let (guest, native, mut vm, writer, _) = reported_model("ended");
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        vm.kill().unwrap();
+        assert!(!vm.wait().unwrap().success());
+        assert!(crate::ManagedProcess::terminal(&*native).unwrap().is_none());
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Err(Refusal::GpuProbe(crate::GpuProbeError::Ended))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(writer);
+    }
+
+    /// D233: a report asked with no clock that comes while its VM process lives is the report,
+    /// waited for until its writer closes after it: judged from that close as the kernel
+    /// says it ([`every_writer_gone`]), not from the test's drop of its own end (PM M587).
+    #[test]
+    fn a_report_with_no_clock_is_taken_as_it_comes() {
+        use std::io::Write as _;
+        let (guest, native, mut vm, mut writer, report) = reported_model("ended");
+        #[cfg(target_os = "linux")]
+        let read = read_end_of(&writer);
+        let taking = guest.try_clone().unwrap();
+        let (worker, rx) = crate::while_runs::on_a_thread(move || taking.take_gpu_report(Duration::MAX));
+        assert!(rx.recv_timeout(crate::while_runs::kept_wait()).is_err());
+        writer.write_all(report.encode().unwrap().as_bytes()).unwrap();
+        drop(writer);
+        #[cfg(target_os = "linux")]
+        every_writer_gone(&read);
+        assert_eq!(
+            crate::while_runs::answer(&rx, worker, Duration::from_millis(1)),
+            Ok(report)
+        );
+        vm.kill().unwrap();
+        vm.wait().unwrap();
+        native.publish(crate::TerminalScope::Released);
+    }
+
+    /// A read end of `writer`'s pipe of this test's own, a duplicate of the one this process
+    /// holds beside it (its guest's), found by the pipe both name in `/proc/self/fd`: for
+    /// [`every_writer_gone`] to ask the kernel about the pipe's writers.
+    #[cfg(target_os = "linux")]
+    fn read_end_of(writer: &io::PipeWriter) -> std::os::fd::OwnedFd {
+        use std::os::fd::{AsRawFd as _, BorrowedFd, RawFd};
+        let named = |fd: RawFd| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok();
+        let pipe = named(writer.as_raw_fd()).unwrap();
+        for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+            let Ok(fd) = entry.unwrap().file_name().to_string_lossy().parse::<RawFd>() else {
+                continue;
+            };
+            if fd == writer.as_raw_fd() || named(fd).as_ref() != Some(&pipe) {
+                continue;
+            }
+            // SAFETY: a descriptor of this process, duplicated at once; another thread may
+            // have closed it and opened another as it was named, which the look after the
+            // duplicate refuses.
+            let Ok(read) = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned() else {
+                continue;
+            };
+            if named(read.as_raw_fd()).as_ref() == Some(&pipe) {
+                return read;
+            }
+        }
+        panic!("no read end of {pipe:?} in this process");
+    }
+
+    /// Waits, with no clock, until every write end of `read`'s pipe is gone, every process's,
+    /// as poll(2) says it: POLLHUP, which Linux reports however `events` is set and once the
+    /// pipe has no writer, data unread or not (fs/pipe.c `pipe_poll`). The test's own drop is
+    /// not that: a spawn of another test's that forks as this one holds its end copies it
+    /// into a child that holds it until its exec, as Linux's clone copies every descriptor
+    /// (PM M587).
+    #[cfg(target_os = "linux")]
+    fn every_writer_gone(read: &std::os::fd::OwnedFd) {
+        use std::os::fd::AsRawFd as _;
+        let mut asked = libc::pollfd {
+            fd: read.as_raw_fd(),
+            events: 0,
+            revents: 0,
+        };
+        // SAFETY: one initialized pollfd of a descriptor `read` owns, its count 1.
+        while unsafe { libc::poll(&mut asked, 1, -1) } != 1 {
+            assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::Interrupted);
+        }
+        assert_ne!(asked.revents & libc::POLLHUP, 0, "{:#x}", asked.revents);
+    }
+
+    /// A managed guest's VM process on Linux and macOS is the process its launcher started,
+    /// become shards-vm in place: named by its pid and its start as the OS reads them, while
+    /// it lives; an identity whose start is another's refused `DifferentStart` with the start
+    /// observed, and one whose process has gone refused, neither named; an ended guest
+    /// refused `Ended`.
+    #[cfg(unix)]
+    #[test]
+    fn a_managed_guests_vm_process_is_the_launched_process_on_unix() {
+        let mut child = Command::new("sleep").arg("600").spawn().unwrap();
+        let (pid, started) = (child.id(), crate::taken::started(child.id()).unwrap());
+        let dir = shards_testdir::TempDir::new("vm-process").unwrap();
+        let vsock = dir.join("v");
+        let (guest, native) = managed_model_as(
+            false,
+            Identity {
+                pid,
+                started,
+                vsock: vsock.clone(),
+            },
+        );
+        assert_eq!(
+            guest.vm_process().unwrap(),
+            crate::VmProcess { pid, started },
+            "the launched process, its start the OS's"
+        );
+        let (stale, _) = managed_model_as(
+            false,
+            Identity {
+                pid,
+                started: started.wrapping_add(1),
+                vsock: vsock.clone(),
+            },
+        );
+        assert!(
+            matches!(stale.vm_process(), Err(Refusal::Process {
+                pid: p, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if p == pid && expected_started == started.wrapping_add(1) && observed == started),
+            "{:?}",
+            stale.vm_process()
+        );
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            matches!(guest.vm_process(), Err(Refusal::Process { pid: p, expected_started, .. })
+                if p == pid && expected_started == started),
+            "{:?}",
+            guest.vm_process()
+        );
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        assert_eq!(guest.vm_process(), Err(Refusal::Ended(End::PowerOff)));
+    }
+
+    /// A managed guest's VM process on Windows is its `shards`'s child, named by the record
+    /// its `shards` writes beside its socket: the process it names, its start the OS's; none
+    /// until it is written (`Unrecorded`); a record whose start is another's refused
+    /// `DifferentStart`; a broken one refused `Broken`.
+    #[cfg(windows)]
+    #[test]
+    fn a_managed_guests_vm_process_on_windows_is_the_one_its_record_names() {
+        let (mut launched, identity) = waiting();
+        let (mut vm, vm_identity) = waiting();
+        let record = vm_process_file(&identity.vsock);
+        let (guest, native) = managed_model_as(false, identity.clone());
+        assert_eq!(
+            guest.vm_process(),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded))
+        );
+        std::fs::write(&record, format!("{} {}\n", vm_identity.pid, vm_identity.started)).unwrap();
+        assert_eq!(
+            guest.vm_process().unwrap(),
+            crate::VmProcess {
+                pid: vm_identity.pid,
+                started: vm_identity.started,
+            }
+        );
+        let other = vm_identity.started.wrapping_add(1);
+        std::fs::write(&record, format!("{} {other}\n", vm_identity.pid)).unwrap();
+        assert!(
+            matches!(guest.vm_process(), Err(Refusal::Process {
+                pid, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if pid == vm_identity.pid && expected_started == other && observed == vm_identity.started),
+            "{:?}",
+            guest.vm_process()
+        );
+        std::fs::write(&record, "x\n").unwrap();
+        assert_eq!(
+            guest.vm_process(),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Broken))
+        );
+        native.publish(crate::TerminalScope::Released);
+        drop(guest);
+        for child in [&mut launched, &mut vm] {
+            child.kill().unwrap();
+            let _ = child.wait();
+        }
+    }
+
+    /// A VM process's record is read as its `shards` writes it: `PID START` and a newline, both
+    /// decimal digits alone, neither zero, at most its longest; anything else is broken, and
+    /// none is unrecorded.
+    #[test]
+    fn a_vm_process_record_names_one_process_or_is_refused() {
+        let dir = shards_testdir::TempDir::new("vm-record").unwrap();
+        let vsock = dir.join("v");
+        assert_eq!(
+            read_vm_process(&vsock),
+            Err(Refusal::VmProcess(crate::VmProcessRefusal::Unrecorded))
+        );
+        let longest = format!("{} {}\n", u32::MAX, u64::MAX);
+        assert_eq!(longest.len(), VM_PROCESS_MOST);
+        for (text, named) in [
+            ("12 34\n", Some((12, 34))),
+            (longest.as_str(), Some((u32::MAX, u64::MAX))),
+        ] {
+            std::fs::write(vm_process_file(&vsock), text).unwrap();
+            let expected = named.map(|(pid, started)| crate::VmProcess { pid, started });
+            assert_eq!(read_vm_process(&vsock).ok(), expected, "{text:?}");
+        }
+        // Past the longest, though each word would parse: read no further than a byte past it.
+        let past = format!("{}12 34\n", "0".repeat(VM_PROCESS_MOST));
+        for text in [
+            "",
+            "12 34",
+            "12  34\n",
+            " 12 34\n",
+            "12 34 \n",
+            "+12 34\n",
+            "12 -34\n",
+            "0 34\n",
+            "12 0\n",
+            "4294967296 1\n",
+            "1 18446744073709551616\n",
+            "12 34\n\n",
+            "12\n",
+            past.as_str(),
+        ] {
+            std::fs::write(vm_process_file(&vsock), text).unwrap();
+            assert_eq!(
+                read_vm_process(&vsock),
+                Err(Refusal::VmProcess(crate::VmProcessRefusal::Broken)),
+                "{text:?}"
+            );
+        }
     }
 
     /// A listener at `path` for a stand-in of a managed guest's VM process, as each OS binds
@@ -2862,6 +3720,188 @@ mod tests {
         drop(listener);
     }
 
+    /// D260: a managed guest's use is asked on its vsock socket, `USE`, and read as its VM
+    /// process answers: its vCPUs' guest times and its own use, its VMM's own the difference;
+    /// either part's words where it was not read; an answer none of the protocol's refused
+    /// by what broke it; an ask closed unanswered, a VM process that takes none.
+    #[test]
+    fn a_managed_guests_use_is_asked_on_its_socket_and_read_as_answered() {
+        use shards_abi::rate::UseBroken;
+        let dir = shards_testdir::TempDir::new("api-use").unwrap();
+        let socket = dir.join("v");
+        let stand_in = rate_stand_in(
+            &socket,
+            vec![
+                Some(
+                    b"USED\ndeparted 5\nvcpu 0 400\nvcpu 1 600 unread hvf-exec-time 3\nhost 1500 8192 4096 thread\n",
+                ),
+                Some(b"USED\nguest-unread the microVM has not started\nhost 70 1 2 thread\n"),
+                Some(b"USED\ndeparted 9\nhost-unread its VM process: denied\n"),
+                Some(b"USED\nhost 1 2 3 thread\n"),
+                Some(b"USED\ndeparted 1\nhost 1 2"),
+                Some(b"RATED 250 1\n"),
+                None,
+            ],
+        );
+        let (guest, _native) = managed_model_at(false, socket);
+        let before = Instant::now();
+        let used = running(guest.host_use(Duration::MAX));
+        assert!(before <= used.asked && used.asked <= used.answered);
+        let times = crate::image::GuestTimes {
+            vcpus: vec![
+                crate::image::VcpuTime {
+                    index: 0,
+                    guest_ns: 400,
+                    unread: None,
+                },
+                crate::image::VcpuTime {
+                    index: 1,
+                    guest_ns: 600,
+                    unread: Some(shards_abi::guest_time::Unread::HvfExecTime(3)),
+                },
+            ],
+            departed_ns: 5,
+        };
+        let host = crate::image::HostUse {
+            cpu_ns: 1500,
+            resident_bytes: 8192,
+            footprint_bytes: 4096,
+            charged: crate::image::Charged::ToThread,
+        };
+        assert_eq!(
+            used.microvm,
+            crate::image::Microvm {
+                host: Ok(host),
+                guest: Ok(times),
+            }
+        );
+        assert_eq!(used.microvm.vmm_ns(), Some(1500 - 1005));
+        let unstarted = running(guest.host_use(Duration::MAX)).microvm;
+        assert_eq!(unstarted.guest, Err("the microVM has not started".to_string()));
+        assert_eq!(unstarted.host.as_ref().map(|h| h.cpu_ns), Ok(70));
+        assert_eq!(unstarted.vmm_ns(), None, "no guest time read");
+        let unhosted = running(guest.host_use(Duration::MAX)).microvm;
+        assert_eq!(unhosted.host, Err("its VM process: denied".to_string()));
+        assert_eq!(unhosted.guest.map(|g| g.total_ns()), Ok(9));
+        for broken in [UseBroken::Guest, UseBroken::Text, UseBroken::Word] {
+            assert_eq!(
+                guest.host_use(Duration::MAX),
+                Err(Refusal::HostUse(broken)),
+                "{broken:?}"
+            );
+        }
+        assert!(matches!(
+            guest.host_use(Duration::MAX),
+            Err(Refusal::Unsupported { what: "host use", .. })
+        ));
+        let asks = stand_in.join().unwrap();
+        assert_eq!(asks, vec![b"USE\n".to_vec(); 7]);
+    }
+
+    /// A managed guest's use while it runs ([`ManagedUsed::Running`]).
+    fn running(used: Result<ManagedUsed, Refusal>) -> ManagedUse {
+        match used {
+            Ok(ManagedUsed::Running(used)) => used,
+            other => panic!("not a running guest's use: {other:?}"),
+        }
+    }
+
+    /// D260's final use, a managed guest's: once it has ended, its use is its end and its final
+    /// use as its record says, asking nothing, the same through `wait_ended` and `host_use`,
+    /// kept as first read; a record none of the protocol's typed by what breaks it; none
+    /// recorded, untold, or killed where its stop came first.
+    #[test]
+    fn a_managed_guests_final_use_is_its_record_once_it_has_ended() {
+        use crate::image::{FinalUse, Unused};
+        let dir = shards_testdir::TempDir::new("api-final").unwrap();
+        let socket = dir.join("v");
+        let used = shards_abi::rate::used(
+            Ok(&crate::image::GuestTimes {
+                vcpus: vec![crate::image::VcpuTime {
+                    index: 0,
+                    guest_ns: 700,
+                    unread: None,
+                }],
+                departed_ns: 0,
+            }),
+            Ok(&crate::image::HostUse {
+                cpu_ns: 900,
+                resident_bytes: 1,
+                footprint_bytes: 2,
+                charged: crate::image::Charged::ToThread,
+            }),
+        );
+        std::fs::write(final_use_file(&socket), &used).unwrap();
+        let (guest, native) = managed_model_at(false, socket.clone());
+        assert_eq!(guest.wait_ended(Duration::ZERO), Ok(None), "it runs");
+        native.publish(crate::TerminalScope::Released);
+        let read = shards_abi::rate::read_used(used.as_bytes()).unwrap();
+        let ended = ManagedEnded {
+            end: End::PowerOff,
+            final_use: FinalUse::Read(crate::image::Microvm {
+                guest: Ok(read.guest.unwrap()),
+                host: Ok(read.host.unwrap()),
+            }),
+        };
+        assert_eq!(guest.wait_ended(Duration::MAX), Ok(Some(ended.clone())));
+        std::fs::remove_file(final_use_file(&socket)).unwrap();
+        assert_eq!(
+            guest.host_use(Duration::MAX),
+            Ok(ManagedUsed::Ended(ended)),
+            "kept as first read"
+        );
+        let other = dir.join("w");
+        std::fs::write(final_use_file(&other), b"USED\nhost 1 2").unwrap();
+        let (guest, native) = managed_model_at(false, other);
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_ended(Duration::MAX).map(|e| e.map(|e| e.final_use)),
+            Ok(Some(FinalUse::Unread(Unused::Broken(
+                shards_abi::rate::UseBroken::Text
+            ))))
+        );
+        let (guest, native) = managed_model_at(false, dir.join("x"));
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(
+            guest.wait_ended(Duration::MAX).map(|e| e.map(|e| e.final_use)),
+            Ok(Some(FinalUse::Unread(Unused::Untold)))
+        );
+        let (guest, _native) = managed_model_at(false, dir.join("y"));
+        guest.stop().unwrap();
+        assert_eq!(
+            guest.wait_ended(Duration::MAX),
+            Ok(Some(ManagedEnded {
+                end: End::Stopped,
+                final_use: FinalUse::Unread(Unused::Killed),
+            }))
+        );
+    }
+
+    /// D260: a use its VM process does not answer within its caller's patience is refused as
+    /// unanswered, typed; once the guest has ended, its use is its end, asking nothing.
+    #[test]
+    fn a_managed_use_unanswered_or_of_an_ended_guest_is_refused() {
+        let dir = shards_testdir::TempDir::new("api-use-late").unwrap();
+        let socket = dir.join("v");
+        let listener = rate_listener(&socket);
+        let (guest, native) = managed_model_at(false, socket);
+        let asked = guest.host_use(Duration::ZERO);
+        assert!(
+            matches!(&asked, Err(Refusal::Unsupported { what: "host use", why }) if why.starts_with("no answer within")),
+            "{asked:?}"
+        );
+        drop(listener);
+        native.publish(crate::TerminalScope::Released);
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::PowerOff));
+        assert_eq!(
+            guest.host_use(Duration::MAX),
+            Ok(ManagedUsed::Ended(ManagedEnded {
+                end: End::PowerOff,
+                final_use: crate::image::FinalUse::Unread(crate::image::Unused::Untold),
+            }))
+        );
+    }
+
     /// D255: a managed guest's room is refused, typed, as nothing holds a managed guest
     /// within one; and once the guest has ended, its rate is its end, asking nothing.
     #[test]
@@ -2956,9 +3996,11 @@ mod tests {
         let request = crate::physical::report::Request {
             scope: [0x93; 16],
             selected: vec![crate::PhysicalGpu::MetalRegistry(7)],
-            deadline: crate::while_runs::latest(),
+            until: crate::Until::At(crate::while_runs::latest()),
         };
-        let (receiver, mut writer) = crate::physical::report::Receiver::new(request).unwrap();
+        let (opened, mut writer) = crate::physical::report::Opened::new(request).unwrap();
+        // Its VM process this test process, which outlives the case.
+        let receiver = opened.follow(crate::physical::report::this_process());
         // Caller error, first observer error, then the old observer's retry
         // after last-drop. New native-event waiting does not need that retry.
         receiver.fail_cancel_calls_for_test(3);
@@ -3413,7 +4455,7 @@ mod tests {
         let binary = dir.join("never-started");
         let socket = dir.join("v");
         for gpu in [false, true] {
-            for cmdline in ["--host-managed", "--", "console=ttyS0"] {
+            for cmdline in ["--host-managed", "--", "console=hvc0"] {
                 let mut spec = spec();
                 spec.gpu = gpu;
                 spec.cmdline = cmdline.into();
@@ -3475,23 +4517,14 @@ mod tests {
         assert_eq!(node.runtime_paths().try_clone().unwrap(), *node.runtime_paths());
         assert!(Shards::configured("relative".into(), home.clone()).is_err());
         assert!(Shards::configured(cache.clone(), "".into()).is_err());
-        let mut command = Command::new(dir.join("never-started"));
-        command.env("FORBIDDEN_MODEL_INPUT", "value");
-        node.environment(&mut command).unwrap();
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut expected = vec![
-            (OsString::from("SHARDS_CACHE"), Some(cache.into_os_string())),
-            (OsString::from("SHARDS_HOME"), Some(home.into_os_string())),
+            ("SHARDS_CACHE", cache.into_os_string()),
+            ("SHARDS_HOME", home.into_os_string()),
         ];
         #[cfg(windows)]
-        expected.push((OsString::from("SystemRoot"), Some(system_root().unwrap())));
-        assert_eq!(
-            command
-                .get_envs()
-                .map(|(name, value)| (name.to_owned(), value.map(OsString::from)))
-                .collect::<Vec<_>>(),
-            expected
-        );
+        expected.push(("SystemRoot", system_root().unwrap()));
+        assert_eq!(node.environment().unwrap(), expected);
         let mut spec = spec();
         spec.binary = None;
         assert!(matches!(
@@ -3509,21 +4542,20 @@ mod tests {
     fn a_configured_providers_child_opens_sockets() {
         let dir = shards_testdir::TempDir::new("api-env-child").unwrap();
         let node = Shards::configured(dir.join("cache"), dir.join("home")).unwrap();
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args([
+        let args = [
             "--exact",
             "client::tests::in_a_configured_environment_a_socket_binds",
             "--ignored",
             "--test-threads=1",
-        ]);
-        node.environment(&mut command).unwrap();
-        let out = command.output().unwrap();
-        assert!(
-            out.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        ]
+        .map(OsString::from);
+        let (mut said, output) = io::pipe().unwrap();
+        let env = node.environment().unwrap();
+        let child = spawn_shards(&std::env::current_exe().unwrap(), &args, Some(&env), &output).unwrap();
+        drop(output);
+        let mut out = String::new();
+        said.read_to_string(&mut out).unwrap();
+        assert_eq!(child.wait().unwrap(), 0, "{out}");
     }
 
     /// [`a_configured_providers_child_opens_sockets`]'s child, run in its environment alone.
@@ -3539,7 +4571,7 @@ mod tests {
         GuestSpec {
             kernel: "/k/Image".into(),
             init: Init::Executable("/k/init".into()),
-            cmdline: "console=ttyS0 quiet".into(),
+            cmdline: "console=hvc0 quiet".into(),
             vcpus: 2,
             memory_mib: 256,
             gpu: false,
@@ -3578,7 +4610,7 @@ mod tests {
                 "--init",
                 "/k/init",
                 "--cmdline",
-                "console=ttyS0 quiet",
+                "console=hvc0 quiet",
                 "--cpus",
                 "2",
                 "--memory",
@@ -3717,20 +4749,11 @@ mod tests {
         assert_ne!(dir.0, again.0);
     }
 
-    /// A stand-in script at `bin`, `body` its text: written beside it and installed by
-    /// install(1), so no descriptor of this process ever writes the file it executes (one a
-    /// test beside it forked while open would fail its exec ETXTBSY, execve(2)).
+    /// A stand-in script at `bin`, `body` its text, written by a process of its own
+    /// (`shards_testdir::program`): no exec of it fails ETXTBSY.
     #[cfg(unix)]
     fn installed(bin: &Path, body: &str) {
-        let source = bin.with_extension("sh");
-        std::fs::write(&source, body).unwrap();
-        let done = Command::new("install")
-            .args(["-m", "755"])
-            .arg(&source)
-            .arg(bin)
-            .status()
-            .unwrap();
-        assert!(done.success());
+        shards_testdir::program(bin, body).unwrap();
     }
 
     /// A guest's socket and its muxer's side of one connection, answering `answer` to the
@@ -3908,7 +4931,7 @@ mod tests {
         ] {
             match refused {
                 Some(Refusal::Stalled(stall)) => {
-                    assert_eq!((stall.least(), stall.slowest()), (least, slowest), "{what}");
+                    assert_eq!((stall.least(), stall.slowest()), (Some(least), slowest), "{what}");
                     let (over, waited) = (stall.over(), stall.waited());
                     assert!(over >= slowest && waited >= over, "{what}: {over:?} {waited:?}");
                 }
@@ -4015,7 +5038,7 @@ mod tests {
     #[cfg(unix)]
     fn booted_pid(guest: &ShardsGuest) -> u32 {
         match guest.process {
-            Process::Booted(pid) => pid,
+            Process::Booted(ref child) => child.id(),
             Process::Taken(_) => panic!("a guest taken back"),
         }
     }
@@ -4129,7 +5152,7 @@ mod tests {
             start(&GuestSpec {
                 kernel: var("SHARDS_API_KERNEL"),
                 init: Init::Executable(var("SHARDS_API_INIT")),
-                cmdline: "console=ttyS0 quiet shards_test=echo".into(),
+                cmdline: "console=hvc0 quiet shards_test=echo".into(),
                 vcpus: 1,
                 memory_mib: crate::min_memory_mib(std::env::consts::ARCH).max(256),
                 gpu: false,
@@ -4532,21 +5555,47 @@ mod tests {
         assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
     }
 
-    /// Set in the process `waiting` starts: it waits until it is ended.
-    #[cfg(windows)]
+    /// Set in the process [`waiter`] starts: `ended`, it waits until it is ended; `stdin`, until
+    /// its stdin ends too, then exits.
     const WAITER: &str = "SHARDS_API_WAITER";
 
-    /// The process `waiting` starts, a stand-in for the `shards` that booted a guest's VM on
-    /// Windows: it waits until it is ended.
-    #[cfg(windows)]
+    /// The process [`waiter`] starts, a stand-in for a guest's VM process, or on Windows for the
+    /// `shards` that booted it.
     #[test]
-    #[ignore = "a child of the Windows take-back tests"]
+    #[ignore = "a child of the take-back and report tests"]
     fn child_a_process_that_waits() {
-        if std::env::var_os(WAITER).is_some() {
-            loop {
-                std::thread::park();
+        match std::env::var_os(WAITER) {
+            Some(until) if until == "stdin" => {
+                io::copy(&mut io::stdin(), &mut io::sink()).unwrap();
             }
+            Some(_) => loop {
+                std::thread::park();
+            },
+            None => {}
         }
+    }
+
+    /// A process of this test binary's, this process's child, that waits until it is ended
+    /// (`ended`), or until it is ended or its stdin, which the child's handle holds, ends
+    /// (`stdin`).
+    fn waiter(until: &str) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "client::tests::child_a_process_that_waits",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(WAITER, until)
+            .stdin(if until == "stdin" {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 
     /// A process that waits until it is ended, this process's child, and its identity, as a
@@ -4554,18 +5603,7 @@ mod tests {
     /// directory `PrivateDir::new` made, which nothing removes until a guest taken back drops.
     #[cfg(windows)]
     fn waiting() -> (Child, Identity) {
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "client::tests::child_a_process_that_waits",
-                "--ignored",
-                "--test-threads=1",
-            ])
-            .env(WAITER, "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let child = waiter("ended");
         let dir = PrivateDir::new().unwrap();
         let vsock = dir.0.join("v");
         std::mem::forget(dir);

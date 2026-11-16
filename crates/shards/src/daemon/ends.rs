@@ -27,15 +27,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use shards_vmm::platform::{Look, Progress};
 
 use super::lock;
 
-/// The home's record of this host's ends: `teardown MS`, `exit MS` and `helper MS`, the
-/// slowest a SIGKILLed command's end was heard after its SIGKILL, a killed VM process's
-/// after its kill, and a network or share process's after its VM had gone, in milliseconds.
+/// The home's record of this host's ends: `teardown MS`, `exit MS`, `helper MS` and `start MS`,
+/// the slowest a SIGKILLed command's end was heard after its SIGKILL, a killed VM process's
+/// after its kill, a network or share process's after its VM had gone, and a daemon's start
+/// from its home's lock to its slots' lists, in milliseconds.
 pub(crate) const RECORD: &str = "ends";
 
 /// Which end was heard.
@@ -48,6 +49,9 @@ pub(crate) enum End {
     /// A network or share process's, once its VM had gone and its spawner held nothing of
     /// it (`netproc::reap`).
     Helper,
+    /// The end of a daemon's start: its home's lock taken to its slots' lists made, which a
+    /// daemon waiting for the lock sees as the home served (`take_lock`, runs-11 TAKEOVER).
+    Start,
 }
 
 /// This host's ends as a home keeps them ([`RECORD`]).
@@ -59,11 +63,12 @@ pub(crate) struct Ends {
 }
 
 /// The slowest end of each kind heard.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Slowest {
     teardown: Duration,
     exit: Duration,
     helper: Duration,
+    start: Duration,
 }
 
 impl Slowest {
@@ -72,14 +77,16 @@ impl Slowest {
             End::Teardown => &mut self.teardown,
             End::Exit => &mut self.exit,
             End::Helper => &mut self.helper,
+            End::Start => &mut self.start,
         }
     }
 
-    /// The record at `path` as it is now: none of a kind it holds no line of, or that is
-    /// not there or not read.
+    /// The record at `path` as it is now, its newest version (platform `write_in`, which on
+    /// Windows lands `ends.~N` beside it and removes the plain name): none of a kind it
+    /// holds no line of, or that is not there or not read.
     fn read(path: &Path) -> Slowest {
         let mut slowest = Slowest::default();
-        for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+        for line in newest(path).unwrap_or_default().lines() {
             let (name, ms) = line.split_once(' ').unwrap_or((line, ""));
             let Ok(ms) = ms.trim().parse::<u64>() else {
                 continue;
@@ -89,6 +96,7 @@ impl Slowest {
                 "teardown" => slowest.teardown = ms,
                 "exit" => slowest.exit = ms,
                 "helper" => slowest.helper = ms,
+                "start" => slowest.start = ms,
                 _ => {}
             }
         }
@@ -101,8 +109,26 @@ impl Slowest {
             teardown: self.teardown.max(other.teardown),
             exit: self.exit.max(other.exit),
             helper: self.helper.max(other.helper),
+            start: self.start.max(other.start),
         }
     }
+}
+
+/// The text of the newest version of the file at `path` (runs-12): what a write there
+/// through `platform::write_in` made, on every platform.
+pub(crate) fn newest(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let dir = home_of(path);
+    let dir = shards_vmm::platform::open_dir(dir).ok()?;
+    let file = shards_vmm::platform::open_newest_in(&dir, name).ok()?;
+    std::io::read_to_string(file).ok()
+}
+
+/// The directory `path`, a home's record, is in.
+fn home_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 impl Ends {
@@ -132,22 +158,27 @@ impl Ends {
     /// or the new. A record that cannot be written leaves this process's own, and says why.
     pub(crate) fn heard(&self, kind: End, took: Duration) -> Result<(), String> {
         let mut slowest = lock(&self.slowest);
-        *slowest = slowest.with(Slowest::read(&self.path));
         let was = slowest.of(kind);
-        if took <= *was {
+        *was = (*was).max(took);
+        let fail = |e| format!("keeping this host's ends in {}: {e}", self.path.display());
+        // Every process rereads and merges under this stable lock, not the replaced
+        // record's inode. Locked releases flock before close (M244).
+        let _writing =
+            shards_image::store::Locked::exclusive(&self.path.with_extension("lock")).map_err(fail)?;
+        let recorded = Slowest::read(&self.path);
+        *slowest = slowest.with(recorded);
+        if *slowest == recorded {
             return Ok(());
         }
-        *was = took;
         let text = format!(
-            "teardown {}\nexit {}\nhelper {}\n",
+            "teardown {}\nexit {}\nhelper {}\nstart {}\n",
             slowest.teardown.as_millis(),
             slowest.exit.as_millis(),
-            slowest.helper.as_millis()
+            slowest.helper.as_millis(),
+            slowest.start.as_millis()
         );
-        let new = self.path.with_extension("new");
-        std::fs::write(&new, text)
-            .and_then(|()| std::fs::rename(&new, &self.path))
-            .map_err(|e| format!("keeping this host's ends in {}: {e}", self.path.display()))
+        let dir = shards_vmm::platform::open_dir(home_of(&self.path)).map_err(fail)?;
+        shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).map_err(fail)
     }
 }
 
@@ -157,8 +188,10 @@ impl Ends {
 /// provider's command too, so that it is held to one slice.
 #[derive(Debug)]
 pub(crate) struct Followed {
-    /// Its CPU and what its host does to it, as D215's readers see them.
+    /// Its CPU and what its host does to it, as D215's readers see them, and when they last
+    /// read it.
     watch: Option<shards_api::Watch>,
+    looked: Instant,
     /// What it holds, which its host frees as its end goes on, and what it did, for the log.
     usage: Option<Progress>,
 }
@@ -171,6 +204,7 @@ impl Followed {
             .and_then(|followed| shards_api::Watch::of(followed).ok().flatten());
         Followed {
             watch,
+            looked: Instant::now(),
             usage: pid.map(Progress::of),
         }
     }
@@ -179,15 +213,28 @@ impl Followed {
     /// or held less than it did, its host freeing it, or its host held it from running, which
     /// is no stall of its own (ROOT's ruling, 2026-11-13); and what it did, for the log.
     /// Waited on for another slice if so; given up on if not, as one stopped or frozen is,
-    /// and one whose CPU could not be read, as before.
+    /// and one whose CPU could not be read, as before. A slice shorter than its CPU reading
+    /// shows (`Watch::resolution`, a clock tick) is no evidence of a stall: it goes on, the
+    /// look before kept, until the slices since add up to one.
     pub(crate) fn goes_on(&mut self) -> Option<Look> {
-        let found = self.watch.as_mut().map(shards_api::Watch::look);
+        let unresolved = self
+            .watch
+            .as_ref()
+            .is_some_and(|watch| self.looked.elapsed() < watch.resolution());
+        let found = match self.watch.as_mut() {
+            Some(_) if unresolved => None,
+            watch => {
+                self.looked = Instant::now();
+                watch.map(shards_api::Watch::look)
+            }
+        };
         let look = self.usage.as_mut()?.look();
         let freed = matches!((look.before, look.now), (Some(b), Some(n)) if n.resident < b.resident);
-        let went = matches!(
-            found,
-            Some(Ok(shards_api::Found::Progressed | shards_api::Found::Held))
-        );
+        let went = unresolved
+            || matches!(
+                found,
+                Some(Ok(shards_api::Found::Progressed | shards_api::Found::Held))
+            );
         (went || freed).then_some(look)
     }
 }
@@ -195,6 +242,69 @@ impl Followed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The record as a later process reads it: its newest version.
+    fn recorded(home: &Path) -> String {
+        newest(&home.join(RECORD)).unwrap()
+    }
+
+    /// Writes `text` as the record, as `heard` publishes one (platform `write_in`).
+    fn publish(home: &Path, text: &str) {
+        let dir = shards_vmm::platform::open_dir(home).unwrap();
+        shards_vmm::platform::write_in(&dir, RECORD, text.as_bytes()).unwrap();
+    }
+
+    /// A record published as `heard` publishes it is read back by the next process, over
+    /// and over: on Windows each publication is a new version beside the name, which a
+    /// read of the plain name never finds (runs-12).
+    #[test]
+    fn each_published_record_is_read_back_by_the_next_process() {
+        let home = shards_testdir::TempDir::new("ends-versions").unwrap();
+        for (ms, kept) in [(1_000u64, 1_000u64), (3_000, 3_000), (2_000, 3_000)] {
+            Ends::kept_in(&home)
+                .heard(End::Teardown, Duration::from_millis(ms))
+                .unwrap();
+            assert_eq!(
+                Ends::kept_in(&home).slice(End::Teardown),
+                Some(Duration::from_millis(kept)),
+                "after {ms}"
+            );
+        }
+        publish(&home, "teardown 5000\nexit 0\nhelper 0\n");
+        assert_eq!(
+            Ends::kept_in(&home).slice(End::Teardown),
+            Some(Duration::from_secs(5))
+        );
+    }
+
+    /// Another writer owns the stable record lock and is about to publish a slower
+    /// teardown. A helper's update must wait, reread it, and preserve both maxima.
+    #[test]
+    fn concurrent_end_writers_keep_each_others_maxima() {
+        let home = shards_testdir::TempDir::new("ends-race").unwrap();
+        std::fs::write(home.join(RECORD), "teardown 1000\nexit 0\nhelper 0\n").unwrap();
+        let owned = shards_image::store::Locked::exclusive(&home.join("ends.lock")).unwrap();
+        let ends = Ends::kept_in(&home);
+        let (send, completed) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                send.send(ends.heard(End::Helper, Duration::from_secs(8)))
+                    .unwrap()
+            });
+            let early = completed.recv_timeout(Duration::from_secs(1));
+            // The lock owner publishes the snapshot it read before the other writer
+            // began. A writer that ignores its lock loses its helper observation here.
+            publish(&home, "teardown 9000\nexit 0\nhelper 0\n");
+            drop(owned);
+            early
+                .or_else(|_| completed.recv_timeout(Duration::from_secs(10)))
+                .unwrap()
+                .unwrap();
+        });
+        let kept = Ends::kept_in(&home);
+        assert_eq!(kept.slice(End::Teardown), Some(Duration::from_secs(9)));
+        assert_eq!(kept.slice(End::Helper), Some(Duration::from_secs(8)));
+    }
 
     /// A home with no record gives no end a slice: each is followed by its process's
     /// liveness alone, as the person's rule has a cold wait (red with `LEAST_SLICE`, 10 s of
@@ -214,16 +324,13 @@ mod tests {
         ends.heard(End::Teardown, Duration::from_millis(12_000)).unwrap();
         ends.heard(End::Exit, Duration::from_millis(1_400)).unwrap();
         assert_eq!(ends.slice(End::Teardown), Some(Duration::from_millis(19_383)));
-        assert_eq!(
-            std::fs::read_to_string(home.join(RECORD)).unwrap(),
-            "teardown 19383\nexit 1400\nhelper 0\n"
-        );
+        assert_eq!(recorded(&home), "teardown 19383\nexit 1400\nhelper 0\nstart 0\n");
         let next = Ends::kept_in(&home);
         assert_eq!(next.slice(End::Teardown), Some(Duration::from_millis(19_383)));
         assert_eq!(next.slice(End::Exit), Some(Duration::from_millis(1_400)));
         assert_eq!(next.slice(End::Helper), None);
         // A record it cannot read is no record.
-        std::fs::write(home.join(RECORD), "teardown many\n").unwrap();
+        publish(&home, "teardown many\n");
         assert_eq!(Ends::kept_in(&home).slice(End::Teardown), None);
     }
 
@@ -239,10 +346,7 @@ mod tests {
         host.heard(End::Helper, Duration::from_millis(12_500)).unwrap();
         daemon.heard(End::Exit, Duration::from_millis(11_000)).unwrap();
         assert_eq!(daemon.slice(End::Helper), Some(Duration::from_millis(12_500)));
-        assert_eq!(
-            std::fs::read_to_string(home.join(RECORD)).unwrap(),
-            "teardown 0\nexit 11000\nhelper 12500\n"
-        );
+        assert_eq!(recorded(&home), "teardown 0\nexit 11000\nhelper 12500\nstart 0\n");
         let gone = shards_testdir::TempDir::new("ends-gone").unwrap();
         let lost = Ends::kept_in(&gone.join("no-such-home"));
         let said = lost.heard(End::Helper, Duration::from_secs(11)).unwrap_err();
@@ -303,22 +407,48 @@ mod tests {
             true,
         );
         let asleep = child(std::path::Path::new("/bin/sleep"), &["60"], false);
-        // Each past its start's own CPU: looked at from a second after it began.
-        std::thread::sleep(Duration::from_secs(1));
-        let (mut trickling, mut sleeping) = (
-            Followed::of(Some(trickler.0.id())),
-            Followed::of(Some(asleep.0.id())),
-        );
+        let mut trickling = Followed::of(Some(trickler.0.id()));
         std::thread::sleep(Duration::from_millis(300));
         assert!(
             trickling.goes_on().is_some(),
             "a fiftieth of a CPU is its end going on"
         );
-        assert!(sleeping.goes_on().is_none(), "asleep, it goes on with nothing");
-        let id = libc::pid_t::try_from(asleep.0.id()).unwrap();
+        // Asleep over a window as long as its reading shows (`Watch::resolution`: a shorter
+        // one goes on, no evidence), and until the trickler has gone on once more, in which a
+        // second watch of it finds it ran nothing; looked at again over another where it ran:
+        // its start's own CPU, or a cgroup freezer's cycles, which wake a sleeper (a kiln
+        // run's, about six a second, PM M562), so no window is a sleeper's by its clock.
+        let pid = asleep.0.id();
+        let mut sleeping = loop {
+            let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
+            let mut witness = shards_api::Watch::of(followed).unwrap().unwrap();
+            let from = witness.cpu();
+            let mut sleeping = Followed::of(Some(pid));
+            std::thread::sleep(witness.resolution());
+            while trickling.goes_on().is_none() {
+                std::thread::yield_now();
+            }
+            let went = sleeping.goes_on();
+            witness.look().unwrap();
+            if witness.cpu() == from {
+                assert!(went.is_none(), "asleep, it goes on with nothing");
+                break sleeping;
+            }
+        };
+        let id = libc::pid_t::try_from(pid).unwrap();
         // SAFETY: kill(2) of this test's own child.
         assert_eq!(unsafe { libc::kill(id, libc::SIGSTOP) }, 0);
-        std::thread::sleep(Duration::from_millis(100));
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of this test's own child, to its stop; WNOWAIT leaves it so.
+        let waited = unsafe { libc::waitid(libc::P_PID, pid, &raw mut info, libc::WSTOPPED | libc::WNOWAIT) };
+        assert_eq!(waited, 0);
+        let resolution = shards_api::Followed::of_pid(pid)
+            .unwrap()
+            .and_then(|followed| shards_api::Watch::of(followed).unwrap())
+            .unwrap()
+            .resolution();
+        std::thread::sleep(resolution);
         assert!(sleeping.goes_on().is_none(), "stopped, it goes on with nothing");
     }
 

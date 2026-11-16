@@ -1,0 +1,20 @@
+# kiln r1765: bash run.sh green
+Host adas-mac-studio-3.local (Adas-Mac-Studio-4.local), Darwin 25.2.0 arm64, macOS 26.2 25C56, rustc 1.98.1. Source 22d03c1a (p/runs-tail-v1 merged with main 2e00a1043), CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true, carrier /tmp/runs-tail-carrier (run.sh, mutate.py). aws-lc-sys build warnings removed.
+=== cargo test -j 4 -p shards --bin shards helpers::tests
+running 6 tests
+test helpers::tests::other_builds_helpers_go_once_no_process_holds_them ... ok
+test helpers::tests::helpers_are_written_whole_once_and_found_after ... ok
+test helpers::tests::a_changed_helper_that_cannot_be_written_again_is_refused ... ok
+test helpers::tests::a_carried_shards_starts_the_helpers_beside_it ... ok
+test helpers::tests::a_helper_whose_bytes_changed_is_written_again_before_it_starts ... ok
+test helpers::tests::concurrent_gpu_writers_publish_their_own_complete_files ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 920 filtered out; finished in 0.02s
+(two carried-helper cases return early under SHARDS_HELPERS=skip)
+=== cargo test -j 4 -p shards --bin shards launch::tests
+running 4 tests
+test launch::tests::the_launchs_words_go_right_after_the_vms_command ... ok
+test launch::tests::a_runs_vm_is_handed_its_ends_where_the_daemon_and_the_run_host_handed_them ... ok
+test launch::tests::a_builders_vm_is_handed_its_ends_where_the_builder_handed_them ... ok
+test launch::tests::a_vm_that_does_not_start_leaves_its_network_process_reaped ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 922 filtered out; finished in 0.01s
+=== cargo clippy -j 4 -p shards --all-targets -- -D warnings: clean (exit 0)

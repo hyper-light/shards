@@ -10,21 +10,22 @@
 //! - Chunked bodies as `internal/chunked.go` reads them: lines end in CRLF and hold at most
 //!   4096 bytes, sizes have at most 16 hex digits, and non-data overhead is bounded.
 //!
-//! Connections follow containerd's transport (`core/remotes/docker/registry.go`):
-//! - 30 s to connect, racing addresses 300 ms apart (RFC 8305);
-//! - 10 s for the TLS handshake, 30 s for the response head;
-//! - at most 10 idle connections.
+//! Connections race their addresses as RFC 8305 has them, and at most 10 are kept idle, as
+//! containerd's transport keeps them (`core/remotes/docker/registry.go`).
 //!
-//! A registry's client waits instead as each wait of its path has shown (D222,
-//! crate::patience): to connect and for its handshake, as fast as the path's own; for an
-//! answer and through a body's silence, while its connection lives and no longer than the
-//! slowest of its kind the path has shown, by its connection alone where it has shown none.
-//! An idle connection is kept until its server closes it, which is seen as it is taken
-//! ([`Conn::quiet`]), or until RFC 5382's least idle time a NAT keeps it for.
+//! Every client learns each wait of its paths (D222, D276, crate::patience): a name's lookup
+//! is waited for while the system's resolver works on it; a connect goes as fast as the
+//! path's own, and one its own time ended is made again. Where its caller asks again what a
+//! cut ends ([`Client::asking_again`]: a registry's, a build's git fetch's), its handshakes
+//! go as fast as its path's, and a lookup's answer and a body's silence wait while its
+//! connection lives and no longer than the slowest of its kind the path has shown, by its
+//! connection alone where it has shown none, a lookup cut so asked again at once; any other
+//! wait follows its connection's liveness. Bytes that keep coming are never cut by a clock. An idle connection is kept until its
+//! server closes it, which is seen as it is taken ([`Conn::quiet`]), or until RFC 5382's
+//! least idle time a NAT keeps it for.
 //!
-//! A body that makes no progress for 30 s fails too, where Go would wait on its context.
-//! That context's cancellation is a [`Cancel`]: every request of a client it cancels
-//! fails, at once.
+//! A request's cancellation, as Go's context's, is a [`Cancel`]: every request of a client
+//! it cancels fails, at once.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -42,16 +43,6 @@ use crate::registries::Registries;
 use crate::url::{Scheme, Url};
 use crate::{Error, ErrorKind, Overdue};
 
-/// How long a client that does not learn its waits (not a registry's) takes to connect:
-/// Go's dialer's, as containerd's transport gives it.
-const CONNECT: Duration = Duration::from_secs(30);
-const RACE: Duration = Duration::from_millis(300);
-/// How long a client that does not learn its waits gives a TLS handshake: Go's
-/// transport's `TLSHandshakeTimeout`, as containerd's gives it.
-const HANDSHAKE: Duration = Duration::from_secs(10);
-/// How long a request waits for its response's head.
-pub const HEAD: Duration = Duration::from_secs(30);
-const STALL: Duration = Duration::from_secs(30);
 /// How long an idle connection is kept, its server not having closed it: no wait (nothing
 /// waits on it, and the time a server keeps one is the server's, RFC 9112 §9.5), but the
 /// least a NAT on its path keeps an idle connection's mapping for, 2 h 4 min (RFC 5382
@@ -95,43 +86,110 @@ pub struct Client {
     /// What Docker's daemon configuration says of registries, for the registries it asks
     /// (D194).
     registries: Registries,
-    /// Whether its waits on a server are what that server's path has shown (D222,
-    /// crate::patience), where the patience it was given bounds them: a registry's.
-    learning: bool,
+    /// How it looks a name up: the system's resolver ([`system_lookup`]), or a test's.
+    lookup: Lookup,
+    /// Whether its caller asks again, or resumes, what a cut ends: then a lookup's answer, a
+    /// body's silence, a head's past its first byte and a handshake are cut where its path
+    /// has shown how long they take (D222), a cut lookup asked again by the client itself;
+    /// else each follows its connection's liveness, its caller's patience where it names
+    /// one, still teaching its path (D276). A connect its pace ended is made again either way.
+    asks_again: bool,
     /// What each path it asked has shown.
     paths: Paths,
-    /// How long a trouble is ridden out, where a test says, in place of what its path has
-    /// shown.
+    /// How long a trouble is ridden out before it runs out, where a test says, in place of
+    /// what its path has shown.
     moment: Option<Duration>,
+    /// Its troubles' run-outs, for what watches them to tell (D222).
+    told: Told,
     /// The waits it chose before asking again, in µs, all told: what a test holds its
     /// riding out of a trouble to, apart from its round trips.
     #[cfg(test)]
     paused: std::sync::atomic::AtomicU64,
 }
 
-/// How long a request waits on its server: to connect, its name's lookup included; for
-/// its response's head; and on any read or write that makes no progress. `None` waits
-/// for as long as it takes, until the request is cancelled. By default 30 s, [`HEAD`] and
-/// 30 s, Go's transport's; a registry's client waits instead as long as its path has shown
-/// (D222: connects, handshakes, lookups' answers and silences, where its patience bounds
-/// them at all); a build's proxy waits as long as the step it serves does, as Go's
-/// transport has no bound of its own (D110); EC2's instance metadata is given 250 ms to
-/// connect, as the AWS SDK gives it (D168).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A trouble that outlasted the longest its path had passed (D222): no failure, but
+/// ridden out while it lasts, its far end asked again while it answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOut {
+    /// Its server's host and port.
+    pub server: String,
+    /// How long it had lasted as it ran out.
+    pub lasted: Duration,
+    /// The longest trouble its path had passed.
+    pub longest: Duration,
+}
+
+impl std::fmt::Display for RunOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: trouble for {:.1} s, longer than any it has passed ({:.1} s): asking it again while it answers",
+            self.server,
+            self.lasted.as_secs_f64(),
+            self.longest.as_secs_f64()
+        )
+    }
+}
+
+/// What watches a client's run-outs (a pull's `Registry::saying_waits`): each watch its own
+/// channel, told each run-out as it comes, its receiver ended as its watch is let go of; none
+/// kept while nothing watches.
+#[derive(Debug, Default)]
+struct Told {
+    watches: Mutex<Vec<(u64, mpsc::Sender<RunOut>)>>,
+    next: AtomicU64,
+}
+
+impl Told {
+    fn tell(&self, run_out: &RunOut) {
+        let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        for (_, watch) in watches.iter() {
+            let _ = watch.send(run_out.clone());
+        }
+    }
+
+    fn watch(&self) -> (u64, mpsc::Receiver<RunOut>) {
+        let (tx, rx) = mpsc::channel();
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        watches.push((id, tx));
+        (id, rx)
+    }
+
+    fn unwatch(&self, id: u64) {
+        let mut watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
+        watches.retain(|(each, _)| *each != id);
+    }
+}
+
+/// The most a request's caller gives its waits on its server, where its own protocol
+/// names less than its path's waits and its connection's liveness give it: none by
+/// default (D276). Every client waits as its paths have shown (D222): a name's lookup
+/// while the system's resolver works on it; a connect at its path's pace; where its caller
+/// asks again ([`Client::asking_again`]), a handshake at its path's pace, and a lookup's
+/// answer and a body's silences no longer than the slowest its path has shown; anything
+/// else as long as its connection lives, until the request is cancelled.
+/// EC2's instance metadata is given 250 ms to connect, 500 ms for an answer and 5 s of
+/// silence, as the AWS SDK gives it (D168).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Patience {
-    pub connect: Duration,
+    /// The most a connect waits, its name's lookup apart: below its path's pace.
+    pub connect: Option<Duration>,
+    /// The most a request other than a lookup waits for its answer's first byte.
     pub head: Option<Duration>,
+    /// The most a write waits for room, and a read of its answer for bytes, in place of
+    /// the slowest silence its path has shown.
     pub stall: Option<Duration>,
 }
 
-impl Default for Patience {
-    fn default() -> Patience {
-        Patience {
-            connect: CONNECT,
-            head: Some(HEAD),
-            stall: Some(STALL),
-        }
-    }
+/// How a name is looked up: its addresses at a port, or the resolver's failure.
+pub(crate) type Lookup = fn(&str, u16) -> io::Result<Vec<SocketAddr>>;
+
+/// A name's addresses as the system's resolver gives them (getaddrinfo(3), GetAddrInfoW),
+/// which retries its servers as the host configures it (resolv.conf(5)'s `timeout` and
+/// `attempts`, and their like): its answer, or its own failure, ends the lookup.
+pub(crate) fn system_lookup(name: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    (name, port).to_socket_addrs().map(Iterator::collect)
 }
 
 /// Stops a client's requests from another thread, as cancelling Go's request context
@@ -154,26 +212,13 @@ struct Cancelling {
     helpers: Mutex<(u64, HashMap<u64, Helper>)>,
 }
 
-/// A credential helper as a cancel ends it: the process group it leads.
-#[cfg(unix)]
+/// A credential helper as a cancel ends it: the process group it leads (on Windows the job
+/// it is made in).
 pub(crate) type Helper = Arc<shards_ipc::Child>;
-/// A credential helper as a cancel ends it: its process, by a handle of its own.
-#[cfg(windows)]
-pub(crate) type Helper = std::os::windows::io::OwnedHandle;
 
 /// Ends `helper` at once, whatever its threads wait in.
 fn end_helper(helper: &Helper) {
-    #[cfg(unix)]
-    let _ = helper.kill_group(libc::SIGKILL);
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle as _;
-        // SAFETY: TerminateProcess on the handle `helper` holds open: of a process that has
-        // ended, it fails and ends nothing.
-        unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(helper.as_raw_handle(), 1);
-        }
-    }
+    let _ = helper.kill_group(shards_ipc::signal::SIGKILL);
 }
 
 impl Cancel {
@@ -230,8 +275,8 @@ impl Cancel {
     }
 
     /// Watches `tcp` while the returned guard lives: a cancel shuts it down, as it does at
-    /// once one already made. A connection that cannot be watched still fails within
-    /// [`STALL`].
+    /// once one already made. A connection that cannot be watched ends as its waits and
+    /// its liveness end it.
     fn watch(&self, tcp: &TcpStream) -> Watch {
         let mut live = self.0.live.lock().unwrap_or_else(PoisonError::into_inner);
         if self.is_cancelled() {
@@ -444,9 +489,11 @@ impl Client {
             reach: None,
             server_name: None,
             registries: Registries::default(),
-            learning: false,
+            lookup: system_lookup,
+            asks_again: false,
             paths: Paths::default(),
             moment: None,
+            told: Told::default(),
             #[cfg(test)]
             paused: std::sync::atomic::AtomicU64::new(0),
         }
@@ -465,35 +512,61 @@ impl Client {
         self
     }
 
-    /// This client, every wait of its paths following its connection's liveness alone, as
-    /// a path's that has shown nothing does (crate::patience `Bounded::Cold`): a test's,
-    /// whose server answers each request with the next of a script, which an asking again
-    /// past a run-out would take out of turn.
-    #[cfg(test)]
-    pub(crate) fn following_liveness(mut self) -> Client {
+    /// This client, every answer and silence of its paths waited for as its connection
+    /// lives alone, as a path's that has shown nothing is (crate::patience
+    /// `Bounded::Cold`): a build's proxy's, which waits as long as the step it serves does,
+    /// the step's own client its waits' judge (D110); and a test's, whose server answers
+    /// each request with the next of a script, which an asking again past a run-out would
+    /// take out of turn.
+    pub fn following_liveness(mut self) -> Client {
         self.paths.follow_liveness();
         self
     }
 
-    /// This client, its waits on each server the ones that server's path has shown
-    /// (D222), where its patience bounds them at all: an answer to a lookup (a GET or HEAD
-    /// without a body), and a body's silence, waited for while its connection lives and no
-    /// longer than the slowest of its kind the path has shown.
-    pub(crate) fn learning(mut self) -> Client {
-        self.learning = true;
+    /// This client, its caller asking again, or resuming, what a cut ends: a registry's,
+    /// whose troubles are ridden and downloads resume where they were (fetch.rs), and a
+    /// build's git fetch, which asks its remote again (D276). Its answers, silences and
+    /// handshakes are cut where its paths have shown how long they take.
+    pub fn asking_again(mut self) -> Client {
+        self.asks_again = true;
         self
     }
 
-    /// How long a trouble of `url`'s server is ridden out before it is said as the
-    /// server's failure (registry.rs `Trouble`): as long as its path's troubles say, none
-    /// where they bound nothing.
+    /// This client, its names looked up by `lookup`, a stand-in for the system's resolver.
+    #[cfg(test)]
+    pub(crate) fn looking_up(mut self, lookup: Lookup) -> Client {
+        self.lookup = lookup;
+        self
+    }
+
+    /// How long a trouble of `url`'s server is ridden out before it runs out (registry.rs
+    /// `Trouble`): as long as its path's troubles say, none where they bound nothing.
     pub(crate) fn budget(&self, url: &Url) -> Option<Duration> {
         self.moment.or_else(|| self.paths.budget(&path_of(url)))
     }
 
-    /// A trouble of `url`'s server lasted its path's budget and was given up on.
-    pub(crate) fn trouble_ran_out(&self, url: &Url) {
-        self.paths.trouble_ran_out(&path_of(url));
+    /// A trouble of `url`'s server outlasted its path's budget, `longest`, at `lasted`: the
+    /// run-out told to what watches, where it began one of the path's.
+    pub(crate) fn trouble_ran_out(&self, url: &Url, lasted: Duration, longest: Duration) {
+        let server = path_of(url);
+        if self.paths.trouble_ran_out(&server) {
+            self.told.tell(&RunOut {
+                server,
+                lasted,
+                longest,
+            });
+        }
+    }
+
+    /// The run-outs of this client's troubles from here on, each as it comes, until
+    /// [`unwatch`](Self::unwatch) with the id, which ends the receiver once it has them all.
+    pub(crate) fn watch(&self) -> (u64, mpsc::Receiver<RunOut>) {
+        self.told.watch()
+    }
+
+    /// Lets go of the watch `id`.
+    pub(crate) fn unwatch(&self, id: u64) {
+        self.told.unwatch(id);
     }
 
     /// A trouble of `url`'s server that lasted `lasted` passed.
@@ -514,22 +587,22 @@ impl Client {
     }
 
     /// Keeps what its paths show in `root`, an image store's directory, and starts them
-    /// from what they showed before there (crate::patience).
-    pub(crate) fn keep_in(&self, root: &std::path::Path) {
+    /// from what they showed before there (crate::patience): what this host has learned of
+    /// them, which its waits are judged by.
+    pub fn keep_in(&self, root: &std::path::Path) {
         self.paths.keep_in(root);
     }
 
-    /// This client, riding out a registry's trouble for `moment`: tests of a registry
-    /// that stays down, ended within it.
+    /// This client, riding out a registry's trouble for `moment` before it runs out.
     #[cfg(test)]
     pub(crate) fn with_moment(mut self, moment: Duration) -> Client {
         self.moment = Some(moment);
         self
     }
 
-    /// Waits `wait` before asking a registry again, or until the client is cancelled,
+    /// Waits `wait` before asking a server again, or until the client is cancelled,
     /// which it then says.
-    pub(crate) fn pause(&self, wait: Duration) -> Result<(), Error> {
+    pub fn pause(&self, wait: Duration) -> Result<(), Error> {
         #[cfg(test)]
         self.paused.fetch_add(
             u64::try_from(wait.as_micros()).unwrap_or(u64::MAX),
@@ -658,11 +731,21 @@ impl Client {
                 // repeated, on a new connection (RFC 9110 §15.5.9), whatever its method,
                 // as Chromium repeats it (net/http/http_network_transaction.cc, 687b43f).
                 Ok(response) if response.status == 408 => {}
+                Err(failure) if failure.is_overdue() => {}
                 result => return result.map_err(Failure::into_error),
             }
         }
-        let conn = self.connect(req.url, key, proxy)?;
-        self.exchange(conn, req, &head, sent).map_err(Failure::into_error)
+        // A lookup its path's wait cut, past the slowest of its kind, is asked again at
+        // once, as it may be (a safe method, RFC 9110 §9.2.1): its path's next wait of that
+        // kind follows its connection's liveness alone until one ends (crate::patience
+        // `Bounded::RanOut`), so each kind cuts it once at most while none ends (D222).
+        loop {
+            let conn = self.connect(req.url, key.clone(), proxy)?;
+            match self.exchange(conn, req, &head, sent) {
+                Err(failure) if failure.is_overdue() => {}
+                result => return result.map_err(Failure::into_error),
+            }
+        }
     }
 
     /// Sends `req` and follows redirects as Go's client does (go1.27.1
@@ -797,17 +880,30 @@ impl Client {
         // A lookup, a GET or HEAD without a body, is answered as fast as its path answers,
         // and asked again where it is not, as it may be (a safe method, RFC 9110 §9.2.1):
         // anything else waits on its server's work with it (an upload begun, or committed,
-        // its digest checked), as long as its patience says.
+        // its digest checked, a git fetch's pack made), as long as its connection lives,
+        // or its caller's patience where it names one. Once an answer has begun, each read
+        // of its head waits as a silence does.
         let lookup = matches!(req.method, "GET" | "HEAD") && req.file.is_none() && req.body.is_empty();
-        let cut = self.learning && lookup;
+        // Its answer teaches its path; its path's waits cut it only where what a cut ends is
+        // asked again (D276), a lookup's by the client itself, anything else by its caller.
+        let cut = lookup && self.asks_again;
+        let gaps = self.patience.stall.or(self
+            .asks_again
+            .then(|| self.paths.silence(&path).bound())
+            .flatten());
         // The person's rule (D222): "The cold start, and every wait after a run-out, follows
         // the party's liveness and progress. After that the bound is the slowest answer seen."
         let waited = match self.patience.head {
-            Some(_) if cut => HeadWait::Path {
-                answer: self.paths.answer(&path).bound(),
-                silence: self.paths.silence(&path).bound(),
+            Some(most) => HeadWait {
+                answer: Some(most),
+                silence: gaps,
+                cut: false,
             },
-            patience => HeadWait::Patience(patience),
+            None => HeadWait {
+                answer: cut.then(|| self.paths.answer(&path).bound()).flatten(),
+                silence: gaps,
+                cut,
+            },
         };
         let written = conn.io.get_mut().write_all(head).and_then(|()| match req.file {
             Some((file, from, len)) => send_body(&mut conn, file, from, len, self.patience.stall, sent),
@@ -819,7 +915,7 @@ impl Client {
         // kind following liveness alone (crate::patience `Bounded::RanOut`). One that comes
         // teaches its path the time to its first byte.
         let learned = |read: Result<Head, Failure>| {
-            if !cut {
+            if !lookup {
                 return read;
             }
             match read {
@@ -852,10 +948,8 @@ impl Client {
                 );
                 // A send cut short is the link's failure, not the request's: sent again.
                 let sending = || {
-                    Failure::BeforeResponse(Error::of(
-                        ErrorKind::Transient,
-                        format!("{}: sending: {e}", req.url),
-                    ))
+                    let e = Error::of(ErrorKind::Transient, format!("{}: sending: {e}", req.url));
+                    Failure::BeforeResponse(if left { e.cut() } else { e })
                 };
                 if !left {
                     return Err(sending());
@@ -891,20 +985,32 @@ impl Client {
         // A body's silence is cut past the slowest its path has shown; one on a path that
         // has shown none, or after one ran out, is waited out as its connection lives
         // (crate::patience `Bounded`). Its head's silences, past its first byte, are its own.
+        // A caller's own patience bounds its silences in place of its path's, and teaches
+        // the path nothing.
         let paced = match self.patience.stall {
-            Some(_) if self.learning => Some(Paced {
+            None => Some(Paced {
                 paths: &self.paths,
-                wait: self.paths.silence(&path),
+                // Where its caller does not ask again, a cut would fail it, its silence
+                // longer than any its path has shown a record any of its bodies may break
+                // (Glick 1978, crate::patience): it follows liveness, as a cold path's does.
+                wait: match self.asks_again {
+                    true => self.paths.silence(&path),
+                    false => Bounded::Cold,
+                },
                 path,
                 body: Silenced {
                     slowest: silence,
                     last: Last::Unread,
                 },
+                working: !lookup,
             }),
-            _ => None,
+            Some(_) => None,
         };
-        conn.stall(paced.as_ref().map_or(self.patience.stall, |p| p.wait.bound()))
-            .map_err(|e| Failure::Other(e.into()))?;
+        conn.stall(paced.as_ref().map_or(
+            self.patience.stall,
+            |p| if p.working { None } else { p.wait.bound() },
+        ))
+        .map_err(|e| Failure::Other(e.into()))?;
         let mut body = Body {
             conn: Some(conn),
             paced,
@@ -955,8 +1061,8 @@ impl Client {
         let watch = self.cancel.as_ref().map(|c| c.watch(&tcp));
         let path = path_of(url);
         let mut hop = match (proxy, first.scheme()) {
-            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, tcp, &path)?)),
-            _ => Hop::Tcp(tcp),
+            (Some(_), Scheme::Https) => Hop::Tls(Box::new(self.handshake(first, Sock::of(tcp), &path)?)),
+            _ => Hop::Tcp(Sock::of(tcp)),
         };
         if let Some(proxy) = proxy
             && url.scheme() == Scheme::Https
@@ -978,24 +1084,35 @@ impl Client {
         Ok(conn)
     }
 
-    /// `first`, the first hop to `url` (its proxy, or it), dialled: within the connections
-    /// of `url`'s path take ([`Wait::Connect`]) where the client learns its waits (D222),
-    /// which learns from how long it took, else within its patience.
+    /// `first`, the first hop to `url` (its proxy, or it), dialled: its name looked up while
+    /// the system's resolver works on it ([`resolve`]), then its addresses raced within the
+    /// time the connects of `url`'s path take ([`Wait::Connect`], D222), which learns from
+    /// how long it took, and no longer than its caller's patience where it names one. A
+    /// connect its path's time ended is made again at once, its time doubled (RFC 6298
+    /// §5.5), as TCP sends its SYN again past its retransmission timeout: until one is
+    /// answered, its far end refuses or is unreachable, or the client is cancelled (D276).
     fn dial(
         &self,
         url: &Url,
         first: &Url,
         reach: Option<fn(std::net::IpAddr) -> bool>,
     ) -> Result<TcpStream, Error> {
-        if !self.learning {
-            return dial(first, self.cancel.as_ref(), reach, self.patience.connect);
-        }
         let path = path_of(url);
-        let within = self.paths.timeout(&path, Wait::Connect);
-        let began = Instant::now();
-        let dialled = dial(first, self.cancel.as_ref(), reach, within);
-        self.learned(&path, Wait::Connect, began, dialled.as_ref().map(drop));
-        dialled
+        let addrs = resolve(first, self.cancel.as_ref(), self.lookup)?;
+        loop {
+            let paced = self.paths.timeout(&path, Wait::Connect);
+            let within = self.patience.connect.map_or(paced, |most| paced.min(most));
+            let race = self.paths.attempt_delay(&path);
+            let began = Instant::now();
+            let dialled = dial(first, addrs.clone(), self.cancel.as_ref(), reach, within, race);
+            self.learned(&path, Wait::Connect, began, dialled.as_ref().map(drop));
+            // Its path's time, not its caller's, ended it.
+            let pace_ended = self.patience.connect.is_none_or(|most| most > paced);
+            match dialled {
+                Err(e) if e.is_timed_out() && pace_ended => {}
+                dialled => return dialled,
+            }
+        }
     }
 
     /// The path `path`'s `wait`, begun at `began`, ended as `ended` says: learned from where
@@ -1014,14 +1131,13 @@ impl Client {
     }
 
     /// A TLS session with `url`'s host over `io`, its handshake done as quickly as the
-    /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`]) where the client
-    /// learns its waits (D222), which learns from how long it took; else within Go's
-    /// transport's `TLSHandshakeTimeout`, 10 s, as containerd's transport gives it.
+    /// handshakes of `path`, the path it is on, take ([`Wait::Handshake`], D222), which
+    /// learns from how long it took.
     fn handshake<T: Wire>(&self, url: &Url, io: T, path: &str) -> Result<Tls<T>, Error> {
-        if !self.learning {
-            return self.shake(url, io, HANDSHAKE);
-        }
-        let within = self.paths.timeout(path, Wait::Handshake);
+        // Cut at its path's pace only where what the cut ends is asked again (D276): a
+        // client's whose caller does not ask again follows its connection's liveness, and
+        // its time still teaches its path.
+        let within = self.asks_again.then(|| self.paths.timeout(path, Wait::Handshake));
         let began = Instant::now();
         let shaken = self.shake(url, io, within);
         self.learned(path, Wait::Handshake, began, shaken.as_ref().map(drop));
@@ -1030,7 +1146,7 @@ impl Client {
 
     /// A TLS session with `url`'s host over `io`, its handshake done `within`: one its time
     /// ends is said so ([`Error::timed_out`]).
-    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Duration) -> Result<Tls<T>, Error> {
+    fn shake<T: Wire>(&self, url: &Url, mut io: T, within: Option<Duration>) -> Result<Tls<T>, Error> {
         let config = (self.tls)(url)?;
         let host = match &self.server_name {
             Some(name) => name.as_str(),
@@ -1038,22 +1154,27 @@ impl Client {
         };
         let name = ServerName::try_from(host.to_string()).map_err(|e| Error::new(format!("{url}: {e}")))?;
         let mut tls = ClientConnection::new(config, name)?;
-        let deadline = after(within);
+        let deadline = within.map(after);
         let mut heard = Heard::default();
         while tls.is_handshaking() {
-            let left = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or_else(|| {
-                    Error::of(
-                        ErrorKind::Transient,
-                        format!("{url}: the TLS handshake timed out"),
-                    )
-                    .not_tls()
-                    .timed_out()
-                })?;
-            io.tcp().set_read_timeout(Some(left))?;
-            io.tcp().set_write_timeout(Some(left))?;
+            let left = match deadline {
+                None => None,
+                Some(deadline) => Some(
+                    deadline
+                        .checked_duration_since(Instant::now())
+                        .filter(|d| !d.is_zero())
+                        .ok_or_else(|| {
+                            Error::of(
+                                ErrorKind::Transient,
+                                format!("{url}: the TLS handshake timed out"),
+                            )
+                            .not_tls()
+                            .timed_out()
+                        })?,
+                ),
+            };
+            shards_ipc::timeout_set(io.tcp().set_read_timeout(left))?;
+            shards_ipc::timeout_set(io.tcp().set_write_timeout(left))?;
             tls.complete_io(&mut Hearing {
                 io: &mut io,
                 heard: &mut heard,
@@ -1153,8 +1274,8 @@ fn tunnel(
         head.push_str("\r\n");
     }
     head.push_str("\r\n");
-    hop.tcp().set_write_timeout(patience)?;
-    hop.tcp().set_read_timeout(patience)?;
+    shards_ipc::timeout_set(hop.tcp().set_write_timeout(patience))?;
+    shards_ipc::timeout_set(hop.tcp().set_read_timeout(patience))?;
     hop.write_all(head.as_bytes())
         .and_then(|()| hop.flush())
         .map_err(|e| proxying(&e))?;
@@ -1255,7 +1376,7 @@ fn sending(
             continue;
         }
         #[cfg(target_os = "linux")]
-        if let Stream::Plain(Hop::Tcp(tcp)) = conn.io.get_mut() {
+        if let Stream::Plain(Hop::Tcp(Sock { tcp, .. })) = conn.io.get_mut() {
             if sent == len {
                 return Ok(true);
             }
@@ -1391,6 +1512,39 @@ fn ready(tcp: &TcpStream, d: Option<Duration>) -> io::Result<(bool, bool)> {
     }
 }
 
+/// Whether `tcp` has something to read now, or has ended or failed: a read would not wait.
+#[cfg(unix)]
+fn readable(tcp: &TcpStream) -> io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    let mut p = libc::pollfd {
+        fd: tcp.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: poll(2) on one pollfd of ours, waiting for nothing.
+    match unsafe { libc::poll(&mut p, 1, 0) } {
+        n if n >= 0 => Ok(p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// [`readable`] on Windows: WSAPoll.
+#[cfg(windows)]
+fn readable(tcp: &TcpStream) -> io::Result<bool> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{POLLERR, POLLHUP, POLLRDNORM, WSAPOLLFD, WSAPoll};
+    let mut p = WSAPOLLFD {
+        fd: tcp.as_raw_socket() as usize,
+        events: POLLRDNORM,
+        revents: 0,
+    };
+    // SAFETY: WSAPoll on one WSAPOLLFD of ours, waiting for nothing.
+    match unsafe { WSAPoll(&mut p, 1, 0) } {
+        n if n >= 0 => Ok(p.revents & (POLLRDNORM | POLLHUP | POLLERR) != 0),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
 /// Why an exchange failed: before any response byte (so a GET can be retried), or later.
 enum Failure {
     BeforeResponse(Error),
@@ -1411,7 +1565,6 @@ impl Failure {
         }
     }
 
-    #[cfg(test)]
     fn is_overdue(&self) -> bool {
         self.overdue_by().is_some()
     }
@@ -1461,15 +1614,26 @@ enum Replied<T> {
     Disconnected,
 }
 
-fn wait_reply<T>(receiver: &mpsc::Receiver<T>, cancel: Option<&Cancel>, deadline: Instant) -> Replied<T> {
-    let Some(cancel) = cancel else {
-        let Some(left) = deadline
+/// `deadline`, none: until its answer, its worker's end or the cancel.
+fn wait_reply<T>(
+    receiver: &mpsc::Receiver<T>,
+    cancel: Option<&Cancel>,
+    deadline: Option<Instant>,
+) -> Replied<T> {
+    let left = |deadline: Instant| {
+        deadline
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
-        else {
-            return Replied::Deadline;
+    };
+    let Some(cancel) = cancel else {
+        let answered = match deadline {
+            None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            Some(deadline) => match left(deadline) {
+                Some(left) => receiver.recv_timeout(left),
+                None => return Replied::Deadline,
+            },
         };
-        return match receiver.recv_timeout(left) {
+        return match answered {
             Ok(answer) => Replied::Answer(answer),
             Err(mpsc::RecvTimeoutError::Timeout) => Replied::Deadline,
             Err(mpsc::RecvTimeoutError::Disconnected) => Replied::Disconnected,
@@ -1480,33 +1644,40 @@ fn wait_reply<T>(receiver: &mpsc::Receiver<T>, cancel: Option<&Cancel>, deadline
         if cancel.is_cancelled() {
             return Replied::Cancelled;
         }
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return Replied::Deadline;
-        }
+        let wait = match deadline.map(left) {
+            Some(None) => return Replied::Deadline,
+            Some(Some(left)) => Some(left),
+            None => None,
+        };
         match receiver.try_recv() {
             Ok(answer) => return Replied::Answer(answer),
             Err(mpsc::TryRecvError::Disconnected) => return Replied::Disconnected,
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        live = cancel
-            .0
-            .rung
-            .wait_timeout(live, left)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+        live = match wait {
+            Some(left) => {
+                cancel
+                    .0
+                    .rung
+                    .wait_timeout(live, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
+            }
+            None => cancel.0.rung.wait(live).unwrap_or_else(PoisonError::into_inner),
+        };
     }
 }
 
-/// The addresses `url`'s host names: at once for an address, and for a name looked
-/// up on a worker, waited for until `deadline` or cancellation. getaddrinfo takes no
-/// deadline; an abandoned lookup retains its worker until libc returns, not a
-/// client/connection owner or a cancellation listener (D222).
-pub(crate) fn resolve(
-    url: &Url,
-    deadline: Instant,
-    cancel: Option<&Cancel>,
-) -> Result<Vec<SocketAddr>, Error> {
+/// The addresses `url`'s host names: at once for an address, and for a name looked up by
+/// `lookup` on a worker (the system's resolver, [`system_lookup`]), waited for as long as
+/// the resolver works on it, its answer or its own failure the lookup's end (D276), or
+/// until the cancel. getaddrinfo takes no deadline, and retries its servers as its host
+/// configures it; an abandoned lookup retains its worker until libc returns, not a
+/// client/connection owner or a cancellation listener (D222). A lookup the resolver failed
+/// may pass (a server that did not answer it, or a network down a while): it is a
+/// trouble's, and a name that fails so again while its trouble follows liveness is gone
+/// (registry.rs `Trouble::gone`).
+pub(crate) fn resolve(url: &Url, cancel: Option<&Cancel>, lookup: Lookup) -> Result<Vec<SocketAddr>, Error> {
     if let Some(cancel) = cancel {
         cancel.check()?;
     }
@@ -1521,23 +1692,14 @@ pub(crate) fn resolve(
     let name = host.to_string();
     std::thread::Builder::new()
         .name("shards-resolve".into())
-        .spawn(move || {
-            reply.send(
-                (name.as_str(), port)
-                    .to_socket_addrs()
-                    .map(Iterator::collect::<Vec<_>>),
-            );
-        })
+        .spawn(move || reply.send(lookup(name.as_str(), port)))
         .map_err(|e| resolving(&e))?;
-    match wait_reply(&rx, cancel, deadline) {
-        Replied::Answer(found) => found.map_err(|e| resolving(&e)),
+    match wait_reply(&rx, cancel, None) {
+        Replied::Answer(found) => found.map_err(|e| {
+            Error::of(ErrorKind::Transient, format!("{}: resolving: {e}", url.host())).unresolved()
+        }),
         Replied::Cancelled => Err(Error::of(ErrorKind::Cancelled, "cancelled")),
-        Replied::Deadline => Err(Error::of(
-            ErrorKind::Transient,
-            format!("{}: resolving: timed out", url.host()),
-        )
-        .timed_out()),
-        Replied::Disconnected => Err(resolving(&"the lookup ended unanswered")),
+        Replied::Deadline | Replied::Disconnected => Err(resolving(&"the lookup ended unanswered")),
     }
 }
 
@@ -1562,19 +1724,21 @@ fn unreachable(url: &Url) -> Error {
     ))
 }
 
-/// Races interleaved addresses, starting the next after RACE or a failure
-/// (RFC 8305 §5). Cancellation ends the caller; pending attempts end themselves. A dial its
-/// time ends is said so ([`Error::timed_out`]): its name's lookup, an attempt's connect
-/// stopped at what was left of it, or attempts still pending as it passed.
+/// Races `addrs`, `url`'s, interleaved, within `within`, starting the next after `race`,
+/// its path's Connection Attempt Delay ([`Paths::attempt_delay`]), or a failure (RFC 8305
+/// §5). Cancellation ends the caller; pending attempts end themselves. A dial its time
+/// ends is said so ([`Error::timed_out`]): an attempt's connect stopped at what was left of
+/// it, or attempts still pending as it passed. Its name's lookup is the caller's, before
+/// it, and none of its time: a lookup is waited for while the resolver works on it (D276).
 fn dial(
     url: &Url,
+    mut addrs: Vec<SocketAddr>,
     cancel: Option<&Cancel>,
     reach: Option<fn(std::net::IpAddr) -> bool>,
     within: Duration,
+    race: Duration,
 ) -> Result<TcpStream, Error> {
-    // The name's lookup is within the dial's time, as Go's Dialer counts it.
     let deadline = after(within);
-    let mut addrs = resolve(url, deadline, cancel)?;
     if let Some(reach) = reach {
         addrs.retain(|a| reach(a.ip()));
         if addrs.is_empty() {
@@ -1586,7 +1750,9 @@ fn dial(
     let mut pending = 0usize;
     let mut last = None;
     let wait = |pending: &mut usize, last: &mut Option<io::Error>, until: Instant| match wait_reply(
-        &rx, cancel, until,
+        &rx,
+        cancel,
+        Some(until),
     ) {
         Replied::Answer(Ok(stream)) => Ok(Some(stream)),
         Replied::Answer(Err(e)) => {
@@ -1627,7 +1793,7 @@ fn dial(
                 continue;
             }
         }
-        let next_attempt = after(RACE).min(deadline);
+        let next_attempt = after(race).min(deadline);
         while Instant::now() < next_attempt {
             let before = pending;
             if let Some(stream) = wait(&mut pending, &mut last, next_attempt)? {
@@ -1649,9 +1815,11 @@ fn dial(
     // was left of it (`connect_timeout`'s own end, which a system wait may make early).
     let ran_out = pending > 0 || last.as_ref().is_none_or(|e| e.kind() == io::ErrorKind::TimedOut);
     let e = match last {
+        // Nothing listens where it is: its far end refuses (D222).
         Some(e) if e.kind() == io::ErrorKind::ConnectionRefused => Error::from(e)
             .context(format!("{}: connecting", url.authority()))
-            .refused(),
+            .refused()
+            .gone(),
         Some(e) => Error::from(e).context(format!("{}: connecting", url.authority())),
         None => Error::of(
             ErrorKind::Transient,
@@ -1690,19 +1858,16 @@ struct Head {
     silence: Option<Duration>,
 }
 
-/// How a response head is waited for.
+/// How a response head is waited for: `answer` bounds the gap before its first byte, its
+/// path's slowest answer or its caller's patience, and `silence` each read's wait after it,
+/// its path's slowest silence or its caller's patience, each none where nothing bounds it
+/// but its connection's liveness (crate::patience `Bounded::bound`). `cut`: whether its
+/// path's waits bound it, a lookup's, so that one they end is overdue, and asked again.
 #[derive(Debug, Clone, Copy)]
-enum HeadWait {
-    /// Within a client's patience in all (30 s for a registry's other requests, Go's
-    /// `ResponseHeaderTimeout`); without end where none.
-    Patience(Option<Duration>),
-    /// As its path's answers and silences say (crate::patience `Bounded::bound`): `answer`
-    /// bounds the gap before its first byte, `silence` each read's wait after it, where
-    /// each bounds anything.
-    Path {
-        answer: Option<Duration>,
-        silence: Option<Duration>,
-    },
+struct HeadWait {
+    answer: Option<Duration>,
+    silence: Option<Duration>,
+    cut: bool,
 }
 
 /// Reads a response head, skipping 1xx ones, within 10 MiB, waited for as `wait` says. Its
@@ -1714,10 +1879,11 @@ enum HeadWait {
 /// timeout between them (Windows' wait functions, Microsoft Learn), so may end before its
 /// time does by the clock (CI's arm64 Windows).
 fn read_head(conn: &mut Conn, url: &Url, wait: HeadWait) -> Result<Head, Failure> {
-    let (patience, cut, silence) = match wait {
-        HeadWait::Patience(patience) => (patience, false, None),
-        HeadWait::Path { answer, silence } => (answer, true, silence),
-    };
+    let HeadWait {
+        answer: patience,
+        silence,
+        cut,
+    } = wait;
     let mut deadline = patience.map(after);
     let mut came: Option<Instant> = None;
     let mut slowest: Option<Duration> = None;
@@ -1776,7 +1942,8 @@ fn read_head(conn: &mut Conn, url: &Url, wait: HeadWait) -> Result<Head, Failure
                 let e = Error::of(
                     ErrorKind::Transient,
                     format!("{url}: the connection closed before a response"),
-                );
+                )
+                .cut();
                 return Err(if first && buf.is_empty() {
                     Failure::BeforeResponse(e)
                 } else {
@@ -1788,9 +1955,7 @@ fn read_head(conn: &mut Conn, url: &Url, wait: HeadWait) -> Result<Head, Failure
                 // silence.
                 None => {
                     came = Some(Instant::now());
-                    if cut {
-                        deadline = None;
-                    }
+                    deadline = None;
                 }
                 Some(_) => {
                     let waited = read.elapsed();
@@ -1969,6 +2134,11 @@ struct Paced<'c> {
     /// bounded its path's silences as the body began, until a run-out it began after ends.
     wait: Bounded,
     body: Silenced,
+    /// A non-lookup's body before its first bytes: what its server does with the request (a
+    /// git fetch's pack made, an upload's digest checked) after sending its head, which is
+    /// none of its path's silences. Waited out as its connection lives, as the answer's own
+    /// first byte is (D276); its bytes' gaps from its first on are its path's silences.
+    working: bool,
 }
 
 impl Drop for Paced<'_> {
@@ -1997,16 +2167,34 @@ impl Body<'_> {
     }
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let began = Instant::now();
+        let paced = self.paced.is_some();
+        if paced && let Some(conn) = self.conn.as_mut() {
+            conn.io.get_mut().sock().count();
+        }
         let read = self.read_framed(buf);
+        let waited = match self.conn.as_mut() {
+            Some(conn) if paced => conn.io.get_mut().sock().waited(),
+            _ => Duration::ZERO,
+        };
+        self.finish_if_done();
         if let Some(p) = self.paced.as_mut() {
             match &read {
+                // A non-lookup's first bytes end its server's work with the request, which
+                // taught its path nothing: its gaps from here are its path's silences.
+                Ok(n) if *n > 0 && p.working => {
+                    p.working = false;
+                    if let Some(conn) = &self.conn {
+                        let _ = conn.stall(p.wait.bound());
+                    }
+                }
                 Ok(n) if *n > 0 => {
-                    // The silence it ended: how long it waited for its bytes, the gap past
-                    // which its socket's timeout would have cut it, not the reader's own time
-                    // between reads.
-                    let waited = began.elapsed();
-                    p.body.slowest = Some(p.body.slowest.map_or(waited, |s| s.max(waited)));
+                    // The silence it ended: how long its socket waited for its bytes, the gap
+                    // past which its timeout would have cut it; none where they were there, in
+                    // a buffer, the TLS session or the socket (waits-05), and not the reader's
+                    // own time between reads.
+                    if !waited.is_zero() {
+                        p.body.slowest = Some(p.body.slowest.map_or(waited, |s| s.max(waited)));
+                    }
                     p.body.last = Last::Bytes;
                     // After a run-out, one longer than what the path had shown ends it: the
                     // path's slowest now, which bounds the rest (crate::patience
@@ -2066,7 +2254,6 @@ impl Body<'_> {
                 n
             }
         };
-        self.finish_if_done();
         Ok(n)
     }
 }
@@ -2264,8 +2451,78 @@ impl<T: Wire> Write for Tls<T> {
 /// A connection's first hop: TCP to the server or its proxy, or TLS to an https proxy.
 #[derive(Debug)]
 enum Hop {
-    Tcp(TcpStream),
-    Tls(Box<Tls<TcpStream>>),
+    Tcp(Sock),
+    Tls(Box<Tls<Sock>>),
+}
+
+impl Hop {
+    fn sock(&mut self) -> &mut Sock {
+        match self {
+            Hop::Tcp(s) => s,
+            Hop::Tls(s) => &mut s.sock,
+        }
+    }
+}
+
+/// A connection's socket, which counts, while a body's read asks it to, how long its reads
+/// waited for bytes that had not come: a read that finds bytes there, or the end, waited
+/// for none (D222, waits-05). The bytes a TLS session or a buffer already held are read
+/// without it.
+#[derive(Debug)]
+struct Sock {
+    tcp: TcpStream,
+    /// How long its reads have waited since it was asked to count, none while it is not.
+    waited: Option<Duration>,
+}
+
+impl Sock {
+    fn of(tcp: TcpStream) -> Sock {
+        Sock { tcp, waited: None }
+    }
+
+    /// Counts its reads' waits from now, until [`waited`](Self::waited).
+    fn count(&mut self) {
+        self.waited = Some(Duration::ZERO);
+    }
+
+    /// How long its reads waited since [`count`](Self::count), which ends.
+    fn waited(&mut self) -> Duration {
+        self.waited.take().unwrap_or_default()
+    }
+}
+
+impl Read for Sock {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Where the socket has bytes, or its end, its read waits for none. One that cannot
+        // be told is counted, as before.
+        match self.waited {
+            Some(_) if !readable(&self.tcp).unwrap_or(false) => {
+                let began = Instant::now();
+                let read = self.tcp.read(buf);
+                if let Some(waited) = self.waited.as_mut() {
+                    *waited = waited.saturating_add(began.elapsed());
+                }
+                read
+            }
+            _ => self.tcp.read(buf),
+        }
+    }
+}
+
+impl Write for Sock {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.tcp.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.tcp.flush()
+    }
+}
+
+impl Wire for Sock {
+    fn tcp(&self) -> &TcpStream {
+        &self.tcp
+    }
 }
 
 /// What TLS runs over, and the socket beneath it, for its timeouts.
@@ -2282,8 +2539,8 @@ impl Wire for TcpStream {
 impl Wire for Hop {
     fn tcp(&self) -> &TcpStream {
         match self {
-            Hop::Tcp(s) => s,
-            Hop::Tls(s) => &s.sock,
+            Hop::Tcp(s) => &s.tcp,
+            Hop::Tls(s) => &s.sock.tcp,
         }
     }
 }
@@ -2326,6 +2583,13 @@ impl Stream {
             Stream::Tls(s) => s.sock.tcp(),
         }
     }
+
+    fn sock(&mut self) -> &mut Sock {
+        match self {
+            Stream::Plain(s) => s.sock(),
+            Stream::Tls(s) => s.sock.sock(),
+        }
+    }
 }
 
 impl Read for Stream {
@@ -2362,18 +2626,13 @@ struct Conn {
 }
 
 impl Conn {
-    /// Bounds each read and write by `d`. macOS refuses any option on a socket shut down
-    /// both ways, as one the server has reset is, with EINVAL (xnu-11417.101.15
-    /// bsd/kern/uipc_socket.c, sosetoptlock): its reads return what is buffered, then its
-    /// end, and its writes fail, at once, so it needs no bound, and the exchange goes on
-    /// to find out what the server sent.
+    /// Bounds each read and write by `d`; a connection the server has reset or closed both
+    /// ways needs no bound, and the exchange goes on to find out what the server sent
+    /// (`shards_ipc::timeout_set`).
     fn set_timeout(&self, d: Option<Duration>) -> io::Result<()> {
         let tcp = self.io.get_ref().tcp();
         for set in [TcpStream::set_read_timeout, TcpStream::set_write_timeout] {
-            match set(tcp, d) {
-                Err(e) if e.kind() == io::ErrorKind::InvalidInput && e.raw_os_error().is_some() => {}
-                result => result?,
-            }
+            shards_ipc::timeout_set(set(tcp, d))?;
         }
         Ok(())
     }
@@ -2435,10 +2694,19 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    use crate::patience::ATTEMPT_DELAY;
     use crate::testing::{After, registry, route, serve};
     use crate::tls::client_config;
 
+    /// A client of a scripted server's: its answers and silences follow liveness alone, so
+    /// that no asking again past a run-out takes a scripted answer out of turn (D222,
+    /// `testing::client`).
     fn plain() -> Client {
+        learner().following_liveness()
+    }
+
+    /// A client whose waits are its paths', as every client's are: the waits' own tests'.
+    fn learner() -> Client {
         Client::new(
             Box::new(|_| crate::tls::client_config(Vec::new(), None)),
             "shards-test",
@@ -2629,26 +2897,26 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         Reply::new(tx, Some(&cancel)).send(7);
         assert!(matches!(
-            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            wait_reply(&rx, Some(&cancel), Some(after(Duration::from_secs(1)))),
             Replied::Answer(7)
         ));
         assert!(matches!(
-            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            wait_reply(&rx, Some(&cancel), Some(after(Duration::from_secs(1)))),
             Replied::Disconnected
         ));
         let (tx, rx) = mpsc::channel::<()>();
         assert!(matches!(
-            wait_reply(&rx, Some(&cancel), Instant::now()),
+            wait_reply(&rx, Some(&cancel), Some(Instant::now())),
             Replied::Deadline
         ));
         drop(Reply::new(tx, Some(&cancel)));
         assert!(matches!(
-            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            wait_reply(&rx, Some(&cancel), Some(after(Duration::from_secs(1)))),
             Replied::Disconnected
         ));
         cancel.cancel();
         assert!(matches!(
-            wait_reply(&rx, Some(&cancel), Instant::now()),
+            wait_reply(&rx, Some(&cancel), Some(Instant::now())),
             Replied::Cancelled
         ));
     }
@@ -2672,10 +2940,10 @@ mod tests {
             let (one, first) = mpsc::channel::<usize>();
             let (two, second) = mpsc::channel();
             let cancellation = &cancel;
-            let a =
-                scope.spawn(move || wait_reply(&first, Some(cancellation), after(Duration::from_secs(2))));
-            let b =
-                scope.spawn(move || wait_reply(&second, Some(cancellation), after(Duration::from_secs(2))));
+            let a = scope
+                .spawn(move || wait_reply(&first, Some(cancellation), Some(after(Duration::from_secs(2)))));
+            let b = scope
+                .spawn(move || wait_reply(&second, Some(cancellation), Some(after(Duration::from_secs(2)))));
             Reply::new(two, Some(&cancel)).send(2);
             assert!(matches!(b.join().unwrap(), Replied::Answer(2)));
             cancel.cancel();
@@ -2726,16 +2994,18 @@ mod tests {
                 let result = if resolving {
                     resolve(
                         &at("http", "shards-cancel.invalid", 9),
-                        after(Duration::from_secs(3)),
                         Some(&asked_cancel),
+                        system_lookup,
                     )
                     .map(|_| ())
                 } else {
                     dial(
                         &at("http", "192.0.2.1", 9),
+                        vec![SocketAddr::from(([192, 0, 2, 1], 9))],
                         Some(&asked_cancel),
                         None,
                         Duration::from_secs(3),
+                        ATTEMPT_DELAY,
                     )
                     .map(|_| ())
                 };
@@ -2841,11 +3111,11 @@ mod tests {
         }
         let conn = Conn {
             key: Key::of(&at("http", "127.0.0.1", port), None),
-            io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+            io: BufReader::new(Stream::Plain(Hop::Tcp(Sock::of(tcp)))),
             watch: None,
         };
         conn.set_timeout(Some(Duration::from_secs(30))).unwrap();
-        conn.stall(Some(STALL)).unwrap();
+        conn.stall(Some(Duration::from_secs(30))).unwrap();
         let t0 = Instant::now();
         let mut conn = conn;
         let mut rest = Vec::new();
@@ -2853,49 +3123,163 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     }
 
-    /// A name's lookup is within the dial's deadline, which an address needs none of.
+    /// A name's lookup is waited for while the system's resolver works on it, whose answer
+    /// ends it (D276), and an address needs none: a stand-in resolver that answers past
+    /// the 30 s a lookup was given within its dial before (Go's dialer's, containerd's),
+    /// at once on the clock of a fresh client, the build's git fetch's kind, still
+    /// resolves, and the connection is made and answered. A resolver's failure is a
+    /// trouble's, said as the resolver says it.
     #[test]
-    fn names_are_looked_up_within_the_dials_deadline() {
-        let spent = Instant::now();
-        let named = resolve(&at("http", "localhost", 5000), spent, None).unwrap_err();
-        assert_eq!(named.kind(), ErrorKind::Transient, "{named}");
-        assert!(named.to_string().contains("resolving: timed out"), "{named}");
-        let addressed = resolve(&at("http", "127.0.0.1", 5000), spent, None).unwrap();
-        assert_eq!(addressed, vec![SocketAddr::from(([127, 0, 0, 1], 5000))]);
-        let found = resolve(
-            &at("http", "localhost", 5000),
-            Instant::now() + Duration::from_secs(10),
-            None,
-        )
+    fn a_lookup_is_waited_for_while_its_resolver_works() {
+        let addressed = resolve(&at("http", "127.0.0.1", 5000), None, |_, _| {
+            panic!("an address is not looked up")
+        })
         .unwrap();
+        assert_eq!(addressed, vec![SocketAddr::from(([127, 0, 0, 1], 5000))]);
+        let failed = resolve(&at("http", "nowhere.test", 5000), None, |_, _| {
+            Err(io::Error::other("no such host"))
+        })
+        .unwrap_err();
         assert!(
-            found.iter().all(|a| a.ip().is_loopback() && a.port() == 5000),
-            "{found:?}"
+            failed.is_unresolved() && failed.kind() == ErrorKind::Transient,
+            "{failed}"
         );
+        assert!(
+            failed
+                .to_string()
+                .contains("nowhere.test: resolving: no such host"),
+            "{failed}"
+        );
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec();
+        let server = serve(None, vec![(ok, After::Close)]);
+        static PORT: AtomicU64 = AtomicU64::new(0);
+        PORT.store(u64::from(server.port), Ordering::SeqCst);
+        // Past the old dial's 30 s, which held the lookup.
+        let slow: Lookup = |name, port| {
+            assert_eq!(name, "slow.test");
+            std::thread::sleep(Duration::from_secs(31));
+            let real = u16::try_from(PORT.load(Ordering::SeqCst)).unwrap();
+            assert_eq!(port, real);
+            Ok(vec![SocketAddr::from(([127, 0, 0, 1], real))])
+        };
+        let client = learner().looking_up(slow);
+        let t0 = Instant::now();
+        let url = Url::parse(&format!("http://slow.test:{}/v2/", server.port)).unwrap();
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert!(t0.elapsed() >= Duration::from_secs(31), "{:?}", t0.elapsed());
+        // The lookup is none of the connect's sample: one of loopback's, under a second.
+        let connect = client.shown("slow.test", server.port).connect;
+        assert_eq!(connect.n, 1);
+        assert!(connect.srtt_us < 1_000_000, "{connect:?}");
     }
 
-    /// A fresh connection's reads and writes are bounded from the start: the request is
-    /// written within them too, which nothing bounded before its response's head. A
-    /// client without that patience bounds neither.
+    /// An answer whose bytes keep coming is never cut by a clock (D276): a POST's, the
+    /// build's git fetch's kind, its head trickled a line each 5 s and its body after, 40 s
+    /// in all, past the 30 s a fresh client's answer had in all before (Go's
+    /// `ResponseHeaderTimeout`, containerd's), is read whole on a path that has shown no
+    /// silence, and teaches its path its slowest silence.
     #[test]
-    fn fresh_connections_bound_their_writes() {
+    fn an_answer_that_trickles_past_the_old_head_wait_is_not_cut() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = tcp.read(&mut request).unwrap();
+            tcp.write_all(b"HTTP/1.1 200 OK\r\n").unwrap();
+            for n in 0..7 {
+                std::thread::sleep(Duration::from_secs(5));
+                tcp.write_all(format!("X-Line-{n}: {n}\r\n").as_bytes()).unwrap();
+            }
+            tcp.write_all(b"Content-Length: 2\r\n\r\no").unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+            tcp.write_all(b"k").unwrap();
+            let _ = tcp.shutdown(Shutdown::Write);
+        });
+        let client = learner();
+        let url = at("http", "127.0.0.1", port);
+        let t0 = Instant::now();
+        let mut response = client
+            .send(&Request {
+                method: "POST",
+                url: &url,
+                headers: &[],
+                body: b"command=fetch",
+                file: None,
+            })
+            .unwrap();
+        let mut body = Vec::new();
+        response.read_to_end(&mut body).unwrap();
+        assert_eq!((response.status, body.as_slice()), (200, &b"ok"[..]));
+        assert!(t0.elapsed() >= Duration::from_secs(40), "{:?}", t0.elapsed());
+        drop(response);
+        served.join().unwrap();
+        let slowest = client.shown("127.0.0.1", port).slowest_silence_us.unwrap();
+        assert!(slowest >= 4_000_000, "{slowest}");
+    }
+
+    /// A body's silence past the slowest its path has shown is cut only where its caller
+    /// asks again or resumes what the cut ends (a registry's, a build's git fetch's): for
+    /// any other client a cut would fail its caller, so it follows its connection's
+    /// liveness, and teaches its path the silence (D276).
+    #[test]
+    fn a_bodys_silence_is_cut_only_where_its_caller_asks_again() {
+        use std::net::TcpListener;
+        let body = |client: Client| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let served = std::thread::spawn(move || {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = tcp.read(&mut request).unwrap();
+                tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\no")
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+                let _ = tcp.write_all(b"k");
+                let _ = tcp.shutdown(Shutdown::Write);
+            });
+            let shown = crate::patience::Shown {
+                slowest_silence_us: Some(100_000),
+                ..crate::patience::Shown::default()
+            };
+            let client = client.showing("127.0.0.1", port, shown);
+            let url = at("http", "127.0.0.1", port);
+            let read = fetch(&client, "GET", &url);
+            let slowest = client.shown("127.0.0.1", port).slowest_silence_us;
+            drop(client);
+            served.join().unwrap();
+            (read, slowest)
+        };
+        let (read, slowest) = body(learner());
+        assert_eq!(read.unwrap(), (200, b"ok".to_vec()));
+        assert!(slowest.is_some_and(|us| us >= 300_000), "{slowest:?}");
+        let (read, slowest) = body(learner().asking_again());
+        assert!(read.is_err(), "{read:?}");
+        assert_eq!(slowest, Some(100_000), "a run-out learns nothing");
+    }
+
+    /// A fresh connection's reads and writes wait as long as it lives where its caller names
+    /// no patience: its request's writes are its connection's liveness's, which no picked
+    /// figure bounds (D276); a caller's patience bounds both.
+    #[test]
+    fn fresh_connections_bound_their_writes_as_their_caller_says() {
         let server = serve(None, vec![]);
         let url = at("http", "127.0.0.1", server.port);
         let conn = plain().connect(&url, Key::of(&url, None), None).unwrap();
-        let tcp = conn.io.get_ref().tcp();
-        assert_eq!(tcp.write_timeout().unwrap(), Some(STALL));
-        assert_eq!(tcp.read_timeout().unwrap(), Some(STALL));
-        let patient = plain().with_patience(Patience {
-            head: None,
-            stall: None,
-            ..Patience::default()
-        });
-        let conn = patient.connect(&url, Key::of(&url, None), None).unwrap();
         let tcp = conn.io.get_ref().tcp();
         assert_eq!(
             (tcp.write_timeout().unwrap(), tcp.read_timeout().unwrap()),
             (None, None)
         );
+        let impatient = plain().with_patience(Patience {
+            stall: Some(Duration::from_secs(5)),
+            ..Patience::default()
+        });
+        let conn = impatient.connect(&url, Key::of(&url, None), None).unwrap();
+        let tcp = conn.io.get_ref().tcp();
+        assert_eq!(tcp.write_timeout().unwrap(), Some(Duration::from_secs(5)));
+        assert_eq!(tcp.read_timeout().unwrap(), Some(Duration::from_secs(5)));
     }
 
     /// A client reaching some addresses alone refuses the others, directly and through a
@@ -3284,7 +3668,6 @@ mod tests {
             Box::new(move |_| client_config(vec![ca.clone()], None)),
             "shards-test",
         )
-        .learning()
         .showing("localhost", listening.port, shown);
         let url = at("https", "localhost", listening.port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
@@ -3303,12 +3686,14 @@ mod tests {
         );
     }
 
-    /// An answer its path's wait cut is said overdue, so it is asked again at once
-    /// (crate::patience): a learning client's, past the slowest its path has shown; on a
-    /// path that has shown none it is waited for as its connection lives, and answered;
-    /// another client's wait is its patience, and a failure past it is not overdue (D222).
+    /// An answer its path's wait cut, past the slowest its path has shown, is overdue and
+    /// asked again at once by the client itself, as any client's is (D276): that asking
+    /// follows its connection's liveness (crate::patience `Bounded::RanOut`) and is
+    /// answered, the request answered whole. On a path that has shown none it is waited for
+    /// as its connection lives, and answered; a caller's own patience is no path's wait,
+    /// and a failure past it is not overdue, nor asked again (D222).
     #[test]
-    fn an_answer_cut_by_its_wait_is_overdue() {
+    fn an_answer_cut_by_its_wait_is_asked_again_at_once() {
         let server = route(None, |_| {
             std::thread::sleep(Duration::from_millis(1300));
             Some((
@@ -3321,25 +3706,22 @@ mod tests {
             slowest_answer_us: Some(200_000),
             ..crate::patience::Shown::default()
         };
-        let t0 = Instant::now();
-        let e = fetch(
-            &plain().learning().showing("127.0.0.1", server.port, shown),
-            "GET",
-            &url,
-        )
-        .unwrap_err();
-        assert!(e.is_overdue() && e.kind() == ErrorKind::Transient, "{e}");
-        assert!(t0.elapsed() < Duration::from_millis(1300), "{:?}", t0.elapsed());
-        let cold = plain().learning();
+        let client = learner().asking_again().showing("127.0.0.1", server.port, shown);
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, Vec::new()));
+        assert_eq!(server.requests().len(), 2, "cut once, asked again once");
+        assert_eq!(client.paused(), Duration::ZERO, "asked again at once");
+        let cold = learner();
         assert_eq!(fetch(&cold, "GET", &url).unwrap(), (200, Vec::new()));
+        assert_eq!(server.requests().len(), 3);
         let learned = cold.shown("127.0.0.1", server.port).slowest_answer_us.unwrap();
         assert!(learned >= 1_300_000, "{learned}");
-        let impatient = plain().with_patience(Patience {
+        let impatient = learner().with_patience(Patience {
             head: Some(Duration::from_millis(500)),
             ..Patience::default()
         });
         let e = fetch(&impatient, "GET", &url).unwrap_err();
-        assert!(!e.is_overdue(), "{e}");
+        assert_eq!(e.kind(), ErrorKind::Transient, "{e}");
+        assert_eq!(server.requests().len(), 4, "not asked again");
     }
 
     /// An answer's wait bounds the gap before its first byte, a stall: a head whose first
@@ -3351,44 +3733,58 @@ mod tests {
     #[test]
     fn an_answer_is_cut_only_before_its_first_byte() {
         use std::net::TcpListener;
-        // A head's first line at once, its rest 0.6 s later.
-        let slow_head = || {
+        // A head's first line at once, its rest 0.6 s later, on each of `n` connections, each
+        // answered as it comes.
+        let slow_head = |n: usize| {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let served = std::thread::spawn(move || {
-                let (mut tcp, _) = listener.accept().unwrap();
-                let mut request = [0u8; 4096];
-                let _ = tcp.read(&mut request).unwrap();
-                tcp.write_all(b"HTTP/1.1 200 OK\r\n").unwrap();
-                std::thread::sleep(Duration::from_millis(600));
-                let _ = tcp.write_all(b"Content-Length: 2\r\n\r\nok");
-                let mut rest = Vec::new();
-                let _ = tcp.read_to_end(&mut rest);
+                let answering: Vec<_> = (0..n)
+                    .map(|_| {
+                        let (mut tcp, _) = listener.accept().unwrap();
+                        std::thread::spawn(move || {
+                            let mut request = [0u8; 4096];
+                            let _ = tcp.read(&mut request).unwrap();
+                            tcp.write_all(b"HTTP/1.1 200 OK\r\n").unwrap();
+                            std::thread::sleep(Duration::from_millis(600));
+                            let _ = tcp.write_all(b"Content-Length: 2\r\n\r\nok");
+                            let _ = tcp.shutdown(Shutdown::Write);
+                        })
+                    })
+                    .collect();
+                for answer in answering {
+                    answer.join().unwrap();
+                }
             });
             (port, served)
         };
-        let (port, served) = slow_head();
+        let (port, served) = slow_head(1);
         let shown = crate::patience::Shown {
             slowest_answer_us: Some(300_000),
             ..crate::patience::Shown::default()
         };
-        let client = plain().learning().showing("127.0.0.1", port, shown.clone());
+        let client = learner().asking_again().showing("127.0.0.1", port, shown.clone());
         let url = at("http", "127.0.0.1", port);
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         drop(client);
         served.join().unwrap();
-        let (port, served) = slow_head();
+        // Its rest past the slowest silence shown: overdue, and asked again at once on a
+        // second connection, whose head's silences follow liveness until one ends.
+        let (port, served) = slow_head(2);
         let silences = crate::patience::Shown {
             slowest_silence_us: Some(100_000),
             ..shown
         };
-        let client = plain().learning().showing("127.0.0.1", port, silences);
+        let client = learner().asking_again().showing("127.0.0.1", port, silences);
         let url = at("http", "127.0.0.1", port);
-        let e = fetch(&client, "GET", &url).unwrap_err();
-        assert!(e.is_overdue(), "{e}");
-        assert_eq!(
-            client.silence("127.0.0.1", port),
-            Bounded::RanOut(Duration::from_millis(100))
+        assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
+        assert!(
+            matches!(
+                client.silence("127.0.0.1", port),
+                Bounded::Slowest(d) if d >= Duration::from_millis(600)
+            ),
+            "{:?}",
+            client.silence("127.0.0.1", port)
         );
         assert_eq!(
             client.paths.answer(&format!("127.0.0.1:{port}")),
@@ -3396,7 +3792,7 @@ mod tests {
         );
         drop(client);
         served.join().unwrap();
-        let client = plain().learning();
+        let client = learner().asking_again();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let served = std::thread::spawn(move || {
@@ -3430,7 +3826,7 @@ mod tests {
         // again.
         let server = serve(None, vec![(ok.clone(), After::Keep); 4]);
         let url = at("http", "127.0.0.1", server.port);
-        let client = plain().learning();
+        let client = learner().asking_again();
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         assert_eq!(fetch(&client, "GET", &url).unwrap(), (200, b"ok".to_vec()));
         let shown = client.shown("127.0.0.1", server.port);
@@ -3443,7 +3839,7 @@ mod tests {
         };
         let server = serve(None, vec![(ok, After::Keep)]);
         let url = at("http", "127.0.0.1", server.port);
-        let kept = plain().learning().showing("127.0.0.1", server.port, zero);
+        let kept = learner().asking_again().showing("127.0.0.1", server.port, zero);
         assert_eq!(kept.silence("127.0.0.1", server.port), Bounded::Cold);
         assert_eq!(fetch(&kept, "GET", &url).unwrap(), (200, b"ok".to_vec()));
     }
@@ -3458,7 +3854,7 @@ mod tests {
         let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
         answer.extend_from_slice(&body);
         let server = serve(None, vec![(answer, After::Keep)]);
-        let client = plain().learning();
+        let client = learner();
         let url = at("http", "127.0.0.1", server.port);
         let mut response = client
             .send(&Request {
@@ -3481,8 +3877,139 @@ mod tests {
         }
         assert_eq!(got, body.len());
         drop(response);
-        let slowest = client.shown("127.0.0.1", server.port).slowest_silence_us.unwrap();
-        assert!(slowest < 300_000, "the reader's own time counted: {slowest} µs");
+        let slowest = client.shown("127.0.0.1", server.port).slowest_silence_us;
+        assert!(
+            slowest.is_none_or(|us| us < 300_000),
+            "the reader's own time counted: {slowest:?} µs"
+        );
+    }
+
+    /// D276's rule for a non-lookup's answer, its server's work with the request waited out as
+    /// its connection lives, holds past its head: a server that sends its head at once and its
+    /// body only after its work (GitHub's git-upload-pack, whose `ERR upload-pack: not our ref`
+    /// or pack follows its `200` by that work's time) is waited for, though its path has shown
+    /// silences of 1 ms; a lookup's body is cut there as before. Before, the gap was taken for a
+    /// silence of the path's: cut, asked again, the run-out ended by the next request's quick
+    /// body, and cut again for as long as the build ran (kiln's P1.4 E2E, 2026-11-15).
+    #[test]
+    fn a_non_lookups_body_waits_out_its_servers_work_before_its_first_bytes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Each request's head answered at once, its body 300 ms later.
+        let serving = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut got = Vec::new();
+                let mut b = [0u8; 4096];
+                let whole = |got: &[u8]| {
+                    let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        return false;
+                    };
+                    let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    got.len() >= end + 4 + len
+                };
+                while !whole(&got) {
+                    let n = s.read(&mut b).unwrap();
+                    assert!(n > 0, "the request ended early");
+                    got.extend_from_slice(&b[..n]);
+                }
+                s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                s.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = s.write_all(b"5\r\nhello\r\n0\r\n\r\n");
+            }
+        });
+        let one_ms = crate::patience::Shown {
+            slowest_silence_us: Some(1_000),
+            ..crate::patience::Shown::default()
+        };
+        let client = learner().asking_again().showing("127.0.0.1", port, one_ms);
+        let url = at("http", "127.0.0.1", port);
+        let send = |method: &'static str, body: &'static [u8]| {
+            client
+                .send(&Request {
+                    method,
+                    url: &url,
+                    headers: &[],
+                    body,
+                    file: None,
+                })
+                .unwrap()
+        };
+        let mut answered = String::new();
+        send("POST", b"0000").read_to_string(&mut answered).unwrap();
+        assert_eq!(answered, "hello", "its server's work waited out");
+        let cut = send("GET", b"").read_to_string(&mut String::new());
+        assert!(
+            cut.is_err(),
+            "a lookup's body cut past its path's silence: {cut:?}"
+        );
+        serving.join().unwrap();
+    }
+
+    /// A read whose bytes were there as it began, in a buffer, the TLS session or the
+    /// socket, waited for none: a body its server sent whole, each read after its bytes have
+    /// all come, teaches its path no silence at all, however long its copies take; and,
+    /// its path's silences out past a slowest of 1 µs, raises none nor ends the run-out by
+    /// one (waits-05). Before, every read that brought bytes was timed, and a copy of a µs
+    /// or more was taken for a stall of the path's.
+    #[test]
+    fn a_read_of_bytes_already_there_is_no_silence() {
+        let body = vec![7u8; 64 << 10];
+        let mut answer = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        answer.extend_from_slice(&body);
+        let read = |client: &Client, port: u16| {
+            let url = at("http", "127.0.0.1", port);
+            let mut response = client
+                .send(&Request {
+                    method: "GET",
+                    url: &url,
+                    headers: &[],
+                    body: &[],
+                    file: None,
+                })
+                .unwrap();
+            let mut chunk = [0u8; 16 << 10];
+            let mut got = 0;
+            loop {
+                // Its bytes all come before each read: on loopback, written at once.
+                std::thread::sleep(Duration::from_millis(50));
+                let n = response.read(&mut chunk).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got += n;
+            }
+            assert_eq!(got, body.len());
+        };
+        let server = serve(None, vec![(answer.clone(), After::Keep)]);
+        let client = learner();
+        read(&client, server.port);
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_eq!(shown.slowest_silence_us, None, "{shown:?}");
+        // Out past 1 µs: none of its reads outlasts it.
+        let server = serve(None, vec![(answer, After::Keep)]);
+        let one = crate::patience::Shown {
+            slowest_silence_us: Some(1),
+            ..crate::patience::Shown::default()
+        };
+        let client = learner().asking_again().showing("127.0.0.1", server.port, one);
+        client
+            .paths
+            .silence_ran_out(&format!("127.0.0.1:{}", server.port));
+        assert_eq!(
+            client.silence("127.0.0.1", server.port),
+            Bounded::RanOut(Duration::from_micros(1))
+        );
+        read(&client, server.port);
+        let shown = client.shown("127.0.0.1", server.port);
+        assert_eq!(shown.slowest_silence_us, Some(1), "{shown:?}");
     }
 
     /// A connect's or a handshake's wait its own time ended counts as a timeout of its
@@ -3492,7 +4019,7 @@ mod tests {
     /// failure its time did not end is none (D222).
     #[test]
     fn a_wait_its_own_time_ended_counts_as_its_timeout() {
-        let client = plain().learning();
+        let client = learner();
         let path = "r.example:443";
         let first = client.paths.timeout(path, Wait::Handshake);
         // Ended at once by the clock, by its own time all the same.
@@ -3514,8 +4041,8 @@ mod tests {
     }
 
     /// A handshake and a dial whose own time ends them say so: a handshake to a server that
-    /// answers nothing, and a name's lookup past its dial's deadline; a handshake its server
-    /// ends, and a dial refused, do not (D222).
+    /// answers nothing, and a dial whose time ended before any attempt; a handshake its
+    /// server ends, and a dial refused, do not (D222).
     #[test]
     fn a_handshake_or_a_dial_its_time_ends_says_so() {
         use std::net::TcpListener;
@@ -3527,7 +4054,7 @@ mod tests {
             let (held, _) = listener.accept().unwrap();
             let _held = (!ends).then_some(held);
             plain()
-                .shake(&url, Hop::Tcp(tcp), Duration::from_millis(50))
+                .shake(&url, Hop::Tcp(Sock::of(tcp)), Some(Duration::from_millis(50)))
                 .err()
                 .unwrap()
         };
@@ -3535,16 +4062,26 @@ mod tests {
         assert!(silent.is_timed_out(), "{silent}");
         let ended = shaken(true);
         assert!(!ended.is_timed_out(), "{ended}");
-        let named = dial(&at("http", "localhost", 5000), None, None, Duration::ZERO).unwrap_err();
-        assert!(named.is_timed_out(), "{named}");
+        let spent = dial(
+            &at("http", "127.0.0.1", 5000),
+            vec![SocketAddr::from(([127, 0, 0, 1], 5000))],
+            None,
+            None,
+            Duration::ZERO,
+            ATTEMPT_DELAY,
+        )
+        .unwrap_err();
+        assert!(spent.is_timed_out(), "{spent}");
         let free = TcpListener::bind("127.0.0.1:0").unwrap();
         let closed = free.local_addr().unwrap().port();
         drop(free);
         let refused = dial(
             &at("http", "127.0.0.1", closed),
+            vec![SocketAddr::from(([127, 0, 0, 1], closed))],
             None,
             None,
             Duration::from_secs(10),
+            ATTEMPT_DELAY,
         )
         .unwrap_err();
         assert!(!refused.is_timed_out(), "{refused}");
@@ -3569,17 +4106,14 @@ mod tests {
             let _held = (!ends).then_some(held);
             let mut conn = Conn {
                 key: Key::of(&url, None),
-                io: BufReader::new(Stream::Plain(Hop::Tcp(tcp))),
+                io: BufReader::new(Stream::Plain(Hop::Tcp(Sock::of(tcp)))),
                 watch: None,
             };
             let t0 = Instant::now();
-            let wait = if cut {
-                HeadWait::Path {
-                    answer: Some(patience),
-                    silence: None,
-                }
-            } else {
-                HeadWait::Patience(Some(patience))
+            let wait = HeadWait {
+                answer: Some(patience),
+                silence: None,
+                cut,
             };
             let failure = read_head(&mut conn, &url, wait).err().unwrap();
             (failure, t0.elapsed())

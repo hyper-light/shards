@@ -5,7 +5,7 @@ mod drain;
 pub(crate) mod execs;
 mod log_lanes;
 pub(crate) mod mcp;
-mod members;
+pub(crate) mod members;
 #[cfg(test)]
 mod terminal_order_tests;
 
@@ -25,6 +25,7 @@ use shards_abi::run::{
     self,
     managed::{Channel, Event, Record, StreamState},
 };
+use shards_api::control::{HANDSHAKE_BYTES, INPUT_ROOM, exec_admissions};
 use shards_ipc::Stream;
 use shards_ipc::fd::AsRawFd as _;
 use shards_remote::{
@@ -55,8 +56,6 @@ pub(super) fn vm_key(dir: &Path) -> Option<Fingerprint> {
 }
 
 const GENERATION: &str = "managed-generation";
-// RFC 8446 §4: Handshake's uint24 length and four-byte type/length head.
-const HANDSHAKE_BYTES: usize = (1 << 24) - 1 + 4;
 /// The run's annotation naming the members whose stdin its owner writes (plan step 5, D231
 /// decision §3.3): each `KIND:NAME` as the image's Agentfile declares it (`agent` or
 /// `harness`), comma-separated. shards' own key, as `shards.egress` is a network's (D192):
@@ -68,10 +67,6 @@ pub(super) const STDIN_ANNOTATION: &str = "shards.stdin";
 /// not name the daemon reads itself, into its member's log as it comes, so that none waits on
 /// a reader (drain.rs): the members of a detached run, or of one whose client has gone.
 pub(super) const OUTPUT_ANNOTATION: &str = "shards.output";
-/// The most one input record carries: one `STDIN` frame to the member's init, which carries
-/// at most what the guest reads of a stream at once (`run::CHUNK`), as a command's and an
-/// exec's stdin frames do.
-const INPUT_ROOM: usize = run::CHUNK;
 
 /// The members a run's annotations give an input, by their declared index: each named
 /// once, each one of the image's members that runs a program (`active`), refused by name
@@ -743,28 +738,6 @@ fn bind_agent(
     .map_err(Failure::Endpoint)
 }
 
-/// What each exec's and MCP connection's streams are admitted (D238, D254), the daemon's runs'
-/// and an orchestrator's (api_run.rs) alike: an output's record is what one of its guest's
-/// output frames carries at most (`run::CHUNK`), its window that record with its data frame's
-/// head, as a member's is; its stdin's is a member's stdin's ([`INPUT_ROOM`], its taken
-/// frames' window). Their handshake and datagrams are a member stream's connection's.
-pub(crate) fn exec_admissions() -> io::Result<control::exec::Admissions> {
-    let window = |n: usize| u64::try_from(n).map_err(|_| io::Error::other("an exec's window overflows"));
-    let link = |record_bytes, transport_bytes| Admitted {
-        record_bytes,
-        transport_bytes,
-        handshake_bytes: HANDSHAKE_BYTES,
-        datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-    };
-    let output = run::CHUNK
-        .checked_add(shards_remote::managed::DATA_HEAD)
-        .ok_or_else(|| io::Error::other("an exec's window overflows"))?;
-    Ok(control::exec::Admissions {
-        output: link(run::CHUNK, window(output)?),
-        input: link(INPUT_ROOM, window(input::TAKEN_BYTES)?),
-    })
-}
-
 impl Owner {
     fn abort(&self) {
         self.credits.close();
@@ -1358,7 +1331,7 @@ impl Outputs {
             Some(Entry::Serving(owner)) => Arc::clone(owner),
             _ => return Err(io::Error::other("managed run is not registered")),
         };
-        owner.ends.told(ended.member, ended.status)
+        owner.ends.told(ended.member, ended.end)
     }
 
     /// Run `id`'s MCP connections, where it gave a member a bridge (D254).
@@ -1465,16 +1438,25 @@ impl Outputs {
         }
     }
 
-    /// Run `id`'s command's log has rotated (files.rs): the run's one log cap holds again, where
-    /// its members' logs are kept (D240).
-    pub(super) fn cap(&self, id: &str) {
+    /// Run `id`'s command's log, in `dir`, has rotated (files.rs): its run's logs are held to
+    /// their bound again, one rule for every run (runs-11 `LOG_SEGMENT`, D186): a run whose
+    /// members' logs are kept, all of them together within the run's one cap (D240); any other,
+    /// its command's log alone within `bound` bytes of output, by the same rule (cap.rs), so that
+    /// segments its retention's count keeps past its bound (a log continued under a smaller
+    /// history, or segments of another size) go oldest first, each loss recorded in `log.capped`.
+    pub(super) fn cap(&self, id: &str, dir: &Path, bound: u64) -> io::Result<()> {
         let owner = match lock(&self.runs).get(id) {
-            Some(Entry::Serving(owner)) => Arc::clone(owner),
-            _ => return,
+            Some(Entry::Serving(owner)) => Some(Arc::clone(owner)),
+            _ => None,
         };
-        if let Some(drain) = &owner.drain {
-            drain.cap();
+        if owner
+            .as_ref()
+            .and_then(|owner| owner.drain.as_ref())
+            .is_some_and(|drain| drain.cap())
+        {
+            return Ok(());
         }
+        cap::hold(dir, &[], bound, &mut |_| Ok(())).map(drop)
     }
 }
 
@@ -1688,7 +1670,7 @@ impl<D: Disk> Daemon<D> {
                 };
                 input_lanes.push((scope, input_admitted));
             }
-            let exec_admitted = exec_admissions()?;
+            let exec_admitted = exec_admissions();
             let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
             // One driver's socket, and the waker every stream's control shares.
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
@@ -2106,6 +2088,11 @@ impl<D: Disk> Daemon<D> {
                 .try_reserve_exact(terminals.len())
                 .map_err(io::Error::other)?;
             sized.extend_from_slice(terminals);
+            let mut running = Vec::new();
+            running
+                .try_reserve_exact(active.len())
+                .map_err(io::Error::other)?;
+            running.extend_from_slice(active);
             std::thread::Builder::new()
                 .name("agent-members".into())
                 .spawn_scoped(threads, move || {
@@ -2113,6 +2100,7 @@ impl<D: Disk> Daemon<D> {
                         &lanes,
                         &members::Hosting {
                             ends: &member_ends,
+                            active: &running,
                             terminals: &sized,
                             charge: &member_charge,
                             started: &|| {
@@ -2120,6 +2108,7 @@ impl<D: Disk> Daemon<D> {
                                 self.running(&run_id)
                             },
                             builtin: &|spec, stdio, theirs| self.launch_builtin(&run_id, spec, stdio, theirs),
+                            say: &|line| log(line),
                         },
                     );
                 })?;
@@ -3292,6 +3281,15 @@ mod terminal_tests {
 mod tests {
     use super::*;
 
+    /// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+    /// with no bound of its own waits: what it answered, or why not.
+    macro_rules! answered {
+        ($ask:expr) => {
+            $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+                .map(|got| got.expect("Duration::MAX waits until the answer"))
+        };
+    }
+
     fn encoded(member: u32, channel: Channel, offset: u64, event: Event<'_>) -> Vec<u8> {
         let record = Record {
             member,
@@ -3393,7 +3391,7 @@ mod tests {
 
     /// The admissions a run's execs get, as `start_managed_capture` gives them.
     fn exec_admitted() -> control::exec::Admissions {
-        exec_admissions().unwrap()
+        exec_admissions()
     }
 
     /// What a run's exec host hands its VM process (`Daemon::launch_exec`): the member's exec,
@@ -3526,7 +3524,7 @@ mod tests {
                 stderr,
                 stdin,
                 mut control,
-            } = execs.exec(0, spec.clone()).unwrap();
+            } = answered!(execs.exec(0, spec.clone())).unwrap();
             let (mut stderr, mut stdin) = (stderr.unwrap(), stdin.unwrap());
             assert_eq!(stdin.write(line).unwrap(), line.len());
             assert_eq!(
@@ -3547,7 +3545,7 @@ mod tests {
             assert_eq!(stderr.next_record().unwrap(), Got::Finished);
             assert_eq!(control.wait(), Ok(7));
             assert_eq!(
-                execs.exec(0, spec.clone()).map(|_| ()),
+                answered!(execs.exec(0, spec.clone())).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             process.join().unwrap();
@@ -3556,18 +3554,18 @@ mod tests {
                 ..spec.clone()
             };
             assert_eq!(
-                execs.exec(0, as_root).map(|_| ()),
+                answered!(execs.exec(0, as_root)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             *lock(&budget) = Some(u64::MAX);
             assert_eq!(
-                execs.exec(0, spec).map(|_| ()),
+                answered!(execs.exec(0, spec)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
             // An MCP connection (D254) of a run that gave its member no bridge: refused before
             // anything reaches its VM process.
             assert_eq!(
-                execs.mcp(0).map(|_| ()),
+                answered!(execs.mcp(0)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             served.revoke.revoke();
@@ -3709,9 +3707,9 @@ mod tests {
             .unwrap();
             let driver = s.spawn(move || controller.run());
             let execs = dialed.execs.as_ref().unwrap();
-            let mut ran = execs
-                .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)
-                .unwrap();
+            let mut ran =
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false))
+                    .unwrap();
             assert_eq!(
                 read_all(&mut ran),
                 [
@@ -3724,28 +3722,24 @@ mod tests {
                 stderr: None,
             };
             assert_eq!(
-                execs
-                    .log(LogSource::Command, LogChannels::BOTH, older, false)
-                    .map(|_| ()),
+                answered!(execs.log(LogSource::Command, LogChannels::BOTH, older, false)).map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Rotated { oldest: at(1, 0, 0) }))
             );
             assert_eq!(
-                execs
-                    .log(LogSource::Member(2), LogChannels::BOTH, LogCursor::OLDEST, false)
+                answered!(execs.log(LogSource::Member(2), LogChannels::BOTH, LogCursor::OLDEST, false))
                     .map(|_| ()),
                 Err(Fault::Unlogged(Unlogged::Unknown))
             );
-            let mut member = execs
-                .log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false)
-                .unwrap();
+            let mut member =
+                answered!(execs.log(LogSource::Member(1), LogChannels::BOTH, LogCursor::OLDEST, false))
+                    .unwrap();
             assert_eq!(
                 read_all(&mut member),
                 [(Channel::Stdout, at(0, 0, 0), b"kept\n".to_vec())]
             );
             // Followed from where it got to: what is kept as it is kept, then its end.
-            let mut followed = execs
-                .log(LogSource::Member(1), LogChannels::BOTH, member.cursor(), true)
-                .unwrap();
+            let mut followed =
+                answered!(execs.log(LogSource::Member(1), LogChannels::BOTH, member.cursor(), true)).unwrap();
             assert!(*lock(&charge.bytes) > 0, "a log lane reading is charged");
             drain
                 .keep(&encoded(1, Channel::Stderr, 0, Event::Data(b"\x00\xff more")))
@@ -3803,9 +3797,19 @@ mod tests {
         let charged = Arc::clone(&charge);
         let bridges = mcp::Bridges::new(vec![0], run::CHUNK, Arc::clone(&charge));
         let first = run::mcp::ACCEPTED_FIRST;
-        // A connection its VM hands over, held: the harness's end of it.
+        // A connection its VM hands over, made as the daemon's are (daemon.rs' LANE_ACCEPTED):
+        // on Windows one written in messages, whose ends say a half-close, which a pair's
+        // pipe does not (ipc pipe.rs); CI run 43530570785's aarch64-pc-windows-msvc waited
+        // here for its harness's half-close until its step's 35 minutes ran out.
+        let handed = || {
+            #[cfg(unix)]
+            return Stream::pair().unwrap();
+            #[cfg(windows)]
+            Stream::plain_pair().unwrap()
+        };
+        // Held: the harness's end of it.
         let held = |number: u64| {
-            let (harness, ours) = Stream::pair().unwrap();
+            let (harness, ours) = handed();
             bridges.hold(number, 0, ours).unwrap();
             harness
         };
@@ -3848,7 +3852,7 @@ mod tests {
                 mut from,
                 mut to,
                 mut end,
-            } = execs.mcp(0).unwrap();
+            } = answered!(execs.mcp(0)).unwrap();
             assert_eq!(
                 from.next_record().unwrap(),
                 Got::Record {
@@ -3873,13 +3877,13 @@ mod tests {
             assert_eq!(from.next_record().unwrap(), Got::Finished);
             assert_eq!(end.wait(), Ok(0));
             assert_eq!(
-                execs.mcp(1).map(|_| ()),
+                answered!(execs.mcp(1)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Refused))
             );
             // No room for another: let go, its harness reading its end.
             let room = *lock(&budget);
             *lock(&budget) = Some(u64::MAX);
-            let (harness, ours) = Stream::pair().unwrap();
+            let (harness, ours) = handed();
             assert!(matches!(
                 bridges.hold(first + 2, 0, ours),
                 Err(mcp::Unheld::Capacity)
@@ -3890,7 +3894,10 @@ mod tests {
             let harness = held(first + 3);
             bridges.close();
             assert_eq!(shards_ipc::Polled(&harness).read(&mut [0; 1]).unwrap(), 0);
-            assert_eq!(execs.mcp(0).map(|_| ()), Err(Fault::Unstarted(Unstarted::Failed)));
+            assert_eq!(
+                answered!(execs.mcp(0)).map(|_| ()),
+                Err(Fault::Unstarted(Unstarted::Failed))
+            );
             assert!(matches!(
                 bridges.hold(first + 4, 0, Stream::pair().unwrap().1),
                 Err(mcp::Unheld::Over)
@@ -3948,7 +3955,7 @@ mod tests {
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Charge::reserve(&budget, 0).unwrap();
         let ends = members::Ends::new(2).unwrap();
-        ends.told(1, 0).unwrap();
+        ends.told(1, run::members::End::Exited(0)).unwrap();
         let (hand, handed) = std::sync::mpsc::channel::<Built>();
         let built = std::sync::atomic::AtomicUsize::new(0);
         let builtin = |spec: &run::Spec,
@@ -3968,10 +3975,12 @@ mod tests {
         std::thread::scope(|s| {
             let hosting = members::Hosting {
                 ends: &ends,
+                active: &[0, 1],
                 terminals: &[],
                 charge: &charge,
                 started: &|| true,
                 builtin: &builtin,
+                say: &|_: &str| {},
             };
             let host = s.spawn(move || members::host(&lanes, &hosting));
             // Its VM process: the first SIGNAL it is handed exits 0, the second SIGNAL_ENDED.
@@ -4003,25 +4012,34 @@ mod tests {
             let Member::Running(MemberControl {
                 mut steering,
                 mut end,
-            }) = execs.member(0).unwrap()
+            }) = answered!(execs.member(0)).unwrap()
             else {
                 panic!("member 0 runs");
             };
             assert!(*lock(&charge.bytes) > 0, "a member's lane open is charged");
-            assert_eq!(steering.signal(15), Ok(()));
-            assert_eq!(steering.signal(15), Err(Fault::Unsteered(Unsteered::Ended)));
+            assert_eq!(steering.signal(15, std::time::Duration::MAX), Ok(Some(())));
             assert_eq!(
-                steering.resize(run::Size { rows: 24, cols: 80 }),
+                steering.signal(15, std::time::Duration::MAX),
+                Err(Fault::Unsteered(Unsteered::Ended))
+            );
+            assert_eq!(
+                steering.resize(run::Size { rows: 24, cols: 80 }, std::time::Duration::MAX),
                 Err(Fault::Unsteered(Unsteered::Terminal))
             );
             process.join().unwrap();
-            ends.told(0, 143).unwrap();
-            assert_eq!(end.wait(), Ok(143));
-            assert_eq!(steering.signal(9), Err(Fault::Unsteered(Unsteered::Ended)));
-            assert!(matches!(execs.member(1), Ok(Member::Ended(0))));
+            ends.told(0, run::members::End::Signaled(15)).unwrap();
+            assert_eq!(end.wait(), Ok(control::exec::End::Signaled(15)));
+            assert_eq!(
+                steering.signal(9, std::time::Duration::MAX),
+                Err(Fault::Unsteered(Unsteered::Ended))
+            );
+            assert!(matches!(
+                answered!(execs.member(1)),
+                Ok(Member::Ended(control::exec::End::Exited(0)))
+            ));
             *lock(&budget) = Some(u64::MAX);
             assert_eq!(
-                execs.member(0).map(|_| ()),
+                answered!(execs.member(0)).map(|_| ()),
                 Err(Fault::Unstarted(Unstarted::Capacity))
             );
             revoke.revoke();
@@ -4502,9 +4520,11 @@ mod tests {
             budget: Arc::clone(&budget),
             bytes: Mutex::new(0),
         });
-        // A quantum climbing past what one endpoint record holds: the capture's own, before
-        // its bound.
-        let quantum = shards_registry::Quantum::new(capacity, run::MAX_PAYLOAD as usize).unwrap();
+        // A quantum climbing past what one endpoint record holds (`RECORD_MOST`, a record's
+        // payload and its head): one made without the endpoint's bound, which the endpoint
+        // refuses to grow to.
+        let most = shards_remote::managed::RECORD_MOST;
+        let quantum = shards_registry::Quantum::new(capacity, most.saturating_mul(2)).unwrap();
         let output = output(
             scope,
             &endpoint,
@@ -4517,6 +4537,10 @@ mod tests {
             &charge,
         );
         let desired = climbed(&mut lock(&output.learning).quantum);
+        assert!(
+            desired > most,
+            "its quantum climbed to {desired}, within one record ({most})"
+        );
         assert!(
             matches!(
                 producer.admit(desired),
@@ -5045,9 +5069,9 @@ mod tests {
         let server = identity::Identity::generate().unwrap();
         let owner = identity::Identity::generate().unwrap();
         let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
-        // The most one endpoint record holds, as its data frame carries it (its offset, then
-        // the record, within one frame): checked against an endpoint of its own.
-        let most = shards_remote::frame::MAX_FRAME - size_of::<u64>();
+        // The most one endpoint record holds (its RECORD_MOST): checked against an endpoint of
+        // its own.
+        let most = shards_remote::managed::RECORD_MOST;
         {
             let (_, _endpoint, producer, _control) =
                 bound(&server, owner.fingerprint(), Channel::Stdout, capacity);

@@ -11,12 +11,14 @@ pub mod bridge;
 pub mod ca;
 #[cfg(target_os = "linux")]
 pub mod confine;
+mod decode;
 #[cfg(windows)]
 mod dial;
 /// The answers its resolver gives a network's members (D46): shards-dns, shared with the
 /// agents' resolver in the guest (D181).
 pub use shards_dns as dns;
-pub mod hpack;
+/// HTTP/2's field compression (RFC 7541): shards-http2's, shared with the gateway's client (R12).
+pub use shards_http2::hpack;
 pub mod http2;
 pub mod inject;
 pub mod lease;
@@ -30,7 +32,7 @@ pub mod tcp;
 pub mod wire;
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 #[cfg(unix)]
@@ -65,38 +67,34 @@ const EPHEMERAL: std::ops::RangeInclusive<u16> = 49152..=u16::MAX;
 /// published port leaves the rest of the VM's flows served.
 const BUDGET: usize = 64;
 
-/// How long a UDP flow lives, as Linux conntrack keeps one (nf_conntrack_proto_udp.c,
-/// udp_packet; v6.12): 30 s past its last datagram (nf_conntrack_udp_timeout), or 120 s
-/// (nf_conntrack_udp_timeout_stream) once it has had a reply and is still going 2 s after
-/// its first datagram, a stream. A query and its answer hold a port 30 s, not 120.
-const UDP_UNREPLIED: Duration = Duration::from_secs(30);
-const UDP_STREAM: Duration = Duration::from_secs(120);
-const UDP_STREAM_AFTER: Duration = Duration::from_secs(2);
-
-/// When a UDP flow ends, unless another datagram comes.
+/// When a UDP flow ends, unless another datagram comes: [`UDP_MAPPING_IDLE`] past its last
+/// one, either way (RFC 4787 REQ-5, REQ-6).
+///
+/// [`UDP_MAPPING_IDLE`]: shards_abi::bounds::UDP_MAPPING_IDLE
 #[derive(Debug, Clone, Copy)]
 struct Lifetime {
-    first: Instant,
-    replied: bool,
     until: Instant,
 }
 
 impl Lifetime {
     fn new(now: Instant) -> Lifetime {
         Lifetime {
-            first: now,
-            replied: false,
-            until: now + UDP_UNREPLIED,
+            until: Self::past(now),
         }
     }
 
-    /// A datagram at `now`; a `reply` if it went the other way from the first.
-    fn datagram(&mut self, now: Instant, reply: bool) {
-        self.replied |= reply;
-        let stream = self.replied && now > self.first + UDP_STREAM_AFTER;
-        self.until = now + if stream { UDP_STREAM } else { UDP_UNREPLIED };
+    /// A datagram at `now`, going out or coming in: each refreshes the mapping.
+    fn datagram(&mut self, now: Instant) {
+        self.until = Self::past(now);
+    }
+
+    /// Its end, refreshed at `now`: `now` itself where the clock has no instant that far on.
+    fn past(now: Instant) -> Instant {
+        now.checked_add(shards_abi::bounds::UDP_MAPPING_IDLE)
+            .unwrap_or(now)
     }
 }
+
 /// Frames waiting for room in the ring, at most: past this the oldest datagram-like frame
 /// is dropped, as a full NIC queue drops; TCP never adds to it unasked.
 const BACKLOG: usize = 1024;
@@ -165,6 +163,37 @@ pub fn encode_grants(grants: &[Grant]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `NET_CREDENTIALS`' payload: the run's upstream roots (D242), which its injector trusts beside
+/// the host's, as their count (two bytes, network order) and each one's DER behind its length
+/// (two bytes), then its grants as [`encode_grants`] writes them. None where a root passes 65535
+/// bytes, or their count does: shards-dns's `WIRE_MOST`, which each side that takes the roots
+/// checks first (`credential::check_roots`).
+pub fn encode_credentials(roots: &[Vec<u8>], grants: &[Grant]) -> Option<Vec<u8>> {
+    let mut out = u16::try_from(roots.len()).ok()?.to_be_bytes().to_vec();
+    for root in roots {
+        out.extend_from_slice(&u16::try_from(root.len()).ok()?.to_be_bytes());
+        out.extend_from_slice(root);
+    }
+    out.extend(encode_grants(grants)?);
+    Some(out)
+}
+
+/// What [`encode_credentials`] wrote: the run's upstream roots and its grants; None for a
+/// malformed payload, or grants [`decode_grants`] refuses.
+pub fn decode_credentials(
+    bytes: &[u8],
+) -> Option<(Vec<rustls::pki_types::CertificateDer<'static>>, Vec<Grant>)> {
+    let (count, mut rest) = bytes.split_first_chunk::<2>()?;
+    let mut roots = Vec::new();
+    for _ in 0..u16::from_be_bytes(*count) {
+        let (len, after) = rest.split_first_chunk::<2>()?;
+        let (der, after) = after.split_at_checked(usize::from(u16::from_be_bytes(*len)))?;
+        roots.push(rustls::pki_types::CertificateDer::from(der.to_vec()));
+        rest = after;
+    }
+    Some((roots, decode_grants(rest)?))
+}
+
 /// What [`encode_grants`] wrote; None for a malformed payload, or one of a grant toward no
 /// host, which could never be filled.
 pub fn decode_grants(mut bytes: &[u8]) -> Option<Vec<Grant>> {
@@ -212,20 +241,22 @@ pub struct Credentials {
 }
 
 /// What a run with credential grants makes as its network process starts, before it confines
-/// itself (D242): its CA's key ([`ca::Key`]) and its injector's TLS to a granted host, whose
-/// verifier reads the host's roots then on Linux ([`inject::Upstream`]). A run with none makes
+/// itself (D242): its CA's key ([`ca::Key`]) and the host's roots, which on Linux are read then
+/// from the system's directories and never from the process's environment
+/// (`shards_verify::Platform`); its injector's TLS to a granted host is made of them and the
+/// run's upstream roots as its grants come ([`inject::Upstream`]). A run with none makes
 /// neither and pays nothing.
 #[derive(Debug)]
 pub struct Prepared {
     pub key: ca::Key,
-    pub upstream: inject::Upstream,
+    pub platform: shards_verify::Platform,
 }
 
 impl Prepared {
     pub fn new() -> Result<Prepared, String> {
         Ok(Prepared {
             key: ca::Key::generate()?,
-            upstream: inject::Upstream::new(Vec::new())?,
+            platform: shards_verify::Platform::read(),
         })
     }
 }
@@ -385,11 +416,17 @@ pub struct Config {
     /// is, or at those the host's resolver answered for it through this process; the host
     /// itself (`dns::HOST`) at the gateway, which is its loopback there.
     pub named: Vec<(String, u16)>,
-    /// What the named have resolved to, each address with its grant's port.
-    pub learned: HashSet<(IpAddr, u16)>,
+    /// One current, expiring answer per granted name and address question type.
+    learned: Vec<Learned>,
     /// Whether any name may be asked past the microVM (`NETWORK --dns`); else only the
     /// named's, and every other question is REFUSED.
     pub dns_all: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Learned {
+    answer: dns::Resolved,
+    until: Instant,
 }
 
 /// The TCP ports a policy's flows reach past the microVM, which the network process is held
@@ -486,7 +523,7 @@ impl Config {
             policy,
             resolvers: Vec::new(),
             named: Vec::new(),
-            learned: HashSet::new(),
+            learned: Vec::new(),
             dns_all: false,
         }
     }
@@ -557,6 +594,38 @@ impl Config {
             .collect()
     }
 
+    /// RFC 2181 §5.4: replace an RRset instead of merging historical answers. The
+    /// finite grant list admits at most its A and AAAA answers; each fits one DNS
+    /// message. TTL zero grants no cached authority to a later connection.
+    fn learn(&mut self, answer: dns::Resolved, now: Instant) -> io::Result<()> {
+        self.learned.retain(|was| {
+            was.until > now && !(was.answer.name == answer.name && was.answer.kind == answer.kind)
+        });
+        if answer.ttl == 0
+            || answer.addresses.is_empty()
+            || !self
+                .named
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&answer.name))
+        {
+            return Ok(());
+        }
+        let until = now
+            .checked_add(Duration::from_secs(u64::from(answer.ttl)))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "DNS lifetime exceeds the clock"))?;
+        self.learned.try_reserve(1).map_err(io::Error::other)?;
+        self.learned.push(Learned { answer, until });
+        Ok(())
+    }
+
+    fn learned(&self, name: &str, to: IpAddr, now: Instant) -> bool {
+        self.learned.iter().any(|found| {
+            found.until > now
+                && found.answer.name.eq_ignore_ascii_case(name)
+                && found.answer.addresses.iter().any(|ip| ip.to_canonical() == to)
+        })
+    }
+
     /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
     /// proxy's socket where it is the gateway's proxy port; none for anything else.
     fn proxy_flow(&self, to: IpAddr, port: u16) -> Option<std::path::PathBuf> {
@@ -577,13 +646,15 @@ impl Config {
         if proto == Proto::Tcp && to == IpAddr::V4(self.gateway_ip) && self.host_granted(port) {
             return true;
         }
+        let now = Instant::now();
         let named = proto == Proto::Tcp
-            && (self.learned.contains(&(to, port))
-                || self.named.iter().any(|(h, p)| {
-                    // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
-                    let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
-                    *p == port && h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
-                }));
+            && self.named.iter().any(|(h, p)| {
+                // An IPv6 address as a URL writes it, in brackets (RFC 3986 §3.2.2).
+                let h = h.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(h);
+                *p == port
+                    && (h.parse::<IpAddr>().ok().map(|a| a.to_canonical()) == Some(to)
+                        || self.learned(h, to, now))
+            });
         match &self.policy {
             // The proxy's one flow is the stack's own (`proxy_flow`), past this.
             Policy::DenyAll | Policy::Proxy { .. } => false,
@@ -640,6 +711,92 @@ impl Listener {
             Listener::Tcp(l) => l.raw_sock(),
             Listener::Udp(u) => u.raw_sock(),
         }
+    }
+}
+
+/// Published ports' host sockets, each with the guest port it reaches, in a slot its token
+/// names with the slot's generation. A slot let go of is the next listener's, so the slots
+/// are as many as were ever published at once, never one for each ever published
+/// (network-10: a host-network guest binding and closing one port again and again), and
+/// what a slot's earlier listener left in the poller is never taken for the next one's.
+#[derive(Default)]
+struct Listeners {
+    slots: Vec<ListenerSlot>,
+    free: Vec<usize>,
+}
+
+#[derive(Default)]
+struct ListenerSlot {
+    generation: u32,
+    held: Option<(Listener, u16)>,
+}
+
+impl Listeners {
+    /// The token the next listener has, in the slot [`Listeners::insert`] gives it.
+    fn vacant(&self) -> u64 {
+        let i = self.free.last().copied().unwrap_or(self.slots.len());
+        let generation = self.slots.get(i).map_or(0, |s| s.generation).wrapping_add(1);
+        token::of(token::LISTENER, generation, u32::try_from(i).unwrap_or(u32::MAX))
+    }
+
+    /// Takes `listener` for guest port `port` into [`Listeners::vacant`]'s slot.
+    fn insert(&mut self, listener: Listener, port: u16) -> usize {
+        let i = self.free.pop().unwrap_or(self.slots.len());
+        if i == self.slots.len() {
+            self.slots.push(ListenerSlot::default());
+        }
+        if let Some(slot) = self.slots.get_mut(i) {
+            slot.generation = slot.generation.wrapping_add(1);
+            slot.held = Some((listener, port));
+        }
+        i
+    }
+
+    fn get(&self, i: usize) -> Option<&(Listener, u16)> {
+        self.slots.get(i).and_then(|s| s.held.as_ref())
+    }
+
+    fn token(&self, i: usize) -> u64 {
+        let generation = self.slots.get(i).map_or(0, |s| s.generation);
+        token::of(token::LISTENER, generation, u32::try_from(i).unwrap_or(u32::MAX))
+    }
+
+    /// The slot `token` names, if its listener is still that one.
+    fn of(&self, token: u64) -> Option<usize> {
+        let i = token::index(token) as usize;
+        self.slots
+            .get(i)
+            .filter(|s| s.held.is_some() && s.generation & 0xff_ffff == token::generation(token))
+            .map(|_| i)
+    }
+
+    /// Takes slot `i`'s listener out, the slot free for the next.
+    fn take(&mut self, i: usize) -> Option<(Listener, u16)> {
+        let held = self.slots.get_mut(i)?.held.take()?;
+        self.free.push(i);
+        Some(held)
+    }
+
+    /// Each listener's socket and token, to forget before [`Listeners::clear`].
+    fn registered(&self) -> Vec<(RawSock, u64)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| Some((s.held.as_ref()?.0.raw_sock(), self.token(i))))
+            .collect()
+    }
+
+    /// Lets every listener go, each slot free for the next.
+    fn clear(&mut self) {
+        for i in 0..self.slots.len() {
+            let _ = self.take(i);
+        }
+    }
+
+    /// How many slots it keeps: as many as were ever published at once.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots.len()
     }
 }
 
@@ -810,9 +967,9 @@ struct Stack<'r> {
     /// clock's origin ([`Stack::isn`]).
     isn_key: [u8; 16],
     began: Instant,
-    /// Published ports' host sockets, each with the guest port it reaches, in the slot its
-    /// token names; a slot emptied where the host's network let one go (D124).
-    published: Vec<Option<(Listener, u16)>>,
+    /// Published ports' host sockets, each with the guest port it reaches; a slot emptied
+    /// where the host's network let one go (D124), for the next to take.
+    published: Listeners,
     /// The host's network's ports (D124), by the daemon's number for each, at their slots.
     hosted: HashMap<u32, usize>,
     /// Published UDP ports' flows, by their gateway ports, and those ports by their
@@ -829,6 +986,11 @@ struct Stack<'r> {
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
+    /// The most its run could ever be granted past the microVM, as its `NET_POLICY` named it
+    /// (D273), which every grant it is told as the run goes (`NET_GRANTS`) lies within, and
+    /// which on Linux its Landlock layer holds its TCP connections to: none until a policy of
+    /// ports came.
+    ceiling: Option<Granted>,
     /// What the run's credentials need made before the process confined itself, where its
     /// spawner said the run has credential grants ([`Prepared`]); taken as the grants come.
     prepared: Option<Prepared>,
@@ -991,6 +1153,7 @@ impl Control {
                     | shards_ipc::kind::NET_LEASE
                     | shards_ipc::kind::NET_SIGN_INS
                     | shards_ipc::kind::NET_SIGN_IN
+                    | shards_ipc::kind::NET_GRANTS
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -1057,7 +1220,7 @@ pub fn serve(
             key
         },
         began: Instant::now(),
-        published: Vec::new(),
+        published: Listeners::default(),
         hosted: HashMap::new(),
         inbound: HashMap::new(),
         inbound_ports: HashMap::new(),
@@ -1066,6 +1229,7 @@ pub fn serve(
         names: None,
         #[cfg(target_os = "linux")]
         ports_confined: false,
+        ceiling: None,
         prepared,
         credentials: None,
         sign_ins: None,
@@ -1169,11 +1333,15 @@ pub fn serve(
                         stack.forget(sock.raw_sock(), e.token, poll::Interest::READ);
                     }
                 }
-                token::LISTENER => match stack.published.get(index as usize).and_then(Option::as_ref) {
-                    Some((Listener::Tcp(_), _)) => stack.accept(index as usize),
-                    Some((Listener::Udp(_), _)) => stack.receive(index as usize),
-                    None => {}
-                },
+                token::LISTENER => {
+                    if let Some(i) = stack.published.of(e.token) {
+                        match stack.published.get(i) {
+                            Some((Listener::Tcp(_), _)) => stack.accept(i),
+                            Some((Listener::Udp(_), _)) => stack.receive(i),
+                            None => {}
+                        }
+                    }
+                }
                 token::TCP => stack.on_socket(e),
                 token::PEER => stack.on_peer(index as usize, e),
                 token::UDP => stack.on_udp(index),
@@ -1333,9 +1501,7 @@ fn handed(
                 "a port of the host's network without its number",
             ));
         };
-        let at = stack.published.len();
-        stack.publish(ports, fds);
-        if stack.published.len() > at {
+        if let Some(at) = stack.publish(ports, fds) {
             stack.hosted.insert(u32::from_be_bytes(*id), at);
         }
         Ok(())
@@ -1409,10 +1575,40 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
                 }
                 stack.ports_confined = true;
             }
+            stack.ceiling = Some((ports.clone(), named.clone(), dns_all));
             stack.cfg.policy = Policy::Ports(ports);
             stack.cfg.named = named;
+            stack.cfg.learned.clear();
             stack.cfg.dns_all = dns_all;
             answer(sock, shards_ipc::kind::NET_POLICY)
+        } else if m.kind == shards_ipc::kind::NET_GRANTS {
+            // The run's grants as it goes (D273), within its ceiling, refused in words where
+            // past it, as a refusal ends no control of the run's.
+            let Some((ports, named, dns_all)) = decode_policy(&m.payload) else {
+                return Err(malformed());
+            };
+            let past = match &stack.ceiling {
+                None => Some("no policy named the most its run could be granted".to_string()),
+                Some(ceiling) => past_ceiling(ceiling, &ports, &named, dns_all),
+            };
+            if let Some(why) = past {
+                return reply(
+                    sock,
+                    shards_ipc::kind::NET_GRANTS,
+                    &[&[1u8][..], why.as_bytes()].concat(),
+                );
+            }
+            stack.cfg.policy = Policy::Ports(ports);
+            stack.cfg.dns_all = dns_all;
+            // What it learned of a name still granted it keeps: a guest that resolved one
+            // before goes on reaching it at that address while its answer lives.
+            stack
+                .cfg
+                .learned
+                .retain(|l| named.iter().any(|(h, _)| h.eq_ignore_ascii_case(&l.answer.name)));
+            stack.cfg.named = named;
+            stack.cut_ungranted();
+            reply(sock, shards_ipc::kind::NET_GRANTS, &[0])
         } else if m.kind == shards_ipc::kind::NET_SIGN_INS {
             // The run's sign-in grants (D242, step 8), once, after its policy and before its
             // credential grants, which make its CA: each host its access token goes to, and its
@@ -1443,7 +1639,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             // where it has any): each host one its egress grants name (D236), checked again here
             // as its run host checked it (D109), as a grant toward a host the run cannot reach
             // could never be filled; each placeholder a token, and one credential's alone.
-            let Some(grants) = decode_grants(&m.payload) else {
+            let Some((roots, grants)) = decode_credentials(&m.payload) else {
                 return Err(malformed());
             };
             let sign_ins = stack.sign_ins.take().unwrap_or_default();
@@ -1459,11 +1655,13 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             {
                 return Err(malformed());
             }
-            // Its key and its injector's TLS, made as the process started, where its spawner
-            // said they would come.
+            // Its key and the host's roots, made and read as the process started, where its
+            // spawner said they would come; its injector's TLS of those and the run's upstream
+            // roots, each a certificate as its run host checked (D109).
             let Some(prepared) = stack.prepared.take() else {
                 return Err(malformed());
             };
+            let upstream = inject::Upstream::new(&prepared.platform, roots).map_err(|_| malformed())?;
             // Its CA names each host a value may be filled toward, and each sign-in's token host,
             // whose responses its injector reads.
             let mut hosts: Vec<&str> = grants
@@ -1491,7 +1689,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
                 grants,
                 ca,
                 leases,
-                upstream: prepared.upstream,
+                upstream,
                 sign_ins: signin::SignIns::new(sign_ins),
             });
             reply(sock, shards_ipc::kind::NET_CREDENTIALS, &der)
@@ -1530,19 +1728,7 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             // registration it keeps by the socket's value would be taken for the next socket
             // given that value, which it would never register (a joiner's listener on the
             // host's network never accepting, jupiter 7 of 20 runs).
-            let listening: Vec<(RawSock, u64)> = stack
-                .published
-                .iter()
-                .enumerate()
-                .filter_map(|(i, slot)| {
-                    let (listener, _) = slot.as_ref()?;
-                    Some((
-                        listener.raw_sock(),
-                        token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX)),
-                    ))
-                })
-                .collect();
-            for (sock, named) in listening {
+            for (sock, named) in stack.published.registered() {
                 stack.forget(sock, named, poll::Interest::READ);
             }
             stack.published.clear();
@@ -1550,6 +1736,33 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             answer(sock, shards_ipc::kind::UNPUBLISH)
         }
     }
+}
+
+/// Why grants `ports`, `named` and `dns_all` lie past `ceiling`, the most a run could be
+/// granted (D273), where they do: a port none of its ranges holds, a destination it names not
+/// (its host's case aside, RFC 4343 §3), or names asked where it asks none. None where each
+/// lies within it.
+fn past_ceiling(ceiling: &Granted, ports: &Ports, named: &[(String, u16)], dns_all: bool) -> Option<String> {
+    let (most, most_named, most_dns) = ceiling;
+    for &(proto, lo, hi) in &ports.0 {
+        if let Some(port) = (lo..=hi).find(|&port| !most.has(proto, port)) {
+            return Some(format!(
+                "port {port}/{proto:?} lies past the most its run may be granted"
+            ));
+        }
+    }
+    for (host, port) in named {
+        if !most_named
+            .iter()
+            .any(|(h, p)| p == port && h.eq_ignore_ascii_case(host))
+        {
+            return Some(format!("{host}:{port} lies past the most its run may be granted"));
+        }
+    }
+    if dns_all && !most_dns {
+        return Some("names past the microVM lie past the most its run may be granted".into());
+    }
+    None
 }
 
 /// Answers a control message of `kind`, with nothing more: that it was taken.
@@ -1639,8 +1852,10 @@ impl<'r> Stack<'r> {
 
     /// Takes published ports' host sockets, each for the guest port and protocol its
     /// payload's next three bytes name (a big-endian u16, then the IP protocol number);
-    /// what does not pair up, or names another protocol, is closed.
-    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) {
+    /// what does not pair up, or names another protocol, is closed. The slot of the first
+    /// taken, if any was.
+    fn publish(&mut self, ports: &[u8], fds: Vec<Handed>) -> Option<usize> {
+        let mut first = None;
         for (fd, &[hi, lo, proto]) in fds.into_iter().zip(ports.as_chunks::<3>().0) {
             let listener = match proto {
                 wire::PROTO_TCP => Listener::Tcp(std::net::TcpListener::from(fd)),
@@ -1651,11 +1866,7 @@ impl<'r> Stack<'r> {
                 Listener::Tcp(l) => l.set_nonblocking(true),
                 Listener::Udp(u) => u.set_nonblocking(true),
             };
-            let named = token::of(
-                token::LISTENER,
-                0,
-                u32::try_from(self.published.len()).unwrap_or(u32::MAX),
-            );
+            let named = self.published.vacant();
             if nonblocking.is_ok()
                 && self
                     .poller
@@ -1667,10 +1878,11 @@ impl<'r> Stack<'r> {
                     )
                     .is_ok()
             {
-                self.published
-                    .push(Some((listener, u16::from_be_bytes([hi, lo]))));
+                let at = self.published.insert(listener, u16::from_be_bytes([hi, lo]));
+                first.get_or_insert(at);
             }
         }
+        first
     }
 
     /// Lets go of the host's network's port the daemon numbered `id` (D124), its slot
@@ -1679,12 +1891,10 @@ impl<'r> Stack<'r> {
         let Some(i) = self.hosted.remove(&id) else {
             return;
         };
-        if let Some(slot) = self.published.get_mut(i)
-            && let Some((listener, _)) = slot.take()
-        {
+        let named = self.published.token(i);
+        if let Some((listener, _)) = self.published.take(i) {
             // Forgotten before it closes ([`Poller::forget`]): on Windows a registration kept
             // by its value would be taken for the next socket given that value.
-            let named = token::of(token::LISTENER, 0, u32::try_from(i).unwrap_or(u32::MAX));
             self.forget(listener.raw_sock(), named, poll::Interest::READ);
         }
         self.inbound_ports.retain(|(published, _), _| *published != i);
@@ -1694,7 +1904,7 @@ impl<'r> Stack<'r> {
     /// Takes what published UDP port `i` holds: each datagram to the guest's port, from
     /// its peer's gateway port.
     fn receive(&mut self, i: usize) {
-        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i).and_then(Option::as_ref) else {
+        let Some((Listener::Udp(sock), guest_port)) = self.published.get(i) else {
             return;
         };
         let guest_port = *guest_port;
@@ -1718,7 +1928,7 @@ impl<'r> Stack<'r> {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     let f = e.get_mut();
                     f.asked = asked;
-                    f.life.datagram(now, false);
+                    f.life.datagram(now);
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
                     let life = Lifetime::new(now);
@@ -1755,8 +1965,7 @@ impl<'r> Stack<'r> {
     /// from the gateway, as a userland proxy's connection comes from it.
     fn accept(&mut self, i: usize) {
         for _ in 0..BUDGET {
-            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i).and_then(Option::as_ref)
-            else {
+            let Some((Listener::Tcp(listener), guest_port)) = self.published.get(i) else {
                 return;
             };
             let guest_port = *guest_port;
@@ -2078,7 +2287,9 @@ impl<'r> Stack<'r> {
                     Err(_) => gone = true,
                 }
             }
-            let mut buf = [0u8; 64 * 1024];
+            // Room for the largest message a peer sends, a whole frame and its length, so
+            // that one read can take it (network-12).
+            let mut buf = [0u8; 4 + shards_netring::MAX_FRAME];
             for _ in 0..BUDGET {
                 match (&peer.sock).read(&mut buf) {
                     Ok(0) => {
@@ -2225,11 +2436,10 @@ impl<'r> Stack<'r> {
             if let Some(f) = self.inbound.get_mut(&u.dst_port)
                 && gateway.is_ipv4()
                 && f.guest_port == u.src_port
-                && let Some((Listener::Udp(sock), _)) =
-                    self.published.get(f.published).and_then(Option::as_ref)
+                && let Some((Listener::Udp(sock), _)) = self.published.get(f.published)
             {
                 let _ = pktinfo::send(sock, u.payload, f.peer, f.asked);
-                f.life.datagram(Instant::now(), true);
+                f.life.datagram(Instant::now());
                 return;
             }
             // On the host's network (D124), the gateway is the host's loopback.
@@ -2290,7 +2500,7 @@ impl<'r> Stack<'r> {
         }
         if let Some(f) = self.udp.get_mut(&key) {
             let _ = f.sock.send(payload);
-            f.life.datagram(Instant::now(), false);
+            f.life.datagram(Instant::now());
         }
     }
 
@@ -2319,6 +2529,11 @@ impl<'r> Stack<'r> {
     #[cfg(windows)]
     fn udp_dialed(&mut self, key: UdpKey, got: io::Result<UdpSocket>) {
         let waiting = self.udp_waiting.remove(&key).unwrap_or_default();
+        // Its grants may have changed while it was dialed (D273): datagrams to what they no
+        // longer reach go, as to a far end that refused them.
+        if key.1 != IpAddr::V4(self.cfg.gateway_ip) && !self.cfg.allows(key.1, Proto::Udp, key.2) {
+            return;
+        }
         let sock = match got {
             Ok(sock) => sock,
             Err(e) => {
@@ -2340,7 +2555,7 @@ impl<'r> Stack<'r> {
         if let Some(f) = self.udp.get_mut(&key) {
             for datagram in waiting {
                 let _ = f.sock.send(&datagram);
-                f.life.datagram(Instant::now(), false);
+                f.life.datagram(Instant::now());
             }
         }
     }
@@ -2363,20 +2578,16 @@ impl<'r> Stack<'r> {
             let Ok(n) = f.sock.recv(&mut self.buf) else {
                 return;
             };
-            f.life.datagram(Instant::now(), true);
+            f.life.datagram(Instant::now());
             let got = self.buf.get(..n).unwrap_or_default();
             // A forwarded answer for a name granted to agents: what it resolved to, each
             // address reached at its grant's port from now on.
             if key.1 == IpAddr::V4(self.cfg.gateway_ip)
                 && key.2 == 53
                 && !self.cfg.named.is_empty()
-                && let Some((name, addrs)) = dns::a_records(got)
+                && let Some(answer) = dns::a_records(got)
             {
-                for (host, port) in &self.cfg.named {
-                    if host.eq_ignore_ascii_case(&name) {
-                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
-                    }
-                }
+                let _ = self.cfg.learn(answer, Instant::now());
             }
             o.datagram((key.1, key.2), key.0, got);
         }
@@ -2642,6 +2853,13 @@ impl<'r> Stack<'r> {
     /// SYN reset, as the far end's refusal would.
     #[cfg(windows)]
     fn dialed(&mut self, d: dial::Dialing, got: io::Result<tcp::HostSock>) {
+        // Its grants may have changed while it was dialed (D273): one they no longer reach is
+        // reset, as a far end's refusal would be.
+        let granted = d.dns || self.cfg.allows(d.key.remote.0, Proto::Tcp, d.key.remote.1);
+        let got = match got {
+            Ok(_) if !granted => Err(io::ErrorKind::ConnectionRefused.into()),
+            got => got,
+        };
         match got {
             Ok(sock) => {
                 if self.tcp.by_key.contains_key(&d.key) {
@@ -2719,6 +2937,48 @@ impl<'r> Stack<'r> {
     /// for what it now wants, its timer armed for its deadline unless an earlier one is,
     /// and its turn kept if a full ring held it back; or its slot emptied if it has
     /// closed, its socket with it, which the poller forgets (review 2.14).
+    /// Ends every flow of its guest's own that its grants no longer reach (D273): each TCP
+    /// connection it opened, reset to it, its host socket closed; each UDP flow past the
+    /// gateway, its socket closed. What a published port took, the gateway's own flows (its
+    /// names' relay) and its peers' frames are none of its grants'.
+    fn cut_ungranted(&mut self) {
+        let opened: Vec<u32> = self
+            .tcp
+            .by_key
+            .iter()
+            .filter(|(key, _)| !self.cfg.allows(key.remote.0, Proto::Tcp, key.remote.1))
+            .map(|(_, &slot)| slot)
+            .collect();
+        for slot in opened {
+            let Some(c) = self.tcp.take(slot) else {
+                continue;
+            };
+            let mut c = c;
+            if !c.accepted {
+                c.reset(&mut self.out());
+            }
+            self.settle(slot, c);
+        }
+        let gateway = IpAddr::V4(self.cfg.gateway_ip);
+        let cut: Vec<(u32, UdpKey)> = self
+            .udp_ids
+            .iter()
+            .filter(|(_, (_, to, port))| *to != gateway && !self.cfg.allows(*to, Proto::Udp, *port))
+            .map(|(&id, &key)| (id, key))
+            .collect();
+        for (id, key) in cut {
+            self.udp_ids.remove(&id);
+            // Forgotten by the poller, its socket closes with it.
+            if let Some(f) = self.udp.remove(&key) {
+                self.forget(
+                    f.sock.raw_sock(),
+                    token::of(token::UDP, 0, id),
+                    poll::Interest::READ,
+                );
+            }
+        }
+    }
+
     fn settle(&mut self, slot: u32, mut c: Conn) {
         if c.closed {
             if let Some(had) = self.tcp.slot(slot).map(|s| s.interest) {
@@ -2764,6 +3024,7 @@ impl<'r> Stack<'r> {
     /// flow (D242, #74 step 8): an answer, which may be a token response, outlives no flow.
     fn release(&mut self, slot: u32) {
         if let Some(c) = self.credentials.as_mut() {
+            c.leases.gone(self.tcp.token(slot));
             c.sign_ins.gone(self.tcp.token(slot));
         }
         self.tcp.release(slot);
@@ -2827,12 +3088,8 @@ impl<'r> Stack<'r> {
         self.buf = buf;
         // What answers of the guest's DNS over TCP resolved granted names to.
         if let Some(d) = c.dns.as_mut() {
-            for (name, addrs) in d.learned.drain(..) {
-                for (host, port) in &self.cfg.named {
-                    if host.eq_ignore_ascii_case(&name) {
-                        self.cfg.learned.extend(addrs.iter().map(|a| (*a, *port)));
-                    }
-                }
+            for answer in d.learned.drain(..) {
+                let _ = self.cfg.learn(answer, Instant::now());
             }
         }
         self.settle(slot, c);
@@ -2843,6 +3100,7 @@ impl<'r> Stack<'r> {
     /// on, does nothing, or is armed again for when it ends (review 2.14).
     fn timers(&mut self, now: Instant) {
         ring::expire(now);
+        self.cfg.learned.retain(|found| found.until > now);
         // Each credential's value goes as its lease ends (D242), wiped.
         if let Some(c) = self.credentials.as_mut() {
             c.leases.lapse(now);
@@ -2918,7 +3176,8 @@ impl<'r> Stack<'r> {
     fn next_timer(&self) -> Option<Instant> {
         let timer = self.timers.peek().map(|Reverse((at, _))| *at);
         let lease = self.credentials.as_ref().and_then(|c| c.leases.next_end());
-        [timer, lease, ring::expire(Instant::now())]
+        let dns = self.cfg.learned.iter().map(|found| found.until).min();
+        [timer, lease, dns, ring::expire(Instant::now())]
             .into_iter()
             .flatten()
             .min()
@@ -3060,7 +3319,7 @@ mod tests {
             scratch: Vec::new(),
             isn_key: [0; 16],
             began: Instant::now(),
-            published: Vec::new(),
+            published: Listeners::default(),
             hosted: HashMap::new(),
             inbound: HashMap::new(),
             inbound_ports: HashMap::new(),
@@ -3069,6 +3328,7 @@ mod tests {
             names: None,
             #[cfg(target_os = "linux")]
             ports_confined: false,
+            ceiling: None,
             prepared: None,
             credentials: None,
             sign_ins: None,
@@ -3084,7 +3344,7 @@ mod tests {
     /// registration by its socket's value, and a listener let go of without that kept the
     /// next listener given its value from ever being waited on (a joiner on the host's
     /// network that never accepted, jupiter 7 of 20 runs). Eight in turn, each ready once a
-    /// connection waits on it.
+    /// connection waits on it, each in the slot the last let go of, under its own token.
     #[test]
     fn a_listener_let_go_of_leaves_its_socket_value_to_the_next() {
         let region = Region::map(shards_netring::memory().unwrap()).unwrap();
@@ -3094,15 +3354,26 @@ mod tests {
             Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
             region.producer(1, pr),
         );
+        let mut before = None;
         for round in 0u32..8 {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let at = listener.local_addr().unwrap();
-            let index = stack.published.len();
-            stack.publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)]);
-            assert_eq!(stack.published.len(), index + 1, "round {round}: not taken");
+            let index = stack
+                .publish(&[0x1f, 0x90, wire::PROTO_TCP], vec![Handed::from(listener)])
+                .unwrap_or_else(|| panic!("round {round}: not taken"));
+            assert_eq!(
+                (index, stack.published.len()),
+                (0, 1),
+                "round {round}: a slot more"
+            );
             stack.hosted.insert(round, index);
             let waiting = std::net::TcpStream::connect(at).unwrap();
-            let listening = token::of(token::LISTENER, 0, u32::try_from(index).unwrap());
+            let listening = stack.published.token(index);
+            assert_eq!(stack.published.of(listening), Some(index));
+            // The last round's listener's token, of this slot, names this one not.
+            if let Some(was) = before.replace(listening) {
+                assert_eq!(stack.published.of(was), None, "round {round}: an old token taken");
+            }
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut events = Vec::new();
             while !events.iter().any(|e: &poll::Event| e.token == listening) {
@@ -3121,17 +3392,88 @@ mod tests {
             stack.poller.wait(&mut events, Some(Duration::ZERO)).unwrap();
             drop(waiting);
             #[cfg(windows)]
-            let value = stack
-                .published
-                .get(index)
-                .and_then(Option::as_ref)
-                .map(|(l, _)| l.raw_sock())
-                .unwrap();
+            let value = stack.published.get(index).map(|(l, _)| l.raw_sock()).unwrap();
             stack.unpublish(round);
+            // What its listener left in the poller names no listener now, nor the next's.
+            assert_eq!(
+                stack.published.of(listening),
+                None,
+                "round {round}: its token kept"
+            );
             // Nothing kept of its value, whatever the next socket given it is.
             #[cfg(windows)]
             assert!(!stack.poller.keeps(value), "round {round}: its registration kept");
         }
+    }
+
+    /// network-10: a host-network guest that binds and closes one port again and again
+    /// holds one listener at a time, and the stack keeps no slot for each closed one: its
+    /// listeners' storage follows what is published now, not how often it was.
+    // NET_PUBLISHED comes from the daemon's hostnet control on a Unix socket here.
+    #[cfg(unix)]
+    #[test]
+    fn host_network_bind_close_cycles_keep_no_listener_history() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (sock, _daemon) = std::os::unix::net::UnixStream::pair().unwrap();
+        for id in 0u32..64 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut payload = id.to_be_bytes().to_vec();
+            payload.extend(8080u16.to_be_bytes());
+            payload.push(wire::PROTO_TCP);
+            handed(
+                &mut stack,
+                &sock,
+                shards_ipc::kind::NET_PUBLISHED,
+                &payload,
+                vec![Handed::from(listener)],
+            )
+            .unwrap();
+            assert_eq!(stack.hosted.len(), 1, "cycle {id}: not hosted");
+            stack.unpublish(id);
+            assert!(stack.hosted.is_empty(), "cycle {id}: still hosted");
+        }
+        assert!(
+            stack.published.len() <= 1,
+            "{} listener slots kept for at most one live listener",
+            stack.published.len()
+        );
+    }
+
+    /// network-11: an answer the resolver gave of another name, or of another class, grants
+    /// a destination named for one name nothing at its address; the name's own record
+    /// does (D192, D236).
+    #[test]
+    fn a_named_grant_learns_only_its_names_own_records() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("allowed.example".to_string(), 443)];
+        let mut q = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+        q.extend_from_slice(b"\x07allowed\x07example\x00\x00\x01\x00\x01");
+        let forbidden = IpAddr::from([203, 0, 113, 9]);
+        for (what, owner, class) in [
+            ("another owner", &b"\x09forbidden\x07example\x00"[..], 1u16),
+            ("another class", &[0xc0, 0x0c][..], 3),
+        ] {
+            let mut reply = q.clone();
+            reply.extend_from_slice(owner);
+            reply.extend_from_slice(&[0, 1]);
+            reply.extend_from_slice(&class.to_be_bytes());
+            reply.extend_from_slice(&[0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+            if let Some(answer) = dns::a_records(&reply) {
+                cfg.learn(answer, Instant::now()).unwrap();
+            }
+            assert!(!cfg.allows(forbidden, Proto::Tcp, 443), "{what}");
+        }
+        let mut own = q.clone();
+        own.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9]);
+        cfg.learn(dns::a_records(&own).unwrap(), Instant::now()).unwrap();
+        assert!(cfg.allows(forbidden, Proto::Tcp, 443), "its own record");
     }
 
     /// The guest's MAC as its run gives it (`NET_MAC`, D46): the one this side's frames
@@ -3298,6 +3640,116 @@ mod tests {
         );
     }
 
+    /// D273. Do: on a stack whose policy (its ceiling) grants 443/tcp, 8443/tcp and 5000/udp,
+    /// open guest connections to 443 and to 8443, accept one a published port took, and open a
+    /// UDP flow to 5000; then tell it grants of 443/tcp alone; then grants past the ceiling;
+    /// and on a stack no policy came to, any grants. Expect: the grants taken (answered 0) and
+    /// held at once; the connection to 8443 reset, its host socket closed, its slot let go;
+    /// the one to 443 and the published port's kept; the UDP flow ended; grants past the
+    /// ceiling refused in words (answered 1), the grants before kept; and grants with no
+    /// ceiling refused alike.
+    #[cfg(unix)]
+    #[test]
+    fn grants_told_as_the_run_goes_hold_its_flows_within_its_ceiling() {
+        use std::io::Read as _;
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, rings) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let ceiling = Ports(vec![
+            (Proto::Tcp, 443, 443),
+            (Proto::Tcp, 8443, 8443),
+            (Proto::Udp, 5000, 5000),
+        ]);
+        let cfg = Config::on_bridge(Policy::Ports(ceiling.clone()), [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, rings));
+        stack.ceiling = Some((ceiling, Vec::new(), false));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local = listener.local_addr().unwrap();
+        let syn = wire::Tcp {
+            src_port: 40000,
+            dst_port: 443,
+            seq: 1,
+            ack: 0,
+            flags: wire::SYN,
+            window: 65535,
+            mss: None,
+            wscale: None,
+            payload: &[],
+        };
+        let opened = |stack: &mut Stack<'_>, guest_port: u16, remote: (IpAddr, u16)| {
+            let key = Key { guest_port, remote };
+            let c = Conn::open_to(key, (local.ip(), local.port()), &syn, 7).unwrap();
+            let slot = stack.tcp.reserve(key);
+            stack.settle(slot, c);
+            let (served, _) = listener.accept().unwrap();
+            (key, served)
+        };
+        let (kept, _kept_peer) = opened(&mut stack, 40000, (IpAddr::from([192, 0, 2, 1]), 443));
+        let (cut, mut cut_peer) = opened(&mut stack, 40001, (IpAddr::from([192, 0, 2, 2]), 8443));
+        let _client = std::net::TcpStream::connect(local).unwrap();
+        let (sock, _) = listener.accept().unwrap();
+        sock.set_nonblocking(true).unwrap();
+        let published = Key {
+            guest_port: 80,
+            remote: (IpAddr::V4(stack.cfg.gateway_ip), 49152),
+        };
+        let c = Conn::accept(published, sock, 9, &mut stack.out());
+        let slot = stack.tcp.reserve(published);
+        stack.settle(slot, c);
+        let udp = (40002, IpAddr::from([192, 0, 2, 3]), 5000);
+        stack.flow(udp, (IpAddr::from([127, 0, 0, 1]), 5000), b"x");
+        assert!(stack.udp.contains_key(&udp));
+        let (host, net) = UnixStream::pair().unwrap();
+        let tell = |stack: &mut Stack<'_>, ports: Ports| {
+            let m = shards_ipc::Message {
+                kind: shards_ipc::kind::NET_GRANTS,
+                payload: encode_policy(&ports, &[], false),
+                fds: Vec::new(),
+            };
+            answer_other(stack, &net, &m).unwrap();
+            let answer = shards_ipc::recv(&host).unwrap().unwrap();
+            assert_eq!(answer.kind, shards_ipc::kind::NET_GRANTS);
+            answer.payload
+        };
+        assert_eq!(tell(&mut stack, Ports(vec![(Proto::Tcp, 443, 443)])), [0]);
+        assert_eq!(
+            stack.cfg.policy,
+            Policy::Ports(Ports(vec![(Proto::Tcp, 443, 443)]))
+        );
+        assert!(
+            stack.tcp.by_key.contains_key(&kept),
+            "a connection its grants reach kept"
+        );
+        assert!(
+            stack.tcp.by_key.contains_key(&published),
+            "a published port's kept"
+        );
+        assert!(
+            !stack.tcp.by_key.contains_key(&cut),
+            "a connection its grants no longer reach"
+        );
+        cut_peer.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut rest = [0u8; 8];
+        assert!(
+            matches!(cut_peer.read(&mut rest), Ok(0) | Err(_)),
+            "its host socket closed"
+        );
+        assert!(
+            !stack.udp.contains_key(&udp),
+            "a UDP flow its grants no longer reach"
+        );
+        let past = tell(&mut stack, Ports(vec![(Proto::Tcp, 22, 22)]));
+        assert_eq!(past.first(), Some(&1));
+        assert!(String::from_utf8_lossy(&past[1..]).contains("22"), "{past:?}");
+        assert_eq!(
+            stack.cfg.policy,
+            Policy::Ports(Ports(vec![(Proto::Tcp, 443, 443)]))
+        );
+        stack.ceiling = None;
+        assert_eq!(tell(&mut stack, Ports(Vec::new())).first(), Some(&1));
+    }
+
     /// A connection's timer is armed once for its deadline, however often it settles,
     /// and armed again when it fires: the timers hold a connection once, not once a
     /// change (review 2.14).
@@ -3338,7 +3790,7 @@ mod tests {
             grants: Vec::new(),
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["platform.claude.com"]).unwrap(),
             leases: lease::Leases::new(Vec::new()),
-            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            upstream: inject::Upstream::new(&shards_verify::Platform::read(), Vec::new()).unwrap(),
             sign_ins: signin::SignIns::new(vec![signin::SignInGrant {
                 sign_in: "claude/acct-1".into(),
                 cli: signin::Cli::ClaudeCode,
@@ -3895,7 +4347,16 @@ mod tests {
         cfg.named = named;
         let learned = IpAddr::from([203, 0, 113, 9]);
         assert!(!cfg.allows(learned, Proto::Tcp, 443), "not yet resolved");
-        cfg.learned.insert((learned, 443));
+        cfg.learn(
+            dns::Resolved {
+                name: "mcp.example".into(),
+                kind: dns::AddressKind::A,
+                addresses: vec![learned],
+                ttl: 60,
+            },
+            Instant::now(),
+        )
+        .unwrap();
         assert!(cfg.allows(learned, Proto::Tcp, 443));
         assert!(!cfg.allows(learned, Proto::Tcp, 80));
         assert!(!cfg.allows(learned, Proto::Udp, 443));
@@ -3910,10 +4371,121 @@ mod tests {
         assert!(!cfg.allows(IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 8]), Proto::Tcp, 8443));
         let learned6 = IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 9]);
         assert!(!cfg.allows(learned6, Proto::Tcp, 443), "not yet resolved");
-        cfg.learned.insert((learned6, 443));
+        cfg.learn(
+            dns::Resolved {
+                name: "mcp.example".into(),
+                kind: dns::AddressKind::Aaaa,
+                addresses: vec![learned6],
+                ttl: 60,
+            },
+            Instant::now(),
+        )
+        .unwrap();
         assert!(cfg.allows(learned6, Proto::Tcp, 443));
         assert!(!cfg.allows(learned6, Proto::Tcp, 8443));
         assert_eq!(Ports::decode(&[6, 0, 1]), None);
+    }
+
+    #[test]
+    fn dns_authority_expires_without_retaining_answer_history() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("mcp.example".into(), 443)];
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let now = Instant::now();
+        let answer = |kind, ip, ttl| dns::Resolved {
+            name: "mcp.example".into(),
+            kind,
+            addresses: vec![ip],
+            ttl,
+        };
+        let v6: IpAddr = "2001:db8::7".parse().unwrap();
+        stack
+            .cfg
+            .learn(answer(dns::AddressKind::Aaaa, v6, 1), now)
+            .unwrap();
+        for last in 1..=16 {
+            let ip = IpAddr::from([203, 0, 113, last]);
+            stack.cfg.learn(answer(dns::AddressKind::A, ip, 1), now).unwrap();
+            assert_eq!(stack.cfg.learned.len(), 2, "historical answers retained");
+            assert!(stack.cfg.learned("mcp.example", ip, now));
+        }
+        let due = now + Duration::from_secs(1);
+        assert!(!stack.cfg.learned("mcp.example", v6, due));
+        assert!(
+            stack.next_timer().is_some_and(|at| at <= due),
+            "expiry never wakes"
+        );
+        stack.timers(due);
+        assert!(stack.cfg.learned.is_empty(), "expired addresses still allocated");
+        stack
+            .cfg
+            .learn(answer(dns::AddressKind::Aaaa, v6, 0), now)
+            .unwrap();
+        assert!(!stack.cfg.allows(v6, Proto::Tcp, 443));
+        assert!(stack.cfg.learned.is_empty(), "zero TTL cached");
+    }
+
+    #[test]
+    fn dns_answers_replace_the_names_previous_authority() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        cfg.named = vec![("mcp.example".into(), 443)];
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let resolver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        resolver.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let key = (12345, IpAddr::V4(stack.cfg.gateway_ip), 53);
+        let at = resolver.local_addr().unwrap();
+        stack.flow(key, (at.ip(), at.port()), b"question");
+        let (_, from) = resolver.recv_from(&mut [0; 32]).unwrap();
+        let answer = |ip: [u8; 4]| {
+            let mut msg = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+            msg.extend_from_slice(b"\x03mcp\x07example\0\0\x01\0\x01");
+            msg.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            msg.extend_from_slice(&ip);
+            msg
+        };
+        let first = [203, 0, 113, 7];
+        let next = [203, 0, 113, 8];
+        // send_to completing does not promise the destination socket is readable.
+        // Dispatch only after readiness, as serve does on every host (macOS loopback
+        // can deliver after send_to returns).
+        let receive = |stack: &mut Stack<'_>| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let named = token::of(token::UDP, 0, 0);
+            let mut events = Vec::new();
+            loop {
+                stack
+                    .poller
+                    .wait(
+                        &mut events,
+                        Some(deadline.saturating_duration_since(Instant::now())),
+                    )
+                    .unwrap();
+                if events.iter().any(|event| event.token == named && event.read) {
+                    stack.on_udp(0);
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the resolver answer never became readable"
+                );
+            }
+        };
+        resolver.send_to(&answer(first), from).unwrap();
+        receive(&mut stack);
+        assert!(stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443));
+        resolver.send_to(&answer(next), from).unwrap();
+        receive(&mut stack);
+        assert!(stack.cfg.allows(IpAddr::from(next), Proto::Tcp, 443));
+        assert!(
+            !stack.cfg.allows(IpAddr::from(first), Proto::Tcp, 443),
+            "the replaced DNS answer still grants a new flow"
+        );
     }
 
     /// The daemon's control socket publishes and the VM's lets go, and neither says the
@@ -3967,7 +4539,7 @@ mod tests {
             }],
             ca: ca::Ca::new(ca::Key::generate().unwrap(), &["api.anthropic.com"]).unwrap(),
             leases: lease::Leases::new(vec![CLAUDE.into(), "openai/chatgpt".into()]),
-            upstream: inject::Upstream::new(Vec::new()).unwrap(),
+            upstream: inject::Upstream::new(&shards_verify::Platform::read(), Vec::new()).unwrap(),
             sign_ins: signin::SignIns::new(Vec::new()),
         });
         let now = Instant::now();
@@ -4035,7 +4607,7 @@ mod tests {
         };
         let message = |grants: &[Grant]| shards_ipc::Message {
             kind: shards_ipc::kind::NET_CREDENTIALS,
-            payload: encode_grants(grants).unwrap(),
+            payload: encode_credentials(&[], grants).unwrap(),
             fds: Vec::new(),
         };
         for refused in [
@@ -4065,6 +4637,109 @@ mod tests {
         assert_eq!(answer.payload, stack.credentials.as_ref().unwrap().ca.der());
     }
 
+    /// The run's upstream roots (D242), carried ahead of its grants on `NET_CREDENTIALS`, are
+    /// what its injector trusts beside the host's own: a host whose certificate a test's root
+    /// signs is verified where the run names that root, and refused where it names none; a
+    /// root that is no certificate breaks the run host's contract, and nothing is taken.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_upstream_roots_are_what_its_injector_trusts_beside_the_hosts() {
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut stack = stack(
+            Config::on_bridge(Policy::Host, [2, 0, 0, 0, 0, 1], &bridge),
+            region.producer(1, pr),
+        );
+        let (_host, ours) = UnixStream::pair().unwrap();
+        const HOST: &str = "api.anthropic.com";
+        let grants = [Grant {
+            reference: "anthropic/claude-max".into(),
+            toward: vec![HOST.into()],
+            placeholder: "kiln-placeholder-0a".into(),
+        }];
+        let root = inject::tests::root("a corporate proxy's root");
+        let roots = [root.der().to_vec()];
+        let payload = encode_credentials(&roots, &grants).unwrap();
+        assert_eq!(
+            decode_credentials(&payload),
+            Some((vec![root.der().clone()], grants.to_vec()))
+        );
+        let message = |payload: Vec<u8>| shards_ipc::Message {
+            kind: shards_ipc::kind::NET_CREDENTIALS,
+            payload,
+            fds: Vec::new(),
+        };
+        let malformed = encode_credentials(&[vec![0x30, 0x03, 0x01, 0x02, 0x03]], &grants).unwrap();
+        stack.prepared = Some(Prepared::new().unwrap());
+        assert!(answer_other(&mut stack, &ours, &message(malformed)).is_err());
+        assert!(stack.credentials.is_none());
+        let host = || inject::tests::leaf_config(&root, &[HOST]);
+        stack.prepared = Some(Prepared::new().unwrap());
+        assert!(answer_other(&mut stack, &ours, &message(payload)).is_ok());
+        let named = &stack.credentials.take().unwrap().upstream;
+        assert_eq!(inject::tests::handshake(named, host(), HOST), Ok(()));
+        stack.prepared = Some(Prepared::new().unwrap());
+        let none = encode_credentials(&[], &grants).unwrap();
+        assert!(answer_other(&mut stack, &ours, &message(none)).is_ok());
+        let unnamed = &stack.credentials.take().unwrap().upstream;
+        assert!(inject::tests::handshake(unnamed, host(), HOST).is_err());
+    }
+
+    /// A network process takes no trust from its environment (D242): `SSL_CERT_FILE` and
+    /// `SSL_CERT_DIR` naming a test's root, as a run's environment could once name one, add
+    /// nothing to what its injector trusts, which is the host's own roots, read as the
+    /// process starts ([`Prepared`]), and the run's (`NET_CREDENTIALS`) alone. Run again in a
+    /// process of its own, whose environment names them; there, the same host is verified
+    /// once the run names the root.
+    #[test]
+    fn the_environment_adds_no_root_to_the_injector() {
+        const CHILD: &str = "SHARDS_NET_TEST_ENVIRONMENT_TRUST";
+        const HOST: &str = "api.example.test";
+        if let Some(dir) = std::env::var_os(CHILD) {
+            let dir = std::path::Path::new(&dir);
+            let root = rustls::pki_types::CertificateDer::from(std::fs::read(dir.join("root.der")).unwrap());
+            let cert = rustls::pki_types::CertificateDer::from(std::fs::read(dir.join("leaf.der")).unwrap());
+            let key = std::fs::read(dir.join("leaf.key")).unwrap();
+            assert!(std::env::var_os("SSL_CERT_FILE").is_some());
+            let prepared = Prepared::new().unwrap();
+            let host = || inject::tests::serving(cert.clone(), key.clone());
+            let environment = inject::Upstream::new(&prepared.platform, Vec::new()).unwrap();
+            assert!(
+                inject::tests::handshake(&environment, host(), HOST).is_err(),
+                "the injector trusted a root its environment named"
+            );
+            let named = inject::Upstream::new(&prepared.platform, vec![root]).unwrap();
+            assert_eq!(inject::tests::handshake(&named, host(), HOST), Ok(()));
+            return;
+        }
+        let dir = shards_testdir::TempDir::new("net-env-trust").unwrap();
+        let root = inject::tests::root("a root the environment names");
+        let (cert, key) = inject::tests::leaf(&root, &[HOST]);
+        std::fs::write(dir.path().join("root.der"), root.der()).unwrap();
+        std::fs::write(dir.path().join("leaf.der"), &cert).unwrap();
+        std::fs::write(dir.path().join("leaf.key"), key).unwrap();
+        let pems = dir.path().join("pems");
+        std::fs::create_dir(&pems).unwrap();
+        std::fs::write(pems.join("root.pem"), root.pem()).unwrap();
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tests::the_environment_adds_no_root_to_the_injector",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(CHILD, dir.path())
+            .env("SSL_CERT_FILE", pems.join("root.pem"))
+            .env("SSL_CERT_DIR", &pems)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&ran.stdout).into_owned() + &String::from_utf8_lossy(&ran.stderr);
+        assert!(ran.status.success(), "{said}");
+        assert!(said.contains("1 passed"), "{said}");
+    }
+
     /// An initial sequence number is its connection's and its secret's alone, plus its
     /// clock: another connection, or another process's secret, gives another, and the
     /// clock adds to it (RFC 6528 §3, review 2.31).
@@ -4083,23 +4758,47 @@ mod tests {
         assert_eq!(initial_seq(&one, 5, guest, &conn(40_000)), isn.wrapping_add(5));
     }
 
-    /// UDP flows live as conntrack keeps them: 30 s from a datagram, until a reply has
-    /// come and a datagram more than 2 s after the first; 120 s from then.
+    /// RFC 4787 REQ-5 and REQ-6: a mapping lives two minutes past its last datagram, one
+    /// going out or one coming in, answered or not.
     #[test]
-    fn udp_flows_live_as_conntrack_keeps_them() {
+    fn a_udp_mapping_is_refreshed_by_each_datagram_either_way() {
         let t0 = Instant::now();
+        let two_minutes = Duration::from_secs(120);
+        assert_eq!(shards_abi::bounds::UDP_MAPPING_IDLE, two_minutes);
         let mut life = Lifetime::new(t0);
-        assert_eq!(life.until, t0 + UDP_UNREPLIED);
-        // A query answered at once: still 30 s.
-        life.datagram(t0 + Duration::from_millis(5), true);
-        assert_eq!(life.until, t0 + Duration::from_millis(5) + UDP_UNREPLIED);
-        // More one way only, past 2 s: not a stream without a reply.
-        let mut one_way = Lifetime::new(t0);
-        one_way.datagram(t0 + Duration::from_secs(3), false);
-        assert_eq!(one_way.until, t0 + Duration::from_secs(3) + UDP_UNREPLIED);
-        // Replied, and going past 2 s: a stream.
-        life.datagram(t0 + Duration::from_secs(3), false);
-        assert_eq!(life.until, t0 + Duration::from_secs(3) + UDP_STREAM);
+        assert_eq!(life.until, t0 + two_minutes);
+        let out = t0 + Duration::from_secs(90);
+        life.datagram(out);
+        assert_eq!(life.until, out + two_minutes, "going out refreshes it (REQ-6)");
+        let back = out + Duration::from_secs(100);
+        life.datagram(back);
+        assert_eq!(life.until, back + two_minutes, "coming in refreshes it (REQ-6a)");
+    }
+
+    /// RFC 4787 (BCP 127) REQ-5: a UDP mapping MUST NOT end in under two minutes of quiet
+    /// but where its destination port is a well-known one's own application's (REQ-5a).
+    /// Do: open a flow to port 5000 and let it be quiet 119 s, then past 120 s. Expect: held
+    /// at 119 s, gone past 120 s, its socket closed.
+    #[test]
+    fn a_udp_mapping_outlives_two_minutes_of_quiet_but_none_past() {
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (_, pr) = shards_netring::doorbell().unwrap();
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::AllowAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let to = (IpAddr::from([127, 0, 0, 1]), 5000);
+        let key = (40_000, to.0, to.1);
+        let t0 = Instant::now();
+        stack.flow(key, to, b"one datagram");
+        assert!(stack.udp.contains_key(&key));
+        stack.timers(t0 + Duration::from_secs(119));
+        assert!(
+            stack.udp.contains_key(&key),
+            "a mapping to port 5000 ended inside two minutes of quiet"
+        );
+        stack.timers(Instant::now() + Duration::from_secs(121));
+        assert!(!stack.udp.contains_key(&key), "a mapping outlived its lifetime");
+        assert!(stack.udp_ids.is_empty());
     }
 
     /// A UDP flow's gateway port is one no other flow has, in turn, and none once all are.

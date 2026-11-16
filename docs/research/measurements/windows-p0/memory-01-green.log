@@ -1,0 +1,42 @@
+== 764f8771 memory-01: a WHP DAX window never shows or writes back zeros in place of its file's bytes 2026-11-14T03:24:16.1052780Z 10.0.26200.0
+
+== cargo test -p shards-vmm --lib -- devices::virtio::fs::window::tests exit 0
+test devices::virtio::fs::window::tests::a_fault_in_a_mapped_range_runs_again_once ... ok
+test devices::virtio::fs::window::tests::a_window_unmaps_its_standing_ranges_as_it_goes ... ok
+test devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files ... ok
+test devices::virtio::fs::window::tests::whp_takes_each_standing_range_over_any_view ... ok
+test devices::virtio::fs::window::tests::an_unmapped_range_takes_a_view_again_and_one_met_in_part_goes_whole ... ok
+test devices::virtio::fs::window::tests::the_held_record_says_a_range_mapped_to_be_written_held ... ok
+test devices::virtio::fs::window::tests::zeros_stand_in_where_the_server_cannot_answer ... ok
+test devices::virtio::fs::window::tests::what_no_view_can_be_is_refused_and_leaves_the_range_as_it_was ... ok
+test devices::virtio::fs::window::tests::a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once ... ok
+test devices::virtio::fs::window::tests::a_window_of_64_gib_is_made_and_let_go ... ok
+test devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros ... ok
+test devices::virtio::fs::window::tests::a_files_ranges_are_its_bytes_then_zeros_and_follow_it ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 440 filtered out; finished in 0.24s
+== mutant m2-no-upgrade: cargo test -p shards-vmm --lib -- devices::virtio::fs::window::tests::a_range_ exit 101 (must fail)
+test devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files ... FAILED
+test devices::virtio::fs::window::tests::a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once ... ok
+test devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros ... ok
+thread 'devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files' (14452) panicked at crates\vmm\src\devices\virtio\fs\window_whp.rs:1287:9:
+assertion `left == right` failed
+  left: Err(Section { node: 9, writable: true })
+ right: Ok(())
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.22s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== mutant m3-section-falls-through: cargo test -p shards-vmm --lib -- devices::virtio::fs::window::tests::a_range_ exit 101 (must fail)
+test devices::virtio::fs::window::tests::a_range_mapped_to_be_written_after_one_to_be_read_stays_its_files ... ok
+test devices::virtio::fs::window::tests::a_range_is_its_sections_bytes_each_way_and_stage_2_is_told_once ... ok
+test devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros ... FAILED
+thread 'devices::virtio::fs::window::tests::a_range_no_view_of_its_file_can_be_made_for_is_refused_never_zeros' (5128) panicked at crates\vmm\src\devices\virtio\fs\window_whp.rs:1334:9:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 449 filtered out; finished in 0.43s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== cargo clippy -p shards-vmm --all-targets exit 0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.93s
+== cargo clippy -p shards-vm-process --all-targets exit 0
+== cargo clippy -p shards --all-targets exit 0
+

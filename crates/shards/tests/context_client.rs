@@ -13,16 +13,13 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
-use std::time::Duration;
 
-use common::TempDir;
+use common::{Patience, TempDir};
 use shards_remote::Error;
 use shards_remote::client::Remote;
 use shards_remote::frame::Request;
 use shards_remote::identity::{self, Identity};
 use shards_remote::server::{self, Host, Running, Stopper};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the test's daemon saw. A command's start comes with where its output and its exit
 /// status come from: the test.
@@ -131,14 +128,26 @@ impl Drop for Daemon {
 }
 
 impl Daemon {
+    /// What it saw next, waited for while the clients this test started go on (`Patience`,
+    /// its kind its call site).
+    #[track_caller]
     fn next(&self) -> Seen {
-        self.seen
-            .recv_timeout(TIMEOUT)
-            .unwrap_or_else(|_| panic!("the daemon saw nothing within {TIMEOUT:?}"))
+        let mut patience = Patience::started();
+        loop {
+            match self.seen.recv_timeout(patience.next_look()) {
+                Ok(seen) => {
+                    patience.done();
+                    return seen;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
+                Err(e) => panic!("the daemon saw nothing ({e})"),
+            }
+        }
     }
 
     /// The stdin the command was given until it holds `want`, which it must begin with; a
     /// resize meanwhile, as a console's size is looked at as it changes, passed over.
+    #[track_caller]
     fn stdin(&self, want: &[u8]) {
         let mut got = Vec::new();
         while got.len() < want.len() {
@@ -168,7 +177,8 @@ fn daemon(laptop: &Path) -> Daemon {
             let _ = tx.send((at, stopper));
         });
     });
-    let (address, stopper) = bound.recv_timeout(TIMEOUT).unwrap();
+    // Bound by a thread of this process's, whose end, sending nothing, ends the wait.
+    let (address, stopper) = bound.recv().unwrap();
     let remote = Remote {
         address,
         daemon: ours.fingerprint(),
@@ -308,17 +318,17 @@ fn a_command_whose_output_nobody_reads_is_hung_up_there() {
     drop(stdout);
     // It goes on printing, as a followed log does: a write may still find a reader a while
     // (a child another test forks holds the pipe until its exec), the next finds none.
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut patience = Patience::started();
     loop {
-        assert!(std::time::Instant::now() < deadline, "never hung up");
         let _ = output.send(b"more\n".to_vec());
-        match d.seen.recv_timeout(Duration::from_millis(20)) {
+        match d.seen.recv_timeout(patience.next_look()) {
             Ok(Seen::HungUp) => break,
             Ok(Seen::Stdin(bytes)) if bytes.is_empty() => {}
             Ok(other) => panic!("{other:?}, waiting for the hangup"),
-            Err(_) => {}
+            Err(_) => assert!(patience.holds(), "never hung up"),
         }
     }
+    patience.done();
     let (status, said) = ended(child);
     assert_eq!(status, Some(1), "{said}");
     assert_eq!(said, "", "nothing said of a reader gone");
@@ -388,13 +398,14 @@ fn a_file_the_command_writes_is_the_clients_whole_or_not_at_all() {
         panic!("no start");
     };
     output.send(b"half".to_vec()).unwrap();
-    let start = std::time::Instant::now();
+    let mut patience = Patience::started();
     while !names(&files).iter().any(|n| {
         n.starts_with(".tmp-lost.tar") && std::fs::metadata(files.join(n)).is_ok_and(|m| m.len() == 4)
     }) {
-        assert!(start.elapsed() < TIMEOUT, "no half written: {:?}", names(&files));
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(patience.holds(), "no half written: {:?}", names(&files));
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     drop(d);
     let (status, said) = ended(child);
     assert_eq!(status, Some(125), "{said}");
@@ -471,13 +482,14 @@ fn a_client_ended_before_its_machine_answers_leaves_no_file() {
     )
     .unwrap();
     let child = saving(&laptop, &files, "unanswered.tar");
-    let start = std::time::Instant::now();
+    let mut patience = Patience::started();
     while !names(&files).iter().any(|n| n.starts_with(".tmp-unanswered.tar")) {
-        assert!(start.elapsed() < TIMEOUT, "no file made");
-        std::thread::sleep(Duration::from_millis(5));
+        assert!(patience.holds(), "no file made");
+        std::thread::sleep(patience.next_look());
     }
-    // Well into its handshake, which gives up after 10 s.
-    std::thread::sleep(Duration::from_millis(500));
+    patience.done();
+    // Its file made, it is in its handshake, which its machine never answers: ended there,
+    // at whatever point of it, before an answer.
     common::terminate(&child);
     let (status, said) = ended(child);
     let ended_by = if cfg!(windows) {
@@ -592,7 +604,6 @@ mod console {
     use std::path::Path;
     use std::ptr::{null, null_mut};
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
 
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
     use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
@@ -608,12 +619,12 @@ mod console {
         WaitForSingleObject,
     };
 
-    use super::TIMEOUT;
-
     pub struct Console {
         console: HPCON,
         input: HANDLE,
         process: HANDLE,
+        /// Its program's process ID, which its waits follow (`common::Wait`).
+        pid: u32,
         thread: HANDLE,
         shown: Arc<Mutex<Vec<u8>>>,
         read: usize,
@@ -758,6 +769,7 @@ mod console {
                 console,
                 input: in_write,
                 process: started.hProcess,
+                pid: started.dwProcessId,
                 thread: started.hThread,
                 shown,
                 read: 0,
@@ -765,25 +777,38 @@ mod console {
             }
         }
 
-        /// Waits until the console has shown `text` since the last wait.
+        /// Waits until the console has shown `text` since the last wait: a wait judged as
+        /// the tests' waits are (`common::Wait`), its kind its call site, its party its
+        /// program, what the console shows its output.
+        #[track_caller]
         pub fn wait_for(&mut self, text: &str) {
-            let until = Instant::now() + TIMEOUT;
+            let kind = crate::common::WaitKind::at(std::panic::Location::caller());
+            let mut wait = crate::common::Wait::begin(kind, self.pid, None, text);
             let want = text.as_bytes();
+            let mut seen = self.read;
             loop {
-                {
+                // Looked at with the console's output let go of: its reader goes on meanwhile.
+                let came = {
                     let shown = self.shown.lock().unwrap();
                     let fresh = &shown[self.read..];
                     if let Some(at) = fresh.windows(want.len()).position(|w| w == want) {
                         self.read += at + want.len();
+                        wait.answered();
                         return;
                     }
-                    assert!(
-                        Instant::now() < until,
-                        "{text:?} did not come; the console showed {:?}",
-                        String::from_utf8_lossy(fresh)
+                    let came = shown.len() != seen;
+                    seen = shown.len();
+                    came
+                };
+                if let Err(stall) = wait.look(came) {
+                    let shown = self.shown.lock().unwrap();
+                    panic!(
+                        "{text:?} did not come: {}; the console showed {:?}",
+                        wait.refused(&stall),
+                        String::from_utf8_lossy(&shown[self.read..])
                     );
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(wait.next_look());
             }
         }
 
@@ -810,12 +835,23 @@ mod console {
             assert_eq!(resized, 0, "ResizePseudoConsole: {resized:#x}");
         }
 
-        /// Once the program exits: its exit status.
+        /// Once the program exits: its exit status, waited for as the tests' waits are
+        /// (`common::Wait`), its kind its call site.
+        #[track_caller]
         pub fn exit(&mut self) -> u32 {
-            let millis = u32::try_from(TIMEOUT.as_millis()).unwrap();
-            // SAFETY: our process's handle.
-            let waited = unsafe { WaitForSingleObject(self.process, millis) };
-            assert_eq!(waited, WAIT_OBJECT_0, "it did not exit");
+            let kind = crate::common::WaitKind::at(std::panic::Location::caller());
+            let mut wait = crate::common::Wait::begin(kind, self.pid, None, "its exit");
+            loop {
+                let left = u32::try_from(wait.next_look().as_millis()).unwrap_or(u32::MAX);
+                // SAFETY: our process's handle.
+                if unsafe { WaitForSingleObject(self.process, left) } == WAIT_OBJECT_0 {
+                    break;
+                }
+                if let Err(stall) = wait.look(false) {
+                    panic!("it did not exit: {}", wait.refused(&stall));
+                }
+            }
+            wait.answered();
             let mut code = 0u32;
             // SAFETY: as above, and where its code goes.
             assert_ne!(unsafe { GetExitCodeProcess(self.process, &mut code) }, 0);

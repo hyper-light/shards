@@ -117,6 +117,7 @@ pub struct Uplink {
 }
 
 /// The uplink's IPv6 part (D99).
+#[derive(Clone)]
 pub struct Uplink6 {
     pub eth0: Ipv6Addr,
     pub subnets: Vec<(Ipv6Addr, u8)>,
@@ -493,6 +494,9 @@ struct Carried {
     ingress: Vec<(usize, Vec<crate::netplan::Egress>)>,
     dns: Vec<usize>,
     uplink: Option<Uplink>,
+    /// The uplink's IPv6 part, where it carries IPv6 (D99): programmed again with the rest
+    /// as a member's grants change (D278).
+    uplink6: Option<Uplink6>,
     domains: usize,
     subnets: Vec<(Ipv4Addr, u8)>,
     members: Vec<Member>,
@@ -622,6 +626,7 @@ impl Switch {
                 ingress: ingress.to_vec(),
                 dns: dns.to_vec(),
                 uplink: None,
+                uplink6: None,
                 domains,
                 subnets: subnets.to_vec(),
                 members: Vec::new(),
@@ -774,6 +779,12 @@ impl Switch {
             }
         }
         policy(&self.nft, &pairs, &egress, &ingress, &dns)?;
+        // IPv6 between domains, and past the microVM where the uplink carries it (D99): the
+        // domains' alone, the engine's members having no IPv6 addresses.
+        if self.ipv6 {
+            let egress6: &[(usize, Vec<crate::netplan::Egress>)] = if self.uplink6 { &c.egress } else { &[] };
+            policy6(&self.nft, &c.pairs, egress6)?;
+        }
         let Some(u) = &c.uplink else {
             return Ok(());
         };
@@ -782,7 +793,81 @@ impl Switch {
         if eth0 == 0 {
             return Err(io::Error::other("the microVM has no eth0 for its agents' egress"));
         }
-        on_init_nft(|nft| outside(nft, eth0, u, &c.members))
+        on_init_nft(|nft| outside(nft, eth0, u, &c.members))?;
+        match &c.uplink6 {
+            Some(six) => on_init_nft(|nft| outside6(nft, eth0, six)),
+            None => Ok(()),
+        }
+    }
+
+    /// Domain `n`'s grants past the microVM made `egress` and `dns`, from its addresses `own`
+    /// and `own6` (D278): what the switch forwards up and down its link, init's own forward
+    /// and marks for it, by IPv6 too where the uplink carries it, and whether the agents'
+    /// resolver asks the microVM's; all of it programmed again whole, each table in one
+    /// transaction. Its gate is [`Self::regate_domain`]'s.
+    pub fn regrant(
+        &self,
+        n: usize,
+        own: &[Ipv4Addr],
+        own6: &[Ipv6Addr],
+        egress: &[crate::netplan::Egress],
+        dns: bool,
+    ) -> io::Result<()> {
+        let mut c = self.carried();
+        if c.uplink.is_none() && (!egress.is_empty() || dns) {
+            return Err(io::Error::other("the microVM has no way past it for its agents"));
+        }
+        c.egress.retain(|(i, _)| *i != n);
+        if !egress.is_empty() {
+            c.egress.push((n, egress.to_vec()));
+        }
+        c.dns.retain(|i| *i != n);
+        if dns {
+            c.dns.push(n);
+        }
+        let resolver = !c.dns.is_empty();
+        if let Some(u) = c.uplink.as_mut() {
+            u.egress.retain(|(from, _)| from.as_slice() != own);
+            if !egress.is_empty() && !own.is_empty() {
+                u.egress.push((own.to_vec(), egress.to_vec()));
+            }
+            u.resolver = resolver;
+        }
+        if let Some(six) = c.uplink6.as_mut() {
+            six.egress.retain(|(from, _)| from.as_slice() != own6);
+            if !egress.is_empty() && !own6.is_empty() {
+                six.egress.push((own6.to_vec(), egress.to_vec()));
+            }
+        }
+        self.reprogram(&c)
+    }
+
+    /// Domain `n`'s gate made again with its grants past the microVM `egress` and `dns`
+    /// (D278), kept so, the subnets the switch carries now among those its egress keeps off,
+    /// as [`Self::regate_domains`] makes them all.
+    pub fn regate_domain(&self, n: usize, egress: &[crate::netplan::Egress], dns: bool) -> io::Result<()> {
+        let gate = {
+            let mut kept = self
+                .domain_gates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (_, g) = kept
+                .iter_mut()
+                .find(|(i, _)| *i == n)
+                .ok_or_else(|| io::Error::other("no such domain's gate"))?;
+            g.egress = egress.to_vec();
+            g.dns = dns;
+            // As the uplink carries IPv6, which it does where eth0 has it (domains::gate_of).
+            g.egress6 = crate::net::current6().is_some() && !g.own6.is_empty() && !egress.is_empty();
+            g.clone()
+        };
+        let mut g = gate;
+        for s in &self.subnets() {
+            if !g.subnets.contains(s) {
+                g.subnets.push(*s);
+            }
+        }
+        self.regate(n, &g)
     }
 
     /// The link past the microVM: `agents0` in init's namespace, `up0` in the switch's,
@@ -867,6 +952,7 @@ impl Switch {
         // route up it and init's routes to the agents' IPv6 subnets down it; init's IPv6
         // tables, then its IPv6 forwarding.
         let Some(six) = &u.ipv6 else { return Ok(()) };
+        self.carried().uplink6 = Some(six.clone());
         exchange(
             &self.route,
             &[
@@ -1020,18 +1106,24 @@ impl Switch {
             .find(|(i, _)| *i == n)
             .ok_or_else(|| io::Error::other("no such member's gate"))?;
         let nft = in_netns(Some(ns.as_raw_fd()), || netlink_socket(libc::NETLINK_NETFILTER))?;
-        gate_policy(&nft, gate)
+        gate_policy(&nft, gate)?;
+        if gate.own6.is_empty() {
+            return Ok(());
+        }
+        gate_policy6(&nft, gate)
     }
 
     /// Links the `n`-th domain, its first process `pid`, as `link` says, through a gate
-    /// of its own that lets through what `gate` says.
-    pub fn attach(&self, n: usize, pid: libc::pid_t, link: &Link, gate: &Gate) -> io::Result<()> {
-        self.attach_ns(n, &open_ns(&format!("/proc/{pid}/ns/net"))?, link, gate)?;
+    /// of its own that lets through what `gate` says: its network namespace, which its
+    /// grants' changes reach (D278).
+    pub fn attach(&self, n: usize, pid: libc::pid_t, link: &Link, gate: &Gate) -> io::Result<OwnedFd> {
+        let ns = open_ns(&format!("/proc/{pid}/ns/net"))?;
+        self.attach_ns(n, &ns, link, gate)?;
         self.domain_gates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((n, gate.clone()));
-        Ok(())
+        Ok(ns)
     }
 
     /// Each domain's gate made again, the subnets the switch carries now among those its
@@ -1074,6 +1166,9 @@ impl Switch {
                 crate::setup::write_sysctl(&format!("net.ipv4.conf.{scope}.rp_filter"), "1")
                     .map_err(io::Error::other)?;
             }
+            // What the domain opens is tracked here (gate_policy): its UDP flows kept as
+            // the host's network process keeps them, not this new namespace's 30 s.
+            crate::setup::keep_udp_flows().map_err(io::Error::other)?;
             Ok((ns, route, nftables))
         })?;
         let create = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL;
@@ -1515,8 +1610,8 @@ const CHOSEN: &[u8] = b"chosen\0";
 /// connection tracking (D122).
 const CHOSEN_ZONE: &[u8] = b"chosen-zone\0";
 
-/// One of the chooser's choices: what comes in on eth0 to port `from` goes to `to`, at its
-/// port `at`; and, for a UDP port, the conntrack zone of this choice, which its flows, both
+/// One of the chooser's choices: what comes in on eth0 to ports `from` goes to `to`, at its
+/// ports `at`; and, for UDP's, the conntrack zone of that holder, which its flows, both
 /// ways, are tracked in.
 pub(crate) type Chosen = (
     crate::netplan::Egress,
@@ -1528,11 +1623,12 @@ pub(crate) type Chosen = (
 /// The chooser's choices, programmed again whole in one transaction: what comes in on
 /// eth0 to each port `from` goes to `to`, at its port `at`, as `pre` gives a port that is
 /// one domain's; a port of no one listening, nowhere here (the run's own command's, as a
-/// port no domain claims is). A UDP port's flows are tracked in its choice's zone, coming
-/// in and the holder's answers going out: a choice of another holder has a zone of its
-/// own, in which a flow admitted before is new, and so translated to the new holder, its
-/// entry in the old zone left to expire, as the old holder's answers past it are new
-/// flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
+/// port no domain claims is). A UDP port's flows are tracked in its holder's zone, coming
+/// in and the holder's answers going out: each holder has a zone of its own for the run
+/// (crate::chooser's `Choices`), in which a flow admitted before a change is new, and so
+/// translated to the new holder, its entry in the old holder's zone left to expire, or
+/// taken again, translated to that holder, should it hold the port again; the old
+/// holder's answers past the change are new flows no grant opens. Linux keeps a NAT binding for a flow's life (nf_nat_core.c; a
 /// UDP flow lives 30 s past its last datagram, 120 s once it streams,
 /// nf_conntrack_proto_udp.c), and a guest kernel without ctnetlink (shards' has none) has
 /// no other way to let one go.
@@ -1873,6 +1969,16 @@ fn policy(
     ingress: &[(usize, Vec<crate::netplan::Egress>)],
     dns: &[usize],
 ) -> io::Result<()> {
+    policy_batch(pairs, egress, ingress, dns)?.commit(sock)
+}
+
+/// [`policy`]'s transaction, made.
+fn policy_batch(
+    pairs: &[(usize, usize, Vec<crate::netplan::Egress>)],
+    egress: &[(usize, Vec<crate::netplan::Egress>)],
+    ingress: &[(usize, Vec<crate::netplan::Egress>)],
+    dns: &[usize],
+) -> io::Result<Batch> {
     let up = UPLINK_IFINDEX as u32;
     let mut b = Batch::new();
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
@@ -1927,7 +2033,7 @@ fn policy(
             both(&mut b, up, link_index(*n)?, range);
         }
     }
-    b.commit(sock)
+    Ok(b)
 }
 
 /// A domain's gate's nf_tables (D61), in one transaction:
@@ -1941,6 +2047,11 @@ fn policy(
 ///   granted; what peers open to it on its ports, from their own addresses, and from past
 ///   the microVM on its ingress ports; and its answers to those.
 fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
+    gate_batch(g).commit(sock)
+}
+
+/// [`gate_policy`]'s transaction, made.
+fn gate_batch(g: &Gate) -> Batch {
     let (inside, outside) = (GATE_IN as u32, GATE_OUT as u32);
     let mut b = Batch::new();
     b.chain(
@@ -2039,7 +2150,7 @@ fn gate_policy(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
             opened(&mut b, None, range);
         }
     }
-    b.commit(sock)
+    b
 }
 
 /// The switch's IPv6 tables (D99), stateless as its IPv4 ones: its own address answers
@@ -2053,10 +2164,13 @@ fn policy6(
 ) -> io::Result<()> {
     let mut b = Batch::of(nft::NFPROTO_IPV6);
     b.chain(b"pre\0", b"filter\0", nft::NF_INET_PRE_ROUTING, 0, nft::NF_ACCEPT);
+    b.flush(b"pre\0");
     b.rule(b"pre\0", reverse_path());
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.flush(b"input\0");
     b.rule(b"input\0", neighbor_discovery());
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.flush(b"forward\0");
     let up = UPLINK_IFINDEX as u32;
     let mut flows: Vec<(u32, u32, Vec<crate::netplan::Egress>)> = Vec::new();
     for (from, to, ranges) in pairs {
@@ -2101,6 +2215,7 @@ fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
         nft::PRIORITY_RAW,
         nft::NF_ACCEPT,
     );
+    b.flush(b"raw\0");
     b.rule(b"raw\0", reverse_path());
     for range in g.accepted() {
         let mut e = Vec::new();
@@ -2115,10 +2230,13 @@ fn gate_policy6(sock: &OwnedFd, g: &Gate) -> io::Result<()> {
         b.rule(b"raw\0", e);
     }
     b.chain(b"input\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_DROP);
+    b.flush(b"input\0");
     b.rule(b"input\0", neighbor_discovery());
     b.chain(b"output\0", b"filter\0", nft::NF_INET_LOCAL_OUT, 0, nft::NF_DROP);
+    b.flush(b"output\0");
     b.rule(b"output\0", neighbor_discovery());
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.flush(b"forward\0");
     b.rule(b"forward\0", answers());
     for &own in &g.own6 {
         // Past the microVM, on its egress ports, where the uplink carries IPv6.
@@ -2181,6 +2299,7 @@ fn outside6(sock: &OwnedFd, eth0: u32, u: &Uplink6) -> io::Result<()> {
     let up = UPLINK_IFINDEX as u32;
     let mut b = Batch::of(nft::NFPROTO_IPV6);
     b.chain(b"in\0", b"filter\0", nft::NF_INET_LOCAL_IN, 0, nft::NF_ACCEPT);
+    b.flush(b"in\0");
     b.rule(b"in\0", answers());
     b.rule(b"in\0", neighbor_discovery());
     let mut e = Vec::new();
@@ -2188,6 +2307,7 @@ fn outside6(sock: &OwnedFd, eth0: u32, u: &Uplink6) -> io::Result<()> {
     drop_verdict(&mut e);
     b.rule(b"in\0", e);
     b.chain(b"forward\0", b"filter\0", nft::NF_INET_FORWARD, 0, nft::NF_DROP);
+    b.flush(b"forward\0");
     b.rule(b"forward\0", answers());
     for (from, ranges) in &u.egress {
         for &a in from {
@@ -2214,6 +2334,7 @@ fn outside6(sock: &OwnedFd, eth0: u32, u: &Uplink6) -> io::Result<()> {
         nft::PRIORITY_SNAT,
         nft::NF_ACCEPT,
     );
+    b.flush(b"post\0");
     let mut e = Vec::new();
     meta(&mut e, nft::NFT_META_MARK);
     compare(&mut e, nft::NFT_CMP_EQ, &MARK_AGENTS.to_ne_bytes());
@@ -2329,10 +2450,16 @@ fn outside(sock: &OwnedFd, eth0: u32, u: &Uplink, members: &[Member]) -> io::Res
             );
         }
         for (to, ranges) in ingress {
-            for &(from, at) in ranges
-                .iter()
-                .filter(|(from, _)| contested.iter().all(|c| c.from != *from))
-            {
+            // Each range's ports no contest is for, at the domain's own ports there.
+            let alone = ranges.iter().flat_map(|&(from, at)| {
+                crate::chooser::uncontested(from, &contested)
+                    .into_iter()
+                    .filter_map(move |(lo, hi)| {
+                        let shift = |port: u16| port.checked_sub(from.1).and_then(|d| at.1.checked_add(d));
+                        Some(((from.0, lo, hi), (at.0, shift(lo)?, shift(hi)?)))
+                    })
+            });
+            for (from, at) in alone {
                 let mut e = Vec::new();
                 meta(&mut e, nft::NFT_META_IIF);
                 compare(&mut e, nft::NFT_CMP_EQ, &eth0.to_ne_bytes());
@@ -2528,6 +2655,76 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
     use super::*;
+
+    /// The rules a transaction adds, each its payload as sent.
+    fn rules(b: &Batch) -> Vec<Vec<u8>> {
+        let rule = (nft::NFNL_SUBSYS_NFTABLES << 8) | nft::NFT_MSG_NEWRULE;
+        b.msgs
+            .iter()
+            .filter(|(kind, _, _)| *kind == rule)
+            .map(|(_, _, payload)| payload.clone())
+            .collect()
+    }
+
+    /// Whether `rule` holds `bytes` somewhere in it.
+    fn holds(rule: &[u8], bytes: &[u8]) -> bool {
+        rule.windows(bytes.len()).any(|w| w == bytes)
+    }
+
+    /// A member granted a TCP port as its run goes (D278): the switch's transaction carries
+    /// its flows up its link on that port and their answers back, two rules more, and names
+    /// its link and its port; the agents' resolver taken by it, two more each way of DNS's;
+    /// revoked, what it carried before, rule for rule. Its gate's transaction lets it out on
+    /// the port from its own address, to none of the microVM's subnets, and to the resolver
+    /// where it asks names, and none of it once revoked; each transaction empties its chains
+    /// first, so that nothing of what it carried is left.
+    #[test]
+    fn a_grant_and_its_revoke_program_the_switch_and_the_gate_whole() {
+        let image = vec![(0usize, vec![(6u8, 443u16, 443u16)])];
+        let before = policy_batch(&[], &image, &[], &[]).unwrap();
+        let mut granted = image.clone();
+        granted.push((1, vec![(6, 8443, 8443)]));
+        let after = policy_batch(&[], &granted, &[], &[1]).unwrap();
+        let (was, is) = (rules(&before), rules(&after));
+        assert_eq!(
+            is.len(),
+            was.len() + 2 + 2,
+            "its flow each way, and its questions by UDP and TCP"
+        );
+        let link = link_index(1).unwrap().to_ne_bytes();
+        let port = 8443u16.to_be_bytes();
+        let new: Vec<&Vec<u8>> = is.iter().filter(|r| !was.contains(r)).collect();
+        assert_eq!(
+            new.iter().filter(|r| holds(r, &link) && holds(r, &port)).count(),
+            2
+        );
+        assert!(was.iter().all(|r| is.contains(r)), "what it carried, kept");
+        let revoked = policy_batch(&[], &image, &[], &[]).unwrap();
+        assert_eq!(rules(&revoked), was);
+        let delete = (nft::NFNL_SUBSYS_NFTABLES << 8) | nft::NFT_MSG_DELRULE;
+        assert_eq!(
+            after.msgs.iter().filter(|(kind, _, _)| *kind == delete).count(),
+            2,
+            "input and forward emptied"
+        );
+        let own = Ipv4Addr::new(10, 88, 0, 2);
+        let gate = Gate {
+            own: vec![own],
+            subnets: vec![(Ipv4Addr::new(10, 88, 0, 0), 16)],
+            ..Gate::default()
+        };
+        let shut = rules(&gate_batch(&gate));
+        let open = rules(&gate_batch(&Gate {
+            egress: vec![(6, 8443, 8443)],
+            dns: true,
+            ..gate.clone()
+        }));
+        let opened: Vec<&Vec<u8>> = open.iter().filter(|r| !shut.contains(r)).collect();
+        assert_eq!(opened.len(), 3, "its port, and DNS by UDP and TCP");
+        assert!(opened.iter().all(|r| holds(r, &own.octets())));
+        assert_eq!(opened.iter().filter(|r| holds(r, &port)).count(), 1);
+        assert_eq!(rules(&gate_batch(&gate)), shut, "revoked, as it was");
+    }
 
     /// A netlink acknowledgment: an nlmsghdr, the error (0 for none), and the request's
     /// header.

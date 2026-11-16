@@ -23,6 +23,8 @@ mod dnsrelay;
 #[cfg(target_os = "linux")]
 mod domains;
 #[cfg(target_os = "linux")]
+mod egress;
+#[cfg(target_os = "linux")]
 mod emulate;
 #[cfg(target_os = "linux")]
 mod engine;
@@ -92,6 +94,8 @@ mod run;
 mod setup;
 #[cfg(target_os = "linux")]
 mod staged;
+#[cfg(target_os = "linux")]
+mod starter;
 #[cfg(target_os = "linux")]
 mod swap;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

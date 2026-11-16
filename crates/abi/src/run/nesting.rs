@@ -8,7 +8,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::gpu::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError};
+use crate::gpu::{PhysicalGpu, PhysicalGpuError};
 
 /// `nesting`, alone: the grant. Its command starts in a leaf of a writable cgroup subtree
 /// of its own, with `NOTIFY_SOCKET`, and with its run's deadline and GPUs below.
@@ -98,13 +98,11 @@ fn nanoseconds(text: &[u8]) -> Option<u64> {
 
 /// `list`, a [`GPUS`] entry's value, as its identities, each checked and none twice, as
 /// D232 checks a selection: counted before any is kept, so that a list past
-/// [`MAX_PHYSICAL_GPUS`] holds no memory for them.
+/// [`crate::gpu::MAX_PHYSICAL_GPUS`] holds no memory for them.
 pub fn selection(list: &[u8]) -> Result<Vec<PhysicalGpu>, PhysicalGpuError> {
     let text = core::str::from_utf8(list).map_err(|_| PhysicalGpuError::Syntax)?;
     let count = text.split(',').count();
-    if count > MAX_PHYSICAL_GPUS {
-        return Err(PhysicalGpuError::Count);
-    }
+    crate::gpu::selection_fits(count)?;
     let mut gpus = Vec::new();
     gpus.try_reserve_exact(count)
         .map_err(|_| PhysicalGpuError::Allocation)?;
@@ -276,15 +274,8 @@ mod tests {
             read(&[b"nesting".to_vec(), b"gpus=\xff".to_vec()]),
             Err(Error::Gpus(PhysicalGpuError::Syntax))
         );
-        // Past D232's bound, refused before any identity is kept.
-        let mut many = b"gpus=metal:1".to_vec();
-        for _ in 0..MAX_PHYSICAL_GPUS {
-            many.extend_from_slice(b",metal:1");
-        }
-        assert_eq!(
-            read(&[b"nesting".to_vec(), many]),
-            Err(Error::Gpus(PhysicalGpuError::Count))
-        );
+        // D232's bound, the renderer transport's (`gpu::selection_fits`, tested there), is
+        // counted before any identity is kept: a list of it would be a gigabyte.
     }
 
     /// READY's payload, each of its three moves read as written, how far past kept whole;

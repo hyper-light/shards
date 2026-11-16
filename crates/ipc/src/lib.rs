@@ -80,6 +80,32 @@ pub fn exiting(home: &Path) -> bool {
     named_lives(&home.join(STOPPING))
 }
 
+/// What a daemon keeps in a run's directory from the stop signal it sends that run's command
+/// until its grace is up (`stop -t`, the run's `--stop-timeout`, or the daemon's default):
+/// when the command's SIGKILL is due, as [`grace_text`] writes it. Removed at that SIGKILL,
+/// or at the run's end before it. A wait on the daemon reads it as the daemon's own
+/// deadline, before which it and its run may run nothing at all and are not stalled (D209):
+/// a `sleep` that ignores SIGTERM as its PID namespace's init keeps its daemon's stop quiet
+/// for its whole grace.
+pub const GRACE: &str = "stop.grace";
+
+/// [`GRACE`]'s contents for a SIGKILL due at `until`: its nanoseconds since the Unix epoch,
+/// in decimal. The system clock, the one clock std reads alike in two processes on every
+/// OS: a step of it moves the deadline as read by that step. None before the epoch or past
+/// u64's nanoseconds.
+pub fn grace_text(until: std::time::SystemTime) -> Option<String> {
+    let ns = until.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+    u64::try_from(ns).ok().map(|ns| ns.to_string())
+}
+
+/// When the SIGKILL of the run whose directory is `dir` is due, as its [`GRACE`] says: none
+/// where it keeps none, or none that reads whole.
+pub fn grace_until(dir: &Path) -> Option<std::time::SystemTime> {
+    let text = std::fs::read_to_string(dir.join(GRACE)).ok()?;
+    let ns: u64 = text.trim().parse().ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(ns))
+}
+
 /// A file a daemon that has closed makes anew and holds locked (flock(2), LockFileEx) until
 /// it has let go of its home's lock: `stop daemon` waits for it by a shared lock, which none
 /// but a closed daemon holds against it, so that no next daemon's lock is waited for. Apart
@@ -96,6 +122,36 @@ pub fn daemon_lives(home: &Path) -> bool {
     named_lives(&home.join(PID))
 }
 
+/// A daemon of a build from before request slots (D185) serves the home: its socket there,
+/// `daemon.sock`, takes a connection. This build never asks it anything: a client and its
+/// daemon are one build (D36), and that daemon hears nothing but its socket. So a client or
+/// daemon that finds it refuses, naming what to end, as no slot reaches it. Only Unix's: no
+/// daemon ran on Windows before slots. `here` is best the home as the working directory
+/// (`.`), whose relative name fits a socket address whatever the home's path (PM M26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreSlotsDaemon;
+
+impl std::fmt::Display for PreSlotsDaemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a daemon of a shards from before request slots serves this home at daemon.sock: \
+             this shards does not speak to it; end that daemon's process",
+        )
+    }
+}
+
+/// [`PreSlotsDaemon`] where one serves the home `here`, by its socket's taking a connection,
+/// which is closed unasked; none where none does (no socket, or one no process listens at).
+pub fn no_pre_slots_daemon(here: &Path) -> Result<(), PreSlotsDaemon> {
+    #[cfg(unix)]
+    if std::os::unix::net::UnixStream::connect(here.join("daemon.sock")).is_ok() {
+        return Err(PreSlotsDaemon);
+    }
+    #[cfg(not(unix))]
+    let _ = here;
+    Ok(())
+}
+
 /// A process as a home's [`PID`] and [`STOPPING`] name it: its ID, and its start, which tells
 /// it from a process given that ID once it has gone. An ID alone is reused (Linux hands
 /// them out again once `pid_max` wraps, proc(5); XNU and Windows likewise), so a client
@@ -103,26 +159,45 @@ pub fn daemon_lives(home: &Path) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Named {
     pub pid: u32,
-    /// Its start ([`started`]); `None` in a file a build from before starts were kept
-    /// wrote, whose daemon is known by its ID alone.
-    pub start: Option<u64>,
+    /// Its start ([`started`]).
+    pub start: u64,
+}
+
+/// Why a home's [`PID`] or [`STOPPING`], or a slot's taker, names no process: what this build
+/// writes is `PID START` ([`this_process`]), and nothing else is read as a process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotNamed {
+    /// An ID with no start: written by a `shards` from before starts were kept (v0.7.0 and
+    /// before), so of another build, whose daemon this one never waits on by its ID (D36,
+    /// D185 *A daemon is known by its process ID and start*). Its record is stale, as a dead process's is.
+    IdAlone,
+    /// Not `PID START`: empty, words that are no numbers, or more than two.
+    Malformed,
 }
 
 impl Named {
-    /// What a file names: `PID START`, or `PID` alone.
-    pub fn parse(text: &str) -> Option<Named> {
+    /// What a file names: `PID START`, or why it names no process.
+    pub fn parse(text: &str) -> Result<Named, NotNamed> {
         let mut words = text.split_ascii_whitespace();
-        let pid = words.next()?.parse().ok()?;
+        let pid = words
+            .next()
+            .and_then(|pid| pid.parse().ok())
+            .ok_or(NotNamed::Malformed)?;
         let start = match words.next() {
-            Some(start) => Some(start.parse().ok()?),
-            None => None,
+            Some(start) => start.parse().map_err(|_| NotNamed::Malformed)?,
+            None => return Err(NotNamed::IdAlone),
         };
-        words.next().is_none().then_some(Named { pid, start })
+        match words.next() {
+            Some(_) => Err(NotNamed::Malformed),
+            None => Ok(Named { pid, start }),
+        }
     }
 
-    /// What the file at `path` names, where it names one process.
+    /// What the file at `path` names, where it names one process: none where there is no
+    /// file, or one that names none ([`NotNamed`]), a stale record whose writer is gone or
+    /// of another build.
     pub fn read(path: &Path) -> Option<Named> {
-        Named::parse(&std::fs::read_to_string(path).ok()?)
+        Named::parse(&std::fs::read_to_string(path).ok()?).ok()
     }
 
     /// Whether it lives: its ID's process lives, and is the one that started when it did.
@@ -131,10 +206,7 @@ impl Named {
         let alive = unix::alive;
         #[cfg(windows)]
         let alive = windows::alive;
-        alive(self.pid)
-            && self
-                .start
-                .is_none_or(|start| started(self.pid).is_ok_and(|now| now == start))
+        alive(self.pid) && started(self.pid).is_ok_and(|now| now == self.start)
     }
 }
 
@@ -189,6 +261,7 @@ pub const NAMES_STEP: &str = "\u{0}names";
 /// Message kinds between the daemon, warm VMs and clients.
 /// [`kind::DEVICE`]'s steps (D214), each a byte after the request's number.
 pub mod device {
+    pub use super::device_reply::{Refusal, Retry, decode, encode};
     /// A disk plugged in: a flags byte ([`READ_ONLY`]) and its serial; its file a
     /// descriptor. Answers its place on the PCI bus (`devfn`, decimal) and its guest's
     /// address of it, a space between.
@@ -213,7 +286,15 @@ pub mod device {
     /// [`FUNCTION`]'s flag of a function taken by its own VFIO device node, through
     /// iommufd, not its group's.
     pub const BY_NODE: u8 = 1;
+    /// A component's EROFS file plugged in (D270): a read-only virtio-pmem function whose
+    /// region its microVM maps in its components' window; its key, its digest's 64 lowercase
+    /// hex digits, by which a snapshot keeps it (slice 5); its file a descriptor, opened to
+    /// read. Answers as [`DISK`] does, then a space and the region's guest address and
+    /// length, each decimal.
+    pub const PMEM: u8 = 6;
 }
+
+mod device_reply;
 
 pub mod kind {
     /// Warm VM → daemon: the guest is connected and waiting for its command.
@@ -398,6 +479,12 @@ pub mod kind {
     /// The network process asks it as the injector meets a sign-in's token response or its
     /// CLI's refresh, of a run host that relays it to its orchestrator.
     pub const NET_SIGN_IN: u8 = 105;
+    /// Run host → network process, as its run goes (D273): the run's grants past the
+    /// microVM now, a policy as `NET_POLICY` carries one (shards_net::encode_policy), each
+    /// within its `NET_POLICY`'s, the most the run could ever be granted; taken in place of
+    /// the grants before, every flow of its guest's they no longer reach ended. Answered with
+    /// the same kind: 0 once taken; or 1 and why not, nothing of it taken.
+    pub const NET_GRANTS: u8 = 107;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
@@ -680,6 +767,26 @@ pub mod kind {
     /// [`LANE_HELD`] (M24); on Windows none, its owner answering [`LANE_HELD`] with the socket
     /// the VM relays it onto, or none for one it closes.
     pub const LANE_ACCEPTED: u8 = 102;
+    /// A VM → its owner, once its machine is down and before its process lets go of it
+    /// (D260's final use), for a run it took alone: what its vCPUs ran of its guest in all,
+    /// each by its index, then what this process used of its host, as
+    /// `shards_abi::rate::used` writes a use's answer. Told from another thread than the
+    /// run's `DONE`, in no order with it: its owner reads both until the link closes.
+    pub const FINAL_USE: u8 = 106;
+    /// Its owner → a VM, on its link (D270 slice 3b): a member held for its next generation,
+    /// so that its current one's end keeps its server instance and its namespaces, or let go
+    /// as its restart failed, as `run::members::Hold` encodes it: the VM holds the guest's
+    /// `MEMBER_HOLD` for its signal connection.
+    pub const MEMBER_HOLD: u8 = 108;
+    /// Its owner → a VM, on its link (D270 slice 3b): a member's next generation,
+    /// `shards_abi::run::members::Start` as it encodes, its input's token none: the VM mints
+    /// one where the member has an input, as it minted its first's, and holds the guest's
+    /// `MEMBER_START` for its signal connection. Answered [`MEMBER_STARTED`].
+    pub const MEMBER_START: u8 = 109;
+    /// A VM → its owner (D270 slice 3b): what came of a [`MEMBER_START`], as its guest's
+    /// `MEMBER_STARTED` says it (`shards_abi::run::members::StartAnswer`), or the VM's own
+    /// refusal in that shape where it could not give the guest the start.
+    pub const MEMBER_STARTED: u8 = 110;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -2361,6 +2468,11 @@ pub const MAX_FDS: usize = run_fds::CLIENT
     + run_fds::SHARES
     + run_fds::CAPTURE;
 
+mod host_memory;
+pub use host_memory::{holdable, holdable_known, host_available, host_memory};
+pub mod size;
+mod window;
+pub use window::{Window, WindowRefusal};
 pub mod slots;
 #[cfg(unix)]
 mod spawner;
@@ -2374,13 +2486,65 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, Stream, await_any, await_streams, byte_pair,
-    end, hung_up, readable_raw, recv, recv_by, send,
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
+    await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair, readable_raw, recv,
+    recv_by, recv_judged, send, send_judged,
 };
+
+/// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes
+/// on: asked as the wait begins and each time the time it named passes with its stream not
+/// ready; `Ok(None)` waits on the stream's readiness alone, an error ends the wait with it.
+pub type Judge<'a> = dyn FnMut() -> std::io::Result<Option<std::time::Instant>> + 'a;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
+
+/// `program` as std's spawn finds one: itself where it names a directory; else the first file
+/// of that name in a directory of `path` (this process's `PATH` where `None`; on Windows `.exe`
+/// added to a name with no extension, as CreateProcessW adds it); else refused, not found.
+/// Never one in the current directory, where std's spawn never looks for a name alone either:
+/// posix_spawn(2), which [`spawn`] is, would take that name as relative to it, and
+/// CreateProcessW looks there before `PATH` (D248). A directory of `PATH` that is empty, which
+/// exec(3) reads as the current one, is skipped, as std's Windows spawn skips it.
+pub fn on_path(program: &Path, path: Option<&std::ffi::OsStr>) -> std::io::Result<PathBuf> {
+    if !program.parent().is_some_and(|dir| dir.as_os_str().is_empty()) {
+        return Ok(program.to_path_buf());
+    }
+    let name = if cfg!(windows) && program.extension().is_none() {
+        program.with_extension("exe")
+    } else {
+        program.to_path_buf()
+    };
+    let ours = std::env::var_os("PATH");
+    path.or(ours.as_deref())
+        .and_then(|path| {
+            std::env::split_paths(path)
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map(|dir| dir.join(&name))
+                .find(|candidate| candidate.is_file())
+        })
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "in no directory of PATH"))
+}
+
+/// The null device, open to read and write: a child's standard stream that is to be none,
+/// given to it as [`spawn`] gives every descriptor, by name.
+pub fn null() -> std::io::Result<std::fs::File> {
+    let device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    std::fs::File::options().read(true).write(true).open(device)
+}
+
+/// A caller's ordinary pipe writer paired with a cancellable reader. Ending a clone
+/// wakes an idle read; once all reader copies close, later writes fail. No relay thread.
+#[cfg(unix)]
+pub fn input_pair(room: u32) -> std::io::Result<(Stream, std::io::PipeWriter)> {
+    use std::os::fd::OwnedFd;
+    if room == 0 {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    let (reader, writer) = Stream::pair()?;
+    Ok((reader, std::io::PipeWriter::from(OwnedFd::from(writer))))
+}
 
 /// A new file at `path`, its user's alone wherever it is, as a file a user's secret is
 /// written to must be (an invitation, a home's identity): mode 0600 on Unix; on Windows a
@@ -2572,9 +2736,135 @@ impl Latch {
     }
 }
 
+/// `set`, what setting a socket's read or write timeout (SO_RCVTIMEO, SO_SNDTIMEO) did, as
+/// every caller is to take it: macOS refuses any option with EINVAL on a socket ended both ways
+/// (SS_CANTRCVMORE and SS_CANTSENDMORE, XNU bsd/kern/uipc_socket.c `sosetoptlock`), as a Unix
+/// stream is once its peer closes and a TCP connection once it is reset or closed both ways.
+/// Such a socket needs no bound: a read returns what is buffered, then its end, and a write fails,
+/// at once (PM M579: a peer that wrote six bytes and closed; the refusal, then all six read). So
+/// the refusal is no timeout needed, and the caller goes on to read the answer its peer sent.
+/// std's own refusal of a zero timeout, which carries no OS error, stays an error. Linux and
+/// Windows take the option on an ended socket, so this is theirs unchanged.
+pub fn timeout_set(set: std::io::Result<()>) -> std::io::Result<()> {
+    match set {
+        #[cfg(target_os = "macos")]
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => Ok(()),
+        set => set,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A program named alone is found in a directory of `PATH` alone, never the current one
+    /// (D248): names on no directory of `PATH`, one of them a file in the current directory,
+    /// refused as not found; one named with its directory as it is; a shell named alone found
+    /// in a directory of `PATH`, and in the `PATH` given in place of this process's.
+    #[test]
+    fn a_program_named_alone_is_found_on_path_alone() {
+        use super::{Path, on_path};
+        assert!(Path::new("Cargo.toml").is_file());
+        for alone in ["Cargo.toml", "shards-ipc-no-such-program"] {
+            let found = on_path(Path::new(alone), None).map_err(|e| e.kind());
+            assert_eq!(found, Err(std::io::ErrorKind::NotFound), "{alone}");
+        }
+        let named = Path::new("target").join("shards");
+        assert_eq!(on_path(&named, None).unwrap(), named);
+        let shell = Path::new(if cfg!(windows) { "cmd" } else { "sh" });
+        let found = on_path(shell, None).unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        assert!(
+            std::env::split_paths(&path).any(|dir| found.parent() == Some(dir.as_path())),
+            "{found:?}"
+        );
+        let dir = found.parent().unwrap().as_os_str();
+        assert_eq!(on_path(shell, Some(dir)).unwrap(), found);
+        let none = on_path(shell, Some(std::ffi::OsStr::new(""))).map_err(|e| e.kind());
+        assert_eq!(none, Err(std::io::ErrorKind::NotFound));
+    }
+
+    /// A daemon of a build from before slots (D185) that serves a home, its `daemon.sock`
+    /// listening, is refused typed, never asked; a home with none, or with a socket no
+    /// process listens at any more, has none. Red before: the client sent it its request.
+    ///
+    /// The daemon is a process of its own, as one is: this test binary run again, listening
+    /// until it is killed. A listener of this process's would be held, after it let go of it,
+    /// by a child another test forks until that child's exec closes it (CLOEXEC), and would
+    /// still take a connection: 13 of 20 runs of the whole lib on Linux (adacachy2, 6e093346c).
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_slots_daemon_is_refused_never_asked() {
+        use std::io::{BufRead as _, Read as _, Write as _};
+        const DAEMON: &str = "SHARDS_PRE_SLOTS_DAEMON";
+        if let Some(sock) = std::env::var_os(DAEMON) {
+            let _listening = std::os::unix::net::UnixListener::bind(sock).unwrap();
+            let mut out = std::io::stdout();
+            writeln!(out, "listening").unwrap();
+            out.flush().unwrap();
+            let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            return;
+        }
+        let home = shards_testdir::TempDir::new("pre-slots").unwrap();
+        assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
+        let mut daemon = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::a_pre_slots_daemon_is_refused_never_asked",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(DAEMON, home.join("daemon.sock"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let said = std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .lines()
+            .map_while(Result::ok)
+            // libtest, run with one thread, starts the line with the test's name.
+            .any(|line| line.ends_with("listening"));
+        assert!(said, "the stand-in daemon ended before it listened");
+        assert_eq!(super::no_pre_slots_daemon(&home), Err(super::PreSlotsDaemon));
+        // Reaped, its descriptors are closed: none other ever held its listener.
+        daemon.kill().unwrap();
+        daemon.wait().unwrap();
+        assert!(home.join("daemon.sock").exists());
+        assert_eq!(super::no_pre_slots_daemon(&home), Ok(()));
+    }
+
+    /// A timeout set after its peer wrote its answer and closed (PM M579): macOS refuses the
+    /// option itself (EINVAL), which `timeout_set` takes for none needed, and the answer is
+    /// read whole, then its end, at once. Red where the refusal is the caller's error: a fully
+    /// answered request failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_set_after_its_peer_answered_and_closed_reads_the_answer() {
+        use std::io::{Read as _, Write as _};
+        let (mut peer, ours) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.write_all(b"answer").unwrap();
+        drop(peer);
+        let raw = ours.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            raw.as_ref().map_err(std::io::Error::raw_os_error),
+            Err(Some(libc::EINVAL))
+        );
+        super::timeout_set(raw).unwrap();
+        super::timeout_set(ours.set_write_timeout(Some(std::time::Duration::from_secs(5)))).unwrap();
+        let began = std::time::Instant::now();
+        let mut answer = Vec::new();
+        (&ours).read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, b"answer");
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            began.elapsed()
+        );
+        // std's own refusal, of a zero timeout, is no OS's: still an error.
+        assert!(super::timeout_set(ours.set_read_timeout(Some(std::time::Duration::ZERO))).is_err());
+    }
+
     /// A layer's file's name says its maker's pid; a name no process makes there (a kept
     /// layer's, one half a name) says none.
     #[test]
@@ -2883,8 +3173,9 @@ mod tests {
         let me = std::process::id();
         for (said, is) in [
             (this_process().unwrap().trim().to_string(), true),
-            // A build's from before starts were kept: by its ID alone.
-            (me.to_string(), true),
+            // A build's from before starts were kept (v0.7.0): by its ID alone, a stale
+            // record, though its ID's process lives.
+            (me.to_string(), false),
             (gone_pid.to_string(), false),
             ("0".to_string(), false),
             ("-1".to_string(), false),
@@ -2909,13 +3200,7 @@ mod tests {
         let start = started(me).unwrap();
         assert_eq!(started(me).unwrap(), start, "a start read twice differs");
         let written = this_process().unwrap();
-        assert_eq!(
-            Named::parse(&written),
-            Some(Named {
-                pid: me,
-                start: Some(start)
-            })
-        );
+        assert_eq!(Named::parse(&written), Ok(Named { pid: me, start }));
         std::fs::write(home.join(PID), &written).unwrap();
         assert!(daemon_lives(&home), "{written}");
         for other in [start.wrapping_add(1), start.wrapping_sub(1), 0] {
@@ -2948,6 +3233,59 @@ mod tests {
             std::fs::write(home.join(PID), format!("{pid} {child_start}\n")).unwrap();
             assert!(!daemon_lives(&home), "{pid} {child_start} has gone");
         }
+    }
+
+    /// A record by its ID alone, as v0.7.0 and every `shards` before starts were kept wrote
+    /// `daemon.pid` and `daemon.stopping`, names no process (`NotNamed::IdAlone`): its daemon
+    /// is of another build (D36), so the record is stale, as a dead process's is, though its
+    /// ID's process lives. Red before legacy3, where such a record named a live daemon by its
+    /// ID alone.
+    #[test]
+    fn a_record_by_its_id_alone_is_stale() {
+        let home = shards_testdir::TempDir::new("ipc-id-alone").unwrap();
+        let me = std::process::id();
+        assert_eq!(Named::parse(&format!("{me}\n")), Err(NotNamed::IdAlone));
+        for malformed in ["", "daemon", "-1 2", &format!("{me} start"), &format!("{me} 1 2")] {
+            assert_eq!(Named::parse(malformed), Err(NotNamed::Malformed), "{malformed:?}");
+        }
+        std::fs::write(home.join(PID), format!("{me}\n")).unwrap();
+        std::fs::write(home.join(STOPPING), format!("{me}\n")).unwrap();
+        assert_eq!(Named::read(&home.join(PID)), None);
+        assert!(!daemon_lives(&home), "{me} by its ID alone lives as a daemon");
+        assert!(!exiting(&home), "{me} by its ID alone is ending its runs");
+        std::fs::write(home.join(PID), this_process().unwrap()).unwrap();
+        assert!(daemon_lives(&home), "this process, by its ID and start");
+    }
+
+    /// A daemon that has exited lives no more while its parent has not reaped it (waits-08):
+    /// its ID's process still answers kill(2) and keeps its start (Linux's `/proc/PID/stat`,
+    /// macOS's `proc_pid_rusage`), so a client that waits on it while it lives would wait for
+    /// ever on a zombie. Red with liveness its ID and start alone. Here the child that names
+    /// itself is left unreaped (waitid's `WNOWAIT`) and so is a zombie.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreaped_daemon_does_not_live() {
+        let home = shards_testdir::TempDir::new("ipc-zombie").unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let id = libc::id_t::try_from(pid).unwrap();
+        // SAFETY: a siginfo_t, plain data, for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid(2) of our own child into a siginfo_t of ours; WNOWAIT leaves it
+        // unreaped.
+        let waited = unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+        let start = started(pid).expect("an unreaped child's start");
+        std::fs::write(home.join(PID), format!("{pid} {start}\n")).unwrap();
+        std::fs::write(home.join(STOPPING), format!("{pid} {start}\n")).unwrap();
+        let named = Named { pid, start };
+        assert!(!named.lives(), "{pid}, exited and unreaped, lives");
+        assert!(!daemon_lives(&home), "{pid}, exited and unreaped, lives");
+        assert!(!exiting(&home), "{pid}, exited and unreaped, is ending its runs");
+        let _ = child.wait();
     }
 
     /// A working set goes in parts each within a message's payload, and comes back whole,

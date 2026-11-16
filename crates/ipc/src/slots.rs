@@ -17,15 +17,15 @@ use crate::MAX_PAYLOAD;
 mod fifo;
 #[cfg(unix)]
 pub use fifo::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
+    Client, Opened, Probe, Quiet, Reader, Requests, Sender, Session, Slot, Stopper, served, take, unoffer,
     write_all_waiting,
 };
 #[cfg(windows)]
 mod named;
 #[cfg(windows)]
 pub use named::{
-    Client, Opened, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served, take,
-    unoffer, write_all_waiting,
+    Client, Opened, Probe, Quiet, Reader, Requests, Sender, Session, Slot, Stopper, read_frame_until, served,
+    take, unoffer, write_all_waiting,
 };
 
 /// A wait of [`write_all_waiting`]'s on a slot's client to make room: as it begins, and as it
@@ -45,7 +45,8 @@ pub type Line = crate::Pipe;
 
 /// Two lines joined, what is written to the second read from the first, as a session's
 /// `say` and `answer` are joined to its client's ends: a pipe on Unix; on Windows a pair
-/// of shards' own pipes, either way, each holding what a slot's line holds.
+/// of shards' own pipes, either way, each holding what a slot's line holds: the system's
+/// default, as Unix's pipe holds the kernel's (`Window::System`).
 pub fn joined() -> io::Result<(Line, Line)> {
     #[cfg(unix)]
     {
@@ -57,7 +58,7 @@ pub fn joined() -> io::Result<(Line, Line)> {
     }
     #[cfg(windows)]
     {
-        let (one, other) = crate::pipe::pair(crate::pipe::LINE_BUFFER, false)?;
+        let (one, other) = crate::pipe::pair(crate::Window::System, false)?;
         Ok((crate::Pipe::from_handle(one), crate::Pipe::from_handle(other)))
     }
 }
@@ -67,8 +68,8 @@ pub const DIR: &str = "requests";
 
 /// What offers the slots, without streams and with: on Unix the FIFOs a client takes a
 /// slot's record from, on Windows the files naming the pipes a client takes an instance of.
-const FREE: &str = "free";
-const FREE_STREAMS: &str = "free-streams";
+pub const FREE: &str = "free";
+pub const FREE_STREAMS: &str = "free-streams";
 
 /// The slots a daemon keeps offered of each kind: one for the next client, and one for a
 /// client that comes as the first's replacement is made (PM M255).
@@ -235,6 +236,17 @@ pub enum Taken {
     Slot(Client),
     /// No daemon offers slots: its list is not there, or no daemon holds it.
     NoDaemon,
+    /// Its list is there with no take lock beside it, which every daemon of this build
+    /// makes before its lists (D185): a daemon of a build from before takers named
+    /// themselves offers it, which this build never asks (D36). Unix's alone.
+    NoTakeLock,
+}
+
+impl Taken {
+    /// What a client says of a [`Taken::NoTakeLock`].
+    pub const NO_TAKE_LOCK: &str = "a daemon of a shards from before slots' takers named \
+        themselves serves this home (its requests have no take lock): this shards does not \
+        speak to it; end that daemon's process";
 }
 
 /// What the slots' tests share, on every host.
@@ -245,7 +257,7 @@ mod testing {
 
     /// The slot's whole request, which a client asked.
     pub(super) fn asked(slot: Slot) -> Asked {
-        let Waited::Opened(opened) = slot.wait().unwrap() else {
+        let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
             panic!("no client opened the slot");
         };
         opened.request().unwrap().expect("no whole request")

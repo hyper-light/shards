@@ -264,6 +264,153 @@ fn sweep(parent: &Path) {
 #[cfg(not(unix))]
 fn sweep(_: &Path) {}
 
+/// The program `text` at `path`, run by its owner alone or by anyone (0755), written by a
+/// process of its own on Unix. A file a test process writes itself is held open to write by
+/// every child another of its test threads forks before that child execs (fork(2) keeps an
+/// O_CLOEXEC descriptor until the exec), and an exec of the file meanwhile, by this process or
+/// any other, fails ETXTBSY (execve(2)); rename(2) does not help, the open being the inode's.
+/// Every program a test runs is written so ([`program_copy`] for a copy), none by a
+/// descriptor of the test process. Windows' exec has no such refusal: written in place there.
+pub fn program(path: &Path, text: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    return write_apart(path, Source::Text(text.as_bytes()));
+    #[cfg(not(unix))]
+    std::fs::write(path, text)
+}
+
+/// The program at `from`, copied to `to` as [`program`] writes one, 0755: on Unix by a
+/// process of its own, so that no descriptor of the test process ever writes it.
+pub fn program_copy(from: &Path, to: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    return write_apart(to, Source::Copy(from));
+    #[cfg(not(unix))]
+    std::fs::copy(from, to).map(drop)
+}
+
+/// What [`write_apart`] writes: these bytes, or the file at a path.
+#[cfg(unix)]
+enum Source<'a> {
+    Text(&'a [u8]),
+    Copy(&'a Path),
+}
+
+/// `source` written to `path`, 0755, by a child forked to write it and exit: the descriptor
+/// that writes the file is the child's alone, never this process's, so no child another test
+/// thread forks holds it. The child execs no program, as a host may have none to run (boot.rs'
+/// L1 guest, a Linux KVM host whose `PATH` is an empty directory, has no /bin/sh, cat or cp),
+/// and calls only async-signal-safe functions on memory made before the fork, as a child of a
+/// multithreaded process must (POSIX fork(), signal-safety(7)). Its exit status is the errno
+/// that stopped it, 0 once written. While it writes it also holds the descriptors it was
+/// forked with, until it exits.
+#[cfg(unix)]
+fn write_apart(path: &Path, source: Source<'_>) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(io::Error::other);
+    let to = c(path)?;
+    let (from, text) = match source {
+        Source::Text(text) => (None, text),
+        Source::Copy(from) => (Some(c(from)?), &[][..]),
+    };
+    let mut buffer = vec![0u8; 64 << 10];
+    // SAFETY: fork(2); the child runs `write_child`, which calls only async-signal-safe
+    // functions and allocates nothing, then _exit(2).
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        let errno = write_child(&to, from.as_deref(), text, &mut buffer);
+        // SAFETY: _exit(2) ends the child, running none of this process's exit handlers.
+        unsafe { libc::_exit(errno) }
+    }
+    if pid < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut status = 0;
+    // SAFETY: waitpid(2) of this function's own child, into a local.
+    while unsafe { libc::waitpid(pid, &mut status, 0) } != pid {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+    let what = match &from {
+        Some(from) => format!("{} copied to {}", from.to_string_lossy(), path.display()),
+        None => format!("{} written", path.display()),
+    };
+    match (libc::WIFEXITED(status), libc::WEXITSTATUS(status)) {
+        (true, 0) => Ok(()),
+        (true, errno) => {
+            let e = io::Error::from_raw_os_error(errno);
+            Err(io::Error::new(e.kind(), format!("{what}: {e}")))
+        }
+        _ => Err(io::Error::other(format!(
+            "{what}: its writer ended with wait status {status}"
+        ))),
+    }
+}
+
+/// The forked writer's work ([`write_apart`]): 0, or the errno that stopped it. `from`, when
+/// given, is copied through `buffer`; otherwise `text` is written.
+#[cfg(unix)]
+fn write_child(
+    to: &std::ffi::CStr,
+    from: Option<&std::ffi::CStr>,
+    text: &[u8],
+    buffer: &mut [u8],
+) -> libc::c_int {
+    let errno = || io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    let source = match from {
+        // SAFETY: open(2) of a NUL-terminated path.
+        Some(from) => match unsafe { libc::open(from.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) } {
+            fd if fd < 0 => return errno(),
+            fd => Some(fd),
+        },
+        None => None,
+    };
+    let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC;
+    // SAFETY: open(2) of a NUL-terminated path; its mode is set below, past the umask.
+    let fd = unsafe { libc::open(to.as_ptr(), flags, 0o755 as libc::c_uint) };
+    if fd < 0 {
+        return errno();
+    }
+    let write_all = |mut bytes: &[u8]| -> Result<(), libc::c_int> {
+        while !bytes.is_empty() {
+            // SAFETY: write(2) of the bytes this slice holds.
+            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+            match usize::try_from(n) {
+                Ok(0) => return Err(libc::EIO),
+                Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+                Err(_) if errno() == libc::EINTR => {}
+                Err(_) => return Err(errno()),
+            }
+        }
+        Ok(())
+    };
+    let wrote = match source {
+        None => write_all(text),
+        Some(source) => loop {
+            // SAFETY: read(2) into the buffer, no more than its length.
+            let n = unsafe { libc::read(source, buffer.as_mut_ptr().cast(), buffer.len()) };
+            match usize::try_from(n) {
+                Ok(0) => break Ok(()),
+                Ok(n) => {
+                    if let Err(e) = write_all(buffer.get(..n).unwrap_or_default()) {
+                        break Err(e);
+                    }
+                }
+                Err(_) if errno() == libc::EINTR => {}
+                Err(_) => break Err(errno()),
+            }
+        },
+    };
+    if let Err(e) = wrote {
+        return e;
+    }
+    // SAFETY: fchmod(2) and close(2) of the descriptor opened above.
+    if unsafe { libc::fchmod(fd, 0o755) } != 0 || unsafe { libc::close(fd) } != 0 {
+        return errno();
+    }
+    0
+}
+
 /// The tests' helper program (`src/bin/shards-testhelper.rs`, which says its commands), for
 /// what a test runs where a Unix host would run a shell's tools: built for this host as a
 /// test process first asks for it, by cargo (the rustup proxy on PATH, without the dyld
@@ -338,22 +485,7 @@ fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDi
 fn copy_helper(built: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
     let dir = TempDir::new("testhelper").map_err(|e| e.to_string())?;
     let program = dir.join(name);
-    // Written by a process of its own on Unix: a file this one held open to write, a child
-    // another test's thread forked meanwhile would hold until it execs, and an exec of it
-    // would fail with ETXTBSY until then (Linux).
-    #[cfg(unix)]
-    {
-        let copied = std::process::Command::new("cp")
-            .arg(built)
-            .arg(&program)
-            .status()
-            .map_err(|e| format!("cp: {e}"))?;
-        if !copied.success() {
-            return Err(format!("{} not copied: {copied}", built.display()));
-        }
-    }
-    #[cfg(not(unix))]
-    std::fs::copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
+    program_copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
     Ok((dir, program))
 }
 
@@ -465,5 +597,66 @@ mod tests {
         assert!(!parent.join(ended.to_string()).exists());
         assert!(parent.join(running.to_string()).exists());
         assert!(parent.join("not-a-pid").exists());
+    }
+
+    /// Programs are written and copied on a host with no tools to run, as the L1 guest of
+    /// boot.rs `snapshot_tests_pass_on_a_kvm_host_of_this_architecture` is (`PATH=/e2e/bin`,
+    /// empty, and no /bin/sh), where `cp` was not found: this test's own process, run with a
+    /// `PATH` of an empty directory, writes them.
+    #[cfg(unix)]
+    #[test]
+    fn programs_are_written_where_no_tools_are() {
+        let dir = TempDir::new("no-tools").unwrap();
+        let empty = dir.join("bin");
+        std::fs::create_dir(&empty).unwrap();
+        let text = "#!/bin/sh\nexit 0\n";
+        // Never run: no program of the test's, read alone.
+        std::fs::write(dir.join("source"), text).unwrap();
+        let ran = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::programs_written_with_no_tools",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("PATH", &empty)
+            .env("SHARDS_TESTDIR_NO_TOOLS", dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        use std::os::unix::fs::PermissionsExt as _;
+        for (name, bytes) in [("written", text.as_bytes()), ("copied", text.as_bytes())] {
+            let path = dir.join(name);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name}");
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o755,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            program_copy(&dir.join("missing"), &dir.join("never"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(!dir.join("never").exists());
+    }
+
+    /// The process [`programs_are_written_where_no_tools_are`] runs.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "a process of its own for programs_are_written_where_no_tools_are, which runs it"]
+    fn programs_written_with_no_tools() {
+        let Some(dir) = std::env::var_os("SHARDS_TESTDIR_NO_TOOLS").map(PathBuf::from) else {
+            return;
+        };
+        program_copy(&dir.join("source"), &dir.join("copied")).unwrap();
+        program(&dir.join("written"), "#!/bin/sh\nexit 0\n").unwrap();
     }
 }

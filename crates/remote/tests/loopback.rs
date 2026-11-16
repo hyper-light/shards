@@ -135,6 +135,7 @@ fn waited<T>(rx: &mpsc::Receiver<T>, what: &str, mut patience: Patience) -> T {
 /// Waits until `view`'s driver has learned a window from a connection's answers
 /// ([`net::View::learned`]), with [`Patience`] on it. Nothing tells of it as it comes, so it
 /// looks again after as long as it has waited (as [`Patience`] does before a window shows).
+#[cfg(unix)]
 fn learned(view: &net::View) -> Duration {
     let mut patience = Patience::on(&[view]);
     loop {
@@ -177,10 +178,13 @@ enum Seen {
     Unheard(String),
 }
 
+/// The clients a [`Machine`] enrolls, by name and key, shared with the test that changes them.
+type Enrolled = std::sync::Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 /// A machine whose clients and invitations are kept in memory, running each command as a
 /// process of its own, and saying what it saw of each.
 struct Machine {
-    clients: Mutex<Vec<(String, Vec<u8>)>>,
+    clients: Enrolled,
     invitations: Mutex<Vec<Invitation>>,
     seen: Saw,
     /// What lets a `stalls` command's start go on.
@@ -291,6 +295,11 @@ impl Host for Machine {
         // start that takes long would hold it.
         let stalls = args.first().is_some_and(|a| a == "stalls");
         let args = if stalls { args[1..].to_vec() } else { args };
+        // `exhausts await GO...`: `await GO...`, after whose start this process can have no
+        // more descriptors ([`Exhausted`]), as a daemon at its limit can have none, until the
+        // daemon's wait for it begins, which then lets it go on (GO).
+        let exhausts = args.first().is_some_and(|a| a == "exhausts");
+        let args = if exhausts { args[1..].to_vec() } else { args };
         if stalls {
             let _ = self.seen.send(Seen::Stalled(args.join(" ")));
             if let Some(release) = self.stall.lock().unwrap().as_ref() {
@@ -312,6 +321,17 @@ impl Host for Machine {
             seen: self.seen.clone(),
         };
         let _ = self.seen.send(Seen::Started(what.clone()));
+        #[cfg(unix)]
+        if exhausts {
+            *EXHAUSTED.lock().unwrap() = Some(Exhausted::now());
+        }
+        // Windows sets no descriptor limit a command could run out of: the ask is refused, as
+        // a start the daemon cannot make is.
+        #[cfg(windows)]
+        if exhausts {
+            return Err(Error::new("no descriptor limit on Windows"));
+        }
+        let go = exhausts.then(|| args.get(1).cloned()).flatten();
         let (exited, hung) = (self.seen.clone(), self.seen.clone());
         let hung_what = what.clone();
         let held = Held(self.seen.clone(), what.clone());
@@ -325,6 +345,11 @@ impl Host for Machine {
             stdout: Box::new(stdout),
             stderr: Box::new(stderr),
             wait: Box::new(move || {
+                if let Some(go) = &go {
+                    #[cfg(unix)]
+                    drop(EXHAUSTED.lock().unwrap().take());
+                    std::fs::write(go, b"").unwrap();
+                }
                 let status = loop {
                     if let Some(status) = ended(&mut child) {
                         break status;
@@ -551,6 +576,8 @@ struct Daemon {
     remote: Remote,
     stopper: Stopper,
     seen: Watch,
+    /// The clients its machine enrolls, by name and key, as a test changes them.
+    clients: Enrolled,
 }
 
 impl Daemon {
@@ -601,8 +628,9 @@ fn daemon_of(
     // whose send goes unanswered a whole window past its probe timeout is let go (D180).
     shards_testdir::helper().unwrap();
     let (seen, rx) = mpsc::channel();
+    let clients = std::sync::Arc::new(Mutex::new(clients));
     let machine = Machine {
-        clients: Mutex::new(clients),
+        clients: std::sync::Arc::clone(&clients),
         invitations: Mutex::new(invitations),
         seen: Saw(seen),
         stall: Mutex::new(stalls.start),
@@ -635,6 +663,7 @@ fn daemon_of(
             seen: Vec::new(),
             view,
         },
+        clients,
     }
 }
 
@@ -852,7 +881,7 @@ impl Handler for Answers {
             }
         }
         // Every whole frame, the request's stdin's end among them, which comes with it.
-        while let Ok(Some((tag, _))) = frame::take(buffer) {
+        while let Ok(Some((tag, _))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             if tag == Tag::Exec {
                 assert_eq!(io.write(conn, stream, &self.answer).unwrap(), self.answer.len());
                 io.finish(conn, stream).unwrap();
@@ -948,7 +977,7 @@ impl Handler for Unread {
         while let StreamRead::Bytes(bytes) = io.read(conn, stream) {
             buffer.extend_from_slice(&bytes);
         }
-        while let Ok(Some((tag, _))) = frame::take(buffer) {
+        while let Ok(Some((tag, _))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             if tag == Tag::Exec {
                 io.stop(conn, stream);
                 let _ = self.asked.send((conn, stream));
@@ -1233,7 +1262,7 @@ impl Handler for Raw {
                 StreamRead::Blocked | StreamRead::Reset => break,
             }
         }
-        while let Ok(Some((tag, payload))) = frame::take(buffer) {
+        while let Ok(Some((tag, payload))) = frame::take(buffer, |_| Some(frame::Most::Holdable)) {
             progressed();
             let _ = self.heard.send(Heard::Frame(stream, tag, payload));
         }
@@ -1399,6 +1428,191 @@ fn a_command_refused_after_it_started_is_cut() {
     );
 }
 
+/// This process held to the descriptors it has, until it drops: its soft RLIMIT_NOFILE lowered
+/// to the lowest it has free, so that every descriptor below it is open and none more can be
+/// had (EMFILE, getrlimit(2)), as a daemon at its limit has none.
+#[cfg(unix)]
+struct Exhausted(libc::rlimit);
+
+#[cfg(unix)]
+static EXHAUSTED: Mutex<Option<Exhausted>> = Mutex::new(None);
+
+#[cfg(unix)]
+impl Exhausted {
+    fn now() -> Exhausted {
+        use std::os::fd::AsRawFd;
+        let mut was = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut was) }, 0);
+        let lowest = std::fs::File::open("/dev/null").unwrap();
+        let held = libc::rlimit {
+            rlim_cur: libc::rlim_t::try_from(lowest.as_raw_fd()).unwrap(),
+            rlim_max: was.rlim_max,
+        };
+        drop(lowest);
+        // SAFETY: setrlimit(2) from a local.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &held) }, 0);
+        Exhausted(was)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Exhausted {
+    fn drop(&mut self) {
+        // SAFETY: setrlimit(2) from what getrlimit(2) gave.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &self.0) };
+    }
+}
+
+/// A command started as its daemon can have no more descriptors (remote-07) runs as any does:
+/// its output and status cross, and the one wait its daemon owes it reaps it. Every step of
+/// its relay that can fail (a waker's descriptor, a thread) is taken before its start; the
+/// limit holds from its start until its daemon's wait for it begins (`exhausts`), so that the
+/// process's other parts, its client's among them, have descriptors again. Red with its relay
+/// had after its start: the relay's first waker (a dup(2)) refused with EMFILE, the stream
+/// cut, and the started command, its wait and hangup dropped, neither hung up nor reaped. In
+/// a process of its own, as a descriptor limit is its whole process's.
+#[cfg(unix)]
+#[test]
+fn a_command_started_as_its_daemon_runs_out_of_descriptors_is_relayed_and_reaped() {
+    const CHILD: &str = "SHARDS_TEST_RELAY_EXHAUSTED";
+    if std::env::var_os(CHILD).is_none() {
+        let output = this_test(
+            "a_command_started_as_its_daemon_runs_out_of_descriptors_is_relayed_and_reaped",
+            (CHILD, "1".as_ref()),
+        )
+        .output();
+        assert!(
+            output.status == 0,
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let dir = TempDir::new("remote-exhausted").unwrap();
+    let go = dir.path().join("go");
+    let go = go.to_str().unwrap();
+    let ran = run(
+        laptop,
+        d.remote,
+        &["exhausts", "await", go, "say=out", "exit=3"],
+        None,
+    )
+    .get();
+    // Let go whatever became of it, and its command too.
+    let held = EXHAUSTED.lock().unwrap().take().is_some();
+    std::fs::write(go, b"").unwrap();
+    let what = format!("await {go} say=out exit=3");
+    d.seen.saw(&Seen::Started(what.clone()));
+    assert_eq!(
+        ran,
+        (Ok(3), b"out\n".to_vec(), Vec::new()),
+        "held to its descriptors still: {held}"
+    );
+    d.seen.saw(&Seen::Exited(what.clone(), 3));
+    d.seen.saw(&Seen::Released(what.clone()));
+    let waits = d
+        .seen
+        .now()
+        .iter()
+        .filter(|s| matches!(s, Seen::Exited(w, _) if *w == what))
+        .count();
+    assert_eq!(waits, 1, "reaped once: {:?}", d.seen.now());
+}
+
+/// A frame a raw client heard: its stream, its tag and its payload.
+type Framed = (StreamId, Tag, Vec<u8>);
+
+/// What a raw client hears until its connection ends: the frames, then the code it ended with.
+fn until_lost(raw: &RawClient) -> (Vec<Framed>, Option<u64>) {
+    let mut frames = Vec::new();
+    loop {
+        match raw.next() {
+            Heard::Frame(stream, tag, payload) => frames.push((stream, tag, payload)),
+            Heard::Lost(code) => return (frames, code),
+            Heard::Connected => {}
+        }
+    }
+}
+
+/// remote-03: a client its machine has removed, or whose name it enrolls under another key
+/// since (a client made again under the old one's name), runs nothing more on the connection
+/// it still holds: the command it asks for is refused and its connection closed, what it ran
+/// hung up. Its name's new key runs commands.
+#[test]
+fn a_removed_clients_held_connection_runs_nothing_more() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (old, new) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let mut d = daemon(
+        daemon_id,
+        vec![("laptop".into(), old.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(old, d.remote);
+    raw.open(exec(&["cat"]));
+    d.seen.saw(&Seen::Started("cat".into()));
+    *d.clients.lock().unwrap() = vec![("laptop".into(), new.spki().to_vec())];
+    let asked = raw.open(exec(&["echo", "again"]));
+    let (frames, code) = until_lost(&raw);
+    assert_eq!(code, Some(u64::from(server::REVOKED)), "{frames:?}");
+    for (stream, tag, payload) in &frames {
+        assert_eq!((*stream, *tag), (asked, Tag::Refused), "{frames:?}");
+        assert_eq!(payload, server::REVOKED_WORDS.as_bytes());
+    }
+    d.seen.saw(&Seen::HungUp("cat".into()));
+    assert!(!d.seen.now().contains(&Seen::Started("echo again".into())));
+    let (status, out, _) = run(new, d.remote, &["echo", "new"], None).get();
+    assert_eq!((status, out), (Ok(0), b"new\n".to_vec()));
+}
+
+/// remote-03: told its machine's clients changed, the daemon closes at once each connection
+/// whose key its machine no longer enrolls under the name it was judged, hanging up what it
+/// runs, and its client says why; a client still enrolled keeps its connection.
+#[test]
+fn a_removed_clients_connection_closes_as_the_daemon_is_told() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let (laptop, desk) = (
+        leak(Identity::generate().unwrap()),
+        leak(Identity::generate().unwrap()),
+    );
+    let mut d = daemon(
+        daemon_id,
+        vec![
+            ("laptop".into(), laptop.spki().to_vec()),
+            ("desk".into(), desk.spki().to_vec()),
+        ],
+        Vec::new(),
+    );
+    let (removed, kept) = (RawClient::new(laptop, d.remote), RawClient::new(desk, d.remote));
+    removed.open(exec(&["cat"]));
+    d.seen.saw(&Seen::Started("cat".into()));
+    d.clients.lock().unwrap().retain(|(name, _)| name != "laptop");
+    d.stopper.revalidate().unwrap();
+    let (frames, code) = until_lost(&removed);
+    assert_eq!(code, Some(u64::from(server::REVOKED)), "{frames:?}");
+    d.seen.saw(&Seen::HungUp("cat".into()));
+    let second = kept.open(exec(&["echo", "kept"]));
+    assert_eq!(kept.next(), Heard::Frame(second, Tag::Stdout, b"kept\n".to_vec()));
+    assert_eq!(
+        kept.next(),
+        Heard::Frame(second, Tag::Exit, 0i32.to_be_bytes().to_vec())
+    );
+}
+
 /// `args`' request frame, and none of its stdin's end.
 fn exec(args: &[&str]) -> Vec<u8> {
     let request = Request {
@@ -1468,6 +1682,32 @@ fn a_client_that_finishes_its_stream_ends_its_commands_input() {
     );
 }
 
+/// A client's frame is held to what its lane takes of its kind (remote-08): a chunk of stdin
+/// past a client's read (`server::READ_MOST`) is refused from its header, before a byte of it
+/// is waited for, where the old 4 MiB bound of every frame waited for all of it. Its command
+/// had started, so the stream ends cut, as a command that may have run does (D176 part 6).
+#[test]
+fn a_clients_stdin_past_a_read_is_refused_from_its_header() {
+    let daemon_id = leak(Identity::generate().unwrap());
+    let laptop = leak(Identity::generate().unwrap());
+    let d = daemon(
+        daemon_id,
+        vec![("laptop".into(), laptop.spki().to_vec())],
+        Vec::new(),
+    );
+    let raw = RawClient::new(laptop, d.remote);
+    let mut bytes = exec(&["cat"]);
+    bytes.push(Tag::Stdin as u8);
+    bytes.extend_from_slice(&u32::try_from(server::READ_MOST + 1).unwrap().to_be_bytes());
+    let stream = raw.open(bytes);
+    let refused = format!(
+        "a {}-byte Stdin frame, over the {} this lane takes",
+        server::READ_MOST + 1,
+        server::READ_MOST
+    );
+    assert_eq!(raw.next(), Heard::Frame(stream, Tag::Cut, refused.into_bytes()));
+}
+
 /// A client the machine has not enrolled is refused by its frame's header: neither a
 /// command's bytes nor more than a join's are waited for.
 #[test]
@@ -1481,7 +1721,7 @@ fn a_client_not_enrolled_is_refused_by_its_frames_header() {
         out.extend_from_slice(&u32::try_from(len).unwrap().to_be_bytes());
         out
     };
-    let command = raw.open(header(Tag::Exec, frame::MAX_FRAME));
+    let command = raw.open(header(Tag::Exec, u32::MAX as usize));
     assert_eq!(
         raw.next(),
         Heard::Frame(command, Tag::Refused, server::NOT_ENROLLED.as_bytes().to_vec())
@@ -2099,7 +2339,12 @@ fn ran_seen(identity: &'static Identity, remote: Remote, args: &[&str]) -> (Resu
 /// The hold is chosen from what the first connection measured, its handshake and its client's
 /// probe timeout (`net::Seen::pto`), never a figure of the test's: ROOT's run at load 59
 /// (8bfa6150e, r678) took a first handshake past 12.5 ms, and a hold of twice it reached the
-/// 25 ms floor the test once assumed. Where no hold fits between them, the test says so.
+/// 25 ms floor the test once assumed. Where no hold fits between them, the test says so. The
+/// hold is on the clock, and a handshake's time counts none of its client's own absence
+/// (`net::Liveness::absent`), so the second handshake and that absence (`net::Seen::absent`)
+/// together outlast the hold: red with the handshake alone held to it, CI's aarch64 Linux run at
+/// 9ef3b1247 (job 132390978048) measured 1.821403 ms past a hold of 2.03343 ms on a loaded
+/// runner. The record keeps the slower of the two handshakes.
 #[test]
 fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answered() {
     let daemon_id = leak(Identity::generate().unwrap());
@@ -2138,8 +2383,11 @@ fn a_daemon_reached_before_slower_to_shake_hands_within_a_probe_timeout_is_answe
     let (status, seen) = ran_seen(laptop, Remote { known, ..remote }, &["say", "second", "x", "0"]);
     assert_eq!(status, Ok(0), "{seen:?}");
     let slower = seen.handshake.unwrap();
-    assert!(slower > hold, "{slower:?}, {path:?}");
-    assert_eq!(known.after(&seen).path().map(|p| p.handshake), Some(slower));
+    assert!(slower + seen.absent > hold, "{seen:?}, {path:?}");
+    assert_eq!(
+        known.after(&seen).path().map(|p| p.handshake),
+        Some(slower.max(path.handshake))
+    );
 }
 
 /// A daemon reached before whose next handshake goes unheard past the slowest handshake seen

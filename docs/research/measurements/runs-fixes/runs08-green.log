@@ -1,0 +1,71 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-runs-carrier-5fa18a445a/changes.bundle
+ * branch              HEAD       -> FETCH_HEAD
+HEAD is now at a68fc0ce Merge main before second runs-07 landing attempt
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/vmm)
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.06s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards-1e7d28c4ebee2f50)
+
+running 1 test
+test helpers::tests::concurrent_gpu_writers_publish_their_own_complete_files ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 915 filtered out; finished in 0.01s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards-1e7d28c4ebee2f50)
+
+running 4 tests
+test helpers::tests::helpers_are_written_whole_once_and_found_after ... ok
+test helpers::tests::other_builds_helpers_go_once_no_process_holds_them ... ok
+test helpers::tests::a_carried_shards_starts_the_helpers_beside_it ... ok
+test helpers::tests::concurrent_gpu_writers_publish_their_own_complete_files ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 912 filtered out; finished in 0.01s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/dns)
+    Checking shards-registry v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/registry)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/vmm)
+    Checking shards-agentfile v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/agentfile)
+    Checking shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/api)
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/net)
+    Checking shards-tuf v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/sigstore)
+    Checking shards-build v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/build)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.77s

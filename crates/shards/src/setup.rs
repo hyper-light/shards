@@ -786,6 +786,56 @@ pub fn security_setup(
     vfio: &[crate::run::VfioGroup],
     nesting: Option<&Grant>,
 ) -> Result<(), String> {
+    let filters = filters(run, kernel, nesting.is_some())?;
+    security_setup_with(setup, run, &filters, cdi, vfio, nesting)
+}
+
+/// The filters a run's security setup installs ([`security_setup`]), compiled: what alone of
+/// it takes compiling, made of the run, its guest's kernel and whether its command has the
+/// nesting grant (`granted`), so the same for every run of one microVM, which a warm run host
+/// makes before its run asks (D253, api_run.rs `shape`). Each where the run has one.
+#[derive(Debug, Clone)]
+pub struct Filters {
+    granted: bool,
+    mounts: Option<Vec<u8>>,
+    seccomp: Option<Vec<u8>>,
+    binds: Option<Vec<u8>>,
+}
+
+/// [`Filters`] of `run` on `kernel`, refused as [`security_setup`] refuses them: its options
+/// first, then each filter in the order its setup takes them.
+pub fn filters(run: &Run, kernel: shards_seccomp::Kernel, granted: bool) -> Result<Filters, String> {
+    let security = security(run)?;
+    Ok(Filters {
+        granted,
+        mounts: if granted {
+            None
+        } else {
+            mounts(run, &security, kernel)?
+        },
+        seccomp: seccomp(run, &security, kernel, granted)?,
+        binds: if run.network == "host" {
+            binds(run, kernel)?
+        } else {
+            None
+        },
+    })
+}
+
+/// [`security_setup`], its filters made already ([`filters`], of this run's microVM): refused
+/// where they were made for a command with the nesting grant and this one has none, or the
+/// other way about, whose filters differ.
+pub fn security_setup_with(
+    setup: &mut Vec<Vec<u8>>,
+    run: &Run,
+    filters: &Filters,
+    cdi: Option<&crate::build::cdi::Edits>,
+    vfio: &[crate::run::VfioGroup],
+    nesting: Option<&Grant>,
+) -> Result<(), String> {
+    if filters.granted != nesting.is_some() {
+        return Err("its filters were made for another nesting grant than its command's".into());
+    }
     let security = security(run)?;
     if let Some(grant) = nesting {
         setup.retain(|e| !e.starts_with(b"caps="));
@@ -805,21 +855,13 @@ pub fn security_setup(
         setup.push(b"nnp".to_vec());
     }
     // Docker's AppArmor's mount rule first, so that its profile's errno is the one a
-    // syscall both refuse returns (the most recent filter's).
-    if nesting.is_none()
-        && let Some(filter) = mounts(run, &security, kernel)?
-    {
-        setup.push(filter);
-    }
-    if let Some(filter) = seccomp(run, &security, kernel, nesting.is_some())? {
-        setup.push(filter);
-    }
+    // syscall both refuse returns (the most recent filter's); none with the grant.
+    setup.extend(filters.mounts.iter().cloned());
+    setup.extend(filters.seccomp.iter().cloned());
     // On the host's network (D124): init told so, and its binds' filter, last.
     if run.network == "host" {
         setup.push(b"network=host".to_vec());
-        if let Some(filter) = binds(run, kernel)? {
-            setup.push(filter);
-        }
+        setup.extend(filters.binds.iter().cloned());
     }
     Ok(())
 }
@@ -1083,7 +1125,7 @@ mod tests {
     const COMPOSERS: [(&str, &[&str]); 14] = [
         ("setup.rs", &["rb", "ri", "w", "wb", "wi"]),
         ("daemon.rs", &["ro", "rw"]),
-        ("api_run.rs", &[]),
+        ("api_run.rs", &["domains", "pmem", "unpmem"]),
         ("warm.rs", &[]),
         ("vm_run.rs", &[]),
         ("volumes.rs", &["mode", "size"]),
@@ -1821,6 +1863,61 @@ mod tests {
                 !entries.iter().any(|e| e.starts_with(b"seccomp")),
                 "{opts:?} {privileged}"
             );
+        }
+    }
+
+    /// The filters made once of a microVM's run (`filters`, as a warm run host makes them
+    /// before its run asks, D253) compose every run of it as a security setup making its own
+    /// does, the grant's deadline each run's own; filters made for a command with the grant
+    /// compose none without it, nor the other way about.
+    #[test]
+    fn a_microvms_filters_made_once_compose_each_of_its_runs() {
+        use shards_abi::run::nesting::Grant;
+        let kernel = shards_seccomp::Kernel(6, 18);
+        let runs = [
+            Run::default(),
+            Run {
+                cap_add: vec!["CAP_SYS_ADMIN".into()],
+                network: "host".into(),
+                ..Run::default()
+            },
+            Run {
+                security_opt: vec!["nesting=true".into()],
+                ..Run::default()
+            },
+        ];
+        let grants = [
+            None,
+            Some(Grant::default()),
+            Some(Grant {
+                ready_by: Some(1_794_466_320_362_000_000),
+                gpus: Vec::new(),
+            }),
+        ];
+        for run in &runs {
+            // Each made once, for every run of this microVM, granted or not.
+            let (granted, plain) = (
+                filters(run, kernel, true).unwrap(),
+                filters(run, kernel, false).unwrap(),
+            );
+            for grant in &grants {
+                let made = if grant.is_some() { &granted } else { &plain };
+                let mut own = setup(run, &[], None, None).unwrap();
+                let mut with = own.clone();
+                security_setup(&mut own, run, kernel, None, &[], grant.as_ref()).unwrap();
+                security_setup_with(&mut with, run, made, None, &[], grant.as_ref()).unwrap();
+                assert_eq!(with, own, "{run:?} {grant:?}");
+                let other = if grant.is_some() {
+                    None
+                } else {
+                    Some(&Grant::default())
+                };
+                let mut refused = Vec::new();
+                assert!(
+                    security_setup_with(&mut refused, run, made, None, &[], other).is_err(),
+                    "{run:?} {grant:?}"
+                );
+            }
         }
     }
 }

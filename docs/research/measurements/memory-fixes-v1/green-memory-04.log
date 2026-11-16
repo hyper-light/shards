@@ -1,0 +1,73 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-memory-carrier-5596c6ba47/change.bundle
+ * branch                HEAD       -> FETCH_HEAD
+Previous HEAD position was cb483406e Retain builder-budget green result before refreshed-main checks
+HEAD is now at 5d822e8fe Merge current run and FUSE fixes before memory-04 landing
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/api)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.06s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 10 tests
+test build::give::tests::nothing_given_back_is_not_said ... ok
+test build::give::tests::a_budget_removed_during_an_ask_is_delivered_after_its_answer ... ok
+test build::give::tests::a_refusal_alone_is_said ... ok
+test build::give::tests::a_budgeted_pass_tells_each_builder_its_share_of_the_room ... ok
+test build::give::tests::a_budget_written_asks_back_only_what_it_leaves_no_room_for ... ok
+test build::give::tests::a_budgets_room_is_told_again_where_it_changed ... ok
+test build::give::tests::what_is_given_back_under_a_budget_written_is_said_at_once ... ok
+test build::give::tests::a_late_answer_is_heard_as_it_comes_and_said_at_once ... ok
+test build::give::tests::each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles ... ok
+test build::give::tests::a_late_or_refused_answer_keeps_its_builder_and_is_said_once ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 892 filtered out; finished in 0.11s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 2 tests
+test build::builder::tests::a_giver_tells_its_room_and_hears_what_it_is_held_within ... ok
+test build::builder::tests::a_giver_asks_once_and_hears_its_answer_whole ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 900 filtered out; finished in 0.07s
+
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/build/aws-lc-sys-8ca7103727f91159/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/api)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 43.71s

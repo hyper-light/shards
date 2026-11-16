@@ -32,7 +32,7 @@ agents and all, is saved and restored in microseconds. Your agents can:
 Shards never needs root, and it is one file.
 
 ```console
-$ time shards run vm --kernel vmlinux --init shards-init --cmdline "console=ttyS0 quiet"
+$ time shards run vm --kernel vmlinux --init shards-init --cmdline "console=hvc0 quiet"
 shards-init: pid 1 running at uptime 0.012768s
 [    0.015804] reboot: Power down
 
@@ -270,7 +270,7 @@ cp target/$arch-unknown-linux-musl/guest/shards-init .
 Boot it:
 
 ```console
-$ shards run vm --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=ttyS0 quiet"
+$ shards run vm --kernel vmlinux --init shards-init --cpus 4 --memory 512 --cmdline "console=hvc0 quiet"
 shards-init: pid 1 running at uptime 0.014162s
 [    0.018563] reboot: Power down
 ```
@@ -291,7 +291,7 @@ cp target/$arch-unknown-linux-musl/guest/shards-testguest .
 
 ```console
 $ shards run vm --kernel vmlinux --init shards-testguest --snapshot-dir snap \
-    --cmdline "console=ttyS0 quiet shards_test=resume"
+    --cmdline "console=hvc0 quiet shards_test=resume"
 $ du -h snap/*
  43M	snap/memory
  20K	snap/state
@@ -405,7 +405,7 @@ the microVMs running from it: `shards stop vm ubuntu` stops each.
 | `shards configure disk [--build-cache-max N%\|SIZE] [--log-history SIZE] ...` | How much of your disk shards keeps: what the build cache always keeps, the most it keeps, and the disk it leaves free (`--build-cache-reserve`, `--build-cache-max`, `--build-cache-free`; 10%, 80% and 20% of the disk by default), and the most a run's log keeps of its newest output (`--log-history`, 1 GiB by default). A change takes at the next build or run. Alone, it shows each setting; `--reset` brings back the defaults |
 | `shards configure cpu --baseline CONTEXT[,CONTEXT...]` · `shards inspect cpu` | The CPU each microVM this home starts is told: what this machine and each context's machine all have, so that its microVMs move among them; `--none` takes it away |
 | `shards run daemon --listen ADDR:PORT` | Let machines you invite run shards on this one, over QUIC on UDP `ADDR:PORT`: run it where the microVMs should run, such as a Linux machine with a GPU. Nothing is reachable until you invite a machine, and it reaches only what you could do here with shards |
-| `shards invite client --name NAME --output FILE` | An invitation, a file only you can read, which lets one machine join this one as `NAME`, within an hour. `shards list invitations`, `shards remove invitation NAME`, `shards list clients` and `shards remove client NAME` show and withdraw them |
+| `shards invite client --name NAME --output FILE --valid DURATION` | An invitation, a file only you can read, which lets one machine join this one as `NAME`, once, within the time you give it (`--valid 10m`, `--valid 2h`; there is no default). `shards list invitations`, `shards remove invitation NAME`, `shards list clients` and `shards remove client NAME` show and withdraw them |
 | `shards grant client NAME --dir PATH[:ro] --device NAME --gpus` · `shards revoke client NAME ...` · `shards inspect client NAME` | Let a client reach folders, devices or GPUs of this machine's, none of which it reaches until then; take them back; show them. A client's own binds are its own folders, served from its machine |
 | `shards create context NAME --invite-file FILE` | Join the machine that invited you. Then `shards --context NAME ACTION THING` runs on that machine, its output and exit status yours, and `shards use context NAME` makes it the one every command runs on; `default` is this one. Its microVMs, images and volumes are that machine's; your logins, environment, terminal and files stay yours: builds send your context and only what changed since the last, your build's secrets cross in memory alone, its outputs come back to your files, `--ssh` reaches your agent here, `copy vm` copies to and from your machine (from Linux and macOS), and `--cidfile` is written here. Tools that speak the Engine API reach it too, through the `Engine` file `shards inspect context NAME` shows |
 | `shards run vm --kernel FILE [options]` | Boot a kernel directly in a microVM of its own |
@@ -424,7 +424,7 @@ there too, and `docker save shards.local/NAME | shards import vm -` brings one b
 |---|---|
 | `--init FILE` | The static Linux binary to run as PID 1 |
 | `--initrd FILE` | An initramfs, instead of `--init` |
-| `--cmdline TEXT` | The kernel command line (default: `console=ttyS0 earlycon panic=-1`) |
+| `--cmdline TEXT` | The kernel command line (default: `console=hvc0 panic=-1`) |
 | `--cpus N` · `--memory MIB` | Size (default: 1 CPU, 256 MiB) |
 | `--disk FILE[:ro]` | A disk. Repeat for more |
 | `--vsock PATH` | A vsock device. Programs here connect to the Unix socket `PATH` and send `CONNECT <port>`; the guest reaches port P here at `PATH_P`. A restored copy needs its own `PATH` |

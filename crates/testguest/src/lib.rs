@@ -77,3 +77,9 @@ pub const LIMITS: &[&str] = &[
     "net.ipv4.tcp_max_orphans",
     "net.ipv4.tcp_max_tw_buckets",
 ];
+
+/// The request a harness's MCP client sends first on a connection to its server, `initialize`
+/// (Model Context Protocol, 2025-06-18, basic/lifecycle), as one line of the stdio transport's
+/// newline-delimited JSON-RPC (basic/transports): what testguest's `mcp-hello` writes into its
+/// MCP bridge (D254), and what its run's controller reads of the connection, exactly.
+pub const MCP_INITIALIZE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"testguest\",\"version\":\"1\"}}}\n";

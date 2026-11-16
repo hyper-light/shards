@@ -390,29 +390,107 @@ pub fn staged_members(setup: &[Vec<u8>]) -> Result<Vec<u32>, Error> {
     Ok(members)
 }
 
-/// `[member, status]`, each a big-endian u32: the payload of
-/// [`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED), its status as `docker run` reports one
-/// (its code, or 128 plus the number of the signal that ended it).
+/// How a member's command ended, as its namespace's reaper saw it (`wait4(2)`): exited with
+/// its code, or killed by a signal, its number (`WTERMSIG`, `1..=`[`NSIG`](super::NSIG)). Its
+/// [`End::status`] is the one `docker run` reports, which cannot tell `exit 143` from a death
+/// by `SIGTERM`; this can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum End {
+    Exited(u32),
+    Signaled(u32),
+}
+
+impl End {
+    const EXITED: u8 = 0;
+    const SIGNALED: u8 = 1;
+    /// Its tag, then its code or signal, a big-endian u32.
+    pub const LEN: usize = 1 + size_of::<u32>();
+
+    /// Its status as `docker run` reports one: its code, or 128 plus its signal's number.
+    pub fn status(self) -> u32 {
+        match self {
+            End::Exited(code) => code,
+            End::Signaled(signal) => signal.saturating_add(128),
+        }
+    }
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let (tag, word) = match self {
+            End::Exited(code) => (Self::EXITED, code),
+            End::Signaled(signal) => (Self::SIGNALED, signal),
+        };
+        let [a, b, c, d] = word.to_be_bytes();
+        [tag, a, b, c, d]
+    }
+
+    /// The end `bytes` say: none for a tag of neither, or a signal out of `1..=NSIG`.
+    pub fn decode(bytes: &[u8]) -> Option<End> {
+        let [tag, a, b, c, d] = <[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let word = u32::from_be_bytes([a, b, c, d]);
+        match tag {
+            Self::EXITED => Some(End::Exited(word)),
+            Self::SIGNALED if (1..=super::NSIG).contains(&word) => Some(End::Signaled(word)),
+            _ => None,
+        }
+    }
+}
+
+/// `[member, end]`: the member (a big-endian u32), then its [`End`]: the payload of
+/// [`kind::MEMBER_ENDED`](super::kind::MEMBER_ENDED).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ended {
     pub member: u32,
-    pub status: u32,
+    pub end: End,
 }
 
 impl Ended {
-    pub const LEN: usize = 2 * size_of::<u32>();
+    pub const LEN: usize = size_of::<u32>() + End::LEN;
 
     pub fn encode(self) -> [u8; Self::LEN] {
         let [a, b, c, d] = self.member.to_be_bytes();
-        let [e, f, g, h] = self.status.to_be_bytes();
-        [a, b, c, d, e, f, g, h]
+        let [e, f, g, h, i] = self.end.encode();
+        [a, b, c, d, e, f, g, h, i]
     }
 
     pub fn decode(bytes: &[u8]) -> Option<Ended> {
-        let [a, b, c, d, e, f, g, h] = <[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let bytes = <&[u8; Self::LEN]>::try_from(bytes).ok()?;
+        let (member, end) = bytes.split_at(size_of::<u32>());
         Some(Ended {
-            member: u32::from_be_bytes([a, b, c, d]),
-            status: u32::from_be_bytes([e, f, g, h]),
+            member: u32::from_be_bytes(member.try_into().ok()?),
+            end: End::decode(end)?,
+        })
+    }
+}
+
+/// `[member, held]`: the member (a big-endian u32), then 1 where its next generation is coming
+/// or 0 where its restart let it go: the payload of
+/// [`kind::MEMBER_HOLD`](super::kind::MEMBER_HOLD) (D270).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hold {
+    pub member: u32,
+    pub held: bool,
+}
+
+impl Hold {
+    pub const LEN: usize = size_of::<u32>() + 1;
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let [a, b, c, d] = self.member.to_be_bytes();
+        [a, b, c, d, u8::from(self.held)]
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Hold> {
+        let (member, held) = <&[u8; Self::LEN]>::try_from(bytes)
+            .ok()?
+            .split_first_chunk::<4>()?;
+        let held = match held {
+            [0] => false,
+            [1] => true,
+            _ => return None,
+        };
+        Some(Hold {
+            member: u32::from_be_bytes(*member),
+            held,
         })
     }
 }
@@ -542,6 +620,10 @@ pub enum Refusal {
     /// A step of its confinement failed: which (init's `domains::Confining`, by its
     /// number), and the errno.
     Confining(u8, i32),
+    /// Its starter, the process of its own that starts what is run in it (init's
+    /// `starter`, D243), has gone: a process of the member's ended it, or it could not be
+    /// forked as the member started.
+    NoStarter,
 }
 
 impl Refusal {
@@ -551,6 +633,7 @@ impl Refusal {
     const WIDENING: u8 = 4;
     const JOINING: u8 = 5;
     const CONFINING: u8 = 6;
+    const NO_STARTER: u8 = 7;
 
     /// Its code and what it carries, then `words`.
     pub fn encode(self, words: &[u8]) -> Vec<u8> {
@@ -568,6 +651,7 @@ impl Refusal {
                 out.extend_from_slice(&[Self::CONFINING, step]);
                 out.extend_from_slice(&errno.to_be_bytes());
             }
+            Refusal::NoStarter => out.push(Self::NO_STARTER),
         }
         out.extend_from_slice(words);
         out
@@ -588,6 +672,7 @@ impl Refusal {
                 let (&step, rest) = rest.split_first()?;
                 (Refusal::Confining(step, errno(rest)?), rest.get(4..)?)
             }
+            Self::NO_STARTER => (Refusal::NoStarter, rest),
             _ => return None,
         })
     }
@@ -597,9 +682,299 @@ impl Refusal {
     pub fn not_started(self) -> bool {
         matches!(
             self,
-            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..)
+            Refusal::Processes | Refusal::Joining(_) | Refusal::Confining(..) | Refusal::NoStarter
         )
     }
+}
+
+/// A component laid at a path of a member's view as its next generation starts (D270): the
+/// path, absolute and plain ([`workdir_ok`]), and the component's key, its digest's 64
+/// lowercase hex digits, which init has it mounted by (`DEVICE pmem`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Component {
+    pub path: Vec<u8>,
+    pub key: [u8; KEY_LEN],
+}
+
+/// A component key's length: a SHA-256 digest's 32 bytes in hex (FIPS 180-4).
+pub const KEY_LEN: usize = 64;
+
+/// A component's key (D270): its manifest digest's [`KEY_LEN`] lowercase hex digits.
+pub type ComponentKey = [u8; KEY_LEN];
+
+/// A member's next generation (D270), the payload of
+/// [`kind::MEMBER_START`](super::kind::MEMBER_START): its index, the generation it is to be
+/// (its last ended, this one past it), its run-time arguments (D256), on its command line
+/// after its image's command as its first's staged ones were, its environment over its
+/// image's, its working directory where it names one, and the components laid at their paths
+/// in its view, over what its image has there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Start {
+    pub member: u32,
+    pub generation: u32,
+    /// Its run-time arguments, after its image's command: its host knows none of that command,
+    /// which is its image's alone.
+    pub args: Vec<Vec<u8>>,
+    pub env: Vec<Vec<u8>>,
+    pub workdir: Option<Vec<u8>>,
+    pub components: Vec<Component>,
+    /// Its input connection's token, where its owner writes its stdin (D270: each generation
+    /// an input of its own, dialed as the first's is at the run's start,
+    /// [`managed::INPUT_TOKEN_KEY`](super::managed::INPUT_TOKEN_KEY)); none for `/dev/null`.
+    pub input: Option<[u8; super::TOKEN]>,
+}
+
+/// Why a member's next generation was not started (D270), typed, as
+/// [`kind::MEMBER_STARTED`](super::kind::MEMBER_STARTED) carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StartRefusal {
+    /// No member of that index started in this run.
+    Unknown = 1,
+    /// Its last generation has not ended: a member runs one generation at a time.
+    Running = 2,
+    /// The generation asked is not the one past its last.
+    Generation = 3,
+    /// What it is cannot be started again yet, as said.
+    Unsupported = 4,
+    /// Its start failed, in init's words.
+    Failed = 5,
+}
+
+impl StartRefusal {
+    fn of(tag: u8) -> Option<StartRefusal> {
+        Some(match tag {
+            1 => StartRefusal::Unknown,
+            2 => StartRefusal::Running,
+            3 => StartRefusal::Generation,
+            4 => StartRefusal::Unsupported,
+            5 => StartRefusal::Failed,
+            _ => return None,
+        })
+    }
+}
+
+/// What came of a [`Start`]: the member and the generation asked, and its refusal where it was
+/// refused, with init's words; the payload of
+/// [`kind::MEMBER_STARTED`](super::kind::MEMBER_STARTED).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartAnswer {
+    pub member: u32,
+    pub generation: u32,
+    pub refused: Option<(StartRefusal, Vec<u8>)>,
+}
+
+fn push_word(out: &mut Vec<u8>, n: u32) {
+    out.extend_from_slice(&n.to_be_bytes());
+}
+
+fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Error> {
+    push_word(out, u32::try_from(bytes.len()).map_err(|_| Error::Shape)?);
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+/// A reader of [`Start`]'s and [`StartAnswer`]'s fields, each refused [`Error::Shape`] where it
+/// runs short.
+struct Fields<'a>(&'a [u8]);
+
+impl<'a> Fields<'a> {
+    fn word(&mut self) -> Result<u32, Error> {
+        let (word, rest) = self.0.split_first_chunk::<4>().ok_or(Error::Shape)?;
+        self.0 = rest;
+        Ok(u32::from_be_bytes(*word))
+    }
+
+    fn bytes(&mut self) -> Result<&'a [u8], Error> {
+        let len = usize::try_from(self.word()?).map_err(|_| Error::Shape)?;
+        let (bytes, rest) = self.0.split_at_checked(len).ok_or(Error::Shape)?;
+        self.0 = rest;
+        Ok(bytes)
+    }
+
+    /// A count of items each at least `least` bytes, no more than what is left could hold.
+    fn count(&mut self, least: usize) -> Result<usize, Error> {
+        let n = usize::try_from(self.word()?).map_err(|_| Error::Shape)?;
+        if n.saturating_mul(least) > self.0.len() {
+            return Err(Error::Shape);
+        }
+        Ok(n)
+    }
+
+    fn end(self) -> Result<(), Error> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Shape)
+        }
+    }
+}
+
+impl Start {
+    /// Its fields checked as its decoding checks them: no argument holding a NUL ([`arg_ok`]),
+    /// none or many of them, each variable `KEY=VALUE` and none init's own
+    /// ([`variable_ok`]), a working directory and each component's path absolute and plain
+    /// ([`workdir_ok`]), each component's key lowercase hex, and no path given two components.
+    pub fn check(&self) -> Result<(), Error> {
+        self.args.iter().try_for_each(|a| arg_ok(a))?;
+        self.env.iter().try_for_each(|v| variable_ok(v))?;
+        if self.workdir.as_deref().is_some_and(|w| !workdir_ok(w)) {
+            return Err(Error::Workdir);
+        }
+        for (i, c) in self.components.iter().enumerate() {
+            if !workdir_ok(&c.path) {
+                return Err(Error::Path);
+            }
+            if !c.key.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(Error::Shape);
+            }
+            if self
+                .components
+                .get(..i)
+                .unwrap_or_default()
+                .iter()
+                .any(|o| o.path == c.path)
+            {
+                return Err(Error::Twice);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        self.check()?;
+        let mut out = Vec::new();
+        push_word(&mut out, self.member);
+        push_word(&mut out, self.generation);
+        for list in [&self.args, &self.env] {
+            push_word(&mut out, u32::try_from(list.len()).map_err(|_| Error::Shape)?);
+            for item in list {
+                push_bytes(&mut out, item)?;
+            }
+        }
+        match &self.workdir {
+            None => out.push(0),
+            Some(w) => {
+                out.push(1);
+                push_bytes(&mut out, w)?;
+            }
+        }
+        push_word(
+            &mut out,
+            u32::try_from(self.components.len()).map_err(|_| Error::Shape)?,
+        );
+        for c in &self.components {
+            push_bytes(&mut out, &c.path)?;
+            out.extend_from_slice(&c.key);
+        }
+        match &self.input {
+            None => out.push(0),
+            Some(token) => {
+                out.push(1);
+                out.extend_from_slice(token);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Start, Error> {
+        let mut r = Fields(bytes);
+        let (member, generation) = (r.word()?, r.word()?);
+        let mut lists = [Vec::new(), Vec::new()];
+        for list in &mut lists {
+            // Each item holds at least its length.
+            for _ in 0..r.count(4)? {
+                list.push(r.bytes()?.to_vec());
+            }
+        }
+        let [args, env] = lists;
+        let (flag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let workdir = match flag {
+            0 => None,
+            1 => Some(r.bytes()?.to_vec()),
+            _ => return Err(Error::Shape),
+        };
+        let mut components = Vec::new();
+        for _ in 0..r.count(4 + KEY_LEN)? {
+            let path = r.bytes()?.to_vec();
+            let (key, rest) = r.0.split_first_chunk::<KEY_LEN>().ok_or(Error::Shape)?;
+            r.0 = rest;
+            components.push(Component { path, key: *key });
+        }
+        let (flag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let input = match flag {
+            0 => None,
+            1 => {
+                let (token, rest) = r.0.split_first_chunk::<{ super::TOKEN }>().ok_or(Error::Shape)?;
+                r.0 = rest;
+                Some(*token)
+            }
+            _ => return Err(Error::Shape),
+        };
+        r.end()?;
+        let start = Start {
+            member,
+            generation,
+            args,
+            env,
+            workdir,
+            components,
+            input,
+        };
+        start.check()?;
+        Ok(start)
+    }
+}
+
+impl StartAnswer {
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::new();
+        push_word(&mut out, self.member);
+        push_word(&mut out, self.generation);
+        match &self.refused {
+            None => out.push(0),
+            Some((why, words)) => {
+                out.push(*why as u8);
+                push_bytes(&mut out, words)?;
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<StartAnswer, Error> {
+        let mut r = Fields(bytes);
+        let (member, generation) = (r.word()?, r.word()?);
+        let (tag, rest) = r.0.split_first().ok_or(Error::Shape)?;
+        r.0 = rest;
+        let refused = match tag {
+            0 => None,
+            tag => Some((StartRefusal::of(*tag).ok_or(Error::Shape)?, r.bytes()?.to_vec())),
+        };
+        r.end()?;
+        Ok(StartAnswer {
+            member,
+            generation,
+            refused,
+        })
+    }
+}
+
+/// [`builtin::MEMBER_KILL`](super::builtin::MEMBER_KILL)'s arguments: the member's index, in
+/// decimal.
+pub fn kill_args(member: u32) -> Vec<Vec<u8>> {
+    let mut arg = Vec::new();
+    push_decimal(&mut arg, member);
+    alloc::vec![arg]
+}
+
+/// The member [`kill_args`] gives, checked: one argument, a decimal u32.
+pub fn parse_kill(args: &[Vec<u8>]) -> Result<u32, Error> {
+    let [member] = args else {
+        return Err(Error::Shape);
+    };
+    decimal(member)
 }
 
 fn split_once(bytes: &[u8], at: u8) -> Option<(&[u8], &[u8])> {
@@ -667,6 +1042,83 @@ fn push_octal(out: &mut Vec<u8>, mode: u32) {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    /// A member's next generation (D270) reads back as it was made, its answer too; what its
+    /// check refuses is refused both ways, and a payload cut short or past its end is refused.
+    #[test]
+    fn a_members_next_generation_reads_back_as_it_was_made() {
+        let key = |c: u8| [c; KEY_LEN];
+        let start = Start {
+            member: 3,
+            generation: 2,
+            args: vec![b"--resume".to_vec(), Vec::new()],
+            env: vec![b"A=1".to_vec(), b"B=x=y".to_vec()],
+            workdir: Some(b"/Users/ada/project".to_vec()),
+            components: vec![
+                Component {
+                    path: b"/harness/codex".to_vec(),
+                    key: key(b'a'),
+                },
+                Component {
+                    path: b"/mcp/tools".to_vec(),
+                    key: key(b'0'),
+                },
+            ],
+            input: Some([7; super::super::TOKEN]),
+        };
+        let bytes = start.encode().unwrap();
+        assert_eq!(Start::decode(&bytes).unwrap(), start);
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert_eq!(Start::decode(&longer), Err(Error::Shape));
+        assert_eq!(Start::decode(&bytes[..bytes.len() - 1]), Err(Error::Shape));
+        let with = |f: &dyn Fn(&mut Start)| {
+            let mut s = start.clone();
+            f(&mut s);
+            s
+        };
+        for (bad, why) in [
+            (with(&|s| s.args[0] = b"--re\0sume".to_vec()), Error::Argument),
+            (with(&|s| s.env[0] = b"=1".to_vec()), Error::Variable),
+            (with(&|s| s.workdir = Some(b"relative".to_vec())), Error::Workdir),
+            (
+                with(&|s| s.components[0].path = b"/harness/../etc".to_vec()),
+                Error::Path,
+            ),
+            (with(&|s| s.components[0].key = key(b'G')), Error::Shape),
+            (
+                with(&|s| s.components[1].path = b"/harness/codex".to_vec()),
+                Error::Twice,
+            ),
+        ] {
+            assert_eq!(bad.encode(), Err(why), "{bad:?}");
+        }
+        // A count past what its bytes could hold allocates nothing and is refused.
+        let mut hostile = bytes.clone();
+        hostile[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(Start::decode(&hostile), Err(Error::Shape));
+        for answer in [
+            StartAnswer {
+                member: 3,
+                generation: 2,
+                refused: None,
+            },
+            StartAnswer {
+                member: 0,
+                generation: 1,
+                refused: Some((StartRefusal::Running, b"its last generation runs".to_vec())),
+            },
+        ] {
+            assert_eq!(StartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert_eq!(
+            StartAnswer::decode(&[0, 0, 0, 1, 0, 0, 0, 1, 9]),
+            Err(Error::Shape)
+        );
+        assert_eq!(parse_kill(&kill_args(7)).unwrap(), 7);
+        assert_eq!(parse_kill(&[b"07".to_vec()]), Err(Error::Index));
+        assert_eq!(parse_kill(&[]), Err(Error::Shape));
+    }
 
     /// An entry made is the entry read back, for every field at its bounds: index 0 and
     /// u32::MAX, mode 0 and 0777, bytes holding NULs, an empty file.
@@ -913,20 +1365,51 @@ mod tests {
     #[test]
     fn ends_round_trip() {
         for ended in [
-            Ended { member: 0, status: 0 },
+            Ended {
+                member: 0,
+                end: End::Exited(0),
+            },
             Ended {
                 member: 3,
-                status: 137,
+                end: End::Signaled(9),
             },
             Ended {
                 member: u32::MAX,
-                status: u32::MAX,
+                end: End::Exited(u32::MAX),
             },
         ] {
             assert_eq!(Ended::decode(&ended.encode()), Some(ended));
         }
-        assert_eq!(Ended::decode(&[0; 7]), None);
-        assert_eq!(Ended::decode(&[0; 9]), None);
+        assert_eq!(Ended::decode(&[0; 8]), None);
+        assert_eq!(Ended::decode(&[0; 10]), None);
+    }
+
+    /// A member held for its next generation, or let go (D270), round-trips; a hold of any
+    /// other length, or neither held nor let go, is none.
+    #[test]
+    fn holds_round_trip() {
+        for hold in [
+            Hold {
+                member: 0,
+                held: true,
+            },
+            Hold {
+                member: u32::MAX,
+                held: false,
+            },
+        ] {
+            assert_eq!(Hold::decode(&hold.encode()), Some(hold));
+        }
+        assert_eq!(
+            Hold::encode(Hold {
+                member: 1,
+                held: true
+            }),
+            [0, 0, 0, 1, 1]
+        );
+        assert_eq!(Hold::decode(&[0, 0, 0, 1]), None);
+        assert_eq!(Hold::decode(&[0, 0, 0, 1, 2]), None);
+        assert_eq!(Hold::decode(&[0, 0, 0, 1, 1, 0]), None);
     }
 
     /// An exec names one member at most, in the index's one spelling; an exec naming none
@@ -1021,6 +1504,7 @@ mod tests {
             Refusal::Joining(i32::MIN),
             Refusal::Confining(13, 22),
             Refusal::Confining(0, -1),
+            Refusal::NoStarter,
         ] {
             for words in [&b""[..], b"agent main: it has ended", b"\0\xff"] {
                 let said = r.encode(words);
@@ -1033,8 +1517,33 @@ mod tests {
             }
         }
         assert_eq!(Refusal::decode(&[0]), None);
-        assert_eq!(Refusal::decode(&[7, b'x']), None);
+        assert_eq!(Refusal::decode(&[8, b'x']), None);
         assert!(!Refusal::Unknown.not_started() && !Refusal::Widening.not_started());
         assert!(Refusal::Processes.not_started() && Refusal::Confining(1, 1).not_started());
+        assert!(Refusal::NoStarter.not_started());
+    }
+
+    /// A member's end says how it ended, typed: `exit 143` stays an exit, a death by TERM is
+    /// signal 15, each with the status `docker run` reports; a tag of neither, or a signal out
+    /// of `1..=NSIG`, is no end.
+    #[test]
+    fn a_members_end_tells_a_signal_from_its_status() {
+        for end in [
+            End::Exited(0),
+            End::Exited(143),
+            End::Exited(u32::MAX),
+            End::Signaled(15),
+            End::Signaled(64),
+        ] {
+            let ended = Ended { member: 3, end };
+            assert_eq!(Ended::decode(&ended.encode()), Some(ended));
+        }
+        assert_eq!(End::Exited(143).status(), 143);
+        assert_eq!(End::Signaled(15).status(), 143);
+        assert_ne!(End::Exited(143), End::Signaled(15));
+        assert_eq!(End::decode(&[1, 0, 0, 0, 0]), None);
+        assert_eq!(End::decode(&[1, 0, 0, 0, 65]), None);
+        assert_eq!(End::decode(&[2, 0, 0, 0, 1]), None);
+        assert_eq!(Ended::decode(&[0; Ended::LEN - 1]), None);
     }
 }

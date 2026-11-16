@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "macos", windows))]
 use std::sync::{Condvar, Mutex, PoisonError};
 #[cfg(any(target_os = "macos", windows))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", windows))]
 use super::reclaim::Gave;
@@ -45,7 +45,25 @@ pub(super) struct Budget {
     /// is stopped, as a cgroup's OOM killer kills within it.
     pub max: Option<u64>,
     /// `cpu.max`: µs of CPU time its microVMs may use together each period of µs.
-    pub cpu: Option<(u64, u64)>,
+    pub cpu: CpuMax,
+}
+
+/// A group's `cpu.max` as the kernel reads it: `quota` µs of CPU time each `period` µs, no
+/// quota for `max`, whose period is still the group's own, as `cpu.max` reads `max 100000`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CpuMax {
+    pub quota: Option<u64>,
+    pub period: u64,
+}
+
+/// A `cpu.max` not written: `max`, over the kernel's default period.
+impl Default for CpuMax {
+    fn default() -> CpuMax {
+        CpuMax {
+            quota: None,
+            period: CPU_PERIOD,
+        }
+    }
 }
 
 impl Budget {
@@ -135,7 +153,7 @@ pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
     };
     let cpu = match read("cpu.max")? {
         Some(text) => cpu_max(&text).map_err(|e| format!("{}: {e}", dir.join("cpu.max").display()))?,
-        None => None,
+        None => CpuMax::default(),
     };
     Ok(Budget {
         high: memory("memory.high")?,
@@ -148,7 +166,7 @@ pub(super) fn budget(dir: &Path) -> Result<Budget, String> {
 /// `cpu_period_quota_parse` and `tg_set_cfs_bandwidth`): `$MAX $PERIOD`, µs of CPU time
 /// each period of µs, `$MAX` `max` for none and `$PERIOD` [`CPU_PERIOD`] where it is left
 /// out; the period 1 ms to 1 s, a quota 1 ms or more and less than 2^44 µs.
-fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
+fn cpu_max(text: &str) -> Result<CpuMax, String> {
     let bad = || format!("{:?}: not a quota and its period, or max", text.trim());
     let mut words = text.split_whitespace();
     let quota = words.next().ok_or_else(bad)?;
@@ -161,7 +179,7 @@ fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
         return Err(format!("a period of {period} µs, where it is 1000 to 1000000"));
     }
     if quota == "max" {
-        return Ok(None);
+        return Ok(CpuMax { quota: None, period });
     }
     if !quota.bytes().all(|b| b.is_ascii_digit()) {
         return Err(bad());
@@ -172,7 +190,10 @@ fn cpu_max(text: &str) -> Result<Option<(u64, u64)>, String> {
             "a quota of {quota} µs, where it is 1000 or more and less than 2^44"
         ));
     }
-    Ok(Some((quota, period)))
+    Ok(CpuMax {
+        quota: Some(quota),
+        period,
+    })
 }
 
 /// A memory budget as the kernel reads one written to `memory.max` (mm/page_counter.c,
@@ -284,24 +305,57 @@ impl Ask {
     }
 }
 
-/// A member's word under way (R04), on a thread of its own: what it says now and since when,
-/// which the groups' thread judges from outside by the record of its kind of answer
-/// (`Record::stalled`), and what is asked of it once that has ended.
+/// A member's word under way (R04): its exec's own judge's state, and the next ask. Only
+/// that judge can refuse it, and its refusal stands for that exec alone: each exec of the
+/// word begins `Waiting` (its room told, then a give-back). The groups thread consumes it.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
 struct Word {
-    saying: Saying,
-    since: Instant,
+    state: WordState,
     next: Option<Ask>,
 }
 
-/// What a member's word says: its room told (`ROOM`), or what it holds cold asked back for a
-/// round (`RECLAIM`).
+/// The authoritative exec judge's outcome for a word still under way.
 #[cfg(any(target_os = "macos", windows))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Saying {
-    Room,
-    GiveBack(u64),
+#[derive(Debug)]
+enum WordState {
+    Waiting,
+    Refused(super::health::Cut),
+}
+
+/// The pace of the groups' passes (D188, R03; it was a pressure window): D215's
+/// `sqrt(2 c w)` (`shards_abi::pace`) after the last, `c` that pass's own time and `w` how
+/// long its groups had gone unchanged as it was made, a change what a pass looks for: a
+/// member come or gone, a group's budget written, or a group fallen short of it or within
+/// it again, which no notification says on macOS or Windows. A pass that finds one restarts
+/// `w`, so passes come close together while groups change and spread out while they stay
+/// as they are. The first pass is made at once.
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug, Clone, Copy, Default)]
+struct Paced {
+    /// What the last pass took, and since when its groups had been unchanged then.
+    took: Duration,
+    unchanged_since: Option<Instant>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl Paced {
+    /// A pass begun `at` has ended, `changed` whether it found a change.
+    fn passed(&mut self, at: Instant, changed: bool) {
+        self.took = at.elapsed();
+        if changed || self.unchanged_since.is_none() {
+            self.unchanged_since = Some(at);
+        }
+    }
+
+    /// When the pass after one made `at` is due.
+    fn next(&self, at: Instant) -> Instant {
+        let unchanged = self
+            .unchanged_since
+            .map_or(Duration::ZERO, |since| at.saturating_duration_since(since));
+        at.checked_add(shards_abi::pace::pause(self.took, unchanged, Duration::MAX))
+            .unwrap_or(at)
+    }
 }
 
 /// What the groups' thread keeps of a group between its passes (R04): whether it was said
@@ -313,11 +367,14 @@ struct Hold {
     short: bool,
     round: Option<Round>,
     told: HashSet<u32>,
+    /// Its budget as its last pass read it: one written since is a change its passes
+    /// look for ([`Daemon::next_look`]).
+    budget: Option<Budget>,
 }
 
 /// A group's round of give-backs (R04): opened at a pass that finds it short of its budget,
 /// each of its members then asked once, by VM process; done once each has answered, ended,
-/// or run past the slowest answer of its kind seen with none, and judged then.
+/// or its own exec judge refused it, and judged then.
 #[cfg(any(target_os = "macos", windows))]
 #[derive(Debug)]
 struct Round {
@@ -333,8 +390,7 @@ enum Given {
     Asked,
     /// Answered: what it gave back.
     Gave(Gave),
-    /// Nothing: its answer refused or cut, its run ended, or its word past the slowest answer
-    /// of its kind seen with none.
+    /// Nothing: its answer refused or cut, or its run ended.
     Nothing,
 }
 
@@ -421,17 +477,24 @@ impl Groups {
 }
 
 /// What a group's microVMs hold themselves to of its `cpu.max` (`GroupCpu::set_budget`):
-/// none where it lets them use every CPU of the host's, which they cannot pass, and none
+/// no quota where it lets them use every CPU of the host's, which they cannot pass, and none
 /// where a quota is past what the count's word holds, which takes a host of more than
-/// 4,295 CPUs.
+/// 4,295 CPUs; its period the group's own whatever the quota, which its governors look again
+/// each of where there is none. Refused where the period is none, or past the word's: no
+/// `cpu.max` the kernel takes (`cpu_max`) has one.
 #[cfg(any(target_os = "macos", windows))]
-fn held_cpu(cpu: Option<(u64, u64)>) -> Option<(u32, u32)> {
-    let (quota, period) = cpu?;
+fn held_cpu(cpu: CpuMax) -> Result<shards_vmm::vm::group::Budget, String> {
+    let period = u32::try_from(cpu.period)
+        .ok()
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or_else(|| format!("a CPU period of {} µs", cpu.period))?;
     let host = u64::try_from(crate::resources::host_cpus()).unwrap_or(u64::MAX);
-    if quota >= period.saturating_mul(host) {
-        return None;
-    }
-    Some((u32::try_from(quota).ok()?, u32::try_from(period).ok()?))
+    let quota = cpu
+        .quota
+        .filter(|&quota| quota < cpu.period.saturating_mul(host))
+        .and_then(|quota| u32::try_from(quota).ok())
+        .and_then(std::num::NonZeroU32::new);
+    Ok(shards_vmm::vm::group::Budget { quota, period })
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -458,16 +521,19 @@ impl<D: Disk> Daemon<D> {
             .map_err(|e| at(&e))?;
         let mapped = shards_vmm::vm::group::GroupCpu::map(file.try_clone().map_err(|e| at(&e))?)
             .map_err(|e| at(&e))?;
-        mapped.set_budget(held_cpu(budget(&dir)?.cpu));
+        mapped.set_budget(held_cpu(budget(&dir)?.cpu).map_err(|e| at(&e))?);
         let given = file.try_clone().map_err(|e| at(&e))?;
         cpus.insert(name.to_string(), (file, mapped));
         Ok(given)
     }
 
     /// Group `name`'s CPU budget written as its `cpu.max` says now, where its count is kept.
-    fn budget_group_cpu(&self, name: &str, cpu: Option<(u64, u64)>) {
+    fn budget_group_cpu(&self, name: &str, cpu: CpuMax) {
         if let Some((_, mapped)) = lock(&self.groups.cpus).get(name) {
-            mapped.set_budget(held_cpu(cpu));
+            match held_cpu(cpu) {
+                Ok(budget) => mapped.set_budget(budget),
+                Err(e) => log(format!("group {name}'s CPU budget, kept as it was: {e}")),
+            }
         }
     }
 }
@@ -545,15 +611,15 @@ impl<D: Disk> Daemon<D> {
     /// and every pressure window while a group has any, its files read again then, so that
     /// a budget written is heard within one. It asks its members and hears their answers,
     /// and waits on none of them, each member's words its own ([`speak`](Self::speak)):
-    /// between its passes it wakes as one answers, and as a round's member runs past the
-    /// slowest answer of its kind seen with none.
+    /// between its passes it wakes as one answers or its own exec judge refuses it.
     fn hold_groups<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>) {
         let mut members: HashMap<String, Vec<Member>> = HashMap::new();
         let mut holds: HashMap<String, Hold> = HashMap::new();
         let mut rounds = 0u64;
         let mut passed: Option<Instant> = None;
+        let mut paced = Paced::default();
         loop {
-            let look = self.next_look(&members, &holds, passed);
+            let look = self.next_look(&members, passed, paced);
             let woke = {
                 let mut woke = lock(&self.groups.woke);
                 if woke.quiet() {
@@ -597,50 +663,40 @@ impl<D: Disk> Daemon<D> {
             }
             members.retain(|_, list| !list.is_empty());
             holds.retain(|name, _| members.contains_key(name));
-            let pass = moved || passed.is_none_or(|p| p.elapsed() >= shards_vmm::platform::PRESSURE_WINDOW);
+            let now = Instant::now();
+            let pass = moved || passed.is_none_or(|p| now >= paced.next(p));
             if pass {
-                passed = Some(Instant::now());
+                passed = Some(now);
             }
+            let mut changed = moved;
             for (name, list) in &members {
                 let hold = holds.entry(name.clone()).or_default();
                 if pass {
+                    let was = (hold.short, hold.budget);
                     self.hold_group(threads, name, list, hold, &mut rounds);
+                    changed |= (hold.short, hold.budget) != was;
                 }
                 self.judge_round(name, list, hold);
+            }
+            if pass {
+                paced.passed(now, changed);
             }
         }
     }
 
-    /// When the groups' thread looks next, while a group has members: its next pass, or the
-    /// first moment before it that a round's member runs past the slowest answer of its kind
-    /// seen with none (R05: a deadline of what this daemon has learned, never a probe).
+    /// The next resource-accounting pass, on its pace ([`Paced`]). Word outcomes wake the
+    /// thread independently; no second timer judges a member behind its authoritative exec
+    /// judge.
     fn next_look(
         &self,
         members: &HashMap<String, Vec<Member>>,
-        holds: &HashMap<String, Hold>,
         passed: Option<Instant>,
+        paced: Paced,
     ) -> Option<Instant> {
         if members.is_empty() {
             return None;
         }
-        let pass = passed
-            .and_then(|p| p.checked_add(shards_vmm::platform::PRESSURE_WINDOW))
-            .unwrap_or_else(Instant::now);
-        let words = lock(&self.groups.words);
-        let due = holds
-            .values()
-            .filter_map(|h| h.round.as_ref())
-            .flat_map(|r| r.of.iter())
-            .filter(|(_, given)| matches!(given, Given::Asked))
-            .filter_map(|(pid, _)| {
-                let word = words.get(pid)?;
-                let shards_api::Seen::Learned { slowest, .. } = self.record_of(word.saying).seen() else {
-                    return None;
-                };
-                word.since.checked_add(slowest)
-            })
-            .min();
-        Some(due.map_or(pass, |due| due.min(pass)))
+        Some(passed.map_or_else(Instant::now, |p| paced.next(p)))
     }
 
     /// A pass over group `name` and its microVMs `members` (D183, slice 3): its files read
@@ -666,6 +722,7 @@ impl<D: Disk> Daemon<D> {
                 return;
             }
         };
+        hold.budget = Some(budget);
         // Its microVMs' CPU budget its `cpu.max`, as the file now says it, and on Windows its
         // job's memory limit its `memory.max`.
         self.budget_group_cpu(name, budget.cpu);
@@ -752,7 +809,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Judges group `name`'s round of give-backs once it is done (D183, slice 3): a member
-    /// whose word has run past the slowest answer of its kind seen with none gave nothing;
+    /// whose own word judge refused it gave nothing;
     /// and past its `memory.max`, with nothing given back, the one of its microVMs that
     /// holds the most is stopped, its record marked OOM-killed, as a cgroup's OOM killer
     /// takes its largest (mm/oom_kill.c, `oom_badness`).
@@ -760,9 +817,8 @@ impl<D: Disk> Daemon<D> {
         let Some(round) = hold.round.as_mut() else {
             return;
         };
-        let now = Instant::now();
         for (pid, given) in &mut round.of {
-            if matches!(given, Given::Asked) && self.overdue(*pid, now) {
+            if matches!(given, Given::Asked) && self.word_refusal(*pid).is_some() {
                 *given = Given::Nothing;
             }
         }
@@ -818,8 +874,7 @@ impl<D: Disk> Daemon<D> {
             words.insert(
                 m.pid,
                 Word {
-                    saying: Saying::Room,
-                    since: Instant::now(),
+                    state: WordState::Waiting,
                     next: None,
                 },
             );
@@ -850,10 +905,14 @@ impl<D: Disk> Daemon<D> {
         loop {
             self.tell_group_room(&m.id, m.pid, ask.room);
             if let Some(round) = ask.give {
-                self.saying(m.pid, Saying::GiveBack(round));
+                // Its room's exec has ended: a refusal of it is no verdict on the give-back
+                // that follows, which its own judge judges, nor on a round opened after it.
+                self.word_begins(m.pid);
                 let vm = self.own_run(&m.id);
                 self.give_after(&vm);
-                let gave = self.give_back_of(&m.id, m.pid);
+                let refused = |cut: &super::health::Cut| self.refuse_word(m.pid, cut);
+                let wait = super::health::Wait::GroupWord(m.pid, &self.answers.reclaim, &refused);
+                let gave = self.give_back_waiting(&m.id, wait);
                 self.given_back(&vm);
                 self.heard(Answered {
                     pid: m.pid,
@@ -865,8 +924,7 @@ impl<D: Disk> Daemon<D> {
                 let mut words = lock(&self.groups.words);
                 let next = words.get_mut(&m.pid).and_then(|word| {
                     let next = word.next.take()?;
-                    word.saying = Saying::Room;
-                    word.since = Instant::now();
+                    word.state = WordState::Waiting;
                     Some(next)
                 });
                 if next.is_none() {
@@ -882,11 +940,18 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Member `pid`'s word says `saying` from now.
-    fn saying(&self, pid: u32, saying: Saying) {
+    /// Member `pid`'s word begins an exec of its own: no refusal stands for it yet.
+    fn word_begins(&self, pid: u32) {
         if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
-            word.saying = saying;
-            word.since = Instant::now();
+            word.state = WordState::Waiting;
+        }
+    }
+
+    /// The active word's exec judge refused it. Publish under the group's wake mutex
+    /// through spoke(), so a refusal between its check and wait cannot lose its wake.
+    fn refuse_word(&self, pid: u32, cut: &super::health::Cut) {
+        if let Some(word) = lock(&self.groups.words).get_mut(&pid) {
+            word.state = WordState::Refused(cut.clone());
         }
         self.spoke();
     }
@@ -903,22 +968,10 @@ impl<D: Disk> Daemon<D> {
         self.groups.wake.notify_one();
     }
 
-    /// Whether member `pid`'s word has run past the slowest answer of its kind seen with none
-    /// by `now`, judged from outside by D215's record (`Record::stalled`): never while its
-    /// kind has had no answer, whose wait follows its microVM's liveness alone, nor with no
-    /// word under way, its answer on its way.
-    fn overdue(&self, pid: u32, now: Instant) -> bool {
-        let words = lock(&self.groups.words);
-        words
-            .get(&pid)
-            .is_some_and(|word| self.record_of(word.saying).stalled(word.since, now).is_some())
-    }
-
-    /// The record of the kind of answer `saying` waits on (D215).
-    fn record_of(&self, saying: Saying) -> &shards_api::Record {
-        match saying {
-            Saying::Room => &self.answers.room,
-            Saying::GiveBack(_) => &self.answers.reclaim,
+    fn word_refusal(&self, pid: u32) -> Option<super::health::Cut> {
+        match &lock(&self.groups.words).get(&pid)?.state {
+            WordState::Waiting => None,
+            WordState::Refused(cut) => Some(cut.clone()),
         }
     }
 
@@ -983,12 +1036,13 @@ impl<D: Disk> Daemon<D> {
             argv,
             ..Default::default()
         };
+        let refused = |cut: &super::health::Cut| self.refuse_word(pid, cut);
         match self.exec_waiting(
             id,
             &spec,
             None,
             1 << 12,
-            super::health::Wait::WhileRuns(pid, &self.answers.room),
+            super::health::Wait::GroupWord(pid, &self.answers.room, &refused),
         ) {
             Ok(q) if q.status == Some(0) && q.cut.is_none() => {
                 let said = String::from_utf8_lossy(&q.output);
@@ -1013,6 +1067,81 @@ impl<D: Disk> Daemon<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The groups' passes come on D215's pace: the first at once; one that found nothing
+    /// changed for 10 s, taking 5 ms, next due 316 ms on (a pressure window would have been 2
+    /// s whatever a pass cost); one that found a change, due again at once.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are() {
+        let t0 = Instant::now();
+        let mut paced = Paced::default();
+        assert_eq!(paced.next(t0), t0, "no pass yet: at once");
+        paced.passed(t0, true);
+        let at = t0 + Duration::from_secs(10);
+        paced = Paced {
+            took: Duration::from_millis(5),
+            ..paced
+        };
+        assert_eq!(paced.next(at), at + Duration::from_nanos(316_227_766));
+        paced.unchanged_since = Some(at);
+        assert_eq!(paced.next(at), at, "a change found: the next at once");
+    }
+
+    /// A pending word's own exec wait owns its progress and host holds. Elapsed wall time
+    /// alone cannot finish its group's round, including while it waits behind host reclaim.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_pending_member_word_is_not_a_failed_give_back() {
+        let t = super::super::tests::Test::new("group-pending");
+        let slowest = std::time::Duration::from_millis(1);
+        t.daemon.answers.room.teach(slowest, slowest);
+        let pid = std::process::id();
+        lock(&t.daemon.groups.words).insert(
+            pid,
+            Word {
+                state: WordState::Waiting,
+                next: None,
+            },
+        );
+        let mut hold = Hold {
+            round: Some(Round {
+                id: 1,
+                of: [(pid, Given::Asked)].into(),
+            }),
+            ..Hold::default()
+        };
+        std::thread::sleep(slowest * 2);
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(
+            hold.round.is_some(),
+            "a pending word was treated as a completed failed pass"
+        );
+        hold.answered(Answered {
+            pid,
+            round: 1,
+            gave: Some(Gave {
+                freed: 1,
+                unplugging: 0,
+            }),
+        });
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(hold.round.is_none(), "a completed give-back was not judged");
+        hold.round = Some(Round {
+            id: 2,
+            of: [(pid, Given::Asked)].into(),
+        });
+        let now = Instant::now();
+        let cut = super::super::health::Cut::Stalled(
+            t.daemon.answers.room.stalled(now - slowest * 2, now).unwrap(),
+        );
+        t.daemon.refuse_word(pid, &cut);
+        t.daemon.judge_round("pending", &[], &mut hold);
+        assert!(
+            hold.round.is_none(),
+            "an authoritative refusal did not finish the round"
+        );
+    }
 
     #[test]
     fn a_group_is_named_as_a_file_of_the_home_alone() {
@@ -1042,12 +1171,14 @@ mod tests {
     /// the period the kernel's default where it is left out; each within the kernel's bounds.
     #[test]
     fn cpu_budgets_read_as_the_kernel_reads_them() {
-        assert_eq!(cpu_max("max 100000\n"), Ok(None));
-        assert_eq!(cpu_max("max"), Ok(None));
-        assert_eq!(cpu_max("50000 100000"), Ok(Some((50_000, 100_000))));
-        assert_eq!(cpu_max("250000\n"), Ok(Some((250_000, 100_000))));
-        assert_eq!(cpu_max("1000 1000"), Ok(Some((1_000, 1_000))));
-        assert_eq!(cpu_max("200000 1000000 more"), Ok(Some((200_000, 1_000_000))));
+        let cpu = |quota, period| Ok(CpuMax { quota, period });
+        assert_eq!(cpu_max("max 100000\n"), cpu(None, 100_000));
+        assert_eq!(cpu_max("max"), cpu(None, 100_000));
+        assert_eq!(cpu_max("max 20000"), cpu(None, 20_000), "max keeps its period");
+        assert_eq!(cpu_max("50000 100000"), cpu(Some(50_000), 100_000));
+        assert_eq!(cpu_max("250000\n"), cpu(Some(250_000), 100_000));
+        assert_eq!(cpu_max("1000 1000"), cpu(Some(1_000), 1_000));
+        assert_eq!(cpu_max("200000 1000000 more"), cpu(Some(200_000), 1_000_000));
         for bad in [
             "",
             "lots",
@@ -1068,10 +1199,25 @@ mod tests {
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_cpu_budget_of_every_cpu_holds_nothing() {
+        use std::num::NonZeroU32;
         let host = u64::try_from(crate::resources::host_cpus()).unwrap();
-        assert_eq!(held_cpu(None), None);
-        assert_eq!(held_cpu(Some((50_000, 100_000))), Some((50_000, 100_000)));
-        assert_eq!(held_cpu(Some((host * 100_000, 100_000))), None);
+        let cpu = |quota, period| CpuMax { quota, period };
+        let held = |quota, period| {
+            Ok(shards_vmm::vm::group::Budget {
+                quota: NonZeroU32::new(quota),
+                period: NonZeroU32::new(period).unwrap(),
+            })
+        };
+        assert_eq!(held_cpu(CpuMax::default()), held(0, 100_000));
+        assert_eq!(
+            held_cpu(cpu(None, 20_000)),
+            held(0, 20_000),
+            "max keeps its period"
+        );
+        assert_eq!(held_cpu(cpu(Some(50_000), 100_000)), held(50_000, 100_000));
+        assert_eq!(held_cpu(cpu(Some(host * 100_000), 100_000)), held(0, 100_000));
+        assert!(held_cpu(cpu(None, 0)).is_err());
+        assert!(held_cpu(cpu(None, 1 << 32)).is_err());
     }
 
     /// An ask made while a member's word is under way waits behind it, the newest room told
@@ -1131,7 +1277,13 @@ mod tests {
             "max 100000\n"
         );
         std::fs::write(dir.join("cpu.max"), "50000\n").unwrap();
-        assert_eq!(budget(&dir).unwrap().cpu, Some((50_000, 100_000)));
+        assert_eq!(
+            budget(&dir).unwrap().cpu,
+            CpuMax {
+                quota: Some(50_000),
+                period: 100_000
+            }
+        );
         std::fs::write(dir.join("cpu.max"), "max 100000\n").unwrap();
         std::fs::write(dir.join("memory.high"), "1G\n").unwrap();
         assert_eq!(made(&home, "agents").unwrap(), dir);

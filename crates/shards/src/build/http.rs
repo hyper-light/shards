@@ -28,6 +28,9 @@ use shards_image::reference::{Algorithm, Digest};
 use shards_image::store::{Limits, Room};
 use shards_registry::http::{Cancel, Client, Redirects, Request};
 use shards_registry::url::Url;
+use zeroize::Zeroizing;
+
+use super::grant;
 
 /// A fetched file: where its bytes are, how many, and its mtime.
 #[derive(Debug)]
@@ -38,6 +41,110 @@ pub struct Download {
     pub digest: Digest,
     /// Its Last-Modified, as `http.ParseTime` reads it, if it has one Go can read.
     pub last_modified: Option<(i64, u32)>,
+    /// What an S3 object was served as, for the build's record: `versionId=ID`, else
+    /// `etag=ETAG`.
+    pub served_as: Option<String>,
+    /// How an S3 object's request was signed, which the build says (D54).
+    pub signed: Option<super::s3::Signed>,
+}
+
+/// What a source's fetch sends and where it may go, beyond what any URL's fetch does: the
+/// Authorization the build's secrets give it (BuildKit's http source), and an Agentfile
+/// directive's grant (D54).
+#[derive(Clone, Default)]
+pub struct Reach {
+    pub authorization: Option<Zeroizing<String>>,
+    pub grant: Option<grant::Redirects>,
+}
+
+/// Secret names BuildKit v0.28.1's http source reads a host's Authorization from
+/// (source/http/source.go `HTTPAuthHeaderSecretPrefix`, `HTTPAuthTokenSecretPrefix`).
+const AUTH_HEADER_PREFIX: &str = "HTTP_AUTH_HEADER_";
+const AUTH_TOKEN_PREFIX: &str = "HTTP_AUTH_TOKEN_";
+
+impl Reach {
+    /// What source `url`, with `attrs`, reaches with the build's `secrets`. The
+    /// Authorization is BuildKit v0.28.1's (newHTTPRequest): the secret
+    /// `http.authheadersecret` names, which must be there; else `HTTP_AUTH_HEADER_<host>`,
+    /// the whole header, then `HTTP_AUTH_TOKEN_<host>`, a Bearer token, which wins where
+    /// both are; `<host>` the URL's host as written, without its port.
+    pub fn of(
+        url: &str,
+        attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+        secrets: &std::collections::BTreeMap<String, shards_cmdline::buildflags::SecretBytes>,
+    ) -> Result<Reach, String> {
+        let text = |id: &str, b: &[u8]| {
+            String::from_utf8(b.to_vec())
+                .map(Zeroizing::new)
+                .map_err(|_| format!("failed to retrieve HTTP auth secret {id}: not UTF-8"))
+        };
+        let authorization = match attrs.get(b"http.authheadersecret".as_slice()) {
+            Some(id) => {
+                let id = String::from_utf8_lossy(id).into_owned();
+                let secret = secrets.get(&id).ok_or_else(|| {
+                    format!("failed to retrieve HTTP auth secret {id}: secret {id}: not found")
+                })?;
+                Some(text(&id, secret.bytes())?)
+            }
+            None => match hostname(url) {
+                None => None,
+                Some(host) => {
+                    let token = format!("{AUTH_TOKEN_PREFIX}{host}");
+                    let header = format!("{AUTH_HEADER_PREFIX}{host}");
+                    match (secrets.get(&token), secrets.get(&header)) {
+                        (Some(t), _) => Some(Zeroizing::new(format!(
+                            "Bearer {}",
+                            text(&token, t.bytes())?.as_str()
+                        ))),
+                        (None, Some(h)) => Some(text(&header, h.bytes())?),
+                        (None, None) => None,
+                    }
+                }
+            },
+        };
+        Ok(Reach {
+            authorization,
+            grant: grant::of(attrs)?,
+        })
+    }
+}
+
+/// `url`'s host as Go's `URL.Hostname` gives it: after any userinfo, without its port or
+/// an IPv6 address's brackets, its case as written.
+fn hostname(url: &str) -> Option<&str> {
+    let (_, authority, _) = authority(url)?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next(),
+        None => host.split(':').next(),
+    }
+}
+
+/// Whether a header set on a request to `initial` goes with its redirect to `to`: Go's
+/// client copies Authorization only to the same host or a subdomain of it, by host alone
+/// (net/http client.go shouldCopyHeaderOnRedirect, isDomainOrSubdomain).
+fn domain_or_subdomain(to: &str, initial: &str) -> bool {
+    if to == initial {
+        return true;
+    }
+    if to.starts_with('[') || to.contains('%') {
+        return false;
+    }
+    to.len() > initial.len()
+        && to.ends_with(initial)
+        && to.as_bytes().get(to.len() - initial.len() - 1) == Some(&b'.')
+}
+
+/// A source a build fetches: a URL's (`ADD`'s, or an Agentfile directive's), or an S3
+/// object (D54).
+#[derive(Clone)]
+pub enum Source {
+    Url {
+        url: String,
+        checksum: Option<String>,
+        reach: Reach,
+    },
+    S3(super::s3::Object),
 }
 
 /// Why a fetch failed, and when BuildKit fails it: while it works out the source's cache
@@ -53,8 +160,7 @@ pub enum Failure {
 struct Job {
     config: std::sync::Arc<shards_registry::tls::ClientConfig>,
     cancel: Cancel,
-    url: String,
-    checksum: Option<String>,
+    source: Source,
     /// The `Accept` the source asks with (llb.Header), if any.
     accept: Option<String>,
     path: PathBuf,
@@ -63,6 +169,10 @@ struct Job {
 
 impl Job {
     fn run(self) -> Result<Download, Failure> {
+        let (url, checksum, reach) = match self.source {
+            Source::S3(object) => return object.fetch(self.cancel, self.path, &self.limits),
+            Source::Url { url, checksum, reach } => (url, checksum, reach),
+        };
         let config = self.config;
         // As BuildKit's http source reaches a URL: through the proxies the environment names.
         let client = Client::new(
@@ -75,9 +185,10 @@ impl Job {
         }));
         fetch(
             &client,
-            &self.url,
-            self.checksum.as_deref(),
+            &url,
+            checksum.as_deref(),
             self.accept.as_deref(),
+            &reach,
             self.path,
             &self.limits,
         )
@@ -98,13 +209,8 @@ pub struct Downloads {
 }
 
 impl Downloads {
-    /// Starts fetching each source, `(op, url, checksum)`, into `dir`, each within
-    /// `limits`.
-    pub fn start(
-        sources: Vec<(usize, String, Option<String>)>,
-        dir: &Path,
-        limits: Limits,
-    ) -> Result<Downloads, String> {
+    /// Starts fetching each source, `(op, source)`, into `dir`, each within `limits`.
+    pub fn start(sources: Vec<(usize, Source)>, dir: &Path, limits: Limits) -> Result<Downloads, String> {
         let (tx, done) = mpsc::channel();
         let mut downloads = Downloads {
             cancel: Cancel::new(),
@@ -117,12 +223,11 @@ impl Downloads {
         }
         // The platform's roots, as Go's default transport trusts: no registry's certs.d.
         let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
-        for (op, url, checksum) in sources {
+        for (op, source) in sources {
             let job = Job {
                 config: config.clone(),
                 cancel: downloads.cancel.clone(),
-                url,
-                checksum,
+                source,
                 accept: None,
                 path: dir.join(op.to_string()),
                 limits,
@@ -185,13 +290,14 @@ impl Drop for Downloads {
     }
 }
 
-/// Fetches `url` into `path`, within `limits`; `checksum` is the source's
-/// `http.checksum`.
+/// Fetches `url` into `path`, within `limits`, reaching what `reach` lets it; `checksum`
+/// is the source's `http.checksum`.
 pub fn fetch(
     client: &Client,
     url: &str,
     checksum: Option<&str>,
     accept: Option<&str>,
+    reach: &Reach,
     path: PathBuf,
     limits: &Limits,
 ) -> Result<Download, Failure> {
@@ -201,15 +307,31 @@ pub fn fetch(
     };
     let (target, authorization) = userinfo(url).map_err(fail)?;
     let parsed = Url::parse(&as_go_sends(&target)).map_err(|e| fail(e.to_string()))?;
-    // Credentials from the userinfo go with the first request alone (net/http
-    // Client.send), so never to where it redirects.
+    let hops = reach.grant.clone().map(|g| grant::Hops::new(parsed.clone(), g));
+    let initial = parsed.host().to_string();
     let first = Cell::new(true);
-    let authorize = |_: &Url| {
-        Ok(if first.replace(false) {
-            authorization.clone()
-        } else {
-            None
-        })
+    // Once a redirect leaves the first host's domain, the secret's header is not sent
+    // again, whatever later hops reach (Go 1.23.5's fix of CVE-2024-45336).
+    let dropped = Cell::new(false);
+    let authorize = |to: &Url| -> Result<Option<String>, shards_registry::Error> {
+        if let Some(h) = &hops {
+            h.check(to).map_err(|r| io::Error::other(r.to_string()))?;
+        }
+        let first = first.replace(false);
+        match &reach.authorization {
+            // The secret's header, in place of the userinfo's, on the first request, and
+            // with each redirect within its host's domain.
+            Some(secret) => {
+                if !first && (dropped.get() || !domain_or_subdomain(to.host(), &initial)) {
+                    dropped.set(true);
+                    return Ok(None);
+                }
+                Ok(Some(secret.as_str().to_string()))
+            }
+            // Credentials from the userinfo go with the first request alone (net/http
+            // Client.send), so never to where it redirects.
+            None => Ok(if first { authorization.clone() } else { None }),
+        }
     };
     let mut headers = vec![("Accept-Encoding", "gzip")];
     if let Some(a) = accept {
@@ -224,8 +346,13 @@ pub fn fetch(
     };
     let mut response = client
         .follow(&request, &authorize, Redirects::Anywhere)
-        .map_err(|e| fail(format!("Get {:?}: {e}", shown(url))))?;
-    if checksum.is_none() {
+        .map_err(|e| match hops.as_ref().and_then(grant::Hops::refused) {
+            Some(refused) => fail(refused.to_string()),
+            None => fail(format!("Get {:?}: {e}", shown(url))),
+        })?;
+    // An Agentfile directive's fetch is refused the server's error whatever pins it: a
+    // checksum would only hide it as a mismatch (D54).
+    if checksum.is_none() || reach.grant.is_some() {
         if !(200..400).contains(&response.status) {
             return Err(fail(format!("invalid response status {}", response.status)));
         }
@@ -277,6 +404,8 @@ pub fn fetch(
         size,
         digest: got,
         last_modified,
+        served_as: None,
+        signed: None,
     })
 }
 
@@ -289,6 +418,23 @@ pub fn fetch_now(
     limits: &Limits,
 ) -> Result<Download, String> {
     fetch_accepting(url, checksum, None, path, limits)
+}
+
+/// A source fetched now, on this thread, within `limits`: what the build's own fetch of it
+/// would make, as policies and SOURCE_DATE_EPOCH ask for it before the build runs.
+pub fn fetch_source(source: Source, path: PathBuf, limits: &Limits) -> Result<Download, String> {
+    let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
+    let job = Job {
+        config,
+        cancel: Cancel::new(),
+        source,
+        accept: None,
+        path,
+        limits: *limits,
+    };
+    job.run().map_err(|f| match f {
+        Failure::CacheKey(e) | Failure::Snapshot(e) => e,
+    })
 }
 
 /// The most a policy's fetch takes (the attestation builtins' and `http.send`'s): buildx
@@ -310,8 +456,11 @@ pub fn fetch_accepting(
     let job = Job {
         config,
         cancel: Cancel::new(),
-        url: url.to_string(),
-        checksum: checksum.map(String::from),
+        source: Source::Url {
+            url: url.to_string(),
+            checksum: checksum.map(String::from),
+            reach: Reach::default(),
+        },
         accept: accept.map(String::from),
         path,
         limits: *limits,
@@ -372,6 +521,21 @@ impl Hasher {
             Hasher::Sha512(h) => Digest::from_hash(Algorithm::Sha512, &h.finalize()),
         }
     }
+}
+
+/// Saves `body` to a new file at `path`, within `limits` and the room its filesystem has:
+/// its length and its SHA-256.
+pub(super) fn save_file(body: impl Read, path: &Path, limits: &Limits) -> Result<(u64, Digest), String> {
+    let dir = path.parent().unwrap_or(path);
+    let mut room = Room::new(dir, limits).map_err(|e| e.to_string())?;
+    let mut file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut to = Bounded {
+        file: &mut file,
+        room: &mut room,
+        written: 0,
+        limit: limits.bytes,
+    };
+    save(body, &mut to, Algorithm::Sha256).map_err(|e| e.to_string())
 }
 
 /// Copies `body` to `file`: its length and its hash by `algorithm`.
@@ -799,6 +963,53 @@ fn days_in(month: u32, year: i64) -> u32 {
     }
 }
 
+/// A server on loopback for tests: each request's head, as it came, and what `answer`
+/// answers that head with (status line and fields, and a body).
+#[cfg(test)]
+pub(super) fn serve(
+    answer: impl Fn(&str) -> (String, Vec<u8>) + Send + Sync + 'static,
+) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::BufRead as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (answer, held) = (std::sync::Arc::new(answer), seen.clone());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let (answer, seen) = (answer.clone(), held.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut out = stream;
+                loop {
+                    let mut head = String::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push_str(&line);
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let (fields, body) = answer(&head);
+                    seen.lock().unwrap().push(head);
+                    let reply = format!("{fields}\r\nContent-Length: {}\r\n\r\n", body.len());
+                    if out
+                        .write_all(reply.as_bytes())
+                        .and_then(|_| out.write_all(&body))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    (port, seen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,5 +1125,263 @@ mod tests {
         );
         assert_eq!(shown("https://u:secret@h/x"), "https://u:***@h/x");
         assert_eq!(shown("https://u@h/x"), "https://u@h/x");
+    }
+
+    fn secrets(
+        pairs: &[(&str, &str)],
+    ) -> std::collections::BTreeMap<String, shards_cmdline::buildflags::SecretBytes> {
+        pairs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.to_string(),
+                    shards_cmdline::buildflags::SecretBytes::new(v.as_bytes().to_vec()),
+                )
+            })
+            .collect()
+    }
+
+    fn fetched(source: Source) -> (Result<Download, String>, shards_testdir::TempDir) {
+        let dir = shards_testdir::TempDir::new("http-reach").unwrap();
+        (fetch_source(source, dir.join("got"), &Limits::none()), dir)
+    }
+
+    /// An HTTP source is sent the Authorization the build's secrets give its host, as
+    /// BuildKit v0.28.1's http source sends it: `HTTP_AUTH_TOKEN_<host>` as a Bearer token,
+    /// which wins over `HTTP_AUTH_HEADER_<host>`, the whole header; the secret an
+    /// `http.authheadersecret` names, which must be there. Another host's are not sent.
+    #[test]
+    fn a_hosts_secrets_authorize_its_fetch_as_buildkits_do() {
+        let none = std::collections::BTreeMap::new();
+        let url = "https://u:p@files.example:8443/a.tgz";
+        let auth = |attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>, pairs: &[(&str, &str)]| {
+            Reach::of(url, attrs, &secrets(pairs)).map(|r| r.authorization.map(|a| a.as_str().to_string()))
+        };
+        assert_eq!(
+            auth(&none, &[("HTTP_AUTH_TOKEN_files.example", "t0k")]),
+            Ok(Some("Bearer t0k".into()))
+        );
+        assert_eq!(
+            auth(&none, &[("HTTP_AUTH_HEADER_files.example", "Basic eDp5")]),
+            Ok(Some("Basic eDp5".into()))
+        );
+        assert_eq!(
+            auth(
+                &none,
+                &[
+                    ("HTTP_AUTH_HEADER_files.example", "Basic eDp5"),
+                    ("HTTP_AUTH_TOKEN_files.example", "t0k")
+                ]
+            ),
+            Ok(Some("Bearer t0k".into()))
+        );
+        assert_eq!(auth(&none, &[("HTTP_AUTH_TOKEN_other.example", "t0k")]), Ok(None));
+        let named = std::collections::BTreeMap::from([(b"http.authheadersecret".to_vec(), b"MINE".to_vec())]);
+        assert_eq!(
+            auth(
+                &named,
+                &[("MINE", "Bearer m"), ("HTTP_AUTH_TOKEN_files.example", "t")]
+            ),
+            Ok(Some("Bearer m".into()))
+        );
+        assert_eq!(
+            auth(&named, &[]),
+            Err("failed to retrieve HTTP auth secret MINE: secret MINE: not found".into())
+        );
+        assert_eq!(hostname("http://[::1]:80/x"), Some("::1"));
+        assert_eq!(hostname("http://Files.Example/x"), Some("Files.Example"));
+    }
+
+    /// A server that asks for the secret's header serves the fetch that sends it; without
+    /// the secret the fetch is refused with the server's status, as BuildKit refuses it.
+    #[test]
+    fn a_server_that_asks_for_the_header_serves_only_the_build_with_the_secret() {
+        let (server, _) = serve(|head| {
+            if head.contains("\r\nAuthorization: Bearer t0k\r\n") {
+                ("HTTP/1.1 200 OK".into(), b"tarball".to_vec())
+            } else {
+                ("HTTP/1.1 401 Unauthorized".into(), Vec::new())
+            }
+        });
+        let url = format!("http://127.0.0.1:{server}/a.tgz");
+        let none = std::collections::BTreeMap::new();
+        let with = Reach::of(&url, &none, &secrets(&[("HTTP_AUTH_TOKEN_127.0.0.1", "t0k")])).unwrap();
+        let (got, _d1) = fetched(Source::Url {
+            url: url.clone(),
+            checksum: None,
+            reach: with,
+        });
+        assert_eq!(got.unwrap().size, 7);
+        let without = Reach::of(&url, &none, &secrets(&[])).unwrap();
+        let (refused, _d2) = fetched(Source::Url {
+            url: url.clone(),
+            checksum: None,
+            reach: without,
+        });
+        assert_eq!(refused.unwrap_err(), "invalid response status 401");
+        // An Agentfile directive's source, pinned: still the server's status, not a mismatch.
+        let directive = std::collections::BTreeMap::from([(b"shards.grant".to_vec(), Vec::new())]);
+        let pinned = Source::Url {
+            checksum: Some(format!("sha256:{}", "0".repeat(64))),
+            reach: Reach::of(&url, &directive, &secrets(&[])).unwrap(),
+            url,
+        };
+        let (refused, _d3) = fetched(pinned);
+        assert_eq!(refused.unwrap_err(), "invalid response status 401");
+    }
+
+    /// An Agentfile directive's http(s) source is pinned by its checksum (D54, P4.2): bytes that
+    /// hash to another are refused in BuildKit's words, naming both digests; the bytes the pin
+    /// names are fetched.
+    #[test]
+    fn a_directives_source_serving_other_bytes_than_its_pin_is_refused() {
+        let (server, _) = serve(|_| ("HTTP/1.1 200 OK".into(), b"agent v2".to_vec()));
+        let url = format!("http://127.0.0.1:{server}/a.tgz");
+        let directive = std::collections::BTreeMap::from([(b"shards.grant".to_vec(), Vec::new())]);
+        let pinned = |sum: String| Source::Url {
+            checksum: Some(sum),
+            reach: Reach::of(&url, &directive, &secrets(&[])).unwrap(),
+            url: url.clone(),
+        };
+        let digest = |b: &[u8]| format!("sha256:{}", super::super::sha256(b).hex());
+        let (refused, _d1) = fetched(pinned(digest(b"agent v1")));
+        assert_eq!(
+            refused.unwrap_err(),
+            format!("digest mismatch {}: {}", digest(b"agent v2"), digest(b"agent v1"))
+        );
+        let (got, _d2) = fetched(pinned(digest(b"agent v2")));
+        assert_eq!(got.unwrap().digest.to_string(), digest(b"agent v2"));
+    }
+
+    /// The secret's header goes with the fetch and its redirects within its host's domain,
+    /// in place of the URL's own credentials; once a redirect leaves the domain, it goes
+    /// with none after it, as Go's client sends it.
+    #[test]
+    fn a_secrets_header_stays_within_its_hosts_domain() {
+        let (other, other_seen) = serve(|_| ("HTTP/1.1 200 OK".into(), b"payload".to_vec()));
+        let (first, first_seen) = serve(move |line| {
+            if line.starts_with("GET /a.tgz") {
+                ("HTTP/1.1 302 Found\r\nLocation: /b.tgz".into(), Vec::new())
+            } else {
+                (
+                    format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{other}/c.tgz"),
+                    Vec::new(),
+                )
+            }
+        });
+        let url = format!("http://u:p@127.0.0.1:{first}/a.tgz");
+        let reach = Reach::of(
+            &url,
+            &std::collections::BTreeMap::new(),
+            &secrets(&[("HTTP_AUTH_TOKEN_127.0.0.1", "t0k")]),
+        )
+        .unwrap();
+        let (got, _dir) = fetched(Source::Url {
+            url,
+            checksum: None,
+            reach,
+        });
+        assert_eq!(got.unwrap().size, 7);
+        let first_seen = first_seen.lock().unwrap();
+        assert_eq!(first_seen.len(), 2);
+        assert!(
+            first_seen
+                .iter()
+                .all(|h| h.contains("Authorization: Bearer t0k\r\n")),
+            "{first_seen:?}"
+        );
+        let other_seen = other_seen.lock().unwrap();
+        assert!(!other_seen.concat().contains("Authorization"), "{other_seen:?}");
+    }
+
+    /// An Agentfile directive's fetch (D54) reaches its own origin and what it grants: a
+    /// redirect elsewhere is refused before anything is sent there, in these words; with
+    /// the origin granted it is followed. An `ADD`'s fetch, which carries no grant, follows
+    /// it as BuildKit does.
+    #[test]
+    fn a_granted_fetch_is_refused_a_redirect_it_does_not_name() {
+        let (elsewhere, elsewhere_seen) = serve(|_| ("HTTP/1.1 200 OK".into(), b"tarball".to_vec()));
+        let (first, _) = serve(move |_| {
+            (
+                format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere}/x.tgz"),
+                Vec::new(),
+            )
+        });
+        let url = format!("http://127.0.0.1:{first}/a.tgz");
+        let held = |grant: &str| {
+            let attrs =
+                std::collections::BTreeMap::from([(b"shards.grant".to_vec(), grant.as_bytes().to_vec())]);
+            Source::Url {
+                url: url.clone(),
+                checksum: None,
+                reach: Reach::of(&url, &attrs, &secrets(&[])).unwrap(),
+            }
+        };
+        let (refused, _d1) = fetched(held(""));
+        assert_eq!(
+            refused.unwrap_err(),
+            format!(
+                "redirected from http://127.0.0.1:{first} to http://127.0.0.1:{elsewhere}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+            )
+        );
+        assert!(
+            elsewhere_seen.lock().unwrap().is_empty(),
+            "nothing reached the origin refused"
+        );
+        let (granted, _d2) = fetched(held(&format!("127.0.0.1:{elsewhere}")));
+        assert_eq!(granted.unwrap().size, 7);
+        let (added, _d3) = fetched(Source::Url {
+            url: url.clone(),
+            checksum: None,
+            reach: Reach::default(),
+        });
+        assert_eq!(added.unwrap().size, 7);
+    }
+
+    /// A SKILL's source and an MCP server's from Git (D54) take `--redirect` as AGENT's
+    /// and HARNESS's do: a SKILL from a URL that redirects to another origin is refused in
+    /// the grant's words, nothing sent there, and fetched once `--redirect` names that
+    /// origin; the planner gives an MCP server's Git source the same grant.
+    #[test]
+    fn a_skill_from_a_redirecting_source_is_fetched_once_granted() {
+        let (elsewhere, elsewhere_seen) = serve(|_| ("HTTP/1.1 200 OK".into(), b"skill".to_vec()));
+        let (first, _) = serve(move |_| {
+            (
+                format!("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere}/s.md"),
+                Vec::new(),
+            )
+        });
+        let skill = |redirect: &str| {
+            let (id, attrs) = crate::build::planned_sources(&format!(
+                "SKILL {redirect}http://127.0.0.1:{first}/s.md /skills/s/SKILL.md"
+            ))
+            .into_iter()
+            .next()
+            .unwrap();
+            let url = String::from_utf8(id).unwrap();
+            Source::Url {
+                reach: Reach::of(&url, &attrs, &secrets(&[])).unwrap(),
+                url,
+                checksum: None,
+            }
+        };
+        let (refused, _d1) = fetched(skill(""));
+        assert_eq!(
+            refused.unwrap_err(),
+            format!(
+                "redirected from http://127.0.0.1:{first} to http://127.0.0.1:{elsewhere}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+            )
+        );
+        assert!(elsewhere_seen.lock().unwrap().is_empty());
+        let (granted, _d2) = fetched(skill(&format!("--redirect=127.0.0.1:{elsewhere} ")));
+        assert_eq!(granted.unwrap().size, 5);
+        let mcp = crate::build::planned_sources(
+            "MCP --redirect=mirror.example:8443 files FROM https://git.example/o/files.git#main",
+        );
+        let grants: Vec<&[u8]> = mcp
+            .iter()
+            .filter_map(|(_, a)| a.get(shards_agentfile::agentfile::GRANT_ATTR).map(Vec::as_slice))
+            .collect();
+        assert_eq!(grants, [b"mirror.example:8443".as_slice()]);
     }
 }

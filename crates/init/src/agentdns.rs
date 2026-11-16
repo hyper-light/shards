@@ -23,6 +23,8 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::dnsrelay::Flight;
+
 /// Init's end of the relay's control link, by which askers come and go as the members a
 /// microVM's engine makes join and leave (D181): each message an asker to keep (`A`, its
 /// link's index, whether it may ask any name, how many addresses it has and each,
@@ -56,6 +58,25 @@ impl Asker {
     fn may_ask(&self, q: &[u8]) -> bool {
         self.any || query_name(q).is_some_and(|name| self.names.contains(&name))
     }
+
+    /// What question `q` of its is answered, as its grants stand.
+    fn verdict(&self, q: &[u8]) -> Verdict {
+        if let Some(answer) = self.local.iter().find(|t| t.holds(q)).and_then(|t| t.answer(q)) {
+            Verdict::Here(answer)
+        } else if self.may_ask(q) {
+            Verdict::Upstream
+        } else {
+            Verdict::Refused
+        }
+    }
+}
+
+/// What a question is answered: from its asker's names here (D181), by the microVM's
+/// resolver, or REFUSED.
+enum Verdict {
+    Here(Vec<u8>),
+    Upstream,
+    Refused,
 }
 
 /// Starts the relay on `listen` (port 53 of every switch address) and `upstream`
@@ -151,8 +172,16 @@ pub fn running() -> bool {
     CONTROL.get().is_some()
 }
 
-/// Has the relay keep `asker`, in place of any of its link's (D181).
+/// Has the relay keep `asker`, in place of any of its link's (D181), its names among it
+/// (D278).
 pub fn admit(asker: &Asker) -> io::Result<()> {
+    tell(&admission(asker)?)
+}
+
+/// What [`admit`] tells the relay: its link, whether it may ask any name, its addresses, each
+/// name it may ask (a length, then its bytes: a host's name is 253 at most, D236), then its
+/// tables.
+fn admission(asker: &Asker) -> io::Result<Vec<u8>> {
     let mut m = vec![b'A'];
     m.extend_from_slice(&asker.link.to_be_bytes());
     m.push(u8::from(asker.any));
@@ -162,6 +191,11 @@ pub fn admit(asker: &Asker) -> io::Result<()> {
     for a in &asker.addrs {
         m.extend_from_slice(&a.octets());
     }
+    m.push(u8::try_from(asker.names.len()).map_err(|_| io::Error::other("an asker with too many names"))?);
+    for name in &asker.names {
+        m.push(u8::try_from(name.len()).map_err(|_| io::Error::other("a name too long to ask"))?);
+        m.extend_from_slice(name.as_bytes());
+    }
     for table in &asker.local {
         let bytes = table.table();
         let len =
@@ -169,7 +203,7 @@ pub fn admit(asker: &Asker) -> io::Result<()> {
         m.extend_from_slice(&len.to_be_bytes());
         m.extend_from_slice(&bytes);
     }
-    tell(&m)
+    Ok(m)
 }
 
 /// Has the relay let the asker of link `link` go (D181).
@@ -210,8 +244,21 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
                 return false;
             };
             let addrs = addrs.iter().map(|c| Ipv4Addr::from(*c)).collect();
+            let Some((&count, mut rest)) = m.get(end..).and_then(<[u8]>::split_first) else {
+                return false;
+            };
+            let mut names = Vec::new();
+            for _ in 0..count {
+                let Some((&len, tail)) = rest.split_first() else {
+                    return false;
+                };
+                let Some((name, tail)) = tail.split_at_checked(usize::from(len)) else {
+                    return false;
+                };
+                names.push(String::from_utf8_lossy(name).into_owned());
+                rest = tail;
+            }
             let mut local = Vec::new();
-            let mut rest = m.get(end..).unwrap_or_default();
             while let Some((&[a, b], tail)) = rest.split_first_chunk::<2>() {
                 let len = usize::from(u16::from_be_bytes([a, b]));
                 let Some((table, tail)) = tail.split_at_checked(len) else {
@@ -231,7 +278,7 @@ fn apply(m: &[u8], askers: &RwLock<Vec<Asker>>) -> bool {
             a.push(Asker {
                 link,
                 any: any != 0,
-                names: Vec::new(),
+                names,
                 addrs,
                 local,
             });
@@ -373,68 +420,9 @@ fn answer_to(sock: &UdpSocket, answer: &[u8], to: &Arrival) -> io::Result<()> {
     Ok(())
 }
 
-/// The questions in flight, each under an ID of the relay's own, and how many each asker's
-/// link holds: each may hold an equal share of the IDs (`u16::MAX` over the askers), so
-/// that one asking without end takes no other's.
-struct Flight<T> {
-    pending: HashMap<u16, (u32, T, Instant)>,
-    held: HashMap<u32, usize>,
-    share: usize,
-}
-
-impl<T> Flight<T> {
-    fn new(askers: usize) -> Self {
-        Flight {
-            pending: HashMap::new(),
-            held: HashMap::new(),
-            share: usize::from(u16::MAX) / askers.max(1),
-        }
-    }
-
-    /// Whether a question from `link` may go: it holds less than its share.
-    fn admits(&self, link: u32) -> bool {
-        self.held.get(&link).copied().unwrap_or(0) < self.share
-    }
-
-    fn insert(&mut self, id: u16, link: u32, what: T, at: Instant) {
-        if let Some((old, _, _)) = self.pending.insert(id, (link, what, at)) {
-            self.release(old);
-        }
-        *self.held.entry(link).or_insert(0) += 1;
-    }
-
-    fn remove(&mut self, id: u16) -> Option<T> {
-        let (link, what, _) = self.pending.remove(&id)?;
-        self.release(link);
-        Some(what)
-    }
-
-    /// Lets go what has waited `WAIT`.
-    fn expire(&mut self, now: Instant) {
-        let gone: Vec<u32> = self
-            .pending
-            .values()
-            .filter(|(_, _, at)| now.duration_since(*at) >= WAIT)
-            .map(|(link, _, _)| *link)
-            .collect();
-        self.pending
-            .retain(|_, (_, _, at)| now.duration_since(*at) < WAIT);
-        for link in gone {
-            self.release(link);
-        }
-    }
-
-    fn release(&mut self, link: u32) {
-        if let Some(n) = self.held.get_mut(&link) {
-            *n = n.saturating_sub(1);
-        }
-    }
-}
-
 /// The descriptors each TCP asker may hold: an equal share of those the process may open
-/// (RLIMIT_NOFILE) beyond those it has open, two to a connection (the asker's and the
-/// upstream one).
-fn tcp_share(askers: usize) -> usize {
+/// (RLIMIT_NOFILE) beyond those it has open, divided by the sockets a connection owns.
+pub(crate) fn tcp_share(askers: usize, sockets: usize) -> usize {
     // SAFETY: an all-zero rlimit, filled by getrlimit(2).
     let mut lim: libc::rlimit = unsafe { std::mem::zeroed() };
     // SAFETY: getrlimit(2) into the struct just made.
@@ -443,13 +431,18 @@ fn tcp_share(askers: usize) -> usize {
     } else {
         0
     };
-    let open = std::fs::read_dir("/proc/self/fd").map_or(0, Iterator::count);
-    soft.saturating_sub(open) / 2 / askers.max(1)
+    let Ok(open) = std::fs::read_dir("/proc/self/fd") else {
+        return 0;
+    };
+    soft.saturating_sub(open.count())
+        .checked_div(sockets)
+        .unwrap_or(0)
+        / askers.max(1)
 }
 
 /// The TCP questions: each connection on a thread of its own, its asker known by its
-/// address, each question answered REFUSED or relayed to the microVM's resolver `to` over a
-/// connection of its own; idle for `WAIT`, it is closed.
+/// address, each question answered from its names here, REFUSED, or relayed to the
+/// microVM's resolver `to` over a connection of its own; idle for `WAIT`, it is closed.
 fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>) {
     // By each asker's link, which outlasts its place in the list as askers come and go.
     let held: std::sync::Mutex<HashMap<u32, usize>> = std::sync::Mutex::new(HashMap::new());
@@ -459,15 +452,18 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
             let Ok(SocketAddr::V4(from)) = conn.peer_addr() else {
                 continue;
             };
-            let (asker, share) = {
+            let (link, share) = {
                 let a = askers.read().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (
-                    a.iter().find(|a| a.addrs.contains(from.ip())).cloned(),
-                    tcp_share(a.len()),
+                    a.iter().find(|a| a.addrs.contains(from.ip())).map(|a| a.link),
+                    tcp_share(a.len(), 2),
                 )
             };
-            let Some(asker) = asker else { continue };
-            let link = asker.link;
+            let Some(link) = link else { continue };
+            let asker = Who {
+                link,
+                addr: *from.ip(),
+            };
             {
                 let mut h = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let n = h.entry(link).or_insert(0);
@@ -480,7 +476,7 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
             let served = std::thread::Builder::new()
                 .name("agentdns-conn".into())
                 .spawn_scoped(scope, move || {
-                    let _ = serve_connection(&mut conn, to, &asker);
+                    let _ = serve_connection(&mut conn, to, askers, asker);
                     if let Some(n) = held
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -501,25 +497,46 @@ fn serve_tcp(listener: &TcpListener, to: SocketAddr, askers: &RwLock<Vec<Asker>>
     });
 }
 
-fn serve_connection(conn: &mut TcpStream, to: SocketAddr, asker: &Asker) -> io::Result<()> {
+/// A TCP connection's asker: its link, and the address it connected from.
+#[derive(Clone, Copy)]
+struct Who {
+    link: u32,
+    addr: Ipv4Addr,
+}
+
+/// Each question on `conn`, judged by its asker's grants as they stand when it comes, not
+/// as they stood when the connection opened (network-09): a member's peers that came or
+/// went since are answered as they are now (D181), and once its asker is let go of, or its
+/// link no longer has the address it connected from, the connection is closed.
+fn serve_connection(
+    conn: &mut TcpStream,
+    to: SocketAddr,
+    askers: &RwLock<Vec<Asker>>,
+    who: Who,
+) -> io::Result<()> {
     conn.set_read_timeout(Some(WAIT))?;
     conn.set_write_timeout(Some(WAIT))?;
     let mut upstream: Option<TcpStream> = None;
     while let Some(q) = crate::dnsrelay::read_message(conn)? {
-        if let Some(answer) = asker
-            .local
+        let verdict = askers
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find(|t| t.holds(&q))
-            .and_then(|t| t.answer(&q))
-        {
-            crate::dnsrelay::write_message(conn, &answer)?;
-            continue;
-        }
-        if !asker.may_ask(&q) {
-            if let Some(no) = refused(&q) {
-                crate::dnsrelay::write_message(conn, &no)?;
+            .find(|a| a.link == who.link && a.addrs.contains(&who.addr))
+            .map(|a| a.verdict(&q));
+        match verdict {
+            None => break,
+            Some(Verdict::Here(answer)) => {
+                crate::dnsrelay::write_message(conn, &answer)?;
+                continue;
             }
-            continue;
+            Some(Verdict::Refused) => {
+                if let Some(no) = refused(&q) {
+                    crate::dnsrelay::write_message(conn, &no)?;
+                }
+                continue;
+            }
+            Some(Verdict::Upstream) => {}
         }
         if upstream.is_none() {
             let up = TcpStream::connect_timeout(&to, WAIT)?;
@@ -566,9 +583,8 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 revents: 0,
             },
         ];
-        // SAFETY: poll(2) of three pollfds of ours; a second at most, so that what waits is
-        // let go in time.
-        if unsafe { libc::poll(set.as_mut_ptr(), 3, 1000) } < 0
+        // SAFETY: poll(2) of three pollfds of ours, until a question expires or I/O arrives.
+        if unsafe { libc::poll(set.as_mut_ptr(), 3, flight.wait_ms(Instant::now())) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
         {
             return;
@@ -592,7 +608,7 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 Ok(0) => said = false,
                 Ok(n) => {
                     if apply(m.get(..n).unwrap_or_default(), askers) {
-                        flight.share = usize::from(u16::MAX) / count().max(1);
+                        flight.resize(count());
                     }
                 }
                 Err(_) => {}
@@ -629,16 +645,17 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
                 continue;
             };
             // An ID of the relay's own, not one in flight.
-            while flight.pending.contains_key(&next) {
-                next = next.wrapping_add(1);
-            }
+            let Some(id) = flight.vacant_id(next) else {
+                continue;
+            };
+            next = id;
             let mut ours = q.to_vec();
             if let Some(id) = ours.get_mut(..2) {
                 id.copy_from_slice(&next.to_be_bytes());
             }
-            if upstream.send(&ours).is_ok() {
-                let link = from.link;
-                flight.insert(next, link, (from, [i0, i1]), now);
+            let link = from.link;
+            if flight.insert(next, link, (from, [i0, i1]), now).is_ok() && upstream.send(&ours).is_err() {
+                flight.remove(next);
             }
             next = next.wrapping_add(1);
         }
@@ -662,26 +679,126 @@ fn relay(listen: &UdpSocket, upstream: &UdpSocket, askers: &RwLock<Vec<Asker>>, 
 mod tests {
     use super::*;
 
+    /// An asker admitted as the run goes keeps the names it may ask (D278), and its next
+    /// admission takes its link's place, what it may ask with it; one cut short is nothing.
+    #[test]
+    fn an_askers_names_are_admitted_with_it() {
+        let askers = RwLock::new(Vec::new());
+        let asker = Asker {
+            link: 9,
+            any: false,
+            names: vec!["api.example.com".into(), "chatgpt.com".into()],
+            addrs: vec![Ipv4Addr::new(10, 88, 0, 2)],
+            local: Vec::new(),
+        };
+        assert!(apply(&admission(&asker).unwrap(), &askers));
+        {
+            let a = askers.read().unwrap();
+            assert_eq!(
+                (a.len(), a[0].names.clone(), a[0].addrs.clone()),
+                (1, asker.names.clone(), asker.addrs.clone())
+            );
+            assert!(a[0].may_ask(&question("chatgpt.com")) && !a[0].may_ask(&question("evil.example")));
+        }
+        let none = Asker {
+            names: Vec::new(),
+            ..asker
+        };
+        let told = admission(&none).unwrap();
+        assert!(apply(&told, &askers));
+        assert!(askers.read().unwrap()[0].names.is_empty(), "its names taken back");
+        assert!(!apply(&told[..told.len() - 1], &askers));
+        fn question(name: &str) -> Vec<u8> {
+            let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            q.push(u8::try_from(name.len()).unwrap());
+            q.extend_from_slice(name.as_bytes());
+            q.extend_from_slice(&[0, 0, 1, 0, 1]);
+            q
+        }
+    }
+
+    #[test]
+    fn an_existing_tcp_session_uses_the_members_current_names() {
+        fn table(entries: &[(&str, &str)]) -> shards_dns::Names {
+            let mut names = shards_dns::Names::default();
+            for &(name, ip) in entries {
+                names.add(name, ip.parse().unwrap());
+            }
+            names
+        }
+        fn question(name: &str) -> Vec<u8> {
+            let mut q = vec![0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            q.push(u8::try_from(name.len()).unwrap());
+            q.extend_from_slice(name.as_bytes());
+            q.extend_from_slice(&[0, 0, 1, 0, 1]);
+            q
+        }
+        fn ask(conn: &mut TcpStream, name: &str) -> Vec<u8> {
+            crate::dnsrelay::write_message(conn, &question(name)).unwrap();
+            crate::dnsrelay::read_message(conn).unwrap().unwrap()
+        }
+        let askers = std::sync::Arc::new(RwLock::new(vec![Asker {
+            link: 7,
+            any: false,
+            names: Vec::new(),
+            addrs: vec![Ipv4Addr::LOCALHOST],
+            local: vec![table(&[("departed", "192.0.2.7"), ("keeper", "192.0.2.8")])],
+        }]));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        upstream.set_nonblocking(true).unwrap();
+        let to = upstream.local_addr().unwrap();
+        let current = std::sync::Arc::clone(&askers);
+        // The filtered cargo test process owns this listener thread and its workers.
+        std::thread::spawn(move || serve_tcp(&listener, to, &current));
+        let mut conn = TcpStream::connect(at).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        assert_eq!(ask(&mut conn, "departed")[3] & 0x0f, 0);
+        askers.write().unwrap().first_mut().unwrap().local =
+            vec![table(&[("keeper", "192.0.2.8"), ("joined", "192.0.2.9")])];
+        assert_eq!(
+            ask(&mut conn, "departed")[3] & 0x0f,
+            5,
+            "the old TCP session kept a departed member"
+        );
+        let joined = ask(&mut conn, "joined");
+        assert_eq!(
+            shards_dns::a_records(&joined).unwrap().addresses,
+            ["192.0.2.9".parse::<std::net::IpAddr>().unwrap()]
+        );
+        assert_eq!(ask(&mut conn, "keeper")[3] & 0x0f, 0);
+        askers.write().unwrap().clear();
+        crate::dnsrelay::write_message(&mut conn, &question("keeper")).unwrap();
+        assert!(
+            crate::dnsrelay::read_message(&mut conn).unwrap().is_none(),
+            "a revoked asker retained its session"
+        );
+        assert!(
+            upstream.accept().is_err(),
+            "a local or refused name went upstream"
+        );
+    }
+
     /// One asker holding its share of the IDs is refused more, and another still asks; one
     /// answered or let go has room again.
     #[test]
     fn no_asker_takes_anothers_share_of_the_ids() {
         let now = Instant::now();
         let mut f: Flight<()> = Flight::new(2);
-        assert_eq!(f.share, 32767);
-        for id in 0..32767u16 {
+        for id in 0..32768u16 {
             assert!(f.admits(7));
-            f.insert(id, 7, (), now);
+            f.insert(id, 7, (), now).unwrap();
         }
         assert!(!f.admits(7));
         assert!(f.admits(9));
-        f.insert(40000, 9, (), now);
+        f.insert(40000, 9, (), now).unwrap();
         assert!(f.remove(0).is_some());
         assert!(f.admits(7));
-        f.insert(0, 7, (), now);
+        f.insert(0, 7, (), now).unwrap();
         f.expire(now + WAIT);
-        assert!(f.admits(7) && f.pending.is_empty());
-        assert_eq!(f.held.values().sum::<usize>(), 0);
+        assert!(f.admits(7) && f.admits(9));
+        assert_eq!(f.wait_ms(now + WAIT), -1);
     }
 
     #[test]

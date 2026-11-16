@@ -1,0 +1,15 @@
+diff --git a/crates/ipc/src/windows.rs b/crates/ipc/src/windows.rs
+index 9be5bf389..b49b4ca6e 100644
+--- a/crates/ipc/src/windows.rs
++++ b/crates/ipc/src/windows.rs
+@@ -2659,6 +2659,10 @@ fn create(
+     let stdio = |h: Option<BorrowedHandle<'_>>| {
+         h.map(|h| h.as_raw_handle())
+             .filter(|&h| !h.is_null() && h != INVALID_HANDLE_VALUE)
++            .inspect(|&h| {
++                // SAFETY: mutation.
++                unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
++            })
+             .map(inheritable_copy)
+             .transpose()
+     };

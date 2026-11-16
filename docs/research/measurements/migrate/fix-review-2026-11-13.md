@@ -1,0 +1,329 @@
+# Migration review fixes, 2026-11-13
+
+POLICY_READ: Shards base `9efde72524dd626f3ff84e6b9891852d7c810a9b`; role implementer,
+area migrate04–10. Rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
+Full policy-file hashes are in [the review](../../../bugs/2026-11-13/migrate.md).
+Current fix-brief/common-brief authorize focused remote checks and signed ff landings.
+ROOT owns VM tests, resource-fault campaigns, measurements and cross-platform gates.
+Migrate03 belongs to the memory reviewer; P0s migrate01/02 belong to Claude.
+
+## migrate06: deadline shaping respects the baseline
+
+The host capability had been used after the baseline removed CPUID1.ECX24, restoring a
+feature that the fleet CPU did not admit. KVM now intersects the capability with that
+baseline bit before shaping. With no baseline native behavior remains; a nonempty
+baseline missing leaf1 admits none of that feature. No tunable or new refusal is added.
+The CPUID register/bit is Intel SDM Vol.2A CPUID's TSC-deadline feature, an architectural
+bit, not a learned value. This preserves the existing CPU-coverage refusal semantics.
+
+Remote runner: `adacachy2`, Linux x86_64, cold target
+`~/g121-tmp/fix-migrate-v1/target`, `CARGO_INCREMENTAL=0`, commands at nice10, one cargo
+at a time. Source transferred by a small bundle carrier; no local builds/tests.
+
+- r1 / `54de9a4ae`: fixture compile failure (private helper), **not** a defect reproduction.
+- r2 / `9add07035`: `cargo test -p shards-vmm a_cpu_baseline_keeps_deadline_timer_shaping_within_its_features`.
+  One test failed on the claimed symptom: exposed bit was 16777216, expected zero.
+- r3 / fix `a09a09f0c`: `cargo test -p shards-vmm arch::x86_64::cpuid`:
+  10 passed, 0 failed; integration binaries had no matching tests.
+  `cargo clippy -p shards-vmm --all-targets -- -D warnings`: passed.
+- Main merge and post-merge focused result are recorded in the landing receipt below.
+
+Owed to ROOT on a suitable two-host KVM pair, with source deadline capability and
+destination without it: configure their common baseline and run
+`SHARDS_MOVE_INVITE=<destination-invitation> cargo test -p shards --test moved a_microvm_moved_to_another_host_keeps_its_cpu_image_files_and_connections`.
+Also run `cargo test -p shards --test moved an_x86_cpu_baseline_is_all_its_guest_finds_and_goes_with_it`.
+These are real-VM checks; neither ran here. No speed, allocation or fault claim is made.
+
+## R01–R16 evidence scope
+
+R01: pure bounded fixed-array lookup, no new fallible allocation or panic path.
+R02/R03: existing KVM capability and architectural feature-bit contract; no new tuning.
+R04: native/baseline admission explicit, existing typed CPU coverage preserved.
+R05/R06/R07/R12/R13: one shared CPUID decision at the existing backend seam; no new wait,
+cache or manager. R08/R14: no optimization or comparative claim; measurements owed.
+R09/R10: exact unit red/green above, reproducible test retained.
+R11: Linux x86_64 focused checks only; CI matrix and real hypervisor runs owed to ROOT.
+R15: implementer-only light scope, signed commits, main merged before ff push.
+R16: only the task-owned remote target is used and must be removed after the last slice;
+no other job/cache is touched.
+
+## Remaining admission and hardware work
+
+### migrate04 — owed to ROOT: independent state admission
+
+No replacement cap was added. `most_state` trusts an unadmitted RAM claim, and there is
+no independent read/restore budget in the existing `snapshot::read`, `backing_named`,
+`relocate` or move-import API. Replacing saturation alone would still admit any finite
+host-exhausting claim; a fixed MiB cap or a fraction of free RAM would invent authority.
+Mmap alone would trade the allocation for a truncation/SIGBUS hazard.
+
+Design owed: the destination's trusted restore/import owner reserves a budget for
+state and guest memory before whole-file reads. It supplies an explicit admitted limit
+through every read path; checked header arithmetic and nested lengths must fit it.
+Reservation is atomic across concurrent restores and released on refusal/cancel.
+Cold start uses local configured authority plus observed resources, never the source's
+claim. Unknown/unavailable resource observations produce a typed refusal; no fallback
+silently enlarges permission. Prefer incremental decoding so malformed trailing sparse
+bytes do not force committed allocation before structural validation.
+
+ROOT's resource-fault fixture must cover `relocate` through migration import, not only
+`decode`: sparse multi-GiB state, valid architecture/header, forged huge `memory_mib`,
+under a disposable process memory limit, with parent RSS/commit and cleanup observed.
+The proposed regression seam is `snapshot::read` with an injected admitted budget;
+`cargo test -p shards-vmm a_sparse_state_cannot_exceed_restore_admission` is the intended
+command **after ROOT implements that fixture**. It does not exist or count as run today.
+No live/OOM reproduction or fix is claimed.
+
+### migrate07 — owed to ROOT: XSAVE layout and host-pair validation
+
+The source guard is real, but a blind zero-padding change is not sufficient evidence of
+compatibility. [Linux v6.18 KVM API, section4.43](https://github.com/torvalds/linux/blob/v6.18/Documentation/virt/kvm/api.rst)
+says SET_XSAVE consumes the destination VM's CAP_XSAVE2 bytes and state offsets follow
+**host** CPUID0xD. Therefore the proposed fix must validate the saved guest components
+against source/destination component layouts, copy by admitted component offsets into a
+fallibly allocated destination-sized buffer, zero absent state and preserve the existing
+CPU-coverage refusal. Unknown/incompatible layouts must refuse typed. Padding the source
+blob without checking layout would hide an unsupported case.
+
+ROOT must first retain non-AMX/AMX same-vendor host data (CPUID0xD plus VM CAP_XSAVE2),
+then drive the already documented two-host move command above with their common
+non-AMX baseline, verifying guest vector state and progress. Add a pure buffer/layout
+regression after the minimal actual host pair is retained. No KVM VM was created here
+and no XSAVE implementation was changed.
+
+### migrate09 — owed to ROOT: measured hold period
+
+D191 already specifies `P = vcpus * g / share`, where g is the larger of measured wake
+resolution and thread CPU-clock resolution. Cold start uses measured soonest wake until
+both observations exist; failure to observe is typed, never a baked-in per-host number.
+ROOT owns the kick-cost and contention measurements prescribed by D191 before this
+policy is implemented. Neither100ms nor another chosen period was installed here.
+
+### migrate10 — owed to ROOT: learned stopping and admitted speculation
+
+Keep byte/page wire units and architectural bounds distinct from policy. Derive whether
+another round pays from observed dirtying, transfer service and destination readiness;
+a cold link has unknown costs, so begin with a bounded admitted transfer and use actual
+progress before predicting downtime. Stop when marginal progress no longer pays, with
+cancellation/resource authority bounding work rather than a chosen round count/factor.
+A destination supplies its admitted private prefetch budget; reserve it across the pool
+and release it on cancellation. Learn record/queue sizes from the resource allowance
+and actual service/consumer waits instead of fixed1MiB/two-frame choices. Snapshot
+publication retries follow observed generation replacement/progress and cancellation,
+not a picked count. Recording ends at an explicit startup observation, with measured
+resource cost/refusal for a start that remains unobserved. ROOT still owes cold-link,
+contended-host and large-working-set measurements plus cancellation/failure fixtures;
+these are designs to validate, not implemented algorithms or passing performance claims.
+
+## migrate08: Linux feature names reach the baseline map
+
+The OS-name/register map now lives in the shared Arm CPU seam; daemon readiness imports
+it on Arm. Linux v6.18 cpuinfo HWCAP names (`aes`, `sha2`, `atomics`, etc.) now map to the
+same architectural registers as the macOS spellings. Register encodings are architectural
+identities, not tuning. No new error/refusal or authority enlargement is introduced.
+Unknown and multi-register names remain checked by name: a partial baseline cannot
+silently drop their compatibility check. This conservative residual can still refuse
+some otherwise compatible moves and is not claimed as complete Linux feature coverage.
+
+Primary sources: Linux v6.18
+[CPU names](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kernel/cpuinfo.c),
+[HWCAP field definitions](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kernel/cpufeature.c),
+and Arm DDI0487 ID-register encodings already used by this module.
+
+- Red at `ae37abb52`, r7: `cargo test -p shards-vmm linux_arm64_feature_names_follow_their_baseline_registers`;
+  one failure, `aes` returned None instead of `Some(49200)` (0xc030).
+- Green at `f004611b5`, r8, adacachy2 Linux x86_64:
+  `cargo test -p shards-vmm arch::aarch64::cpu`: 3 passed;
+  `cargo test -p shards-vmm arch::x86_64::cpuid`: 10 passed;
+  `cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings`: passed.
+- Clippy used `SHARDS_HELPERS=skip` and prebuilt placeholder guest paths `/bin/true`
+  (`SHARDS_INIT_BINARY`, `SHARDS_SERVER_BINARY`) to avoid nested guest/helper builds.
+  No VM test ran; placeholders are never runtime-validation evidence.
+- ROOT owes the above two-host move command on Linux arm64 with a baseline masking a
+  source-only mapped HWCAP; native backend and Windows/macOS checks remain unrun.
+
+Post-merge receipts: r4 and r6 reran migrate06's10 CPUID tests plus clippy successfully
+on their then-merged trees; policy r5 passed. Earlier ff pushes were rejected as main
+advanced, so no landing is inferred from those checks. The final landing SHA and its
+new post-merge result must be retained in ROOT's receipt.
+
+## Resumed landing receipt
+
+ROOT's corrected handoff supersedes its earlier P0 handoff. The unlanded P0 tip
+`21c66fd3e` was briefly merged locally, never pushed, then the merge was removed
+with `git reset --keep 09338f18d` at ROOT's explicit instruction. That reset preserved
+the owned untracked hardlink regression fixture. The CPU landing must not contain
+`21c66fd3e` unless its owner independently lands it on the verified remote main.
+Remote authority is `git ls-remote origin refs/heads/main`, not the shared tracking ref.
+
+- Focused merged tests at `8eb8767d6` (original run r10): 3 Arm CPU tests and 10 x86
+  CPUID tests passed; policy check passed. Both crates' clippy passed at `f746ce4c3`
+  (original r9), and at the earlier green fix `f004611b5` (r8).
+- Resumed check r2, `09338f18d`: `cargo check -p shards-vmm -p shards --tests`
+  passed on adacachy2 Linux x86_64, warm target, no VM run. This tree integrates the
+  memory lane's `29196c6b3` owned-copy fix; migrate03 is not implemented twice.
+- Subsequent main merges follow ROOT's amended fix brief: check overlapping crate
+  inputs on the warm target; rerun focused tests after any conflict; disjoint merges
+  do not pretend to be separately tested.
+
+Migrate05 remains held for the P0 extractor owner's actual remote-main landing.
+The archive regression already failed at `8eb8767d6` plus the retained patch (original
+r11): after importing hardlinked a/b, writing `after` through a left b reading `before`.
+Command: `cargo test -p shards a_volumes_hardlinks_keep_shared_contents_after_move --bin shards`.
+This is a real file/archive unit failure, not a VM test. The test will be committed into
+that slice once the P0 extractor seam lands; no production extractor change is included
+in this CPU landing. ROOT accepted migrate04/07/09/10 as owed with the designs above.
+
+## CPU landing and held hardlink slice
+
+`git ls-remote origin refs/heads/main` confirmed CPU06/08 landed at
+`24402e230fd1930fed6afdca2c870660ba16c51e`. This tip excludes the unlanded P0
+`21c66fd3e`; no P0 code was published by this lane. It merges remote main
+`b6c76d45c` after check `dcbfa8b19`.
+
+An exact-SHA readback found the carrier runner still at the prior checked tree,
+so a single post-landing check explicitly fetched/checks-out `24402e230`, asserted
+HEAD equality and ran `cargo check -p shards-vmm -p shards --tests`. It passed on
+adacachy2 Linux x86_64 (resumed Kiln r2). The complete command output remains in
+`~/g121-tmp/fix-migrate-v1/landed-24402-check.log` on that runner. Earlier r2 IDs in
+this document belong to the original turn and are distinguished by source SHA.
+Only the lane's target directory was removed afterward; source and evidence remain.
+
+The migrate05 regression from original r11 is now a committed source test, not an
+untracked patch. It remains intentionally red: importer alias loss is unfixed.
+No production Placer/Writer change is included. ROOT's corrected instruction holds
+that implementation until the P0 owner's extractor fix is actually on remote main.
+This local held slice must not land by itself; its test becomes green with05's fix.
+
+## migrate05: preserve regular-file aliases through Beneath
+
+POLICY_READ on resume: implementer, branch `p/fix-migrate-v1`, revision `73af9fb62`,
+rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
+Owned paths: migration stream Writer/parser/Placer and share guest-file helpers;
+adopt/import belongs to the migrate11 P0 lane and is untouched.
+
+ROOT verified migrate01's `b282ba757` on remote main. This branch merged remote
+`f7a3edfbc` at `a6a4dbc6b`, then adapted only the red fixture's constructor at
+`73af9fb62`. Its red ran on adacachy2 Linux x86_64: the same alias test failed with
+`b` reading `before` after writing `after` through `a` (one test, exit 101).
+Log: `~/g121-tmp/fix-migrate-v1/hardlink-red-beneath.log`; prior committed red is
+`5bf16ecff`. The symptom survives the landed confinement fix.
+
+Decision: stream version 3 adds tag 6, `Hardlink { rel, target }`, naming an already
+created regular file. Readers retain version 2 compatibility; older readers reject
+version 3 before extraction. Both names use the existing PATH_MAX-derived wire
+bound and the plan's volume-data authority. No new runtime tuning value is added:
+3/6 are assigned format/version tags, four path fields are the volume grammar,
+and link-count greater than one means the host reports another inode name.
+
+Primary source: POSIX.1-2024
+<https://pubs.opengroup.org/onlinepubs/9799919799/functions/linkat.html> specifies
+shared file identity and `linkat` flags 0's no-follow behavior. Established local
+implementations are the virtio-fs LINK handlers and existing shared `link_at`
+Unix/NT adapters (`crates/ntfs/src/lib.rs`); reuse them through `Beneath` rather
+than add a host-specific extractor. Independent file copies lose identity, as the
+red demonstrates. A numeric inode wire registry adds a second lifetime/lookup
+protocol; an earlier in-root path already supplies the required reference.
+
+The writer identifies the opened source with the server's device/file-id and link
+count. It retains only multiply-linked volume files for the lifetime of one stream;
+map and saved-name growth are fallible, keyed by authoritative host identity. This
+is required alias state, not a performance cache. Cold start is empty, and any
+export error discards it. It assumes the existing move contract's quiesced source;
+concurrent external host edits remain outside this scoped unit proof.
+
+Import checks both names against the plan and volume-data scope, then traverses
+both parents using held Beneath directories. Missing/forward sources, non-regular
+sources (including symlinks), linked parents and existing destinations refuse via
+typed IO error kinds, rendered at the existing string presentation boundary. It
+creates an alias without resetting metadata or replaying bytes, so the first
+file's sparse contents and inode metadata remain shared. No new wait or polling
+is introduced, and no second extractor is added. The P0 Beneath traversal and
+adopt/import lines remain intact.
+
+R01/R03/R04/R05/R06/R07/R12/R13: checked new wire-name conversion, fallible alias
+state growth, explicit Hardlink entry/refusal and one shared filesystem seam.
+Existing broader parser allocations are not claimed repaired by this slice.
+R02/R09/R10: source/alternatives and exact live red above; green results follow.
+R08/R14: no speed/allocation/fault ratio claimed; coordinator measurements owed.
+R11: Linux x86_64 unit coverage only; Windows/macOS and real guest alias behavior
+remain unverified. R15: scoped light tests only, signed commits and fresh remote
+main merge before landing. R16: task-owned target only, removed after landing;
+logs and source retained. Remaining checks and exact green revisions follow.
+
+### Green module and integrated migrate03 checks
+
+Source merge `7720df8391bd9da2e3e5d4511cf243a2db4db7ae` includes fix `fd33ec11a`
+and verified remote main `fde2f60fd`. adacachy2 Linux x86_64, one cargo at a time,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4`, nice10, task-owned target;
+`SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/bin/true SHARDS_SERVER_BINARY=/bin/true`
+avoid building embedded helper binaries for these pure unit tests.
+
+- `cargo test -p shards daemon::moves::tests --bin shards`: **15 passed**, including
+  the alias red, unchanged migrate01 confinement guards, forward/missing hardlink
+  sources, forbidden backing/metadata scope and oversized hardlink names.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-moves.log`.
+- `cargo test -p shards-vmm devices::virtio::fs::server::guest::tests --lib`:
+  **4 passed**, including alias identity and non-following source/destination paths.
+  Log `~/g121-tmp/fix-migrate-v1/hardlink-green-guest.log`.
+- `cargo test -p shards-vmm live_copy_ --lib`: **5 passed**. This validates the
+  integrated memory reviewer's migrate03 fix (`29196c6b3`) without a duplicate fix:
+  pages survive unplug, mapping loss refuses resume, intact mappings recover after
+  scan errors, and the live-copy guard excludes save/teardown. These are pure tests,
+  not live guest unplug or migration. Log `~/g121-tmp/fix-migrate-v1/livecopy-03-integrated.log`.
+
+`cargo clippy -p shards-vmm -p shards --all-targets -- -D warnings` passed on that
+same merge (exit 0, 1m26s). `scripts/check-development-policy` passed too. Runner
+Linux 7.3.3-1-cachyos x86_64, glibc 2.44, rustc 1.98.1 (48a229cea).
+Raw red/green/clippy/policy logs are retained beside this record:
+`hardlink-red-beneath.log`, `hardlink-green-moves.log`, `hardlink-green-guest.log`,
+`livecopy-03-integrated.log`, `hardlink-clippy.log`, `hardlink-policy.log`.
+Main advanced to remotely verified `c6dd465259`; it merged without conflicts at
+`26db8d3581e206c0739b1a9ae51e534d48899a69`. Its changes touched tested crates,
+so ROOT's amended contention rule required the warm
+`cargo check -p shards-vmm -p shards --tests`: passed on that exact merge (43.31s,
+exit 0). Log `~/g121-tmp/fix-migrate-v1/hardlink-main-check-26db8d358.log`.
+Focused tests/clippy remain those of `7720df839`; this later merge received the
+specified compile check, not another full focused run. Landing receipt and
+task-owned target cleanup follow.
+No additional mutation campaign ran; the committed pre-fix unit revision is the
+reproducible feature-removal control, as the fix brief prescribes.
+
+Owed to ROOT: `SHARDS_MOVE_INVITE=<destination-invitation> cargo test -p shards
+--test moved a_volumes_guest_owners_move_with_it` on the supported host pairs,
+extended to check guest hardlink aliases/open handles; the existing test alone
+does not exercise hardlinks. Also run a real live move with a guest concurrently
+issuing virtio-mem unplug and verify either consistent completion or typed refusal,
+with source survival and no stale destination pages. No such VM test or resource
+measurement was run by this implementer.
+
+### Final migrate05 landing receipt
+
+Code and its original committed red `5bf16ecff` landed together at
+`5f42c94527d747959d2d732587cb566b860a0137`, confirmed with
+`git ls-remote origin refs/heads/main`. Fix `fd33ec11a` remains the implementation
+SHA. Two ordinary fast-forward refusals were resolved by merging verified remote
+main; no force push, signing bypass or borrowed shared origin/main ref was used.
+
+After the check at `26db8d358`, main `33d28bf884` touched tested dependencies.
+Merge `b4f7d341062b21f4202e04143d1c343f7addfd75` passed the same warm
+`cargo check -p shards-vmm -p shards --tests` (46.03s, exit 0), with log
+`~/g121-tmp/fix-migrate-v1/hardlink-main-check-b4f7d3410.log`. Main then advanced
+only documentation (`6389b6e096`); its conflict-free merge `5f42c9452` was pushed
+immediately under ROOT's disjoint-input rule. Full focused tests/clippy are those
+of `7720df839`, compile checks are those of `26db8d358` and `b4f7d3410`, and final
+`5f42c9452` adds no tested input beyond that last checked tree.
+
+Migrate03 is fixed by memory-02 (`29196c6b3`) and integrated/green here; 06/08
+previously landed at `24402e230`. Migrate04/07/09/10 remain owed with the accepted
+designs above, with no unmeasured implementation or comparative claim. No new
+outside-area finding was opened. The migrate11 P0 adopt/import work remains its
+owner's; this lane changed none of those functions. ROOT's Kiln mailbox rejected
+the final checkpoint with HTTP429 backpressure; the authorized local peer channel
+is the fallback, without a queue retry loop.
+
+Cleanup completed on adacachy2 (exit 0): only
+`~/g121-tmp/fix-migrate-v1/target` was removed and its absence checked. Source,
+red/green/compile logs and `hardlink-cleanup.log` remain. No build, test, VM or
+daemon job is left running by this lane. This final receipt is documentation-only;
+it changes none of the tested code or build inputs.

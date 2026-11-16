@@ -95,6 +95,31 @@ impl ControlQueue {
     pub fn pending(&self) -> bool {
         self.cursor < self.bytes.len()
     }
+    /// Writes what is left of it whole on `fd`, waiting for room as the connection fills: as
+    /// the relay ends, so that what follows on the connection, the relay's end
+    /// (run.rs `say_signals_end`), starts at a frame's boundary, never within a frame part of
+    /// which went.
+    pub fn finish(&mut self, fd: RawFd) -> io::Result<()> {
+        let rest = self
+            .bytes
+            .get(self.cursor..)
+            .ok_or_else(|| io::Error::other(managed::Error::Offset))?;
+        crate::run::write_whole(fd, rest)?;
+        self.bytes.clear();
+        self.cursor = 0;
+        if matches!(self.state, ControlState::Ending) {
+            self.state = ControlState::Ended;
+        }
+        Ok(())
+    }
+
+    /// As if the connection had taken `n` more of its bytes: a write that took part of a
+    /// frame, which tests cannot make a socket do at will.
+    #[cfg(test)]
+    pub fn sent(&mut self, n: usize) {
+        self.cursor = self.cursor.saturating_add(n).min(self.bytes.len());
+    }
+
     pub fn write(&mut self, fd: RawFd) -> Result<(), Failure> {
         let bytes = self
             .bytes
@@ -422,6 +447,24 @@ impl Capture {
         matches!(self.state, State::Running(Output::Idle))
     }
 
+    /// Whether `failure`, which [`Capture::progress`] met, is its host ending the connection
+    /// once every admitted channel has said its end and nothing of it is left to send: its
+    /// host's relay ends there (shards workload/capture.rs `records`, `Relayed::Done`), and
+    /// may as soon as the last record's write returns, in the same `progress` (KVM, ROOT's
+    /// batch 22 at f385b8dac: api_image's harness runs ended 128, init failing them
+    /// "managed transport: unexpected end of file" with its harness's output whole). That
+    /// end is the capture's own; one that comes before then still cuts it.
+    pub fn ended_once_done(&self, failure: &Failure) -> bool {
+        self.drained()
+            && self
+                .credits
+                .iter()
+                .flatten()
+                .all(|c| matches!(c, CreditState::Inactive | CreditState::Closed))
+            && matches!(failure, Failure::Transport(e)
+                if matches!(e.kind(), io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset))
+    }
+
     fn take_credit(&mut self, member: u32, channel: Channel, terminal: bool) -> Result<(), Failure> {
         let pair = self
             .credits
@@ -636,6 +679,19 @@ impl Capture {
             matches!(record.event, Event::End | Event::Aborted(_)),
         )?;
         self.state = State::Running(Output::Sending { written: 0 });
+        Ok(())
+    }
+
+    /// Member `member`'s channels made ready for its next generation (D270): each waits for its
+    /// host's credit again, as a member's do as the run starts, and is opened again, at offset 0,
+    /// once it comes ([`open`](Self::open)), its last generation's having ended. Refused for a
+    /// member past those the run admitted.
+    pub fn reopen(&mut self, member: u32) -> Result<(), Failure> {
+        let slot = usize::try_from(member)
+            .ok()
+            .and_then(|at| self.credits.get_mut(at))
+            .ok_or(Failure::Protocol(managed::Error::Member))?;
+        *slot = [CreditState::Waiting; 2];
         Ok(())
     }
 
@@ -986,6 +1042,61 @@ mod tests {
                 n => panic!("poll: {n}: {}", io::Error::last_os_error()),
             }
         }
+    }
+
+    /// A member whose two channels end, its host ending the connection as its relay does once
+    /// every channel has (shards workload/capture.rs `records`), here as the last end's write
+    /// goes, so that the `progress` that writes it reads the host's end next. Expect: that end
+    /// the capture's own (`ended_once_done`), every record whole on the host's side; the same
+    /// end while one channel is still open, a failure.
+    #[test]
+    fn the_hosts_end_after_every_channels_end_is_the_captures_own() {
+        let label = "codex";
+        let capacity = managed::HEADER + label.len().max(size_of::<i32>());
+        let ended = |stderr_ends: bool| {
+            let (mut capture, mut peer) = fixture(1, capacity);
+            let mut opened = Vec::new();
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                let (mut pipe, writer) = Pipe::make().unwrap();
+                grant(&mut capture, &mut peer, 0, channel, capacity);
+                assert!(capture.open(0, channel, label, &mut pipe).unwrap());
+                let bytes = receive(&mut capture, &mut peer);
+                assert_eq!(Record::decode(&bytes).unwrap().event, Event::Open(label));
+                opened.push((channel, pipe, writer));
+            }
+            let end = |capture: &mut Capture,
+                       peer: &mut UnixStream,
+                       (channel, mut pipe, writer): (Channel, Pipe, OwnedFd)| {
+                drop(writer);
+                grant(capture, peer, 0, channel, capacity);
+                readable(&pipe);
+                capture.read(0, channel, &mut pipe).unwrap();
+                assert!(pipe.terminal());
+            };
+            let mut opened = opened.into_iter();
+            end(&mut capture, &mut peer, opened.next().unwrap());
+            let bytes = receive(&mut capture, &mut peer);
+            assert_eq!(Record::decode(&bytes).unwrap().event, Event::End);
+            let stderr = opened.next().unwrap();
+            if stderr_ends {
+                end(&mut capture, &mut peer, stderr);
+            }
+            peer.shutdown(std::net::Shutdown::Write).unwrap();
+            let failure = capture.progress().unwrap_err();
+            if stderr_ends {
+                let mut header = [0; run::HEADER];
+                peer.read_exact(&mut header).unwrap();
+                let mut bytes = vec![0; run::parse_header(header).unwrap().1 as usize];
+                peer.read_exact(&mut bytes).unwrap();
+                assert_eq!(Record::decode(&bytes).unwrap().event, Event::End);
+            }
+            (failure, capture)
+        };
+        let (failure, capture) = ended(true);
+        assert!(capture.drained());
+        assert!(capture.ended_once_done(&failure), "{failure}");
+        let (failure, capture) = ended(false);
+        assert!(!capture.ended_once_done(&failure), "{failure}");
     }
 
     #[test]

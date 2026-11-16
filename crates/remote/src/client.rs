@@ -372,7 +372,7 @@ impl Client<'_> {
             if !self.deliver_held() {
                 return;
             }
-            match frame::take(&mut self.inbound) {
+            match frame::take(&mut self.inbound, daemon_takes) {
                 Ok(Some((tag, payload))) => match tag {
                     Tag::Stdout | Tag::Stderr => {
                         self.held = Some((tag, payload));
@@ -554,6 +554,10 @@ impl Handler for Client<'_> {
                 server::NOT_ENROLLED
             };
             self.answer = Some(Answer::Refused(words.to_string()));
+        }
+        if self.answer.is_none() && self.failed.is_none() && code == Some(u64::from(server::REVOKED)) {
+            // Removed from the daemon's clients as its command ran, or before the stream said so.
+            self.answer = Some(Answer::Refused(server::REVOKED_WORDS.to_string()));
         }
         if self.answer.is_none() && self.failed.is_none() {
             let at = self.remote.address;
@@ -919,6 +923,22 @@ fn run(
 
 fn driver_handler<'d, 'a>(driver: &'d mut Driver<Client<'a>>) -> &'d mut Client<'a> {
     driver.handler_mut()
+}
+
+/// What a command stream's daemon sends its client, each kind with what the client takes of
+/// it (remote-08, D180 *Frame bounds*): the command's output its pipe's reads
+/// ([`server::READ_MOST`]); its exit status four bytes; the microVM it made, an ID
+/// ([`server::MADE_MOST`]); a join's end nothing; a refusal's or a cut's words, which no
+/// grammar bounds, the most this host can hold.
+fn daemon_takes(tag: Tag) -> Option<frame::Most> {
+    Some(match tag {
+        Tag::Stdout | Tag::Stderr => frame::Most::Bytes(server::READ_MOST),
+        Tag::Exit => frame::Most::Bytes(size_of::<u32>()),
+        Tag::Made => frame::Most::Bytes(usize::try_from(server::MADE_MOST).ok()?),
+        Tag::Joined => frame::Most::Bytes(0),
+        Tag::Refused | Tag::Cut => frame::Most::Holdable,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

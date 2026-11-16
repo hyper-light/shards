@@ -2434,6 +2434,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `s3://` source an Agentfile's AGENT makes, as the planner makes it (D54).
+    fn planned_s3_source(line: &str) -> Source {
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (identifier, attrs) = crate::build::planned_sources(line)
+            .into_iter()
+            .find(|(id, _)| id.starts_with(b"s3://"))
+            .unwrap();
+        Source {
+            identifier: text(&identifier),
+            attrs: attrs.iter().map(|(k, v)| (text(k), text(v))).collect(),
+        }
+    }
+
+    /// An `s3://` source is asked of a build's policies in a form of its own, `input.s3`
+    /// (D101, D54): a policy that allows its bucket, endpoint and pin lets the build load
+    /// it; one that allows only another bucket refuses it, the build saying the policy's
+    /// words. It was refused as an unsupported scheme whatever the policy said.
+    #[test]
+    fn a_policy_allows_or_denies_an_s3_source_by_its_fields() {
+        let sum = format!("sha256:{}", "cd".repeat(32));
+        let source = planned_s3_source(&format!(
+            "AGENT --checksum={sum} --version-id=v7 --endpoint=http://127.0.0.1:9000 --region=us-east-1 --path-style a FROM s3://agents/a/v1.tgz"
+        ));
+        let log = Lines(RefCell::new(Vec::new()));
+        let dir = scratch("s3-allow");
+        let allows = policy_in(
+            &dir,
+            &format!(
+                "package docker\n\ndefault allow := false\n\nallow if {{\n\tinput.s3.bucket == \"agents\"\n\tinput.s3.key == \"a/v1.tgz\"\n\tinput.s3.endpoint == \"http://127.0.0.1:9000\"\n\tinput.s3.region == \"us-east-1\"\n\tinput.s3.pathStyle\n\tinput.s3.versionId == \"v7\"\n\tinput.s3.checksum == \"{sum}\"\n}}\n\ndecision := {{\"allow\": allow}}\n"
+            ),
+        );
+        let allowed = allows.evaluate(&source, None, &NoMeta, &log);
+        assert!(matches!(allowed, Ok(None)), "{allowed:?} {:?}", log.0.borrow());
+        let dir = scratch("s3-deny");
+        let denies = policy_in(
+            &dir,
+            "package docker\n\ndefault allow := false\n\nallow if input.s3.bucket == \"trusted\"\n\ndeny_msg contains msg if {\n\tnot allow\n\tmsg := sprintf(\"bucket %s is not trusted\", [input.s3.bucket])\n}\n\ndecision := {\"allow\": allow, \"deny_msg\": deny_msg}\n",
+        );
+        let refused = denies.evaluate(&source, None, &NoMeta, &log).unwrap_err();
+        assert_eq!(refused.by, By::Decision);
+        assert_eq!(
+            refused.error,
+            "source \"s3://agents/a/v1.tgz\" not allowed by policy: action DENY"
+        );
+        assert_eq!(refused.messages, ["bucket agents is not trusted"]);
+    }
+
+    /// The `input.s3` form is the one testdata/deviations.json records as shards' own
+    /// (`policy-input`), field for field.
+    #[test]
+    fn the_s3_input_is_the_recorded_deviation() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../agentfile/testdata/deviations.json"
+        );
+        let all: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let d = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == "policy-input" && d["field"] == "input.s3")
+            .unwrap();
+        assert!(d["reason"].as_str().is_some_and(|r| !r.is_empty()));
+        let source = Source {
+            identifier: d["source"]["identifier"].as_str().unwrap().into(),
+            attrs: d["source"]["attrs"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                .collect(),
+        };
+        let mut said = |_: LogLevel, _: &str| {};
+        let input = input::of_source(&source, &Meta::default(), None, None, &mut said).unwrap();
+        let ours: serde_json::Value = serde_json::from_str(&input.json().indented()).unwrap();
+        assert_eq!(ours, d["ours"]);
+        assert!(input.unknown_refs().is_empty());
+    }
+
     /// The deepest a policy goes, run on its thread: a JSON document of 10000 levels,
     /// Go's limit, read by `load_json`, compared and dropped; and a policy nested as deep
     /// as OPA's parser takes, parsed, compiled and evaluated. `SHARDS_STACK_PROBE` names

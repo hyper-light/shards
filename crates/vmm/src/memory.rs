@@ -31,7 +31,7 @@ use std::io;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, RwLock};
 
 use crate::platform;
 use crate::sync::lock;
@@ -314,6 +314,10 @@ pub struct GuestMemory {
     /// Device memory its devices reach as they reach RAM ([`give_devices`](Self::give_devices)):
     /// its devices' own mappings, which this memory never releases.
     devices: OnceLock<Box<[Region]>>,
+    /// Device memory plugged in as its machine runs (D270): each component's pmem region,
+    /// which its devices reach as they reach [`give_devices`](Self::give_devices)'s, from its
+    /// plug until [`take_plugged`](Self::take_plugged) takes it back.
+    plugged: RwLock<Vec<Region>>,
     /// Held by the thread with the [`Access`].
     host: Mutex<()>,
     /// That thread's [`token`], or 0.
@@ -334,8 +338,10 @@ struct DeviceWrites {
 /// The unit a device's writes are noted in.
 const DEVICE_PAGE: u64 = 4096;
 
-/// What [`GuestMemory::each_used`] gives each run of used pages to: whether plugged, its
-/// place, and its bytes.
+/// An owned live-move page: plugged, file offset or guest address, and bytes.
+pub type CopiedPage = (bool, u64, [u8; crate::vm::live::PAGE as usize]);
+
+/// What each_used gives its consumer: mapping kind, offset, and owned copied bytes.
 pub type UsedTaker<'a> = dyn FnMut(bool, u64, &[u8]) -> io::Result<()> + 'a;
 
 // SAFETY: the reservations are memory this value owns. The host reaches it only through an
@@ -379,6 +385,7 @@ impl GuestMemory {
             given_back: Mutex::new(None),
             pins: Mutex::new(Pins::default()),
             devices: OnceLock::new(),
+            plugged: RwLock::new(Vec::new()),
             holder: AtomicUsize::new(0),
             device_writes: DeviceWrites::default(),
         };
@@ -706,66 +713,84 @@ impl GuestMemory {
     /// is noted for the next round.
     pub fn each_used(&self, take: &mut UsedTaker<'_>) -> io::Result<()> {
         let page = crate::vm::live::PAGE as usize;
-        let mut offset = 0u64;
-        let mut runs = |host: *const u8, len: usize, at: u64, plugged: bool| -> io::Result<()> {
-            let mut start = None;
-            for i in (0..len).step_by(page).chain(std::iter::once(len)) {
-                // SAFETY: the page at `i` lies within the region at `host`, page-aligned.
-                let used = i < len && unsafe { !is_zero(host.add(i), page) };
-                match (start, used) {
-                    (None, true) => start = Some(i),
-                    (Some(first), false) => {
-                        // At most a record's worth at once.
-                        let mut from = first;
-                        while from < i {
-                            let to = i.min(from + crate::vm::live::MAX_RECORD);
-                            // SAFETY: within the region, as above.
-                            let bytes = unsafe { std::slice::from_raw_parts(host.add(from), to - from) };
-                            take(plugged, at + from as u64, bytes)?;
-                            from = to;
+        let mut buffer = vec![0; crate::vm::live::MAX_RECORD];
+        let mut copy = |gpa: u64, len: usize, at: u64, plugged: bool, grain: usize| -> io::Result<()> {
+            for off in (0..len).step_by(grain) {
+                let n = grain.min(len - off);
+                let bytes = buffer.get_mut(..n).ok_or(io::ErrorKind::InvalidInput)?;
+                // The bitmap and its backing stay together only while Access is held.
+                // Network output below consumes owned bytes, after releasing that hold.
+                let copied = {
+                    let access = self.access().map_err(io::Error::other)?;
+                    access.read(gpa + off as u64, bytes)
+                };
+                match copied {
+                    Err(_) if plugged => continue, // Unplugged since the range was found.
+                    Err(e) => return Err(io::Error::other(e)),
+                    Ok(()) => {}
+                }
+                let mut start = None;
+                for (i, used) in bytes
+                    .chunks_exact(page)
+                    .map(|p| p.iter().any(|&b| b != 0))
+                    .chain(std::iter::once(false))
+                    .enumerate()
+                {
+                    match (start, used) {
+                        (None, true) => start = Some(i * page),
+                        (Some(first), false) => {
+                            let run = bytes.get(first..i * page).ok_or(io::ErrorKind::InvalidData)?;
+                            take(plugged, at + off as u64 + first as u64, run)?;
+                            start = None;
                         }
-                        start = None;
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             Ok(())
         };
+        let mut offset = 0;
         for r in &self.regions {
-            runs(r.host.as_ptr(), r.len, offset, false)?;
+            copy(r.gpa, r.len, offset, false, crate::vm::live::MAX_RECORD)?;
             offset += r.len as u64;
         }
         if let Some(h) = &self.hotplug {
+            let grain = usize::try_from(h.block)
+                .map_err(io::Error::other)?
+                .min(crate::vm::live::MAX_RECORD);
             for (gpa, len) in h.runs(&h.plugged) {
-                let len = usize::try_from(len).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-                runs(h.host(gpa), len, gpa, true)?;
+                let len = usize::try_from(len).map_err(io::Error::other)?;
+                copy(gpa, len, gpa, true, grain)?;
             }
         }
         Ok(())
     }
 
-    /// Where a page its guest wrote at `gpa` is, for a live move's round (D176 part 7): in
-    /// its RAM, by its offset in a save's file, or plugged (true), by its address; and its
-    /// bytes, [`PAGE`](crate::vm::live::PAGE) long. None for an address of neither, or of
-    /// memory to plug that is not plugged now.
-    pub fn page_at(&self, gpa: u64) -> Option<(bool, u64, &[u8])> {
+    /// Copies a live move's page into owned bytes under Access. Unplug may withdraw
+    /// its mapping as soon as this returns; the stream writer never borrows that mapping.
+    pub fn page_at(&self, gpa: u64) -> Result<Option<CopiedPage>, Reentered> {
         let page = crate::vm::live::PAGE;
-        let mut offset = 0u64;
+        let access = self.access()?;
+        let mut bytes = [0; crate::vm::live::PAGE as usize];
+        let mut offset = 0;
         for r in &self.regions {
-            if let Some(off) = gpa.checked_sub(r.gpa).filter(|off| off + page <= r.len as u64) {
-                // SAFETY: a page within the region, which this value keeps mapped.
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(r.host.as_ptr().add(off as usize), page as usize) };
-                return Some((false, offset + off, bytes));
+            if let Some(off) = gpa
+                .checked_sub(r.gpa)
+                .filter(|off| off.checked_add(page).is_some_and(|end| end <= r.len as u64))
+            {
+                return Ok(access
+                    .read(gpa, &mut bytes)
+                    .ok()
+                    .map(|()| (false, offset + off, bytes)));
             }
             offset += r.len as u64;
         }
-        self.hotplug.as_ref()?.blocks(gpa, page)?;
-        // Plugged now, its blocks the host's to reach.
-        let host = self.host_ptr(gpa, page as usize).ok()?;
-        // SAFETY: a page of plugged blocks of the reservation, which this value keeps.
-        let bytes = unsafe { std::slice::from_raw_parts(host, page as usize) };
-        Some((true, gpa, bytes))
+        Ok(self
+            .hotplug
+            .as_ref()
+            .and_then(|h| h.blocks(gpa, page))
+            .and_then(|_| access.read(gpa, &mut bytes).ok())
+            .map(|()| (true, gpa, bytes)))
     }
 
     /// Plugs `runs` again, the memory a snapshot's machine had plugged, and reads each back
@@ -915,13 +940,71 @@ impl GuestMemory {
     /// Host address of `gpa..gpa+len` within one region of device memory.
     fn device_ptr(&self, gpa: u64, len: usize) -> Option<*mut u8> {
         let end = gpa.checked_add(len as u64)?;
-        let r = self
-            .devices
-            .get()?
+        let within = |r: &Region| {
+            (gpa >= r.gpa && end <= r.end())
+                // SAFETY: offset is within the region's mapping (checked here).
+                .then(|| unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+        };
+        if let Some(at) = self.devices.get().and_then(|d| d.iter().find_map(within)) {
+            return Some(at);
+        }
+        self.plugged
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find(|r| gpa >= r.gpa && end <= r.end())?;
-        // SAFETY: offset is within the region's mapping (found above).
-        Some(unsafe { r.host.as_ptr().add((gpa - r.gpa) as usize) })
+            .find_map(within)
+    }
+
+    /// Has the host's devices reach `len` bytes at `host`, device memory plugged in at `gpa`
+    /// as the machine runs (D270): a component's pmem region, which the guest maps its files
+    /// from and so names to its other devices as any of its pages. Refused where it meets
+    /// RAM, the memory to plug, or other device memory.
+    ///
+    /// # Safety
+    /// `host..host+len` stays mapped until [`take_plugged`](Self::take_plugged) takes it back
+    /// or this memory drops; as for every device memory, a device's access of it after its
+    /// pages are gone is a system call's EFAULT or a checked copy's failure (`io_ptr`).
+    pub unsafe fn give_plugged(&self, gpa: u64, host: *mut u8, len: usize) -> Result<(), String> {
+        let named = || format!("device memory {gpa:#x}+{len:#x}");
+        let end = gpa
+            .checked_add(len as u64)
+            .filter(|_| len > 0)
+            .ok_or_else(named)?;
+        let host = NonNull::new(host).ok_or_else(|| format!("{} at no host address", named()))?;
+        let meets = |at: u64, to: u64| gpa < to && at < end;
+        let mut plugged = self
+            .plugged
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.regions.iter().any(|r| meets(r.gpa, r.end()))
+            || self.hotplug.as_ref().is_some_and(|h| meets(h.gpa, h.end()))
+            || self
+                .devices
+                .get()
+                .is_some_and(|d| d.iter().any(|r| meets(r.gpa, r.end())))
+            || plugged.iter().any(|r| meets(r.gpa, r.end()))
+        {
+            return Err(format!("{} overlaps other guest memory", named()));
+        }
+        plugged.push(Region {
+            gpa,
+            len,
+            host,
+            views: None,
+        });
+        Ok(())
+    }
+
+    /// The device memory plugged in at `gpa` taken back (D270), as its device goes: its
+    /// devices reach it no more. Whether there was any.
+    pub fn take_plugged(&self, gpa: u64) -> bool {
+        let mut plugged = self
+            .plugged
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = plugged.len();
+        plugged.retain(|r| r.gpa != gpa);
+        plugged.len() < before
     }
 
     /// Pins `gpa..gpa+len` for a device's DMA, as the host's IOMMU has mapped it ([`Pins`]),
@@ -1464,6 +1547,53 @@ fn write_run(file: &File, r: &Region, run: Range<usize>, offset: u64) -> io::Res
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn live_copy_keeps_bytes_after_their_block_is_unplugged() {
+        let block = DATA_BLOCK as u64;
+        let memory = GuestMemory::with_hotplug(&[], block, block as usize, block).unwrap();
+        {
+            let access = memory.access().unwrap();
+            access.plug(block, block, |_, _, _| Ok(())).unwrap();
+            access.write_obj(block, 0x5au8).unwrap();
+        }
+        let mut seen = false;
+        memory
+            .each_used(&mut |plugged, at, bytes| {
+                assert!(plugged);
+                assert_eq!(at, block);
+                memory
+                    .access()
+                    .unwrap()
+                    .unplug(block, block, |_, _| Ok(()))
+                    .unwrap();
+                assert_eq!(bytes.first(), Some(&0x5a));
+                seen = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(seen);
+    }
+
+    #[test]
+    fn live_copy_page_keeps_bytes_after_their_block_is_unplugged() {
+        let block = DATA_BLOCK as u64;
+        let memory = GuestMemory::with_hotplug(&[], block, block as usize, block).unwrap();
+        {
+            let access = memory.access().unwrap();
+            access.plug(block, block, |_, _, _| Ok(())).unwrap();
+            access.write_obj(block, 0x5au8).unwrap();
+        }
+        let (plugged, at, bytes) = memory.page_at(block).unwrap().unwrap();
+        assert!(plugged);
+        assert_eq!(at, block);
+        memory
+            .access()
+            .unwrap()
+            .unplug(block, block, |_, _| Ok(()))
+            .unwrap();
+        assert_eq!(bytes.first(), Some(&0x5a));
+    }
+
     use super::*;
     use crate::platform::page_size;
 
@@ -2583,6 +2713,63 @@ mod tests {
     /// the kernel and the hypervisor are given RAM by. A page of it whose file was cut short
     /// fails a copy, and a system call EFAULT, the process going on. It may overlap no other
     /// guest memory, and is given once.
+    /// Device memory plugged in as the machine runs (D270), a component's region, is reached
+    /// as a boot's device memory is, beside it, until it is taken back; one that meets RAM or
+    /// other device memory is refused, and one taken back is reached no more.
+    #[test]
+    fn plugged_device_memory_is_reached_until_it_is_taken_back() {
+        let m = mem();
+        let p = page_size().unwrap();
+        let mut boot = vec![0u8; 2 * p];
+        let mut plugged = vec![0u8; 2 * p];
+        let (boot_at, plugged_at) = (0x2_0000_0000u64, 0x3_0000_0000u64);
+        // SAFETY: both buffers outlive every use of `m`'s, which drops first.
+        unsafe {
+            m.give_devices([(boot_at, boot.as_mut_ptr(), 2 * p)]).unwrap();
+            assert!(
+                m.give_plugged(0x8000_0000, plugged.as_mut_ptr(), p).is_err(),
+                "RAM"
+            );
+            assert!(
+                m.give_plugged(boot_at + p as u64, plugged.as_mut_ptr(), p)
+                    .is_err(),
+                "boot's"
+            );
+            assert!(
+                m.give_plugged(plugged_at, std::ptr::null_mut(), p).is_err(),
+                "no host"
+            );
+            assert!(
+                m.give_plugged(plugged_at, plugged.as_mut_ptr(), 0).is_err(),
+                "empty"
+            );
+            m.give_plugged(plugged_at, plugged.as_mut_ptr(), 2 * p).unwrap();
+            assert!(
+                m.give_plugged(plugged_at + p as u64, plugged.as_mut_ptr(), p)
+                    .is_err(),
+                "its own"
+            );
+        }
+        assert_eq!(
+            m.io_ptr(plugged_at + 8, 8).unwrap(),
+            plugged.as_mut_ptr().wrapping_add(8)
+        );
+        assert_eq!(
+            m.io_ptr(boot_at + 8, 8).unwrap(),
+            boot.as_mut_ptr().wrapping_add(8)
+        );
+        assert!(
+            m.io_ptr(plugged_at + 2 * p as u64 - 4, 8).is_err(),
+            "past its end"
+        );
+        m.access().unwrap().write(plugged_at + 8, b"plugged").unwrap();
+        assert_eq!(plugged.get(8..15), Some(b"plugged".as_slice()));
+        assert!(m.take_plugged(plugged_at));
+        assert!(!m.take_plugged(plugged_at), "taken already");
+        assert!(m.io_ptr(plugged_at + 8, 8).is_err());
+        assert!(m.access().unwrap().write(plugged_at + 8, b"x").is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn device_memory_is_reached_as_ram_is_and_its_lost_pages_fail() {

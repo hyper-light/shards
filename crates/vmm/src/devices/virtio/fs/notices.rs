@@ -14,21 +14,40 @@
 //! watched (macOS, Windows), a change is told only where the guest holds its directory
 //! ([`Server::holds_dir`]): what the guest never looked at it watches nothing of.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::sync::{Condvar, Mutex, PoisonError};
 
 use super::server::Server;
 
-/// The most changes waiting to be told: Linux's default queue of an inotify instance
-/// (`fs.inotify.max_queued_events`, 16384; fs/notify/inotify/inotify_user.c), past which
-/// the guest's own watcher would be told only that it lost events (`IN_Q_OVERFLOW`), so
-/// that a change past it is told by its directory, which a watcher reads again whole.
-pub const MOST: usize = 16384;
+/// What a host's watcher saw of a share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// What is at the path, within the share, changed.
+    At(Vec<u8>),
+    /// What changed beneath the path (a directory; empty for the share's root) was not each
+    /// said: inotify's queue overflowed (`IN_Q_OVERFLOW`, inotify(7)), ReadDirectoryChangesW
+    /// answered nothing as its buffer overflowed, or FSEvents said only that the directory
+    /// must be scanned (`kFSEventStreamEventFlagMustScanSubDirs`, as it says of events the
+    /// kernel or the stream dropped).
+    Beneath(Vec<u8>),
+}
 
 /// The changes waiting to be told, each share's paths, each once, in the order first seen;
 /// each share named in its records as its place among its process's shares says
 /// ([`Pending::new`]).
+///
+/// How many of a share's wait, each told by its path, is bounded by the nodes its guest
+/// holds ([`Server::held`]), as the share's server holds them now. A guest's inotify watch
+/// holds its inode (fs/notify/inotify/inotify_user.c, `inotify_new_watch` takes the inode
+/// the path names), and a FUSE inode its server's node until the guest forgets it, so
+/// every watch the guest has is of a node held; told each of those, every watch is woken.
+/// Past that bound, telling each path costs more than telling every node held, so the
+/// share's changes are told as lost ([`Change::Beneath`] its root): when they are taken,
+/// by every node its guest then holds beneath where they were lost
+/// ([`Server::held_beneath`]), which wakes every watch there, a file's own among them,
+/// as a burst a host's watcher lost or coalesced does too. The bound is never below one,
+/// as the share's root is always held; and a share's places lost are as bounded.
 #[derive(Debug, Default)]
 pub struct Pending {
     names: Vec<Vec<u8>>,
@@ -40,6 +59,36 @@ pub struct Pending {
 struct Queue {
     order: VecDeque<(u32, Vec<u8>)>,
     seen: HashSet<(u32, Vec<u8>)>,
+    /// How many of `order` are each share's.
+    counts: HashMap<u32, usize>,
+    /// Each share's places beneath which changes were lost, none beneath another of its.
+    lost: Vec<(u32, Vec<u8>)>,
+}
+
+/// Whether `path` is `place` or beneath it, both within a share, `place` empty for its root.
+fn beneath(path: &[u8], place: &[u8]) -> bool {
+    place.is_empty()
+        || path
+            .strip_prefix(place)
+            .is_some_and(|rest| rest.is_empty() || rest.first() == Some(&b'/'))
+}
+
+impl Queue {
+    /// What changed beneath `place` in `share` lost; `held`, the nodes its guest holds.
+    fn lose(&mut self, share: u32, place: Vec<u8>, held: usize) {
+        if self.lost.iter().any(|(s, l)| *s == share && beneath(&place, l)) {
+            return;
+        }
+        self.lost.retain(|(s, l)| *s != share || !beneath(l, &place));
+        let places = self.lost.iter().filter(|(s, _)| *s == share).count();
+        // No more places lost than nodes held: past them, the root stands for them all.
+        if places >= held {
+            self.lost.retain(|(s, _)| *s != share);
+            self.lost.push((share, Vec::new()));
+        } else {
+            self.lost.push((share, place));
+        }
+    }
 }
 
 impl Pending {
@@ -52,55 +101,99 @@ impl Pending {
         }
     }
 
-    /// Path `path` of share `share` changed: told once, however often it changes before it
-    /// is; past [`MOST`] waiting, its nearest directory that is told or the share's root.
-    pub fn tell(&self, share: u32, mut path: Vec<u8>) {
+    /// Path `path` of share `share` changed, its guest holding `held` nodes now: told once,
+    /// however often it changes before it is; with as many of the share's waiting as its
+    /// guest holds nodes, the share's changes told as lost.
+    pub fn tell(&self, share: u32, path: Vec<u8>, held: usize) {
         let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
-        while q.order.len() >= MOST && !path.is_empty() && !q.seen.contains(&(share, path.clone())) {
-            let cut = path.iter().rposition(|&b| b == b'/').unwrap_or(0);
-            path.truncate(cut);
+        if q.lost.iter().any(|(s, l)| *s == share && beneath(&path, l)) {
+            return;
         }
-        if q.seen.insert((share, path.clone())) {
-            q.order.push_back((share, path));
-            self.ready.notify_one();
+        let key = (share, path);
+        if q.seen.contains(&key) {
+            return;
+        }
+        let count = q.counts.get(&share).copied().unwrap_or(0);
+        if count >= held {
+            q.lose(share, Vec::new(), held);
+        } else {
+            *q.counts.entry(share).or_insert(0) = count.saturating_add(1);
+            q.seen.insert(key.clone());
+            q.order.push_back(key);
+        }
+        self.ready.notify_one();
+    }
+
+    /// What changed beneath `place` in share `share` was lost ([`Change::Beneath`]), its
+    /// guest holding `held` nodes now.
+    pub fn lose(&self, share: u32, place: Vec<u8>, held: usize) {
+        let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
+        q.lose(share, place, held);
+        self.ready.notify_one();
+    }
+
+    /// `change` of share `share`, whose server is `server`.
+    pub fn told(&self, share: u32, server: &Server, change: Change) {
+        let held = server.held();
+        match change {
+            Change::At(path) => self.tell(share, path, held),
+            Change::Beneath(place) => self.lose(share, place, held),
         }
     }
 
     /// [`take`](Self::take), for no longer than `wait`: none where none came.
     #[cfg(test)]
-    fn take_within(&self, wait: std::time::Duration) -> Option<Vec<u8>> {
+    fn take_within(&self, servers: &[Server], shares: &[u32], wait: std::time::Duration) -> Option<Vec<u8>> {
         let q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
         let (q, _) = self
             .ready
-            .wait_timeout_while(q, wait, |q| q.order.is_empty())
+            .wait_timeout_while(q, wait, |q| q.order.is_empty() && q.lost.is_empty())
             .unwrap_or_else(PoisonError::into_inner);
-        let empty = q.order.is_empty();
+        let empty = q.order.is_empty() && q.lost.is_empty();
         drop(q);
-        (!empty).then(|| self.take())
+        (!empty).then(|| self.take(servers, shares))
     }
 
-    /// The changes waiting, taken, as records: none until there is one.
-    fn take(&self) -> Vec<u8> {
-        let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
-        while q.order.is_empty() {
-            q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
-        }
-        q.seen.clear();
+    /// The changes waiting, taken, as records: none until there is one. What was lost is
+    /// told by every node its guest holds beneath where it was, the k-th of `servers` being
+    /// share `shares[k]`'s, as it holds them now.
+    fn take(&self, servers: &[Server], shares: &[u32]) -> Vec<u8> {
+        let (order, lost) = {
+            let mut q = self.queued.lock().unwrap_or_else(PoisonError::into_inner);
+            while q.order.is_empty() && q.lost.is_empty() {
+                q = self.ready.wait(q).unwrap_or_else(PoisonError::into_inner);
+            }
+            q.seen.clear();
+            q.counts.clear();
+            (std::mem::take(&mut q.order), std::mem::take(&mut q.lost))
+        };
+        let name = |share: u32| usize::try_from(share).ok().and_then(|i| self.names.get(i));
         let mut out = Vec::new();
-        for (share, path) in q.order.drain(..) {
-            let named = usize::try_from(share).ok().and_then(|i| self.names.get(i));
-            if let Some(name) = named {
+        for (share, path) in order {
+            if let Some(name) = name(share) {
                 shards_abi::run::notice::encode(name, &path, &mut out);
+            }
+        }
+        for (share, place) in lost {
+            let server = shares
+                .iter()
+                .position(|s| *s == share)
+                .and_then(|k| servers.get(k));
+            if let (Some(name), Some(server)) = (name(share), server) {
+                for path in server.held_beneath(&place) {
+                    shards_abi::run::notice::encode(name, &path, &mut out);
+                }
             }
         }
         out
     }
 
-    /// Tells `out` each change as it comes, those that came while it was written taken
-    /// together, until it refuses one: its reader has gone.
-    pub fn send(&self, out: &mut impl Write) -> io::Result<()> {
+    /// Tells `out` each change of `servers`' shares (the k-th being share `shares[k]`) as
+    /// it comes, those that came while it was written taken together, until it refuses
+    /// one: its reader has gone.
+    pub fn send(&self, servers: &[Server], shares: &[u32], out: &mut impl Write) -> io::Result<()> {
         loop {
-            let records = self.take();
+            let records = self.take(servers, shares);
             out.write_all(&records)?;
             out.flush()?;
         }
@@ -134,20 +227,24 @@ struct Watched {
     pending: &'static Pending,
 }
 
-/// The path of the k-th server's change at `path` that the guest is told, where it holds
-/// the directory it is in, or it is that directory (D235).
+/// The k-th server's change that the guest is told: a change at a path where it holds the
+/// directory it is in, or it is that directory (D235); what was lost beneath a place,
+/// whatever it holds there ([`Pending::take`] tells what it does).
 #[cfg(not(target_os = "linux"))]
-fn told(w: Watched, k: usize, path: Vec<u8>) {
+fn told(w: Watched, k: usize, change: Change) {
     let (Some(server), Some(&share)) = (w.servers.get(k), w.shares.get(k)) else {
         return;
     };
-    let dir = match path.iter().rposition(|&b| b == b'/') {
-        Some(cut) => path.get(..cut).unwrap_or_default(),
-        None => &[][..],
-    };
-    if server.holds_dir(dir) || server.holds_dir(&path) {
-        w.pending.tell(share, path);
+    if let Change::At(path) = &change {
+        let dir = match path.iter().rposition(|&b| b == b'/') {
+            Some(cut) => path.get(..cut).unwrap_or_default(),
+            None => &[][..],
+        };
+        if !server.holds_dir(dir) && !server.holds_dir(path) {
+            return;
+        }
     }
+    w.pending.told(share, server, change);
 }
 
 #[cfg(target_os = "linux")]
@@ -170,8 +267,8 @@ mod host {
             .spawn(move || {
                 while let Ok(event) = events.recv() {
                     for (server, &share) in w.servers.iter().zip(w.shares) {
-                        for path in server.noticed(&event) {
-                            w.pending.tell(share, path);
+                        for change in server.noticed(&event) {
+                            w.pending.told(share, server, change);
                         }
                     }
                 }
@@ -208,7 +305,12 @@ mod host {
                 while let Ok(change) = changes.recv() {
                     for (k, root) in roots.iter().enumerate() {
                         if let Some(path) = within(root, &change.path) {
-                            told(w, k, path);
+                            let change = if change.flags & shards_apple::fsevents::MUST_SCAN_SUBDIRS != 0 {
+                                Change::Beneath(path)
+                            } else {
+                                Change::At(path)
+                            };
+                            told(w, k, change);
                         }
                     }
                 }
@@ -288,16 +390,16 @@ mod host {
             if read == 0 {
                 return;
             }
-            // None: more changed than the buffer held, each one lost; the root stands for
-            // them, which a guest's watcher there reads again.
+            // None: more changed than the buffer held, each one lost (MSDN,
+            // "ReadDirectoryChangesW": the buffer overflowed and its changes were lost).
             if got == 0 {
-                told(w, k, Vec::new());
+                told(w, k, Change::Beneath(Vec::new()));
                 continue;
             }
             let bytes: Vec<u8> = buf.iter().flat_map(|word| word.to_ne_bytes()).collect();
             let bytes = bytes.get(..usize::try_from(got).unwrap_or(0)).unwrap_or_default();
             for path in changes(bytes) {
-                told(w, k, path);
+                told(w, k, Change::At(path));
             }
         }
     }
@@ -347,42 +449,121 @@ mod host {
 mod tests {
     use super::*;
 
-    /// A change is told once however often it changes before it is; past the most waiting,
-    /// by its nearest directory waiting, else by its share's root, once; and records come
-    /// of it.
+    /// Every path `records` holds, each with its share's name.
+    fn paths_of(records: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut paths = Vec::new();
+        let mut rest = records;
+        while let shards_abi::run::notice::Decoded::Record { name, path, rest: r } =
+            shards_abi::run::notice::decode(rest)
+        {
+            paths.push((name.to_vec(), path.to_vec()));
+            rest = r;
+        }
+        paths
+    }
+
+    /// A share of a directory of the test's own holding `d/f`, its guest having looked up
+    /// `d` and `d/f`, so that it holds three nodes, its root's among them.
+    fn held_share() -> (shards_testdir::TempDir, &'static [Server]) {
+        use super::super::proto::op;
+        let dir = shards_testdir::TempDir::new("notices-held").unwrap();
+        std::fs::create_dir(dir.join("d")).unwrap();
+        std::fs::write(dir.join("d").join("f"), b"f").unwrap();
+        #[cfg(windows)]
+        let opened: super::super::host::Owned = {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            std::fs::File::options()
+                .read(true)
+                .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+                .open(dir.path())
+                .unwrap()
+                .into()
+        };
+        #[cfg(unix)]
+        let opened: super::super::host::Owned = std::fs::File::open(dir.path()).unwrap().into();
+        let server: &'static [Server] = Vec::leak(vec![Server::new(opened, false, None).unwrap()]);
+        let lookup = |parent: u64, name: &[u8]| -> u64 {
+            let mut r = Vec::new();
+            r.extend_from_slice(&u32::try_from(40 + name.len() + 1).unwrap().to_le_bytes());
+            r.extend_from_slice(&op::LOOKUP.to_le_bytes());
+            r.extend_from_slice(&7u64.to_le_bytes());
+            r.extend_from_slice(&parent.to_le_bytes());
+            r.extend_from_slice(&[0u8; 16]);
+            r.extend_from_slice(name);
+            r.push(0);
+            let answered = server[0].handle(&r).unwrap();
+            assert_eq!(i32::from_le_bytes(answered[4..8].try_into().unwrap()), 0);
+            u64::from_le_bytes(answered[16..24].try_into().unwrap())
+        };
+        let d = lookup(1, b"d");
+        lookup(d, b"f");
+        assert_eq!(server[0].held(), 3);
+        (dir, server)
+    }
+
+    /// A change is told once however often it changes before it is, each share's apart;
+    /// and records come of it.
     #[test]
-    fn changes_are_told_once_and_within_bounds() {
+    fn changes_are_told_once() {
         let pending = Pending::new(vec![b"shards0".to_vec(), b"shards-plug1".to_vec()]);
-        pending.tell(0, b"a/b".to_vec());
-        pending.tell(0, b"a/b".to_vec());
-        pending.tell(1, b"a/b".to_vec());
-        let records = pending.take();
+        pending.tell(0, b"a/b".to_vec(), 2);
+        pending.tell(0, b"a/b".to_vec(), 2);
+        pending.tell(1, b"a/b".to_vec(), 2);
+        let records = pending.take(&[], &[]);
         let mut want = Vec::new();
         shards_abi::run::notice::encode(b"shards0", b"a/b", &mut want);
         shards_abi::run::notice::encode(b"shards-plug1", b"a/b", &mut want);
         assert_eq!(records, want);
-        for n in 0..MOST {
-            pending.tell(0, format!("d/{n}").into_bytes());
+    }
+
+    /// confine-06 and confine-09: what a host's watcher lost beneath a place is told by every
+    /// node the guest holds there, a file deep in the share among them, which a guest's
+    /// watch of that file alone waits on; and a share's changes past as many as its guest
+    /// holds nodes are told as lost, so that what waits follows what the guest holds, not
+    /// a number of the host's.
+    #[test]
+    fn lost_changes_are_told_by_every_node_the_guest_holds_beneath() {
+        let (_dir, server) = held_share();
+        let shares = [0u32];
+        let pending = Pending::new(vec![b"shards0".to_vec(), b"shards-plug1".to_vec()]);
+        let told = |pending: &Pending| -> Vec<Vec<u8>> {
+            let mut paths: Vec<_> = paths_of(&pending.take(server, &shares))
+                .into_iter()
+                .map(|(name, path)| {
+                    assert_eq!(name, b"shards0");
+                    path
+                })
+                .collect();
+            paths.sort();
+            paths
+        };
+        // Lost at its root (inotify's overflow, ReadDirectoryChangesW's empty answer).
+        pending.told(0, &server[0], Change::Beneath(Vec::new()));
+        assert_eq!(told(&pending), [&b""[..], b"d", b"d/f"]);
+        // Lost beneath `d` (FSEvents' MustScanSubDirs of it): `d` and what is in it alone.
+        pending.told(0, &server[0], Change::Beneath(b"d".to_vec()));
+        pending.told(0, &server[0], Change::At(b"d/g".to_vec()));
+        assert_eq!(told(&pending), [&b"d"[..], b"d/f"]);
+        // As many as it holds nodes, each told by its path; one more, and the share's
+        // changes are told as lost, by every node it holds, those already waiting too.
+        for path in [&b"n0"[..], b"n1", b"n2"] {
+            pending.told(0, &server[0], Change::At(path.to_vec()));
         }
-        pending.tell(0, b"d/7".to_vec());
-        pending.tell(0, b"d/7/new".to_vec());
-        pending.tell(0, b"d/new".to_vec());
-        pending.tell(0, b"e/f/g".to_vec());
-        pending.tell(1, b"e/f/g".to_vec());
-        let mut paths = Vec::new();
-        let records = pending.take();
-        let mut rest = records.as_slice();
-        while let shards_abi::run::notice::Decoded::Record { path, rest: r, .. } =
-            shards_abi::run::notice::decode(rest)
-        {
-            paths.push(path.to_vec());
-            rest = r;
+        assert_eq!(told(&pending), [&b"n0"[..], b"n1", b"n2"]);
+        for path in [&b"n0"[..], b"n1", b"n2", b"n3", b"n4"] {
+            pending.told(0, &server[0], Change::At(path.to_vec()));
         }
-        assert_eq!(paths.len(), MOST + 2);
-        // `d/7/new` stood for by `d/7`, waiting; `d/new` and `e/f/g` by the root, once a
-        // share.
-        assert_eq!(paths[MOST], Vec::<u8>::new());
-        assert_eq!(paths[MOST + 1], Vec::<u8>::new());
+        assert_eq!(told(&pending), [&b""[..], b"d", b"d/f", b"n0", b"n1", b"n2"]);
+        // Another share's changes are its own: share 1 has no server here, so what it lost
+        // is told by nothing, and share 0's waiting changes are not lost with it.
+        pending.tell(0, b"a".to_vec(), 3);
+        pending.lose(1, Vec::new(), 1);
+        assert_eq!(told(&pending), [&b"a"[..]]);
+        // Places lost are no more than the nodes held: past them, the root stands for all.
+        for place in [&b"x"[..], b"y", b"z", b"w"] {
+            pending.lose(0, place.to_vec(), 3);
+        }
+        assert_eq!(told(&pending), [&b""[..], b"d", b"d/f"]);
     }
 
     /// The host's changes beneath a share are told where the guest holds their directory,
@@ -469,7 +650,7 @@ mod tests {
                     "{} not told; told {told:?}",
                     String::from_utf8_lossy(until)
                 );
-                let records = pending.take_within(left).unwrap_or_default();
+                let records = pending.take_within(server, &[0], left).unwrap_or_default();
                 let mut rest = records.as_slice();
                 while let shards_abi::run::notice::Decoded::Record { name, path, rest: r } =
                     shards_abi::run::notice::decode(rest)

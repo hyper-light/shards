@@ -11,26 +11,42 @@
 
 mod common;
 
-use std::io::{BufRead, Read as _};
+use std::io::{BufRead, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
 
 use common::terminal::{Terminal, cooked};
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, run_shards_env_in, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// SIGINT, as Linux numbers it, which a client ended by an interrupt exits by (128 + it), on
 /// every host: Windows' clients exit by Linux's numbers.
 const SIGINT: i32 = 2;
 
 /// A connection to the engine served at `socket`: its Unix socket; on Windows the named pipe
-/// the file there names.
+/// the file there names. Read through [`reading`].
 #[cfg(unix)]
 fn connect(socket: &Path) -> std::os::unix::net::UnixStream {
-    let conn = std::os::unix::net::UnixStream::connect(socket).unwrap();
-    conn.set_read_timeout(Some(TIMEOUT)).unwrap();
+    std::os::unix::net::UnixStream::connect(socket).unwrap()
+}
+
+/// A secret-looking value a test's command carries, which the machine's log never says.
+const PLANTED: &str = "SHARDS_PLANTED=sk-ant-planted-0d6f1c";
+
+/// What is read of `conn`, a connection to an engine `home`'s daemon serves: on Unix a read
+/// judged as the tests' waits are (`common::Following::of_home`), its kind its call site, its
+/// bytes its progress; on Windows, whose pipes take no timeout to read by, the pipe itself,
+/// which the daemon closes as it ends.
+#[cfg(unix)]
+#[track_caller]
+fn reading<'a>(
+    conn: &'a std::os::unix::net::UnixStream,
+    home: &Path,
+) -> common::Following<'a, std::os::unix::net::UnixStream> {
+    common::Following::of_home(conn, home)
+}
+
+#[cfg(windows)]
+fn reading<'a>(conn: &'a std::fs::File, _home: &Path) -> &'a std::fs::File {
     conn
 }
 
@@ -78,6 +94,7 @@ impl Drop for Listening {
 
 /// Two homes: a machine whose daemon listens on loopback, the test image pulled there, and a
 /// laptop joined to it as context `gpu`.
+#[track_caller]
 fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
     // It says why it skips.
     if cannot_run_vms() {
@@ -103,7 +120,14 @@ fn joined(name: &str) -> Option<(TempDir, Listening, TempDir, String)> {
     let invite = machine.join("laptop.invite");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -588,13 +612,15 @@ fn a_build_through_a_context_is_of_the_clients_context_kept_in_step() {
     assert!(!machine.join("synced/laptop").exists(), "its copies kept");
 }
 
-/// What a client of Docker's API reads of `path` on the engine socket `socket`, on a
-/// connection of its own: the answer's status, and its body, a length's or a chunked one's.
-fn engine_get(socket: &Path, path: &str) -> (u16, String) {
+/// What a client of Docker's API reads of `path` on the engine socket `socket`, which
+/// `home`'s daemon serves, on a connection of its own: the answer's status, and its body, a
+/// length's or a chunked one's.
+#[track_caller]
+fn engine_get(home: &Path, socket: &Path, path: &str) -> (u16, String) {
     use std::io::{BufRead as _, Write as _};
     let mut conn = connect(socket);
     write!(conn, "GET {path} HTTP/1.1\r\nHost: api\r\n\r\n").unwrap();
-    let mut reader = std::io::BufReader::new(conn);
+    let mut reader = std::io::BufReader::new(reading(&conn, home));
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
     let status = line.split(' ').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -660,13 +686,15 @@ fn a_contexts_engine_is_its_machines() {
         let short: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
         laptop.join("e").join(format!("{short}.sock"))
     };
-    // Served as the daemon starts, for the contexts its home joined.
+    // Served as the daemon starts, for the contexts its home joined: waited for while that
+    // daemon goes on.
     let served = |engine: &Path| {
-        let start = std::time::Instant::now();
+        let mut patience = common::Patience::of(&laptop);
         while !engine.exists() {
-            assert!(start.elapsed() < TIMEOUT, "{} never served", engine.display());
-            std::thread::sleep(Duration::from_millis(5));
+            assert!(patience.holds(), "{} never served", engine.display());
+            std::thread::sleep(patience.next_look());
         }
+        patience.done();
     };
     served(&engine);
     // On Windows, once served, the endpoint names its pipe, as `npipe://` (D180 part 3k).
@@ -681,7 +709,7 @@ fn a_contexts_engine_is_its_machines() {
             "{doc}"
         );
     }
-    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    assert_eq!(engine_get(&laptop, &engine, "/_ping"), (200, "OK".into()));
     // A client that reads to the end, as one asking to close does: the API's end of its
     // answer is the client's end of reading, through the relay.
     {
@@ -690,7 +718,7 @@ fn a_contexts_engine_is_its_machines() {
         conn.write_all(b"GET /_ping HTTP/1.1\r\nHost: api\r\nConnection: close\r\n\r\n")
             .unwrap();
         let mut answer = String::new();
-        conn.read_to_string(&mut answer).unwrap();
+        reading(&conn, &laptop).read_to_string(&mut answer).unwrap();
         assert!(
             answer.starts_with("HTTP/1.1 200 OK\r\n") && answer.ends_with("OK"),
             "{answer:?}"
@@ -702,7 +730,7 @@ fn a_contexts_engine_is_its_machines() {
         &on_laptop,
     );
     assert_eq!(made.status, Some(0), "{made}");
-    let (status, there) = engine_get(&engine, "/containers/json?all=1");
+    let (status, there) = engine_get(&laptop, &engine, "/containers/json?all=1");
     assert_eq!(status, 200, "{there}");
     assert!(there.contains("\"/relayed\""), "{there}");
     // A bind through the context's engine names a path, which is the client's, and Docker's
@@ -723,11 +751,11 @@ fn a_contexts_engine_is_its_machines() {
         )
         .unwrap();
         let mut answer = String::new();
-        conn.read_to_string(&mut answer).unwrap();
+        reading(&conn, &laptop).read_to_string(&mut answer).unwrap();
         assert!(!answer.starts_with("HTTP/1.1 201"), "{answer}");
         assert!(answer.contains("its own directory"), "{answer}");
     }
-    let (status, here) = engine_get(&laptop.join(OWN_ENGINE), "/containers/json?all=1");
+    let (status, here) = engine_get(&laptop, &laptop.join(OWN_ENGINE), "/containers/json?all=1");
     assert_eq!(status, 200, "{here}");
     assert!(!here.contains("relayed"), "{here}");
     // Docker's own CLI, where this host has one: its listing, and a run, whose attach takes
@@ -748,7 +776,7 @@ fn a_contexts_engine_is_its_machines() {
     // a new name.
     let docker = |args: &[&str], stdin: Stdio| {
         docker.as_ref().map(|docker| {
-            let out = common::output_within(
+            let out = common::client_output(
                 std::process::Command::new(docker)
                     .args(args)
                     .env("DOCKER_HOST", docker_host(&engine))
@@ -757,7 +785,7 @@ fn a_contexts_engine_is_its_machines() {
                     .env_remove("DOCKER_CONTEXT")
                     .env("DOCKER_CLI_HINTS", "false")
                     .stdin(stdin),
-                TIMEOUT,
+                Some(&*laptop),
             );
             (
                 out.status.code(),
@@ -797,7 +825,14 @@ fn a_contexts_engine_is_its_machines() {
     let invite = machine.join("again.invite");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "again", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "again",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -808,7 +843,7 @@ fn a_contexts_engine_is_its_machines() {
     );
     assert_eq!(rejoined.status, Some(0), "{rejoined}");
     served(&engine);
-    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    assert_eq!(engine_get(&laptop, &engine, "/_ping"), (200, "OK".into()));
     // Joined again as it was enrolled: one client of its key, the invitation redeemed.
     let clients = run_shards_env(&["list", "clients"], &[] as &[&str], &on_machine);
     let named: Vec<&str> = clients
@@ -824,7 +859,7 @@ fn a_contexts_engine_is_its_machines() {
     let listed = run_shards_env(&["ps"], &["-a"], &on_laptop);
     assert_eq!(listed.status, Some(0), "{listed}");
     served(&engine);
-    assert_eq!(engine_get(&engine, "/_ping"), (200, "OK".into()));
+    assert_eq!(engine_get(&laptop, &engine, "/_ping"), (200, "OK".into()));
     // A stream held open through it ends as the daemon stops, which takes the contexts'
     // sockets with it as it closes: an attach to a microVM there, which the end of its
     // client's writing would not end.
@@ -842,7 +877,7 @@ fn a_contexts_engine_is_its_machines() {
                 b"POST /containers/held/attach?stream=1&stdout=1&stderr=1 HTTP/1.1\r\nHost: api\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
             )
             .unwrap();
-        let mut reader = std::io::BufReader::new(&attach);
+        let mut reader = std::io::BufReader::new(reading(&attach, &laptop));
         let mut status = String::new();
         reader.read_line(&mut status).unwrap();
         assert!(status.starts_with("HTTP/1.1 101 "), "{status:?}");
@@ -861,7 +896,7 @@ fn a_contexts_engine_is_its_machines() {
     served(&engine);
     let gone = run_shards_env(&["remove", "client"], &["laptop"], &on_machine);
     assert_eq!(gone.status, Some(0), "{gone}");
-    let (status, said) = engine_get(&engine, "/_ping");
+    let (status, said) = engine_get(&laptop, &engine, "/_ping");
     assert_eq!(status, 502, "{said}");
     let said: serde_json::Value = serde_json::from_str(&said).unwrap();
     assert_eq!(
@@ -1087,8 +1122,12 @@ fn a_policy_through_a_context_is_the_clients_its_builder_the_machine() {
     // Evaluated here: the machine was asked its steps alone, never to run the commands, and
     // none of the client's paths.
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
-    assert!(log.contains("client laptop: policy step platform"), "{log}");
-    assert!(log.contains("client laptop: policy step resolve"), "{log}");
+    assert!(log.contains("client laptop: policy step platform\n"), "{log}");
+    assert!(log.contains("client laptop: policy step resolve\n"), "{log}");
+    assert!(
+        log.contains("client laptop: policy step resolve ended, status 0"),
+        "{log}"
+    );
     assert!(!log.contains("client laptop: shards buildx policy"), "{log}");
     assert!(!log.contains(dir.to_str().unwrap()), "{log}");
 }
@@ -1249,12 +1288,25 @@ fn a_signal_to_the_client_reaches_the_command_there() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = common::interruptible(&mut command).spawn().unwrap();
-        // A regression fails the test instead of hanging it.
+        // A regression fails the test instead of hanging it: its run, waited on as the tests'
+        // waits are (`common::Wait`, its client and the laptop's daemon its party), is ended
+        // where its judge refuses it.
         let ender = Ender::of(&child);
         let (done, watch) = std::sync::mpsc::channel::<()>();
+        let (client, home) = (child.id(), laptop.to_path_buf());
         std::thread::spawn(move || {
-            if watch.recv_timeout(TIMEOUT).is_err() {
-                ender.end();
+            let kind = common::WaitKind::at(std::panic::Location::caller());
+            let mut wait = common::Wait::begin(kind, client, Some(&home), "a run's signal");
+            loop {
+                match watch.recv_timeout(wait.next_look()) {
+                    Ok(()) => return wait.answered(),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                if let Err(stall) = wait.look(false) {
+                    let _ = writeln!(std::io::stderr(), "{}", wait.refused(&stall));
+                    return ender.end();
+                }
             }
         });
         let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
@@ -1352,7 +1404,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let invite = machine.join("laptop.invite");
     let early = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_ne!(early.status, Some(0), "{early}");
@@ -1366,7 +1425,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     assert_eq!(started.status, Some(0), "{started}");
     let invited = run_shards_env(
         &["invite", "client"],
-        &["--name", "laptop", "--output", invite.to_str().unwrap()],
+        &[
+            "--name",
+            "laptop",
+            "--output",
+            invite.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(invited.status, Some(0), "{invited}");
@@ -1413,11 +1479,36 @@ fn a_context_runs_commands_on_its_machine_whole() {
         "{again}"
     );
 
-    // An invitation an hour old enrolls no one.
+    // An invitation is made only with the lifetime its owner gives it: none is assumed.
+    let unstated = run_shards_env(
+        &["invite", "client"],
+        &[
+            "--name",
+            "unstated",
+            "--output",
+            machine.join("unstated.invite").to_str().unwrap(),
+        ],
+        &on_machine,
+    );
+    assert_ne!(unstated.status, Some(0), "{unstated}");
+    assert!(
+        unstated.stderr.contains("flag needed: --valid DURATION"),
+        "{unstated}"
+    );
+    assert!(!machine.join("invitations/unstated").exists());
+
+    // An invitation older than the lifetime its owner gave it enrolls no one.
     let late = machine.join("late.invite");
     let made = run_shards_env(
         &["invite", "client"],
-        &["--name", "late", "--output", late.to_str().unwrap()],
+        &[
+            "--name",
+            "late",
+            "--output",
+            late.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(made.status, Some(0), "{made}");
@@ -1451,7 +1542,14 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let forged = machine.join("forged.invite");
     let made = run_shards_env(
         &["invite", "client"],
-        &["--name", "forged", "--output", forged.to_str().unwrap()],
+        &[
+            "--name",
+            "forged",
+            "--output",
+            forged.to_str().unwrap(),
+            "--valid",
+            "10m",
+        ],
         &on_machine,
     );
     assert_eq!(made.status, Some(0), "{made}");
@@ -1514,7 +1612,7 @@ fn a_context_runs_commands_on_its_machine_whole() {
     assert!(ran.stdout.lines().any(|l| l == "uid 1000"), "{ran}");
     let exited = run_shards_env(
         &["--context", "gpu", "run"],
-        &["--rm", image.as_str(), "exit", "3"],
+        &["--rm", "-e", PLANTED, image.as_str(), "exit", "3"],
         &on_laptop,
     );
     assert_eq!(exited.status, Some(3), "{exited}");
@@ -1592,13 +1690,13 @@ fn a_context_runs_commands_on_its_machine_whole() {
     let back = run_shards_env(&["use", "context"], &["default"], &on_laptop);
     assert_eq!(back.status, Some(0), "{back}");
 
-    // The machine's log says what its client ran.
+    // The machine's log says what its client ran, by its command's name and its status, and
+    // nothing of its flags' values or arguments (remote-05, D180).
     let log = std::fs::read_to_string(machine.join("daemon.log")).unwrap();
     assert!(log.contains("client laptop joined"), "{log}");
-    assert!(
-        log.contains(&format!("client laptop: shards run --rm {image} exit 3")),
-        "{log}"
-    );
+    assert!(log.contains("client laptop: shards run\n"), "{log}");
+    assert!(log.contains("client laptop: shards run ended, status 3"), "{log}");
+    assert!(!log.contains(PLANTED), "{log}");
     let stopped = run_shards_env(&["daemon"], &["stop"], &on_machine);
     assert_eq!(stopped.status, Some(0), "{stopped}");
 }
@@ -2103,12 +2201,16 @@ fn a_builds_ssh_agents_through_a_context_are_the_clients() {
             }
         }
         let agent = Ended(common::ssh_agent(&sock));
-        for _ in 0..100 {
-            if sock.exists() {
-                break;
+        // Its socket, waited for while the agent goes on.
+        let kind = common::WaitKind::at(std::panic::Location::caller());
+        let mut wait = common::Wait::begin(kind, agent.0.id(), None, "ssh-agent's socket");
+        while !sock.exists() {
+            if let Err(stall) = wait.look(false) {
+                panic!("{}", wait.refused(&stall));
             }
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(wait.next_look());
         }
+        wait.answered();
         let made = std::process::Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-C", "shards-test-key", "-f"])
             .arg(&key)
@@ -2417,12 +2519,16 @@ fn a_cidfile_through_a_context_is_the_clients() {
         .spawn()
         .unwrap();
     let attached_id = laptop.join("attached.id");
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let kind = common::WaitKind::at(std::panic::Location::caller());
+    let mut wait = common::Wait::begin(kind, attached.id(), Some(&laptop), "its run's ID");
     while std::fs::read_to_string(&attached_id).map_or(0, |id| id.len()) != 64 {
         assert!(attached.try_wait().unwrap().is_none(), "the run ended first");
-        assert!(std::time::Instant::now() < deadline, "no ID while the run runs");
-        std::thread::sleep(Duration::from_millis(20));
+        if let Err(stall) = wait.look(false) {
+            panic!("no ID while the run runs: {}", wait.refused(&stall));
+        }
+        std::thread::sleep(wait.next_look());
     }
+    wait.answered();
     let removed = there(&["rm", "-f", "held", "attached", created.stdout.trim()]);
     assert_eq!(removed.status, Some(0), "{removed}");
     let _ = attached.wait();
@@ -2512,10 +2618,11 @@ fn a_clients_binds_are_its_own_files_and_the_machines_its_owners_to_grant() {
         "write:/data/c=detached",
     ]);
     assert_eq!(detached.status, Some(0), "{detached}");
-    let waited = std::time::Instant::now();
-    while !src.join("c").exists() && waited.elapsed() < TIMEOUT {
-        std::thread::sleep(Duration::from_millis(100));
+    let mut patience = common::Patience::of(&laptop);
+    while !src.join("c").exists() && patience.holds() {
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
     assert_eq!(std::fs::read_to_string(src.join("c")).unwrap(), "detached");
     // A directory of the laptop's plugged into a running microVM there: its files read and
     // written there, until it is unplugged.

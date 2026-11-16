@@ -19,6 +19,12 @@ shards-apple = { path = "../apple" }
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rustls-platform-verifier = "0.7.1"
 
+# The system's roots read from the directories openssl-probe knows, never from SSL_CERT_FILE
+# or SSL_CERT_DIR (Platform, D242): rustls-platform-verifier's own source of them on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl-probe = "0.2.1"
+rustls-native-certs = "0.8.4"
+
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 # What the macOS verifier is held to: it trusts and refuses as this one did (apple.rs).
 rustls-platform-verifier = "0.7.1"

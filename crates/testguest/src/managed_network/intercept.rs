@@ -274,6 +274,9 @@ enum WorkerState<T> {
 }
 impl Worker {
     fn start(listener: TcpListener, reply: Reply, deadline: &Deadline) -> io::Result<Self> {
+        // Before the thread starts: a blocking accept4 never returns to Deadline::io's
+        // poll, so neither the wake nor the deadline would reach it.
+        listener.set_nonblocking(true)?;
         Self::spawn(deadline, move |deadline| {
             let mut report = Report::default();
             let result = (|| loop {
@@ -1108,15 +1111,78 @@ mod tests {
         );
     }
 
+    /// The latest deadline an Instant holds. These workers end at an answer or a wake that
+    /// Deadline::io's poll sees, never at time, so the tests choose no time limit of their own.
+    fn farthest() -> Deadline {
+        let mut within = Duration::MAX;
+        loop {
+            if let Ok(deadline) = Deadline::new(within) {
+                return deadline;
+            }
+            within /= 2;
+        }
+    }
+
+    /// Whether a thread of this process is in accept4(2) on `fd` (proc(5)'s
+    /// /proc/pid/task/tid/syscall: the number, then the arguments in hex).
+    fn blocked_in_accept4(fd: RawFd) -> bool {
+        let wanted = format!("{} {fd:#x} ", libc::SYS_accept4);
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|task| {
+                std::fs::read_to_string(task.path().join("syscall"))
+                    .is_ok_and(|line| line.starts_with(&wanted))
+            })
+    }
+
+    /// The hang CI's aarch64-unknown-linux-gnu job met (run 43496145972): Deadline::io tries
+    /// its operation before it polls, so an accept4 on a blocking listener is in the kernel
+    /// where neither the wake nor the deadline reaches it, and only a connection ends it.
+    #[test]
+    fn a_wake_never_reaches_an_accept_that_blocks() {
+        // The wait below ends only where the kernel reports its threads' system calls.
+        std::fs::read_to_string("/proc/thread-self/syscall").unwrap();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let at = listener.local_addr().unwrap();
+        let fd = listener.as_raw_fd();
+        let mut worker = Worker::spawn(&farthest(), move |deadline| {
+            deadline
+                .io(fd, libc::POLLIN, || listener.accept())
+                .map(|(_, peer)| peer)
+        })
+        .unwrap();
+        // A blocking accept4 stays in the kernel until a connection comes: none comes yet.
+        while !blocked_in_accept4(fd) {
+            if let WorkerState::Running(thread) = &worker.state {
+                assert!(!thread.is_finished(), "the worker ended before its accept4");
+            }
+            std::thread::yield_now();
+        }
+        worker.wake();
+        assert!(blocked_in_accept4(fd), "the wake moved a blocking accept4");
+        let client = TcpStream::connect(at).unwrap();
+        // The accept completed after its wake: the wake never reached it.
+        let peer = worker.join().unwrap().unwrap();
+        assert_eq!(peer, client.local_addr().unwrap());
+    }
+
     #[test]
     fn an_aborted_accept_without_cancellation_is_a_worker_error() {
-        // Test patience: the aborted worker ends at its first accept, the cancelled at its wake.
-        let deadline = Deadline::new(Duration::from_secs(30)).unwrap();
+        let deadline = farthest();
         let aborted = std::thread::scope(|scope| {
             scope
                 .spawn(|| {
                     accept_aborts_here();
-                    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                    let listener =
+                        listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+                    // The filter's own answer, before the worker relies on it.
+                    let probe = listener.accept().map(|_| ()).unwrap_err();
+                    assert_eq!(
+                        probe.raw_os_error(),
+                        Some(libc::ECONNABORTED),
+                        "accept4 answered {probe}: the seccomp filter is not in force"
+                    );
                     let mut worker = Worker::start(listener, Reply::Backend, &deadline).unwrap();
                     // Joined without its wake: nothing requested this worker's cancellation.
                     worker.join().unwrap()
@@ -1129,9 +1195,23 @@ mod tests {
             aborted.result.unwrap_err().kind(),
             io::ErrorKind::ConnectionAborted
         );
-        // A requested cancellation remains the worker's clean stop.
+        // A requested cancellation remains the worker's clean stop, on a listener given blocking.
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let at = listener.local_addr().unwrap();
+        // try_clone shares the open file description, and with it O_NONBLOCK.
+        let shared = listener.try_clone().unwrap();
         let mut worker = Worker::start(listener, Reply::Backend, &deadline).unwrap();
+        // SAFETY: F_GETFL on a descriptor this test owns.
+        let flags = unsafe { libc::fcntl(shared.as_raw_fd(), libc::F_GETFL) };
+        let nonblocking = flags >= 0 && flags & libc::O_NONBLOCK != 0;
+        if !nonblocking {
+            // Releases a blocking accept4, so the failed test's Drop can join the worker.
+            let _ = TcpStream::connect(at);
+        }
+        assert!(
+            nonblocking,
+            "the worker's listener is blocking: its accept4 never sees the wake"
+        );
         let stopped = worker.finish().unwrap();
         assert_eq!(stopped.outcome(), WorkerOutcome::Stopped, "{:?}", stopped.result);
     }

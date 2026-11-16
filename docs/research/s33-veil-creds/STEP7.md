@@ -269,3 +269,70 @@ Run each on the green tree with `cargo test -p shards-net --profile test-release
 
 - ROOT: CI's 8-target matrix on main; the mutations above; a real-VM run whose broker refuses a granted lease (an api
   run on KVM, HVF and WHP), its guest answered 503 once, over HTTP/1.1 and HTTP/2.
+
+# Real-VM tests of steps 7 and 8, written for ROOT to run
+
+Kiln goal "#74 credentials" (plan step 33), steps 7 and 8. Role: implementer for ROOT (g121). Policy read at origin/main
+70eba153d: AGENTS.md sha256 f66d304c…, docs/development-rules.md df2acf47…, docs/development-evidence.md 61613a24…, and
+/tmp/g121-shot/brief-common.md. Worktree `s33-vm-tests`, branch `p/s33-vm-tests-v1`. Written, compiled and linted; not
+run (real-VM runs are ROOT's).
+
+## Tests (`crates/shards/tests/api_image.rs`)
+
+- `an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_back_masked`: a grant toward the host
+  itself; the harness sends its placeholder over HTTP/2 as a bearer token, then as `x-api-key` with a body, to the
+  test's host speaking `h2`. The host sees the value, each field never indexed (RFC 7541 §7.1.3); the echoes, in a
+  field and in DATA, come back masked; the value is in neither the harness's output nor the run's home; every lease
+  is released by the run's end.
+- `a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks_again`: the lessor refuses its first
+  two asks. The first request (HTTP/1.1) and the second (an h2 stream) are each answered 503, and neither reaches
+  the host. The third (h2) asks anew, three asks in all, and is filled and echoed masked.
+- `an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside`: Codex's sign-in, with the
+  test's host playing `auth.openai.com`. The exchange over h2 reaches the host, which is asked `identity`. Its
+  tokens are captured by the lessor, and the harness holds the capture's placeholders alone. The refresh never
+  reaches the host: the lessor answers it, again with placeholders. The access token's use is then filled with the
+  refreshed token toward the host itself, never indexed, and its echo is masked. No token reaches the harness's
+  output or the run's home.
+- The harness is the test guest's new `tls-ask` mode (`crates/testguest/src/tls_ask.rs`): HTTP/2 or HTTP/1.1 per
+  request over TLS trusting the run's bundle, HPACK through shards-net's `hpack.rs` included by path. The host is
+  the test's own, on this host's loopback (`tls_host`: h2 and HTTP/1.1 under a test CA, HPACK through
+  `shards_net::hpack`); the run reaches it as `host.docker.internal`. Waits end on the harness's own end (its
+  stdout read to its close, `assert_ended`); the host's records are read after it, with no deadline of their own.
+- No vendor is asked. The sign-in's guest dials the test's host and names `auth.openai.com` in its SNI alone.
+  The injector picks a flow by its SNI (inject.rs `hello`) and reaches the address the guest dialed, and its
+  upstream TLS verifies that name against the test's root.
+
+## Where they run
+
+- **Linux (KVM)**: the run host's environment carries `SSL_CERT_FILE` naming the test's CA. Its network process
+  inherits it, and its verifier reads it as it starts (rustls-platform-verifier 0.7.1 on Linux loads roots through
+  rustls-native-certs 0.8, which takes `SSL_CERT_FILE` over the system's bundle).
+- **macOS (HVF) and Windows (WHP)**: each test prints `SKIP:` and returns. The injector's upstream side is the OS's
+  verifier (shards-verify: trustd, CryptoAPI), and production builds `Upstream::new(Vec::new())`
+  (`crates/net/src/lib.rs` `Prepared::new`), so nothing a test sets adds a root. These runs stay **unverified**
+  there until a run's injector can be given a test's root. That seam is a D242 decision, not taken here.
+
+## Checks (adas-mac-studio.local, macOS arm64, through the carrier /tmp/s33vm-carrier; `SHARDS_HELPERS=skip`, `CARGO_INCREMENTAL=0`)
+
+- kiln run r1238 at a4bc7f212:
+  - `cargo fmt --all --check` clean.
+  - `cargo test -p shards --profile test-release --test api_image --no-run` built.
+  - `cargo clippy -p shards-testguest --all-targets --target {aarch64,x86_64}-unknown-linux-musl -- -D warnings`
+    (zig) clean.
+  - `cargo clippy -p shards --test api_image -- -D warnings` refused three lints (two `type_complexity`, one
+    `panic_in_result_fn`) on aarch64-apple-darwin, x86_64-unknown-linux-gnu (zig) and x86_64-pc-windows-msvc
+    (xwin). They were fixed in the next commit.
+- kiln run r1247 at 29c8d321d: fmt, and clippy of `shards --test api_image` on the same three targets, clean (exit 0 each).
+
+## Owed (ROOT)
+
+- On a Linux KVM host (x86_64; and arm64 through the L1 path):
+  `cargo test -p shards --profile test-release --test api_image -- --exact --test-threads=1
+  an_h2_request_to_a_granted_host_is_filled_never_indexed_and_its_echo_comes_back_masked
+  a_refused_lease_is_answered_503_over_http_1_1_and_h2_and_a_later_request_asks_again
+  an_h2_sign_in_gives_the_harness_placeholders_and_its_refresh_is_answered_outside
+  staged_credentials_reach_the_harness_and_its_output_and_end_come_back` (the last because its home scan now
+  goes through `holding`).
+- HVF and WHP: the same command prints SKIP for the three. A decision on giving a run's injector a test's root
+  (D242) is needed before they can run there.
+- Under step 10's leak scan, and the guard-removal mutations listed above, run against these real-VM tests.

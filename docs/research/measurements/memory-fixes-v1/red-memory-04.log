@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 06s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 1 test
+test build::give::tests::a_budget_removed_during_an_ask_is_delivered_after_its_answer ... FAILED
+
+failures:
+
+---- build::give::tests::a_budget_removed_during_an_ask_is_delivered_after_its_answer stdout ----
+
+thread 'build::give::tests::a_budget_removed_during_an_ask_is_delivered_after_its_answer' (54151246) panicked at crates/shards/src/build/give.rs:695:18:
+budget removal was lost behind the pending answer: Os { code: 35, kind: WouldBlock, message: "Resource temporarily unavailable" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    build::give::tests::a_budget_removed_during_an_ask_is_delivered_after_its_answer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 893 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`

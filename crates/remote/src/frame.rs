@@ -8,9 +8,70 @@
 
 use crate::Error;
 
-/// The most a frame carries: a pipe's reads come in less, and a request's arguments and
-/// variables are a command line's (Linux's ARG_MAX is 2 MiB, execve(2)), within it.
-pub const MAX_FRAME: usize = 4 << 20;
+/// How many bytes a frame of a tag may carry on the lane that reads it (remote-08, D180
+/// *Frame bounds*): the bound its grammar gives, else what the reading host can hold now
+/// (`shards_ipc::holdable_known`, the rule a snapshot's state is read by), for a payload whose
+/// grammar gives none: a request's step and a refusal's or a cut's words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Most {
+    Bytes(usize),
+    Holdable,
+}
+
+/// The kinds of frame a lane's reader takes, each with its [`Most`]; one it takes none of is
+/// [`Unframed::Untaken`].
+pub type Takes = fn(Tag) -> Option<Most>;
+
+/// Why the frame at the front of a lane's bytes is not one it reads ([`admit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unframed {
+    /// A kind no frame has.
+    NoKind(u8),
+    /// A kind this lane takes none of.
+    Untaken(Tag),
+    /// More bytes than this lane takes of its kind.
+    Past { tag: Tag, len: usize, most: usize },
+    /// A kind bounded by what the host can hold, on a host that says nothing of its memory.
+    HostMemoryUnknown(Tag),
+}
+
+impl std::fmt::Display for Unframed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unframed::NoKind(byte) => write!(f, "a frame of no kind ({byte})"),
+            Unframed::Untaken(tag) => write!(f, "a frame out of place ({tag:?})"),
+            Unframed::Past { tag, len, most } => {
+                write!(f, "a {len}-byte {tag:?} frame, over the {most} this lane takes")
+            }
+            Unframed::HostMemoryUnknown(tag) => write!(
+                f,
+                "a {tag:?} frame bounded by this host's memory, which it does not say"
+            ),
+        }
+    }
+}
+
+impl From<Unframed> for Error {
+    fn from(why: Unframed) -> Error {
+        Error::new(why.to_string())
+    }
+}
+
+/// Whether a lane that `takes` its frames so reads one of `tag` carrying `len` bytes: judged
+/// from its header, before a byte of it is waited for.
+pub fn admit(tag: Tag, len: usize, takes: Takes) -> Result<(), Unframed> {
+    let most = match takes(tag) {
+        None => return Err(Unframed::Untaken(tag)),
+        Some(Most::Bytes(most)) => most,
+        Some(Most::Holdable) => shards_ipc::holdable_known()
+            .and_then(|most| usize::try_from(most).ok())
+            .ok_or(Unframed::HostMemoryUnknown(tag))?,
+    };
+    if len > most {
+        return Err(Unframed::Past { tag, len, most });
+    }
+    Ok(())
+}
 
 /// What a frame is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +153,9 @@ pub enum Tag {
     /// the oldest its log keeps, which this names (`control::exec::LogPos`, 24 bytes); the
     /// lane's end follows.
     Rotated = 45,
+    /// Agent-control endpoint, on a member's lane (D238): the member's command was killed by
+    /// this signal, its Linux number (four bytes, big endian), in place of its `Exit`.
+    Signaled = 46,
 }
 
 impl Tag {
@@ -124,6 +188,7 @@ impl Tag {
             43 => Tag::Running,
             44 => Tag::Steered,
             45 => Tag::Rotated,
+            46 => Tag::Signaled,
             _ => return None,
         })
     }
@@ -131,13 +196,13 @@ impl Tag {
 
 /// `payload` framed as `tag`, appended to `out`.
 pub fn put(out: &mut Vec<u8>, tag: Tag, payload: &[u8]) -> Result<(), Error> {
-    if payload.len() > MAX_FRAME {
-        return Err(Error::new(format!(
-            "a {}-byte frame, over {MAX_FRAME}",
-            payload.len()
-        )));
-    }
     let len = u32::try_from(payload.len()).map_err(|_| Error::new("a frame too long"))?;
+    let extra = payload
+        .len()
+        .checked_add(std::mem::size_of::<u8>() + std::mem::size_of::<u32>())
+        .ok_or_else(|| Error::new("a frame too long"))?;
+    out.try_reserve(extra)
+        .map_err(|_| Error::new("no room for a frame"))?;
     out.push(tag as u8);
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(payload);
@@ -145,7 +210,8 @@ pub fn put(out: &mut Vec<u8>, tag: Tag, payload: &[u8]) -> Result<(), Error> {
 }
 
 /// What the frame at the front of `buffer` is, and how many bytes it carries, once its header
-/// has come: what a frame may be is judged before its bytes are waited for.
+/// has come: its kind and length as the wire says them. What its lane takes of it is the
+/// lane's to judge ([`admit`]) before its bytes are waited for.
 pub fn peek(buffer: &[u8]) -> Result<Option<(Tag, usize)>, Error> {
     let Some(&[tag, a, b, c, d]) = buffer.get(..5).and_then(|h| <&[u8; 5]>::try_from(h).ok()) else {
         return Ok(None);
@@ -153,18 +219,16 @@ pub fn peek(buffer: &[u8]) -> Result<Option<(Tag, usize)>, Error> {
     let tag = Tag::of(tag).ok_or_else(|| Error::new(format!("a frame of no kind ({tag})")))?;
     let len =
         usize::try_from(u32::from_be_bytes([a, b, c, d])).map_err(|_| Error::new("a frame too long"))?;
-    if len > MAX_FRAME {
-        return Err(Error::new(format!("a {len}-byte frame, over {MAX_FRAME}")));
-    }
     Ok(Some((tag, len)))
 }
 
-/// The first whole frame at the front of `buffer`, taken from it; none until one has come
-/// whole.
-pub fn take(buffer: &mut Vec<u8>) -> Result<Option<(Tag, Vec<u8>)>, Error> {
+/// The first whole frame at the front of `buffer`, taken from it, of a kind and length its lane
+/// `takes` ([`admit`], judged from its header); none until one has come whole.
+pub fn take(buffer: &mut Vec<u8>, takes: Takes) -> Result<Option<(Tag, Vec<u8>)>, Error> {
     let Some((tag, len)) = peek(buffer)? else {
         return Ok(None);
     };
+    admit(tag, len, takes)?;
     let end = len.checked_add(5).ok_or_else(|| Error::new("a frame too long"))?;
     let Some(payload) = buffer.get(5..end) else {
         return Ok(None);
@@ -278,7 +342,7 @@ impl Request {
             usize::try_from(u32::from_be_bytes(*n)).map_err(|_| short())
         };
         let n = count(input)?;
-        let mut args = Vec::with_capacity(n.min(MAX_FRAME / 4));
+        let mut args = Vec::with_capacity(n.min(input.len() / 4));
         for _ in 0..n {
             args.push(get_bytes(input)?.to_vec());
         }
@@ -339,7 +403,7 @@ mod tests {
         let mut got = Vec::new();
         for byte in wire {
             buffer.push(byte);
-            while let Some(frame) = take(&mut buffer).unwrap() {
+            while let Some(frame) = take(&mut buffer, |_| Some(Most::Bytes(16))).unwrap() {
                 got.push(frame);
             }
         }
@@ -352,10 +416,55 @@ mod tests {
         );
         assert!(buffer.is_empty());
         let mut bad = vec![99, 0, 0, 0, 0];
-        assert!(take(&mut bad).is_err());
+        assert!(take(&mut bad, |_| Some(Most::Bytes(16))).is_err());
         let mut huge = vec![Tag::Stdout as u8];
         huge.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert!(take(&mut huge).is_err());
+        assert!(take(&mut huge, |_| Some(Most::Bytes(16))).is_err());
+    }
+
+    /// A lane takes a frame of a kind it reads and of no more than it takes of that kind,
+    /// judged from the header alone (remote-08): a kind it reads none of is out of place, one
+    /// past its bound is refused before a byte of it is waited for, and one bounded by what
+    /// the host can hold is held to that.
+    #[test]
+    fn a_lane_takes_its_own_kinds_to_its_own_bounds() {
+        let takes: Takes = |tag| match tag {
+            Tag::Stdout => Some(Most::Bytes(4)),
+            Tag::Refused => Some(Most::Holdable),
+            _ => None,
+        };
+        assert_eq!(admit(Tag::Stdout, 4, takes), Ok(()));
+        assert_eq!(
+            admit(Tag::Stdout, 5, takes),
+            Err(Unframed::Past {
+                tag: Tag::Stdout,
+                len: 5,
+                most: 4
+            })
+        );
+        assert_eq!(admit(Tag::Exit, 0, takes), Err(Unframed::Untaken(Tag::Exit)));
+        let holdable = shards_ipc::holdable_known().and_then(|n| usize::try_from(n).ok());
+        match holdable {
+            Some(most) => {
+                assert_eq!(admit(Tag::Refused, most, takes), Ok(()));
+                assert_eq!(
+                    admit(Tag::Refused, most + 1, takes),
+                    Err(Unframed::Past {
+                        tag: Tag::Refused,
+                        len: most + 1,
+                        most
+                    })
+                );
+            }
+            None => assert_eq!(
+                admit(Tag::Refused, 1, takes),
+                Err(Unframed::HostMemoryUnknown(Tag::Refused))
+            ),
+        }
+        // Refused from the header, before its payload has come.
+        let mut header = vec![Tag::Stdout as u8];
+        header.extend_from_slice(&5u32.to_be_bytes());
+        assert!(take(&mut header, takes).is_err());
     }
 
     /// A request crosses as it was sent; a variable that would change what the command does

@@ -11,6 +11,7 @@
 //! for now, and the FUSE wire the device needs is `proto`'s. Its DAX window there maps the
 //! sections its server duplicates into this process (`window_whp.rs`, PM M341, M343).
 
+mod crossover;
 pub mod headroom;
 pub mod host;
 pub mod notices;
@@ -38,6 +39,21 @@ pub type MapObject = std::os::fd::OwnedFd;
 #[cfg(windows)]
 pub type MapObject = std::os::windows::io::OwnedHandle;
 
+/// Why a DAX window could not make its ranges of a file what the file is now
+/// (`window::Window::reconcile`): the reply that would tell its guest the file's size is
+/// refused it (EIO), as its window does not hold what that size says (memory-01).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unfollowed {
+    /// Node `node`'s file's size could not be read.
+    Size { node: u64 },
+    /// No section of node `node`'s file could be made, to write too where `writable`: its
+    /// mappings are left as they were.
+    Section { node: u64, writable: bool },
+    /// A view of node `node`'s file could not be placed in its mapping at window offset
+    /// `moffset`, its old views freed: its ranges are let go of until they can be.
+    View { node: u64, moffset: u64 },
+}
+
 use super::limit::Limiter;
 use super::queue::{Chain, Queue};
 use super::worker::Worker;
@@ -64,6 +80,9 @@ pub struct Slot {
     /// has its tables: before the guest runs, as a restored run's shares are given first.
     window: std::sync::Mutex<Option<Arc<window::Window>>>,
     mappings: std::sync::Mutex<Vec<(u64, window::Mapped)>>,
+    /// Which files its window maps, learned from what each way costs here (D189,
+    /// memory-09): made as it first learns.
+    crossover: std::sync::Mutex<Option<crossover::Crossover>>,
 }
 
 /// A share's slot, which the VM's owner fills.
@@ -95,6 +114,11 @@ impl std::ops::Deref for SlotOf {
 pub const MAX_FRAME: usize = proto::IN_HEADER_BYTES + proto::WRITE_IN_BYTES + proto::MAX_WRITE as usize;
 const _: () = assert!(proto::IN_HEADER_BYTES + proto::SETXATTR_MOST <= MAX_FRAME);
 const _: () = assert!(proto::OUT_HEADER_BYTES + proto::MAX_WRITE as usize <= MAX_FRAME);
+/// The most a request or reply takes on a share's stream: its length word ([`write_frame`])
+/// and a frame of [`MAX_FRAME`]. The window a share's pipe holds (`shards_ipc::Window`,
+/// platform-11); a control frame of the VM process's own (a share's tables, D176) is longer
+/// and rarer, and waits on its reader past it, as any stream's write does.
+pub const STREAM_FRAME: usize = std::mem::size_of::<u32>() + MAX_FRAME;
 
 /// A frame of the VM process's own, never of a guest's (D176): its length word's top bit,
 /// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the
@@ -123,7 +147,17 @@ impl Slot {
             pending: std::sync::Mutex::new(None),
             window: std::sync::Mutex::new(None),
             mappings: std::sync::Mutex::new(Vec::new()),
+            crossover: std::sync::Mutex::new(None),
         }
+    }
+
+    /// What `f` learns or tells of which files the window maps ([`crossover`]).
+    fn crossover<T>(&self, f: impl FnOnce(&mut crossover::Crossover) -> T) -> T {
+        let mut x = self
+            .crossover
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(x.get_or_insert_with(crossover::Crossover::default))
     }
 
     /// Asks the server at the other end of `conn` from here on, which first takes the tables
@@ -223,6 +257,174 @@ impl Slot {
         }
         Ok(!reply.is_empty())
     }
+
+    /// Replaces a server reply its device cannot give the guest with EIO.
+    fn refuse(&self, req: &[u8], reply: &mut Vec<u8>) -> bool {
+        let Some(refused) = proto::unfollowed(req) else {
+            return false;
+        };
+        let mut conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let released = conn
+            .as_mut()
+            .ok_or_else(|| Unreleased::Transport(io::ErrorKind::NotConnected.into()))
+            .and_then(|conn| release_reply(conn, req, reply));
+        match released {
+            Ok(()) => {}
+            // Its exchange whole, the stream stays in step: Linux, too, ignores a
+            // RELEASE's error (fs/fuse/file.c, fuse_file_put: fuse_release_end(args, 0)).
+            Err(why @ Unreleased::Refused { .. }) => {
+                debug!("virtio-fs: its refused reply's resources: {why}");
+            }
+            Err(why) => {
+                debug!("virtio-fs: its refused reply's resources: {why}");
+                // A partial cleanup exchange cannot be followed by another request.
+                *conn = None;
+            }
+        }
+        reply.clear();
+        reply.extend_from_slice(&refused);
+        true
+    }
+}
+
+#[derive(Debug)]
+enum Unreleased {
+    Transport(io::Error),
+    Refused { opcode: u32, errno: i32 },
+    Malformed,
+}
+
+impl From<io::Error> for Unreleased {
+    fn from(why: io::Error) -> Self {
+        Self::Transport(why)
+    }
+}
+
+impl std::fmt::Display for Unreleased {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(why) => write!(f, "its server connection: {why}"),
+            Self::Refused { opcode, errno } => write!(f, "FUSE {opcode} refused: errno {errno}"),
+            Self::Malformed => f.write_str("a malformed cleanup reply or request"),
+        }
+    }
+}
+
+/// Retires only what this successful reply acquired, which the guest will never know.
+/// RELEASE precedes FORGET, as Linux's fuse_create_open failure path does. These are
+/// ordinary FUSE requests, also understood by a share served outside this process.
+fn release_reply(conn: &mut Stream, req: &[u8], reply: &[u8]) -> Result<(), Unreleased> {
+    let word = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at..at.checked_add(4)?)?
+            .try_into()
+            .ok()
+            .map(u32::from_le_bytes)
+    };
+    let long = |bytes: &[u8], at: usize| {
+        bytes
+            .get(at..at.checked_add(8)?)?
+            .try_into()
+            .ok()
+            .map(u64::from_le_bytes)
+    };
+    if word(reply, 4).ok_or(Unreleased::Malformed)? != 0 {
+        return Ok(());
+    }
+    let header = req.get(..proto::IN_HEADER_BYTES).ok_or(Unreleased::Malformed)?;
+    let opcode = word(header, 4).ok_or(Unreleased::Malformed)?;
+    let node = long(header, 16).ok_or(Unreleased::Malformed)?;
+    let mut request = [0u8; proto::IN_HEADER_BYTES + proto::RELEASE_IN_BYTES];
+    request
+        .get_mut(..proto::IN_HEADER_BYTES)
+        .ok_or(Unreleased::Malformed)?
+        .copy_from_slice(header);
+    // The copied caller and unique stay; this request carries no header extensions.
+    request.get_mut(36..40).ok_or(Unreleased::Malformed)?.fill(0);
+    let mut send = |opcode: u32, node: u64, body: &[u8]| -> Result<(), Unreleased> {
+        let len = proto::IN_HEADER_BYTES
+            .checked_add(body.len())
+            .ok_or(Unreleased::Malformed)?;
+        let request = request.get_mut(..len).ok_or(Unreleased::Malformed)?;
+        let length = u32::try_from(len).map_err(|_| Unreleased::Malformed)?;
+        request
+            .get_mut(..4)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&length.to_le_bytes());
+        request
+            .get_mut(4..8)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&opcode.to_le_bytes());
+        request
+            .get_mut(16..24)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&node.to_le_bytes());
+        request
+            .get_mut(proto::IN_HEADER_BYTES..)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(body);
+        write_frame(conn, request)?;
+        let mut length = [0u8; 4];
+        conn.read_exact(&mut length)?;
+        let len = u32::from_le_bytes(length) as usize;
+        if opcode == proto::op::FORGET {
+            return if len == 0 {
+                Ok(())
+            } else {
+                Err(Unreleased::Malformed)
+            };
+        }
+        if len != proto::OUT_HEADER_BYTES {
+            return Err(Unreleased::Malformed);
+        }
+        let mut answer = [0u8; proto::OUT_HEADER_BYTES];
+        conn.read_exact(&mut answer)?;
+        let errno = word(&answer, 4).ok_or(Unreleased::Malformed)? as i32;
+        if errno != 0 {
+            return Err(Unreleased::Refused { opcode, errno });
+        }
+        Ok(())
+    };
+    use proto::op::{CREATE, OPEN, OPENDIR, RELEASE, RELEASEDIR};
+    let handle = match opcode {
+        CREATE => Some((
+            RELEASE,
+            long(reply, proto::OUT_HEADER_BYTES).ok_or(Unreleased::Malformed)?,
+            proto::OUT_HEADER_BYTES + proto::ENTRY_OUT_BYTES,
+        )),
+        OPEN => Some((RELEASE, node, proto::OUT_HEADER_BYTES)),
+        OPENDIR => Some((RELEASEDIR, node, proto::OUT_HEADER_BYTES)),
+        _ => None,
+    };
+    let mut released = Ok(());
+    if let Some((release, node, at)) = handle {
+        let fh = long(reply, at).ok_or(Unreleased::Malformed)?;
+        let flags = word(req, proto::IN_HEADER_BYTES).ok_or(Unreleased::Malformed)?
+            & !(host::linux::O_CREAT | host::linux::O_EXCL | host::linux::O_TRUNC);
+        let mut body = [0u8; proto::RELEASE_IN_BYTES];
+        body.get_mut(..8)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&fh.to_le_bytes());
+        body.get_mut(8..12)
+            .ok_or(Unreleased::Malformed)?
+            .copy_from_slice(&flags.to_le_bytes());
+        released = send(release, node, &body);
+    }
+    // A refused RELEASE still forgets its entry, as fuse_create_open's failure does.
+    if !matches!(released, Ok(()) | Err(Unreleased::Refused { .. })) {
+        return released;
+    }
+    let mut done = Ok(());
+    for_each_entry(req, reply, |node| {
+        if node != 0 && done.is_ok() {
+            // Each returned entry acquires exactly one lookup reference.
+            done = send(proto::op::FORGET, node, &1u64.to_le_bytes());
+        }
+    });
+    done.and(released)
 }
 
 /// The descriptor of the file of node `node` of the server at the other end of `conn`,
@@ -953,22 +1155,39 @@ fn serve_with(
                 if let Some((w, node)) = cutting {
                     w.evict(node);
                 }
+                // A READ's answer timed, FUSE's cost of what it served (memory-09).
+                let reading = window.is_some() && opcode(req) == Some(proto::op::READ);
+                let began = reading.then(std::time::Instant::now);
                 let asked = match slot.ask_into(req, reply) {
                     Ok(asked) => asked,
                     Err(_) => proto::unattached(req).is_some_and(|r| put(reply, r)),
                 };
+                if window.is_some() {
+                    learn_from(req, reply, began.map(|b| b.elapsed()), slot);
+                }
                 // The files whose sizes the reply tells the guest are what its window maps
                 // of them before it hears: grown, the file's pages; cut short, zeros.
+                let mut unfollowed = None;
                 if let Some(w) = window.filter(|_| asked) {
-                    w.reconcile(&told(req, reply));
+                    unfollowed = w.reconcile(&told(req, reply)).err();
+                    choose_ways(req, reply, slot);
                     keep_mapped(req, reply, w);
                     rerecord_written(req, reply, w);
                 }
                 // The file let go of is made what it is, the cut made or not.
-                if let Some((w, node)) = cutting {
-                    w.reconcile(&[node]);
+                if let Some((w, node)) = cutting
+                    && let Err(why) = w.reconcile(&[node])
+                {
+                    unfollowed.get_or_insert(why);
                 }
-                asked
+                // A size its window does not hold, refused its guest (memory-01).
+                match unfollowed {
+                    Some(why) => {
+                        debug!("virtio-fs: {why:?}: its reply refused");
+                        slot.refuse(req, reply)
+                    }
+                    None => asked,
+                }
             }
         },
         None => proto::too_long(req).is_some_and(|r| put(reply, r)),
@@ -978,9 +1197,13 @@ fn serve_with(
     }
     // A reply its device could not write whole where the guest said (device memory whose
     // pages are gone, say): EIO in its place, never a success whose bytes are not there.
-    scatter(chain, mem, reply)
-        .or_else(|_| proto::unreachable(req).map_or(Ok(0), |e| scatter(chain, mem, &e)))
-        .unwrap_or(0)
+    match scatter(chain, mem, reply) {
+        Ok(written) => written,
+        Err(()) => {
+            slot.refuse(req, reply);
+            scatter(chain, mem, reply).unwrap_or(0)
+        }
+    }
 }
 
 /// The node whose file `req` cuts short, if it may: a SETATTR of its size, or an OPEN that
@@ -1022,7 +1245,7 @@ fn scatter(chain: &Chain, mem: &GuestMemory, reply: &[u8]) -> Result<u32, ()> {
         written = written.saturating_add(n as u32);
         rest = tail;
     }
-    Ok(written)
+    if rest.is_empty() { Ok(written) } else { Err(()) }
 }
 
 /// A FUSE_SETUPMAPPING or FUSE_REMOVEMAPPING, answered from `window` (D189): a range of the
@@ -1064,9 +1287,15 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
                 // one open of the file for all its ranges stops reading around after a
                 // hundred misses, and the window's 1 MiB writes after a page of each range
                 // was written took 1,285 µs at p50 where they took 682 (PM M302). The window
-                // keeps one a file, not one a range.
-                slot.descriptor(node, writable, foffset, len)
-                    .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable))
+                // keeps one a file, not one a range. Timed whole, the window's cost of what
+                // it maps (memory-09).
+                let began = std::time::Instant::now();
+                let done = slot
+                    .descriptor(node, writable, foffset, len)
+                    .and_then(|fd| window.map(fd, node, foffset, moffset, len, writable));
+                let took = began.elapsed();
+                slot.crossover(|x| x.mapped(node, done, took));
+                done
             }
             _ => Err(proto::EINVAL),
         }
@@ -1100,41 +1329,157 @@ fn mapping(req: &[u8], window: &window::Window, slot: &Slot) -> Option<(Vec<u8>,
 /// READDIRPLUS entry's. The server serves no COPY_FILE_RANGE, TMPFILE nor STATX, whose
 /// replies would tell more (ENOSYS: the guest copies, makes and asks otherwise).
 fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
-    use proto::op::{CREATE, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SYMLINK};
+    let mut nodes: Vec<u64> = req
+        .get(16..24)
+        .and_then(|b| <[u8; 8]>::try_from(b).ok())
+        .map(u64::from_le_bytes)
+        .into_iter()
+        .collect();
+    for_each_entry(req, reply, |node| nodes.push(node));
+    nodes
+}
+
+/// A request's opcode.
+fn opcode(req: &[u8]) -> Option<u32> {
+    req.get(4..8)
+        .and_then(|b| <[u8; 4]>::try_from(b).ok())
+        .map(u32::from_le_bytes)
+}
+
+/// What the window's learner takes from a request and its server's reply (memory-09): a
+/// READ's bytes served `took` after it was asked; a FORGET's or a BATCH_FORGET's nodes, let
+/// go of.
+fn learn_from(req: &[u8], reply: &[u8], took: Option<std::time::Duration>, slot: &Slot) {
     let long = |b: &[u8], at: usize| {
         b.get(at..at.checked_add(8)?)
             .and_then(|b| <[u8; 8]>::try_from(b).ok())
             .map(u64::from_le_bytes)
     };
-    let word = |b: &[u8], at: usize| {
-        b.get(at..at.checked_add(4)?)
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-            .map(u32::from_le_bytes)
-    };
-    let mut nodes: Vec<u64> = long(req, 16).into_iter().collect();
-    // fuse_out_header: len, error, unique; an error tells nothing of an entry.
-    const OUT_HEADER: usize = 16;
-    // fuse_entry_out: nodeid, generation, entry_valid, attr_valid, their nsecs, fuse_attr.
-    const ENTRY_OUT: usize = 128;
-    // fuse_dirent: ino, off, namelen, type, then the name, padded to 8 bytes.
-    const DIRENT: usize = 24;
-    let opcode = word(req, 4).unwrap_or(0);
-    let failed = word(reply, 4).is_none_or(|e| e != 0);
-    match opcode {
-        _ if failed => {}
-        LOOKUP | SYMLINK | MKNOD | MKDIR | LINK | CREATE => nodes.extend(long(reply, OUT_HEADER)),
-        READDIRPLUS => {
-            let mut at = OUT_HEADER;
-            while let (Some(node), Some(len)) = (
-                long(reply, at),
-                at.checked_add(ENTRY_OUT + 16).and_then(|n| word(reply, n)),
-            ) {
-                if node != 0 {
-                    nodes.push(node);
+    let node = long(req, 16).unwrap_or(0);
+    match opcode(req) {
+        Some(proto::op::READ) => {
+            let ok = reply.get(4..8) == Some(&[0; 4][..]);
+            let bytes = reply.len().saturating_sub(proto::OUT_HEADER_BYTES) as u64;
+            if let Some(took) = took.filter(|_| ok) {
+                slot.crossover(|x| x.read(node, bytes, took));
+            }
+        }
+        Some(proto::op::FORGET) => slot.crossover(|x| x.forget(node)),
+        Some(proto::op::BATCH_FORGET) => {
+            // fuse_batch_forget_in: count, dummy; then each fuse_forget_one: nodeid, nlookup.
+            let at = proto::IN_HEADER_BYTES;
+            let count = req
+                .get(at..at + 4)
+                .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                .map_or(0, u32::from_le_bytes);
+            slot.crossover(|x| {
+                for i in 0..count as usize {
+                    let Some(node) = i
+                        .checked_mul(16)
+                        .and_then(|o| o.checked_add(at + 8))
+                        .and_then(|o| long(req, o))
+                    else {
+                        break;
+                    };
+                    x.forget(node);
                 }
-                let Some(next) = (DIRENT + len as usize)
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Takes the window away from each regular file the reply tells the guest of whose way the
+/// learner says is FUSE's (memory-09, `fuse_attr.flags`' FUSE_ATTR_DAX cleared): the server
+/// says which may be mapped; this never says one may that it did not.
+fn choose_ways(req: &[u8], reply: &mut [u8], slot: &Slot) {
+    // fuse_attr: size at 8, mode at 60, flags at 84 (include/uapi/linux/fuse.h).
+    const SIZE: usize = 8;
+    const MODE: usize = 60;
+    const FLAGS: usize = 84;
+    const ATTR_DAX: u32 = 1 << 1;
+    const S_IFMT: u32 = 0o170_000;
+    const S_IFREG: u32 = 0o100_000;
+    let mut attrs = Vec::new();
+    each_attr(req, reply, |node, at| attrs.push((node, at)));
+    if attrs.is_empty() {
+        return;
+    }
+    slot.crossover(|x| {
+        for (node, at) in attrs {
+            let word = |b: &[u8], o: usize| {
+                b.get(at.checked_add(o)?..at.checked_add(o + 4)?)
+                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                    .map(u32::from_le_bytes)
+            };
+            let (Some(mode), Some(flags)) = (word(reply, MODE), word(reply, FLAGS)) else {
+                continue;
+            };
+            if mode & S_IFMT != S_IFREG {
+                continue;
+            }
+            let size = reply
+                .get(at + SIZE..at + SIZE + 8)
+                .and_then(|b| <[u8; 8]>::try_from(b).ok())
+                .map_or(0, u64::from_le_bytes);
+            let may = flags & ATTR_DAX != 0;
+            let dax = x.told(node, size, may);
+            if may
+                && !dax
+                && let Some(f) = reply.get_mut(at + FLAGS..at + FLAGS + 4)
+            {
+                f.copy_from_slice(&(flags & !ATTR_DAX).to_le_bytes());
+            }
+        }
+    });
+}
+
+/// Each `fuse_attr` a reply to `req` gives: its node and where it begins in `reply` (an
+/// entry's: LOOKUP, SYMLINK, MKNOD, MKDIR, LINK, CREATE and each READDIRPLUS entry's; an
+/// attr_out's: GETATTR's and SETATTR's, of the request's own node).
+fn each_attr(req: &[u8], reply: &[u8], mut each: impl FnMut(u64, usize)) {
+    use proto::op::{CREATE, GETATTR, LINK, LOOKUP, MKDIR, MKNOD, READDIRPLUS, SETATTR, SYMLINK};
+    // fuse_out_header; fuse_entry_out's nodeid, generation, valids and nsecs before its
+    // attr; fuse_attr_out's attr_valid, its nsec and a dummy before its attr.
+    const OUT_HEADER: usize = 16;
+    const ENTRY_ATTR: usize = 40;
+    const ATTR_OUT_ATTR: usize = 16;
+    let failed = reply.get(4..8) != Some(&[0; 4][..]);
+    let long = |b: &[u8], at: usize| {
+        b.get(at..at.checked_add(8)?)
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+    };
+    match opcode(req) {
+        _ if failed => {}
+        Some(GETATTR | SETATTR) => {
+            if let Some(node) = long(req, 16) {
+                each(node, OUT_HEADER + ATTR_OUT_ATTR);
+            }
+        }
+        Some(LOOKUP | SYMLINK | MKNOD | MKDIR | LINK | CREATE) => {
+            if let Some(node) = long(reply, OUT_HEADER) {
+                each(node, OUT_HEADER + ENTRY_ATTR);
+            }
+        }
+        Some(READDIRPLUS) => {
+            let mut at = OUT_HEADER;
+            while let Some(node) = long(reply, at) {
+                if node != 0 {
+                    each(node, at + ENTRY_ATTR);
+                }
+                // The dirent after the entry: ino, off, namelen, type, the name padded to 8.
+                let Some(len) = at
+                    .checked_add(proto::ENTRY_OUT_BYTES + 16)
+                    .and_then(|n| reply.get(n..n + 4))
+                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
+                    .map(u32::from_le_bytes)
+                else {
+                    break;
+                };
+                let Some(next) = (24 + len as usize)
                     .checked_next_multiple_of(8)
-                    .and_then(|d| at.checked_add(ENTRY_OUT + d))
+                    .and_then(|d| at.checked_add(proto::ENTRY_OUT_BYTES + d))
                 else {
                     break;
                 };
@@ -1143,7 +1488,18 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
         }
         _ => {}
     }
-    nodes
+}
+
+/// The reply's entry IDs, excluding its request's existing node. Reconciliation and
+/// retiring an unpublished reply use the same wire walk as the window's learner
+/// ([`each_attr`]); retirement allocates no list.
+fn for_each_entry(req: &[u8], reply: &[u8], mut each: impl FnMut(u64)) {
+    let entries = !matches!(opcode(req), Some(proto::op::GETATTR | proto::op::SETATTR));
+    each_attr(req, reply, |node, _| {
+        if entries {
+            each(node);
+        }
+    });
 }
 
 /// Tells the guest to keep what it has of a file its window maps as it opens it again
@@ -1157,7 +1513,7 @@ fn told(req: &[u8], reply: &[u8]) -> Vec<u64> {
 fn keep_mapped(req: &[u8], reply: &mut [u8], window: &window::Window) {
     // fuse_open_out's open_flags: after fh, past the out header, and a CREATE's entry.
     const OPEN_FLAGS: usize = 16 + 8;
-    const ENTRY_OUT: usize = 128;
+    const ENTRY_OUT: usize = proto::ENTRY_OUT_BYTES;
     const KEEP_CACHE: u32 = 1 << 1;
     let long = |b: &[u8], at: usize| {
         b.get(at..at.checked_add(8)?)
@@ -1426,6 +1782,59 @@ mod tests {
     const RAM: usize = 4 << 20;
     const REQUEST: u64 = BASE;
     const REPLY: u64 = BASE + 0x1000;
+
+    /// A reply's attributes tell the guest to read through FUSE a file of a class its share
+    /// learned FUSE serves for less, its FUSE_ATTR_DAX cleared where the reply says it; one of
+    /// a class still calibrating, the first told, keeps it; one its server refused is never
+    /// given it (memory-09). GETATTR's and LOOKUP's attributes alike.
+    #[test]
+    fn a_reply_takes_the_window_from_a_file_its_class_reads() {
+        const ATTR_DAX: u32 = 1 << 1;
+        let slot = Slot::new();
+        slot.crossover(|x| {
+            x.told(1, 64 << 10, true);
+            for us in [30, 35] {
+                x.read(1, 64 << 10, Duration::from_micros(us));
+            }
+            for us in [60, 90] {
+                x.mapped(1, Ok(64 << 10), Duration::from_micros(us));
+            }
+        });
+        let request = |op: u32, node: u64| {
+            let mut req = vec![0u8; proto::IN_HEADER_BYTES];
+            req[4..8].copy_from_slice(&op.to_le_bytes());
+            req[16..24].copy_from_slice(&node.to_le_bytes());
+            req
+        };
+        // An out header, then where the attribute begins, then fuse_attr's 88 bytes.
+        let reply = |before: &[u8], size: u64, flags: u32| {
+            let mut r = vec![0u8; 16];
+            r.extend_from_slice(before);
+            let at = r.len();
+            r.resize(at + 88, 0);
+            r[at + 8..at + 16].copy_from_slice(&size.to_le_bytes());
+            r[at + 60..at + 64].copy_from_slice(&0o100_644u32.to_le_bytes());
+            r[at + 84..at + 88].copy_from_slice(&flags.to_le_bytes());
+            (r, at + 84)
+        };
+        let flags = |r: &[u8], at: usize| u32::from_le_bytes(r[at..at + 4].try_into().unwrap());
+        let (mut got, at) = reply(&[0; 16], 64 << 10, ATTR_DAX);
+        choose_ways(&request(proto::op::GETATTR, 2), &mut got, &slot);
+        assert_eq!(flags(&got, at), 0, "its class reads");
+        let mut entry = 3u64.to_le_bytes().to_vec();
+        entry.resize(40, 0);
+        let (mut looked, at) = reply(&entry, 256 << 10, ATTR_DAX);
+        choose_ways(&request(proto::op::LOOKUP, 1), &mut looked, &slot);
+        assert_eq!(
+            flags(&looked, at),
+            ATTR_DAX,
+            "calibrating, the first of its class"
+        );
+        entry[..8].copy_from_slice(&4u64.to_le_bytes());
+        let (mut refused, at) = reply(&entry, 256 << 10, 0);
+        choose_ways(&request(proto::op::LOOKUP, 1), &mut refused, &slot);
+        assert_eq!(flags(&refused, at), 0, "its server refused it");
+    }
 
     /// A FUSE_GETATTR of the root, `unique` 0x1234, at `REQUEST`.
     fn guest() -> GuestMemory {

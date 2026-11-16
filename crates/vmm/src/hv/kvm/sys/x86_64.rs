@@ -114,6 +114,10 @@ pub const VCPU_EVENTS_SIZE: usize = 64;
 pub const DEBUGREGS_SIZE: usize = 128;
 pub const XSAVE_SIZE: usize = 4096;
 pub const XCRS_SIZE: usize = 392;
+/// The XCRs a `struct kvm_xcrs` holds, KVM_MAX_XCRS (arch/x86/include/uapi/asm/kvm.h):
+/// 8 bytes of count and flags, then 16-byte entries, then 16 words of padding.
+pub const MAX_XCRS: u32 = 16;
+const _: () = assert!(8 + 16 * MAX_XCRS as usize + 16 * 8 == XCRS_SIZE);
 pub const IRQCHIP_SIZE: usize = 520;
 pub const CLOCK_SIZE: usize = 48;
 /// Each size is the one its ioctl numbers encode (bits 16-29).

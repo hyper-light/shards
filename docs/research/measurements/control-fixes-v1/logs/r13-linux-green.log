@@ -1,0 +1,77 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/control-joined-carrier-2d5cc7ea6b/source.bundle
+   3a398339..4ce3d80a  p/fix-control-v1 -> carrier/control
+Previous HEAD position was 3a398339 Merge fresh main before control-03 landing
+HEAD is now at 4ce3d80a Control-04: observe feeder thread exit before checking descriptor release
+Source: 4ce3d80a432db5b2ce02d4ff718b8ba84989e43b
+   Compiling autocfg v1.5.1
+   Compiling libc v0.2.189
+   Compiling memchr v2.8.3
+   Compiling regex-syntax v0.8.11
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling num-integer v0.1.47
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/abi)
+   Compiling num-bigint v0.4.8
+   Compiling shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/template)
+   Compiling regex-automata v0.4.18
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/testdir)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/archive)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/dns)
+   Compiling shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/user)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/erofs)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/devcgroup)
+   Compiling regex v1.13.1
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/cmdline)
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/init)
+    Finished `test` profile [unoptimized] target(s) in 9.44s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/control-target/debug/deps/shards_init-55b226b2d4355c83)
+
+running 8 tests
+test mcp::tests::a_runs_mcp_ask_is_its_members_and_its_token ... ok
+test mcp::tests::a_members_socket_is_its_own_beside_its_bridges_mount_point ... ok
+test mcp::tests::bridge_output_failure_releases_open_stdin ... ok
+test mcp::tests::bridge_peer_end_releases_open_stdin ... ok
+test mcp::tests::the_bridge_copies_both_ways_each_ending_as_its_source_ends ... ok
+test mcp::tests::bridge_half_close_ends_stdout_but_keeps_stdin ... ok
+test mcp::tests::a_bridge_input_failure_does_not_wait_for_its_idle_socket ... ok
+test mcp::tests::a_members_connection_is_said_as_its_own_then_carried_both_ways ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 274 filtered out; finished in 0.00s
+
+HEAD is now at 4ce3d80a Control-04: observe feeder thread exit before checking descriptor release
+Source: 4ce3d80a432db5b2ce02d4ff718b8ba84989e43b
+    Finished `test` profile [unoptimized] target(s) in 0.02s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/control-target/debug/deps/shards_init-55b226b2d4355c83)
+
+running 6 tests
+test lanes::tests::a_grant_is_a_running_commands_alone ... ok
+test lanes::tests::a_lane_is_refused_at_once_where_it_may_not_be ... ok
+test lanes::tests::a_workloads_half_close_still_ends_its_way_in_order ... ok
+test lanes::tests::a_workload_gone_mid_stream_ends_its_vsock_both_ways ... ok
+test lanes::tests::a_full_socket_backlog_refuses_a_lane_instead_of_holding_its_worker ... ok
+test lanes::tests::a_path_connects_inside_its_root_alone ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 276 filtered out; finished in 0.00s
+
+HEAD is now at 4ce3d80a Control-04: observe feeder thread exit before checking descriptor release
+Source: 4ce3d80a432db5b2ce02d4ff718b8ba84989e43b
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/abi)
+    Checking memchr v2.8.3
+    Checking num-traits v0.2.19
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking libc v0.2.189
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/template)
+    Checking regex v1.13.1
+    Checking shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/testdir)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/cmdline)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/dns)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/user)
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/init)
+    Finished `dev` profile [unoptimized] target(s) in 10.74s

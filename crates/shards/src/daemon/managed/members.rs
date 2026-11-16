@@ -4,7 +4,8 @@
 //! steering delivered and answered: a signal by init's `SIGNAL` built-in, a resize of the
 //! member's own terminal by its `RESIZE` (D244).
 //!
-//! - **Its state.** Once its run has started: running, or ended with the status its init said.
+//! - **Its state.** Once its run has started: running, or ended as its init said, typed: its
+//!   command's exit (`Reply::Exited`) or the signal that killed it (`Reply::Signaled`).
 //! - **Its end, as it comes.** Its init says each member's end once its whole population has
 //!   ended (D231), which its VM process relays (`MEMBER_ENDED`) and the run's end table keeps
 //!   and tells whoever waits ([`Ends`]): no lane looks for it.
@@ -25,82 +26,120 @@ use shards_ipc::Stream;
 use shards_ipc::fd::BorrowedFd;
 use shards_remote::control::exec::{self, MemberStart, Reply, Steer, Unstarted, Unsteered};
 
-use super::execs::{self, Held};
-use super::{Charge, ipc_buffers, lock, log};
+use super::execs::{self, Held, Say};
+use super::{Charge, ipc_buffers, lock};
 
 /// Each member's end as its init told it (`MEMBER_ENDED`, D231): kept for a lane that asks
 /// after, and told as it comes to whoever waits on it.
 #[derive(Debug)]
-pub(super) struct Ends {
+pub(crate) struct Ends {
     state: Mutex<Told>,
     changed: Condvar,
 }
 
-/// What a run's end table holds (R04): each member's status once told, by its index; and
-/// whether the run is over, after which none is told and every wait ends.
+/// What a run's end table holds (R04): each member's generation and its end once told, by its
+/// index; and whether the run is over, after which none is told and every wait ends.
 #[derive(Debug)]
 struct Told {
-    ended: Vec<Option<u32>>,
+    ended: Vec<Slot>,
     over: bool,
+}
+
+/// A member's generation (D270: 0 its first, one more at each start of its next), its end
+/// once told, and its last generation's end, for a lane that waited on that one.
+#[derive(Debug, Clone, Copy, Default)]
+struct Slot {
+    generation: u32,
+    end: Option<members::End>,
+    before: Option<members::End>,
 }
 
 impl Ends {
     /// The end table of a run of `members` members, none ended.
-    pub(super) fn new(members: usize) -> io::Result<Ends> {
+    pub(crate) fn new(members: usize) -> io::Result<Ends> {
         let mut ended = Vec::new();
         ended.try_reserve_exact(members).map_err(io::Error::other)?;
-        ended.resize(members, None);
+        ended.resize(members, Slot::default());
         Ok(Ends {
             state: Mutex::new(Told { ended, over: false }),
             changed: Condvar::new(),
         })
     }
 
-    /// Member `member` ended with `status`, as its init told it (once a member): told whoever
-    /// waits on it. A member of no index the run has, or told twice, is the guest's protocol
-    /// broken, refused.
-    pub(super) fn told(&self, member: u32, status: u32) -> io::Result<()> {
+    /// Member `member`'s generation ended as `end` says, as its init told it (once a
+    /// generation): told whoever waits on it. A member of no index the run has, or a generation
+    /// told twice, is the guest's protocol broken, refused.
+    pub(crate) fn told(&self, member: u32, end: members::End) -> io::Result<()> {
         let mut told = lock(&self.state);
         let slot = usize::try_from(member)
             .ok()
             .and_then(|at| told.ended.get_mut(at))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("no member {member}")))?;
-        if slot.is_some() {
+        if slot.end.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("member {member}'s end told twice"),
             ));
         }
-        *slot = Some(status);
+        slot.end = Some(end);
         drop(told);
         self.changed.notify_all();
         Ok(())
     }
 
+    /// Member `member`'s next generation started (D270 slice 3b), told before anything of it
+    /// is: a lane opened from here is its, and one that waited on its last is told that one's
+    /// end. A member of no index the run has is nothing.
+    pub(crate) fn again(&self, member: u32) {
+        let mut told = lock(&self.state);
+        if let Some(slot) = usize::try_from(member).ok().and_then(|at| told.ended.get_mut(at)) {
+            slot.before = slot.end.take();
+            slot.generation = slot.generation.wrapping_add(1);
+        }
+        drop(told);
+        self.changed.notify_all();
+    }
+
     /// The run is over: no member's end is told from now on, and every wait ends.
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         lock(&self.state).over = true;
         self.changed.notify_all();
     }
 
-    /// Member `member`'s status, once its end has been told.
-    fn ended(&self, member: u32) -> Option<u32> {
+    /// Member `member`'s current generation, and its end once it has been told; none for a
+    /// member of no index the run has.
+    fn now(&self, member: u32) -> Option<(u32, Option<members::End>)> {
+        let told = lock(&self.state);
+        let slot = told.ended.get(usize::try_from(member).ok()?)?;
+        Some((slot.generation, slot.end))
+    }
+
+    /// Whether member `member`'s generation `generation` is over: its end told, or its next
+    /// started.
+    fn over(&self, member: u32, generation: u32) -> bool {
         let told = lock(&self.state);
         usize::try_from(member)
             .ok()
-            .and_then(|at| told.ended.get(at).copied().flatten())
+            .and_then(|at| told.ended.get(at))
+            .is_none_or(|slot| slot.generation != generation || slot.end.is_some())
     }
 
-    /// Waits for member `member`'s end: its status; or none, once the run is over or `gone`
-    /// says its lane was let go (which [`Ends::wake`] tells).
-    fn wait(&self, member: u32, gone: &AtomicBool) -> Option<u32> {
+    /// Waits for the end of member `member`'s generation `generation`; or none, once the run is
+    /// over or `gone` says its lane was let go (which [`Ends::wake`] tells). Its next started
+    /// as it waited, its end is the one before that next's: one that waited through two
+    /// restarts is told the later's.
+    fn wait(&self, member: u32, generation: u32, gone: &AtomicBool) -> Option<members::End> {
         let at = usize::try_from(member).ok()?;
         let mut told = lock(&self.state);
         loop {
-            if let Some(status) = told.ended.get(at).copied().flatten() {
-                return Some(status);
+            let slot = told.ended.get(at)?;
+            if slot.generation != generation {
+                return slot.before;
             }
-            if told.over || gone.load(Ordering::Acquire) || told.ended.get(at).is_none() {
+            if let Some(end) = slot.end {
+                return Some(end);
+            }
+            if told.over || gone.load(Ordering::Acquire) {
                 return None;
             }
             told = self
@@ -118,23 +157,26 @@ impl Ends {
 }
 
 /// How the host runs one of init's built-ins in its run's microVM: its spec, its stdio and its
-/// client's end of the connection its end is told on (`Daemon::launch_builtin`).
-pub(super) type Builtin<'a> = dyn Fn(&Spec, [BorrowedFd<'_>; 3], &Stream) -> io::Result<()> + Sync + 'a;
+/// client's end of the connection its end is told on (`Daemon::launch_builtin`, api_run.rs
+/// `hand_exec`).
+pub(crate) type Builtin<'a> = dyn Fn(&Spec, [BorrowedFd<'_>; 3], &Stream) -> io::Result<()> + Sync + 'a;
 
-/// What the host serves its members' lanes with: the run's end table, the members with a
-/// terminal of their own, the run's budget, whether its run runs (once it has started), and
-/// how it runs a built-in.
-pub(super) struct Hosting<'a> {
-    pub(super) ends: &'a Ends,
-    pub(super) terminals: &'a [u32],
-    pub(super) charge: &'a Charge,
-    pub(super) started: &'a (dyn Fn() -> bool + Sync),
-    pub(super) builtin: &'a Builtin<'a>,
+/// What the host serves its members' lanes with: the run's end table, the members that run a
+/// program and those with a terminal of their own, the run's budget, whether its run runs
+/// (once it has started), how it runs a built-in, and where it says what befell a lane.
+pub(crate) struct Hosting<'a> {
+    pub(crate) ends: &'a Ends,
+    pub(crate) active: &'a [u32],
+    pub(crate) terminals: &'a [u32],
+    pub(crate) charge: &'a Charge,
+    pub(crate) started: &'a (dyn Fn() -> bool + Sync),
+    pub(crate) builtin: &'a Builtin<'a>,
+    pub(crate) say: &'a Say,
 }
 
 /// Serves each member's lane `lanes` brings, on a thread of its own, until the endpoint that
 /// brings them has ended and so has every lane it brought.
-pub(super) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
+pub(crate) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
     std::thread::scope(|scope| {
         while let Ok(start) = lanes.recv() {
             let (number, replies) = (start.lane, start.replies.try_clone());
@@ -142,7 +184,7 @@ pub(super) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
                 .name("agent-member".into())
                 .spawn_scoped(scope, move || serve(start, hosting));
             if let Err(e) = spawned {
-                log(format!("agent-control member lane {number}: its thread: {e}"));
+                (hosting.say)(&format!("agent-control member lane {number}: its thread: {e}"));
                 if let Ok(replies) = replies {
                     replies.tell(Reply::Unstarted(Unstarted::Failed));
                 }
@@ -151,14 +193,18 @@ pub(super) fn host(lanes: &mpsc::Receiver<MemberStart>, hosting: &Hosting<'_>) {
     });
 }
 
-/// A member's status as its lane tells it: the bits its init said, as an exec's are told.
-fn told_status(status: u32) -> i32 {
-    i32::from_be_bytes(status.to_be_bytes())
+/// A member's end as its lane tells it, typed: its exit's code, the bits its init said, as an
+/// exec's are told; or the signal that killed it.
+fn told_end(end: members::End) -> Reply {
+    match end {
+        members::End::Exited(code) => Reply::Exited(i32::from_be_bytes(code.to_be_bytes())),
+        members::End::Signaled(signal) => Reply::Signaled(signal),
+    }
 }
 
-/// One member's lane, from its ask to its letting go: refused where its run does not run or
-/// its budget has no room for it; told the member's end at once where it has ended, else that
-/// it runs, then each steer answered and its end as it comes.
+/// One member's lane, from its ask to its letting go: refused where its run has no such member
+/// that runs, does not run, or has no room in its budget for it; told the member's end at once
+/// where it has ended, else that it runs, then each steer answered and its end as it comes.
 fn serve(start: MemberStart, hosting: &Hosting<'_>) {
     let MemberStart {
         ask: exec::Ask { member, .. },
@@ -166,7 +212,13 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
         steer,
         replies,
     } = start;
-    let say = |what: &str| log(format!("agent-control member {member}, lane {lane}: {what}"));
+    let say = |what: &str| (hosting.say)(&format!("agent-control member {member}, lane {lane}: {what}"));
+    // A member the run has not, or one that runs no program, refused as its init refuses an
+    // exec in one (D243): an endpoint of no member stream leaves the member to its host.
+    if !hosting.active.contains(&member) {
+        say("its run has no such member that runs");
+        return replies.tell(Reply::Unstarted(Unstarted::Refused));
+    }
     if !(hosting.started)() {
         say("its run does not run");
         return replies.tell(Reply::Unstarted(Unstarted::Failed));
@@ -186,8 +238,14 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
             return replies.tell(Reply::Unstarted(Unstarted::Capacity));
         }
     };
-    if let Some(status) = hosting.ends.ended(member) {
-        return replies.tell(Reply::Exited(told_status(status)));
+    // Its member's generation that runs as it opens is its (D270): its steers go to that one
+    // alone, and its end is that one's.
+    let Some((generation, ended)) = hosting.ends.now(member) else {
+        say("its run has no such member");
+        return replies.tell(Reply::Unstarted(Unstarted::Refused));
+    };
+    if let Some(end) = ended {
+        return replies.tell(told_end(end));
     }
     let Ok(answers) = replies.try_clone() else {
         say("its answers");
@@ -201,7 +259,7 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
             .name("member-steer".into())
             .spawn_scoped(s, move || {
                 while let Ok(taken) = steer.recv() {
-                    answers.tell(Reply::Steered(deliver(member, taken, hosting)));
+                    answers.tell(Reply::Steered(deliver(member, generation, taken, hosting)));
                 }
                 gone.store(true, Ordering::Release);
                 hosting.ends.wake();
@@ -211,15 +269,17 @@ fn serve(start: MemberStart, hosting: &Hosting<'_>) {
             return replies.tell(Reply::Unstarted(Unstarted::Failed));
         }
         replies.tell(Reply::Running);
-        if let Some(status) = hosting.ends.wait(member, gone) {
-            replies.tell(Reply::Exited(told_status(status)));
+        if let Some(end) = hosting.ends.wait(member, generation, gone) {
+            replies.tell(told_end(end));
         }
     });
 }
 
-/// Delivers `steer` to member `member`: taken, or why not, typed.
-fn deliver(member: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unsteered> {
-    if hosting.ends.ended(member).is_some() {
+/// Delivers `steer` to member `member`'s generation `generation`: taken, or why not, typed. One
+/// that races its member's restart may reach its next generation: init's built-ins name a
+/// member, not its generation.
+fn deliver(member: u32, generation: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unsteered> {
+    if hosting.ends.over(member, generation) {
         return Err(Unsteered::Ended);
     }
     let (builtin, argv) = match steer {
@@ -242,7 +302,7 @@ fn deliver(member: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unste
             Err(Unsteered::Ended)
         }
         Ok(Said { status, words }) => {
-            log(format!(
+            (hosting.say)(&format!(
                 "agent-control member {member}: built-in {builtin} exited {status}: {}",
                 String::from_utf8_lossy(&words).trim_end()
             ));
@@ -250,7 +310,7 @@ fn deliver(member: u32, steer: Steer, hosting: &Hosting<'_>) -> Result<(), Unste
         }
         Err(Undelivered::Capacity) => Err(Unsteered::Capacity),
         Err(Undelivered::Failed(why)) => {
-            log(format!(
+            (hosting.say)(&format!(
                 "agent-control member {member}: built-in {builtin}: {why}"
             ));
             Err(Unsteered::Failed)
@@ -345,36 +405,77 @@ mod tests {
     fn a_members_end_is_kept_and_told_as_it_comes() {
         let ends = Ends::new(2).unwrap();
         let gone = AtomicBool::new(false);
-        assert_eq!(ends.ended(1), None);
+        assert_eq!(ends.now(1), Some((0, None)));
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(1, &gone));
-            ends.told(1, 137).unwrap();
-            assert_eq!(waiting.join().unwrap(), Some(137));
+            let waiting = s.spawn(|| ends.wait(1, 0, &gone));
+            ends.told(1, members::End::Signaled(9)).unwrap();
+            assert_eq!(waiting.join().unwrap(), Some(members::End::Signaled(9)));
         });
-        assert_eq!(ends.ended(1), Some(137));
-        assert_eq!(ends.wait(1, &gone), Some(137));
-        assert_eq!(ends.told(1, 0).unwrap_err().kind(), io::ErrorKind::InvalidData);
-        assert_eq!(ends.told(2, 0).unwrap_err().kind(), io::ErrorKind::InvalidData);
-        assert_eq!(ends.wait(2, &gone), None);
+        assert_eq!(ends.now(1), Some((0, Some(members::End::Signaled(9)))));
+        assert_eq!(ends.wait(1, 0, &gone), Some(members::End::Signaled(9)));
+        let exited = members::End::Exited(0);
+        assert_eq!(
+            ends.told(1, exited).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            ends.told(2, exited).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(ends.wait(2, 0, &gone), None);
+        assert_eq!(ends.now(2), None);
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(0, &gone));
+            let waiting = s.spawn(|| ends.wait(0, 0, &gone));
             gone.store(true, Ordering::Release);
             ends.wake();
             assert_eq!(waiting.join().unwrap(), None);
         });
         let gone = AtomicBool::new(false);
         std::thread::scope(|s| {
-            let waiting = s.spawn(|| ends.wait(0, &gone));
+            let waiting = s.spawn(|| ends.wait(0, 0, &gone));
             ends.close();
             assert_eq!(waiting.join().unwrap(), None);
         });
     }
 
-    /// A status keeps its bits as its lane tells it.
+    /// A member started again (D270 slice 3b): a lane of its first generation, whose next
+    /// started before the lane looked, is told its first's end and steers it no more; its lanes
+    /// from then on are its next generation's, which runs, whose end is told once and kept as
+    /// its first's was. A start of a member the run has not is nothing.
     #[test]
-    fn a_status_is_told_as_its_init_said_it() {
-        assert_eq!(told_status(0), 0);
-        assert_eq!(told_status(143), 143);
-        assert_eq!(told_status(u32::MAX), -1);
+    fn a_members_lanes_follow_its_generations() {
+        let ends = Ends::new(2).unwrap();
+        let gone = AtomicBool::new(false);
+        let (first, next) = (members::End::Exited(0), members::End::Signaled(9));
+        assert!(!ends.over(1, 0));
+        ends.told(1, first).unwrap();
+        ends.again(1);
+        assert_eq!(ends.wait(1, 0, &gone), Some(first));
+        assert!(ends.over(1, 0), "its first generation's lane steers it no more");
+        assert_eq!(ends.now(1), Some((1, None)), "its next generation runs");
+        assert!(!ends.over(1, 1));
+        std::thread::scope(|s| {
+            let waiting = s.spawn(|| ends.wait(1, 1, &gone));
+            ends.told(1, next).unwrap();
+            assert_eq!(waiting.join().unwrap(), Some(next));
+        });
+        assert_eq!(ends.now(1), Some((1, Some(next))));
+        assert!(ends.over(1, 1));
+        assert_eq!(
+            ends.told(1, first).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        ends.again(9);
+        assert!(ends.over(9, 0), "no such member's generation runs");
+    }
+
+    /// A lane tells a member's end typed: a death by TERM `Signaled(15)`, which `exit 143` is
+    /// not; an exit's code its bits as its init said them.
+    #[test]
+    fn a_lane_tells_a_signal_apart_from_an_exit() {
+        assert_eq!(told_end(members::End::Signaled(15)), Reply::Signaled(15));
+        assert_eq!(told_end(members::End::Exited(143)), Reply::Exited(143));
+        assert_eq!(told_end(members::End::Exited(0)), Reply::Exited(0));
+        assert_eq!(told_end(members::End::Exited(u32::MAX)), Reply::Exited(-1));
     }
 }

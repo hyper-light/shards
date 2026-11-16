@@ -1,0 +1,27 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-runs-carrier-5fa18a445a/changes.bundle
+ * branch              HEAD       -> FETCH_HEAD
+HEAD is now at af947732 Merge fresh main before runs-05 and runs-06 landing retry
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.14s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 1 test
+test devices::virtio::fs::server::tests::unrecorded_nondevice_nodes_keep_the_runs_user ... FAILED
+
+failures:
+
+---- devices::virtio::fs::server::tests::unrecorded_nondevice_nodes_keep_the_runs_user stdout ----
+
+thread 'devices::virtio::fs::server::tests::unrecorded_nondevice_nodes_keep_the_runs_user' (54255509) panicked at crates/vmm/src/devices/virtio/fs/server.rs:3951:9:
+assertion `left == right` failed
+  left: 0
+ right: 1000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    devices::virtio::fs::server::tests::unrecorded_nondevice_nodes_keep_the_runs_user
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 504 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`

@@ -1,0 +1,28 @@
+# kiln r1795 and r1833, adas-mac-studio-3.local (Darwin arm64), 2026-11-14; env as devtk-07-11.log
+# r1795: red fe1bd3989 (Codex's 53265a0fe cherry-picked: its test over the old encoding, every refusal sent as status 1 prose)
+=== cargo test -p shards-ipc --lib device_reply -j 8
+test device_reply::tests::device_refusals_keep_identity_and_retry_across_the_wire ... FAILED
+panicked at crates/ipc/src/device_reply.rs:107:13:
+assertion `left == right` failed
+  left: Unknown
+ right: AfterRelease
+test result: FAILED. 0 passed; 1 failed
+# r1833: green a3a9bccf4 (170f6e360 merged with main 226170f88)
+=== cargo test -p shards-ipc --lib device_reply -j 8
+test device_reply::tests::malformed_device_answers_are_uncertain_not_success ... ok
+test device_reply::tests::device_refusals_keep_identity_and_retry_across_the_wire ... ok
+test result: ok. 2 passed; 0 failed
+=== cargo test -p shards-vmm --lib devices::pci::hotplug -j 8
+test devices::pci::hotplug::tests::a_slot_behind_the_iommu_is_its_endpoint_while_plugged ... ok
+test devices::pci::hotplug::tests::a_plugged_function_takes_a_free_slot_and_leaves_once_let_go ... ok
+test result: ok. 2 passed; 0 failed
+=== cargo test -p shards-vmm --lib devices::virtio::block::tests -j 8
+test devices::virtio::block::tests::a_growth_is_refused_by_cause ... ok
+(and 8 more) test result: ok. 9 passed; 0 failed
+=== cargo test -p shards --bin shards daemon::devices::tests -j 8
+test result: ok. 9 passed; 0 failed
+=== cargo clippy -p shards-ipc -p shards-vmm -p shards -p shards-vm-process --all-targets -j 8 -- -D warnings
+    Checking shards-vm-process v0.1.0
+    Checking shards v0.7.0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.39s
+=== exit 0

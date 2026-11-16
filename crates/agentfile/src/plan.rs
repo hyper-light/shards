@@ -637,7 +637,7 @@ struct Planner<'a> {
     /// `SKILL --from=<agent>` may take is what it lists.
     domain_configs: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Each agent's and harness's source, as its stage expanded it.
-    domain_sources: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)>,
+    domain_sources: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>, crate::agentfile::Fetch)>,
 }
 
 /// The frontends shards' own is: docker/dockerfile at any tag, labs ones included, which at
@@ -1598,6 +1598,15 @@ fn http_filename(src: &[u8]) -> Vec<u8> {
             }
         }
         Err(_) => b"__unnamed__".to_vec(),
+    }
+}
+
+/// The name an s3 object's file takes in its source: its key's last part, made safe as an
+/// HTTP source's is; `__unnamed__` where the key ends in `/`.
+fn s3_filename(key: &[u8]) -> Vec<u8> {
+    match key.rsplit(|&b| b == b'/').next() {
+        Some(base) if !base.is_empty() && base != b"." && base != b".." => base.to_vec(),
+        _ => b"__unnamed__".to_vec(),
     }
 }
 
@@ -2920,6 +2929,17 @@ impl Planner<'_> {
         };
         // Single words expand before the step; ARG expands its own.
         let ex = |w: &[u8]| self.expand(d, &loc, &lint, &shlex, w);
+        let domain = |a: &mut crate::agentfile::Domain, directive: &str| -> Result<(), Fail> {
+            let named = crate::agentfile::unexpanded(&a.source);
+            a.source = ex(&a.source)?;
+            if named {
+                crate::agentfile::fetch_checked(directive, &a.source, &a.fetch).map_err(Fail::new)?;
+            }
+            if let Some(to) = &mut a.to {
+                *to = ex(to)?;
+            }
+            Ok(())
+        };
         match &mut step.command.kind {
             Kind::Env(kvs) | Kind::Label(kvs) => {
                 for kv in kvs.iter_mut() {
@@ -2957,21 +2977,25 @@ impl Planner<'_> {
                 v.chown = ex(&v.chown)?;
                 v.chmod = ex(&v.chmod)?;
             }
-            // Their sources and paths as ADD's: names stay as written, as a stage's do.
-            Kind::Agentfile(
-                crate::agentfile::Directive::Agent(a) | crate::agentfile::Directive::Harness(a),
-            ) => {
-                a.source = ex(&a.source)?;
-                if let Some(to) = &mut a.to {
-                    *to = ex(to)?;
-                }
-            }
+            // Their sources expand as ADD's (D56), names staying as written, as a stage's do; one that named a variable is held to its
+            // directive's checks once expanded, as one that named none was as parsed (D54).
+            Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => domain(a, "AGENT")?,
+            Kind::Agentfile(crate::agentfile::Directive::Harness(a)) => domain(a, "HARNESS")?,
             Kind::Agentfile(crate::agentfile::Directive::Mcp(m)) => {
+                let named = crate::agentfile::unexpanded(&m.source);
                 m.source = ex(&m.source)?;
+                if named {
+                    crate::agentfile::mcp_checked(&m.source, &m.redirects).map_err(Fail::new)?;
+                }
             }
             Kind::Agentfile(crate::agentfile::Directive::Skill(sk)) => {
                 if let crate::agentfile::SkillSource::Path(p) = &mut sk.source {
+                    let named = crate::agentfile::unexpanded(p);
                     *p = ex(p)?;
+                    if named {
+                        crate::agentfile::skill_checked(&sk.source, &sk.from, &sk.redirects)
+                            .map_err(Fail::new)?;
+                    }
                 }
                 if let Some(dest) = &mut sk.dest {
                     *dest = ex(dest)?;
@@ -3144,8 +3168,10 @@ impl Planner<'_> {
                 });
                 self.domain_sources
                     .entry(a.name.clone())
-                    .or_insert_with(|| (b"agent".to_vec(), a.source.clone()));
-                self.fetch_into(d, b"agent", &a.name, &a.source, &dest, &code, &loc, &lint)?;
+                    .or_insert_with(|| (b"agent".to_vec(), a.source.clone(), a.fetch.clone()));
+                self.fetch_into(
+                    d, b"agent", &a.name, &a.source, &a.fetch, &dest, &code, &loc, &lint,
+                )?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
             }
             Kind::Agentfile(crate::agentfile::Directive::Harness(h)) => {
@@ -3157,8 +3183,10 @@ impl Planner<'_> {
                 });
                 self.domain_sources
                     .entry(h.name.clone())
-                    .or_insert_with(|| (b"harness".to_vec(), h.source.clone()));
-                self.fetch_into(d, b"harness", &h.name, &h.source, &dest, &code, &loc, &lint)?;
+                    .or_insert_with(|| (b"harness".to_vec(), h.source.clone(), h.fetch.clone()));
+                self.fetch_into(
+                    d, b"harness", &h.name, &h.source, &h.fetch, &dest, &code, &loc, &lint,
+                )?;
                 self.ds(d)?
                     .agentfile
                     .push(crate::agentfile::Directive::Harness(h));
@@ -3180,7 +3208,11 @@ impl Planner<'_> {
                             .collect()
                     };
                     for dest in dests {
-                        self.fetch_into(d, b"mcp", &m.name, &m.source, &dest, &code, &loc, &lint)?;
+                        let fetch = crate::agentfile::Fetch {
+                            redirects: m.redirects.clone(),
+                            ..crate::agentfile::Fetch::default()
+                        };
+                        self.fetch_into(d, b"mcp", &m.name, &m.source, &fetch, &dest, &code, &loc, &lint)?;
                     }
                 }
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Mcp(m));
@@ -3191,7 +3223,9 @@ impl Planner<'_> {
                 } else {
                     None
                 };
+                let first = self.graph.vertices.len();
                 self.dispatch_skill(d, &sk, &step.sources, domain, &code, &loc, &lint)?;
+                self.granted(first, &sk.redirects);
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Skill(sk));
             }
             Kind::User(u) => self.dispatch_user(d, &u, true),
@@ -4428,6 +4462,7 @@ impl Planner<'_> {
         kind: &[u8],
         name: &[u8],
         source: &[u8],
+        fetch: &crate::agentfile::Fetch,
         dest: &[u8],
         code: &[u8],
         loc: &Location,
@@ -4436,7 +4471,7 @@ impl Planner<'_> {
         if let crate::agentfile::Source::Oci(r) = crate::agentfile::source_of(source).map_err(Fail::new)? {
             return self.artifact_into(d, kind, &r, dest, code, loc, lint);
         }
-        let content = self.content_of(d, source)?;
+        let content = self.content_of(d, source, fetch)?;
         let platform = self
             .states
             .get(d)
@@ -4513,7 +4548,40 @@ impl Planner<'_> {
     /// What a path, Git or http(s) source holds, at the root of a state of its own: a
     /// Git repository's tree; a URL's download, or a path of the context, unpacked where it
     /// is an archive, as `ADD` takes them.
-    fn content_of(&mut self, d: usize, source: &[u8]) -> Result<State, Fail> {
+    fn content_of(
+        &mut self,
+        d: usize,
+        source: &[u8],
+        fetch: &crate::agentfile::Fetch,
+    ) -> Result<State, Fail> {
+        let first = self.graph.vertices.len();
+        let st = self.content_unheld(d, source, fetch)?;
+        self.granted(first, &fetch.redirects);
+        Ok(st)
+    }
+
+    /// Marks each http(s), Git and s3 source made since vertex `first` as an Agentfile
+    /// directive's, held to its grant (D54): the origin it names and `redirects` alone.
+    /// An `ADD`'s sources carry no mark, and are fetched as BuildKit fetches them.
+    fn granted(&mut self, first: usize, redirects: &[Vec<u8>]) {
+        let grant = redirects.join(&b',');
+        for v in self.graph.vertices.iter_mut().skip(first) {
+            if let llb::Kind::Source { identifier, attrs } = &mut v.kind
+                && [b"http://".as_slice(), b"https://", b"git://", b"s3://"]
+                    .iter()
+                    .any(|s| identifier.starts_with(s))
+            {
+                attrs.insert(crate::agentfile::GRANT_ATTR.to_vec(), grant.clone());
+            }
+        }
+    }
+
+    fn content_unheld(
+        &mut self,
+        d: usize,
+        source: &[u8],
+        fetch: &crate::agentfile::Fetch,
+    ) -> Result<State, Fail> {
         let shown = errb(&[b"[internal] load ", source]);
         let mut scratch = State::scratch();
         scratch.platform = self.states.get(d).and_then(|s| s.platform.clone());
@@ -4541,7 +4609,37 @@ impl Planner<'_> {
                 let name = http_filename(&url);
                 let mut attrs = BTreeMap::new();
                 attrs.insert(b"http.filename".to_vec(), name.clone());
+                if !fetch.checksum.is_empty() {
+                    attrs.insert(b"http.checksum".to_vec(), fetch.checksum.clone());
+                }
                 let st = self.graph.source(url, attrs, None, custom_name(shown.clone()));
+                Ok(self
+                    .graph
+                    .file(&scratch, vec![copy(st, name, false)], custom_name(shown)))
+            }
+            crate::agentfile::Source::S3 { key, .. } => {
+                let name = s3_filename(&key);
+                let mut attrs = BTreeMap::new();
+                attrs.insert(b"s3.filename".to_vec(), name.clone());
+                for (k, v) in [
+                    (b"s3.checksum".as_slice(), &fetch.checksum),
+                    (b"s3.versionid", &fetch.version_id),
+                    (b"s3.endpoint", &fetch.endpoint),
+                    (b"s3.region", &fetch.region),
+                ] {
+                    if !v.is_empty() {
+                        attrs.insert(k.to_vec(), v.clone());
+                    }
+                }
+                if fetch.path_style {
+                    attrs.insert(b"s3.pathstyle".to_vec(), b"true".to_vec());
+                }
+                if fetch.aws_default {
+                    attrs.insert(b"s3.credentials".to_vec(), crate::agentfile::AWS_DEFAULT.to_vec());
+                }
+                let st = self
+                    .graph
+                    .source(source.to_vec(), attrs, None, custom_name(shown.clone()));
                 Ok(self
                     .graph
                     .file(&scratch, vec![copy(st, name, false)], custom_name(shown)))
@@ -4572,7 +4670,7 @@ impl Planner<'_> {
             return Ok(st.clone());
         }
         // Its stage, a dependency, was dispatched first.
-        let Some((kind, source)) = self.domain_sources.get(&name).cloned() else {
+        let Some((kind, source, fetch)) = self.domain_sources.get(&name).cloned() else {
             return Err(Fail::new(errb(&[
                 b"COPY --from=",
                 &name,
@@ -4594,7 +4692,7 @@ impl Planner<'_> {
                     custom_name(errb(&[b"[internal] load ", kind, b" ", &r])),
                 )
             }
-            _ => self.content_of(d, &source)?,
+            _ => self.content_of(d, &source, &fetch)?,
         };
         self.contents.insert(name, st.clone());
         Ok(st)

@@ -8,6 +8,17 @@ use std::io;
 /// The null device's path: what reads nothing and takes all that is written to it.
 pub(crate) const NULL: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
+/// A share's stream on Windows (D197): a byte pipe's two ends, each way holding a share's
+/// longest frame on it (`fs::STREAM_FRAME`, its window, platform-11).
+#[cfg(windows)]
+pub(crate) fn share_pipe() -> io::Result<(
+    std::os::windows::io::OwnedHandle,
+    std::os::windows::io::OwnedHandle,
+)> {
+    let window = shards_ipc::Window::frame(shards_vmm::devices::virtio::fs::STREAM_FRAME)?;
+    shards_ipc::byte_pair(window)
+}
+
 /// The null device, open to read and to write.
 pub(crate) fn null() -> io::Result<File> {
     OpenOptions::new().read(true).write(true).open(NULL)
@@ -142,5 +153,47 @@ pub(crate) fn path_id(path: &std::path::Path) -> Option<(u64, u64)> {
     #[cfg(windows)]
     {
         shards_ipc::Identity::of(path).ok().map(|i| (i.dev, i.ino))
+    }
+}
+
+/// What tells open file `file` from every other file of its host, whatever its path: its
+/// device and inode on Unix (POSIX `<sys/stat.h>`: st_dev and st_ino identify a file); on
+/// Windows its volume's serial number and its 128-bit file ID (FILE_ID_INFO), which ReFS
+/// needs where NTFS's 64-bit index would do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct FileId {
+    pub volume: u64,
+    pub file: u128,
+}
+
+pub(crate) fn file_id(file: &File) -> io::Result<FileId> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let m = file.metadata()?;
+        Ok(FileId {
+            volume: m.dev(),
+            file: u128::from(m.ino()),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+        };
+        let mut info = FILE_ID_INFO::default();
+        let size = u32::try_from(size_of::<FILE_ID_INFO>()).map_err(io::Error::other)?;
+        // SAFETY: a file the caller holds open, and a structure of `size` bytes to fill.
+        let read = unsafe {
+            GetFileInformationByHandleEx(file.as_raw_handle(), FileIdInfo, (&raw mut info).cast(), size)
+        };
+        if read == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(FileId {
+            volume: info.VolumeSerialNumber,
+            file: u128::from_le_bytes(info.FileId.Identifier),
+        })
     }
 }

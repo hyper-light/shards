@@ -1,0 +1,12 @@
+diff --git a/crates/vmm/src/hv/whp/mod.rs b/crates/vmm/src/hv/whp/mod.rs
+index 0860f0045..e7b52ca23 100644
+--- a/crates/vmm/src/hv/whp/mod.rs
++++ b/crates/vmm/src/hv/whp/mod.rs
+@@ -489,7 +489,6 @@ enum Reached {
+ impl Ram {
+     /// Records `range`, mapped: what it maps of the ranges before it is theirs no longer.
+     fn map(&mut self, range: Range) {
+-        cut(&mut self.0, range.gpa, range.len);
+         self.0.push(range);
+     }
+ 

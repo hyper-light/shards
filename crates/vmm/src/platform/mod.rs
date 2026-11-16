@@ -7,12 +7,14 @@ use std::io;
 
 mod checked;
 mod copy;
+
 mod progress;
 pub use checked::copy_checked;
 #[cfg(test)]
 pub use copy::COPIED;
 pub use copy::{copy_in, copy_out};
 pub use progress::{IDLE_VM_CPU, Look, Progress, progressed};
+pub use shards_ipc::{holdable, holdable_known, host_available, host_memory};
 
 #[cfg(unix)]
 mod unix;
@@ -26,14 +28,18 @@ pub use windows::*;
 #[cfg(windows)]
 mod windows_files;
 #[cfg(windows)]
+mod windows_pipes;
+#[cfg(windows)]
+pub use windows_pipes::Pipes;
+#[cfg(windows)]
 mod windows_process;
 #[cfg(windows)]
 mod windows_watch;
 #[cfg(windows)]
 pub use windows_files::{
-    append_new_in, create_in, deallocate, deallocation_unit, make_sparse, names_in, newest_in, open_beneath,
-    open_dir_beneath, open_in, open_newest_beneath, open_newest_in, punch_hole, remove_in, sync_entries,
-    unlink_in, version_of, write_in,
+    FileIdentity, allocation_unit, append_new_in, create_in, deallocate, deallocation_unit, file_identity,
+    make_sparse, names_in, newest_in, open_beneath, open_dir_beneath, open_in, open_newest_beneath,
+    open_newest_in, punch_hole, remove_in, sync_entries, unlink_in, version_of, write_in,
 };
 #[cfg(windows)]
 pub use windows_process::{
@@ -108,7 +114,9 @@ mod macos_thread;
 mod windows_thread;
 
 mod pressure;
-pub use pressure::{MemoryPressure, PRESSURE_WINDOW, PressureWatches};
+pub use pressure::{MemoryPressure, PressureWatches};
+
+pub mod granule;
 
 mod granted;
 #[cfg(windows)]
@@ -126,7 +134,7 @@ pub use shards_syscall_filter as seccomp;
 /// watches the thread while it is held (macos_thread.rs): one that runs long goes to
 /// timeshare before XNU's fail-safe would depress it (PM M317). On Windows a priority
 /// governor does (windows_thread.rs): one that uses more than half of its CPU, by more
-/// than half a period over a stretch, goes back to normal priority.
+/// than a period (D191's, 2g) over a stretch, goes back to normal priority.
 #[derive(Debug)]
 pub struct Prioritized {
     #[cfg(target_os = "macos")]
@@ -142,7 +150,7 @@ pub struct Prioritized {
 /// waited for the busy thread's slice to run out, and a run's start in a microVM of every
 /// CPU of the host took twice as long as in one of one (PM M292, M440). On Windows a step
 /// above normal priority while the thread uses no more than half of its CPU, its governor's
-/// credit carrying half a period across its clock's coarse steps (windows_thread.rs), where
+/// credit carrying a period across its clock's coarse steps (windows_thread.rs), where
 /// on 4 CPUs that 4 busy loops hold a run's start waited 217 to 337 ms at p50 for its guest
 /// to begin the command, and 8 to 10 so (PM M495, D191).
 pub fn prioritize_vcpu_thread() -> Result<Prioritized, String> {
@@ -206,14 +214,14 @@ pub fn read_input(path: &std::path::Path, max: u64) -> io::Result<Option<Vec<u8>
 }
 
 /// [`read_beneath`] of a file that says in its first bytes how long it may be: `most` is
-/// given its first `head` bytes (all of it, if it is shorter) and answers the most the
-/// whole may hold, or why its head is none of the file's kind. A file longer than that is
-/// an error, found before more than its head is read.
+/// given its first `head` bytes (all of it, if it is shorter) and the file's length, and
+/// answers the most the whole may hold, or why its head or its length is refused. A file
+/// longer than that is an error, found before more than its head is read.
 pub fn read_beneath_by(
     root: &std::path::Path,
     rel: &[&str],
     head: usize,
-    most: impl FnOnce(&[u8]) -> io::Result<u64>,
+    most: impl FnOnce(&[u8], u64) -> io::Result<u64>,
 ) -> io::Result<Option<Vec<u8>>> {
     let name = rel.join("/");
     let file = match open_beneath_input(root, rel) {
@@ -224,7 +232,7 @@ pub fn read_beneath_by(
     let len = file.metadata()?.len();
     let mut first = vec![0u8; usize::try_from(len).map_or(head, |len| len.min(head))];
     read_exact_at(&file, &mut first, 0)?;
-    let max = most(&first)?;
+    let max = most(&first, len)?;
     read_whole(&file, &name, len, max)
 }
 

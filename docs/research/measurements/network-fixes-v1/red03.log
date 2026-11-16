@@ -1,0 +1,86 @@
+From https://github.com/hyper-light/shards
+ * branch              p/fix-network-v1 -> FETCH_HEAD
+   e37f837e..5a3d2778  p/fix-network-v1 -> origin/p/fix-network-v1
+Previous HEAD position was e37f837e Merge current main after network-02 contention
+HEAD is now at 5a3d2778 network-03: reproduce authority retained after a DNS answer changes
+Linux 6.12.65-linuxkit aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+   Compiling libc v0.2.189
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-rs v1.18.1 (/src/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling rustls v0.23.46
+   Compiling rustls-pki-types v1.15.1
+   Compiling untrusted v0.9.0
+   Compiling openssl-probe v0.2.1
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.9
+   Compiling shards-abi v0.1.0 (/src/crates/abi)
+   Compiling deranged v0.5.8
+   Compiling num-conv v0.2.2
+   Compiling once_cell v1.21.4
+   Compiling jobserver v0.1.35
+   Compiling subtle v2.6.1
+   Compiling cc v1.5.1
+   Compiling rustls-native-certs v0.8.4
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling time v0.3.55
+   Compiling base64 v0.23.1
+   Compiling pem v4.0.0
+   Compiling cmake v0.1.58
+   Compiling yasna v0.6.0
+   Compiling zlib-rs v0.6.8
+   Compiling aws-lc-sys v0.45.0 (/src/vendor/aws-lc-sys)
+   Compiling twox-hash v2.1.4
+   Compiling ruzstd v0.9.1
+   Compiling shards-ipc v0.1.0 (/src/crates/ipc)
+   Compiling shards-netring v0.1.0 (/src/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/src/crates/syscall-filter)
+   Compiling shards-testdir v0.1.0 (/src/crates/testdir)
+   Compiling shards-dns v0.1.0 (/src/crates/dns)
+   Compiling flate2 v1.1.10
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-verify v0.1.0 (/src/crates/verify)
+   Compiling shards-net v0.1.0 (/src/crates/net)
+    Finished `test` profile [unoptimized] target(s) in 18.71s
+     Running unittests src/lib.rs (/target/debug/deps/shards_net-6fb1df034324ab7e)
+
+running 1 test
+test tests::dns_answers_replace_the_names_previous_authority ... FAILED
+
+failures:
+
+---- tests::dns_answers_replace_the_names_previous_authority stdout ----
+
+thread 'tests::dns_answers_replace_the_names_previous_authority' (1783) panicked at crates/net/src/lib.rs:3985:9:
+the replaced DNS answer still grants a new flow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::dns_answers_replace_the_names_previous_authority
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 179 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-net --lib`

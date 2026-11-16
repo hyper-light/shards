@@ -385,6 +385,44 @@ impl fmt::Display for Refusal {
     }
 }
 
+/// Whether a token response carries none of `tokens` outside its body's own places (creds-01):
+/// in `places`, each a part of it that goes to the guest as it came (an HTTP/1.1 head whole, its
+/// reason phrase too; an HTTP/2 field's name or value, its trailers' too), as it came or with its
+/// escapes decoded (RFC 3986 §2.1's percent-encoding, RFC 9110 §5.6.4's quoted-pair), as `read`
+/// refuses a token echoed in another of its body's strings.
+pub fn unechoed<'p>(tokens: &Tokens, places: impl IntoIterator<Item = &'p [u8]>) -> Result<(), Refusal> {
+    let values: Vec<&[u8]> = [&tokens.access, &tokens.refresh, &tokens.id]
+        .into_iter()
+        .flatten()
+        .map(|t| t.value.as_slice())
+        .collect();
+    for place in places {
+        let decoded = unescaped(place);
+        if values.iter().any(|v| contains(place, v) || contains(&decoded, v)) {
+            return Err(Refusal::Echoed);
+        }
+    }
+    Ok(())
+}
+
+/// `bytes` with each `%HH` and each backslash's pair decoded, in one buffer sized at once and
+/// wiped as it drops.
+fn unescaped(bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(bytes.len()));
+    let hex = |at: usize| bytes.get(at).and_then(|&c| char::from(c).to_digit(16));
+    let mut i = 0usize;
+    while let Some(&b) = bytes.get(i) {
+        let (byte, took) = match (b, hex(i + 1), hex(i + 2), bytes.get(i + 1)) {
+            (b'%', Some(h), Some(l), _) => (u8::try_from(h * 16 + l).unwrap_or(b), 3),
+            (b'\\', _, _, Some(&n)) => (n, 2),
+            _ => (b, 1),
+        };
+        out.push(byte);
+        i += took;
+    }
+    out
+}
+
 /// Whether a response's body is as its sender wrote it, so that its tokens can be read where they
 /// lie: no content coding but `identity` (RFC 9110 §8.4), no transfer coding but `chunked`
 /// (RFC 9112 §6.1), whose framing the injector reads.

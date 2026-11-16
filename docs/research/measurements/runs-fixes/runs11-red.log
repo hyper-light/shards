@@ -1,0 +1,10 @@
+# runs-11 (handoff tries), red by mutation: MUT=handoff puts back a count of three. CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY/SHARDS_SERVER_BINARY a stand-in; carrier /tmp/runs-tail-carrier (run.sh, mutate2.py, cost.sh); aws-lc-sys build warnings removed
+## kiln r1904, macOS 26.2 25C56 arm64, adas-mac-studio-3.local (Adas-Mac-Studio-4.local), rustc 1.98.1, at 66012636
+shards daemon: warm VM 89091 did not take a run: it ended first
+shards daemon: warm VM 89092 did not take a run: it ended first
+shards daemon: warm VM 89093 did not take a run: it ended first
+test daemon::tests::untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start ... FAILED
+  thread 'reader' panicked at crates/shards/src/daemon.rs:11152:55: the daemon hung up
+  panicked at crates/shards/src/daemon.rs:10399:38: the daemon said nothing to its VM: its sender ended
+  (the run refused after three tries, its fourth pooled VM and the healthy fifth never asked for)
+test result: FAILED. 0 passed; 1 failed

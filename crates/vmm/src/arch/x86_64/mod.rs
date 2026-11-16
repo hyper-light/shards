@@ -7,6 +7,7 @@ pub mod boot;
 pub mod cpuid;
 pub mod ioapic;
 pub mod mmio;
+pub mod xsave;
 
 /// Guest-physical memory map (research doc §6.4, after Firecracker's layout).
 pub mod layout {
@@ -45,6 +46,9 @@ pub mod layout {
     pub const VIRTIO_MMIO_STRIDE: u64 = 0x200;
     /// GSIs 5-22 are free IOAPIC pins: at most 18 virtio devices.
     pub const VIRTIO_MMIO_MAX: u64 = 18;
+    /// The pvpanic device's register (devices/pvpanic.rs): the first page past the
+    /// virtio-mmio transports.
+    pub const PVPANIC: u64 = (VIRTIO_MMIO + VIRTIO_MMIO_MAX * VIRTIO_MMIO_STRIDE).next_multiple_of(0x1000);
     /// The IOAPIC (KVM's in-kernel one, the VMM's own on WHP) and the LAPIC.
     /// A PCI bus's 32-bit memory window, where its functions' BARs are placed, and its
     /// ECAM window above it, bus 0 alone (D153), in the MMIO gap.
@@ -57,9 +61,6 @@ pub mod layout {
     pub const IDENTITY_MAP: u64 = 0xfffb_c000;
     pub const TSS: u64 = 0xfffb_d000;
 
-    /// COM1: ports 0x3F8-0x3FF on GSI 4.
-    pub const COM1: u16 = 0x3f8;
-    pub const GSI_COM1: u32 = 4;
     pub const GSI_VIRTIO: u32 = 5;
     /// The Generic Event Device's, which tells the guest of a new VM generation ID: the
     /// IOAPIC's last pin.
@@ -68,10 +69,9 @@ pub mod layout {
     /// (D154): the last of the virtio devices' pins, so that a machine with a PCI bus has
     /// one virtio device fewer.
     pub const GSI_PCI: u32 = 22;
-    /// The i8042 data and command ports (only the reset command is emulated).
-    pub const I8042: u16 = 0x60;
-    /// ACPI SLEEP_CONTROL_REG and SLEEP_STATUS_REG (HW-reduced ACPI), a free port pair.
-    pub const ACPI_SLEEP: u16 = 0x600;
+    /// The ACPI power device's ports (HW-reduced ACPI), free ones: SLEEP_CONTROL_REG,
+    /// SLEEP_STATUS_REG and RESET_REG (`acpi::SLEEP_STATUS`, `acpi::RESET`, D268).
+    pub const ACPI_POWER: u16 = 0x600;
 }
 
 /// A segment register as VM entry wants it (Intel SDM Vol. 3A §3.4.5).

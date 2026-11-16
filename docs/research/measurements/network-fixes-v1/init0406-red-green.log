@@ -1,0 +1,80 @@
+# network-04/06 focused run, kiln r1774 on adacachy2 (Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1),
+# Commits as run (bundle of p/fix-network-a-v1) and as landed (p/fix-network-a-0406-v1, cherry-picked, crates/init identical):
+# red c3d908cef = a5772afa8, green d6dd528a0 = f2a8e2186, partial overlaps 0d31d9f9d = 10a3bc47f.
+# carrier /tmp/g121-shot/carrier-neta (run.sh MODE=script SCRIPT=init0406.sh), nice -n 10,
+# cold CARGO_TARGET_DIR ~/g121-tmp/neta-linux/target. Source: main 97f404be8 + bundle of p/fix-network-a-v1.
+# Test command: cargo test -p shards-init --profile test-release --bins chooser::
+Linux 7.3.3-1-cachyos x86_64
+rustc 1.98.1 (48a229cea 2026-09-01)
+d6dd528a063c0509b6cf720ec2814074064faa9b
+=== red c3d908cef
+test chooser::tests::a_socket_takes_what_comes_to_its_address_and_port ... ok
+test chooser::tests::ports_several_domains_are_given_are_contested ... ok
+test chooser::tests::the_filter_notifies_of_bind_and_listen_alone ... ok
+test chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it ... FAILED
+test chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports ... FAILED
+test chooser::tests::a_udp_zone_names_one_holder_for_the_run ... FAILED
+thread 'chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it' (1030930) panicked at crates/init/src/chooser.rs:794:13:
+thread 'chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports' (1030927) panicked at crates/init/src/chooser.rs:829:9:
+thread 'chooser::tests::a_udp_zone_names_one_holder_for_the_run' (1030929) panicked at crates/init/src/chooser.rs:774:13:
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+red exit 101
+=== green d6dd528a0
+test chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports ... ok
+test chooser::tests::a_socket_takes_what_comes_to_its_address_and_port ... ok
+test chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it ... ok
+test chooser::tests::ports_several_domains_are_given_are_contested ... ok
+test chooser::tests::the_filter_notifies_of_bind_and_listen_alone ... ok
+test chooser::tests::more_udp_candidates_than_zones_are_refused ... ok
+test chooser::tests::a_udp_zone_names_one_holder_for_the_run ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.00s
+green exit 0
+=== clippy
+clippy exit 0
+ crates/init/src/chooser.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+=== mutation m1: every candidate zone 1
+test chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports ... ok
+test chooser::tests::a_socket_takes_what_comes_to_its_address_and_port ... ok
+test chooser::tests::ports_several_domains_are_given_are_contested ... ok
+test chooser::tests::a_udp_zone_names_one_holder_for_the_run ... FAILED
+test chooser::tests::the_filter_notifies_of_bind_and_listen_alone ... ok
+test chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it ... FAILED
+test chooser::tests::more_udp_candidates_than_zones_are_refused ... FAILED
+thread 'chooser::tests::a_udp_zone_names_one_holder_for_the_run' (1152181) panicked at crates/init/src/chooser.rs:798:13:
+thread 'chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it' (1152182) panicked at crates/init/src/chooser.rs:851:17:
+thread 'chooser::tests::more_udp_candidates_than_zones_are_refused' (1152183) panicked at crates/init/src/chooser.rs:812:9:
+test result: FAILED. 4 passed; 3 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+m1 exit 101
+ crates/init/src/chooser.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+=== mutation m2: a candidate listening on any port takes every port
+test chooser::tests::a_socket_takes_what_comes_to_its_address_and_port ... ok
+test chooser::tests::ports_several_domains_are_given_are_contested ... ok
+test chooser::tests::the_filter_notifies_of_bind_and_listen_alone ... ok
+test chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports ... FAILED
+test chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it ... FAILED
+test chooser::tests::more_udp_candidates_than_zones_are_refused ... ok
+test chooser::tests::a_udp_zone_names_one_holder_for_the_run ... ok
+thread 'chooser::tests::a_choice_keeps_its_members_port_and_joins_adjacent_ports' (1299395) panicked at crates/init/src/chooser.rs:877:9:
+thread 'chooser::tests::each_port_of_a_range_goes_to_the_member_listening_on_it' (1299398) panicked at crates/init/src/chooser.rs:842:13:
+test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+m2 exit 101
+(exit 0; worktree clean after mutations)
+
+# Second run, kiln r1800, adacachy2 (same host/toolchain/target), green = 0d31d9f9d (= 10a3bc47f),
+# cargo test -p shards-init --profile test-release --bins -- chooser:: links:: netplan::
+# red c3d908cef: 13 passed, 3 failed (each_port_of_a_range..., a_choice_keeps..., a_udp_zone_names...)
+# green 0d31d9f9d: 18 passed, 0 failed (adds ranges_that_meet_in_part_are_contested_where_they_meet,
+#   links::tests and netplan::tests, which pass unchanged)
+# clippy -p shards-init --all-targets -D warnings: exit 0
+# m1 (every candidate zone 1): 3 failed: each_port_of_a_range (UDP zone assert, chooser.rs:941),
+#   a_udp_zone_names_one_holder_for_the_run (:888), more_udp_candidates_than_zones_are_refused (:902)
+# m2 (any port listened takes every port): 2 failed: a_choice_keeps_its_members_port... (:967),
+#   each_port_of_a_range... (:932)
+# m3 (ranges contested only where equal, the old contested): 1 failed:
+#   ranges_that_meet_in_part_are_contested_where_they_meet (:808)
+# worktree clean after each mutation (git checkout); exit 0.

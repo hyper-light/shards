@@ -49,6 +49,7 @@ pub mod gc;
 mod gha;
 mod git;
 mod give;
+mod grant;
 pub(crate) mod http;
 mod live;
 pub(crate) mod multi;
@@ -84,6 +85,13 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
             Ok(a) => argv.push(a),
             Err(a) => return failed(&format!("{a:?} is not UTF-8")),
         }
+    }
+    // A client's build names no path of this machine's but its own copies' (remote-09).
+    let words: Vec<String> = std::iter::once("build".to_string())
+        .chain(argv.iter().cloned())
+        .collect();
+    if let Some(why) = crate::synced::refused_for_client(&words) {
+        return failed(&why);
     }
     let parsed = match flags::parse(&BUILD, PATH, &argv, &buildflags::validate) {
         Outcome::Run(parsed) => parsed,
@@ -166,6 +174,36 @@ pub fn build(args: impl Iterator<Item = OsString>) -> ExitCode {
     }
 }
 
+/// Whether this process's build tells its progress to shards-api (D263): set once, by
+/// [`for_api`], before its one build runs.
+static API_EVENTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The build `shards api-build` runs for shards-api (D263): `argv`, buildx's flags as
+/// `shards build image` takes them, read and run as that command's are (`run`), its progress
+/// told as events in place of a display, and its build cache collected after, as theirs is.
+/// It names no image to the daemon (`publish_built`): a build for an orchestrator reaches
+/// no daemon.
+pub(crate) fn for_api(argv: &[String]) -> Result<(), String> {
+    let parsed = match flags::parse(&BUILD, PATH, argv, &buildflags::validate) {
+        Outcome::Run(parsed) => parsed,
+        Outcome::Help { .. } => return Err("a build's flags asked for help".into()),
+        Outcome::Fail { text, .. } => return Err(text),
+    };
+    API_EVENTS.store(true, std::sync::atomic::Ordering::Relaxed);
+    let status = std::cell::Cell::new(0u8);
+    let built = run(&parsed, &status);
+    if let Ok(home) = shards_ipc::home()
+        && let Ok(store) = crate::pull::store(&home)
+        && let Err(e) = gc::after_build(&home, &store)
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "WARNING: the build cache was not collected: {e}"
+        );
+    }
+    built
+}
+
 /// What the build read of stdin (`-` as the context or the Dockerfile), once for every
 /// platform's build: a file in the home's `tmp`, removed when the build ends, its size, its
 /// digest, and its first 1024 bytes, which tell an archive from a Dockerfile.
@@ -246,6 +284,9 @@ struct Progress {
     /// What follows the recap: the warnings, then the excerpt of the Dockerfile where the
     /// failing step comes from, as buildx prints them before its error (D108).
     epilogue: RefCell<String>,
+    /// Each step's progress told as shards-api's events on stdout, in place of a display: a
+    /// build `shards api-build` runs (D263).
+    events: bool,
 }
 
 impl Progress {
@@ -259,8 +300,57 @@ impl Progress {
             recapped: std::cell::Cell::new(false),
             current: std::cell::Cell::new(0),
             epilogue: RefCell::new(String::new()),
+            events: false,
         }
     }
+
+    /// `event` told to shards-api, where this build's progress goes there (D263).
+    fn tell(&self, event: shards_api::BuildEvent) {
+        self.send(|| shards_api::builds::wire::event(&event));
+    }
+
+    /// What a policy's decision said as it refused one of the build's sources, told to
+    /// shards-api, which refuses the build in its words (D263).
+    fn tell_policy(&self, said: &[String]) {
+        self.send(|| shards_api::builds::wire::policy(said));
+    }
+
+    /// The lines of the Agentfile the build's error is at, each of its excerpt's ranges, told
+    /// to shards-api (D263). Lines count from 1, as the excerpt's do: a range from 0 is none.
+    fn tell_at(&self, locations: &[shards_agentfile::instructions::Location]) {
+        let lines: Vec<std::ops::RangeInclusive<u32>> = locations
+            .iter()
+            .flatten()
+            .filter(|&&(first, _)| first > 0)
+            .map(|&(first, last)| told_line(first)..=told_line(last.max(first)))
+            .collect();
+        if !lines.is_empty() {
+            self.send(|| shards_api::builds::wire::at(&lines));
+        }
+    }
+
+    /// `frame` on stdout, where this build's progress goes to shards-api: stdout carries
+    /// nothing else in such a build. A client gone ends the build with its group
+    /// (`shards_api::Builds`), so a write it refuses is let go of.
+    fn send<E>(&self, frame: impl FnOnce() -> Result<Vec<u8>, E>) {
+        if !self.events {
+            return;
+        }
+        if let Ok(frame) = frame() {
+            let mut out = std::io::stdout().lock();
+            let _ = out.write_all(&frame).and_then(|()| out.flush());
+        }
+    }
+}
+
+/// A line's number as shards-api tells it: no Agentfile has more lines than a u32 counts.
+fn told_line(line: usize) -> u32 {
+    u32::try_from(line).unwrap_or(u32::MAX)
+}
+
+/// A step's number as shards-api tells it: no build has more steps than a u32 counts.
+fn told_index(index: usize) -> u32 {
+    u32::try_from(index).unwrap_or(u32::MAX)
 }
 
 /// A step's name, last lines and whether it failed.
@@ -286,7 +376,7 @@ fn saying_waits<T>(
         let p = progress.borrow();
         p.live.is_none() && !p.quiet
     };
-    let say = |notice: &str| {
+    let say = |notice: shards_registry::registry::Notice<'_>| {
         if plain {
             let _ = writeln!(std::io::stderr(), "{notice}");
         }
@@ -318,6 +408,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().start(name);
         }
+        self.tell(shards_api::BuildEvent::Step {
+            index: told_index(self.next),
+            name: name.to_string(),
+        });
         self.to(self.next);
         Vertex {
             index: self.next,
@@ -355,6 +449,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().line(v.index, text);
         }
+        self.tell(shards_api::BuildEvent::Line {
+            index: told_index(v.index),
+            text: text.to_string(),
+        });
         self.to(v.index);
         self.say(&format!("#{} {text}\n", v.index));
     }
@@ -383,6 +481,10 @@ impl Progress {
         if let Some(step) = self.steps.borrow_mut().get_mut(&index) {
             step.0 = name.to_string();
         }
+        self.tell(shards_api::BuildEvent::Step {
+            index: told_index(index),
+            name: name.to_string(),
+        });
         self.resume(index, name)
     }
 
@@ -402,6 +504,10 @@ impl Progress {
             if let Some(live) = &self.live {
                 live.borrow_mut().line(v.index, line);
             }
+            self.tell(shards_api::BuildEvent::Line {
+                index: told_index(v.index),
+                text: line.to_string(),
+            });
             self.say(&format!("#{} {secs:.places$} {line}\n", v.index));
             self.remember(v.index, &format!("{secs:.places$} {line}"));
         }
@@ -445,6 +551,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().done(v.index);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Done,
+        });
         let secs = v.started.elapsed().as_secs_f64();
         self.ended(v);
         self.say(&format!("#{} DONE {secs:.1}s\n", v.index));
@@ -457,6 +567,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().error(v.index, message);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Failed(message.to_string()),
+        });
         self.ended(v);
         self.say(&format!("#{} ERROR: {message}\n", v.index));
     }
@@ -466,6 +580,10 @@ impl Progress {
         if let Some(live) = &self.live {
             live.borrow_mut().cached(v.index);
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Cached,
+        });
         self.ended(v);
         self.say(&format!("#{} CACHED\n", v.index));
     }
@@ -476,6 +594,10 @@ impl Progress {
             live.borrow_mut().canceled(v.index);
             live.borrow_mut().leave();
         }
+        self.tell(shards_api::BuildEvent::Ended {
+            index: told_index(v.index),
+            how: shards_api::StepEnd::Canceled,
+        });
         self.ended(v);
         self.say(&format!("#{} CANCELED\n", v.index));
     }
@@ -785,25 +907,43 @@ fn builder_cpus() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| u32::try_from(n.get()).unwrap_or(u32::MAX))
 }
 
-/// The most memory a builder may have, in MiB: `SHARDS_BUILD_MEMORY` if set, else what
-/// [`builder_most`] makes of this host's memory, what it has available as the builder
-/// starts, and what the home's builds have needed (`needs`, [`Needed`]). Its steps and its
-/// layers share it. It boots with little of it, and the rest is plugged as the build needs
-/// it (builder::BOOT_MEMORY_MIB, D133): what it costs at boot grows with what it boots with
-/// (PM M82), not with what it may have.
-fn builder_memory_mib(needs: &Path) -> u64 {
-    if let Some(m) = std::env::var("SHARDS_BUILD_MEMORY")
+/// The memory a builder may have and boots with, in MiB (D133): the most, `SHARDS_BUILD_MEMORY`
+/// if set, else what [`builder_most`] makes of this host's memory, what it has available as
+/// the builder starts, and what the home's builds have needed (`needs`, [`Needed`]); and what
+/// it boots with, [`builder_boot`] of what the home learned its guest, `identity`
+/// ([`builder_identity`]), needs as it starts. Its steps and its layers share the most, the
+/// rest of it plugged as the build needs it: what a guest costs at boot grows with what it
+/// boots with (PM M82), not with what it may have. A host whose memory is unread, with
+/// nothing recorded, is refused ([`HostMemoryUnread`]).
+fn builder_memory_mib(needs: &Path, identity: &str) -> Result<(u64, u64), HostMemoryUnread> {
+    let needed = Needed::read(needs);
+    let learned = needed.boot_for(identity);
+    let most = match std::env::var("SHARDS_BUILD_MEMORY")
         .ok()
         .and_then(|v| v.parse().ok())
     {
-        return whole_blocks(m);
+        Some(m) => whole_blocks(m),
+        None => builder_most(host_memory(), host_available(), &needed, learned)?,
+    };
+    Ok((most, builder_boot(most, learned)))
+}
+
+/// A builder refused for want of its host's memory: unread, and nothing recorded in its home
+/// to size its builder by (D133, memory-15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemoryUnread;
+
+impl std::fmt::Display for HostMemoryUnread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the host's memory cannot be read, and no build of this home has said what a builder needs",
+        )
     }
-    builder_most(host_memory(), host_available(), Needed::read(needs))
 }
 
 /// The most memory a builder may have, in MiB, on a host of `host` bytes that has
-/// `available` as it starts, the home's builds having needed `needed` (D133), in whole
-/// blocks:
+/// `available` as it starts, the home's builds having needed `needed` (D133) and its guest
+/// having been learned to need `learned` bytes to boot, in whole blocks:
 ///
 /// - with no build recorded (a new home: the cold start), what the host has available,
 ///   what its kernel says it can give a new program without taking from what runs;
@@ -811,28 +951,90 @@ fn builder_memory_mib(needs: &Path) -> u64 {
 /// - all the host's memory once a build was ended short of memory, its builder having
 ///   reached its ceiling, as a run with no limit may have (`run::sizes`, D148);
 ///
-/// never more than the host's memory, nor less than a builder boots with, which is all it
-/// may have where the host's memory cannot be read; all of it where what is available
-/// cannot be.
-fn builder_most(host: Option<u64>, available: Option<u64>, needed: Needed) -> u64 {
+/// never more than the host's memory, nor less than what its guest was learned to boot with;
+/// all of it where what is available cannot be read, or holds no whole block, the unit a
+/// builder's memory comes in. Where the host's memory cannot be read: what the home
+/// recorded, the most its builds needed or its guest's boot, else refused, never a guess.
+fn builder_most(
+    host: Option<u64>,
+    available: Option<u64>,
+    needed: &Needed,
+    learned: Option<u64>,
+) -> Result<u64, HostMemoryUnread> {
+    let block = shards_vmm::devices::virtio::mem::BLOCK;
+    let learned = learned.unwrap_or(0);
     let Some(host) = host else {
-        return whole_blocks(builder::BOOT_MEMORY_MIB);
+        let recorded = needed.most.max(learned);
+        return match recorded {
+            0 => Err(HostMemoryUnread),
+            bytes => Ok(whole_blocks_up(bytes.div_ceil(1 << 20))),
+        };
     };
     let most = if needed.short {
         host
     } else {
-        available.unwrap_or(host).max(needed.most)
+        available.filter(|&a| a >= block).unwrap_or(host).max(needed.most)
     };
-    whole_blocks((most.min(host) >> 20).max(builder::BOOT_MEMORY_MIB))
+    Ok(whole_blocks((most.max(learned).min(host)) >> 20))
+}
+
+/// What a builder that may have `most` MiB boots with, in MiB (D133, memory-15): what its
+/// home learned its guest needs as it starts (`learned` bytes, [`boot_need`]), in whole
+/// blocks, within its most; with nothing learned for this guest (the cold start), all it may
+/// have, which always boots: it costs that boot the page structures of all of it, a 64th
+/// (PM M82, M193), once for each home and guest, and never a guessed floor.
+fn builder_boot(most: u64, learned: Option<u64>) -> u64 {
+    learned.map_or(most, |bytes| whole_blocks_up(bytes.div_ceil(1 << 20)).min(most))
+}
+
+/// The memory a builder's guest needs to boot with, in bytes, from what one that booted with
+/// `booted` bytes said as its build ended (`NEEDED`, memory-15): its kernel had `total` of it
+/// (MemTotal as it booted), and needed `start` as its build was held (its kernel's memory
+/// then, the reserve beside its hold and its first growth's working room, `plug::startup`).
+/// What the kernel took at boot past MemTotal is its image and its page structures, a 64th of
+/// what it booted with (`struct page`'s 64 bytes a 4 KiB page, allocated from memblock and
+/// never in MemTotal); the rest of it stands as it was, and the page structures are counted
+/// for the memory booted with: the least `b` with `b − b/64 ≥ fixed + start`.
+fn boot_need(booted: u64, total: u64, start: u64) -> u64 {
+    let fixed = booted.saturating_sub(total).saturating_sub(booted / 64);
+    fixed.saturating_add(start).saturating_mul(64).div_ceil(63)
+}
+
+/// What names a builder's guest in its home's record of what it needs to boot (memory-15):
+/// its kernel's and its init's paths, lengths and times, and its CPUs, whose number its
+/// kernel's reserve grows with; a guest replaced in place, or one of other CPUs, is another,
+/// and learned afresh. A file unread is named by its path alone.
+fn builder_identity(kernel: &Path, init: &Path, cpus: u32) -> String {
+    use sha2::{Digest as _, Sha256};
+    let mut h = Sha256::new();
+    for file in [kernel, init] {
+        h.update(file.as_os_str().as_encoded_bytes());
+        h.update([0]);
+        if let Ok(meta) = std::fs::metadata(file) {
+            h.update(meta.len().to_le_bytes());
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            h.update(modified.to_le_bytes());
+        }
+    }
+    h.update(cpus.to_le_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// What a home's builds have needed of memory (D133), as their builders' guests said it as
-/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, and whether any was
-/// ended short of it. Recorded in the home's `builder-memory`, one `KEY VALUE` a line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// each ended (`build::kind::NEEDED`): the most one needed, in bytes, whether any was ended
+/// short of it, and what each guest it booted was learned to need to boot ([`boot_need`],
+/// memory-15), by its identity ([`builder_identity`]). Recorded in the home's
+/// `builder-memory`, one `KEY VALUE` a line, a guest's `boot IDENTITY BYTES`: a line for each
+/// guest the home has booted builders of.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Needed {
     most: u64,
     short: bool,
+    boots: Vec<(String, u64)>,
 }
 
 impl Needed {
@@ -847,18 +1049,42 @@ impl Needed {
             match line.split_once(' ') {
                 Some(("needed", n)) => needed.most = n.trim().parse().unwrap_or(0),
                 Some(("short", s)) => needed.short = s.trim() == "yes",
+                Some(("boot", rest)) => {
+                    if let Some((id, bytes)) = rest.trim().split_once(' ')
+                        && let Ok(bytes) = bytes.trim().parse()
+                    {
+                        needed.learned(id, bytes);
+                    }
+                }
                 _ => {}
             }
         }
         needed
     }
 
-    fn text(self) -> String {
-        format!(
+    /// What guest `identity` was learned to need to boot, where it was.
+    fn boot_for(&self, identity: &str) -> Option<u64> {
+        self.boots.iter().find(|(id, _)| id == identity).map(|&(_, b)| b)
+    }
+
+    /// Guest `identity` booted needing `bytes`: the most it was seen to need.
+    fn learned(&mut self, identity: &str, bytes: u64) {
+        match self.boots.iter_mut().find(|(id, _)| id == identity) {
+            Some((_, had)) => *had = (*had).max(bytes),
+            None => self.boots.push((identity.to_string(), bytes)),
+        }
+    }
+
+    fn text(&self) -> String {
+        let mut text = format!(
             "needed {}\nshort {}\n",
             self.most,
             if self.short { "yes" } else { "no" }
-        )
+        );
+        for (id, bytes) in &self.boots {
+            text.push_str(&format!("boot {id} {bytes}\n"));
+        }
+        text
     }
 }
 
@@ -868,9 +1094,10 @@ fn needs_path(home: &Path) -> PathBuf {
 }
 
 /// Adds a build that needed `need` bytes of memory, `short` where it was ended short of it,
-/// to the record at `path`, under the record's lock, so that builds ending together each
-/// count; unlocked before it closes (PM M244).
-fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
+/// and what its guest was learned to need to boot (`boot`: its identity and bytes), to the
+/// record at `path`, under the record's lock, so that builds ending together each count;
+/// unlocked before it closes (PM M244).
+fn record_need(path: &Path, need: u64, short: bool, boot: (&str, u64)) -> Result<(), String> {
     use std::io::{Read as _, Seek as _, Write as _};
     let said = |e: std::io::Error| format!("{}: {e}", path.display());
     let mut file = std::fs::File::options()
@@ -886,10 +1113,12 @@ fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
         .read_to_string(&mut text)
         .and_then(|_| {
             let had = Needed::parse(&text);
-            let now = Needed {
+            let mut now = Needed {
                 most: had.most.max(need),
                 short: had.short || short,
+                boots: had.boots.clone(),
             };
+            now.learned(boot.0, boot.1);
             if now == had && !text.is_empty() {
                 return Ok(());
             }
@@ -902,66 +1131,7 @@ fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
     written
 }
 
-/// The memory this host has available, in bytes: what its kernel says a new program may
-/// have without taking from what runs. Linux's `MemAvailable` ("an estimate of how much
-/// memory is available for starting new applications, without swapping", proc_meminfo(5)).
-#[cfg(target_os = "linux")]
-pub(crate) fn host_available() -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    let kib: u64 = text
-        .lines()
-        .find_map(|l| l.strip_prefix("MemAvailable:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    kib.checked_mul(1024)
-}
-
-/// The memory this host has available, in bytes: macOS's `kern.memorystatus_level`, the
-/// percentage of its pages its pressure thread counts available
-/// (`memorystatus_get_available_page_count`, osfmk/vm/vm_pageout.c `vm_pressure_response`;
-/// the sysctl in bsd/kern/kern_memorystatus.c), of its memory.
-#[cfg(target_os = "macos")]
-pub(crate) fn host_available() -> Option<u64> {
-    let mut level: libc::c_int = 0;
-    let mut len = size_of::<libc::c_int>();
-    // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
-    let rc = unsafe {
-        libc::sysctlbyname(
-            c"kern.memorystatus_level".as_ptr(),
-            (&raw mut level).cast(),
-            &raw mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 || len != size_of::<libc::c_int>() {
-        return None;
-    }
-    let level = u64::try_from(level).ok()?.min(100);
-    Some(host_memory()? / 100 * level)
-}
-
-/// The memory this host has available, in bytes: none known on this Unix.
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-pub(crate) fn host_available() -> Option<u64> {
-    None
-}
-
-/// The memory this host has available, in bytes: `ullAvailPhys` (GlobalMemoryStatusEx),
-/// "the amount of physical memory that can be immediately reused without having to write
-/// its contents to disk first" (MEMORYSTATUSEX).
-#[cfg(windows)]
-pub(crate) fn host_available() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullAvailPhys)
-}
+pub(crate) use shards_vmm::platform::{holdable, host_available, host_memory};
 
 /// `mib` down to whole blocks of what a builder's memory is plugged in (virtio-mem's,
 /// D133), which a VM refuses anything but: half of a host's memory need not be (Windows
@@ -971,37 +1141,10 @@ fn whole_blocks(mib: u64) -> u64 {
     mib - mib % block
 }
 
-/// The most a read whose length the reader cannot know before it ends may hold, where what
-/// it guards is the reader's memory: what this host has available now ([`host_available`]),
-/// else its memory ([`host_memory`]); past that it could not be held without taking from
-/// what runs. Unbounded where the host says neither, as dockerd reads a call's JSON.
-pub(crate) fn holdable() -> u64 {
-    host_available().or_else(host_memory).unwrap_or(u64::MAX)
-}
-
-/// The host's physical memory, in bytes.
-#[cfg(unix)]
-pub(crate) fn host_memory() -> Option<u64> {
-    // SAFETY: sysconf(3) with constant arguments.
-    let (pages, size) = unsafe {
-        (
-            libc::sysconf(libc::_SC_PHYS_PAGES),
-            libc::sysconf(libc::_SC_PAGESIZE),
-        )
-    };
-    u64::try_from(pages).ok()?.checked_mul(u64::try_from(size).ok()?)
-}
-
-/// The host's physical memory, in bytes (GlobalMemoryStatusEx).
-#[cfg(windows)]
-pub(crate) fn host_memory() -> Option<u64> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    let mut status = MEMORYSTATUSEX {
-        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: a structure of its own length for the call to fill.
-    (unsafe { GlobalMemoryStatusEx(&raw mut status) } != 0).then_some(status.ullTotalPhys)
+/// `mib` up to whole blocks ([`whole_blocks`]).
+fn whole_blocks_up(mib: u64) -> u64 {
+    let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
+    mib.div_ceil(block).saturating_mul(block)
 }
 
 /// A base image as the build resolved it.
@@ -1471,7 +1614,7 @@ impl Bases<'_> {
                 offset,
             }))
         } else if id.starts_with(b"http://") || id.starts_with(b"https://") {
-            let made = self.http_time(id, op.attrs.get(b"http.checksum".as_slice()).map(Vec::as_slice))?;
+            let made = self.http_time(id, &op.attrs)?;
             Ok(made.map(|(secs, nanos)| plan::Epoch {
                 secs,
                 nanos,
@@ -1486,17 +1629,21 @@ impl Bases<'_> {
 
     /// When an HTTP source was made: its Last-Modified where nothing pins its bytes, else
     /// the newest regular file of the archive it is (none where it is no archive).
-    fn http_time(&self, url: &[u8], checksum: Option<&[u8]>) -> Result<Option<(i64, u32)>, String> {
+    fn http_time(
+        &self,
+        url: &[u8],
+        attrs: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<(i64, u32)>, String> {
         let limits = crate::pull::limits()?;
         // Removed, with what it holds, once the time is known.
         let stage = self.store.stage().map_err(|e| e.to_string())?;
-        let checksum = checksum.map(show);
-        let fetched = http::fetch_now(
-            &show(url),
-            checksum.as_deref(),
-            stage.path().join("source"),
-            &limits,
-        )?;
+        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
+        let source = http::Source::Url {
+            url: show(url),
+            checksum: checksum.clone(),
+            reach: http::Reach::of(&show(url), attrs, self.secrets)?,
+        };
+        let fetched = http::fetch_source(source, stage.path().join("source"), &limits)?;
         if checksum.is_none()
             && let Some(t) = fetched.last_modified
         {
@@ -1586,10 +1733,14 @@ impl Bases<'_> {
                     let p = self.progress.borrow();
                     p.live.is_none() && !p.quiet
                 };
-                let report = |event: Event<'_>| {
-                    if let (true, Event::Waiting(notice)) = (plain, event) {
+                let report = |event: Event<'_>| match (plain, event) {
+                    (true, Event::Waiting(notice)) => {
                         let _ = writeln!(std::io::stderr(), "{notice}");
                     }
+                    (true, Event::RanOut(run_out)) => {
+                        let _ = writeln!(std::io::stderr(), "{run_out}");
+                    }
+                    _ => {}
                 };
                 crate::pull::fetch(
                     self.home,
@@ -1956,7 +2107,17 @@ impl policy::Resolve for PolicyMeta<'_, '_> {
             // BuildKit resolves an HTTP source's metadata by fetching it: its digest.
             let limits = crate::pull::limits()?;
             let stage = self.bases.store.stage().map_err(|e| e.to_string())?;
-            let fetched = http::fetch_now(&source.identifier, None, stage.path().join("source"), &limits)?;
+            let attrs = source
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.clone().into_bytes(), v.clone().into_bytes()))
+                .collect();
+            let fetch = http::Source::Url {
+                url: source.identifier.clone(),
+                checksum: None,
+                reach: http::Reach::of(&source.identifier, &attrs, self.bases.secrets)?,
+            };
+            let fetched = http::fetch_source(fetch, stage.path().join("source"), &limits)?;
             // A ChecksumRequest: the content, then the suffix, hashed as asked.
             let signature_checksum = match &request.http_checksum {
                 None => None,
@@ -2046,10 +2207,14 @@ fn proxy_provenance(
 }
 
 /// buildx's main: each message of a policy's refusal, before the error
-/// (policysession.DenyMessages).
-fn policy_said(messages: &[String]) {
-    for m in messages.iter().filter(|m| !m.is_empty()) {
+/// (policysession.DenyMessages); a decision's told to shards-api too (D263).
+fn policy_said(progress: &Progress, r: &policy::Refused) {
+    let said: Vec<String> = r.messages.iter().filter(|m| !m.is_empty()).cloned().collect();
+    for m in &said {
         let _ = writeln!(std::io::stderr(), "Policy: {m}");
+    }
+    if r.denied() {
+        progress.tell_policy(&said);
     }
 }
 
@@ -2456,6 +2621,11 @@ fn stored_at(path: &Path) -> Option<Time> {
 }
 
 /// An HTTP source's identifier: its URL.
+/// Whether a source is an S3 object's (D54).
+fn is_s3(identifier: &[u8]) -> bool {
+    identifier.starts_with(b"s3://")
+}
+
 fn is_http(identifier: &[u8]) -> bool {
     identifier.starts_with(b"https://") || identifier.starts_with(b"http://")
 }
@@ -2927,7 +3097,9 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         "rawjson" => return Err("--progress=rawjson is not supported by shards yet".into()),
         other => return Err(format!("invalid progress mode {other:?}")),
     };
-    let quiet = parsed.bool("quiet") || mode == "quiet";
+    // A build for shards-api tells its progress as events, and shows no display (D263).
+    let events = API_EVENTS.load(std::sync::atomic::Ordering::Relaxed);
+    let quiet = parsed.bool("quiet") || mode == "quiet" || events;
     let host = host_platform();
     let progress = RefCell::new(Progress {
         quiet,
@@ -2943,6 +3115,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         recapped: std::cell::Cell::new(false),
         current: std::cell::Cell::new(0),
         epilogue: RefCell::new(String::new()),
+        events,
     });
     // Said once of a build of several platforms, not again by each platform's.
     if !multi::active() {
@@ -3073,7 +3246,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             policy_step.close();
         }
         progress.borrow().recap();
-        policy_said(&r.messages);
+        policy_said(&progress.borrow(), &r);
         format!("failed to build: {e}")
     };
     let beside_local = fetched_dockerfile.is_none();
@@ -3396,12 +3569,13 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             }
             progress.borrow().recap();
             if let Some(r) = refusal {
-                policy_said(&r.messages);
+                policy_said(&progress.borrow(), &r);
             }
             let mut out = String::new();
             for loc in &e.location {
                 out.push_str(&excerpt(&name, &text, loc));
             }
+            progress.borrow().tell_at(&e.location);
             let _ = write!(std::io::stderr(), "{out}");
             print_warnings(&e.warnings, quiet, debug, &name, &text);
             return Err(format!("failed to build: failed to solve: {message}"));
@@ -3580,23 +3754,28 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
     }
     // Every HTTP source is fetched from the start, as BuildKit's solver fetches them (D33); a
     // step waits only for the one it reads.
-    let sources: Vec<(usize, String, Option<String>)> = def
-        .ops
-        .iter()
-        .enumerate()
-        .filter_map(|(i, op)| match &op.kind {
+    let mut sources: Vec<(usize, http::Source)> = Vec::new();
+    for (i, op) in def.ops.iter().enumerate() {
+        match &op.kind {
             OpKind::Source { identifier, attrs }
                 if is_http(identifier) && !given.iter().any(|g| g.identifier == *identifier) =>
             {
-                Some((
+                let url = show(identifier);
+                sources.push((
                     i,
-                    show(identifier),
-                    attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
-                ))
+                    http::Source::Url {
+                        reach: http::Reach::of(&url, attrs, &secrets)?,
+                        url,
+                        checksum: attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                    },
+                ));
             }
-            _ => None,
-        })
-        .collect();
+            OpKind::Source { identifier, attrs } if is_s3(identifier) => {
+                sources.push((i, http::Source::S3(s3::Object::of(identifier, attrs, &secrets)?)));
+            }
+            _ => {}
+        }
+    }
     let dir = if sources.is_empty() {
         PathBuf::new()
     } else {
@@ -3740,6 +3919,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
             for loc in &meta.locations {
                 epilogue.push_str(&excerpt(&dockerfile_name, &text, loc));
             }
+            p.tell_at(&meta.locations);
             *p.epilogue.borrow_mut() = epilogue;
             format!("failed to build: failed to solve: {stage}{why}")
         };
@@ -3966,7 +4146,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 progress.borrow().done(&v);
                 vec![r]
             }
-            OpKind::Source { identifier, attrs } if is_http(identifier) => {
+            OpKind::Source { identifier, attrs } if is_http(identifier) || is_s3(identifier) => {
                 let v = progress.borrow_mut().start(&name);
                 let download = match downloads.take(i) {
                     Ok(d) => d,
@@ -3983,11 +4163,21 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 };
                 let file = attrs
                     .get(b"http.filename".as_slice())
+                    .or_else(|| attrs.get(b"s3.filename".as_slice()))
                     .ok_or_else(|| fail(&v, "an HTTP source without a file name"))?;
+                if let Some(signed) = &download.signed {
+                    progress
+                        .borrow()
+                        .line(&v, &format!("{}: {signed}", show(identifier)));
+                }
                 let pin = download.digest.to_string();
                 let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
+                let uri = match &download.served_as {
+                    Some(served) => format!("{}?{served}", show(identifier)),
+                    None => show(identifier),
+                };
                 http_materials.push(provenance::Material {
-                    uri: redact_credentials(&show(identifier)),
+                    uri: redact_credentials(&uri),
                     algorithm: algorithm.to_string(),
                     hex: hex.to_string(),
                 });
@@ -4201,12 +4391,18 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                         false => Some(bases.emulators(&limits).map_err(|e| fail(&v, &e))?),
                     };
                     let needs = needs_path(&home);
+                    let cpus = builder_cpus();
+                    let identity = builder_identity(&guest.0, &guest.1, cpus);
+                    let (memory_mib, boot_mib) =
+                        builder_memory_mib(&needs, &identity).map_err(|e| fail(&v, &e.to_string()))?;
                     let boot = builder::Boot {
                         home: &home,
                         kernel: &guest.0,
                         init: &guest.1,
-                        cpus: builder_cpus(),
-                        memory_mib: builder_memory_mib(&needs),
+                        cpus,
+                        memory_mib,
+                        boot_mib,
+                        identity: &identity,
                         bases: &run_bases,
                         proxy: build_proxy.as_ref(),
                         gpu,
@@ -6231,6 +6427,53 @@ fn frontend_attrs(
     Ok(a)
 }
 
+/// A source the planner made: its identifier and attributes.
+#[cfg(test)]
+pub(crate) type PlannedSource = (Vec<u8>, BTreeMap<Vec<u8>, Vec<u8>>);
+
+/// The fetched sources (http(s), Git, s3) of the Agentfile `FROM alpine` and `lines`, as the
+/// planner makes them: each identifier and its attributes, in the graph's order.
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+pub(crate) fn planned_sources(lines: &str) -> Vec<PlannedSource> {
+    struct Alpine;
+    impl Resolver for Alpine {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: shards_agentfile::parser::Dialect::Agentfile,
+        ..Default::default()
+    };
+    let built = plan::plan(format!("FROM alpine\n{lines}\n").as_bytes(), &opts, &Alpine).unwrap();
+    built
+        .graph
+        .vertices
+        .iter()
+        .filter_map(|v| match &v.kind {
+            shards_agentfile::llb::Kind::Source { identifier, attrs }
+                if [b"http://".as_slice(), b"https://", b"git://", b"s3://"]
+                    .iter()
+                    .any(|s| identifier.starts_with(s)) =>
+            {
+                Some((identifier.clone(), attrs.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// [`frontend_attrs`] of a build given `flags` alone: a named context's directory taken
 /// as one, by its name, wherever it is.
 #[cfg(test)]
@@ -6439,16 +6682,26 @@ fn redact_credentials(url: &str) -> String {
 
 #[cfg(test)]
 mod memory_tests {
-    use super::{Needed, builder_most};
+    use super::{HostMemoryUnread, Needed, builder_boot, builder_most};
 
     const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+
+    fn needed(most: u64, short: bool) -> Needed {
+        Needed {
+            most,
+            short,
+            boots: Vec::new(),
+        }
+    }
 
     /// A builder's ceiling comes from its host and its home (D133), in whole blocks: with
     /// no build recorded, what the host has available as it starts; past that, the most a
     /// build of its home needed; all the host's memory once a build was ended short of it,
-    /// as a run with no limit may have (D148); never past the host's memory nor below what
-    /// a builder boots with. Hosts: a Windows runner's 16 GiB less what Windows keeps back
-    /// (CI run 38274751000), CI's runners, a Mac Studio's, Fedora's, a size of no whole MiB.
+    /// as a run with no limit may have (D148), or where what is available holds no block;
+    /// never past the host's memory nor below what its guest was learned to boot with. Hosts:
+    /// a Windows runner's 16 GiB less what Windows keeps back (CI run 38274751000), CI's
+    /// runners, a Mac Studio's, Fedora's, a size of no whole MiB.
     #[test]
     fn a_builders_ceiling_comes_from_its_host_and_its_homes_builds() {
         let block = shards_vmm::devices::virtio::mem::BLOCK >> 20;
@@ -6463,42 +6716,31 @@ mod memory_tests {
             128 * GIB,
             64 * GIB + 4096,
         ];
+        let most = |host, available, n: &Needed| builder_most(Some(host), available, n, None).unwrap();
         for host in hosts {
             let available = host / 3 + 4096;
-            let cold = builder_most(Some(host), Some(available), Needed::default());
+            let cold = most(host, Some(available), &Needed::default());
             assert_eq!(
                 cold,
                 whole(available),
                 "{host}: the cold start is what is available"
             );
-            let less = Needed {
-                most: available / 2,
-                short: false,
-            };
-            assert_eq!(builder_most(Some(host), Some(available), less), cold, "{host}");
-            let more = Needed {
-                most: available + 2 * GIB,
-                short: false,
-            };
             assert_eq!(
-                builder_most(Some(host), Some(available), more),
+                most(host, Some(available), &needed(available / 2, false)),
+                cold,
+                "{host}"
+            );
+            assert_eq!(
+                most(host, Some(available), &needed(available + 2 * GIB, false)),
                 whole(available + 2 * GIB),
                 "{host}"
             );
-            let past = Needed {
-                most: host + GIB,
-                short: false,
-            };
             assert_eq!(
-                builder_most(Some(host), Some(available), past),
+                most(host, Some(available), &needed(host + GIB, false)),
                 whole(host),
                 "{host}"
             );
-            let short = Needed {
-                most: available / 2,
-                short: true,
-            };
-            let all = builder_most(Some(host), Some(available), short);
+            let all = most(host, Some(available), &needed(available / 2, true));
             assert_eq!(
                 all,
                 super::whole_blocks(crate::run::sizes(&unlimited, Some(host)).2),
@@ -6506,55 +6748,91 @@ mod memory_tests {
             );
             assert!(all << 20 <= host && (host >> 20) - all < block, "{host}");
             assert_eq!(
-                builder_most(Some(host), None, Needed::default()),
+                most(host, None, &Needed::default()),
                 all,
                 "{host}: none known available"
             );
             assert_eq!(
-                builder_most(Some(host), Some(0), Needed::default()),
-                512,
+                most(host, Some(0), &Needed::default()),
+                all,
+                "{host}: none available"
+            );
+            // Never below what its guest boots with.
+            let learned = 3 * GIB;
+            assert_eq!(
+                builder_most(Some(host), Some(GIB), &Needed::default(), Some(learned)).unwrap(),
+                whole(learned.min(host)),
                 "{host}"
             );
         }
+    }
+
+    /// Where the host's memory cannot be read, a builder may have what its home recorded,
+    /// the most a build needed or what its guest boots with, in whole blocks; with nothing
+    /// recorded it is refused, typed, never given a guessed size (memory-15): it was 512 MiB.
+    #[test]
+    fn a_builder_on_a_host_of_unread_memory_has_what_its_home_recorded_or_is_refused() {
         assert_eq!(
-            builder_most(
-                None,
-                Some(8 * GIB),
-                Needed {
-                    most: 4 * GIB,
-                    short: true
-                }
-            ),
-            512
+            builder_most(None, Some(8 * GIB), &needed(4 * GIB, true), None),
+            Ok(4096)
+        );
+        assert_eq!(
+            builder_most(None, None, &Needed::default(), Some(300 * MIB + 1)),
+            Ok(super::whole_blocks_up(301))
+        );
+        assert_eq!(
+            builder_most(None, Some(8 * GIB), &Needed::default(), None),
+            Err(HostMemoryUnread)
         );
     }
 
-    /// A home's record of its builds' needs keeps the most any needed and whether any was
-    /// ended short, whatever order builds end in; a record that does not read is the cold
-    /// start's.
+    /// A builder boots with what its home learned its guest needs as it starts, in whole
+    /// blocks within its ceiling; with nothing learned of this guest, all it may have, which
+    /// always boots (memory-15): never a chosen floor, which was 512 MiB whatever the guest.
+    #[test]
+    fn a_builder_boots_with_what_its_guest_was_learned_to_need_else_all_it_may_have() {
+        let up = super::whole_blocks_up;
+        assert_eq!(builder_boot(16_384, None), 16_384);
+        assert_eq!(builder_boot(16_384, Some(300 * MIB)), up(300));
+        assert_eq!(builder_boot(16_384, Some(700 * MIB + 1)), up(701));
+        assert!(up(701) >= 701);
+        assert_eq!(builder_boot(256, Some(GIB)), 256);
+        // Learned from a guest booted with 16 GiB whose kernel had 15.7 GiB of it: past
+        // MemTotal its image and its page structures, 256 MiB; it needed 372 MiB held.
+        let booted = 16 * GIB;
+        let total = booted - 300 * MIB;
+        let need = super::boot_need(booted, total, 372 * MIB);
+        // 44 MiB of image stays, 416 MiB with what it needs, and its own page structures:
+        // the least b with b - b/64 >= 416 MiB.
+        assert_eq!(need, (416 * MIB * 64).div_ceil(63));
+        assert!(need - need / 64 >= 416 * MIB);
+        assert_eq!(builder_boot(16_384, Some(need)), up(need.div_ceil(MIB)));
+        assert!(builder_boot(16_384, Some(need)) < 16_384 / 8);
+    }
+
+    /// A home's record of its builds' needs keeps the most any needed, whether any was
+    /// ended short, and the most each guest was learned to need to boot, whatever order
+    /// builds end in; a record that does not read is the cold start's.
     #[test]
     fn a_homes_record_keeps_the_most_its_builds_needed() {
         let dir = shards_testdir::TempDir::new("needs").unwrap();
         let path = super::needs_path(&dir);
         assert_eq!(Needed::read(&path), Needed::default());
-        super::record_need(&path, 3 * GIB, false).unwrap();
-        super::record_need(&path, GIB, false).unwrap();
-        assert_eq!(
-            Needed::read(&path),
-            Needed {
-                most: 3 * GIB,
-                short: false
-            }
-        );
-        super::record_need(&path, 2 * GIB, true).unwrap();
-        super::record_need(&path, 5 * GIB, false).unwrap();
-        assert_eq!(
-            Needed::read(&path),
-            Needed {
-                most: 5 * GIB,
-                short: true
-            }
-        );
+        super::record_need(&path, 3 * GIB, false, ("a", 400 * MIB)).unwrap();
+        super::record_need(&path, GIB, false, ("a", 300 * MIB)).unwrap();
+        super::record_need(&path, GIB, false, ("b", 500 * MIB)).unwrap();
+        let read = Needed::read(&path);
+        assert_eq!((read.most, read.short), (3 * GIB, false));
+        assert_eq!(read.boot_for("a"), Some(400 * MIB));
+        assert_eq!(read.boot_for("b"), Some(500 * MIB));
+        assert_eq!(read.boot_for("c"), None);
+        super::record_need(&path, 2 * GIB, true, ("a", 100 * MIB)).unwrap();
+        super::record_need(&path, 5 * GIB, false, ("b", 200 * MIB)).unwrap();
+        let read = Needed::read(&path);
+        assert_eq!((read.most, read.short), (5 * GIB, true));
+        assert_eq!(read.boot_for("a"), Some(400 * MIB));
+        // A record that names no guest's boot learns none.
+        assert_eq!(Needed::parse("needed 7\nshort no\n"), needed(7, false));
         std::fs::write(&path, "garbled").unwrap();
         assert_eq!(Needed::read(&path), Needed::default());
         // Builds ending together each count.
@@ -6562,10 +6840,27 @@ mod memory_tests {
         std::thread::scope(|s| {
             for i in 1..=8u64 {
                 let path = &path;
-                s.spawn(move || super::record_need(path, i * GIB, false).unwrap());
+                s.spawn(move || super::record_need(path, i * GIB, false, ("a", i)).unwrap());
             }
         });
         assert_eq!(Needed::read(&path).most, 8 * GIB);
+        assert_eq!(Needed::read(&path).boot_for("a"), Some(8));
+    }
+
+    /// A guest is named by its kernel's and its init's files and its CPUs: another of any
+    /// is another guest, learned afresh; the same is the same.
+    #[test]
+    fn a_builders_guest_is_named_by_its_files_and_cpus() {
+        let dir = shards_testdir::TempDir::new("ident").unwrap();
+        let (k, i) = (dir.join("k"), dir.join("i"));
+        std::fs::write(&k, b"kernel").unwrap();
+        std::fs::write(&i, b"init").unwrap();
+        let id = super::builder_identity(&k, &i, 4);
+        assert_eq!(id, super::builder_identity(&k, &i, 4));
+        assert_ne!(id, super::builder_identity(&k, &i, 8));
+        assert_ne!(id, super::builder_identity(&i, &k, 4));
+        std::fs::write(&k, b"another kernel").unwrap();
+        assert_ne!(id, super::builder_identity(&k, &i, 4));
     }
 
     /// What this host says it has available is some of its memory.
@@ -7087,14 +7382,19 @@ fn solve_context(
                             size: stdin.size,
                             digest: stdin.digest.clone(),
                             last_modified: None,
+                            served_as: None,
+                            signed: None,
                         },
                         None,
                     ),
                     _ => {
                         let path = exec.stage()?.join("context");
-                        let checksum = attrs.get(b"http.checksum".as_slice()).map(|c| show(c));
-                        let d = http::fetch_now(&url, checksum.as_deref(), path, limits)
-                            .map_err(|e| failed(&v, &e))?;
+                        let source = http::Source::Url {
+                            reach: http::Reach::of(&url, attrs, secrets).map_err(|e| failed(&v, &e))?,
+                            url: url.clone(),
+                            checksum: attrs.get(b"http.checksum".as_slice()).map(|c| show(c)),
+                        };
+                        let d = http::fetch_source(source, path, limits).map_err(|e| failed(&v, &e))?;
                         let pin = d.digest.to_string();
                         let (algorithm, hex) = pin.split_once(':').unwrap_or(("sha256", pin.as_str()));
                         let m = provenance::Material {

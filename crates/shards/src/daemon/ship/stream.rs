@@ -744,8 +744,8 @@ impl Conn {
     fn open(to: &To, [write, read]: [Option<Duration>; 2]) -> io::Result<Conn> {
         let tcp = |address: &str| -> io::Result<Counted> {
             let socket = TcpStream::connect(address)?;
-            socket.set_write_timeout(write)?;
-            socket.set_read_timeout(read)?;
+            shards_ipc::timeout_set(socket.set_write_timeout(write))?;
+            shards_ipc::timeout_set(socket.set_read_timeout(read))?;
             Ok(Counted::new(socket))
         };
         Ok(match to {
@@ -766,8 +766,8 @@ impl Conn {
                 #[cfg(windows)]
                 shards_vmm::platform::winsock()?;
                 let socket = UnixStream::connect(path)?;
-                socket.set_write_timeout(write)?;
-                socket.set_read_timeout(read)?;
+                shards_ipc::timeout_set(socket.set_write_timeout(write))?;
+                shards_ipc::timeout_set(socket.set_read_timeout(read))?;
                 Conn::Unix(socket, 0)
             }
         })

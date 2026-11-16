@@ -1,0 +1,22 @@
+# bash docs/research/measurements/borrowed-no-clock/run.sh (via go.sh carrier), kiln run r1936
+# adas-mac-studio-3.local (Darwin 25.2.0, xnu-12377.61.12, arm64), rustc 1.98.1, at e960039cc
+# filter client::borrowed_tests, --test-threads=1; per-test lines for the new tests and each result line
+=== red-today (must fail)
+no_clock::a_pid_that_names_another_process_is_never_followed ... FAILED   (focused.rs:165: Bounds, not DifferentStart)
+no_clock::an_ok_past_a_patience_is_closed_with_one_and_taken_with_none ... FAILED (focused.rs:100: Bounds, not the OK)
+no_clock::the_vm_processs_end_mid_wait_is_refused_exited ... FAILED       (focused.rs:132: Bounds, not Exited)
+test result: FAILED. 9 passed; 3 failed; 2 ignored; 197 filtered out; finished in 0.06s
+=== m1-unwatched (the no-clock handshake waits on its socket alone; must fail)
+no_clock::the_vm_processs_end_mid_wait_is_refused_exited ... FAILED       (while_runs.rs:108: blocked in the kernel past its scale)
+test result: FAILED. 11 passed; 1 failed; 2 ignored; finished in 0.06s
+=== m2-end-unchecked (the hold not checked at a watched handshake's end; must fail)
+no_clock::the_vm_processs_end_mid_wait_is_refused_exited ... FAILED       (focused.rs:132: Borrowed Channel(Closed), not Exited)
+test result: FAILED. 11 passed; 1 failed; 2 ignored; finished in 0.05s
+=== m3-start-unchecked (Held::found's start comparison removed; must fail)
+changed_identity_is_rejected_before_dial ... FAILED                       (focused.rs:90)
+no_clock::a_pid_that_names_another_process_is_never_followed ... FAILED   (while_runs.rs:108: followed, blocked)
+test result: FAILED. 10 passed; 2 failed; 2 ignored; finished in 0.05s
+=== green
+test result: ok. 12 passed; 0 failed; 2 ignored; 197 filtered out; finished in 0.05s
+=== clippy -p shards-api --all-targets -- -D warnings
+Finished; exit 0

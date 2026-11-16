@@ -27,6 +27,9 @@ fn request(stream: &mut impl io::Read, port: u32) {
 #[path = "contract.rs"]
 mod contract;
 
+#[path = "../borrowed-no-clock/focused.rs"]
+mod no_clock;
+
 /// A fixture for one attempt, at a socket of its own: its one dial accepted on a thread of
 /// its own and its CONNECT read, then `then` given the stream. [`Fixture::end`] dials it once
 /// more, which ends a fixture whose attempt never dialed, and joins it.

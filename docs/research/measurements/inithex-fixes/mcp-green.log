@@ -1,0 +1,14 @@
+Source f7d83f73a; kiln r4; adacachy2 Linux x86_64.
+CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/g121-tmp/fix-inithex-v1/target nice -n 10 cargo test -p shards-init mcp::tests -j 4
+running 7 tests
+test mcp::tests::a_runs_mcp_ask_is_its_members_and_its_token ... ok
+test mcp::tests::a_members_socket_is_its_own_beside_its_bridges_mount_point ... ok
+test mcp::tests::bridge_peer_end_releases_open_stdin ... ok
+test mcp::tests::the_bridge_copies_both_ways_each_ending_as_its_source_ends ... ok
+test mcp::tests::bridge_output_failure_releases_open_stdin ... ok
+test mcp::tests::a_members_connection_is_said_as_its_own_then_carried_both_ways ... ok
+test mcp::tests::bridge_half_close_ends_stdout_but_keeps_stdin ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 269 filtered out; finished in 0.00s
+nice -n 10 cargo clippy -p shards-init --all-targets -j 4 -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.38s
+exit_code 0

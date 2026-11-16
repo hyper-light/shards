@@ -79,6 +79,49 @@ pub(crate) fn connect_until(path: &Path, deadline: Option<Instant>) -> io::Resul
     Socket::new(inner)
 }
 
+/// What a [`Socket::read_watched`] or [`Socket::write_watched`] waits on beside its socket:
+/// a process held for its end (`taken::Held::exit`: Linux's pidfd, macOS's kqueue with its
+/// exit registered; on Windows the process's handle), which is readable, or signalled, once
+/// the process has exited.
+#[cfg(unix)]
+pub(crate) type Exit<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub(crate) type Exit<'a> = std::os::windows::io::BorrowedHandle<'a>;
+
+impl Socket {
+    /// A read with no clock that ends at what comes, at the socket's end, or at the end of
+    /// the process `exit` holds: `None` then.
+    pub(crate) fn read_watched(&self, buf: &mut [u8], exit: Exit<'_>) -> io::Result<Option<usize>> {
+        self.watched(waits::READ, exit, || self.read_nowait(buf))
+    }
+
+    /// A write with no clock that ends where the socket takes bytes, at its end, or at the
+    /// end of the process `exit` holds: `None` then.
+    pub(crate) fn write_watched(&self, buf: &[u8], exit: Exit<'_>) -> io::Result<Option<usize>> {
+        self.watched(waits::WRITE, exit, || self.write_nowait(buf))
+    }
+
+    /// Does `op` as far as it goes now and, where it would block, waits for the socket and
+    /// for `exit` together, with no clock: `None` once `exit`'s process has ended.
+    fn watched<T>(
+        &self,
+        which: usize,
+        exit: Exit<'_>,
+        mut op: impl FnMut() -> io::Result<T>,
+    ) -> io::Result<Option<T>> {
+        loop {
+            match op() {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                done => return done.map(Some),
+            }
+            if self.ready_or_exited(which, exit)? {
+                return Ok(None);
+            }
+        }
+    }
+}
+
 pub(crate) fn connect_nowait(path: &Path) -> io::Result<Socket> {
     #[cfg(unix)]
     let inner = unix::connect(path)?;
@@ -297,6 +340,43 @@ mod unix {
         }
     }
 
+    impl Socket {
+        /// Waits in poll(2), with no clock, for it to be readable (`READ`) or writable, or to
+        /// have ended, and for `exit` to be readable, as a pidfd (pidfd_open(2)) and a kqueue
+        /// holding an event (kqueue(2)) are once their process has exited: whether `exit` is.
+        /// An interrupted poll is neither, and its caller asks again.
+        pub(super) fn ready_or_exited(&self, which: usize, exit: super::Exit<'_>) -> io::Result<bool> {
+            let mut fds = [
+                libc::pollfd {
+                    fd: self.inner.as_raw_fd(),
+                    events: if which == READ {
+                        libc::POLLIN
+                    } else {
+                        libc::POLLOUT
+                    },
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: exit.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: poll(2) of two pollfds of ours, of a socket this value holds open and a
+            // descriptor `exit` borrows, with no timeout.
+            let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+            if n < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+                return Ok(false);
+            }
+            let [_, exited] = fds;
+            Ok(exited.revents != 0)
+        }
+    }
+
     /// Sets SO_NOSIGPIPE on `s` (setsockopt(2); the macOS SDK's `sys/socket.h`: "No SIGPIPE
     /// on EPIPE"), so that a write to a gone peer fails EPIPE.
     #[cfg(target_vendor = "apple")]
@@ -377,19 +457,46 @@ impl Socket {
     fn poll_ready(&self, which: usize, ms: i32) -> io::Result<()> {
         self.inner.ready_within(which == waits::WRITE, ms).map(drop)
     }
+
+    /// Waits, with no clock, for it to be readable (`READ`) or writable, or to have ended,
+    /// and for the process `exit` to be signalled, as it is once it has exited: whether it
+    /// is. WSAPoll takes sockets alone, so the socket's readiness is an event
+    /// (WSAEventSelect, FD_READ or FD_WRITE, and FD_CLOSE: signalled at once where the
+    /// condition holds as it is selected), waited on with the process
+    /// (`shards_ipc::await_any`, WaitForMultipleObjects), and let go of after, the socket left
+    /// non-blocking, as `new` made it.
+    fn ready_or_exited(&self, which: usize, exit: Exit<'_>) -> io::Result<bool> {
+        use std::os::windows::io::AsHandle as _;
+        use windows_sys::Win32::Networking::WinSock::{
+            FD_CLOSE, FD_READ, FD_WRITE, WSAEVENT, WSAEventSelect,
+        };
+        let wanted = if which == waits::WRITE { FD_WRITE } else { FD_READ };
+        let wanted = i32::try_from(wanted | FD_CLOSE).map_err(io::Error::other)?;
+        let event = shards_ipc::Event::new()?;
+        // SAFETY: the socket this value holds, and an event of ours, which outlives the
+        // selection: it is let go of below.
+        if unsafe { WSAEventSelect(self.inner.raw(), event.raw() as WSAEVENT, wanted) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let waited = shards_ipc::await_any(&[], &[event.as_handle(), exit], None);
+        // SAFETY: as above: no event of the socket's is set from here on.
+        unsafe { WSAEventSelect(self.inner.raw(), 0, 0) };
+        let (_, signalled) = waited?;
+        Ok(signalled.get(1).copied().unwrap_or(false))
+    }
 }
 
 impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
-        self.waiting(waits::READ, || self.read_nowait(buf))
+        Stream::read_shared(self, buf)
     }
 }
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.waiting(waits::WRITE, || self.write_nowait(buf))
+        Stream::write_shared(self, buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -415,6 +522,18 @@ impl Stream for Socket {
             });
             Ok(Box::from_raw(at.as_ptr()))
         }
+    }
+
+    fn read_shared(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.waiting(waits::READ, || self.read_nowait(buf))
+    }
+
+    fn write_shared(&self, buf: &[u8]) -> io::Result<usize> {
+        self.waiting(waits::WRITE, || self.write_nowait(buf))
+    }
+
+    fn into_socket(self: Box<Self>) -> crate::OwnedSocket {
+        crate::OwnedSocket::from(self.inner)
     }
 
     fn handle(&self) -> crate::Handle<'_> {
@@ -509,6 +628,21 @@ mod tests {
         a.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"late");
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
+    }
+
+    /// A timeout set after its peer answered and closed (PM M579) is taken, as a stream's waits
+    /// are its own (`waits`), no socket option that macOS refuses on an ended socket, and the
+    /// answer is read whole, then its end: an API client reads a fully answered request.
+    #[test]
+    fn a_timeout_set_after_its_peer_answered_and_closed_reads_the_answer() {
+        let (mut a, mut b) = pair().unwrap();
+        b.write_all(b"answer").unwrap();
+        drop(b);
+        Stream::set_read_timeout(&a, Some(Duration::from_secs(5))).unwrap();
+        Stream::set_write_timeout(&a, Some(Duration::from_secs(5))).unwrap();
+        let mut answer = Vec::new();
+        a.read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, b"answer");
     }
 
     #[test]
@@ -692,6 +826,71 @@ mod tests {
         let mut buf = [0u8; 8];
         let n = clone.read(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"now");
+    }
+
+    /// Do: share one stream between two threads as `&dyn Stream`, no clone made: one reads
+    /// what the peer writes while the other writes to it. Expect each way's bytes whole, and
+    /// on Windows the stream's socket, and a clone's, not inheritable, as std's Command would
+    /// hand an inheritable one to every child another thread starts (Hex's audit D-5, PM M582).
+    #[test]
+    fn two_threads_share_a_stream_through_a_reference() {
+        let (a, b) = pair().unwrap();
+        let (a, b): (Box<dyn Stream>, Box<dyn Stream>) = (a.boxed().unwrap(), b.boxed().unwrap());
+        let shared: &dyn Stream = &*a;
+        let (sent, got) = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                let mut got = [0u8; 4];
+                (&*shared).read_exact(&mut got).unwrap();
+                got
+            });
+            let writer = scope.spawn(|| (&*shared).write_all(b"from").unwrap());
+            (&*b).write_all(b"to a").unwrap();
+            writer.join().unwrap();
+            let mut sent = [0u8; 4];
+            (&*b).read_exact(&mut sent).unwrap();
+            (sent, reader.join().unwrap())
+        });
+        assert_eq!((&sent, &got), (b"from", b"to a"));
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket as _;
+            let inheritable = |s: crate::Handle<'_>| {
+                let mut flags = 0u32;
+                // SAFETY: a socket the stream holds open, and a u32 for the call to fill.
+                let ok = unsafe {
+                    windows_sys::Win32::Foundation::GetHandleInformation(
+                        s.as_raw_socket() as windows_sys::Win32::Foundation::HANDLE,
+                        &raw mut flags,
+                    )
+                };
+                assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+                flags & windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT != 0
+            };
+            let clone = Stream::try_clone(&*a).unwrap();
+            assert!(!inheritable(a.handle()), "the stream's socket");
+            assert!(!inheritable(clone.handle()), "its clone's");
+        }
+    }
+
+    /// Do: take a stream's socket. Expect the same connection, owned by the caller: bytes
+    /// written to it reach the peer, and the peer's reach it.
+    #[test]
+    fn a_streams_socket_is_handed_over() {
+        let (a, mut b) = pair().unwrap();
+        let socket = a.boxed().unwrap().into_socket();
+        #[cfg(unix)]
+        let taken = std::os::unix::net::UnixStream::from(socket);
+        #[cfg(windows)]
+        let taken = shards_afunix::UnixStream::from(socket);
+        taken.set_nonblocking(false).unwrap();
+        (&taken).write_all(b"taken").unwrap();
+        let mut got = [0u8; 5];
+        b.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"taken");
+        b.write_all(b"back").unwrap();
+        let mut back = [0u8; 4];
+        (&taken).read_exact(&mut back).unwrap();
+        assert_eq!(&back, b"back");
     }
 
     /// A clone is the same connection: what one writes the peer reads (D215).

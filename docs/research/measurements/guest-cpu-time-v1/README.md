@@ -88,6 +88,9 @@ keyed by vCPU index, not a fixed array; a departed vCPU stays in a monotone tota
     CONFIG_HZ=1000, CONFIG_VIRT_CPU_ACCOUNTING_GEN=y, no nohz_full CPUs asked for, so tick accounting). Each
     thread's value can run up to one scheduler tick ahead of its precise runtime (whole-tick charges), and the
     ticks are sampled, so short windows are coarse. ROOT's real-VM test reads the step size live.
+  - Bounded by its thread's runtime since #77 (D260's amendment): what is read is the less of field 43 and the
+    vCPU thread's own CPU-time clock, read after it, so a whole-tick charge never says more than the thread ran,
+    and the process's CPU-time clock, read later, holds it.
 
 ### WHP
 

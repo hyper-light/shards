@@ -420,6 +420,19 @@ pub struct Prepared {
     pub layer: u64,
 }
 
+impl Prepared {
+    /// The most memory its guest may plug past what it boots with, in bytes (D148): its
+    /// [`memory_max`](Self::memory_max) less its boot's, none where it boots with all of it.
+    /// Every request that hands a microVM its run carries it (`RunHead::plug`), the daemon's,
+    /// a visit's and an orchestrator's alike: its VM sets it as its guest's most before the
+    /// guest hears of the run, and a VM told none has what it booted with.
+    pub fn plug_bytes(&self) -> u64 {
+        self.memory_max
+            .saturating_sub(self.size.1)
+            .saturating_mul(1 << 20)
+    }
+}
+
 /// What a run's writable layer holds unless it asks for another size (D190,
 /// `--storage-opt size`): Docker's device-mapper driver's default for a container's base
 /// device, a block device's writable layer as a microVM's is (dockerd's `dm.basesize`,
@@ -604,6 +617,11 @@ pub fn find_image(
                 Event::Present(d) => say(&format!("{}: Already exists", short(&d.to_string()))),
                 // What the pull waits on (D184).
                 Event::Waiting(notice) => say(notice),
+                // A trouble that ran out, told once, as the pull goes on (D222).
+                Event::RanOut(run_out) => {
+                    crate::daemon::log(run_out);
+                    say(&run_out.to_string());
+                }
                 Event::Manifest(..)
                 | Event::Progress(..)
                 | Event::Building
@@ -1224,6 +1242,15 @@ impl Shape<'_> {
             cfg.share_window_mib = cfg.share_window_mib.min(bound);
         }
         cfg.pci_slots = self.pci_slots;
+        // And a components' window where it has slots to plug a component's pmem function
+        // into (D270): as long as the host's memory, the most of the components' files its
+        // page cache holds at once, as its swap window is (D159); nothing of it mapped until
+        // one is plugged.
+        cfg.component_window_mib = if self.pci_slots > 0 {
+            host_mib.unwrap_or(0)
+        } else {
+            0
+        };
         if let Some(bridge) = self.bridge {
             cfg.cmdline.push(' ');
             cfg.cmdline.push_str(&bridge.cmdline());
@@ -1298,6 +1325,12 @@ pub fn boot_args(cfg: &Config, rootfs: &Path, save: Option<&Path>, link: &str) -
         if cfg.pci_slots_iommu {
             args.push("--pci-slots-iommu".into());
         }
+    }
+    if cfg.component_window_mib > 0 {
+        args.extend([
+            "--component-window".into(),
+            cfg.component_window_mib.to_string().into(),
+        ]);
     }
     // The CPU baseline its guest is told (D176 part 6).
     if !cfg.cpu_baseline.is_empty() {
@@ -2064,6 +2097,7 @@ mod tests {
         assert!(bound < 4096);
         assert_eq!(cfg.share_window_mib, bound);
         assert_eq!(cfg.pci_slots, 4);
+        assert_eq!(cfg.component_window_mib, 8192);
         assert_eq!(
             cfg.cmdline,
             format!(
@@ -2083,7 +2117,10 @@ mod tests {
         };
         let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
         unknown.give(&mut cfg);
-        assert_eq!((cfg.hotplug_mib, cfg.swap_mib), (0, 0));
+        assert_eq!(
+            (cfg.hotplug_mib, cfg.swap_mib, cfg.component_window_mib),
+            (0, 0, 0)
+        );
         assert_eq!(cfg.cmdline, base);
         assert!(cfg.pmem.is_empty() && cfg.shares.is_empty());
         assert_eq!(cfg.share_window_mib, 4096);
@@ -2095,7 +2132,10 @@ mod tests {
 
     /// A boot's words are its config's, in the order the daemon gave them before they were
     /// shared (D253): every one a run's microVM may have, then its join disk and share and its
-    /// link; a config of none of them has those alone.
+    /// link; a config of none of them has those alone. Every flag given a value is one `run`
+    /// reads a value after (`spec::RUN_VALUED`, which vm_run's `valued_flags_need_their_values`
+    /// holds to `run`): D270's components' window, unlisted, refused every orchestrator's
+    /// image boot, "--component-window needs a value".
     #[test]
     fn a_boots_words_are_its_configs() {
         let mut cfg = Config::new("/k/vmlinux".into(), Some("/k/init".into()));
@@ -2110,6 +2150,7 @@ mod tests {
         cfg.share_window_mib = 870;
         cfg.pci_slots = 4;
         cfg.pci_slots_iommu = true;
+        cfg.component_window_mib = 8192;
         #[cfg(target_arch = "aarch64")]
         let baseline: shards_vmm::arch::cpu::Id = vec![(0xc000, 0x11)];
         #[cfg(target_arch = "x86_64")]
@@ -2152,6 +2193,8 @@ mod tests {
                 "--pci-slots",
                 "4",
                 "--pci-slots-iommu",
+                "--component-window",
+                "8192",
                 "--cpu-baseline",
                 encoded.as_str(),
                 "--join",
@@ -2160,6 +2203,17 @@ mod tests {
                 "3",
             ]
         );
+        for pair in words(&args).windows(2) {
+            if let [flag, value] = pair
+                && flag.starts_with("--")
+                && !value.starts_with("--")
+            {
+                assert!(
+                    crate::spec::RUN_VALUED.contains(flag),
+                    "{flag} {value}: not a flag run reads a value after"
+                );
+            }
+        }
         let plain = Config::new("/k/vmlinux".into(), None);
         let memory = shards_vmm::vm::MEMORY_MIB.to_string();
         assert_eq!(

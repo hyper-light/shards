@@ -1,0 +1,55 @@
+# kiln run r1753 (on: adacachy2), cwd a carrier, `bash memory-18-run.sh ee3cf6fe9c7b` (nice -n 10, cold target under ~/g121-tmp/m18)
+# Its refused-release-detaches mutant was the Malformed/Refused swap, killed by the "empty" case; the guard-only mutant ran on macOS (r1779).
+ee3cf6fe memory-18: a refused RELEASE keeps its share and still forgets its entry; a held node's refused LOOKUP keeps the guest's reference
+Linux adacachy2 7.3.3-1-cachyos #1 SMP PREEMPT_DYNAMIC Sat, 07 Nov 2026 18:39:10 +0000 x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+=== green: devices::virtio::fs
+test result: ok. 89 passed; 0 failed; 1 ignored; 0 measured; 444 filtered out; finished in 2.06s
+green exit 0
+=== green: memory-18 tests by name
+test devices::virtio::fs::server::tests::refusing_an_open_preserves_the_guests_earlier_node_handle_and_pin ... ok
+test devices::virtio::fs::server::tests::a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference ... ok
+test devices::virtio::fs::server::tests::refused_lookups_leave_the_held_count_unchanged ... ok
+test devices::virtio::fs::server::tests::refused_creates_leave_the_held_count_unchanged ... ok
+test devices::virtio::fs::server::tests::a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not ... ok
+test devices::virtio::fs::server::tests::refused_directory_replies_release_their_entries_and_new_handle_only ... ok
+test devices::virtio::fs::server::tests::replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 527 filtered out; finished in 0.01s
+=== clippy
+clippy exit 0
+=== mutant red-no-cleanup
+  a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference: left (2, 10, 0, 0, 0) right (2, 2, 0, 0, 0)
+  refused_lookups_leave_the_held_count_unchanged: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+  replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+  refused_directory_replies_release_their_entries_and_new_handle_only: left (4, 25, 9, 9, 0) right (1, 1, 1, 1, 0)
+  refused_creates_leave_the_held_count_unchanged: left (9, 9, 8, 8, 0) right (1, 1, 0, 0, 0)
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 529 filtered out
+MUTANT red-no-cleanup: KILLED (exit 101)
+=== mutant no-forget
+  a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference: left (2, 10, 0, 0, 0) right (2, 2, 0, 0, 0)
+  refused_lookups_leave_the_held_count_unchanged: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+  refused_directory_replies_release_their_entries_and_new_handle_only: left (4, 25, 1, 1, 0) right (1, 1, 1, 1, 0)
+  refused_creates_leave_the_held_count_unchanged: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+MUTANT no-forget: KILLED (exit 101)
+=== mutant forget-two
+  a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference panicked at server.rs:3376:17
+MUTANT forget-two: KILLED (exit 101)
+=== mutant no-release
+  refused_directory_replies_release_their_entries_and_new_handle_only: left (1, 1, 9, 9, 0) right (1, 1, 1, 1, 0)
+  refused_creates_leave_the_held_count_unchanged: left (1, 1, 8, 8, 0) right (1, 1, 0, 0, 0)
+MUTANT no-release: KILLED (exit 101)
+=== mutant scatter-short-ok
+  replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+MUTANT scatter-short-ok: KILLED (exit 101)
+=== mutant scatter-no-refuse
+  replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held: left (9, 9, 0, 0, 0) right (1, 1, 0, 0, 0)
+MUTANT scatter-no-refuse: KILLED (exit 101)
+=== mutant keep-broken-conn
+  a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not panicked at server.rs:3505:21
+MUTANT keep-broken-conn: KILLED (exit 101)
+=== mutant refused-release-no-forget
+  worker panicked at server.rs:3485:29 (left 1 = LOOKUP, right 2 = FORGET)
+MUTANT refused-release-no-forget: KILLED (exit 101)
+=== mutant refused-release-detaches (Malformed/Refused swap)
+  a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not panicked at server.rs:3505:21 (the "empty" case kept)
+MUTANT refused-release-detaches: KILLED (exit 101)

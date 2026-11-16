@@ -30,10 +30,132 @@ pub const BUILD: &str = "/sys/fs/cgroup/build";
 /// What the memory to plug is asked for in: Linux's memory block with 4 KiB pages
 /// (shards_vmm's `virtio::mem::ALIGN`), which its driver adds memory in.
 const ALIGN: u64 = 128 << 20;
-/// What the kernel needs beside the build that its cgroup is not charged for, and what
-/// the build may pass its `memory.high` by before the kernel's slowing catches it
-/// (PM M193), on top of the page structures of the next memory plugged ([`reserve`]).
-const SLACK: u64 = 64 << 20;
+/// How far the kernel lets a cgroup's charges pass its `memory.high` before it reclaims
+/// at once (D133, memory-11): a task's charges count past the hold until they come to more
+/// than a batch, `MEMCG_CHARGE_BATCH`'s 64 pages, so a task passes it by two charges at
+/// most, each of a batch or of the folio it charges where that is larger (mm/memcontrol.c
+/// `try_charge_memcg`, `memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH`, Linux 7.2-rc4);
+/// one such task on each CPU online. Its largest folio is a PMD's where the kernel has
+/// THP (`hpage_pmd_size`, which the pinned kernel's config has), else 2^8 pages
+/// (include/linux/pagemap.h `PREFERRED_MAX_PAGECACHE_ORDER`), never past
+/// `MAX_XAS_ORDER`'s 2^11 pages.
+fn overshoot() -> u64 {
+    overshoot_of(online_cpus(), page_size(), number(PMD_SIZE))
+}
+
+/// Where the kernel says its PMD's size, which its THP folios are at most.
+const PMD_SIZE: &str = "/sys/kernel/mm/transparent_hugepage/hpage_pmd_size";
+
+/// [`overshoot`] of `cpus` CPUs with pages of `page` bytes and THP folios of at most `pmd`
+/// bytes: where it is unread, a PMD's as its page table has it (a page of 8-byte entries,
+/// each a page), the larger of the two folios without THP and with it, as unread is not
+/// none.
+fn overshoot_of(cpus: u64, page: u64, pmd: Option<u64>) -> u64 {
+    const CHARGE_BATCH: u64 = 64;
+    const MAX_XAS_ORDER: u32 = 11;
+    let page = page.max(1);
+    let pmd = pmd.unwrap_or_else(|| {
+        let order = (page / 8).max(1).ilog2().min(MAX_XAS_ORDER);
+        page.checked_shl(order).unwrap_or(u64::MAX)
+    });
+    let folio = pmd.min(page.checked_shl(MAX_XAS_ORDER).unwrap_or(u64::MAX));
+    CHARGE_BATCH
+        .saturating_mul(page)
+        .max(folio)
+        .saturating_mul(2)
+        .saturating_mul(cpus.max(1))
+}
+
+/// The CPUs online in this guest, one at least.
+fn online_cpus() -> u64 {
+    // SAFETY: sysconf(3) reads a value of the running kernel's.
+    u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1))
+}
+
+/// What the kernel holds beside a held cgroup and charges it none of, as the grower reads it
+/// at a wake: its memory less what is free and what the cgroup holds, and what is plugged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reading {
+    uncharged: u64,
+    plugged: u64,
+}
+
+/// [`Reading`] of `cgroup` in a guest booted with `boot`: none where a file is unread.
+fn reading(cgroup: &str, boot: u64) -> Option<Reading> {
+    let current = number(&format!("{cgroup}/memory.current"))?;
+    let (total, free) = memory().ok()?;
+    Some(Reading {
+        uncharged: total.saturating_sub(free).saturating_sub(current),
+        plugged: total.saturating_sub(boot),
+    })
+}
+
+/// What the kernel adds beside a held cgroup and charges it none of, learned by its grower
+/// at each wake (D133, memory-11): the most it rose between two wakes, less the page
+/// structures of what was plugged between them (a 64th, which [`reserve`] counts apart).
+/// Its cold start, before any rise is seen, is what the kernel holds beside the cgroup as it
+/// is held: its use so far standing for what it adds (Gott, Nature 363, 1993, D215's `w`).
+/// A wake whose files are unread keeps what it had, never none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Uncharged {
+    most: u64,
+    last: Option<Reading>,
+}
+
+impl Uncharged {
+    /// Learning from `most`, the cold start or what was learned before, the last reading
+    /// `last`.
+    fn begun(most: u64, last: Option<Reading>) -> Uncharged {
+        Uncharged { most, last }
+    }
+
+    /// A wake that read `now`: what it has learned so far.
+    fn woke(&mut self, now: Option<Reading>) -> u64 {
+        if let Some(now) = now {
+            if let Some(last) = self.last {
+                let memmap = now.plugged.saturating_sub(last.plugged) / 64;
+                let rose = now
+                    .uncharged
+                    .saturating_sub(last.uncharged)
+                    .saturating_sub(memmap);
+                self.most = self.most.max(rose);
+            }
+            self.last = Some(now);
+        }
+        self.most
+    }
+}
+
+/// Says what the kernel adds beside a held cgroup, as far as learned ([`Uncharged`]), to
+/// every process that shares [`CAP`]'s page.
+fn publish_uncharged(bytes: u64) {
+    if let Some(s) = CAP.get() {
+        s.uncharged.store(bytes, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// What the kernel keeps beside a held cgroup's `memory.high` past its page structures and
+/// its CPUs' lists ([`reserve`], D133, memory-11): what a cgroup's charges pass its hold by
+/// ([`overshoot`]) and what the kernel adds beside it uncharged ([`Uncharged`]), as its grower
+/// learned it, else, where none shares it, what the kernel holds beside `cgroup` now.
+fn slack(cgroup: &str, boot: u64) -> io::Result<u64> {
+    let learned = CAP
+        .get()
+        .map(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst))
+        .filter(|&u| u != UNLEARNED);
+    let uncharged = match learned {
+        Some(u) => u,
+        None => {
+            reading(cgroup, boot)
+                .ok_or_else(|| err(format!("{cgroup}: what its kernel holds beside it is unread")))?
+                .uncharged
+        }
+    };
+    Ok(overshoot().saturating_add(uncharged))
+}
+
+/// [`Shared::uncharged`] before any hold published it.
+const UNLEARNED: u64 = u64::MAX;
 /// At boot, before any snapshot: a guest reports the memory it holds free to its microVM
 /// (D151) only where its kernel treats what a pass of reporting holds as free memory
 /// (`page_reporting.held`, resources/kernel/patches/0006). One that does not counts up to
@@ -88,11 +210,33 @@ fn let_go_of_balloons(driver: &str) {
     }
 }
 
-/// How long the memory asked for may take to come online, from the last of it that came,
-/// before the process that grows it asks again: a thousand times the 5-7 ms 1 GiB took
-/// (PM M193). Asked again, the device tells its driver again, which then tries what it
-/// could not plug at once, not at its retry timer's 50 s (D137).
-const STALLED: Duration = Duration::from_secs(5);
+/// What the grower has learned in this guest of memory coming online (D137, D209 Part 4):
+/// W*, the slowest a block took to come, from the ask or the block before it, of the blocks
+/// that came. None until the first, kept in the grower's memory for its guest's life. Past
+/// it, a block not come is asked for again, and the device tells its driver again, which
+/// then tries what it could not plug at once, not at its retry timer's 50 s (D137).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Coming {
+    slowest: Option<Duration>,
+}
+
+impl Coming {
+    /// A block came `took` after the ask or the block before it: the slowest rises to it
+    /// where it is slower. A block no time long teaches nothing.
+    fn came(&mut self, took: Duration) {
+        if !took.is_zero() {
+            self.slowest = Some(self.slowest.map_or(took, |s| s.max(took)));
+        }
+    }
+}
+
+/// The pause between looks for something nothing says (D215's pace, `shards_abi::pace`):
+/// `sqrt(2 c w)` of a look's own cost `c` and the time waited so far `w`, the first look at
+/// once (R03, memory-12; it was a millisecond). A pause that runs past it is its guest's or
+/// its host's hold of the looker, which no window counts.
+fn pace(look: Duration, waited: Duration) -> Duration {
+    shards_abi::pace::pause(look, waited, Duration::MAX)
+}
 /// inotify's cost of a watch and epoll's of an item in this kernel, in bytes
 /// (`INOTIFY_WATCH_COST`, `EP_ITEM_COST`): what makes their limits 1:28.17 at every size
 /// the pinned kernel was measured at, 4, 16 and 64 GiB (PM M193).
@@ -106,11 +250,9 @@ const INOTIFY_WATCHES: (u64, u64) = (8192, 1_048_576);
 const TCP_RMEM_MAX: u64 = 32 << 20;
 const TCP_WMEM_MAX: u64 = 4 << 20;
 
-/// The kernel's limits sized by its memory at boot, each in proportion to it (kernel/fork.c
-/// `fork_init`, fs/eventpoll.c `eventpoll_init`, net/ipv4/tcp.c `tcp_init`, net/ipv4/udp.c
-/// `udp_init`), as PM M193 measured them.
-const LINEAR: &[&str] = &[
-    "kernel/threads-max",
+/// The namespaces of each kind a user may make, which the kernel sets to half its threads
+/// at boot (kernel/fork.c `fork_init`, `init_user_ns.ucount_max`).
+const NAMESPACES: &[&str] = &[
     "user/max_user_namespaces",
     "user/max_pid_namespaces",
     "user/max_uts_namespaces",
@@ -119,10 +261,19 @@ const LINEAR: &[&str] = &[
     "user/max_mnt_namespaces",
     "user/max_cgroup_namespaces",
     "user/max_time_namespaces",
-    "fs/epoll/max_user_watches",
-    "net/ipv4/tcp_mem",
-    "net/ipv4/udp_mem",
 ];
+/// A kernel stack, `THREAD_SIZE`: 16 KiB on x86_64 (arch/x86/include/asm/page_64_types.h,
+/// `THREAD_SIZE_ORDER` 2 without KASAN) and on arm64 (arch/arm64/include/asm/memory.h,
+/// `MIN_THREAD_SHIFT` 14 without KASAN, a page where pages are larger with `VMAP_STACK`);
+/// the pinned kernels have no KASAN (resources/kernel).
+fn thread_size() -> u64 {
+    (16 << 10_u64).max(page_size())
+}
+/// A `struct page`'s bytes, one for each page (include/linux/mm_types.h, 64 on 64-bit
+/// kernels without debug options): what a guest's boot takes of its memory for its page
+/// structures, from memblock, never in MemTotal.
+const STRUCT_PAGE: u64 = 64;
+
 /// TCP's orphans and TIME-WAIT sockets, each half its established table's buckets
 /// (net/ipv4/tcp.c `tcp_init`): a bucket for each 128 KiB of the memory rounded up to a
 /// MiB, rounded up to a power of two, at most 512 Ki (mm/mm_init.c
@@ -289,7 +440,85 @@ fn scaled(v: u64, to: u64, from: u64) -> u64 {
     u64::try_from(s).unwrap_or(u64::MAX)
 }
 
+/// What the kernel sizes by the memory it has as it boots, each of a sum of its pages at
+/// the time (PM M193): its threads (kernel/fork.c `set_max_threads`), epoll's items
+/// (fs/eventpoll.c `eventpoll_init`), TCP's and UDP's pages and TCP's buffers, each of its
+/// free buffer pages (net/ipv4/tcp.c `tcp_init_mem`, `tcp_init`; net/ipv4/udp.c
+/// `udp_init`), and its files (fs/file_table.c `files_maxfiles_init`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Limits {
+    threads: u64,
+    epoll: u64,
+    tcp_mem: [u64; 3],
+    udp_mem: [u64; 3],
+    tcp_rmem: [u64; 3],
+    tcp_wmem: [u64; 3],
+    files: u64,
+}
+
+impl Limits {
+    /// What a guest booted with `more` bytes more than this one sizes, by the kernel's own
+    /// formulas of the pages it adds: the memory less its page structures ([`STRUCT_PAGE`]),
+    /// which that guest's boot takes from memblock. Each is this boot's, which the kernel
+    /// sized from what it had at the time, and what the added pages add to it, rounded up,
+    /// so that none is short of that guest's for the floors each formula takes; never
+    /// proportional, which scaled what a boot's kernel counts beside MemTotal by the ratio
+    /// of the memory too (about 17 MiB at every size, PM M193): from a boot of a few hundred
+    /// MiB, a builder's steps had 11% more threads than a guest booted with all of it.
+    /// What the added pages raise beside them (the kernel's watermarks, hash tables and
+    /// what it has used) is left out, so each comes out at or over that guest's.
+    fn raised(&self, more: u64, page: u64, stack: u64) -> Limits {
+        let page = page.max(1);
+        let pages = (more / page).saturating_sub((more / page).saturating_mul(STRUCT_PAGE).div_ceil(page));
+        let bytes = pages.saturating_mul(page);
+        // `limit / 4 * 3`, `limit`, twice the first (`tcp_init_mem`, `udp_init`).
+        let mem = |limit: u64| [limit / 4 * 3, limit, limit / 4 * 3 * 2];
+        // The largest buffer: its free buffer pages' bytes over 128, within `cap`
+        // (`tcp_init`: `nr_free_buffer_pages() << (PAGE_SHIFT - 7)`).
+        let buffer = |[least, default, most]: [u64; 3], cap: u64| {
+            [
+                least,
+                default,
+                most.saturating_add(bytes.div_ceil(128)).min(cap).max(most),
+            ]
+        };
+        Limits {
+            // A thread for each 8 stacks of memory: `nr_pages * PAGE_SIZE / (THREAD_SIZE * 8)`.
+            threads: self
+                .threads
+                .saturating_add(bytes.div_ceil(stack.max(1).saturating_mul(8))),
+            // `((totalram / 25) << PAGE_SHIFT) / EP_ITEM_COST`.
+            epoll: self.epoll.saturating_add(bytes.div_ceil(25 * EP_ITEM_COST)),
+            // A 16th of its free buffer pages, and an 8th.
+            tcp_mem: mem(self.tcp_mem[1].saturating_add(pages.div_ceil(16))),
+            udp_mem: mem(self.udp_mem[1].saturating_add(pages.div_ceil(8))),
+            tcp_rmem: buffer(self.tcp_rmem, TCP_RMEM_MAX),
+            tcp_wmem: buffer(self.tcp_wmem, TCP_WMEM_MAX),
+            files: self.files.saturating_add(bytes.div_ceil(FILE_BYTES)),
+        }
+    }
+}
+
 impl Plug {
+    /// Begins what the kernel adds beside its cgroup uncharged ([`Uncharged`]) with what it
+    /// holds beside it as it is held, where nothing was learned before (a template's
+    /// restores keep what its grower learned).
+    fn learn_uncharged_cold(&self) -> io::Result<()> {
+        let unlearned = CAP
+            .get()
+            .is_some_and(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst) == UNLEARNED);
+        if unlearned {
+            let at_hold = reading(self.cgroup, self.boot).ok_or_else(|| {
+                err(format!(
+                    "{}: what its kernel holds beside it is unread",
+                    self.cgroup
+                ))
+            })?;
+            publish_uncharged(at_hold.uncharged);
+        }
+        Ok(())
+    }
+
     /// MemTotal with all of it plugged: each page plugged is the kernel's, its page
     /// structures taken from what it has.
     pub fn full(&self) -> u64 {
@@ -304,64 +533,65 @@ impl Plug {
         tmpfs_holding(self.full())
     }
 
-    /// Raises what the kernel sized by the memory it booted with to what it sizes by all
-    /// of it: each limit in proportion to the memory scaled by their ratio; files by the
-    /// memory added; TCP's buffers within their caps; TCP's orphans and TIME-WAIT buckets
-    /// by its table's sizing; inotify's watches, which the kernel holds at 8192 below
-    /// about 1 GiB, in their proportion to epoll's items, within their clamps; and init's
-    /// RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1 (`fork_init`), which
-    /// every step inherits. Its processes are Docker's, unlimited (`defaults::limits`,
-    /// PM M211), not the kernel's.
+    /// Raises what the kernel sized by the memory it booted with to what it sizes in a guest
+    /// booted with all of it ([`Limits::raised`]), each read and written back in its sysctl;
+    /// and init's RLIMIT_SIGPENDING, half the threads, as the kernel gives PID 1
+    /// (`fork_init`), which every step inherits. Its processes are Docker's, unlimited
+    /// (`defaults::limits`, PM M211), not the kernel's.
     pub fn raise_limits(&self) -> io::Result<()> {
-        let (to, from) = (self.full(), self.boot);
         let sysctl = |name: &str| format!("/proc/sys/{name}");
-        for name in LINEAR {
+        let read = |name: &str| -> io::Result<Vec<u64>> {
             let path = sysctl(name);
-            let now = std::fs::read_to_string(&path).map_err(|e| err(format!("{path}: {e}")))?;
-            let raised: Vec<String> = now
-                .split_whitespace()
-                .map(|v| v.parse::<u64>().map(|v| scaled(v, to, from).to_string()))
-                .collect::<Result<_, _>>()
-                .map_err(|e| err(format!("{path}: {e}")))?;
-            std::fs::write(&path, raised.join(" ")).map_err(|e| err(format!("{path}: {e}")))?;
-        }
-        for (name, cap) in [
-            ("net/ipv4/tcp_rmem", TCP_RMEM_MAX),
-            ("net/ipv4/tcp_wmem", TCP_WMEM_MAX),
-        ] {
-            let path = sysctl(name);
-            let now = std::fs::read_to_string(&path).map_err(|e| err(format!("{path}: {e}")))?;
-            let mut values: Vec<u64> = now
+            std::fs::read_to_string(&path)
+                .map_err(|e| err(format!("{path}: {e}")))?
                 .split_whitespace()
                 .map(str::parse)
                 .collect::<Result<_, _>>()
-                .map_err(|e| err(format!("{path}: {e}")))?;
-            if let Some(max) = values.last_mut() {
-                *max = scaled(*max, to, from).min(cap).max(*max);
-            }
+                .map_err(|e| err(format!("{path}: {e}")))
+        };
+        let one = |name: &str| -> io::Result<u64> {
+            read(name)?
+                .first()
+                .copied()
+                .ok_or_else(|| err(format!("{}: empty", sysctl(name))))
+        };
+        let three = |name: &str| -> io::Result<[u64; 3]> {
+            <[u64; 3]>::try_from(read(name)?).map_err(|v| err(format!("{}: {v:?}", sysctl(name))))
+        };
+        let write = |name: &str, values: &[u64]| -> io::Result<()> {
+            let path = sysctl(name);
             let line: Vec<String> = values.iter().map(u64::to_string).collect();
-            std::fs::write(&path, line.join(" ")).map_err(|e| err(format!("{path}: {e}")))?;
+            std::fs::write(&path, line.join(" ")).map_err(|e| err(format!("{path}: {e}")))
+        };
+        let booted = Limits {
+            threads: one("kernel/threads-max")?,
+            epoll: one("fs/epoll/max_user_watches")?,
+            tcp_mem: three("net/ipv4/tcp_mem")?,
+            udp_mem: three("net/ipv4/udp_mem")?,
+            tcp_rmem: three("net/ipv4/tcp_rmem")?,
+            tcp_wmem: three("net/ipv4/tcp_wmem")?,
+            files: one("fs/file-max")?,
+        };
+        let sized = booted.raised(self.most, page_size(), thread_size());
+        write("kernel/threads-max", &[sized.threads])?;
+        for name in NAMESPACES {
+            write(name, &[sized.threads / 2])?;
         }
-        let path = sysctl("fs/file-max");
-        let files = number(&path).ok_or_else(|| err(format!("{path}: not a number")))?;
-        let files = files.saturating_add(to.saturating_sub(from) / FILE_BYTES);
-        std::fs::write(&path, files.to_string()).map_err(|e| err(format!("{path}: {e}")))?;
-        let mib = to.div_ceil(1 << 20);
+        write("fs/epoll/max_user_watches", &[sized.epoll])?;
+        write("net/ipv4/tcp_mem", &sized.tcp_mem)?;
+        write("net/ipv4/udp_mem", &sized.udp_mem)?;
+        write("net/ipv4/tcp_rmem", &sized.tcp_rmem)?;
+        write("net/ipv4/tcp_wmem", &sized.tcp_wmem)?;
+        write("fs/file-max", &[sized.files])?;
+        let mib = self.full().div_ceil(1 << 20);
         let buckets = (mib << 3).next_power_of_two().min(TCP_TABLE_MOST);
         for name in TCP_TABLE {
-            let path = sysctl(name);
-            let now = number(&path).ok_or_else(|| err(format!("{path}: not a number")))?;
-            std::fs::write(&path, (buckets / 2).max(now).to_string())
-                .map_err(|e| err(format!("{path}: {e}")))?;
+            write(name, &[(buckets / 2).max(one(name)?)])?;
         }
-        let epoll =
-            number(&sysctl("fs/epoll/max_user_watches")).ok_or_else(|| err("fs.epoll.max_user_watches"))?;
-        let watches =
-            scaled(epoll, EP_ITEM_COST, 4 * INOTIFY_WATCH_COST).clamp(INOTIFY_WATCHES.0, INOTIFY_WATCHES.1);
-        std::fs::write(sysctl("fs/inotify/max_user_watches"), watches.to_string())
-            .map_err(|e| err(format!("fs.inotify.max_user_watches: {e}")))?;
-        let threads = number(&sysctl("kernel/threads-max")).ok_or_else(|| err("kernel.threads-max"))?;
-        let half = threads / 2;
+        let watches = scaled(sized.epoll, EP_ITEM_COST, 4 * INOTIFY_WATCH_COST)
+            .clamp(INOTIFY_WATCHES.0, INOTIFY_WATCHES.1);
+        write("fs/inotify/max_user_watches", &[watches])?;
+        let half = sized.threads / 2;
         let limit = libc::rlimit {
             rlim_cur: half,
             rlim_max: half,
@@ -376,38 +606,13 @@ impl Plug {
         Ok(())
     }
 
-    /// Holds the build at the memory the builder has: mounts the builder's cgroup2 (D133),
-    /// makes the build's cgroup with its `memory.high`, starts the process that grows it
-    /// in the root cgroup, which nothing slows, and moves init into the build's. What the
-    /// grower says comes out of the descriptor returned, a line at a time (D137).
-    pub fn hold(&self) -> io::Result<OwnedFd> {
-        mount_cgroups()?;
-        let enable = |dir: &str| {
-            std::fs::write(format!("{dir}/cgroup.subtree_control"), "+memory +cpu +cpuset")
-                .map_err(|e| err(format!("{dir}: enabling controllers: {e}")))
-        };
-        enable("/sys/fs/cgroup")?;
-        for dir in [
-            BUILD.to_string(),
-            format!("{BUILD}/init"),
-            format!("{BUILD}/steps"),
-        ] {
-            match std::fs::create_dir(&dir) {
-                Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(err(format!("{dir}: {e}"))),
-                _ => {}
-            }
-        }
-        enable(BUILD)?;
-        enable(&format!("{BUILD}/steps"))?;
-        // Its peak, counted afresh by each giving back through this descriptor
-        // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
-        if let Ok(peak) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(format!("{BUILD}/memory.peak"))
-        {
-            let _ = PEAK.set(peak);
-        }
+    /// Holds the build at the memory the builder has, in its cgroup ([`hold_build`]): its
+    /// `memory.high`, and the process that grows it, started in the root cgroup, which
+    /// nothing slows, as init is still there. What the grower says comes out of the
+    /// descriptor returned, a line at a time (D137).
+    fn hold(&self) -> io::Result<OwnedFd> {
+        begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
+        self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         let mut fds = [0; 2];
@@ -434,8 +639,6 @@ impl Plug {
             grow(*self, &events, &said);
         }
         drop((events, said));
-        std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
-            .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
         Ok(notes)
     }
 
@@ -456,6 +659,8 @@ impl Plug {
         {
             let _ = PEAK.set(peak);
         }
+        begin_period(mem_total().map_or(0, |total| staying(self.boot, total)));
+        self.learn_uncharged_cold()?;
         set_high(self.cgroup, high(self.cgroup, self.most, 0)?)?;
         let events = watch_events(self.cgroup)?;
         // SAFETY: fork(2) of PID 1 before it starts any thread: the child runs on a copy
@@ -478,6 +683,58 @@ impl Plug {
     }
 }
 
+/// Makes the build's cgroup and moves init into it, every builder's, booted cold with all
+/// it may have or with memory to plug (D133, memory-15): mounts the builder's cgroup2, makes
+/// `build` with `init`, where init goes, and `steps`, where each step has its own, so that
+/// what a build holds is counted (`memory.peak`, `memory.events`, `memory.stat`) for its
+/// needs to be recorded ([`needed`]) and its cold files given back at its host's word
+/// ([`answer_give_backs`], D188). Where it has memory to plug (`plug`), the build is held at
+/// what it has first ([`Plug::hold`]), whose grower it starts before init moves: what the
+/// grower says comes out of the descriptor returned, a line at a time (D137). Called by PID
+/// 1 before it starts any thread.
+pub fn hold_build(plug: Option<Plug>) -> io::Result<Option<OwnedFd>> {
+    mount_cgroups()?;
+    make_build(std::path::Path::new(CGROUPS))?;
+    // Its peak, counted afresh by each giving back through this descriptor
+    // ([`shrink_run`], [`answer_give_backs`]), as a run's; none where it does not open.
+    if let Ok(peak) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{BUILD}/memory.peak"))
+    {
+        let _ = PEAK.set(peak);
+    }
+    let notes = plug.map(|plug| plug.hold()).transpose()?;
+    std::fs::write(format!("{BUILD}/init/cgroup.procs"), "1")
+        .map_err(|e| err(format!("moving init into the build's cgroup: {e}")))?;
+    Ok(notes)
+}
+
+/// The builder's cgroup2's mount, where [`BUILD`] is.
+const CGROUPS: &str = "/sys/fs/cgroup";
+
+/// Makes the build's cgroup under the cgroup2 at `root`: `build`, `build/init` and
+/// `build/steps`, the controllers a step's limits need enabled down to `steps`, those
+/// made before kept.
+fn make_build(root: &std::path::Path) -> io::Result<()> {
+    let build = root.join("build");
+    let enable = |dir: &std::path::Path| {
+        std::fs::write(dir.join("cgroup.subtree_control"), "+memory +cpu +cpuset")
+            .map_err(|e| err(format!("{}: enabling controllers: {e}", dir.display())))
+    };
+    enable(root)?;
+    for dir in [build.clone(), build.join("init"), build.join("steps")] {
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(err(format!("{}: {e}", dir.display())));
+            }
+            _ => {}
+        }
+    }
+    enable(&build)?;
+    enable(&build.join("steps"))
+}
+
 /// The most a run's cgroup may hold that its host's budget leaves its microVM (D188), in
 /// bytes: no hold of its memory passes it ([`set_high`]), and its grower lifts none past
 /// it, so that its own kernel drops its run's page cache before its host must take memory
@@ -488,13 +745,16 @@ impl Plug {
 /// its restores resume with none.
 static CAP: std::sync::OnceLock<&'static Shared> = std::sync::OnceLock::new();
 
-/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and when
-/// the grower last asked for memory or had memory come ([`grew_lately`]).
+/// What init, its grower and its builtins' forks share in [`CAP`]'s page: the cap, and what
+/// stayed plugged as the run's peak began to be counted afresh ([`begin_period`]).
 #[repr(C)]
 #[derive(Debug)]
 struct Shared {
     cap: std::sync::atomic::AtomicU64,
-    grown_at: std::sync::atomic::AtomicU64,
+    period_plugged: std::sync::atomic::AtomicU64,
+    /// What the kernel adds beside the held cgroup uncharged, as its grower has learned it
+    /// ([`Uncharged`]): [`UNLEARNED`] before its hold.
+    uncharged: std::sync::atomic::AtomicU64,
 }
 
 /// Makes [`CAP`], none yet: by PID 1 as it starts, before it forks anything, a grower or a
@@ -526,6 +786,9 @@ pub fn make_cap() -> io::Result<()> {
     // lives as long as the process, and every process forked from it shares it.
     let shared = unsafe { &*page.cast::<Shared>() };
     shared.cap.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    shared
+        .uncharged
+        .store(UNLEARNED, std::sync::atomic::Ordering::SeqCst);
     let _ = CAP.set(shared);
     Ok(())
 }
@@ -536,50 +799,28 @@ pub(crate) fn cap() -> u64 {
         .map_or(u64::MAX, |s| s.cap.load(std::sync::atomic::Ordering::SeqCst))
 }
 
-/// Now, in nanoseconds since boot; a value [`grew_within`] reads against.
-fn now_ns() -> u64 {
-    let mut t = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: clock_gettime(2) into a timespec of ours.
-    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut t) };
-    u64::try_from(t.tv_sec)
-        .unwrap_or(0)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(u64::try_from(t.tv_nsec).unwrap_or(0))
-}
-
-/// Marks that the grower asked for memory, or had memory come ([`Grows::ask`],
-/// [`Grows::raise`]): the run grows.
-fn mark_growth() {
-    if let Some(s) = CAP.get() {
-        s.grown_at.store(now_ns(), std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-/// Whether the run's grower asked for memory, or had memory come, within the window its
-/// host's pressure is measured over ([`shards_abi::PRESSURE_WINDOW_US`]): memory plugged
-/// so lately is what its run grows into, not what it holds cold. A give-back that took it
-/// for cold, counting what it keeps from what the run had reached so far where the grower
-/// asks for twice as much, took back what the grower had just plugged for a run raised to
-/// more (`update -m`, D149) and held it at what it would have after, pass after pass of a
-/// host that stays short of memory, 128 MiB plugged and unplugged in turn, until its guest
-/// ran out of memory and killed what grew (PM M466). The window, not the pass before: a
-/// host's words come as fast as its watches do. False where nothing is shared.
-fn grew_lately() -> bool {
-    CAP.get().is_some_and(|s| {
-        grew_within(
-            s.grown_at.load(std::sync::atomic::Ordering::SeqCst),
-            now_ns(),
-            shards_abi::PRESSURE_WINDOW_US.saturating_mul(1000),
-        )
+/// Begins a period of the run's peak with `stays` bytes plugged past its boot, the period
+/// before having begun with what this returns: none where nothing is shared. Each give-back
+/// begins one as it reads the peak afresh ([`peak_since`]), and its hold began the first.
+fn begin_period(stays: u64) -> u64 {
+    CAP.get().map_or(0, |s| {
+        s.period_plugged.swap(stays, std::sync::atomic::Ordering::SeqCst)
     })
 }
 
-/// Whether `grown_at` is within `window` of `now`, nanoseconds; none is 0.
-fn grew_within(grown_at: u64, now: u64, window: u64) -> bool {
-    grown_at != 0 && now.saturating_sub(grown_at) < window
+/// Whether memory came within a period of the run's peak that began with `began_with` bytes
+/// plugged and ends with `stays` (D188, PM M466; R03, memory-06): memory plugged within it
+/// was not there for the whole of the period its peak counts, so its going unused is no
+/// sign of its being cold, and a give-back keeps all the run has. Only memory there for a
+/// whole period, from one give-back to the next, and unused through it, is cold. It was a
+/// mark of the grower's within a pressure window (2 s): the period is now the host's own
+/// cadence of give-backs, whatever it is. A give-back that took the block the grower had
+/// just plugged for a run raised to more (`update -m`, D149) as its allocation was yet to
+/// touch it, counting what it keeps from what the run had reached so far, held it at what it
+/// would have after, pass after pass of a host that stays short of memory, 128 MiB plugged
+/// and unplugged in turn, until its guest ran out of memory and killed what grew.
+fn came_within(began_with: u64, stays: u64) -> bool {
+    stays > began_with
 }
 
 /// The run's `memory.high` as its grower holds it ([`Plug::hold_run`]), what it uses and
@@ -653,9 +894,7 @@ fn reclaimed(short: bool, was: u64, now: u64) -> bool {
 /// 7763s, and three reads in 144 took over twice their CPU's time with none, the slowest
 /// 2.77 times; with it, 1 and 687 times, the slowest 1.12 times (PM M321).
 pub(crate) fn working_room() -> u64 {
-    // SAFETY: sysconf(3) reads a value of the running kernel's.
-    let cpus = u64::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).map_or(1, |c| c.max(1));
-    working_room_of(cpus, page_size())
+    working_room_of(online_cpus(), page_size())
 }
 
 /// [`working_room`] of a guest with `cpus` CPUs online and pages of `page` bytes.
@@ -671,7 +910,7 @@ fn working_room_of(cpus: u64, page: u64) -> u64 {
 
 /// The most a run's microVM may have plugged within what its host's budget leaves it
 /// ([`CAP`]): what lets its run hold its cap beside what its kernel holds now and its
-/// [`SLACK`], with the page structures of what is plugged, a 64th of it, which the kernel
+/// [`slack`], with the page structures of what is plugged, a 64th of it, which the kernel
 /// takes from its own memory, in whole blocks; `most` with no budget. Its grower doubling
 /// what it asked for past this, as a give-back's hold below the cap reached it, plugged its
 /// 16 GiB, whose page structures alone took 256 MiB of a 384 MiB budget (PM M309).
@@ -686,13 +925,17 @@ fn most_within(boot: u64, most: u64, cgroup: &str) -> u64 {
     let Ok((total, free)) = memory() else {
         return most;
     };
+    let Ok(slack) = slack(cgroup, boot) else {
+        return most;
+    };
     let kernel = total.saturating_sub(free).saturating_sub(used);
-    plug_for(boot, most, cap, kernel)
+    plug_for(boot, most, cap, kernel.saturating_add(slack))
 }
 
-/// [`most_within`] of a run held at `cap` bytes, its kernel holding `kernel` beside it.
-fn plug_for(boot: u64, most: u64, cap: u64, kernel: u64) -> u64 {
-    let want = cap.saturating_add(kernel).saturating_add(SLACK);
+/// [`most_within`] of a run held at `cap` bytes, its kernel holding `beside` beside it
+/// with its [`slack`].
+fn plug_for(boot: u64, most: u64, cap: u64, beside: u64) -> u64 {
+    let want = cap.saturating_add(beside);
     want.saturating_add(want / 63)
         .saturating_sub(boot)
         .checked_next_multiple_of(ALIGN)
@@ -764,26 +1007,59 @@ fn peak_since(used: u64) -> u64 {
     peak.max(used)
 }
 
-/// What a run keeps plugged past what its microVM booted with as its host asks for memory
-/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
-/// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses and
-/// what it used at its peak
-/// since it was last asked: twice what it uses, as the grower asks for twice what it
-/// reaches (D148), never less than its peak, in whole memory blocks. None where it gives
-/// back nothing: less than a block, or while memory it asked for to grow is still to come,
-/// which the giving back would take away from it as it grows (PM M275).
-fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64) -> Option<u64> {
-    if asked.saturating_sub(plugged) >= ALIGN {
-        return None;
-    }
-    let keep = used
-        .saturating_mul(2)
-        .max(peak)
+/// What a run's memory is grown to and kept at past what its microVM booted with (`boot`)
+/// (D133, D188, memory-14): the least whole blocks whose hold ([`needed_for`]), its kernel
+/// holding `beside` beside it uncharged with its [`slack`], keeps `held` (twice what the run
+/// uses, and its peak where a give-back keeps it). Twice is no tuning: it is the delta-t
+/// estimator (Gott, Nature 363:315, 1993), the estimator D215's `w` uses. The run's use now,
+/// `u`, is a point of its growth episode, so `r = u/P` of the episode's final peak `P` is
+/// uniform on (0, 1): P(r > 1/2) = 1/2, and the median of `P` is `u / (1/2) = 2u`. The median
+/// is the point estimate under absolute loss, an even chance of growing past it or not; a
+/// quantile `q` would give `1/(1−q)`. Learned from realized peaks it would be biased low, as
+/// the hold caps what a run can show (censored): the refinement owed is D133's. The grower asks for it and
+/// a give-back keeps it, both of the run's own use, so that a give-back takes nothing a
+/// growth just asked for on the same use.
+fn holding(boot: u64, held: u64, beside: u64) -> u64 {
+    needed_for(held, beside)
         .saturating_sub(boot)
         .checked_next_multiple_of(ALIGN)
         .unwrap_or(u64::MAX)
-        .min(most);
+}
+
+/// What the grower asks for past `boot` as a run that uses `used` reaches its hold, its
+/// kernel holding `beside` beside it with its slack, `plugged` plugged and `asking` asked for
+/// now: [`holding`] twice its use, and at least a block past what is plugged, the unit its
+/// driver adds memory in, so that a run held at its hold is always given room to grow into;
+/// never less than is asked for now, nor past its `most`.
+fn to_ask(boot: u64, most: u64, plugged: u64, asking: u64, used: u64, beside: u64) -> u64 {
+    holding(boot, used.saturating_mul(2), beside)
+        .max(plugged.saturating_add(ALIGN))
+        .max(asking)
+        .min(most)
+}
+
+/// What a run keeps plugged past what its microVM booted with as its host asks for memory
+/// back (D188), from what its microVM booted with (`boot`), the most it may have plugged,
+/// what stays of what it has plugged ([`staying`]) and has asked to have, what it uses, what
+/// it used at its peak since it was last asked and what its kernel holds beside it with its
+/// slack: [`holding`] twice what it uses, as the grower asks for ([`to_ask`]), never less
+/// than its peak. None where it gives back nothing: less than a block, or while memory it
+/// asked for to grow is still to come, which the giving back would take away from it as it
+/// grows (PM M275).
+fn to_keep(boot: u64, most: u64, plugged: u64, asked: u64, used: u64, peak: u64, beside: u64) -> Option<u64> {
+    if asked.saturating_sub(plugged) >= ALIGN {
+        return None;
+    }
+    let keep = holding(boot, used.saturating_mul(2).max(peak), beside).min(most);
     (plugged.saturating_sub(keep) >= ALIGN).then_some(keep)
+}
+
+/// What the kernel holds beside `cgroup` uncharged now, with its [`slack`]: what a hold of it
+/// keeps beside it ([`needed_for`]).
+fn beside(cgroup: &str, boot: u64) -> io::Result<u64> {
+    let now = reading(cgroup, boot)
+        .ok_or_else(|| err(format!("{cgroup}: what its kernel holds beside it is unread")))?;
+    Ok(now.uncharged.saturating_add(slack(cgroup, boot)?))
 }
 
 /// Gives back what the run holds plugged past what it keeps ([`to_keep`], D188). The run is
@@ -801,16 +1077,19 @@ pub fn shrink_run(cgroup: &str) -> io::Result<u64> {
     let asked = control_read64(control::HOTPLUG_REQUEST).unwrap_or(plugged);
     let used = number(&format!("{cgroup}/memory.current"))
         .ok_or_else(|| err(format!("{cgroup}/memory.current unread")))?;
-    // A run that grew lately keeps all it has, its peak counted on from then: what was
-    // plugged lately is what it grows into (PM M466).
-    if grew_lately() {
+    // Of what stays: what a give-back before asked its driver to unplug goes already. Its
+    // peak read afresh begins a period; memory that came within the one before is what the
+    // run grows into, all of it kept (PM M466).
+    let stays = staying(boot, total);
+    let peak = peak_since(used);
+    if came_within(begin_period(stays), stays) {
         return Ok(0);
     }
-    // Of what stays: what a give-back before asked its driver to unplug goes already.
-    let stays = staying(boot, total);
-    let Some(keep) = to_keep(boot, most, stays, asked, used, peak_since(used)) else {
+    let beside = beside(cgroup, boot)?;
+    let Some(keep) = to_keep(boot, most, stays, asked, used, peak, beside) else {
         return Ok(0);
     };
+    begin_period(keep);
     // The free memory that goes with it counted out of the hold now, before it goes, as
     // every hold counts out what goes already ([`high`]).
     set_high(
@@ -853,10 +1132,10 @@ pub fn answer_give_backs(conn: std::fs::File) -> io::Result<()> {
     Ok(())
 }
 
-/// The most a frame on the give-back connection holds: a `GIVE_BACK` holds nothing and a
-/// `ROOM` a number, and a frame past this ends the connection rather than have its answerer
-/// hold it.
-const GIVE_FRAME: usize = 4096;
+/// The longest host request: Giver::tell encodes ROOM as an i64's decimal or nothing;
+/// GIVE_BACK is empty. The minus sign and digits of i64::MIN bound either request.
+/// A longer frame ends the connection before its payload is read or allocated.
+const GIVE_FRAME: usize = 1 + i64::MIN.unsigned_abs().ilog10() as usize + 1;
 
 /// What [`answer_give_backs`]'s process does until its connection ends: each frame read
 /// whole; each `GIVE_BACK` answered with a `GAVE` of what `give` gave back (the bytes its
@@ -998,9 +1277,8 @@ pub fn grower() -> Option<libc::pid_t> {
     GROWER.get().copied()
 }
 
-/// The builder's cgroup2 at /sys/fs/cgroup, mounted once: by [`Plug::hold`], or by the
-/// first step with limits.
-pub fn mount_cgroups() -> io::Result<()> {
+/// The builder's cgroup2 at /sys/fs/cgroup, mounted once, as it starts ([`hold_build`]).
+fn mount_cgroups() -> io::Result<()> {
     let root = std::path::Path::new("/sys/fs/cgroup");
     if root.join("cgroup.controllers").exists() {
         return Ok(());
@@ -1025,14 +1303,14 @@ pub fn mount_cgroups() -> io::Result<()> {
     Ok(())
 }
 
-/// What the kernel keeps beside the build's `memory.high`: [`SLACK`]; the page structures
+/// What the kernel keeps beside the build's `memory.high`: its `slack` ([`slack`]); the page structures
 /// of the memory plugged next, a 64th of it (a 64-byte `struct page` for each 4 KiB page),
 /// which the kernel takes from what it has before the memory comes online (growth asks for
 /// as much as the builder has, [`grow`], so that is a 64th of what it has, until it has all
 /// it may); and the free pages its CPUs may keep on their own lists, which are neither free
 /// to its readers nor charged to the build ([`PCP_FRACTION`]).
-fn reserve(total: u64, left: u64) -> u64 {
-    SLACK
+fn reserve(total: u64, left: u64, slack: u64) -> u64 {
+    slack
         .saturating_add(total.min(left) / 64)
         .saturating_add(total / PCP_FRACTION)
 }
@@ -1047,6 +1325,46 @@ fn reserve(total: u64, left: u64) -> u64 {
 /// only there, was never asked to plug more (PM M392).
 const PCP_FRACTION: u64 = 8;
 
+/// What the builder's guest needed as its build was held, and MemTotal as it booted
+/// ([`note_startup`], memory-15).
+static STARTUP: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+
+/// Notes what the builder's guest needs as its build is about to be held, and MemTotal as
+/// it booted, for its host to learn what its next builder of this guest boots with
+/// (`kind::NEEDED`, memory-15). Called by PID 1 as it would hold its build, with or without
+/// memory to plug: a cold builder boots with all it may have, and plugs none. Once.
+pub fn note_startup() -> io::Result<()> {
+    let (total, free) = memory()?;
+    let boot = BOOT.get().copied().unwrap_or(total);
+    let start = startup(total.saturating_sub(free), overshoot(), working_room());
+    let _ = STARTUP.set((start, boot));
+    Ok(())
+}
+
+/// [`note_startup`]'s words: `START TOTAL`, none where it was not noted.
+pub fn startup_said() -> Option<String> {
+    STARTUP.get().map(|(start, total)| format!("{start} {total}"))
+}
+
+/// The MemTotal a builder needs as its build is held, its kernel then using `used` bytes:
+/// the least `t` whose hold leaves the build its first growth's working room (`working`,
+/// [`working_room`]) beside what the kernel uses and the [`reserve`] (its slack: the
+/// kernel's `overshoot` and what it adds uncharged, cold, its use so far, [`Uncharged`];
+/// the page structures of what it may still plug, at most a 64th of `t`; its CPUs' lists,
+/// an eighth): `t − t/64 − t/8 ≥ 2·used + overshoot + working`, so `t ≥ 64/55` of it, the
+/// share the reserve's two fractions leave a hold, `1 − 1/MEMMAP − 1/PCP_FRACTION`.
+fn startup(used: u64, overshoot: u64, working: u64) -> u64 {
+    // struct page's 64 bytes for each 4 KiB page: a 64th, [`reserve`]'s page structures.
+    const MEMMAP: u64 = 64;
+    let whole = MEMMAP * PCP_FRACTION;
+    let left = whole - PCP_FRACTION - MEMMAP;
+    used.saturating_mul(2)
+        .saturating_add(overshoot)
+        .saturating_add(working)
+        .saturating_mul(whole)
+        .div_ceil(left)
+}
+
 /// What the build has needed of its builder's memory so far, for its host to record
 /// (`kind::NEEDED`, D133): the least memory, in whole blocks, whose hold keeps the most its
 /// cgroup has held (`memory.peak`, Documentation/admin-guide/cgroup-v2.rst) under its
@@ -1055,21 +1373,28 @@ const PCP_FRACTION: u64 = 8;
 pub fn needed() -> io::Result<(u64, u64)> {
     let peak = number(&format!("{BUILD}/memory.peak"))
         .ok_or_else(|| err(format!("{BUILD}/memory.peak: none to read")))?;
+    let beside = beside(BUILD, BOOT.get().copied().unwrap_or(0))?;
     let events = std::fs::read_to_string(format!("{BUILD}/memory.events"))
         .map_err(|e| err(format!("{BUILD}/memory.events: {e}")))?;
-    let killed = events
+    Ok((needed_for(peak, beside), killed(&events)))
+}
+
+/// The processes a cgroup's `memory.events` says any OOM killer ended (`oom_kill`): a cold
+/// builder's kernel's, which holds the build at no `memory.high`, as a held one's.
+fn killed(events: &str) -> u64 {
+    events
         .lines()
         .find_map(|l| l.strip_prefix("oom_kill "))
         .and_then(|n| n.trim().parse().ok())
-        .unwrap_or(0);
-    Ok((needed_for(peak), killed))
+        .unwrap_or(0)
 }
 
 /// The least memory in whole blocks whose hold, its [`reserve`] beside it and nothing left
-/// to plug, is at least `peak`: `total − SLACK − total / PCP_FRACTION ≥ peak`.
-fn needed_for(peak: u64) -> u64 {
+/// to plug, is at least `peak`, the kernel holding `beside` uncharged with its [`slack`]:
+/// `total − beside − total / PCP_FRACTION ≥ peak`.
+fn needed_for(peak: u64, beside: u64) -> u64 {
     let total = peak
-        .saturating_add(SLACK)
+        .saturating_add(beside)
         .saturating_mul(PCP_FRACTION)
         .div_ceil(PCP_FRACTION - 1);
     total.div_ceil(ALIGN).saturating_mul(ALIGN)
@@ -1081,14 +1406,16 @@ fn needed_for(peak: u64) -> u64 {
 fn high(cgroup: &str, most: u64, plugged: u64) -> io::Result<u64> {
     let current = number(&format!("{cgroup}/memory.current")).unwrap_or(0);
     let (total, free) = memory()?;
-    let leaving = BOOT.get().map_or(0, |&boot| {
+    let boot = BOOT.get().copied();
+    let leaving = boot.map_or(0, |boot| {
         total.saturating_sub(boot).saturating_sub(staying(boot, total))
     });
+    let slack = slack(cgroup, boot.unwrap_or(0))?;
     Ok(hold_of(
         current,
         free,
         leaving,
-        reserve(total, most.saturating_sub(plugged)),
+        reserve(total, most.saturating_sub(plugged), slack),
     ))
 }
 
@@ -1201,13 +1528,23 @@ fn kernel_said(most: usize) -> Vec<String> {
     said.into()
 }
 
-/// How memory asked for came.
+/// How memory asked for came, or why it is no longer waited for (R04): each but `All` with
+/// what of it came, in bytes.
 #[derive(Debug, PartialEq, Eq)]
 enum Came {
     /// All of it.
     All,
-    /// Not all, though asked for twice: what of it came, in bytes.
-    Stalled(u64),
+    /// Its driver says it plugs no more: the kernel's "marking device broken", which its
+    /// driver says as it stops for good (drivers/virtio/virtio_mem.c `virtio_mem_run_wq`,
+    /// an error it has no retry for), never of one it tries again on its timer.
+    Broken(u64),
+    /// The ask itself failed: its device's control page refused it.
+    Refused(u64),
+    /// What its device is asked for fell below it, lowered by another (its host, or a
+    /// give-back): no longer this grower's to wait for.
+    Superseded(u64),
+    /// MemTotal could not be read.
+    Unread(u64),
 }
 
 /// What growing the builder's memory acts on: the guest's memory, the host's device, the
@@ -1221,12 +1558,18 @@ trait Grows {
     /// `plugged` bytes are online: the build's `memory.high` raised to match.
     fn raise(&mut self, plugged: u64);
     fn say(&mut self, what: &str);
+    /// What its device is asked for now (`HOTPLUG_REQUEST`).
+    fn request(&mut self) -> io::Result<u64>;
+    /// Lets the build run on what the builder has: its `memory.high` lifted (D137).
+    fn lift(&mut self);
     /// The kernel's last words of its virtio-mem driver.
     fn kernel_said(&mut self) -> Vec<String>;
     /// How long since `from` began, from [`Grows::now`].
     fn now(&mut self) -> Duration;
-    /// Waits a moment before looking again.
-    fn pause(&mut self);
+    /// Waits `d` before looking again.
+    fn pause(&mut self, d: Duration);
+    /// What its guest's blocks have taught so far.
+    fn coming(&mut self) -> &mut Coming;
 }
 
 /// The builder's own memory, its device and its build's cgroup.
@@ -1234,6 +1577,7 @@ struct Builder<'n> {
     plug: Plug,
     notes: &'n OwnedFd,
     began: Instant,
+    coming: &'n mut Coming,
 }
 
 impl Grows for Builder<'_> {
@@ -1242,12 +1586,10 @@ impl Grows for Builder<'_> {
     }
 
     fn ask(&mut self, bytes: u64) -> io::Result<()> {
-        mark_growth();
         control_write64(control::HOTPLUG_REQUEST, bytes)
     }
 
     fn raise(&mut self, plugged: u64) {
-        mark_growth();
         let cgroup = self.plug.cgroup;
         if let Err(e) = high(cgroup, self.plug.most, plugged).and_then(|h| set_high(cgroup, h)) {
             say(self.notes, self.plug.whose, &e.to_string());
@@ -1258,6 +1600,16 @@ impl Grows for Builder<'_> {
         say(self.notes, self.plug.whose, what);
     }
 
+    fn request(&mut self) -> io::Result<u64> {
+        control_read64(control::HOTPLUG_REQUEST)
+    }
+
+    fn lift(&mut self) {
+        if let Err(e) = set_high(self.plug.cgroup, u64::MAX) {
+            say(self.notes, self.plug.whose, &e.to_string());
+        }
+    }
+
     fn kernel_said(&mut self) -> Vec<String> {
         kernel_said(3)
     }
@@ -1266,58 +1618,100 @@ impl Grows for Builder<'_> {
         self.began.elapsed()
     }
 
-    fn pause(&mut self) {
-        std::thread::sleep(Duration::from_millis(1));
+    fn pause(&mut self, d: Duration) {
+        std::thread::sleep(d);
+    }
+
+    fn coming(&mut self) -> &mut Coming {
+        self.coming
     }
 }
 
+/// Whether the kernel's words of its virtio-mem driver say it stopped for good.
+fn broken(said: &[String]) -> bool {
+    said.iter().any(|l| l.contains("marking device broken"))
+}
+
 /// Asks for `asked` bytes past what the builder booted with, and raises the build's
-/// `memory.high` as they come online. Where none comes for [`STALLED`], asks again, which
-/// tells the driver again; where none comes for as long again, stops.
+/// `memory.high` as they come online, each block teaching [`Coming`]. It looks at MemTotal
+/// on D215's pace ([`pace`]: a look's own cost against the wait since the ask or the block
+/// before), each pause counted at most as long as its pace (one its guest or its host held
+/// longer is their hold, not the driver's). Past the slowest a block took in this guest with
+/// none come, the grower's own time alone counted, it asks again, which tells the driver
+/// again, which then tries what it could not plug at once, not at its retry timer's 50 s
+/// and more (D137); and lets the build run on what it has meanwhile, as one that waits past
+/// any block this guest has seen holds it for what may not come (D137). It asks again each
+/// such window, no count of tries (R03, memory-13): a driver that retries on its timer is
+/// one that may still plug it, and memory that comes holds the build again as it grows.
+/// It stops for its driver's own word that it plugs no more ([`Came::Broken`]), an ask
+/// refused, a request lowered by another, or MemTotal unread, each typed. A guest's first
+/// plug, none seen yet, waits on its driver for as long as it takes, as D215's cold wait
+/// follows its party: the driver tries again on its own timer (D137), and its word that it
+/// stopped is looked for at each look meanwhile.
 fn come(plug: Plug, asked: u64, g: &mut impl Grows) -> Came {
     let want = plug.boot.saturating_add(asked);
     let Ok(start) = g.total() else {
-        return Came::Stalled(0);
+        return Came::Unread(0);
     };
-    let (mut last, mut since) = (start, g.now());
-    let mut again = false;
+    let (mut last, mut since, mut still) = (start, g.now(), Duration::ZERO);
+    let mut lifted = false;
     if let Err(e) = g.ask(asked) {
         g.say(&format!("asking for {asked} bytes: {e}"));
-        return Came::Stalled(start.saturating_sub(plug.boot));
+        return Came::Refused(start.saturating_sub(plug.boot));
     }
-    while let Ok(now) = g.total() {
+    loop {
+        let looked = g.now();
+        let Ok(now) = g.total() else {
+            return Came::Unread(last.saturating_sub(plug.boot));
+        };
+        let came = now.saturating_sub(plug.boot);
         if now > last {
-            (last, since) = (now, g.now());
-            g.raise(now.saturating_sub(plug.boot));
+            let took = g.now().saturating_sub(since);
+            g.coming().came(took);
+            (last, since, still) = (now, g.now(), Duration::ZERO);
+            g.raise(came);
+            lifted = false;
         }
         if now >= want {
             return Came::All;
         }
-        if g.now().saturating_sub(since) > STALLED {
-            if again {
-                break;
-            }
-            let came = now.saturating_sub(plug.boot);
-            let kernel = g.kernel_said();
-            g.say(&format!(
-                "{asked} bytes asked for, {came} came in {} s; asking again{}{}",
-                STALLED.as_secs(),
-                if kernel.is_empty() {
-                    ""
-                } else {
-                    "; the kernel said: "
-                },
-                kernel.join("; ")
-            ));
-            if let Err(e) = g.ask(asked) {
-                g.say(&format!("asking for {asked} bytes again: {e}"));
-                break;
-            }
-            (again, since) = (true, g.now());
+        if g.request().is_ok_and(|r| r < asked) {
+            return Came::Superseded(came);
         }
-        g.pause();
+        let slowest = g.coming().slowest;
+        if slowest.is_none_or(|s| still >= s) {
+            let kernel = g.kernel_said();
+            if broken(&kernel) {
+                g.say(&format!(
+                    "{asked} bytes asked for, {came} came; the kernel said: {}",
+                    kernel.join("; ")
+                ));
+                return Came::Broken(came);
+            }
+            if let Some(slowest) = slowest {
+                g.say(&format!(
+                    "{asked} bytes asked for, {came} came, none for {still:?}, past the slowest a block took here ({slowest:?}); asking again{}{}{}",
+                    if lifted { "" } else { ", the build running on what it has meanwhile" },
+                    if kernel.is_empty() { "" } else { "; the kernel said: " },
+                    kernel.join("; ")
+                ));
+                if !lifted {
+                    g.lift();
+                    lifted = true;
+                }
+                if let Err(e) = g.ask(asked) {
+                    g.say(&format!("asking for {asked} bytes again: {e}"));
+                    return Came::Refused(came);
+                }
+                (since, still) = (g.now(), Duration::ZERO);
+            }
+        }
+        let look = g.now().saturating_sub(looked);
+        let pause = pace(look, g.now().saturating_sub(since));
+        let before = g.now();
+        g.pause(pause);
+        still = still.saturating_add(g.now().saturating_sub(before).min(pause));
     }
-    Came::Stalled(last.saturating_sub(plug.boot))
 }
 
 /// How many of `cgroup`'s processes the kernel has ended for want of memory, by any of its
@@ -1335,16 +1729,22 @@ pub(crate) fn oom_kills(cgroup: &str) -> u64 {
 /// What the kernel said as it last ended a process for want of memory (/dev/kmsg): what
 /// asked for memory and of what order, the memory free in each zone against its
 /// watermarks, and what it ended (mm/oom_kill.c `dump_header`, `__oom_kill_process`;
-/// mm/show_mem.c `show_free_areas`). It counts the kill before it says what it ended, so
-/// where that is not said yet, it is read again, for as long as [`STALLED`].
+/// mm/show_mem.c `show_free_areas`). It counts the kill, sends its SIGKILL and then says
+/// what it ended, on the killer's own path with no return between (Linux 7.2
+/// `__oom_kill_process`: `memcg_memory_event_mm`, `do_send_sig_info`, `pr_err`), so a kill
+/// counted is said: where that is not said yet, it is read again until it is (D137, D209
+/// Part 4: no clock). A guest whose log cannot be read at all says nothing at once.
 pub(crate) fn oom_said() -> Vec<String> {
     let began = Instant::now();
     loop {
-        let said = oom_report();
-        if said.iter().any(|l| ended(l)) || began.elapsed() > STALLED {
+        let looked = Instant::now();
+        let Some(said) = oom_report() else {
+            return Vec::new();
+        };
+        if said.iter().any(|l| ended(l)) {
             return said;
         }
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::sleep(pace(looked.elapsed(), began.elapsed()));
     }
 }
 
@@ -1357,7 +1757,8 @@ fn ended(line: &str) -> bool {
 
 /// The lines of the kernel's last report of a process ended for want of memory, as
 /// [`oom_said`] relays them.
-fn oom_report() -> Vec<String> {
+/// None where the kernel's log cannot be read: no /dev/kmsg, and syslog(2) refused.
+fn oom_report() -> Option<Vec<String>> {
     let Ok(file) = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -1365,7 +1766,7 @@ fn oom_report() -> Vec<String> {
     else {
         // A run's root moved over the VM's, its /dev has no kmsg: the log read whole with
         // syslog(2), which init, the VM's own, may.
-        return oom_lines(&syslog_records());
+        return syslog_records().map(|records| oom_lines(&records));
     };
     let mut records = Vec::new();
     let mut record = [0u8; 8192];
@@ -1380,31 +1781,29 @@ fn oom_report() -> Vec<String> {
         };
         records.push(String::from_utf8_lossy(record.get(..n).unwrap_or_default()).into_owned());
     }
-    oom_lines(&records)
+    Some(oom_lines(&records))
 }
 
 /// The kernel's log read whole with syslog(2) (`SYSLOG_ACTION_READ_ALL`), each line a
 /// record as /dev/kmsg gives one (`LEVEL,SEQ,USECS,FLAGS;TEXT`), its fields but the text
-/// left as nothing is read of them.
-fn syslog_records() -> Vec<String> {
+/// left as nothing is read of them; none where syslog(2) refuses.
+fn syslog_records() -> Option<Vec<String>> {
     const READ_ALL: libc::c_int = 3;
     const SIZE_BUFFER: libc::c_int = 10;
     // SAFETY: syslog(2)'s size query takes no buffer.
     let size = unsafe { libc::klogctl(SIZE_BUFFER, std::ptr::null_mut(), 0) };
-    let Ok(len) = usize::try_from(size) else {
-        return Vec::new();
-    };
+    let len = usize::try_from(size).ok()?;
     let mut buf = vec![0u8; len.max(1)];
     let room = libc::c_int::try_from(buf.len()).unwrap_or(libc::c_int::MAX);
     // SAFETY: a buffer of `room` bytes, which syslog(2) fills at most.
     let read = unsafe { libc::klogctl(READ_ALL, buf.as_mut_ptr().cast(), room) };
-    let Ok(read) = usize::try_from(read) else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
-        .lines()
-        .map(syslog_record)
-        .collect()
+    let read = usize::try_from(read).ok()?;
+    Some(
+        String::from_utf8_lossy(buf.get(..read).unwrap_or_default())
+            .lines()
+            .map(syslog_record)
+            .collect(),
+    )
 }
 
 /// A line of syslog(2)'s, `<LEVEL>[SECONDS] TEXT`, as /dev/kmsg's record of it.
@@ -1471,6 +1870,15 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
         }
     };
     let mut asked = 0u64;
+    let mut coming = Coming::default();
+    // What the kernel adds beside the cgroup, learned from what its hold began it with.
+    let mut uncharged = Uncharged::begun(
+        CAP.get()
+            .map(|s| s.uncharged.load(std::sync::atomic::Ordering::SeqCst))
+            .filter(|&u| u != UNLEARNED)
+            .unwrap_or(0),
+        reading(cgroup, plug.boot),
+    );
     let mut buf = [0u8; 4096];
     loop {
         // SAFETY: read(2) into a buffer this process owns; it blocks for the next event.
@@ -1488,6 +1896,7 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
             // SAFETY: _exit(2) of this child alone.
             unsafe { libc::_exit(1) };
         }
+        publish_uncharged(uncharged.woke(reading(cgroup, plug.boot)));
         let (Some(current), Some(high_now)) = (
             number(&format!("{cgroup}/memory.current")),
             number(&format!("{cgroup}/memory.high")),
@@ -1522,27 +1931,34 @@ fn grow(plug: Plug, events: &OwnedFd, notes: &OwnedFd) -> ! {
         // Never less than is asked for now: the device's request, which a run gives back
         // by (D188), else what it asked for last.
         let asking = control_read64(control::HOTPLUG_REQUEST).unwrap_or(asked);
-        asked = total
-            .saturating_mul(2)
-            .saturating_sub(plug.boot)
-            .checked_next_multiple_of(ALIGN)
-            .unwrap_or(u64::MAX)
-            .max(asking)
-            .min(plug.most);
+        let Ok(beside) = beside(cgroup, plug.boot) else {
+            continue;
+        };
+        asked = to_ask(
+            plug.boot,
+            plug.most,
+            total.saturating_sub(plug.boot),
+            asking,
+            current,
+            beside,
+        );
         let mut builder = Builder {
             plug,
             notes,
             began: Instant::now(),
+            coming: &mut coming,
         };
         match come(plug, asked, &mut builder) {
             Came::All if asked >= plug.most => lift(),
             Came::All => {}
-            Came::Stalled(came) => {
+            // Asked for less by another since: its growth is that one's now.
+            Came::Superseded(_) => {}
+            Came::Broken(came) | Came::Refused(came) | Came::Unread(came) => {
                 say(
                     notes,
                     plug.whose,
                     &format!(
-                        "{asked} bytes asked for, {came} came, though asked for twice: what it holds now runs on what it has, {} bytes",
+                        "{asked} bytes asked for, {came} came, and no more will: what it holds now runs on what it has, {} bytes",
                         mem_total().unwrap_or(total)
                     ),
                 );
@@ -1557,6 +1973,7 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+    const GIB: u64 = 1 << 30;
     const PLUG: Plug = Plug {
         boot: 512 * MIB,
         most: 2048 * MIB,
@@ -1564,21 +1981,216 @@ mod tests {
         whose: "the builder's",
     };
 
-    /// What a build needed is the least memory in whole blocks whose hold, with nothing
-    /// left to plug, keeps its peak: a block less holds less.
+    /// Every builder's build has its cgroup as it starts, with memory to plug or not
+    /// (memory-15): `build`, `build/init` for init and `build/steps` for its steps, the
+    /// controllers enabled down to `steps`; made again over what is there.
     #[test]
-    fn what_a_build_needed_is_the_least_memory_that_holds_its_peak() {
-        let hold = |total: u64| total.saturating_sub(reserve(total, 0));
-        for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
-            let need = needed_for(peak);
-            assert_eq!(need % ALIGN, 0, "{peak}");
-            assert!(hold(need) >= peak, "{peak}: {need} holds {}", hold(need));
-            assert!(
-                hold(need - ALIGN) < peak || need == ALIGN,
-                "{peak}: {need} is not the least"
+    fn a_builders_cgroup_is_made_as_it_starts() {
+        let root = shards_testdir::TempDir::new("plug-cgroup").unwrap();
+        for _ in 0..2 {
+            make_build(&root).unwrap();
+        }
+        for dir in ["", "build", "build/steps"] {
+            assert_eq!(
+                std::fs::read_to_string(root.join(dir).join("cgroup.subtree_control")).unwrap(),
+                "+memory +cpu +cpuset",
+                "{dir}"
             );
         }
+        assert!(root.join("build/init").is_dir());
+        assert!(!root.join("build/init/cgroup.subtree_control").exists());
     }
+
+    /// A build ended short of memory says the processes its kernel ended, a cold builder's
+    /// as a held one's (memory-15): its host records it short (D148).
+    #[test]
+    fn a_builds_kills_are_read_from_its_events() {
+        let events = "low 0\nhigh 12\nmax 0\noom 1\noom_kill 2\noom_group_kill 0\n";
+        assert_eq!(killed(events), 2);
+        assert_eq!(killed("low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n"), 0);
+    }
+
+    /// What a guest booted small sizes once raised is what one booted with all of it sizes,
+    /// or up to a tenth more, never less: from each size the pinned kernel was booted with
+    /// (PM M193, the pinned kernel 6.18.48, 4 KiB pages) to each larger one.
+    #[test]
+    fn a_small_boots_limits_are_raised_to_a_full_boots() {
+        let row = |threads, epoll, tcp_mem, udp_mem, rmem, wmem, files| Limits {
+            threads,
+            epoll,
+            tcp_mem,
+            udp_mem,
+            tcp_rmem: [4096, 131072, rmem],
+            tcp_wmem: [4096, 16384, wmem],
+            files,
+        };
+        let booted = [
+            (
+                512 * MIB,
+                row(
+                    3995,
+                    108989,
+                    [5688, 7585, 11376],
+                    [11376, 15171, 22752],
+                    3883872,
+                    3883872,
+                    48903,
+                ),
+            ),
+            (
+                GIB,
+                row(
+                    8009,
+                    223365,
+                    [11361, 15151, 22722],
+                    [22725, 30302, 45450],
+                    7757344,
+                    4194304,
+                    100244,
+                ),
+            ),
+            (
+                4 * GIB,
+                row(
+                    31607,
+                    895777,
+                    [46362, 61819, 92724],
+                    [92727, 123638, 185454],
+                    31651456,
+                    4194304,
+                    402298,
+                ),
+            ),
+            (
+                16 * GIB,
+                row(
+                    128038,
+                    3643481,
+                    [190890, 254522, 381780],
+                    [381783, 509045, 763566],
+                    33554432,
+                    4194304,
+                    1636622,
+                ),
+            ),
+            (
+                64 * GIB,
+                row(
+                    513765,
+                    14634317,
+                    [768324, 1024432, 1536648],
+                    [1536648, 2048864, 3073296],
+                    33554432,
+                    4194304,
+                    6573917,
+                ),
+            ),
+        ];
+        let within = |got: u64, full: u64| got >= full && got <= full + full / 10;
+        for (i, (small, from)) in booted.iter().enumerate() {
+            for (large, full) in booted.iter().skip(i + 1) {
+                let got = from.raised(large - small, 4096, 16 << 10);
+                let pairs = [
+                    (got.threads, full.threads),
+                    (got.epoll, full.epoll),
+                    (got.files, full.files),
+                    (got.tcp_rmem[2], full.tcp_rmem[2]),
+                    (got.tcp_wmem[2], full.tcp_wmem[2]),
+                ]
+                .into_iter()
+                .chain(got.tcp_mem.into_iter().zip(full.tcp_mem))
+                .chain(got.udp_mem.into_iter().zip(full.udp_mem));
+                for (got_one, full_one) in pairs {
+                    assert!(
+                        within(got_one, full_one),
+                        "{small} to {large}: {got:?}, booted with all of it {full:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// What a build needed is the least memory in whole blocks whose hold, with nothing
+    /// left to plug and its kernel holding what it holds beside it, keeps its peak: a block
+    /// less holds less.
+    #[test]
+    fn what_a_build_needed_is_the_least_memory_that_holds_its_peak() {
+        for beside in [0, 64 * MIB, 300 * MIB] {
+            // Signed: a block less may hold less than nothing.
+            let hold = |total: u64| i128::from(total) - i128::from(reserve(total, 0, beside));
+            for peak in [0, 1, 300 * MIB, 512 * MIB, 1536 * MIB, 34 << 30, 120 << 30] {
+                let need = needed_for(peak, beside);
+                assert_eq!(need % ALIGN, 0, "{peak}");
+                assert!(
+                    hold(need) >= i128::from(peak),
+                    "{peak}: {need} holds {}",
+                    hold(need)
+                );
+                assert!(
+                    need <= ALIGN || hold(need - ALIGN) < i128::from(peak),
+                    "{peak}: {need} is not the least"
+                );
+            }
+        }
+    }
+
+    /// What a builder needs as its build is held leaves its hold the first growth's working
+    /// room beside what its kernel uses and its reserve, whatever it may still plug, and no
+    /// block less does (memory-15).
+    #[test]
+    fn a_builders_start_leaves_its_hold_its_working_room() {
+        for (used, cpus) in [(90 * MIB, 1), (150 * MIB, 4), (400 * MIB, 32)] {
+            let (o, w) = (overshoot_of(cpus, 4096, None), working_room_of(cpus, 4096));
+            let t = startup(used, o, w);
+            let hold = |t: u64| i128::from(t) - i128::from(used) - i128::from(reserve(t, u64::MAX, o + used));
+            assert!(hold(t) >= i128::from(w), "{used} {cpus}: {}", hold(t));
+            assert!(hold(t - MIB) < i128::from(w), "{used} {cpus}: not the least");
+        }
+    }
+
+    /// The slack covers how far the kernel lets a cgroup's charges pass its hold before it
+    /// reclaims at once, two charges of a batch or of its largest folio on each CPU, which
+    /// grows with the CPUs and the folio (memory-11): 64 MiB, the slack it was, fell short of
+    /// it on 32 CPUs with THP's 2 MiB folios, 128 MiB.
+    #[test]
+    fn the_slack_covers_what_the_kernel_charges_past_the_hold_on_every_cpu() {
+        // Without THP read: a PMD's folio as its page table has it, 2 MiB of 4 KiB pages.
+        assert_eq!(overshoot_of(1, 4096, None), 4 * MIB);
+        assert_eq!(overshoot_of(32, 4096, Some(2 * MIB)), 128 * MIB);
+        assert!(overshoot_of(32, 4096, Some(2 * MIB)) > 64 * MIB);
+        // A batch where it is larger than the folio; 16 KiB pages' PMD of 32 MiB; 64 KiB
+        // pages' within MAX_XAS_ORDER, 128 MiB, not their PMD's 512.
+        assert_eq!(overshoot_of(2, 4096, Some(128 << 10)), 2 * 2 * 64 * 4096);
+        assert_eq!(overshoot_of(1, 16 << 10, None), 2 * 32 * MIB);
+        assert_eq!(overshoot_of(1, 64 << 10, Some(512 * MIB)), 2 * 128 * MIB);
+        // No CPU read is one; a reserve holds its slack whole.
+        assert_eq!(overshoot_of(0, 4096, None), overshoot_of(1, 4096, None));
+        let slack = overshoot_of(4, 4096, None) + 90 * MIB;
+        assert_eq!(reserve(GIB, 0, slack) - GIB / 8, slack);
+    }
+
+    /// What the kernel adds beside a held cgroup uncharged starts from what it held as the
+    /// hold was set, and rises to the most it rose between two wakes, less the page structures
+    /// of what was plugged between them; a wake unread keeps it (memory-11).
+    #[test]
+    fn what_the_kernel_adds_uncharged_is_learned_at_each_wake() {
+        let at = |uncharged: u64, plugged: u64| Reading { uncharged, plugged };
+        let mut u = Uncharged::begun(80 * MIB, Some(at(80 * MIB, 0)));
+        // 30 MiB more as 1 GiB came, 16 of it that GiB's page structures: no more than it had.
+        assert_eq!(u.woke(Some(at(110 * MIB, GIB))), 80 * MIB);
+        // 120 MiB more with nothing plugged: it rose by that.
+        assert_eq!(u.woke(Some(at(230 * MIB, GIB))), 120 * MIB);
+        // Unread, or fallen as memory was unplugged: what it had.
+        assert_eq!(u.woke(None), 120 * MIB);
+        assert_eq!(u.woke(Some(at(100 * MIB, 0))), 120 * MIB);
+        // Its first reading only begins it.
+        let mut first = Uncharged::begun(80 * MIB, None);
+        assert_eq!(first.woke(Some(at(500 * MIB, 0))), 80 * MIB);
+        assert_eq!(first.woke(Some(at(590 * MIB, 0))), 90 * MIB);
+    }
+
+    /// What a look at MemTotal costs a fake builder's clock.
+    const LOOK: Duration = Duration::from_micros(10);
 
     /// A builder whose memory is what `comes` makes of the requests so far and the time.
     struct Fake<F> {
@@ -1587,15 +2199,35 @@ mod tests {
         raised: Vec<u64>,
         said: Vec<String>,
         clock: Duration,
+        coming: Coming,
+        /// A pause its host or its guest holds past its pace: the first at or after the
+        /// first time, for the second.
+        held: Option<(Duration, Duration)>,
+        /// The kernel's words of its driver; what its device is asked for, where another
+        /// lowered it; whether asks past the first are refused; how many lifts.
+        kernel: Vec<String>,
+        lowered: Option<u64>,
+        refuses_again: bool,
+        lifts: u32,
     }
 
     impl<F: FnMut(&[u64], Duration) -> u64> Grows for Fake<F> {
         fn total(&mut self) -> io::Result<u64> {
+            self.clock += LOOK;
             Ok((self.comes)(&self.asks, self.clock))
         }
         fn ask(&mut self, bytes: u64) -> io::Result<()> {
+            if self.refuses_again && !self.asks.is_empty() {
+                return Err(io::Error::other("the control page refused it"));
+            }
             self.asks.push(bytes);
             Ok(())
+        }
+        fn request(&mut self) -> io::Result<u64> {
+            Ok(self.lowered.or(self.asks.last().copied()).unwrap_or(0))
+        }
+        fn lift(&mut self) {
+            self.lifts += 1;
         }
         fn raise(&mut self, plugged: u64) {
             self.raised.push(plugged);
@@ -1604,13 +2236,20 @@ mod tests {
             self.said.push(what.to_string());
         }
         fn kernel_said(&mut self) -> Vec<String> {
-            vec!["virtio_mem virtio5: adding memory failed: -12".into()]
+            self.kernel.clone()
         }
         fn now(&mut self) -> Duration {
             self.clock
         }
-        fn pause(&mut self) {
-            self.clock += Duration::from_millis(1);
+        fn pause(&mut self, d: Duration) {
+            self.clock += d;
+            if let Some((_, held)) = self.held.filter(|&(at, _)| self.clock >= at) {
+                self.clock += held;
+                self.held = None;
+            }
+        }
+        fn coming(&mut self) -> &mut Coming {
+            &mut self.coming
         }
     }
 
@@ -1621,6 +2260,12 @@ mod tests {
             raised: Vec::new(),
             said: Vec::new(),
             clock: Duration::ZERO,
+            coming: Coming::default(),
+            held: None,
+            kernel: vec!["virtio_mem virtio5: adding memory failed: -12".into()],
+            lowered: None,
+            refuses_again: false,
+            lifts: 0,
         }
     }
 
@@ -1631,11 +2276,11 @@ mod tests {
     fn a_microvm_held_to_a_budget_plugs_no_more_than_its_cap_needs() {
         let boot = 256 * MIB;
         let most = 16 << 30;
-        // 96 MiB of room past 200 MiB used, 40 MiB its kernel's: 400 MiB with the slack,
+        // 96 MiB of room past 200 MiB used, 40 MiB its kernel's and 64 its slack: 400 MiB,
         // 406 with its page structures, 150 past boot, two blocks.
-        assert_eq!(plug_for(boot, most, 296 * MIB, 40 * MIB), 2 * ALIGN);
-        assert_eq!(plug_for(boot, most, 100 * MIB, 40 * MIB), 0);
-        assert_eq!(plug_for(boot, 128 * MIB, 4 << 30, 40 * MIB), 128 * MIB);
+        assert_eq!(plug_for(boot, most, 296 * MIB, 104 * MIB), 2 * ALIGN);
+        assert_eq!(plug_for(boot, most, 100 * MIB, 104 * MIB), 0);
+        assert_eq!(plug_for(boot, 128 * MIB, 4 << 30, 104 * MIB), 128 * MIB);
         assert_eq!(plug_for(boot, most, u64::MAX - 1, 0), most);
     }
 
@@ -1674,16 +2319,19 @@ mod tests {
         assert!(!reclaimed(false, u64::MAX, u64::MAX), "no budget");
     }
 
-    /// A run whose grower asked for memory, or had memory come, within the host's pressure
-    /// window keeps all it has; one quiet for the window, or never grown, is asked as any
-    /// other (PM M466).
+    /// Memory that came within a period of the run's peak keeps all it has, however soon
+    /// after it came the give-back is; a period that ends with no more than it began with,
+    /// or less (an unplug), is asked as any other (PM M466). No window: a give-back a
+    /// microsecond or an hour after the block came keeps it alike.
     #[test]
-    fn a_run_grown_lately_is_taken_for_growing_for_the_window() {
-        const WINDOW: u64 = shards_abi::PRESSURE_WINDOW_US * 1000;
-        assert!(!grew_within(0, 5 * WINDOW, WINDOW), "never grown");
-        assert!(grew_within(WINDOW, WINDOW, WINDOW), "just now");
-        assert!(grew_within(WINDOW, 2 * WINDOW - 1, WINDOW), "within");
-        assert!(!grew_within(WINDOW, 2 * WINDOW, WINDOW), "past it");
+    fn memory_that_came_within_a_peaks_period_is_kept() {
+        assert!(came_within(0, ALIGN), "a block come since its hold");
+        assert!(
+            came_within(2 * ALIGN, 3 * ALIGN),
+            "a block come since the last give-back"
+        );
+        assert!(!came_within(3 * ALIGN, 3 * ALIGN), "there the whole period");
+        assert!(!came_within(3 * ALIGN, ALIGN), "unplugged within it");
     }
 
     /// A hold counts out what its device has been asked to unplug, free or not, so that the
@@ -1695,7 +2343,8 @@ mod tests {
     fn a_hold_counts_out_what_goes_as_it_is_unplugged() {
         let (boot, total, free, current) = (244_293_632u64, 378_511_360u64, 316_907_520u64, 20_647_936u64);
         let (kernel, leaving) = (total - free - current, total - boot);
-        let reserve = reserve(total, u64::MAX);
+        // A slack of 64 MiB, as it had then (memory-11).
+        let reserve = reserve(total, u64::MAX, 64 * MIB);
         // 264,532,352 before the reserve kept an eighth for its CPUs' lists (PM M392).
         assert_eq!(
             hold_of(current, free, 0, reserve),
@@ -1728,12 +2377,16 @@ mod tests {
                 .saturating_sub(uncharged)
                 .saturating_sub(hold_of(at_hold, 0, 0, reserve))
         };
-        let without = SLACK + total / 64;
+        // The slack it had then, 64 MiB (memory-11), with no eighth for the lists.
+        let without = 64 * MIB + total / 64;
         assert!(free_at(without) < 8 * MIB, "{}", free_at(without) / MIB);
+        // Its slack now: what 32 CPUs charge past the hold with THP, and the 85 MiB its
+        // kernel held beside the build as the hold was set.
+        let slack = overshoot_of(32, 4096, Some(2 * MIB)) + 85 * MIB;
         // At least a memory block free, which its driver adds the memory asked for in.
-        assert!(free_at(reserve(total, u64::MAX)) >= ALIGN);
+        assert!(free_at(reserve(total, u64::MAX, slack)) >= ALIGN);
         // An eighth of what it has, past all its lists held as it ran out.
-        assert_eq!(reserve(total, u64::MAX) - without, total / 8);
+        assert_eq!(reserve(total, u64::MAX, slack) - slack - total / 64, total / 8);
         assert!(total / 8 >= 98 * MIB);
     }
 
@@ -1755,42 +2408,79 @@ mod tests {
         assert_eq!(working_room(), working_room_of(cpus, page_size()));
     }
 
-    /// A run gives back what it holds plugged past twice what it uses, in whole blocks, as
-    /// its host asks; never what it used at its peak since it was last asked, nor anything
-    /// while memory it asked for to grow is still to come, nor less than a block.
+    /// A run gives back what it holds plugged past what holds twice what it uses beside what
+    /// its kernel holds, in whole blocks, as its host asks; never what it used at its peak
+    /// since it was last asked, nor anything while memory it asked for to grow is still to
+    /// come, nor less than a block.
     #[test]
     fn a_run_keeps_its_peak_and_what_it_asked_for() {
-        const GIB: u64 = 1 << 30;
         let boot = 256 * MIB;
-        // Using 300 MiB of 4 GiB plugged: it keeps 600 less what it booted with, 344 MiB,
-        // in whole blocks, 384.
+        let beside = 100 * MIB;
+        // Using 300 MiB of 4 GiB plugged, its kernel 100 beside it: 700 MiB held is 800 with
+        // its CPUs' lists, 896 in whole blocks, 640 past its boot.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB),
-            Some(384 * MIB)
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, 300 * MIB, beside),
+            Some(640 * MIB)
         );
-        // Having reached 2.5 GiB since it was last asked: it keeps that.
+        // Having reached 2.5 GiB since it was last asked: what holds that, 3 GiB, less boot.
         let peak = 2560 * MIB;
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak),
-            Some((peak - boot).next_multiple_of(ALIGN))
+            to_keep(boot, 8 * GIB, 4 * GIB, 4 * GIB, 300 * MIB, peak, beside),
+            Some(2816 * MIB)
         );
         // Growing, a block or more it asked for not yet plugged: it gives back nothing.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB),
+            to_keep(boot, 8 * GIB, 4 * GIB, 5 * GIB, 300 * MIB, 300 * MIB, beside),
             None
         );
-        // What it would give back is less than a block, 448 MiB plugged and 384 kept; and a
+        // What it would give back is less than a block, 640 MiB plugged and 640 kept; and a
         // block exactly.
         assert_eq!(
-            to_keep(boot, 8 * GIB, 448 * MIB, 448 * MIB, 300 * MIB, 300 * MIB),
+            to_keep(boot, 8 * GIB, 640 * MIB, 640 * MIB, 300 * MIB, 300 * MIB, beside),
             None
         );
         assert_eq!(
-            to_keep(boot, 8 * GIB, 512 * MIB, 512 * MIB, 300 * MIB, 300 * MIB),
-            Some(384 * MIB)
+            to_keep(boot, 8 * GIB, 768 * MIB, 768 * MIB, 300 * MIB, 300 * MIB, beside),
+            Some(640 * MIB)
         );
         // Never past its most.
-        assert_eq!(to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB), Some(GIB));
+        assert_eq!(
+            to_keep(boot, GIB, 4 * GIB, 4 * GIB, 3 * GIB, 3 * GIB, beside),
+            Some(GIB)
+        );
+    }
+
+    /// The grower asks for what a give-back keeps, both of the run's own use (memory-14):
+    /// growth that asked for twice its MemTotal while a give-back kept twice its use, a
+    /// give-back after a growth took back what the growth had just asked for. And a run held
+    /// at its hold is given a block more than it has at least, never nothing to grow into.
+    #[test]
+    fn a_grower_asks_for_what_a_give_back_keeps() {
+        let most = 64 * GIB;
+        for (boot, used, beside) in [
+            (256 * MIB, 300 * MIB, 100 * MIB),
+            (512 * MIB, 3 * GIB, 180 * MIB),
+            (2 * GIB, 900 * MIB, 400 * MIB),
+            (512 * MIB, 20 * GIB, 300 * MIB),
+        ] {
+            let asked = to_ask(boot, most, 0, 0, used, beside);
+            assert_eq!(asked % ALIGN, 0, "{used}");
+            let plugged = asked + 8 * GIB;
+            assert_eq!(
+                to_keep(boot, most, plugged, plugged, used, used, beside),
+                Some(asked),
+                "{boot} {used} {beside}"
+            );
+        }
+        // Held at its hold with little used and much plugged: a block more than it has.
+        let plugged = 4 * GIB;
+        assert_eq!(
+            to_ask(256 * MIB, most, plugged, plugged, 10 * MIB, 50 * MIB),
+            plugged + ALIGN
+        );
+        // Never past its most, never below what it asks for now.
+        assert_eq!(to_ask(256 * MIB, GIB, 0, 0, 3 * GIB, 0), GIB);
+        assert_eq!(to_ask(256 * MIB, most, 0, 6 * GIB, 300 * MIB, 0), 6 * GIB);
     }
 
     /// The kernel's memory less its report of what may still be plugged (D149): read
@@ -1891,7 +2581,9 @@ mod tests {
         assert!(g.said.is_empty(), "{:?}", g.said);
     }
 
-    /// Memory that comes slowly, a block every four seconds, is never stalled.
+    /// Memory that comes slowly, a block every four seconds, is never stalled, and teaches
+    /// its guest's grower that a block may take four seconds, seen within a look's pace of
+    /// its coming.
     #[test]
     fn memory_that_comes_slowly_is_waited_for() {
         let mut g = fake(|asks: &[u64], t: Duration| {
@@ -1900,35 +2592,125 @@ mod tests {
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB]);
         assert_eq!(g.raised, [128 * MIB, 256 * MIB, 384 * MIB, 512 * MIB]);
+        let slowest = g.coming.slowest.unwrap();
+        let four = Duration::from_secs(4);
+        assert!(
+            slowest >= four && slowest <= four + 2 * pace(LOOK, four) + 4 * LOOK,
+            "{slowest:?}"
+        );
+        assert_eq!(g.lifts, 0);
     }
 
-    /// Memory that stops coming is asked for again after [`STALLED`], saying so with the
-    /// kernel's words, which tells the driver again; it comes then, and is waited for.
+    /// The grower's looks follow D215's pace, a look's cost against the wait so far, not a
+    /// millisecond: a look of 10 µs 4 s into a wait pauses 8.9 ms, and at once into it none.
+    #[test]
+    fn the_growers_looks_follow_their_cost_against_the_wait() {
+        assert_eq!(
+            pace(LOOK, Duration::from_secs(4)),
+            Duration::from_nanos(8_944_271)
+        );
+        assert_eq!(pace(LOOK, Duration::ZERO), Duration::ZERO);
+    }
+
+    /// A grower its host or its guest held from looking is not stalled for it: learned that a
+    /// block takes 100 ms, held 10 s 50 ms into its wait on one that comes 10.08 s in, under
+    /// 100 ms of its own time (the hold counted as one pace), it asks once.
+    #[test]
+    fn a_grower_held_from_looking_is_not_stalled() {
+        let mut g = fake(|asks: &[u64], t: Duration| {
+            PLUG.boot
+                + if t >= Duration::from_millis(10_080) {
+                    asks[0]
+                } else {
+                    0
+                }
+        });
+        g.coming.came(Duration::from_millis(100));
+        g.held = Some((Duration::from_millis(50), Duration::from_secs(10)));
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert!(g.said.is_empty(), "{:?}", g.said);
+    }
+
+    /// A guest's first plug has no slowest seen to be past: it is waited for for as long as
+    /// its memory takes, here 20 s, never asked for again nor given up (D137, D209 Part 4).
+    #[test]
+    fn a_guests_first_memory_is_waited_for_however_long_it_takes() {
+        let mut g = fake(|asks: &[u64], t: Duration| {
+            PLUG.boot + if t >= Duration::from_secs(20) { asks[0] } else { 0 }
+        });
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks, [512 * MIB]);
+        assert!(g.said.is_empty(), "{:?}", g.said);
+    }
+
+    /// Memory that stops coming past the slowest a block took in its guest (here 2 s) is
+    /// asked for again, saying so with the kernel's words, which tells the driver again, and
+    /// the build runs on what it has meanwhile; it comes then, and is waited for.
     #[test]
     fn memory_that_stops_coming_is_asked_for_again() {
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 1 { 512 * MIB } else { 0 });
+        g.coming.came(Duration::from_secs(2));
         assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
         assert_eq!(g.asks, [512 * MIB, 512 * MIB]);
-        assert_eq!(
-            g.said,
-            [
-                "536870912 bytes asked for, 0 came in 5 s; asking again; the kernel said: virtio_mem virtio5: adding memory failed: -12"
-            ]
+        assert_eq!(g.lifts, 1);
+        assert_eq!(g.said.len(), 1, "{:?}", g.said);
+        assert!(
+            g.said[0].starts_with("536870912 bytes asked for, 0 came, none for ")
+                && g.said[0].ends_with(
+                "past the slowest a block took here (2s); asking again, the build running on what it has meanwhile; the kernel said: virtio_mem virtio5: adding memory failed: -12"
+            ),
+            "{:?}",
+            g.said
         );
     }
 
-    /// Memory that does not come though asked for twice is given up, with what came of it,
-    /// after [`STALLED`] twice and no sooner.
+    /// A driver that plugs on the third window past the slowest a block took, after three
+    /// asks again, is waited for to the end, not given up for a count of tries (memory-13):
+    /// asked again each window, the build let run once, its hold raised again as it comes.
     #[test]
-    fn memory_that_never_comes_is_given_up() {
+    fn memory_that_comes_after_a_third_ask_is_waited_for() {
+        let slowest = Duration::from_secs(2);
+        let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.len() > 3 { 512 * MIB } else { 0 });
+        g.coming.came(slowest);
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::All);
+        assert_eq!(g.asks.len(), 4);
+        assert_eq!(g.lifts, 1, "let run once, as it first waited past the slowest");
+        assert_eq!(g.raised, [512 * MIB]);
+        assert!(g.clock >= 3 * slowest, "{:?}", g.clock);
+    }
+
+    /// A driver that says it stopped for good ("marking device broken") is given up at
+    /// once, with what came, never asked again: told apart from one that is still trying
+    /// by its own words, not by time.
+    #[test]
+    fn a_driver_that_stopped_for_good_is_given_up() {
+        let slowest = Duration::from_secs(2);
         let mut g = fake(|asks: &[u64], _| PLUG.boot + if asks.is_empty() { 0 } else { 256 * MIB });
-        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Stalled(256 * MIB));
-        assert_eq!(g.asks.len(), 2);
-        assert!(
-            g.clock > 2 * STALLED && g.clock < 2 * STALLED + Duration::from_millis(10),
-            "{:?}",
-            g.clock
-        );
+        g.coming.came(slowest);
+        g.kernel = vec!["virtio_mem virtio5: unknown error, marking device broken: -22".into()];
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Broken(256 * MIB));
+        assert_eq!(g.asks.len(), 1);
+        assert!(g.clock >= slowest && g.clock < 2 * slowest, "{:?}", g.clock);
+        assert_eq!(g.coming.slowest, Some(slowest));
+        // In a guest's first plug, none seen yet, its word is looked for at each look.
+        let mut g = fake(|_: &[u64], _| PLUG.boot);
+        g.kernel = vec!["virtio_mem virtio5: unknown error, marking device broken: -22".into()];
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Broken(0));
+    }
+
+    /// An ask again that its control page refuses ends the wait, typed; a request another
+    /// lowered below the ask is no longer this grower's to wait for.
+    #[test]
+    fn a_refused_ask_and_a_lowered_request_end_the_wait() {
+        let slowest = Duration::from_secs(2);
+        let mut g = fake(|_: &[u64], _| PLUG.boot);
+        g.coming.came(slowest);
+        g.refuses_again = true;
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Refused(0));
+        let mut g = fake(|_: &[u64], _| PLUG.boot + 128 * MIB);
+        g.lowered = Some(128 * MIB);
+        assert_eq!(come(PLUG, 512 * MIB, &mut g), Came::Superseded(128 * MIB));
     }
 
     /// The give-back connection's two ends: the host's, and the answerer's as init holds it.
@@ -2029,6 +2811,54 @@ mod tests {
             answerer.join().unwrap();
         });
         assert_eq!(*rooms.lock().unwrap(), [Some(128 * MIB as i64), None, Some(-5)]);
+    }
+
+    #[test]
+    fn a_give_back_room_past_signed_decimal_ends_before_reading_payload() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(&guest, || Ok((0, 0)), |_| Ok(None));
+                ended.send(()).unwrap();
+            });
+            let len = u32::try_from(i64::MIN.to_string().len() + 1).unwrap();
+            (&host).write_all(&run::header(kind::ROOM, len)).unwrap();
+            let gone = end.recv_timeout(Duration::from_secs(1));
+            // Close a mutant's waiting payload read before asserting/joining.
+            host.shutdown(std::net::Shutdown::Both).unwrap();
+            gone.expect("an impossible ROOM length kept the answerer waiting for its payload");
+        });
+    }
+
+    #[test]
+    fn a_give_back_room_accepts_both_signed_decimal_extremes() {
+        use shards_abi::{build::kind, run};
+        let (host, guest) = give_pair();
+        let rooms = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                answer(
+                    &guest,
+                    || Ok((0, 0)),
+                    |room| {
+                        rooms.lock().unwrap().push(room);
+                        Ok(None)
+                    },
+                )
+            });
+            let _shut = Shut(&host);
+            for value in [i64::MIN, i64::MAX] {
+                let payload = value.to_string();
+                (&host)
+                    .write_all(&run::header(kind::ROOM, payload.len() as u32))
+                    .unwrap();
+                (&host).write_all(payload.as_bytes()).unwrap();
+                assert_eq!(heard(&host), (kind::HELD, String::new()));
+            }
+        });
+        assert_eq!(*rooms.lock().unwrap(), [Some(i64::MIN), Some(i64::MAX)]);
     }
 
     /// A frame longer than any its host sends ends the connection, unread and unanswered,

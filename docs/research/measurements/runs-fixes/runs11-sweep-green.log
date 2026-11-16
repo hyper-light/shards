@@ -1,0 +1,13 @@
+# runs-11 SWEEP, green. macOS arm64, adas-mac-studio-3.local, kiln r1967, at cdefed177 (the test's flock assertion then
+# rewritten for clippy's safety comment in 65bf5db0d).
+# cargo test -p shards-ipc --lib slots::   18 passed, among them:
+test slots::fifo::tests::the_daemon_holds_the_take_lock_only_while_no_client_takes_a_slot ... ok
+test slots::fifo::tests::a_slot_whose_taker_ends_before_its_request_is_gone ... ok
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; finished in 2.05s
+# cargo test -p shards --bin shards -- a_follow_no_watch a_shipper_no_watch a_daemon_that_cannot_watch daemon::slots::tests
+test daemon::slots::tests::a_slot_whose_taker_ended_taking_it_is_let_go_of_while_none_takes ... ok
+test result: ok. 4 passed; 0 failed
+# cargo test -p shards --bin shards cli::client
+test result: ok. 7 passed; 0 failed; 1 ignored
+# cargo test -p shards --bin shards daemon::
+test result: ok. 440 passed; 0 failed; 7 ignored; 0 measured; 501 filtered out; finished in 65.28s

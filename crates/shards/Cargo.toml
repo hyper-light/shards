@@ -42,6 +42,8 @@ shards-seccomp = { path = "../seccomp" }
 shards-ext4 = { path = "../ext4" }
 shards-image = { path = "../image" }
 regex = "1"
+# A kernel's banner found in its image (guest.rs `release`), as regex finds its literals.
+memchr = "2"
 shards-ipc = { path = "../ipc" }
 shards-tui = { path = "../tui" }
 shards-registry = { path = "../registry" }

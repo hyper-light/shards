@@ -905,32 +905,37 @@ pub(crate) fn chosen(home: &Path, args: &mut Vec<OsString>) -> Result<Chosen, St
     chosen_in(home, args, &|name| std::env::var(name).ok())
 }
 
+/// The context `args`' own options choose, the last of them counting, and how many words
+/// at their front they are: what [`chosen`] takes off before the command. A client's
+/// command the daemon judges by the words that follow them (daemon/remote.rs, `judge`).
+pub(crate) fn choice<A: AsRef<std::ffi::OsStr>>(args: &[A]) -> Result<(Option<String>, usize), String> {
+    let mut given = None;
+    let mut taken = 0;
+    loop {
+        let word = |i: usize| args.get(i).and_then(|a| a.as_ref().to_str());
+        match word(taken) {
+            Some("--context" | "-c") => {
+                let name = word(taken.saturating_add(1)).ok_or("flag needs an argument: --context")?;
+                given = Some(name.to_string());
+                taken = taken.saturating_add(2);
+            }
+            Some(flag) if flag.starts_with("--context=") => {
+                given = Some(flag.trim_start_matches("--context=").to_string());
+                taken = taken.saturating_add(1);
+            }
+            _ => return Ok((given, taken)),
+        }
+    }
+}
+
 /// [`chosen`], `env` this process's environment.
 fn chosen_in(
     home: &Path,
     args: &mut Vec<OsString>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Chosen, String> {
-    let mut given = None;
-    loop {
-        let first = args.first().and_then(|a| a.to_str()).map(str::to_string);
-        match first.as_deref() {
-            Some("--context" | "-c") => {
-                let name = args
-                    .get(1)
-                    .and_then(|a| a.to_str())
-                    .ok_or("flag needs an argument: --context")?
-                    .to_string();
-                args.drain(..2);
-                given = Some(name);
-            }
-            Some(flag) if flag.starts_with("--context=") => {
-                given = Some(flag.trim_start_matches("--context=").to_string());
-                args.remove(0);
-            }
-            _ => break,
-        }
-    }
+    let (given, taken) = choice(args)?;
+    args.drain(..taken.min(args.len()));
     let env = |name: &str| env(name).filter(|v| !v.is_empty());
     let name = match given {
         Some(name) => name,
@@ -1085,6 +1090,25 @@ impl crate::build::policy::Resolve for PolicyBuilder<'_> {
         let said = self.asked(&["resolve"], asked, env)?;
         crate::build::policy::wire::read_known(&said)
     }
+}
+
+/// A build's `words` as the machine is sent them: before its context, each of `secrets`, by
+/// id, as the pipe it is read from there (`synced::SECRET`), and each of `agents`, by id, as
+/// the agent it reaches there (`synced::AGENT_SOCKET`).
+fn sent_words(words: &[String], secrets: &[&str], agents: &[&str]) -> Vec<String> {
+    let mut words = words.to_vec();
+    let at = words
+        .iter()
+        .position(|w| w == crate::synced::CONTEXT)
+        .unwrap_or(words.len());
+    for id in agents.iter().rev() {
+        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
+    }
+    for (i, id) in secrets.iter().enumerate().rev() {
+        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
+        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
+    }
+    words
 }
 
 /// A build of a context of this client's (D180 part 3c): what the machine builds, of its copy
@@ -1861,18 +1885,9 @@ fn build_there(
             *keys = crate::build::sshkey::keyring(std::mem::take(keys));
         }
     }
-    let mut words = built.words.clone();
-    let at = words
-        .iter()
-        .position(|w| w == crate::synced::CONTEXT)
-        .unwrap_or(words.len());
-    for id in agents.keys().rev() {
-        words.insert(at, format!("--ssh={id}={}{id}", crate::synced::AGENT_SOCKET));
-    }
-    for (i, (id, _)) in secrets.iter().enumerate().rev() {
-        let id = shards_cmdline::go::csv_field(&format!("id={id}"));
-        words.insert(at, format!("--secret={id},src={}{i}", crate::synced::SECRET));
-    }
+    let secret_ids: Vec<&str> = secrets.iter().map(|(id, _)| id.as_str()).collect();
+    let agent_ids: Vec<&str> = agents.keys().map(String::as_str).collect();
+    let words = sent_words(&built.words, &secret_ids, &agent_ids);
     // This client's own paths, which what the build prints there says in place of its
     // copies': its context's, its build file's directory's, and each tree's, by its key.
     let mut shown = built.context.as_os_str().as_encoded_bytes().to_vec();
@@ -3525,7 +3540,13 @@ fn remove(home: &Path, names: &[&str]) -> Result<(), String> {
 // What the machine that runs the microVMs keeps: its clients and invitations.
 
 const CLIENT: &str = "shards client 1";
-const INVITATION: &str = "shards invitation record 1";
+/// An invitation's record: `created T`, `valid S` (its lifetime, the owner's), then the
+/// invitation. A record of an earlier shards, made under its fixed hour, says no lifetime
+/// (`shards invitation record 1`) and is taken as lapsed: none is assumed for it.
+const INVITATION: &str = "shards invitation record 2";
+/// What stays of an invitation once it is used or revoked: `used T` or `revoked T`, its secret
+/// gone, so that a later join by its name is refused for what became of it.
+const ENDED: &str = "shards invitation ended 1";
 
 /// A client this machine's daemon enrolled.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3562,6 +3583,25 @@ pub(crate) fn clients(home: &Path) -> Vec<Client> {
     out
 }
 
+/// A client as its connection proved it (remote-03): the name the daemon judged its key
+/// enrolled under, and that key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Proved {
+    pub name: String,
+    pub key: Vec<u8>,
+}
+
+impl Proved {
+    /// Whether `home` enrolls it still: its name's record, of the key it proved. Read for
+    /// each operation, as its record is the one account of whom the home enrolls, which a
+    /// removal (`remove client`) or a client made again under the name changes.
+    pub(crate) fn enrolled(&self, home: &Path) -> bool {
+        invite::valid_name(&self.name)
+            && read_client(&home.join("clients").join(&self.name))
+                .is_some_and(|c| c.name == self.name && c.key == self.key)
+    }
+}
+
 /// Enrolls `key` as client `name`: the daemon's, as a client joins.
 pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> {
     let text = format!(
@@ -3572,29 +3612,130 @@ pub(crate) fn enroll(home: &Path, name: &str, key: &[u8]) -> Result<(), String> 
     write_new(&dir(home, "clients")?.join(name), text.as_bytes())
 }
 
-/// The invitation `name` this machine made, and when, if it holds one.
-pub(crate) fn invitation(home: &Path, name: &str) -> Option<(Invitation, u64)> {
+/// What this machine holds of invitation `name` (D180; its lifetime the owner's, decided by
+/// the person, 2026-11-14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Invited {
+    /// Unused and unrevoked: lapsed or not ([`Open::lapsed`]).
+    Open(Open),
+    /// Used by a join, or revoked by its owner.
+    Ended(Ended),
+}
+
+/// An invitation not yet used or revoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Open {
+    pub(crate) invitation: Invitation,
+    /// When it was made, seconds since the epoch.
+    pub(crate) created: u64,
+    /// How long it stays open, in seconds, as its owner said (`--valid`); none for a record of
+    /// an earlier shards, which said none.
+    pub(crate) valid: Option<u64>,
+}
+
+impl Open {
+    /// Whether it has lapsed by now: past its lifetime, or made with none stated.
+    pub(crate) fn lapsed(&self) -> bool {
+        self.valid
+            .is_none_or(|valid| now().saturating_sub(self.created) >= valid)
+    }
+}
+
+/// What ended an invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ended {
+    Used,
+    Revoked,
+}
+
+impl Ended {
+    fn word(self) -> &'static str {
+        match self {
+            Ended::Used => "used",
+            Ended::Revoked => "revoked",
+        }
+    }
+}
+
+/// Why a join by an invitation is refused at this machine. Its client hears the same words
+/// whatever it is (`server::NOT_INVITED`), so that no name or secret is told by its refusal;
+/// the machine's log says which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Uninvited {
+    /// No invitation of the name.
+    Unknown,
+    /// Past the lifetime its owner gave it, or made with none.
+    Lapsed,
+    /// Used by an earlier join.
+    Used,
+    /// Revoked by its owner.
+    Revoked,
+    /// Its secret not proven over the connection.
+    Unproven,
+}
+
+impl std::fmt::Display for Uninvited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Uninvited::Unknown => "no invitation of its name",
+            Uninvited::Lapsed => "its invitation lapsed",
+            Uninvited::Used => "its invitation was used",
+            Uninvited::Revoked => "its invitation was revoked",
+            Uninvited::Unproven => "its invitation's secret was not proven",
+        })
+    }
+}
+
+/// What this machine holds of invitation `name`, if anything.
+pub(crate) fn invited(home: &Path, name: &str) -> Option<Invited> {
     if !invite::valid_name(name) {
         return None;
     }
     let text = fs::read_to_string(home.join("invitations").join(name)).ok()?;
-    let (head, rest) = text.split_once('\n')?;
-    let (header, created) = (head, rest.lines().next()?);
-    if header != INVITATION {
-        return None;
+    let (header, rest) = text.split_once('\n')?;
+    if header == ENDED {
+        return match rest.split_once(' ').map(|(how, _)| how) {
+            Some("used") => Some(Invited::Ended(Ended::Used)),
+            Some("revoked") => Some(Invited::Ended(Ended::Revoked)),
+            _ => None,
+        };
     }
-    let created = created.strip_prefix("created ")?.parse().ok()?;
-    let body = rest.split_once('\n')?.1;
-    Some((Invitation::parse(body).ok()?, created))
+    let mut lines = rest.split_inclusive('\n');
+    let created = lines.next()?.trim_end().strip_prefix("created ")?.parse().ok()?;
+    let (valid, body) = match header {
+        INVITATION => {
+            let valid = lines.next()?.trim_end().strip_prefix("valid ")?.parse().ok()?;
+            (Some(valid), lines.collect::<String>())
+        }
+        "shards invitation record 1" => (None, lines.collect::<String>()),
+        _ => return None,
+    };
+    Some(Invited::Open(Open {
+        invitation: Invitation::parse(&body).ok()?,
+        created,
+        valid,
+    }))
 }
 
-/// Whether an invitation made at `created` has lapsed by now.
-pub(crate) fn lapsed(created: u64) -> bool {
-    now().saturating_sub(created) >= invite::LIFETIME_SECS
+/// The open invitation `name` whose secret `proven` says was proven, or why a join by it is
+/// refused.
+pub(crate) fn joinable(
+    home: &Path,
+    name: &str,
+    proven: impl Fn(&Invitation) -> bool,
+) -> Result<Open, Uninvited> {
+    match invited(home, name) {
+        None => Err(Uninvited::Unknown),
+        Some(Invited::Ended(Ended::Used)) => Err(Uninvited::Used),
+        Some(Invited::Ended(Ended::Revoked)) => Err(Uninvited::Revoked),
+        Some(Invited::Open(open)) if open.lapsed() => Err(Uninvited::Lapsed),
+        Some(Invited::Open(open)) if !proven(&open.invitation) => Err(Uninvited::Unproven),
+        Some(Invited::Open(open)) => Ok(open),
+    }
 }
 
-/// The invitations this machine holds, each with when it was made, by name.
-fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
+/// The open invitations this machine holds, lapsed or not, by name.
+fn invitations(home: &Path) -> Vec<Open> {
     let mut names: Vec<String> = fs::read_dir(home.join("invitations"))
         .into_iter()
         .flatten()
@@ -3602,21 +3743,73 @@ fn invitations(home: &Path) -> Vec<(Invitation, u64)> {
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     names.sort();
-    names.iter().filter_map(|name| invitation(home, name)).collect()
-}
-
-/// How many of this machine's invitations are open: unspent, and not lapsed.
-pub(crate) fn open_invitations(home: &Path) -> usize {
-    invitations(home)
+    names
         .iter()
-        .filter(|(_, created)| !lapsed(*created))
-        .count()
+        .filter_map(|name| match invited(home, name)? {
+            Invited::Open(open) => Some(open),
+            Invited::Ended(_) => None,
+        })
+        .collect()
 }
 
-/// Redeems invitation `name`: removed, so that it enrolls one client alone.
-pub(crate) fn redeem(home: &Path, name: &str) -> Result<(), String> {
+/// How many of this machine's invitations are open: unused, unrevoked, and not lapsed.
+pub(crate) fn open_invitations(home: &Path) -> usize {
+    invitations(home).iter().filter(|open| !open.lapsed()).count()
+}
+
+/// Ends invitation `name`, `how`: its record taken away first, so that of two joins at once one
+/// ends it and the other is refused, then what stays of it written in its place, its secret
+/// gone.
+pub(crate) fn end_invitation(home: &Path, name: &str, how: Ended) -> Result<(), String> {
     let path = home.join("invitations").join(name);
-    fs::remove_file(&path).map_err(at(&path))
+    let taken = dir(home, "invitations-ending")?.join(name);
+    fs::rename(&path, &taken).map_err(at(&path))?;
+    // What was taken is an open invitation's record, or what stays of one ended already, which
+    // goes back (where no new invitation of the name took its place meanwhile) unended again.
+    let open = fs::read_to_string(&taken)
+        .is_ok_and(|text| text.split_once('\n').is_some_and(|(header, _)| header != ENDED));
+    if !open {
+        let _ = fs::hard_link(&taken, &path);
+        let _ = fs::remove_file(&taken);
+        return Err(format!("invitation {name:?} ended already"));
+    }
+    let ended = write_new(&path, format!("{ENDED}\n{} {}\n", how.word(), now()).as_bytes());
+    let removed = fs::remove_file(&taken).map_err(at(&taken));
+    ended.and(removed)
+}
+
+/// An invitation's lifetime as its owner gives it (`--valid DURATION`, Go's durations, as
+/// `10m`), in whole seconds, rounded up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Lifetime {
+    /// None given: the owner states it, as none is assumed (the person, 2026-11-14).
+    Missing,
+    /// Not a duration.
+    Unread(String),
+    /// Zero or less.
+    NotPositive,
+}
+
+impl std::fmt::Display for Lifetime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Lifetime::Missing => f.write_str(
+                "flag needed: --valid DURATION, how long the invitation stays open for its one use (as --valid 10m): none is assumed",
+            ),
+            Lifetime::Unread(why) => write!(f, "--valid: {why}"),
+            Lifetime::NotPositive => f.write_str("--valid: an invitation's lifetime is more than none"),
+        }
+    }
+}
+
+pub(crate) fn lifetime(given: Option<&str>) -> Result<u64, Lifetime> {
+    let given = given.ok_or(Lifetime::Missing)?;
+    let nanos = shards_cmdline::gotime::duration(given).map_err(Lifetime::Unread)?;
+    let nanos = u64::try_from(nanos)
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or(Lifetime::NotPositive)?;
+    Ok(nanos.div_ceil(1_000_000_000))
 }
 
 /// Where this home's daemon listens for clients, while it does.
@@ -3629,7 +3822,7 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         Err(e) => return failed(&e),
     };
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).collect();
-    if asks_help(&words, &["--name", "--output", "--dir", "--device"]) {
+    if asks_help(&words, &["--name", "--output", "--valid", "--dir", "--device"]) {
         return help_page(thing, ADMIN_USAGE);
     }
     let result = match (thing, words.as_slice()) {
@@ -3676,18 +3869,31 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
         }),
         ("invitation", ["ls" | "list"]) => {
             let mut out = io::stdout().lock();
-            let _ = writeln!(out, "NAME\tADDRESS\tMADE\tLAPSED");
-            for (i, created) in invitations(&home) {
-                let _ = writeln!(out, "{}\t{}\t{created}\t{}", i.name, i.address, lapsed(created));
+            let _ = writeln!(out, "NAME\tADDRESS\tMADE\tVALID\tLAPSED");
+            for open in invitations(&home) {
+                let valid = open.valid.map_or_else(|| "-".to_string(), |v| format!("{v}s"));
+                let i = &open.invitation;
+                let _ = writeln!(
+                    out,
+                    "{}\t{}\t{}\t{valid}\t{}",
+                    i.name,
+                    i.address,
+                    open.created,
+                    open.lapsed()
+                );
             }
             Ok(())
         }
         ("invitation", ["rm" | "remove", names @ ..]) if !names.is_empty() => {
             names.iter().try_for_each(|name| {
-                if invitation(&home, name).is_none() {
-                    return Err(format!("no invitation {name:?}"));
+                match invited(&home, name) {
+                    Some(Invited::Open(_)) => {}
+                    Some(Invited::Ended(how)) => {
+                        return Err(format!("invitation {name:?} was {} already", how.word()));
+                    }
+                    None => return Err(format!("no invitation {name:?}")),
                 }
-                redeem(&home, name)?;
+                end_invitation(&home, name, Ended::Revoked)?;
                 // What it would have granted, where it enrolled no client (D228).
                 if !clients(&home).iter().any(|c| c.name == *name) {
                     crate::client_grants::remove(&home, name)?;
@@ -3705,7 +3911,7 @@ pub(crate) fn admin(thing: &str, args: &[OsString]) -> ExitCode {
 }
 
 const ADMIN_USAGE: &str =
-    "usage: shards invite client --name NAME --output FILE [--dir PATH[:ro]]... [--device NAME]... [--gpus]
+    "usage: shards invite client --name NAME --output FILE --valid DURATION [--dir PATH[:ro]]... [--device NAME]... [--gpus]
        shards grant client NAME [--dir PATH[:ro]]... [--device NAME]... [--gpus]
        shards revoke client NAME [--dir PATH]... [--device NAME]... [--gpus]
        shards inspect client NAME...
@@ -3715,7 +3921,8 @@ const ADMIN_USAGE: &str =
        shards remove invitation NAME...
   On the machine that runs the microVMs, whose daemon listens for clients (shards run
   daemon --listen ADDR:PORT): an invitation, a private file that enrolls one client as
-  NAME and lapses an hour after it is made, and the clients enrolled.
+  NAME, once, within the lifetime --valid gives it (as 10m or 2h: none is assumed), until
+  then revocable (shards remove invitation NAME); and the clients enrolled.
   A client reaches none of this machine's directories or devices but those granted it:
   --dir a directory, and all beneath it, which a volume of it (o=bind) mounts, :ro to
   read alone; --device a CDI device, a VFIO group's node or a host's PCI function by its
@@ -3777,6 +3984,7 @@ fn show_grants(name: &str, grants: &crate::client_grants::Grants) {
 fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let mut name = None;
     let mut output = None;
+    let mut valid = None;
     // What the client it enrolls may reach of this machine (D228), none unless named.
     let mut asked = crate::client_grants::Asked::default();
     let mut i = 0;
@@ -3790,6 +3998,10 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
                 output = Some(*rest.get(i + 1).ok_or("flag needs an argument: --output")?);
                 i += 2;
             }
+            "--valid" => {
+                valid = Some(*rest.get(i + 1).ok_or("flag needs an argument: --valid")?);
+                i += 2;
+            }
             other => match asked.read(rest, i)? {
                 0 => return Err(format!("unknown flag: {other}")),
                 n => i += n,
@@ -3799,6 +4011,7 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let (Some(name), Some(output)) = (name, output) else {
         return Err(ADMIN_USAGE.to_string());
     };
+    let valid = lifetime(valid).map_err(|e| e.to_string())?;
     let listening = fs::read_to_string(home.join(LISTENING))
         .ok()
         .and_then(|a| a.trim().parse::<SocketAddr>().ok())
@@ -3812,12 +4025,12 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     if clients(home).iter().any(|c| c.name == name) {
         return Err(format!("a client named {name:?} is enrolled already"));
     }
-    if invitation(home, name).is_some_and(|(_, created)| !lapsed(created)) {
+    if matches!(invited(home, name), Some(Invited::Open(open)) if !open.lapsed()) {
         return Err(format!("an invitation named {name:?} is open already"));
     }
     let identity = identity(home)?;
     let made = Invitation::new(name, listening, identity.fingerprint()).map_err(|e| e.to_string())?;
-    let record = format!("{INVITATION}\ncreated {}\n{}", now(), made.text());
+    let record = format!("{INVITATION}\ncreated {}\nvalid {valid}\n{}", now(), made.text());
     let path = dir(home, "invitations")?.join(name);
     let _ = fs::remove_file(&path);
     // Kept under the name it enrolls its client as, which no client has: what an
@@ -3830,7 +4043,10 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
     let _ = writeln!(io::stdout(), "{output}");
     let _ = writeln!(
         io::stderr(),
-        "Invited {name}: the invitation in {output} enrolls one client, and lapses in an hour"
+        "Invited {name}: the invitation in {output} enrolls one client, and lapses in {}",
+        shards_cmdline::gotime::format_duration(
+            i64::try_from(valid.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX)
+        )
     );
     Ok(())
 }
@@ -3839,6 +4055,61 @@ fn invite_client(home: &Path, rest: &[&str]) -> Result<(), String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// An invitation's lifetime is its owner's to give (the person, 2026-11-14): none given is
+    /// refused, typed, with what the flag is; a duration is whole seconds, rounded up.
+    #[test]
+    fn an_invitations_lifetime_is_given_by_its_owner() {
+        assert_eq!(lifetime(None), Err(Lifetime::Missing));
+        assert!(Lifetime::Missing.to_string().contains("--valid DURATION"));
+        assert_eq!(lifetime(Some("10m")), Ok(600));
+        assert_eq!(lifetime(Some("1500ms")), Ok(2));
+        assert_eq!(lifetime(Some("0s")), Err(Lifetime::NotPositive));
+        assert_eq!(lifetime(Some("-1m")), Err(Lifetime::NotPositive));
+        assert!(matches!(lifetime(Some("ten")), Err(Lifetime::Unread(_))));
+    }
+
+    /// A join is refused, typed, for what became of its invitation: none of its name, past its
+    /// lifetime (or made by an earlier shards with none), its secret unproven, used, revoked.
+    /// Of two ends at once, one ends it.
+    #[test]
+    fn a_join_is_refused_for_what_became_of_its_invitation() {
+        let home = shards_testdir::TempDir::new("invited").unwrap();
+        let home = home.path();
+        let at: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let fingerprint = identity::Identity::generate().unwrap().fingerprint();
+        let make = |name: &str, created: u64, valid: Option<u64>| {
+            let made = Invitation::new(name, at, fingerprint).unwrap();
+            let record = match valid {
+                Some(valid) => format!("{INVITATION}\ncreated {created}\nvalid {valid}\n{}", made.text()),
+                None => format!("shards invitation record 1\ncreated {created}\n{}", made.text()),
+            };
+            let path = dir(home, "invitations").unwrap().join(name);
+            let _ = fs::remove_file(&path);
+            write_new(&path, record.as_bytes()).unwrap();
+            made
+        };
+        let proven = |_: &Invitation| true;
+        assert_eq!(joinable(home, "none", proven), Err(Uninvited::Unknown));
+        let made = make("open", now(), Some(600));
+        let open = joinable(home, "open", proven).unwrap();
+        assert_eq!((open.invitation, open.valid), (made, Some(600)));
+        assert_eq!(joinable(home, "open", |_| false), Err(Uninvited::Unproven));
+        make("late", now() - 601, Some(600));
+        assert_eq!(joinable(home, "late", proven), Err(Uninvited::Lapsed));
+        make("older", now(), None);
+        assert_eq!(joinable(home, "older", proven), Err(Uninvited::Lapsed));
+        end_invitation(home, "open", Ended::Used).unwrap();
+        assert_eq!(joinable(home, "open", proven), Err(Uninvited::Used));
+        assert!(end_invitation(home, "open", Ended::Used).is_err(), "ended once");
+        let text = fs::read_to_string(home.join("invitations/open")).unwrap();
+        assert!(!text.contains("secret"), "{text}");
+        make("withdrawn", now(), Some(600));
+        end_invitation(home, "withdrawn", Ended::Revoked).unwrap();
+        assert_eq!(joinable(home, "withdrawn", proven), Err(Uninvited::Revoked));
+        assert_eq!(open_invitations(home), 0);
+        assert_eq!(invitations(home).len(), 2, "the lapsed are listed, the ended not");
+    }
 
     /// A run or create that never pulls asks no credential helper; one that may pull does.
     #[test]
@@ -4087,6 +4358,36 @@ mod tests {
         assert_eq!(crate::cli::request::seccomp_profile(json), Ok(json.to_string()));
     }
 
+    /// remote-09: what this client's shards sends of a build naming every kind of path a build
+    /// names, here, is held to its copies there (`synced::held_to_copies`), so that the
+    /// machine's refusal of any other path refuses no build of a client's.
+    #[test]
+    fn what_a_client_sends_of_a_build_is_held_to_its_copies() {
+        let dir = shards_testdir::TempDir::new("ctx-held").unwrap();
+        let t = AsRef::<Path>::as_ref(&dir).to_str().unwrap().to_string();
+        for sub in ["ctx", "cachein", "named", "layout"] {
+            std::fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        std::fs::write(dir.join("ctx").join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("ctx").join("p.rego"), "package docker\n").unwrap();
+        let words: Vec<String> = "build --output=type=local,dest=T/out --iidfile=T/iid --metadata-file=T/meta --cache-to=type=local,dest=T/cache --cache-from=type=local,src=T/cachein --build-context=n=T/named --build-context=l=oci-layout://T/layout:v1 --policy=filename=T/ctx/p.rego --secret=id=s,src=T/s --ssh=default -f T/ctx/Dockerfile T/ctx"
+            .split(' ')
+            .map(|w| w.replace('T', &t))
+            .collect();
+        let built = building(&words, &|| Ok(Vec::new())).unwrap().unwrap();
+        let sent = sent_words(&built.words, &["s"], &["default"]);
+        assert_eq!(crate::synced::held_to_copies(&sent, 1), Ok(()), "{sent:?}");
+        let artifact = artifact_building(&[
+            "build".to_string(),
+            "agent".to_string(),
+            dir.join("ctx").to_str().unwrap().to_string(),
+            "-t".to_string(),
+            "a".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(crate::synced::held_to_copies(&artifact.words, 0), Ok(()));
+    }
+
     /// What a context carries, and what it refuses until it carries it.
     #[test]
     fn an_artifacts_build_is_of_the_machines_copy_of_its_directory() {
@@ -4247,6 +4548,32 @@ mod tests {
     /// A command shards starts by a word a user types too, `HERE` in its environment, runs
     /// here, where its home's current context, or its starter's `DOCKER_CONTEXT`, names
     /// another machine's.
+    /// remote-03: a client as its connection proved it is enrolled while its name's record
+    /// holds its key: not once it is removed, nor once its name is another key's.
+    #[test]
+    fn a_proved_client_is_enrolled_while_its_record_holds_its_key() {
+        let home = shards_testdir::TempDir::new("ctx-proved").unwrap();
+        let (one, other) = (vec![1u8; 44], vec![2u8; 44]);
+        let proved = |key: &[u8]| Proved {
+            name: "laptop".into(),
+            key: key.to_vec(),
+        };
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &one).unwrap();
+        assert!(proved(&one).enrolled(&home));
+        assert!(!proved(&other).enrolled(&home));
+        std::fs::remove_file(home.join("clients").join("laptop")).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        enroll(&home, "laptop", &other).unwrap();
+        assert!(!proved(&one).enrolled(&home));
+        assert!(proved(&other).enrolled(&home));
+        let elsewhere = Proved {
+            name: "../laptop".into(),
+            key: other.clone(),
+        };
+        assert!(!elsewhere.enrolled(&home));
+    }
+
     #[test]
     fn here_holds_a_child_to_this_machine() {
         let home = shards_testdir::TempDir::new("ctx-here").unwrap();

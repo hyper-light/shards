@@ -1,0 +1,19 @@
+# network-09, adacachy2, Linux 7.3.3-1-cachyos x86_64, rustc 1.98.1, dev profile, nice -n 10, cold CARGO_TARGET_DIR ~/g121-tmp/netb/target.
+# kiln run r1786, tree 51a4b86fb (merge 38bd7a9d0 of main 2e00a1043 + part B commits)
+=== RED tree: 51a4b86fb86113a598874081b5f882072fdb95c6 with 339d16ab1 reverted
+running 1 test
+test agentdns::tests::an_existing_tcp_session_uses_the_members_current_names ... FAILED
+---- agentdns::tests::an_existing_tcp_session_uses_the_members_current_names stdout ----
+thread 'agentdns::tests::an_existing_tcp_session_uses_the_members_current_names' (1515316) panicked at crates/init/src/agentdns.rs:653:9:
+assertion `left == right` failed: the old TCP session kept a departed member
+  left: 0
+ right: 5
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 286 filtered out; finished in 0.00s
+=== GREEN tree: 51a4b86fb86113a598874081b5f882072fdb95c6 0 changed
+test agentdns::tests::a_refused_query_keeps_its_id_and_question ... ok
+test agentdns::tests::an_existing_tcp_session_uses_the_members_current_names ... ok
+test dnsrelay::tests::an_open_tcp_client_and_a_lost_udp_query_leave_other_clients_progress ... ok
+test agentdns::tests::no_asker_takes_anothers_share_of_the_ids ... ok
+test dnsrelay::tests::a_full_id_space_refuses_then_releases_its_questions ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 282 filtered out; finished in 0.08s
+--- clippy (cargo clippy -p shards-init --all-targets -- -D warnings): exit 0

@@ -42,6 +42,18 @@ pub use whp::*;
 pub mod assignment;
 
 /// The backend this build drives VMs with, if any.
+/// Whether this backend's vCPU guest time is its thread's CPU time by construction (D265):
+/// KVM charges it to the vCPU thread's user time (`account_guest_time`: `p->utime +=
+/// cputime; ... p->gtime += cputime`, kernel/sched/cputime.c), and Hypervisor.framework runs
+/// a vCPU on the thread that owns it, whose time XNU does not split between guest and host
+/// (docs/research/measurements/guest-cpu-time-v1). WHP's is its host's scheduler's, which
+/// its process learns from its own clocks (`vm::guest_time`): none here.
+pub const GUEST_TIME_CHARGED: Option<crate::vm::Charged> = if cfg!(any(hv = "kvm", hv = "hvf")) {
+    Some(crate::vm::Charged::ToThread)
+} else {
+    None
+};
+
 pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
     Some("hvf")
 } else if cfg!(hv = "kvm") {
@@ -51,6 +63,33 @@ pub const BACKEND: Option<&str> = if cfg!(hv = "hvf") {
 } else {
     None
 };
+
+/// The backend this build drives VMs with, typed, if any.
+pub fn backend() -> Option<shards_abi::host::Backend> {
+    BACKEND.and_then(shards_abi::host::Backend::named)
+}
+
+/// Whether this x86-64 host is a VM its hypervisor gives no hardware virtualization of its
+/// own ([`shards_abi::host::Unusable::NoNested`]), asked where KVM or WHP found none: the CPU
+/// says a hypervisor runs it (CPUID.1:ECX bit 31, which Intel's SDM and AMD's APM reserve for
+/// a hypervisor to set) and offers neither VMX (CPUID.1:ECX bit 5, Intel SDM vol. 2A) nor SVM
+/// (CPUID.80000001h:ECX bit 2, AMD APM vol. 3), which a hypervisor nesting its guests gives.
+#[cfg(all(target_arch = "x86_64", any(hv = "kvm", hv = "whp")))]
+pub(crate) fn no_nested() -> bool {
+    use std::arch::x86_64::__cpuid;
+    let extended = (__cpuid(0x8000_0000).eax >= 0x8000_0001).then(|| __cpuid(0x8000_0001).ecx);
+    nested_unavailable(__cpuid(1).ecx, extended)
+}
+
+/// [`no_nested`] of CPUID.1's ECX and, where the CPU has the leaf, CPUID.80000001h's.
+#[cfg(any(all(target_arch = "x86_64", any(hv = "kvm", hv = "whp")), test))]
+fn nested_unavailable(leaf1_ecx: u32, extended_ecx: Option<u32>) -> bool {
+    const HYPERVISOR: u32 = 1 << 31;
+    const VMX: u32 = 1 << 5;
+    const SVM: u32 = 1 << 2;
+    let svm = extended_ecx.is_some_and(|ecx| ecx & SVM != 0);
+    leaf1_ecx & HYPERVISOR != 0 && leaf1_ecx & VMX == 0 && !svm
+}
 
 /// A guest page in a working set: what a run touched, in the order it first did, so that
 /// later copies can have it in place before they run (REAP, Ustiugov et al., ASPLOS 2021;
@@ -165,6 +204,19 @@ pub enum Exit {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A VM is told from a host without virtualization only where its CPU says a hypervisor
+    /// runs it and offers it neither VMX nor SVM.
+    #[test]
+    fn a_vm_without_nested_virtualization_is_told_by_cpuid() {
+        let (hypervisor, vmx, svm) = (1u32 << 31, 1u32 << 5, 1u32 << 2);
+        assert!(nested_unavailable(hypervisor, None));
+        assert!(nested_unavailable(hypervisor, Some(0)));
+        assert!(!nested_unavailable(hypervisor | vmx, None), "Intel nested");
+        assert!(!nested_unavailable(hypervisor, Some(svm)), "AMD nested");
+        assert!(!nested_unavailable(0, None), "bare metal");
+        assert!(!nested_unavailable(vmx, Some(svm)));
+    }
 
     /// Written marks are kept in first-touch order up to the budget, whole pages of it,
     /// and cleared past it; reads are left alone.

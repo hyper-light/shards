@@ -1,0 +1,24 @@
+From https://github.com/hyper-light/shards
+ * branch              p/fix-network-v1 -> FETCH_HEAD
+   e0c78817..4ce420fd  p/fix-network-v1 -> origin/p/fix-network-v1
+Previous HEAD position was e0c78817 Merge current main after network-03 contention
+HEAD is now at 4ce420fd Merge current main before network-03 retry
+Linux 6.12.65-linuxkit aarch64
+rustc 1.98.1 (48a229cea 2026-09-01)
+4ce420fd2d5b78c56da35634d25eff798acf81da
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/target/debug/build/aws-lc-sys-4f74894467df8c75/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking shards-net v0.1.0 (/src/crates/net)
+    Finished `dev` profile [unoptimized] target(s) in 1.16s

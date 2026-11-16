@@ -23,6 +23,7 @@ at; 2: what it was asked to read could not be.
 """
 
 import base64
+import errno
 import importlib.util
 import json
 import mmap
@@ -135,6 +136,23 @@ class Index:
             units[1].update(window[1::2])
         self.runs16 = Runs(units, self.windows16, 2 * RUN) if self.windows16 else None
 
+    def zeros(self):
+        """The most zero bytes a finding can take from a hole of a sparse file beside the data
+        it lies in; None where one can lie in zeros alone, so that holes must be read.
+
+        A finding is a window, or a short secret, matched byte for byte: it takes from a hole
+        at most the zeros a window or a short secret starts or ends with (a UTF-16LE window of
+        ASCII, one). No shape and no field name holds a zero byte. A UTF-16LE run read from
+        `zeros` before its data to `zeros` past it pairs its units from there, which a run of
+        the whole file may pair a byte apart; its data being whole blocks, it is an even
+        number of bytes and ends where it is cut, so no window inside it is lost."""
+        most = 0
+        for held in (*self.windows, *self.windows16, *(value for _, value in self.short)):
+            if not held.strip(b"\0"):
+                return None
+            most = max(most, len(held) - len(held.lstrip(b"\0")), len(held) - len(held.rstrip(b"\0")))
+        return most
+
     def holds_secret(self, data):
         return any(data[i : i + RUN] in self.windows for i in range(len(data) - RUN + 1)) or any(
             value in data for _, value in self.short
@@ -172,16 +190,17 @@ class Runs:
         self.stride = width + 1 - self.anchor
         self.anchors = {w[k : k + self.anchor] for w in windows for k in range(self.stride)}
 
-    def regions(self, buf):
-        """Each (start, end) of a run in `buf`, in order, as one unbounded match would span it."""
-        pos = 0
+    def regions(self, buf, lo, hi):
+        """Each (start, end) of a run in `buf[lo:hi]`, in order, as one unbounded match would
+        span it."""
+        pos = lo
         while True:
-            found = self.start.search(buf, pos)
+            found = self.start.search(buf, pos, hi)
             if found is None:
                 return
             start, end = found.span()
             while True:
-                step = self.more.match(buf, end).end()
+                step = self.more.match(buf, end, hi).end()
                 whole = step - end == self.page
                 end = step
                 if not whole:
@@ -200,13 +219,13 @@ class Runs:
                     yield i, label
 
 
-def _runs(buf, runs, found):
-    """Each run of `runs`' windows in `buf`, those that touch merged, added to `found` as
-    (offset, length, label)."""
+def _runs(buf, lo, hi, runs, found):
+    """Each run of `runs`' windows in `buf[lo:hi]`, those that touch merged, added to `found`
+    as (offset, length, label)."""
     if runs is None:
         return
     width = runs.width
-    for start, end in runs.regions(buf):
+    for start, end in runs.regions(buf, lo, hi):
         first = last = label = None
         for i, hit in runs.hits(buf, start, end):
             if last is not None and i <= last + width:
@@ -220,27 +239,31 @@ def _runs(buf, runs, found):
             found.append((first, last + width - first, label))
 
 
-def leaks(buf, index):
-    """Each (offset, length, label) where `buf` holds a run of RUN or more of a secret's bytes
-    in one of its forms, runs that touch merged, or a short secret whole. A run lies within a
-    run of its form's own bytes, so only those are looked in, for a window at every offset."""
+def leaks(buf, index, lo=0, hi=None):
+    """Each (offset, length, label) where `buf[lo:hi]` holds a run of RUN or more of a secret's
+    bytes in one of its forms, runs that touch merged, or a short secret whole. A run lies
+    within a run of its form's own bytes, so only those are looked in, for a window at every
+    offset."""
+    hi = len(buf) if hi is None else hi
     found = []
-    _runs(buf, index.runs, found)
-    _runs(buf, index.runs16, found)
+    _runs(buf, lo, hi, index.runs, found)
+    _runs(buf, lo, hi, index.runs16, found)
     for label, value in index.short:
-        at = buf.find(value)
+        at = buf.find(value, lo, hi)
         while at != -1:
             found.append((at, len(value), label))
-            at = buf.find(value, at + 1)
+            at = buf.find(value, at + 1, hi)
     return found
 
 
-def shapes(buf, index):
-    """Each (shape, offset, length, class) of a credential-shaped string in `buf`: a secret's
-    (its bytes a leak's, counted there), a public value's, or unexplained."""
+def shapes(buf, index, lo=0, hi=None):
+    """Each (shape, offset, length, class) of a credential-shaped string in `buf[lo:hi]`: a
+    secret's (its bytes a leak's, counted there), a public value's, or unexplained. A shape's
+    lookbehind sees the byte before `lo`, as a read of the whole file would."""
+    hi = len(buf) if hi is None else hi
     found = []
     for name, pattern, group in SHAPES:
-        for match in pattern.finditer(buf):
+        for match in pattern.finditer(buf, lo, hi):
             token = match.group(group)
             if index.holds_secret(token):
                 kind = "secret"
@@ -265,9 +288,36 @@ def files(paths):
                     yield path
 
 
+def extents(f, size, zeros):
+    """Each (start, end) of `f` to read, in order: its data, where its file system says it lies
+    (lseek(2)'s SEEK_DATA and SEEK_HOLE), each widened by the `zeros` bytes of the holes beside
+    it that a finding can take. A hole is zeros alone, which hold no finding but at its ends;
+    it is whole blocks of its file system, longer than the twice `zeros` (2 * 2 * RUN at most)
+    that would make two widened ranges meet. The whole file where `zeros` is None or the
+    system cannot say (Windows, a file system without them)."""
+    whole = [(0, size)]
+    if zeros is None or not hasattr(os, "SEEK_DATA"):
+        return whole
+    found = []
+    at = 0
+    while at < size:
+        try:
+            start = os.lseek(f.fileno(), at, os.SEEK_DATA)
+            end = min(size, os.lseek(f.fileno(), start, os.SEEK_HOLE))
+        except OSError as e:
+            # ENXIO: no data past `at`.
+            if e.errno == errno.ENXIO:
+                break
+            return whole
+        found.append((max(0, start - zeros), min(size, end + zeros)))
+        at = end
+    return found
+
+
 def scan(paths, index, say):
     """Scans every file of `paths`, saying each finding; the counts."""
-    counts = {"files": 0, "bytes": 0, "leaks": 0, "unexplained": 0, "fields": 0}
+    counts = {"files": 0, "bytes": 0, "read": 0, "leaks": 0, "unexplained": 0, "fields": 0}
+    zeros = index.zeros()
     shaped = {}
     for path in files(paths):
         counts["files"] += 1
@@ -275,17 +325,20 @@ def scan(paths, index, say):
             size = os.fstat(f.fileno()).st_size
             if size == 0:
                 continue
+            spans = extents(f, size, zeros)
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
                 counts["bytes"] += size
-                for offset, length, label in leaks(buf, index):
-                    counts["leaks"] += 1
-                    say("FOUND %s offset %d length %d: a run of %s" % (path, offset, length, label))
-                for name, offset, length, kind in shapes(buf, index):
-                    shaped[(name, kind)] = shaped.get((name, kind), 0) + 1
-                    if kind == "unexplained":
-                        counts["unexplained"] += 1
-                        say("SHAPE %s offset %d length %d: %s none given explains" % (path, offset, length, name))
-                counts["fields"] += sum(1 for _ in FIELDS.finditer(buf))
+                for lo, hi in spans:
+                    counts["read"] += hi - lo
+                    for offset, length, label in leaks(buf, index, lo, hi):
+                        counts["leaks"] += 1
+                        say("FOUND %s offset %d length %d: a run of %s" % (path, offset, length, label))
+                    for name, offset, length, kind in shapes(buf, index, lo, hi):
+                        shaped[(name, kind)] = shaped.get((name, kind), 0) + 1
+                        if kind == "unexplained":
+                            counts["unexplained"] += 1
+                            say("SHAPE %s offset %d length %d: %s none given explains" % (path, offset, length, name))
+                    counts["fields"] += sum(1 for _ in FIELDS.finditer(buf, lo, hi))
     for (name, kind), n in sorted(shaped.items()):
         say("shapes: %d of %s, %s" % (n, name, kind))
     return counts
@@ -313,7 +366,7 @@ def main(argv):
         return 2
     print(
         "leak scan: %d secret windows of %d bytes, %d short secrets, %d public values; "
-        "%d files (%d bytes) scanned: %d secret runs found, %d unexplained credential shapes, "
+        "%d files (%d bytes, %d read) scanned: %d secret runs found, %d unexplained credential shapes, "
         "%d token field names"
         % (
             len(index.windows),
@@ -322,6 +375,7 @@ def main(argv):
             len(index.public),
             counts["files"],
             counts["bytes"],
+            counts["read"],
             counts["leaks"],
             counts["unexplained"],
             counts["fields"],

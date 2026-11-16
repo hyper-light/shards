@@ -1,0 +1,88 @@
+
+
+== 9f95ae7d platform-10: raised threads that share CPUs share a pool of half their time 2026-11-14T05:22:54.0860602Z
+== cargo test -p shards-vmm hv::whp:: platform::windows_files:: platform::windows_thread:: exit 101
+test hv::whp::tests::a_watched_range_is_cut_where_part_of_it_is_unmapped ... ok
+test hv::whp::state::tests::a_decoders_bounds_are_what_a_save_makes ... ok
+test hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read ... ok
+test hv::whp::state::tests::a_state_naming_registers_no_snapshot_keeps_is_refused ... ok
+test hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced ... ok
+test hv::whp::tests::a_partitions_writes_are_watched_where_it_maps_them ... ok
+test hv::whp::tests::a_write_populate_copies_a_views_pages_in_the_kernel ... ok
+test hv::whp::state::tests::states_round_trip_and_damage_is_an_error ... ok
+test platform::windows_files::tests::a_taken_version_moves_the_next_past_it ... ok
+test platform::windows_files::tests::a_directory_holding_an_open_file_is_renamed_by_no_rename ... ok
+test platform::windows_files::tests::a_punched_hole_reads_zeros_and_is_given_back ... ok
+test platform::windows_files::tests::a_names_versions_are_found_whatever_their_case ... ok
+test platform::windows_files::tests::in_an_open_directory_by_its_handle ... ok
+test platform::windows_files::tests::only_plain_names_pass ... ok
+test platform::windows_files::tests::write_in_as_the_rename_probes_writers ... ignored, a measurement: docs/research/measurements/write-in-versions/run.sh
+test platform::windows_files::tests::a_version_is_one_past_the_highest_listed ... ok
+test platform::windows_files::tests::beneath_a_root_no_reparse_point_is_followed ... ok
+test platform::windows_thread::tests::a_pool_is_half_of_its_cpus_time ... FAILED
+test platform::windows_files::tests::a_copy_takes_its_data_alone_of_the_disk ... ok
+test platform::windows_thread::tests::a_thread_set_otherwise_is_left_as_it_is ... ok
+test platform::windows_files::tests::a_write_through_another_case_lands_as_the_next_version ... ok
+test platform::windows_thread::tests::credit_carries_a_thread_that_waits_across_its_clocks_steps ... ok
+test platform::windows_files::tests::a_held_version_keeps_no_write_from_landing ... ok
+test platform::windows_thread::tests::a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits ... ok
+test platform::windows_files::tests::written_whole_in_an_open_directory_and_listed ... ok
+test platform::windows_thread::tests::a_thread_that_waits_between_its_runs_stays_raised ... ok
+test platform::windows_files::tests::a_long_listing_is_whole ... ok
+test platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it ... ok
+test platform::windows_files::tests::writers_racing_to_one_name_each_land_whole ... ok
+test platform::windows_files::tests::a_name_being_removed_is_not_found ... ok
+thread 'platform::windows_thread::tests::a_pool_is_half_of_its_cpus_time' (9476) panicked at crates\vmm\src\platform\windows_thread.rs:618:9:
+assertion `left == right` failed
+test result: FAILED. 28 passed; 1 failed; 1 ignored; 0 measured; 444 filtered out; finished in 13.58s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+== cargo test -p shards-ipc windows::tests slots:: exit 0
+test slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused ... ok
+test slots::named::tests::a_home_whose_slot_waits_for_its_client_is_served ... ok
+test slots::named::tests::a_client_holding_a_name_gone_takes_from_the_list_made_anew ... ok
+test slots::named::tests::a_lists_waiting_slots_are_those_no_client_took ... ok
+test slots::named::tests::a_slot_process ... ok
+test slots::named::tests::a_stream_said_and_not_opened_is_refused ... ok
+test slots::named::tests::a_slot_let_go_of_once_opened_is_passed_over ... ok
+test slots::named::tests::a_streams_name_taken_first_refuses_its_slot ... ok
+test slots::named::tests::an_answer_is_written_as_its_line_takes_it ... ok
+test slots::named::tests::a_client_waits_for_a_slot_and_passes_over_a_removed_one ... ok
+test slots::named::tests::a_client_of_a_home_named_in_no_unicode_waits_for_its_slot ... ok
+test slots::named::tests::what_a_line_holds_and_what_a_waiting_write_comes_to_as_its_reader_goes ... ignored, a measurement, run by hand
+test slots::tests::a_request_is_answered_through_its_slot ... ok
+test slots::tests::a_sessions_streams_carry_what_each_side_writes ... ok
+test slots::named::tests::a_killed_daemons_waiting_client_hears_it_is_gone ... ok
+test slots::named::tests::a_killed_client_ends_its_session ... ok
+test slots::tests::records_name_their_slots ... ok
+test slots::tests::a_client_hears_there_is_no_daemon ... ok
+test slots::named::tests::a_waiting_client_leaves_a_list_made_anew ... ok
+test windows::tests::a_child_is_given_its_variables_and_what_windows_needs_alone ... ok
+test slots::tests::what_a_daemon_before_left_goes_as_the_next_opens_its_slots ... ok
+test windows::tests::a_child_of_a_job_ending_with_this_process_ends_as_its_handle_closes ... ok
+test windows::tests::a_command_line_quotes_as_windows_reads_it ... ok
+test slots::tests::served_is_whether_a_daemon_holds_the_lists ... ok
+test windows::tests::a_detached_child_runs_and_its_end_is_seen ... ok
+test windows::tests::a_job_nested_under_one_ending_with_this_process_ends_with_it ... ok
+test windows::tests::a_child_of_stds_takes_no_handle_held_inheritable_for_another ... ok
+test windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them ... ok
+test windows::tests::a_memory_limit_keeps_a_job_ending_with_this_process ... ok
+test windows::tests::a_message_comes_whole_from_its_parts ... ok
+test windows::tests::a_groups_end_follows_every_process_of_it_to_its_end ... ok
+test windows::tests::a_messages_sockets_are_its_receivers_own ... ok
+test windows::tests::a_plain_child ... ok
+test windows::tests::a_killed_plain_child_says_its_signal ... ok
+test windows::tests::a_processs_activity_names_its_threads_states ... ok
+test slots::tests::an_answer_is_waited_for_no_longer_than_asked ... ok
+test windows::tests::messages_frame_as_unix_messages_do ... ok
+test windows::tests::a_plain_child_is_given_its_handles_by_number ... ok
+test windows::tests::grants_past_a_pipes_buffer_never_wait_for_their_reader ... ok
+test windows::tests::this_process_is_in_no_app_container ... ok
+test windows::tests::a_sweep_takes_records_no_maker_holds ... ok
+test windows::tests::a_pseudoconsoles_question_as_it_starts_is_not_shown ... ok
+test slots::named::tests::a_requests_rest_is_waited_for_while_its_client_goes_on ... ok
+test slots::named::tests::clients_waiting_on_one_list_each_take_a_slot ... ok
+test slots::named::tests::clients_waiting_on_one_list_wake_for_its_instances ... ok
+test result: ok. 44 passed; 0 failed; 1 ignored; 0 measured; 38 filtered out; finished in 2.09s
+== done 2026-11-14T05:23:37.2837392Z status 1
+
+[exited with code 0]

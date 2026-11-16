@@ -118,7 +118,7 @@ fn tell_notices(
         .name("notices out".into())
         .spawn(move || {
             let mut out = out;
-            let _ = pending.send(&mut out);
+            let _ = pending.send(servers, shares, &mut out);
         });
     if let Err(e) = sent {
         let _ = writeln!(std::io::stderr(), "shards: share: its notices' thread: {e}");

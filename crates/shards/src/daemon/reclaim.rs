@@ -8,10 +8,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use shards_api::Seen;
 use shards_vmm::platform::PressureWatches;
 
 use super::health::{Quiet, Wait};
-use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
+use super::{Daemon, RunState, Threads, lock, log};
 use crate::containers::Disk;
 use crate::pressure::{Pressure, Saying};
 
@@ -35,6 +36,10 @@ pub(super) struct Watching {
     given: Condvar,
     /// What they gave back since it was last said.
     unsaid: Mutex<Unsaid>,
+    /// What the last give-back that answered took, from its ask to its answer: the cost of
+    /// acting on the host's word, which its watch learns what a pressure is, and how often
+    /// one that goes on is said again, from (`Pressure::acted`, D188). None before the first.
+    acted: Mutex<Option<Duration>>,
 }
 
 /// What microVMs gave back since it was last said: since when, how much of files and of
@@ -119,6 +124,9 @@ impl<D: Disk> Daemon<D> {
             if !self.await_a_microvm() {
                 return;
             }
+            if let Some(took) = *lock(&self.watching.acted) {
+                pressure.acted(took);
+            }
             if let Err(e) = pressure.wait() {
                 log(format!(
                     "watching the host's memory pressure: {e}; nothing more is given back at it"
@@ -128,7 +136,9 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
-            lock(&self.watching.unsaid).saying.heard(Instant::now());
+            lock(&self.watching.unsaid)
+                .saying
+                .heard(Instant::now(), pressure.repeat());
             self.give_back_cold(threads);
         }
     }
@@ -183,9 +193,11 @@ impl<D: Disk> Daemon<D> {
                     .name("give-back".into())
                     .spawn_scoped(threads, move || {
                         let before = super::budget::resident_file(pid);
+                        let asked = Instant::now();
                         let gave = self.give_back_of(&id, pid);
                         self.given_back(&vm);
                         if let Some(gave) = gave {
+                            *lock(&self.watching.acted) = Some(asked.elapsed());
                             self.budgets.gave_back(pid, before, gave.freed);
                             self.budgets.gave_at_pressure(pid, gave);
                             self.gave(gave);
@@ -212,14 +224,19 @@ impl<D: Disk> Daemon<D> {
     /// while its VM process `vm` runs (`Wait::WhileRuns`, judged by the give-backs it has
     /// answered before); none where it gave nothing back, and why said.
     pub(super) fn give_back_of(&self, id: &str, vm: u32) -> Option<Gave> {
+        self.give_back_waiting(id, Wait::WhileRuns(vm, &self.answers.reclaim))
+    }
+
+    /// A give-back whose caller observes its own judge's refusal, as a group's word does.
+    pub(super) fn give_back_waiting(&self, id: &str, wait: Wait<'_>) -> Option<Gave> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::RECLAIM,
             ..Default::default()
         };
+        let before = self.answers.reclaim.seen();
         let asked = Instant::now();
-        let wait = Wait::WhileRuns(vm, &self.answers.reclaim);
         let quiet = self.exec_waiting(id, &spec, None, 64, wait);
-        said_if_long(id, "giving back what it holds cold", asked.elapsed());
+        said_if_long(id, "giving back what it holds cold", asked.elapsed(), &before);
         match quiet {
             Ok(q) => match given(&q) {
                 Ok(gave) => Some(gave),
@@ -274,14 +291,24 @@ impl<D: Disk> Daemon<D> {
     }
 }
 
-/// Says that an exec of the daemon's own in container `id` took past [`TAKE_TIMEOUT`]; each
-/// at debug.
-pub(super) fn said_if_long(id: &str, what: &str, took: Duration) {
+/// Says that an exec of the daemon's own in container `id` took past the slowest answer of its
+/// kind seen before it ([`past_slowest`]), each at debug.
+pub(super) fn said_if_long(id: &str, what: &str, took: Duration, before: &Seen) {
     shards_vmm::debug!("container {id}: {what}: answered after {took:?}");
-    if took > TAKE_TIMEOUT {
+    if let Some(slowest) = past_slowest(took, before) {
         log(format!(
-            "container {id}: {what}: answered after {took:?}, its microVM running"
+            "container {id}: {what}: answered after {took:?}, past the slowest before ({slowest:?}), its microVM running"
         ));
+    }
+}
+
+/// The slowest answer of its kind seen before one that `took` this long, where it took longer:
+/// `before`, its record's as the exec began (D215's W*; runs-11 `TAKE_TIMEOUT`, which this was).
+/// A kind with no answer before (cold) has no slowest to pass.
+fn past_slowest(took: Duration, before: &Seen) -> Option<Duration> {
+    match before {
+        Seen::Learned { slowest, .. } if took > *slowest => Some(*slowest),
+        _ => None,
     }
 }
 
@@ -373,6 +400,21 @@ impl Watching {
 mod tests {
     use super::super::health::Cut;
     use super::*;
+
+    /// An answer is said long past its kind's slowest before it, and only then; a cold kind's
+    /// never (runs-11 `TAKE_TIMEOUT`): red before, said past `TAKE_TIMEOUT`'s 10 s alone, picked,
+    /// so an answer of 150 ms past a slowest of 100 ms went unsaid.
+    #[test]
+    fn an_answer_is_long_past_its_kinds_slowest_before_it() {
+        let record = shards_api::Record::new();
+        assert_eq!(past_slowest(Duration::from_secs(60), &record.seen()), None);
+        let slowest = Duration::from_millis(100);
+        record.teach(slowest, slowest / 1000);
+        let before = record.seen();
+        assert_eq!(past_slowest(Duration::from_millis(50), &before), None);
+        assert_eq!(past_slowest(slowest, &before), None);
+        assert_eq!(past_slowest(Duration::from_millis(150), &before), Some(slowest));
+    }
 
     fn quiet(output: &str, status: Option<i64>, cut: Option<Cut>) -> Quiet {
         Quiet {

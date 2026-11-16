@@ -4,6 +4,7 @@
 
 #[cfg(target_os = "macos")]
 use std::path::Path;
+#[cfg(any(target_os = "macos", windows))]
 use std::path::PathBuf;
 
 use crate::grant::{Access, MAX_GRANTS, MAX_PATH, Wanted};
@@ -233,10 +234,44 @@ pub fn obtain(link: &std::os::unix::net::UnixStream, wanted: &[Wanted]) -> Resul
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "linux")]
+/// Asks the spawner on `link` for a socket bound at `vsock`, this VM's vsock path, and
+/// takes it for the vsock device to listen on (`platform::grant_listener`): Landlock lets
+/// a VM on Linux make no socket file (D30).
+pub fn listen_at(link: &std::os::unix::net::UnixStream, vsock: &std::path::Path) -> Result<(), String> {
+    use shards_ipc::kind;
+    shards_ipc::send(
+        link,
+        kind::GRANT,
+        &encode(&[(Access::Listen, vsock.to_path_buf())])?,
+        &[],
+    )
+    .map_err(|e| format!("asking for {}: {e}", vsock.display()))?;
+    let answer = shards_ipc::recv(link)
+        .map_err(|e| format!("the grant for {}: {e}", vsock.display()))?
+        .ok_or_else(|| format!("the spawner went before granting {}", vsock.display()))?;
+    match (
+        answer.kind,
+        answer.fds.into_iter().next(),
+        answer.payload.is_empty(),
+    ) {
+        (kind::GRANTED, Some(fd), true) => {
+            shards_vmm::platform::grant_listener(vsock.to_path_buf(), fd);
+            Ok(())
+        }
+        (kind::ERR, _, _) => Err(String::from_utf8_lossy(&answer.payload).into_owned()),
+        _ => Err(format!(
+            "the spawner's answer for {} was not what was asked",
+            vsock.display()
+        )),
+    }
+}
+
+#[cfg(unix)]
 /// A connection to vsock host port `port`, which the spawner on `link` dials for this VM
 /// beside the vsock path it granted it (`kind::DIAL`): App Sandbox lets the VM dial
-/// nothing outside its container (PM M67).
+/// nothing outside its container (PM M67), and on Linux its filter refuses it every
+/// connect (D30).
 pub fn dial(
     link: &std::os::unix::net::UnixStream,
     port: u32,
@@ -305,6 +340,18 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
         }
     }
     Ok(())
+}
+
+/// [`obtain`] for `wanted`, the last grants this VM asks for, then its grants sealed
+/// (`kind::SEALED`), before its guest starts, whatever it was granted: a guest that takes
+/// the VM's process over may ask its spawner for nothing more, only for its dials, its files'
+/// ranges and its snapshots (D30, D196; platform-03, where a VM that staged its snapshots
+/// and had no vsock path left them open).
+#[cfg(windows)]
+pub fn obtain_sealed(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
+    obtain(link, wanted)?;
+    shards_ipc::write_message(&link.to, shards_ipc::kind::SEALED, &[])
+        .map_err(|e| format!("sealing its grants: {e}"))
 }
 
 /// A file the spawner duplicated into this process, and the path it found it at: the

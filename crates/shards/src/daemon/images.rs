@@ -245,7 +245,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             // Its microVMs, running and stopped, as `list vm` counts them.
             let (running, stopped) = super::lock(&self.containers)
                 .all()
-                .filter(|c| c.image_id.as_deref() == Some(image.id.as_str()))
+                .filter(|c| c.image_id == image.id.as_str())
                 .fold((0u64, 0u64), |(r, s), c| {
                     if c.state == crate::containers::State::Running {
                         (r + 1, s)
@@ -316,9 +316,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // Each microVM's image, counted by ID.
         let mut users: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
         for c in super::lock(&self.containers).all() {
-            if let Some(id) = &c.image_id {
-                *users.entry(id.clone()).or_default() += 1;
-            }
+            *users.entry(c.image_id.clone()).or_default() += 1;
         }
         let mut images = Vec::with_capacity(named.len());
         for n in &named {
@@ -1020,9 +1018,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         let id = image.id.to_string();
         let stopped: Vec<(String, String)> = super::lock(&self.containers)
             .all()
-            .filter(|c| {
-                c.image_id.as_deref() == Some(id.as_str()) && c.state != crate::containers::State::Running
-            })
+            .filter(|c| c.image_id == id && c.state != crate::containers::State::Running)
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
         let mut removed = Vec::new();
@@ -1642,9 +1638,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
         // was made by stay, and an image it named by ID or digest is used.
         let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in super::lock(&self.containers).all() {
-            let Some(id) = &c.image_id else {
-                continue;
-            };
+            let id = &c.image_id;
             doomed.remove(&format!("{}{id}", super::rmi::DANGLING));
             let normalized = format!("sha256:{}", c.image.strip_prefix("sha256:").unwrap_or(&c.image));
             if id.starts_with(&normalized) || c.image.ends_with(&format!("@{id}")) {

@@ -1,9 +1,13 @@
-//! Why a vCPU's guest time was not read (guest-cpu-time-v1, R04): the cause its backend met,
-//! typed, with the code its hypervisor or its OS gave, carried as it is to every reader (the
-//! VM process's `GUEST_TIMED` answer, the daemon's stats, an orchestrator's, D231). Its words
-//! are for showing alone.
+//! A microVM's vCPUs' guest time as a sample read it, and its text, one form for every reader
+//! (the VM process's `GUEST_TIMED` answer to its daemon, a managed machine's `USED` to its
+//! host's client, D260); and why a vCPU's was not read (guest-cpu-time-v1, R04): the cause its
+//! backend met, typed, with the code its hypervisor or its OS gave, carried as it is to every
+//! reader (the daemon's stats, an orchestrator's, D231). Its words are for showing alone.
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
+use core::fmt::Write as _;
 
 /// Why a sample did not read a vCPU's guest time: the most it read before stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,10 +109,208 @@ impl fmt::Display for Unread {
     }
 }
 
+/// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostUse {
+    /// Its CPU time, user and system together, in ns, as its OS counts it, its vCPUs' guest
+    /// time added where its OS charges that to none of its threads ([`Charged::Apart`]).
+    pub cpu_ns: u64,
+    pub resident_bytes: u64,
+    /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
+    /// Linux's anonymous resident pages, Windows' private working set.
+    pub footprint_bytes: u64,
+    /// Whether its OS counts its vCPUs' guest time as its own, as `cpu_ns` was made by.
+    pub charged: Charged,
+}
+
+/// Whether a VM process's CPU time, as its OS counts it, holds its vCPUs' guest time (D265),
+/// learned from its own clocks: a vCPU thread's CPU time `t`, its guest time `g` and the wall
+/// time `w` over one span. Where a hypervisor runs a vCPU on the thread that asks it to, `t`
+/// holds `g`; where it runs it on its own, the thread waits meanwhile, so `t + g` is within
+/// `w`. Each is told apart by what the other cannot read, past one step of the thread's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charged {
+    /// Not yet told: no span has read what only one of the two can, or its reader has no
+    /// clocks of its vCPUs (a run host reading another process). Its CPU time is its OS's
+    /// count, which may not hold its guest time.
+    Unknown,
+    /// Its vCPU threads' CPU time holds their guest time (`t + g` past `w`): KVM's,
+    /// Hypervisor.framework's, WHP's under Windows' root scheduler.
+    ToThread,
+    /// Its hypervisor runs its vCPUs apart from their threads (`g` past `t`): WHP's under
+    /// the classic and core schedulers, every Windows Server's (D265).
+    Apart,
+}
+
+impl Charged {
+    /// Its word in a use answer (`shards_abi::rate::used`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::ToThread => "thread",
+            Self::Apart => "apart",
+        }
+    }
+
+    /// The charge a word names, as [`word`](Self::word) says it.
+    pub fn from_word(word: &str) -> Option<Charged> {
+        [Self::Unknown, Self::ToThread, Self::Apart]
+            .into_iter()
+            .find(|c| c.word() == word)
+    }
+
+    /// Its tag in a binary record.
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::ToThread => 1,
+            Self::Apart => 2,
+        }
+    }
+
+    /// The charge a tag names, as [`tag`](Self::tag) says it.
+    pub fn from_tag(tag: u8) -> Option<Charged> {
+        [Self::Unknown, Self::ToThread, Self::Apart]
+            .into_iter()
+            .find(|c| c.tag() == tag)
+    }
+
+    /// What one span read of a vCPU tells: `t` its thread's CPU time, `g` its guest time and
+    /// `w` the wall time between the span's reads, each in ns, `step` the thread clock's step.
+    /// None where the span reads what either could.
+    pub fn told(t: u64, g: u64, w: u64, step: u64) -> Option<Charged> {
+        if t.saturating_add(step) < g {
+            Some(Self::Apart)
+        } else if t.saturating_add(g) >= w.saturating_add(step) {
+            Some(Self::ToThread)
+        } else {
+            None
+        }
+    }
+}
+
+/// One vCPU's guest time, as a sample read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VcpuTime {
+    pub index: u32,
+    /// Nanoseconds, never less than an earlier sample of the same vCPU said.
+    pub guest_ns: u64,
+    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
+    pub unread: Option<Unread>,
+}
+
+/// A machine's vCPUs' guest time, as one sample read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuestTimes {
+    /// The vCPUs it has, by index.
+    pub vcpus: Vec<VcpuTime>,
+    /// What the vCPUs it had and no longer has ran of their guest: still its machine's.
+    pub departed_ns: u64,
+}
+
+impl GuestTimes {
+    /// Its machine's: what every vCPU it has had ran of its guest.
+    pub fn total_ns(&self) -> u64 {
+        self.vcpus
+            .iter()
+            .fold(self.departed_ns, |total, v| total.saturating_add(v.guest_ns))
+    }
+
+    /// As text, a line each, in decimal: `departed NS`, then `vcpu INDEX NS` for each vCPU,
+    /// ` unread CAUSE [CODE]` after where this sample did not read it ([`Unread::write`]), as a
+    /// VM process answers its daemon.
+    pub fn encode(&self) -> String {
+        let mut text = alloc::format!("departed {}\n", self.departed_ns);
+        for v in &self.vcpus {
+            let _ = write!(text, "vcpu {} {}", v.index, v.guest_ns);
+            if let Some(why) = &v.unread {
+                text.push_str(" unread ");
+                let _ = why.write(&mut text);
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// What [`encode`](Self::encode) wrote; `None` for anything else: a line of its keys
+    /// malformed, its departed time missing or said twice, or its vCPUs out of index
+    /// order. Lines of other keys are passed over, for a later VM's to come.
+    pub fn decode(text: &str) -> Option<GuestTimes> {
+        let mut departed = None;
+        let mut vcpus: Vec<VcpuTime> = Vec::new();
+        for line in text.lines() {
+            let mut words = line.splitn(5, ' ');
+            match words.next() {
+                Some("departed") => {
+                    let ns = words.next()?.parse().ok()?;
+                    if departed.replace(ns).is_some() || words.next().is_some() {
+                        return None;
+                    }
+                }
+                Some("vcpu") => {
+                    let index = words.next()?.parse().ok()?;
+                    let guest_ns = words.next()?.parse().ok()?;
+                    let unread = match (words.next(), words.next()) {
+                        (None, _) => None,
+                        (Some("unread"), Some(cause)) => Some(Unread::parse(cause)?),
+                        _ => return None,
+                    };
+                    if vcpus.last().is_some_and(|v| v.index >= index) {
+                        return None;
+                    }
+                    // Fallible, as a managed guest's client reads its VM's answer (D260).
+                    vcpus.try_reserve(1).ok()?;
+                    vcpus.push(VcpuTime {
+                        index,
+                        guest_ns,
+                        unread,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Some(GuestTimes {
+            vcpus,
+            departed_ns: departed?,
+        })
+    }
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::Unread;
+    use super::{Charged, GuestTimes, Unread, VcpuTime};
+
+    /// A span tells a charge only by what the other cannot read, one step of the thread's
+    /// clock past it: hex-winvm's spinning vCPU (WHP, the classic scheduler; 500 ms of wall,
+    /// 470 ms of guest, its thread none, at GetThreadTimes' 15.625 ms) is apart; a thread
+    /// that ran its guest's time (KVM, Hypervisor.framework) is charged it once the two pass
+    /// the wall; a quiet guest, or a thread busy with what its guest asks, tells neither.
+    #[test]
+    fn a_span_tells_a_charge_only_by_what_the_other_cannot_read() {
+        let (w, step) = (500_000_000, 15_625_000);
+        assert_eq!(Charged::told(0, 470_000_000, w, step), Some(Charged::Apart));
+        assert_eq!(
+            Charged::told(480_000_000, 470_000_000, w, step),
+            Some(Charged::ToThread)
+        );
+        assert_eq!(Charged::told(0, 0, w, step), None);
+        assert_eq!(Charged::told(300_000_000, 100_000_000, w, step), None);
+        // A thread within one step of its guest time is not apart; the two together a
+        // step short of passing the wall tell nothing.
+        assert_eq!(
+            Charged::told(470_000_000 - step, 470_000_000, w, step),
+            Some(Charged::ToThread)
+        );
+        assert_eq!(Charged::told(w - 1, step, w, step), None);
+        for c in [Charged::Unknown, Charged::ToThread, Charged::Apart] {
+            assert_eq!(Charged::from_word(c.word()), Some(c));
+            assert_eq!(Charged::from_tag(c.tag()), Some(c));
+        }
+        assert_eq!(Charged::from_tag(3), None);
+    }
     use alloc::string::String;
+    use alloc::vec;
 
     const EVERY: [Unread; 7] = [
         Unread::Gone,
@@ -165,5 +367,66 @@ mod tests {
         assert_eq!(Unread::ThreadStat(Some(3)).code(), Some(3));
         assert_eq!(Unread::ThreadStat(None).code(), None);
         assert_eq!(Unread::Gone.cause(), "gone");
+    }
+
+    /// Times encoded decode as they were: a vCPU unread, its cause and code whole; one unread
+    /// with no code; none; and the most a u64 holds.
+    #[test]
+    fn encoded_times_decode_as_they_were() {
+        let t = GuestTimes {
+            vcpus: vec![
+                VcpuTime {
+                    index: 0,
+                    guest_ns: 123_456_789,
+                    unread: None,
+                },
+                VcpuTime {
+                    index: 5,
+                    guest_ns: u64::MAX,
+                    unread: Some(Unread::WhpCounters(-2147024891)),
+                },
+                VcpuTime {
+                    index: 6,
+                    guest_ns: 0,
+                    unread: Some(Unread::ThreadStat(None)),
+                },
+            ],
+            departed_ns: 99,
+        };
+        let text = t.encode();
+        assert_eq!(
+            text,
+            "departed 99\nvcpu 0 123456789\nvcpu 5 18446744073709551615 unread whp-counters \
+             -2147024891\nvcpu 6 0 unread thread-stat malformed\n"
+        );
+        assert_eq!(GuestTimes::decode(&text), Some(t.clone()));
+        assert_eq!(t.total_ns(), u64::MAX, "the total saturates");
+        let none = GuestTimes::default();
+        assert_eq!(GuestTimes::decode(&none.encode()), Some(none));
+    }
+
+    /// Text that is not encoded times is refused; lines of keys a later VM may add are not.
+    #[test]
+    fn text_other_than_encoded_times_is_refused() {
+        for bad in [
+            "",
+            "vcpu 0 1\n",
+            "departed\n",
+            "departed x\n",
+            "departed 1 2\n",
+            "departed 1\ndeparted 2\n",
+            "departed 1\nvcpu 0\n",
+            "departed 1\nvcpu 0 -1\n",
+            "departed 1\nvcpu 0 1 lost\n",
+            "departed 1\nvcpu 0 1 unread\n",
+            "departed 1\nvcpu 0 1 unread its thread's stat: gone\n",
+            "departed 1\nvcpu 0 1 unread whp-counters\n",
+            "departed 1\nvcpu 1 5\nvcpu 0 5\n",
+            "departed 1\nvcpu 0 5\nvcpu 0 6\n",
+        ] {
+            assert_eq!(GuestTimes::decode(bad), None, "{bad:?}");
+        }
+        let later = GuestTimes::decode("departed 4\nsteal 9\nvcpu 1 6\n").unwrap();
+        assert_eq!((later.total_ns(), later.vcpus.len()), (10, 1));
     }
 }

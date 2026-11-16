@@ -1,0 +1,14 @@
+Retained kiln completion-notification excerpt, new-turn r8 (not a full runner log).
+Command: bash check.sh test shards-api image::session::tests && bash check.sh clippy -p shards-api -p shards-ipc && SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true bash check.sh test shards a_caps_loss_record_is_bounded_by_its_totals_not_its_history --bin shards
+Runner: cec37f60f22c5a60d27f08f4d2e5daa8 (adas-mac-studio.local, macOS arm64)
+Source: ea6614b8b750b488bb396abfd5475ca06bdd6127
+Exit: 101 (the preceding API tests and clippy succeeded; && reached this cap test)
+
+running 1 test
+test daemon::managed::cap::tests::a_caps_loss_record_is_bounded_by_its_totals_not_its_history ... FAILED
+
+thread 'daemon::managed::cap::tests::a_caps_loss_record_is_bounded_by_its_totals_not_its_history' (54234521) panicked at crates/shards/src/daemon/managed/cap.rs:325:9:
+lifetime eviction history remained on disk
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 900 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards --bin shards`

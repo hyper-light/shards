@@ -10,16 +10,18 @@
 //!   alone; so does its wait of that kind after one ran out, until one ends ([`Bounded`]). A
 //!   stall is a gap with no progress, never an answer's whole length: an answer's first
 //!   byte, then each silence, a read's own wait for bytes. A run-out learns nothing;
-//! - how long a connection takes to make (its name's lookup included) and its TLS
-//!   handshake: each the path's own pace, estimated as TCP estimates a retransmission
+//! - how long a connection takes to make (its name's lookup apart, which is waited for while
+//!   the system's resolver works on it, D276) and its TLS handshake: each the path's own pace, estimated as TCP estimates a retransmission
 //!   timeout (RFC 6298 §2, after Jacobson, "Congestion Avoidance and Control", SIGCOMM
 //!   1988): the smoothed wait and four times its smoothed deviation, at least a second, a
 //!   second before any wait is measured, and doubled for each timeout in a row (§5.5)
 //!   until one is answered;
 //! - how long a trouble (a passing failure, RFC 9110 §15.6.3 to §15.6.5, or a download
-//!   that brings nothing) is ridden out: no longer than the longest this path has passed;
-//!   a path that has passed none rides it out while it lasts, as one does after a trouble
-//!   ran out, until one passes, by the same rule (D222's run-out clause).
+//!   that brings nothing) is ridden out before it runs out: the longest this path has
+//!   passed. A run-out is told once and is no failure: the trouble is then ridden out while
+//!   it lasts, as one is on a path that has passed none (the cold start), and as each of the
+//!   path's is until one passes, which teaches its length. A re-ask past a run-out that the
+//!   far end refuses, or ends before any answer, is its end (D222's run-out clause).
 //!
 //! What a path showed is kept in the home, in the image store's `links/`, in the one
 //! record of the path that its transfers learn into too (D226, crate::links): by its host
@@ -36,6 +38,15 @@ use std::time::{Duration, SystemTime};
 
 /// The wait before any is measured, and a pace's least: RFC 6298 §2.1 and §2.4.
 pub(crate) const FIRST: Duration = Duration::from_secs(1);
+
+/// How long a dial waits on one address before it starts the next where its path has shown
+/// no connect: RFC 8305's Connection Attempt Delay "in the absence of RTT data" (§8).
+pub(crate) const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+/// The least and the most a learned Connection Attempt Delay may be: RFC 8305 §5's Minimum
+/// ("required to avoid congestion collapse in the presence of high packet-loss rates") and
+/// Maximum Connection Attempt Delay, as §8 recommends them.
+const ATTEMPT_DELAY_MIN: Duration = Duration::from_millis(100);
+const ATTEMPT_DELAY_MAX: Duration = Duration::from_secs(2);
 
 /// A wait's estimator: RFC 6298 §2's SRTT and RTTVAR, in µs, how many waits it has seen,
 /// and when the last was seen, in µs since the Unix epoch (0 where never, or a record of
@@ -73,6 +84,21 @@ impl Pace {
         }
         let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
         Duration::from_micros(us).max(FIRST)
+    }
+
+    /// How long a dial waits on one address before it starts the next ([`ATTEMPT_DELAY`]
+    /// before any connect is seen): RFC 8305 §5's delay "should correspond to the time when
+    /// the previous attempt is sending its second TCP SYN, based on the TCP's
+    /// retransmission timer [RFC6298]", which this path's connects pace: SRTT + 4·RTTVAR
+    /// (§2.3), within §5's least and most, and with no backoff: it "should only try to
+    /// approximate the time of the first SYN retransmission". RFC 6298 §2.4's 1 s rounding
+    /// is TCP's own guard against retransmitting early, which §5's minimum stands for here.
+    pub(crate) fn attempt_delay(&self) -> Duration {
+        if self.n == 0 {
+            return ATTEMPT_DELAY;
+        }
+        let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
+        Duration::from_micros(us).clamp(ATTEMPT_DELAY_MIN, ATTEMPT_DELAY_MAX)
     }
 
     /// The estimator a record keeps of `kept`, as it holds it now, and `own`, a client's,
@@ -134,8 +160,8 @@ pub(crate) struct Shown {
     /// The slowest silence of a download's body it has shown, in µs: the time between a
     /// body's reads that brought bytes. None before any.
     pub slowest_silence_us: Option<u64>,
-    /// Its connections' waits: a TCP connection's, its name's lookup included, and its
-    /// TLS handshake's.
+    /// Its connections' waits: a TCP connection's (records before D276 held its name's
+    /// lookup too, which later samples smooth away, §2.3), and its TLS handshake's.
     pub connect: Pace,
     pub handshake: Pace,
     /// The longest trouble it passed, in µs, and how many it passed.
@@ -166,7 +192,7 @@ impl Shown {
 /// Which of a path's waits RFC 6298's estimator paces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wait {
-    /// A connection's, its name's lookup included.
+    /// A connection's, its name's lookup apart.
     Connect,
     /// A TLS handshake's.
     Handshake,
@@ -288,9 +314,8 @@ pub(crate) struct Paths {
     paths: Mutex<HashMap<String, Path>>,
     routes: Mutex<HashMap<String, std::net::IpAddr>>,
     kept: OnceLock<PathBuf>,
-    /// Whether every wait of its paths follows its connection's liveness alone, where a test
-    /// says ([`Paths::follow_liveness`]).
-    #[cfg(test)]
+    /// Whether every answer and silence of its paths follows its connection's liveness
+    /// alone ([`Paths::follow_liveness`]): a build's proxy's, and a scripted test's.
     unbounded: bool,
 }
 
@@ -374,9 +399,9 @@ impl Paths {
         self.with(key, |p| p.shown.clone())
     }
 
-    /// Every wait of its paths from now on follows its connection's liveness alone, as a
-    /// path's that has shown nothing does ([`Bounded::Cold`]), whatever they show.
-    #[cfg(test)]
+    /// Every answer and silence of its paths from now on follows its connection's liveness
+    /// alone, as a path's that has shown nothing does ([`Bounded::Cold`]), whatever they
+    /// show.
     pub(crate) fn follow_liveness(&mut self) {
         self.unbounded = true;
     }
@@ -384,7 +409,6 @@ impl Paths {
     /// What a wait of a kind begins with, its path having shown `slowest` and its last of
     /// the kind having ran out or not.
     fn bounded(&self, slowest: Option<u64>, out: Out) -> Bounded {
-        #[cfg(test)]
         if self.unbounded {
             return Bounded::Cold;
         }
@@ -392,16 +416,19 @@ impl Paths {
     }
 
     /// Starts the path from what it showed before, as kept; what it has shown since this
-    /// client asked it is kept over that, each slowest the slower of the two, both seen.
+    /// client asked it is kept over that, as a record keeps it ([`Shown::merged`]): each
+    /// slowest the slower, each pace the newer sample's, the longest trouble the longer, and
+    /// the troubles this client passed added. Only what it has shown is its own: a connect
+    /// it took before its route was known keeps the route's record's handshakes and
+    /// troubles (waits-07). The record read is then what it writes its own over.
     pub(crate) fn learn(&self, key: &str, shown: Shown) {
         self.with(key, |p| {
             if p.changed {
-                p.shown.slowest_answer_us = slower(p.shown.slowest_answer_us, shown.slowest_answer_us);
-                p.shown.slowest_silence_us = slower(p.shown.slowest_silence_us, shown.slowest_silence_us);
+                p.shown = shown.clone().merged(&p.base, &p.shown);
             } else {
                 p.shown = shown.clone();
-                p.base = shown;
             }
+            p.base = shown;
         });
     }
 
@@ -412,6 +439,12 @@ impl Paths {
             let (pace, timeouts) = p.pace(wait);
             backed_off(pace.timeout(), *timeouts)
         })
+    }
+
+    /// How long a dial of `key` waits on one address before it starts the next
+    /// ([`Pace::attempt_delay`] of its connects).
+    pub(crate) fn attempt_delay(&self, key: &str) -> Duration {
+        self.with(key, |p| p.shown.connect.attempt_delay())
     }
 
     /// `key`'s connect or handshake ended after `took`, in time.
@@ -502,14 +535,15 @@ impl Paths {
         });
     }
 
-    /// How long a trouble of `key`'s is ridden out: no longer than the longest it has
+    /// How long a trouble of `key`'s is ridden out before it runs out: the longest it has
     /// passed; none where it has passed none, or where its last ran out and none has
     /// passed since, whose trouble is ridden out while it lasts (`Bounded`).
     pub(crate) fn budget(&self, key: &str) -> Option<Duration> {
         self.with(key, |p| bounded(Some(p.shown.trouble_us), p.trouble).bound())
     }
 
-    /// A trouble that lasted `lasted` passed: the longest where it is longer, a run-out over.
+    /// A trouble that lasted `lasted` passed, one that ran out past the longest included:
+    /// the longest where it is longer, a run-out over.
     pub(crate) fn passed(&self, key: &str, lasted: Duration) {
         let us = micros(lasted);
         self.with(key, |p| {
@@ -520,10 +554,11 @@ impl Paths {
         });
     }
 
-    /// A trouble of `key`'s lasted the longest it had passed and was given up on. It learns
-    /// nothing: until one passes, its troubles are ridden out while they last.
-    pub(crate) fn trouble_ran_out(&self, key: &str) {
-        self.with(key, |p| p.trouble = Out::Yes);
+    /// A trouble of `key`'s outlasted the longest it had passed, and is ridden out while it
+    /// lasts, as its troubles are until one passes, which teaches its length
+    /// ([`Paths::passed`]). Whether it began the run-out: one under way is told no more.
+    pub(crate) fn trouble_ran_out(&self, key: &str) -> bool {
+        self.with(key, |p| std::mem::replace(&mut p.trouble, Out::Yes) == Out::No)
     }
 }
 
@@ -674,12 +709,40 @@ mod tests {
         assert_eq!(paths.answer("t:443"), Bounded::Slowest(Duration::from_secs(7)));
         paths.answered("s:443", Duration::from_secs(2));
         paths.learn("s:443", kept);
-        assert_eq!(paths.budget("s:443"), None, "what it showed since is kept");
+        // What it showed since is kept over the record, and what it did not show is the
+        // record's: its trouble, where it passed none (waits-07); its paces, newer, its own.
+        assert_eq!(paths.budget("s:443"), Some(Duration::from_secs(200)));
+        assert_eq!(paths.timeout("s:443", Wait::Connect), Duration::from_secs(9));
         assert_eq!(
             paths.answer("s:443"),
             Bounded::Slowest(Duration::from_secs(7)),
             "and the slowest the slower of the two"
         );
+    }
+
+    /// A dial starts a path's next address as its connects would send their second SYN
+    /// (waits-12; RFC 8305 §5, §8): 250 ms before any connect, then SRTT + 4·RTTVAR of
+    /// them, never under 100 ms nor past 2 s. Red with the race a figure of its own, 300 ms
+    /// whatever the path showed.
+    #[test]
+    fn a_dial_starts_its_next_address_as_its_paths_connects_retransmit() {
+        let paths = Paths::default();
+        let ms = Duration::from_millis;
+        assert_eq!(paths.attempt_delay("r:443"), ms(250), "cold: RFC 8305 §8");
+        for (key, took, delay) in [
+            // 10 + 4·5 ms, under the minimum.
+            ("near:443", ms(10), ms(100)),
+            // 150 + 4·75 ms.
+            ("far:443", ms(150), ms(450)),
+            // 1.5 + 4·0.75 s, past the maximum.
+            ("slow:443", ms(1500), ms(2000)),
+        ] {
+            paths.waited(key, Wait::Connect, took);
+            assert_eq!(paths.attempt_delay(key), delay, "{key}");
+        }
+        // A handshake is no connect.
+        paths.waited("tls:443", Wait::Handshake, ms(150));
+        assert_eq!(paths.attempt_delay("tls:443"), ms(250));
     }
 
     /// What a client's paths showed is kept in the home as it lets them go, and the next
@@ -820,5 +883,43 @@ mod tests {
         drop(paths);
         let record = crate::links::read(&crate::links::file(&dir, "r:443", Some(wired))).unwrap();
         assert_eq!(record.shown.trouble_us, 300_000_000);
+    }
+
+    /// A client's first connect is taught before its route is known, as `Client::connect`
+    /// dials and only then says where it left from: its route's record, read then, keeps
+    /// the trouble it passed and the handshake it learned, the connect only this client's,
+    /// and what it writes back adds its own to the record, no more (waits-07). Before, the
+    /// connect's change kept only the record's slowest answer and silence: the trouble
+    /// cold, the handshake 1 s.
+    #[test]
+    fn a_connect_before_its_route_is_known_keeps_its_routes_record() {
+        let dir = shards_testdir::TempDir::new("route-late").unwrap();
+        let wired = std::net::IpAddr::from([192, 168, 1, 92]);
+        let mut handshake = Pace::default();
+        handshake.add(Duration::from_secs(2));
+        handshake.at_us = 1;
+        let kept = Shown {
+            trouble_us: 300_000,
+            troubles: 4,
+            handshake,
+            ..Shown::default()
+        };
+        crate::links::update(&crate::links::file(&dir, "r:443", Some(wired)), |r| {
+            r.shown = kept
+        })
+        .unwrap();
+        let paths = Paths::default();
+        paths.keep_in(&dir);
+        paths.waited("r:443", Wait::Connect, Duration::from_millis(10));
+        paths.located("r:443", wired);
+        assert_eq!(paths.budget("r:443"), Some(Duration::from_millis(300)));
+        assert_eq!(paths.timeout("r:443", Wait::Handshake), Duration::from_secs(6));
+        assert_eq!(paths.timeout("r:443", Wait::Connect), Duration::from_secs(1));
+        paths.passed("r:443", Duration::from_millis(100));
+        drop(paths);
+        let record = crate::links::read(&crate::links::file(&dir, "r:443", Some(wired))).unwrap();
+        assert_eq!((record.shown.trouble_us, record.shown.troubles), (300_000, 5));
+        assert_eq!(record.shown.handshake.n, 1);
+        assert_eq!(record.shown.connect.n, 1);
     }
 }

@@ -118,6 +118,10 @@ pub enum Field {
     Access,
     AccessPlaceholder,
     RefreshPlaceholder,
+    /// A run's upstream root, its DER's bytes (`NET_CREDENTIALS`, ahead of the grants).
+    UpstreamRoot,
+    /// A run's upstream roots, their count.
+    UpstreamRoots,
 }
 
 impl fmt::Display for Field {
@@ -131,6 +135,8 @@ impl fmt::Display for Field {
             Field::Access => "sign-in grant's access token's reference",
             Field::AccessPlaceholder => "sign-in grant's access token's placeholder",
             Field::RefreshPlaceholder => "sign-in grant's refresh token's placeholder",
+            Field::UpstreamRoot => "upstream root",
+            Field::UpstreamRoots => "run's upstream roots",
         })
     }
 }
@@ -161,10 +167,10 @@ impl fmt::Display for Refused {
             ),
             Refused::Shared(a, b) => write!(f, "{a} and {b}: one placeholder stands for two credentials"),
             Refused::TooLong { field, place, len } => {
-                let unit = if matches!(field, Field::Hosts | Field::SignInHosts) {
-                    "hosts"
-                } else {
-                    "bytes"
+                let unit = match field {
+                    Field::Hosts | Field::SignInHosts => "hosts",
+                    Field::UpstreamRoots => "roots",
+                    _ => "bytes",
                 };
                 write!(
                     f,
@@ -180,6 +186,17 @@ impl fmt::Display for Refused {
 fn within(field: Field, place: usize, len: usize) -> Result<(), Refused> {
     if len > WIRE_MOST {
         return Err(Refused::TooLong { field, place, len });
+    }
+    Ok(())
+}
+
+/// A run's upstream roots (D242), each a certificate's DER, and their count, within
+/// [`WIRE_MOST`]: `NET_CREDENTIALS` carries each behind a two-byte length, and their count behind
+/// two more (shards-net's `encode_credentials`). Their place in `TooLong` is 0 for their count.
+pub fn check_roots(roots: &[Vec<u8>]) -> Result<(), Refused> {
+    within(Field::UpstreamRoots, 0, roots.len())?;
+    for (i, root) in roots.iter().enumerate() {
+        within(Field::UpstreamRoot, i, root.len())?;
     }
     Ok(())
 }

@@ -1,0 +1,43 @@
+== the Alpine step, by job and outcome (GitHub's step times)
+aarch64-unknown-linux-musl           failure  n=400 p50=33.2 p90=36.1 p99=66.9 max=67.5
+aarch64-unknown-linux-musl           success  n=72 p50=32.9 p90=35.8 p99=38.7 max=38.7
+aarch64-unknown-linux-musl release   failure  n=96 p50=7.3 p90=8.6 p99=31.4 max=31.4
+aarch64-unknown-linux-musl release   success  n=385 p50=31.2 p90=33.1 p99=35.2 max=38.3
+x86_64-unknown-linux-musl            failure  n=406 p50=60.2 p90=60.2 p99=60.2 max=63.2
+x86_64-unknown-linux-musl            success  n=7 p50=50.4 p90=57.3 p99=57.3 max=57.3
+x86_64-unknown-linux-musl release    failure  n=92 p50=7.8 p90=9.9 p99=11.1 max=11.1
+x86_64-unknown-linux-musl release    success  n=372 p50=31.3 p90=37.3 p99=40.4 max=43.8
+== x86_64-unknown-linux-musl, its test job's logs: 404
+  tests' build (step start to Finished): n=404 p50=32.5 p90=37.2 p99=39.6 max=46.3
+  setup (step start to cargo's first line): n=404 p50=0.5 p90=0.6 p99=1.5 max=4.5
+    build 11-09: n=6 p50=34.8 p90=35.7 p99=35.7 max=35.7
+    build 11-10: n=163 p50=32.3 p90=36.1 p99=38.0 max=39.6
+    build 11-11: n=106 p50=32.1 p90=36.8 p99=37.8 max=38.5
+    build 11-12: n=106 p50=32.7 p90=37.9 p99=38.7 max=41.0
+    build 11-13: n=23 p50=31.1 p90=39.7 p99=46.3 max=46.3
+  ran through (117 test binaries): tests n=4 p50=25.8 p90=27.2 p99=27.2 max=27.2 | build n=4 p50=24.8 p90=25.8 p99=25.8 max=25.8
+  cut by the limit: 355 ; quiet at the cut (since its binary began): n=353 p50=5.1 p90=25.4 p99=34.7 max=36.5
+  tests, estimated for the cut runs (M420): n=353 p50=29.8 p90=31.9 p99=34.1 max=42.4
+    42.4: 11-10 01:04 cut in tests/oracle.rs at 38.5, build 23.1
+    42.2: 11-10 00:30 cut in tests/oracle.rs at 38.3, build 25.0
+    34.6: 11-10 11:22 cut in tests/oracle.rs at 30.7, build 29.4
+  a tests step of its own (setup + tests, each run's): n=357 p50=30.3 p90=32.4 p99=34.7 max=42.9
+  slowest build: 46.3, run 43513425954 (70eba153d), job 132194139799
+== aarch64-unknown-linux-musl, its test job's logs: 107
+  tests' build (step start to Finished): n=107 p50=25.1 p90=26.5 p99=28.5 max=29.1
+  setup (step start to cargo's first line): n=107 p50=0.4 p90=0.5 p99=0.8 max=0.8
+    build 11-12: n=79 p50=25.1 p90=26.0 p99=27.3 max=27.3
+    build 11-13: n=28 p50=25.0 p90=28.2 p99=29.1 max=29.1
+  ran through (121 test binaries): tests n=1 p50=8.9 p90=8.9 p99=8.9 max=8.9 | build n=1 p50=29.1 p90=29.1 p99=29.1 max=29.1
+  cut by the limit: 12 ; quiet at the cut (since its binary began): n=9 p50=26.1 p90=27.1 p99=27.1 max=27.1
+  tests, estimated for the cut runs (M420): n=9 p50=14.2 p90=14.6 p99=14.6 max=14.6
+    14.6: 11-13 06:25 cut in tests/oracle.rs at 9.8, build 27.0
+    14.4: 11-12 09:31 cut in tests/oracle.rs at 9.7, build 25.6
+    14.4: 11-13 01:05 cut in tests/oracle.rs at 9.6, build 25.0
+  a tests step of its own (setup + tests, each run's): n=10 p50=14.6 p90=14.9 p99=15.0 max=15.0
+  slowest build: 29.1, run 43513425954 (70eba153d), job 132194139822
+== the test jobs' other steps, where gdb's install went through
+  x86_64-unknown-linux-musl: n=413 p50=1.5 p90=2.4 p99=4.3 max=5.8 ; slowest run 42748601186
+  aarch64-unknown-linux-musl: n=472 p50=0.1 p90=0.1 p99=0.1 max=0.2 ; slowest run 43474661701
+== x86_64-unknown-linux-gnu's Tests step, runs that ran through
+  build n=9 p50=18.6 p90=20.0 p99=20.0 max=20.0 | tests n=9 p50=31.0 p90=34.7 p99=34.7 max=34.7

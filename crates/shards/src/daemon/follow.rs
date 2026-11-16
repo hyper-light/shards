@@ -49,12 +49,13 @@ enum Process {
     /// from its VM's word that it waits on it to close the run's ports (`UNPUBLISHING`) to
     /// its answer (`PORTS_FREE`), what it does since (`unpublishing`). `due` is when its
     /// look is next: a deadline before it, or with none, one left from a follow since ended.
+    /// Each `Followed` is boxed: a look's state (shards-api's `Watch`) is many times a `Vm`'s.
     Net {
         child: Arc<shards_ipc::Child>,
         vm: u32,
         vm_running: bool,
         ended_vm: Option<Arc<shards_ipc::Child>>,
-        following: Option<(Instant, super::ends::Followed)>,
+        following: Option<(Instant, Box<super::ends::Followed>)>,
         unpublishing: Option<Box<super::ends::Followed>>,
         due: Option<Instant>,
         watch: Option<ExitWatch>,
@@ -123,6 +124,13 @@ impl Followers {
     #[cfg(test)]
     pub(super) fn ending(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
+    }
+
+    /// Whether the loop has woken since [`end`](Self::end) and so takes nothing more: its
+    /// wake read, which `end` wrote.
+    #[cfg(test)]
+    pub(super) fn ended_awake(&self) -> bool {
+        self.ending() && !super::readable_within(&self.wake.1, Some(std::time::Duration::ZERO))
     }
 
     /// Ends the loop, once it has woken, and every process it follows: a test's daemon's,
@@ -211,6 +219,23 @@ impl<D: Disk> Daemon<D> {
             return;
         }
         self.start_followers(threads);
+    }
+
+    /// Takes what each followed run has said that the loop did not take before it ended
+    /// ([`Followers::end`]): a test's daemon's, as its scope ends. A run whose VM said its
+    /// end, or whose VM's socket its test closed, ends as the loop would have ended it, and
+    /// lets go of what it held: the exec connections handed its VM and not taken (M24),
+    /// whose askers, threads of the daemon's, wait until they close.
+    #[cfg(test)]
+    pub(super) fn take_left(&self) {
+        let f = &self.followers;
+        let left: Vec<(u64, Followed)> = lock(&f.runs).iter().map(|(t, r)| (*t, r.clone())).collect();
+        for (token, (id, inbox)) in left {
+            if self.take_messages(&id, &inbox) {
+                let _ = f.poller.remove(&lock(&inbox).socket.stream);
+                lock(&f.runs).remove(&token);
+            }
+        }
     }
 
     /// Starts the followers' thread, unless it runs.
@@ -462,7 +487,7 @@ impl<D: Disk> Daemon<D> {
                     *vm_running = false;
                     *ended_vm = Some(vm);
                     let now = Instant::now();
-                    *following = Some((now, super::ends::Followed::of(Some(child.id()))));
+                    *following = Some((now, Box::new(super::ends::Followed::of(Some(child.id())))));
                     *unpublishing = None;
                     // A slice past what a clock holds, or none heard yet: its end alone,
                     // which reaps it.

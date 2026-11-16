@@ -288,7 +288,7 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp="),
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
-        let declared = declared.map_or_else(crate::domains::read, Ok);
+        let declared = declared.map_or_else(|| crate::domains::read(&spec.setup), Ok);
         match declared.and_then(|(all, domains, pairs)| {
             workload.capture = crate::capture::Capture::prepare(
                 &spec.setup,
@@ -625,6 +625,11 @@ fn mount_root(device: &str) -> Result<(), Failure> {
             crate::setup::write_sysctl(key, value).map_err(setup_failed)?;
         }
     }
+    // Init's namespace's conntrack, which the agents' egress, their published ports and
+    // the host's loopback are translated by, keeps a UDP flow as the host's network
+    // process does; a kernel without conntrack has none to keep. Before a run's
+    // `--sysctl`, which dockerd's merge puts over its own.
+    crate::setup::keep_udp_flows().map_err(setup_failed)?;
     // Last: init writes /proc/sys above, and no more after but through what it kept.
     masked()
 }
@@ -855,10 +860,10 @@ fn undoes_nesting(setup: &[Vec<u8>]) -> Option<String> {
 
 /// Init's part of a run's nesting grant (D234), before any process of its command is born:
 /// its own check against the image as built (D109), which must declare `NESTING` and no
-/// agent or harness; the command kept in a cgroup namespace of its own, whose root's limits
-/// nsdelegate keeps init's; `fs.nr_open` raised to the run's own `--ulimit nofile` hard
-/// limit, where that is higher, a limit past the kernel's ceiling refused; and the leaf the
-/// command starts in.
+/// agent or harness; `fs.nr_open` raised to the run's own `--ulimit nofile` hard limit,
+/// where that is higher, a limit past the kernel's ceiling refused; and the subtree the
+/// command is given beneath the workload's cgroup, with the leaf it starts in, which its
+/// standby enters (`setup::delegate`) in a cgroup namespace rooted at the subtree.
 fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
     crate::domains::nesting().map_err(|refused| setup_failed(refused.to_string()))?;
     if let Some(why) = undoes_nesting(setup) {
@@ -876,12 +881,15 @@ fn grant_nesting(setup: &[Vec<u8>]) -> Result<(), Failure> {
             return Err(setup_failed(crate::setup::nr_open_refused(asked, ceiling)));
         }
     }
-    match std::fs::create_dir(workload_leaf()) {
-        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(setup_failed(format!(
-            "making the leaf of the command's cgroup, {LEAF}: {e}"
-        ))),
-        _ => Ok(()),
+    for dir in [delegated_in(WORKLOAD_CGROUP), workload_leaf()] {
+        match std::fs::create_dir(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
+                return Err(setup_failed(format!("making the command's cgroup {dir}: {e}")));
+            }
+            _ => {}
+        }
     }
+    Ok(())
 }
 
 /// A spec's setup entries as init sorts them: the standby's own, and its microVM's
@@ -1234,14 +1242,23 @@ pub fn joiner_path(id: impl std::fmt::Display) -> String {
     format!("{RUN_PATH}/join-{id}")
 }
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/run/workload";
-/// The leaf of the workload's cgroup that its command starts in under the nesting grant
-/// (D234), and each of its execs joins: the name moby's hack/dind gives the leaf a nested
-/// runtime moves itself into (f35).
+/// The subtree of the workload's cgroup that its command is given under the nesting grant
+/// (D234), its cgroup namespace's root: beneath the workload's cgroup, which keeps its
+/// device program and limits out of the command's reach (inithex-01).
+pub const DELEGATED: &str = "delegated";
+/// The leaf of [`DELEGATED`] that the command starts in under the nesting grant (D234), and
+/// each of its execs joins: the name moby's hack/dind gives the leaf a nested runtime moves
+/// itself into (f35).
 pub const LEAF: &str = "init";
+
+/// [`DELEGATED`] of the workload's cgroup at `workload`.
+fn delegated_in(workload: &str) -> String {
+    format!("{workload}/{DELEGATED}")
+}
 
 /// [`LEAF`], as init sees the hierarchy.
 fn workload_leaf() -> String {
-    format!("{WORKLOAD_CGROUP}/{LEAF}")
+    format!("{}/{LEAF}", delegated_in(WORKLOAD_CGROUP))
 }
 
 /// Whether the run has the nesting grant (D234): set before any process of its command is
@@ -1389,15 +1406,17 @@ fn isolate(join: Option<libc::pid_t>, joiner: bool) -> Result<(), i32> {
 /// is in now (`now`), as runc's exec falls back to container init's (D173). Under the
 /// nesting grant (D234), its leaf; and where the leaf takes none, the workload's process's
 /// cgroup, but never the namespace root, whose controllers the workload may be enabling as
-/// an exec comes (moby's hack/dind loops on that race, f35). The errno of what failed.
+/// an exec comes (moby's hack/dind loops on that race, f35), nor the workload's cgroup
+/// above it. The errno of what failed.
 fn join_workload(
     workload: &str,
     granted: bool,
     now: impl FnOnce() -> Result<String, i32>,
 ) -> Result<(), i32> {
     let errno = |e: io::Error| e.raw_os_error().unwrap_or(libc::EIO);
+    let root = delegated_in(workload);
     let first = if granted {
-        format!("{workload}/{LEAF}")
+        format!("{root}/{LEAF}")
     } else {
         workload.to_string()
     };
@@ -1405,7 +1424,7 @@ fn join_workload(
         return Ok(());
     };
     let now = now()?;
-    if granted && now == workload {
+    if granted && (now == workload || now == root) {
         return Err(errno(refused));
     }
     enter_cgroup(&now).map_err(errno)
@@ -1736,22 +1755,27 @@ const UNFORWARDED: [libc::c_int; 9] = [
 /// (ptrace(2)). No process is born in its namespace before it is so ([`clone_reaper`]).
 /// A copy of init's memory before any run's. Ended with the run (`relay`).
 fn reaper(last_cap: u32, ids: Ids, ready: RawFd) -> ! {
-    // SAFETY: system calls on local values and literals alone: mount(2), chroot(2) and
-    // chdir(2) to an empty root; for IDs sent, dup2(2) of the two pipes it holds,
-    // close_range(2) of the rest and read(2) into a local buffer; the command's IDs, then
-    // prctl(2) and capset(2) to none of init's privileges; its signals blocked;
-    // close_range(2) of every descriptor past stdio, which says to init that it is ready
-    // ([`await_reaper`]); then waitpid(2), sigwaitinfo(2) and kill(2) for ever. Its
-    // signals stay blocked, so that one sent between the waits waits for sigwaitinfo.
+    // SAFETY: system calls on local values and literals alone: unshare(2) of its cgroup
+    // namespace; mount(2), chroot(2) and chdir(2) to an empty root; for IDs sent, dup2(2)
+    // of the two pipes it holds, close_range(2) of the rest and read(2) into a local
+    // buffer; the command's IDs, then prctl(2) and capset(2) to none of init's
+    // privileges; its signals blocked; close_range(2) of every descriptor past stdio,
+    // which says to init that it is ready ([`await_reaper`]); then waitpid(2),
+    // sigwaitinfo(2) and kill(2) for ever. Its signals stay blocked, so that one sent
+    // between the waits waits for sigwaitinfo.
     unsafe {
         let shut = libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
-        let alone = libc::mount(
-            std::ptr::null(),
-            c"/".as_ptr(),
-            std::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            std::ptr::null(),
-        ) == 0
+        // A cgroup namespace of its own, rooted at its cgroup, so that a process of the
+        // namespace that may enter its namespaces (CAP_SYS_ADMIN beside CAP_SYS_PTRACE)
+        // names through it no cgroup above its own (inithex-01).
+        let alone = libc::unshare(libc::CLONE_NEWCGROUP) == 0
+            && libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_REC | libc::MS_PRIVATE,
+                std::ptr::null(),
+            ) == 0
             && libc::mount(
                 c"tmpfs".as_ptr(),
                 c"/proc".as_ptr(),
@@ -2306,26 +2330,51 @@ fn loses_signals_on() -> Option<u32> {
 /// connection's loss (D16). A connect still under way, as a run can end before its first
 /// poll finishes it, is waited for: the kernel ends one within its connect timeout (Linux 6.18
 /// net/vmw_vsock/af_vsock.c l. 136, 1509, 1652), and sends nothing on it before (l. 2075).
-/// Its frame takes room nothing else takes by now, the managed control's having ended.
-fn say_signals_end(signals: &File, connected: bool) {
+/// The run's managed control, where a failure broke the relay before it all went, goes first
+/// and whole (`ControlQueue::finish`): the end written within a frame part of which went
+/// would be read as that frame's rest, and the host would refuse what followed. Both are
+/// written whole, the connection waited on as it fills: a vsock stream takes what its peer's
+/// credit has room for (Linux 6.18 net/vmw_vsock/virtio_transport_common.c,
+/// `virtio_transport_get_credit`), and an end of which none or part went is no end.
+fn say_signals_end(signals: &File, connected: bool, control: Option<&mut crate::capture::ControlQueue>) {
     let fd = signals.as_raw_fd();
-    if !connected {
-        let mut p = libc::pollfd {
-            fd,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        // SAFETY: poll(2) of one pollfd of a descriptor the relay holds open.
-        while unsafe { libc::poll(&mut p, 1, -1) } < 0 {
-            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return;
-            }
-        }
-        if connect_result(fd).is_err() {
-            return;
+    if !connected && (writable(fd).is_err() || connect_result(fd).is_err()) {
+        return;
+    }
+    if let Some(control) = control
+        && control.finish(fd).is_err()
+    {
+        return;
+    }
+    let _ = write_whole(fd, &run::header(kind::SIGNALS_END, 0));
+}
+
+/// Waits until non-blocking `fd` has room to write, or has ended or failed.
+fn writable(fd: RawFd) -> io::Result<()> {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: poll(2) of one pollfd of a descriptor the caller holds open.
+    while unsafe { libc::poll(&mut p, 1, -1) } < 0 {
+        let e = io::Error::last_os_error();
+        if e.kind() != io::ErrorKind::Interrupted {
+            return Err(e);
         }
     }
-    let _ = write(fd, &run::header(kind::SIGNALS_END, 0));
+    Ok(())
+}
+
+/// Writes `bytes` whole on non-blocking `fd`, waiting for room as it fills ([`writable`]).
+pub(crate) fn write_whole(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match write(fd, bytes)? {
+            0 => writable(fd)?,
+            n => bytes = bytes.get(n..).unwrap_or_default(),
+        }
+    }
+    Ok(())
 }
 
 /// Writes one frame, blocking.
@@ -2493,11 +2542,6 @@ pub(crate) mod step {
     pub const NNP: u8 = 10;
     /// Making a joiner's working directory (D119), as [`super::workdir`] makes a run's.
     pub const MKDIR: u8 = 11;
-    /// Entering a member's namespaces, for a command run in it ([`crate::enter`]).
-    pub const JOIN: u8 = 12;
-    /// A step of a member's confinement, its number (`domains::Confining`) where a
-    /// candidate's would be ([`crate::enter`]).
-    pub const CONFINE: u8 = 13;
 }
 
 /// A running workload and init's ends of its stdio. With a terminal, `stdout` is its
@@ -2961,7 +3005,7 @@ impl Standby {
         // daemon refuses it: what the image declares, in the image as built (D109).
         let declared = match crate::setup::filter_named(&spec.setup, b"domains-seccomp=") {
             Some(_) if spec.builtin != run::builtin::HOLD => {
-                Some(crate::domains::read().map_err(setup_failed)?)
+                Some(crate::domains::read(&spec.setup).map_err(setup_failed)?)
             }
             _ => None,
         };
@@ -3644,6 +3688,26 @@ struct Exec {
     /// Init's own work for a joiner (D119), its built-in in a child of init's: spared as
     /// the workload's end ends the rest, as the joiner is.
     into_joiner: bool,
+    /// A command run in a member, through the member's starter (D243, confine-10).
+    member: Option<MemberExec>,
+}
+
+/// Where a command run in a member has come, started by its member's starter
+/// ([`crate::starter`]). Init waits on none of it but in its poll loop: a process of the
+/// member's may stop the starter, or the command before it execs, as it may any of its own.
+enum MemberExec {
+    /// Asked of its starter, whose answer is to come on its channel.
+    Asked(crate::enter::Asked),
+    /// Born, its error channel open until it execs.
+    Born(crate::enter::Asked, crate::starter::Born),
+    /// Running until its pidfd says it ended; `failed`, ended before it ran, its end said.
+    Running {
+        born: crate::starter::Born,
+        member: u32,
+        failed: bool,
+    },
+    /// Its end read, and its starter asked to reap it.
+    Done,
 }
 
 /// How far an exec's connection to the host has come. The host says nothing on it before
@@ -3751,17 +3815,32 @@ fn builtin(
     let (stderr_r, stderr_w) = pipe()?;
     // What a microVM's engine asks of its networks is init's own state (D181): done here,
     // and said by the child as any built-in's answer is.
-    let networked = (kind == run::builtin::NETWORK).then(|| crate::members::network(args));
+    // Each answer its text, or why not and the built-in's exit status.
+    let networked =
+        (kind == run::builtin::NETWORK).then(|| crate::members::network(args).map_err(|e| (e, 1)));
     // What a joiner listens on, read through init's `/proc` by its process, whose
     // network namespace its socket tables are (D181).
     let networked = networked.or_else(|| {
-        (kind == run::builtin::LISTENS).then(|| crate::members::listening(joiner.unwrap_or(workload)))
+        (kind == run::builtin::LISTENS)
+            .then(|| crate::members::listening(joiner.unwrap_or(workload)).map_err(|e| (e, 1)))
     });
     // The workload's device filter widened to the nodes of the host's functions plugged
     // into its microVM (D214): init's own state, as the filter it keeps, done here.
     let networked = networked.or_else(|| {
         (kind == run::builtin::DEVICE && joiner.is_none() && args.first().is_some_and(|a| a == b"allow"))
-            .then(|| crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP))
+            .then(|| {
+                crate::devices::allow(args.get(1..).unwrap_or_default(), WORKLOAD_CGROUP).map_err(|e| (e, 1))
+            })
+    });
+    // A member's grants past the microVM made as its host says (D278): init's own state, as
+    // the switch and the gates it keeps, done here; answered with nothing, or refused by its
+    // cause's status.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::EGRESS).then(|| {
+            crate::egress::change(args)
+                .map(|()| String::new())
+                .map_err(|e| (e.to_string(), failed_status(kind, &e)))
+        })
     });
     // What reads the host's stdin: unpacking an archive, and the host's notices (D235).
     let input = if matches!(kind, run::builtin::EXTRACT | run::builtin::NOTICE) {
@@ -3779,9 +3858,11 @@ fn builtin(
         if let Some(said) = networked {
             let (mut to, text, code) = match said {
                 Ok(text) => (File::from(stdout_w), text, 0),
-                Err(why) => (File::from(stderr_w), why, 1),
+                Err((why, code)) => (File::from(stderr_w), why, code),
             };
-            let _ = writeln!(to, "{text}");
+            if !(text.is_empty() && kind == run::builtin::EGRESS) {
+                let _ = writeln!(to, "{text}");
+            }
             // SAFETY: _exit(2) ends the child without running init's exit paths.
             unsafe { libc::_exit(code) }
         }
@@ -3945,6 +4026,11 @@ fn builtin(
             run::builtin::RESIZE => resize_member(args, domains),
             // A member's command signalled (D238, goal 58's step 5).
             run::builtin::SIGNAL => signal_member(args, domains),
+            // A member's generation ended at once (D270): its reaper killed, its PID
+            // namespace with it.
+            run::builtin::MEMBER_KILL => kill_member(args, domains),
+            // Its clock its host's, as its run goes on from a pause (D267).
+            run::builtin::CLOCK => crate::linux::sync_clock(),
             run::builtin::SIZE => match &layers {
                 Some((_, upper)) => Some(format!("/proc/self/fd/{}", upper.as_raw_fd())),
                 None => crate::changes::upper(),
@@ -4509,6 +4595,7 @@ impl Exec {
             proxy: None,
             save: Save::Unasked,
             into_joiner: false,
+            member: None,
         };
         exec.to_conn
             .extend(&[&run::header(kind::HELLO, run::TOKEN as u32), token]);
@@ -4521,18 +4608,15 @@ impl Exec {
         // A command run in one of the run's members (plan step 6, D243).
         let in_member = run::members::exec_member(&spec.setup);
         let started = if let Ok(Some(member)) = in_member {
-            crate::enter::start(&spec, member, domains)
-                .map(|e| Started {
-                    pid: e.pid,
-                    tty: e.tty,
-                    stdin: e.stdin,
-                    stdout: e.stdout,
-                    stderr: e.stderr,
-                    binds: None,
-                    published: None,
-                    member: None,
-                })
-                .map_err(|f| entered_failure(f, &spec))
+            // Asked of its member's starter: its start is said as its starter answers and
+            // it execs, in the poll loop (`MemberExec`).
+            match crate::enter::start(&spec, member, domains, id) {
+                Ok(asked) => {
+                    exec.member = Some(MemberExec::Asked(asked));
+                    return Ok(exec);
+                }
+                Err(f) => Err(entered_failure(f, &spec.argv, &spec.cwd, &spec.user)),
+            }
         } else if let Err(e) = in_member {
             Err(setup_failed(format!("a malformed command: {e}")))
         } else if let Some(range) = crate::join::range(&spec.setup) {
@@ -4645,19 +4729,154 @@ impl Exec {
                 }
                 exec.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
             }
-            Err(f) => {
-                // A member's refusal by type, its words after (D243); else the class alone.
-                let said = match f.refusal {
-                    Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
-                    None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
-                    None => [&[run::exec_failed::RUNTIME][..], f.message.as_bytes()].concat(),
-                };
-                let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
-                exec.to_conn.extend(&[&run::header(kind::SYSTEM_ERR, len), &said]);
-                exec.status = Some(f.status);
-            }
+            Err(f) => exec.not_started(f),
         }
         Ok(exec)
+    }
+
+    /// It could not start, `f` why: said to its host, its status `f`'s.
+    fn not_started(&mut self, f: Failure) {
+        // A member's refusal by type, its words after (D243); else the class alone.
+        let said = match f.refusal {
+            Some(r) => [&[run::exec_failed::MEMBER][..], &r.encode(f.message.as_bytes())].concat(),
+            None if f.daemon => [&[run::exec_failed::DAEMON][..], f.message.as_bytes()].concat(),
+            None => [&[run::exec_failed::RUNTIME][..], f.message.as_bytes()].concat(),
+        };
+        let len = u32::try_from(said.len()).unwrap_or(u32::MAX);
+        self.to_conn.extend(&[&run::header(kind::SYSTEM_ERR, len), &said]);
+        self.status = Some(f.status);
+    }
+
+    /// Its terminal's master, where it runs on one: what its host's resizes size, from its
+    /// ask on, as the host may resize it before it has heard that it started.
+    fn terminal(&self) -> Option<RawFd> {
+        match &self.member {
+            Some(MemberExec::Asked(asked) | MemberExec::Born(asked, _)) => asked.master(),
+            _ => self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd),
+        }
+    }
+
+    /// Whether it is asked of member `member`'s starter as exec `id`, its answer to come.
+    fn asked_of(&self, member: u32, id: u32) -> bool {
+        self.id == id && matches!(&self.member, Some(MemberExec::Asked(a)) if a.member == member)
+    }
+
+    /// Its member's starter answered: born, or its fork's errno.
+    fn member_answered(&mut self, answer: Result<crate::starter::Born, i32>) {
+        let Some(MemberExec::Asked(asked)) = self.member.take() else {
+            return;
+        };
+        match answer {
+            Ok(born) => {
+                self.pid = born.pid;
+                self.member = Some(MemberExec::Born(asked, born));
+            }
+            Err(errno) => {
+                self.member = Some(MemberExec::Done);
+                let f = asked.not_born(errno);
+                self.not_started(entered_failure(
+                    f,
+                    std::slice::from_ref(&asked.argv0),
+                    &asked.cwd,
+                    &[],
+                ));
+            }
+        }
+    }
+
+    /// Its member's starter has gone before it answered.
+    fn member_unanswered(&mut self) {
+        if let Some(MemberExec::Asked(asked)) = self.member.take() {
+            self.member = Some(MemberExec::Done);
+            let f = asked.gone();
+            self.not_started(entered_failure(
+                f,
+                std::slice::from_ref(&asked.argv0),
+                &asked.cwd,
+                &[],
+            ));
+        }
+    }
+
+    /// Its error channel is readable: closed as it execs, or why it did not.
+    fn member_launched(&mut self) {
+        let Some(MemberExec::Born(asked, born)) = self.member.take() else {
+            return;
+        };
+        let member = asked.member;
+        let mut report = [0u8; 16];
+        let n = read(asked.err.as_raw_fd(), &mut report).unwrap_or(0);
+        let said = asked.launched(report.get(..n).unwrap_or_default());
+        let (argv0, cwd) = (asked.argv0.clone(), asked.cwd.clone());
+        let tty = asked.master().is_some();
+        let started = said.and_then(|()| {
+            asked.stdio().map_err(|e| {
+                crate::enter::Failed::Refused(
+                    run::members::Refusal::Joining(e.raw_os_error().unwrap_or(libc::EIO)),
+                    format!("its stdio: {e}"),
+                )
+            })
+        });
+        match started {
+            Ok((stdin, stdout, stderr)) => {
+                for fd in [&stdin, &stdout, &stderr].into_iter().flatten() {
+                    set_nonblocking(fd.as_raw_fd(), true);
+                }
+                (self.stdin, self.stdout, self.stderr) = (stdin, stdout, stderr);
+                // Its stdout a terminal's master, which its host's resizes size (EXEC_RESIZE).
+                self.tty = tty;
+                self.to_conn.extend(&[&run::header(kind::STARTED, 0)]);
+                self.member = Some(MemberExec::Running {
+                    born,
+                    member,
+                    failed: false,
+                });
+            }
+            Err(f) => {
+                // One that ran on (its stdio's failure) ends here; one that reported has.
+                // SAFETY: pidfd_send_signal(2) of a process this pidfd selects alone.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        born.pidfd.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    )
+                };
+                self.not_started(entered_failure(f, &[argv0], &cwd, &[]));
+                self.member = Some(MemberExec::Running {
+                    born,
+                    member,
+                    failed: true,
+                });
+            }
+        }
+    }
+
+    /// Its pidfd is readable: it has ended, a zombie its starter keeps until init has read
+    /// its end. Its starter, of `domains`, is asked to reap it.
+    fn member_ended(&mut self, domains: &[crate::domains::Started]) {
+        let Some(MemberExec::Running { born, member, failed }) = self.member.take() else {
+            return;
+        };
+        self.member = Some(MemberExec::Done);
+        // Gone where its starter went, reaped by its namespace's init: killed with its
+        // starter (`PR_SET_PDEATHSIG`), as its member's end kills it.
+        let end = crate::starter::ended(born.pid).map_or(
+            run::members::End::Signaled(libc::SIGKILL.unsigned_abs()),
+            crate::managed::ended,
+        );
+        if let Some(s) = domains
+            .iter()
+            .find(|d| d.member == member)
+            .and_then(|d| d.starter.as_ref())
+        {
+            s.reap(born.ns_pid);
+        }
+        if !failed {
+            exec_ended(self, end);
+        }
     }
 
     /// Whether everything of it is said: its status known, its output drained, its EXIT
@@ -4933,6 +5152,8 @@ enum Owner {
     Notify,
     /// Its ready-by's timer.
     ReadyBy,
+    /// A member's starter's channel, by its domain's index (D243, confine-10).
+    Starter(usize),
 }
 
 /// Tells the host where a granted run's readiness moved (D234), and marks it ready on the
@@ -4951,6 +5172,10 @@ enum Part {
     Stdin,
     Stdout,
     Stderr,
+    /// A member's command's error channel, until it execs (`MemberExec::Born`).
+    Launch,
+    /// A member's command's pidfd, readable as it ends (`MemberExec::Running`).
+    Pidfd,
 }
 
 /// Reads what a pipe or pty holds into `to` as `which` frames; drops `slot` at its end.
@@ -5040,14 +5265,21 @@ impl Workload {
             // with it, which the run's end says.
             if !exited && MEMBER_ENDS.load(std::sync::atomic::Ordering::Relaxed) {
                 for d in self.domains.iter_mut().filter(|d| !d.end_told) {
-                    if let Some(status) = d.lifecycle.ended_status() {
+                    if let Some(end) = d.lifecycle.ended_status() {
                         let ended = run::members::Ended {
                             member: d.member,
-                            status,
+                            end,
                         }
                         .encode();
                         to_host.extend(&[&run::header(kind::MEMBER_ENDED, ended.len() as u32), &ended]);
                         d.end_told = true;
+                        // A generation no next one is held for ends its whole member, its server
+                        // instance with it, as a member's end did before generations (D270).
+                        if !d.held
+                            && let Err(e) = crate::domains::end_member(d)
+                        {
+                            let _ = writeln!(io::stderr(), "shards-init: {}'s server instance: {e}", d.label);
+                        }
                     }
                 }
             }
@@ -5080,6 +5312,8 @@ impl Workload {
                     break 'relay;
                 }
             }
+            // Let go once every channel has ended and nothing of it is in flight, but for a member
+            // held for its next generation (D270): its channels open again on this connection.
             if self
                 .capture
                 .as_ref()
@@ -5087,7 +5321,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.stdout.terminal() && d.stderr.terminal())
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && !d.held)
             {
                 self.capture = None;
             }
@@ -5330,6 +5564,11 @@ impl Workload {
             );
             for (i, d) in self.domains.iter().enumerate() {
                 poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
+                poll(
+                    d.starter.as_ref().map(crate::starter::Starter::fd),
+                    libc::POLLIN,
+                    Owner::Starter(i),
+                );
                 if let Some(input) = d.input.as_ref() {
                     let (fd, events) = input.conn();
                     poll(fd, events, Owner::MemberInput(i, Part::Conn));
@@ -5431,6 +5670,23 @@ impl Workload {
                     out_events,
                     Owner::Exec(i, Part::Stderr),
                 );
+                match &e.member {
+                    Some(MemberExec::Born(asked, _)) => {
+                        poll(
+                            Some(asked.err.as_raw_fd()),
+                            libc::POLLIN,
+                            Owner::Exec(i, Part::Launch),
+                        );
+                    }
+                    Some(MemberExec::Running { born, .. }) => {
+                        poll(
+                            Some(born.pidfd.as_raw_fd()),
+                            libc::POLLIN,
+                            Owner::Exec(i, Part::Pidfd),
+                        );
+                    }
+                    _ => {}
+                }
             }
             // SAFETY: valid pollfds, as many as given.
             if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
@@ -5447,11 +5703,11 @@ impl Workload {
                         // in /proc to say whose they are (procevents).
                         keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
-                        reap(&self.sigchld, |pid, code| {
+                        reap(&self.sigchld, |pid, end| {
                             if let Some(d) =
                                 self.domains.iter_mut().find(|d| d.lifecycle.awaiting_status(pid))
                             {
-                                match d.lifecycle.reaped(code) {
+                                match d.lifecycle.reaped(end) {
                                     Ok(update) => apply_lifecycle(d, update),
                                     Err(fault) => {
                                         fatal = Some(setup_failed(format!(
@@ -5467,7 +5723,7 @@ impl Workload {
                             }
                             if pid == main {
                                 let _ = crate::linux::control_write(control::MARKER, marker::WORKLOAD_EXITED);
-                                status = Some(code);
+                                status = Some(end.status());
                                 // Its readiness ends with it (D234): nothing moves it after.
                                 if let Some(r) = self.readiness.as_mut() {
                                     r.exited();
@@ -5524,32 +5780,7 @@ impl Workload {
                                     unsafe { libc::kill(-1, libc::SIGKILL) };
                                 }
                             } else if let Some(e) = execs.iter_mut().find(|e| e.pid == pid) {
-                                e.status = Some(code);
-                                // What it published goes with it (D181).
-                                if let Some(proxy) = e.proxy.take() {
-                                    // SAFETY: kill(2) of init's own child, reaped as it ends.
-                                    unsafe { libc::kill(proxy, libc::SIGKILL) };
-                                }
-                                // Its stdin goes with it.
-                                e.stdin = None;
-                                e.to_stdin.clear();
-                                // A joiner's cgroup, empty now: the kernel ends a PID
-                                // namespace's other processes before its first's end is
-                                // reaped (D119).
-                                // In another's PID namespace, what it started is killed
-                                // as it ends, as runc kills it (D119).
-                                if e.joined {
-                                    joined().retain(|(j, _)| *j != e.id);
-                                    crate::join::kill_rest(e.id);
-                                    let dir = crate::join::cgroup(e.id);
-                                    if crate::plug::oom_kills(&dir) > 0 {
-                                        e.oom = Some(oom_facts(&dir));
-                                    }
-                                    e.pids = pids_refused_in(&dir);
-                                    crate::join::remove_cgroup(e.id);
-                                    // Its membership of the microVM's switch (D181).
-                                    crate::members::leave(e.id);
-                                }
+                                exec_ended(e, end);
                             } else if packing == Some(pid) {
                                 // The workload's layer sent, whole or not; the connection's
                                 // file, which the child made blocking, nonblocking again.
@@ -5564,7 +5795,7 @@ impl Workload {
                                 // connection goes, so that the host hears its end rather
                                 // than waiting on the rest.
                                 e.save = Save::Done;
-                                if code != 0 {
+                                if end != run::members::End::Exited(0) {
                                     e.link = Link::Gone;
                                 } else if let Some(conn) = e.link.conn() {
                                     set_nonblocking(conn.as_raw_fd(), true);
@@ -5679,6 +5910,9 @@ impl Workload {
                                 let pty = self.stdout.as_ref().filter(|_| self.tty).map(AsRawFd::as_raw_fd);
                                 let hosts = self.hosts.as_ref();
                                 let mut taken_for_malformed = false;
+                                // A member's next generation asked for, or held for (D270): taken
+                                // once the frames are read, as they change the members.
+                                let mut generations: Vec<(u8, Vec<u8>)> = Vec::new();
                                 let whole = each_frame(&mut from_signals, |which, payload| {
                                     let id_and = |p: &[u8]| {
                                         let (id, rest) = p.split_at_checked(4)?;
@@ -5759,10 +5993,10 @@ impl Workload {
                                         kind::EXEC_RESIZE => {
                                             if let Some((id, rest)) = id_and(payload)
                                                 && let Some(size) = Size::decode(&rest)
-                                                && let Some(e) = execs.iter().find(|e| e.id == id && e.tty)
-                                                && let Some(fd) = e.stdout.as_ref()
+                                                && let Some(fd) =
+                                                    execs.iter().find(|e| e.id == id).and_then(Exec::terminal)
                                             {
-                                                resize(fd.as_raw_fd(), size);
+                                                resize(fd, size);
                                             }
                                         }
                                         // The host's answer to the run's bind on its network
@@ -5772,9 +6006,35 @@ impl Workload {
                                                 hosts.answer(payload);
                                             }
                                         }
+                                        kind::MEMBER_START | kind::MEMBER_HOLD => {
+                                            generations.push((which, payload.to_vec()));
+                                        }
                                         _ => {}
                                     }
                                 });
+                                for (which, payload) in generations {
+                                    if which == kind::MEMBER_HOLD {
+                                        hold_member(&payload, &mut self.domains);
+                                    } else {
+                                        let answer = next_generation(
+                                            &payload,
+                                            &mut self.domains,
+                                            self.capture.as_mut(),
+                                        );
+                                        match answer.encode() {
+                                            Ok(bytes) => to_host.extend(&[
+                                                &run::header(kind::MEMBER_STARTED, bytes.len() as u32),
+                                                &bytes,
+                                            ]),
+                                            Err(e) => {
+                                                let _ = writeln!(
+                                                    io::stderr(),
+                                                    "shards-init: a member's next generation's answer: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 if !whole || taken_for_malformed {
                                     signals = None;
                                 }
@@ -5801,6 +6061,12 @@ impl Workload {
                             && let Err(e) = capture.progress()
                             && !e.transient()
                         {
+                            // Its every channel's end sent whole, its host ends it: the
+                            // capture's own end, which can come before the loop lets it go.
+                            if capture.ended_once_done(&e) {
+                                self.capture = None;
+                                continue;
+                            }
                             // Once the command has ended its status stands: the members'
                             // output, drained to its end (D240), ends where its host went.
                             if status.is_some() {
@@ -5897,6 +6163,47 @@ impl Workload {
                             Part::Stdin => feed(&mut e.stdin, &mut e.to_stdin),
                             Part::Stdout => drain_into(&mut e.stdout, kind::STDOUT, &mut buf, &mut e.to_conn),
                             Part::Stderr => drain_into(&mut e.stderr, kind::STDERR, &mut buf, &mut e.to_conn),
+                            Part::Launch => e.member_launched(),
+                            Part::Pidfd => e.member_ended(&self.domains),
+                        }
+                    }
+                    Owner::Starter(i) => {
+                        let Some(d) = self.domains.get_mut(i) else {
+                            continue;
+                        };
+                        let member = d.member;
+                        while let Some(starter) = d.starter.as_ref() {
+                            match starter.answer() {
+                                Ok(None) => break,
+                                Ok(Some(crate::starter::Answer::Born(born))) => {
+                                    let id = born.id;
+                                    if let Some(e) = execs.iter_mut().find(|e| e.asked_of(member, id)) {
+                                        e.member_answered(Ok(born));
+                                    }
+                                }
+                                Ok(Some(crate::starter::Answer::NotBorn { id, errno })) => {
+                                    if let Some(e) = execs.iter_mut().find(|e| e.asked_of(member, id)) {
+                                        e.member_answered(Err(errno));
+                                    }
+                                }
+                                // Gone: what was asked of it is refused; what it started ends
+                                // with it, told by each one's pidfd.
+                                Err(_) => {
+                                    if let Err(e) = d.starter_gone() {
+                                        let _ = writeln!(
+                                            io::stderr(),
+                                            "shards-init: {}: its pids.max as its starter went: {e}",
+                                            d.label
+                                        );
+                                    }
+                                    for e in execs.iter_mut() {
+                                        if matches!(&e.member, Some(MemberExec::Asked(a)) if a.member == member)
+                                        {
+                                            e.member_unanswered();
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -5983,7 +6290,7 @@ impl Workload {
             set_nonblocking(fd, false);
         }
         if let Some(signals) = &signals {
-            say_signals_end(signals, signals_connected);
+            say_signals_end(signals, signals_connected, self.capture_control.as_mut());
         }
         let result = match fatal {
             Some(failure) => {
@@ -6211,7 +6518,7 @@ fn frame_processes(records: &[u8], to_host: &mut Outbox) {
     }
 }
 
-fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
+fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, run::members::End)) {
     let mut info = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
     while read(sigchld.as_raw_fd(), &mut info).is_ok_and(|n| n > 0) {}
     loop {
@@ -6221,14 +6528,35 @@ fn reap(sigchld: &OwnedFd, mut exited: impl FnMut(libc::pid_t, u32)) {
         if pid <= 0 {
             return;
         }
-        exited(
-            pid,
-            if libc::WIFSIGNALED(st) {
-                128 + libc::WTERMSIG(st) as u32
-            } else {
-                libc::WEXITSTATUS(st) as u32
-            },
-        );
+        exited(pid, crate::managed::ended(st));
+    }
+}
+
+/// Exec `e`'s process ended, `end` how: its status, and what goes with it.
+fn exec_ended(e: &mut Exec, end: run::members::End) {
+    e.status = Some(end.status());
+    // What it published goes with it (D181).
+    if let Some(proxy) = e.proxy.take() {
+        // SAFETY: kill(2) of init's own child, reaped as it ends.
+        unsafe { libc::kill(proxy, libc::SIGKILL) };
+    }
+    // Its stdin goes with it.
+    e.stdin = None;
+    e.to_stdin.clear();
+    // A joiner's cgroup, empty now: the kernel ends a PID namespace's other processes before
+    // its first's end is reaped (D119). In another's PID namespace, what it started is
+    // killed as it ends, as runc kills it (D119).
+    if e.joined {
+        joined().retain(|(j, _)| *j != e.id);
+        crate::join::kill_rest(e.id);
+        let dir = crate::join::cgroup(e.id);
+        if crate::plug::oom_kills(&dir) > 0 {
+            e.oom = Some(oom_facts(&dir));
+        }
+        e.pids = pids_refused_in(&dir);
+        crate::join::remove_cgroup(e.id);
+        // Its membership of the microVM's switch (D181).
+        crate::members::leave(e.id);
     }
 }
 
@@ -6255,12 +6583,25 @@ fn resize(fd: RawFd, size: Size) {
 /// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`).
 fn failed_status(kind: u8, e: &io::Error) -> i32 {
     let unsignalled = e.get_ref().and_then(|inner| inner.downcast_ref::<Unsignalled>());
-    match (kind, unsignalled) {
-        (run::builtin::DEVICE, _) if e.kind() == io::ErrorKind::ResourceBusy => {
+    let refused = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::egress::Refused>());
+    match (kind, unsignalled, refused) {
+        (run::builtin::DEVICE, _, _) if e.kind() == io::ErrorKind::ResourceBusy => {
             i32::from(run::builtin::DEVICE_BUSY)
         }
-        (run::builtin::SIGNAL, Some(Unsignalled::Ended(_))) => i32::from(run::builtin::SIGNAL_ENDED),
-        (run::builtin::SIGNAL, Some(Unsignalled::Unknown(_))) => i32::from(run::builtin::SIGNAL_UNKNOWN),
+        (run::builtin::SIGNAL, Some(Unsignalled::Ended(_)), _) => i32::from(run::builtin::SIGNAL_ENDED),
+        (run::builtin::SIGNAL, Some(Unsignalled::Unknown(_)), _) => i32::from(run::builtin::SIGNAL_UNKNOWN),
+        // A member's grants past the microVM refused by a cause its host tells apart (D278).
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Unknown(_))) => {
+            i32::from(run::builtin::EGRESS_UNKNOWN)
+        }
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Past(_))) => {
+            i32::from(run::builtin::EGRESS_PAST)
+        }
+        (run::builtin::EGRESS, _, Some(crate::egress::Refused::Unheld(_))) => {
+            i32::from(run::builtin::EGRESS_UNHELD)
+        }
         _ => 1,
     }
 }
@@ -6303,7 +6644,7 @@ fn signal_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::R
     // SAFETY: openat(2) of a fixed name under the cgroup directory init holds for the member.
     let procs = unsafe {
         libc::openat(
-            started.lifecycle.group().as_raw_fd(),
+            started.lifecycle.population().as_raw_fd(),
             c"cgroup.procs".as_ptr(),
             libc::O_RDONLY | libc::O_CLOEXEC,
         )
@@ -6318,6 +6659,103 @@ fn signal_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::R
         true => Ok(()),
         false => Err(ended()),
     }
+}
+
+/// [`run::builtin::MEMBER_KILL`] (D270): member `args` names' generation ended at once, its
+/// reaper killed, which takes every process of its PID namespace and nothing else of the
+/// member's. Refused, as [`signal_member`] refuses, for a member that never started, and for one
+/// whose generation has ended already.
+fn kill_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::Result<()> {
+    let member = run::members::parse_kill(args)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+    let started = domains
+        .iter()
+        .find(|d| d.member == member)
+        .ok_or_else(|| io::Error::other(Unsignalled::Unknown(member)))?;
+    if started.lifecycle.ended() {
+        return Err(io::Error::other(Unsignalled::Ended(started.label.clone())));
+    }
+    started.lifecycle.kill_reaper()
+}
+
+/// A [`kind::MEMBER_HOLD`]: its member's next generation is coming (D270), so that its current
+/// one's end keeps its server instance and its namespaces; or, its restart failed, let go: a
+/// generation that ended under the hold then ends its whole member, as an end with none does.
+/// One of no member, or malformed, is nothing: a start that follows it is refused, typed.
+fn hold_member(payload: &[u8], domains: &mut [crate::domains::Started]) {
+    let Some(hold) = run::members::Hold::decode(payload) else {
+        return;
+    };
+    let Some(d) = domains.iter_mut().find(|d| d.member == hold.member) else {
+        return;
+    };
+    // A generation that ended unheld ended its whole member: nothing of it is kept to hold.
+    if d.end_told && !d.held {
+        return;
+    }
+    d.held = hold.held;
+    if d.end_told
+        && !hold.held
+        && let Err(e) = crate::domains::end_member(d)
+    {
+        let _ = writeln!(io::stderr(), "shards-init: {}'s server instance: {e}", d.label);
+    }
+}
+
+/// A [`kind::MEMBER_START`]'s answer (D270): its member's next generation started, its channels
+/// waiting for their credit again, or why not, typed.
+fn next_generation(
+    payload: &[u8],
+    domains: &mut [crate::domains::Started],
+    capture: Option<&mut crate::capture::Capture>,
+) -> run::members::StartAnswer {
+    use run::members::{Start, StartAnswer, StartRefusal};
+    let start = match Start::decode(payload) {
+        Ok(start) => start,
+        Err(e) => {
+            let (member, generation) = (
+                payload
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .map_or(0, u32::from_be_bytes),
+                payload
+                    .get(4..8)
+                    .and_then(|b| b.try_into().ok())
+                    .map_or(0, u32::from_be_bytes),
+            );
+            return StartAnswer {
+                member,
+                generation,
+                refused: Some((
+                    StartRefusal::Failed,
+                    format!("a malformed start: {e}").into_bytes(),
+                )),
+            };
+        }
+    };
+    let answer = |refused: Option<(StartRefusal, String)>| StartAnswer {
+        member: start.member,
+        generation: start.generation,
+        refused: refused.map(|(why, words)| (why, words.into_bytes())),
+    };
+    let Some(d) = domains.iter_mut().find(|d| d.member == start.member) else {
+        return answer(Some((
+            StartRefusal::Unknown,
+            format!("member {} did not start in this run", start.member),
+        )));
+    };
+    if let Err(refused) = crate::domains::next_generation(d, &start) {
+        return answer(Some(refused));
+    }
+    let reopened = match capture {
+        Some(capture) => capture.reopen(start.member).map_err(|e| e.to_string()),
+        None => Ok(()),
+    };
+    answer(
+        reopened
+            .err()
+            .map(|e| (StartRefusal::Failed, format!("{}: its output: {e}", d.label))),
+    )
 }
 
 /// Signals the member's command among `listed`'s processes (its cgroup's, `cgroup.procs`):
@@ -6594,7 +7032,7 @@ fn exec_failure(which: u8, errno: i32, argv0: &[u8], tried: &[u8], cwd: &[u8], u
 /// are said: a refusal by type, its status `docker exec`'s for one the daemon refuses (1)
 /// or one its runtime could not start (126, moby daemon/errors.go); a step of its child's
 /// in an exec's words, as [`exec_failure`] says them.
-fn entered_failure(f: crate::enter::Failed, spec: &Spec) -> Failure {
+fn entered_failure(f: crate::enter::Failed, argv: &[Vec<u8>], cwd: &[u8], user: &[u8]) -> Failure {
     match f {
         crate::enter::Failed::Refused(r, message) => Failure {
             status: if r.not_started() { 126 } else { 1 },
@@ -6603,8 +7041,8 @@ fn entered_failure(f: crate::enter::Failed, spec: &Spec) -> Failure {
             refusal: Some(r),
         },
         crate::enter::Failed::Step { which, errno, tried } => {
-            let argv0 = spec.argv.first().map_or(&[][..], Vec::as_slice);
-            exec_failure(which, errno, argv0, &tried, &spec.cwd, &spec.user)
+            let argv0 = argv.first().map_or(&[][..], Vec::as_slice);
+            exec_failure(which, errno, argv0, &tried, cwd, user)
         }
     }
 }
@@ -6634,6 +7072,54 @@ pub(crate) fn candidates(argv0: &[u8], env: &[Vec<u8>]) -> (bool, Vec<Vec<u8>>) 
             .collect()
     };
     (false, found)
+}
+
+/// The first of `candidates` that is a file, no directory, and executable by the caller
+/// (Go's exec.LookPath, `findExecutable`), looked for in the caller's own view as it is now:
+/// its mounts, its confinement and its working directory, which a relative candidate is
+/// relative to; then execve(2) of it. Returns only where none ran, with the step that
+/// failed and the candidate it failed at, errno set: a path the command names is the only
+/// candidate, and each failure is its own; past the last searched, [`step::NOT_IN_PATH`].
+///
+/// # Safety
+/// `argv` and `envp` are NULL-terminated arrays of NUL-terminated strings that outlive the
+/// call. It makes system calls alone, so a child of a multithreaded fork may call it.
+pub(crate) unsafe fn exec_found<'a>(
+    candidates: impl IntoIterator<Item = &'a std::ffi::CStr>,
+    explicit: bool,
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
+) -> (u8, usize) {
+    // SAFETY: stat(2), faccessat(2) and execve(2) of NUL-terminated paths the caller holds,
+    // with the arrays the caller vouches for.
+    unsafe {
+        for (i, path) in candidates.into_iter().enumerate() {
+            let mut st: libc::stat = std::mem::zeroed();
+            if libc::stat(path.as_ptr(), &mut st) != 0 {
+                if explicit {
+                    return (step::STAT, i);
+                }
+                continue;
+            }
+            if st.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                if explicit {
+                    *libc::__errno_location() = libc::EISDIR;
+                    return (step::ACCESS, i);
+                }
+                continue;
+            }
+            if libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::X_OK, libc::AT_EACCESS) != 0 {
+                if explicit {
+                    return (step::ACCESS, i);
+                }
+                continue;
+            }
+            libc::execve(path.as_ptr(), argv, envp);
+            return (step::EXEC, i);
+        }
+        *libc::__errno_location() = libc::ENOENT;
+        (step::NOT_IN_PATH, 0)
+    }
 }
 
 /// What the child needs, built before fork.
@@ -6853,6 +7339,52 @@ pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod generation_tests {
+    use super::*;
+
+    /// A member's next generation asked of a run with no such member, or in a malformed start,
+    /// is refused typed, by the member and generation it asked for where they are read (D270);
+    /// a hold of no member is nothing; a kill of no member is refused as a signal of none is.
+    #[test]
+    fn a_start_of_no_member_or_no_start_is_refused_typed() {
+        use run::members::{Start, StartRefusal};
+        let start = Start {
+            member: 4,
+            generation: 1,
+            args: vec![b"--resume".to_vec()],
+            env: Vec::new(),
+            workdir: None,
+            components: Vec::new(),
+            input: None,
+        };
+        let mut none: Vec<crate::domains::Started> = Vec::new();
+        let answer = next_generation(&start.encode().unwrap(), &mut none, None);
+        assert_eq!((answer.member, answer.generation), (4, 1));
+        assert_eq!(answer.refused.map(|(why, _)| why), Some(StartRefusal::Unknown));
+        let mut malformed = start.encode().unwrap();
+        malformed.push(9);
+        let answer = next_generation(&malformed, &mut none, None);
+        assert_eq!((answer.member, answer.generation), (4, 1));
+        assert_eq!(answer.refused.map(|(why, _)| why), Some(StartRefusal::Failed));
+        let hold = run::members::Hold {
+            member: 4,
+            held: true,
+        };
+        hold_member(&hold.encode(), &mut none);
+        hold_member(&run::members::Hold { held: false, ..hold }.encode(), &mut none);
+        hold_member(&4u32.to_be_bytes(), &mut none);
+        hold_member(b"no", &mut none);
+        let refused = kill_member(&run::members::kill_args(4), &none).unwrap_err();
+        assert!(refused.to_string().contains('4'), "{refused}");
+        assert_eq!(
+            kill_member(&[], &none).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod exec_link_tests {
     use super::*;
     use std::os::unix::net::UnixStream;
@@ -6885,7 +7417,64 @@ mod exec_link_tests {
             proxy: None,
             save: Save::Unasked,
             into_joiner: false,
+            member: None,
         }
+    }
+
+    /// A command run in a member on a terminal (D243) is sized by its host's resizes
+    /// (EXEC_RESIZE) from its ask on, as every exec on a terminal is: its terminal is its
+    /// master, asked of its starter, born, and running. Its starter's path had left the exec's
+    /// terminal unsaid, so its host's resizes went nowhere and a command waiting for its
+    /// SIGWINCH waited for ever (member_exec's
+    /// `a_command_run_in_a_member_has_a_terminal_that_resizes`, on KVM and HVF).
+    #[test]
+    fn a_command_run_in_a_member_on_a_terminal_is_sized_by_its_host() {
+        // SAFETY: geteuid(2) reads this process's effective uid.
+        let euid = unsafe { libc::geteuid() };
+        let (master, peer) = crate::enter::terminal(Size { rows: 24, cols: 80 }, euid).unwrap();
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both were just made; the write end closes here, as a command's does as it
+        // execs.
+        let err = unsafe {
+            libc::close(fds[1]);
+            OwnedFd::from_raw_fd(fds[0])
+        };
+        let mut child = running();
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: pidfd_open(2) of the test's own child, not yet waited for.
+        let pidfd = unsafe { OwnedFd::from_raw_fd(libc::syscall(libc::SYS_pidfd_open, pid, 0) as RawFd) };
+        let born = crate::starter::Born {
+            id: 3,
+            pid,
+            ns_pid: pid,
+            pidfd,
+        };
+        let mut e = exec(3, None, Link::Gone);
+        e.member = Some(MemberExec::Born(
+            crate::enter::Asked::on_terminal(1, master, err),
+            born,
+        ));
+        // The size its peer reads once its host has sized the exec's terminal; none where it
+        // has none.
+        let sized = |e: &Exec, rows, cols| {
+            resize(e.terminal()?, Size { rows, cols });
+            // SAFETY: a winsize of zeroes, which TIOCGWINSZ fills from our peer.
+            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+            // SAFETY: as above.
+            let got = unsafe { libc::ioctl(peer.as_raw_fd(), libc::TIOCGWINSZ, &raw mut ws) };
+            (got == 0).then_some((ws.ws_row, ws.ws_col))
+        };
+        let born_sized = sized(&e, 30, 100);
+        e.member_launched();
+        let running = matches!(e.member, Some(MemberExec::Running { failed: false, .. }));
+        let running_sized = sized(&e, 40, 120);
+        // Ended before anything is asserted, so that a red leaves no process behind.
+        assert_eq!(ended_by(&mut child), Some(libc::SIGTERM));
+        assert_eq!(born_sized, Some((30, 100)), "born, before it execs");
+        assert!(running);
+        assert_eq!(running_sized, Some((40, 120)), "running");
     }
 
     /// A process of the test's own, as an exec's runs: until something ends it.
@@ -7135,7 +7724,7 @@ mod signals_end_tests {
     fn the_relays_end_is_said_last_on_its_signal_connection() {
         for connected in [true, false] {
             let (signals, mut host) = ours();
-            say_signals_end(&signals, connected);
+            say_signals_end(&signals, connected, None);
             drop(signals);
             let mut said = Vec::new();
             host.read_to_end(&mut said).unwrap();
@@ -7144,7 +7733,41 @@ mod signals_end_tests {
         // A host gone first hears nothing, and the relay waits for nothing.
         let (signals, host) = ours();
         drop(host);
-        say_signals_end(&signals, false);
+        say_signals_end(&signals, false, None);
+    }
+
+    /// A relay broken by a failure while part of its managed control's frame had gone writes
+    /// the rest of that control whole before its end: the host reads whole frames, then the
+    /// end. Written at once after the part, the end was read as the frame's rest, and its
+    /// host's managed control refused what followed (PM M566).
+    #[test]
+    fn the_relays_end_follows_its_control_whole_where_part_of_a_frame_went() {
+        let (signals, mut host) = ours();
+        let mut control = crate::capture::ControlQueue::prepare(2, 0).unwrap();
+        let aborts = [3, 4].map(|member| run::managed::Abort {
+            member,
+            errno: libc::EIO,
+        });
+        for abort in aborts {
+            control.push(abort).unwrap();
+        }
+        let frame = |abort: run::managed::Abort| {
+            [
+                &run::header(kind::MANAGED_ABORT, run::managed::ABORT_LEN as u32)[..],
+                &abort.encode().unwrap(),
+            ]
+            .concat()
+        };
+        let whole = [frame(aborts[0]), frame(aborts[1])].concat();
+        // Three bytes of the first frame went before the failure.
+        (&signals).write_all(&whole[..3]).unwrap();
+        control.sent(3);
+        say_signals_end(&signals, true, Some(&mut control));
+        drop(signals);
+        let mut said = Vec::new();
+        host.read_to_end(&mut said).unwrap();
+        assert_eq!(said, [&whole[..], &run::header(kind::SIGNALS_END, 0)].concat());
+        assert!(!control.pending());
     }
 
     /// An init built without the tests' knob (`SHARDS_TEST_LOSE_SIGNALS_ON`), as every one
@@ -7372,12 +7995,18 @@ mod nesting_tests {
         );
     }
 
-    /// A cgroup tree of plain files: the workload's cgroup, its leaf and a box beneath it,
-    /// each with an empty `cgroup.procs`.
+    /// A cgroup tree of plain files: the workload's cgroup, the subtree its command is
+    /// given, that subtree's leaf and a box beneath it, each with an empty `cgroup.procs`.
     fn tree(name: &str) -> (shards_testdir::TempDir, String) {
         let dir = shards_testdir::TempDir::new(name).unwrap();
         let workload = dir.path().join("workload");
-        for d in [workload.clone(), workload.join(LEAF), workload.join("boxes/b1")] {
+        let delegated = workload.join(DELEGATED);
+        for d in [
+            workload.clone(),
+            delegated.clone(),
+            delegated.join(LEAF),
+            delegated.join("boxes/b1"),
+        ] {
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("cgroup.procs"), b"").unwrap();
         }
@@ -7391,30 +8020,34 @@ mod nesting_tests {
 
     /// An exec of a run given the nesting grant joins its leaf, never its cgroup
     /// namespace's root (D234): where the leaf takes no process, the cgroup the workload's
-    /// process is in, beneath the root, and never the root itself. Without the grant, the
-    /// workload's cgroup, as before (D173).
+    /// process is in, beneath the root, and never the root itself, nor the workload's cgroup
+    /// above it. Without the grant, the workload's cgroup, as before (D173).
     #[test]
     fn a_granted_runs_execs_join_its_leaf_never_its_root() {
         let (_dir, w) = tree("exec-leaf");
-        let leaf = format!("{w}/{LEAF}");
+        let root = format!("{w}/{DELEGATED}");
+        let leaf = format!("{root}/{LEAF}");
         // Not asked where the workload's process is: the leaf took it.
         let unasked = || Err(libc::ESRCH);
         join_workload(&w, true, unasked).unwrap();
         assert_eq!(procs(&leaf), "0");
-        assert_eq!(procs(&w), "", "the root holds none");
+        assert_eq!(procs(&root), "", "the root holds none");
+        assert_eq!(procs(&w), "", "the workload's cgroup holds none");
         // The leaf gone: the cgroup the workload's process is in now, beneath the root.
         std::fs::remove_dir_all(&leaf).unwrap();
-        let in_box = format!("{w}/boxes/b1");
+        let in_box = format!("{root}/boxes/b1");
         join_workload(&w, true, || Ok(in_box.clone())).unwrap();
         assert_eq!(procs(&in_box), "0");
-        // But never the root itself, where the workload's process is.
+        // But never the root itself, nor the workload's cgroup above it.
+        assert_eq!(join_workload(&w, true, || Ok(root.clone())), Err(libc::ENOENT));
         assert_eq!(join_workload(&w, true, || Ok(w.clone())), Err(libc::ENOENT));
+        assert_eq!(procs(&root), "");
         assert_eq!(procs(&w), "");
 
         let (_dir, w) = tree("exec-plain");
         join_workload(&w, false, unasked).unwrap();
         assert_eq!(procs(&w), "0");
-        assert_eq!(procs(&format!("{w}/{LEAF}")), "");
+        assert_eq!(procs(&format!("{w}/{DELEGATED}/{LEAF}")), "");
     }
 
     fn setup(list: &[&str]) -> Vec<Vec<u8>> {
@@ -7511,9 +8144,12 @@ mod nesting_tests {
     /// The workload's standby under the grant, on a real kernel (D234), in the cgroup `w`, as
     /// init's view names it: into `w`, a cgroup and mount namespace of its own rooted there,
     /// the hierarchy read-only over /sys/fs/cgroup, as `isolate` makes them; then its
-    /// `cgroups-rw` and `nesting` entries, by init's own setup; then what the workload may and
-    /// may not do there. A user namespace of its own stands in for init's privileges.
-    fn standby_in(w: &str) -> String {
+    /// `cgroups-rw` and `nesting` entries, by init's own setup; then whether any cgroup it
+    /// can name is `w`, where init attaches the workload's device program (`ceiling`, its
+    /// inode): its mount's root, or a fresh mount's at `fresh` (inithex-01); then what the
+    /// workload may and may not do there. A user namespace of its own stands in for init's
+    /// privileges.
+    fn standby_in(w: &str, ceiling: u64, fresh: &str) -> String {
         let mut out = said("enter", enter_cgroup(w));
         // SAFETY: getuid(2) and getgid(2), which cannot fail.
         let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
@@ -7576,6 +8212,29 @@ mod nesting_tests {
                 crate::setup::apply(entry).map_err(io::Error::from_raw_os_error),
             );
         }
+        let mountpoint = std::ffi::CString::new(fresh).unwrap();
+        // SAFETY: mount(2) of NUL-terminated strings, in this child's own mount namespace.
+        let again = unsafe {
+            libc::mount(
+                c"cgroup2".as_ptr(),
+                mountpoint.as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_RDONLY | nosuid | noexec | nodev,
+                std::ptr::null(),
+            )
+        };
+        out += &said("fresh", done(again));
+        let ino = |p: &str| {
+            std::fs::metadata(p)
+                .map(|m| std::os::unix::fs::MetadataExt::ino(&m))
+                .ok()
+        };
+        let named = [ino("/sys/fs/cgroup"), ino(fresh)].contains(&Some(ceiling));
+        out += if named {
+            "ceiling=named "
+        } else {
+            "ceiling=hidden "
+        };
         let read = |p: &str| {
             std::fs::read_to_string(p)
                 .map(|t| t.trim().to_string())
@@ -7607,12 +8266,14 @@ mod nesting_tests {
     }
 
     /// The grant's cgroup on a real kernel (D234), as a granted microVM's init and standby make
-    /// it, in a cgroup of the test's own for `run/workload`: its /sys/fs/cgroup writable; its
-    /// process in the leaf `init` and none in its namespace's root; memory and pids enabled for
-    /// children beside the leaf and a box of them limited; the root's own memory.max and
-    /// pids.max, init's limits, refused it by the kernel (nsdelegate) and left as init set
-    /// them; and an exec, whose join of the root the workload's controllers now refuse (EBUSY,
-    /// f9), in the leaf. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write,
+    /// it, in a cgroup of the test's own for `run/workload`: its namespace rooted at the
+    /// subtree `delegated` beneath it, so that neither its own mount nor a fresh one shows it
+    /// the workload's cgroup, where init attaches its device program (inithex-01); its
+    /// /sys/fs/cgroup writable; its process in the leaf `init` and none in its namespace's
+    /// root; memory and pids enabled for children beside the leaf and a box of them limited;
+    /// the root's own memory.max and pids.max refused it by the kernel (nsdelegate), and the
+    /// workload's, init's limits, left as init set them; and an exec, whose join of the
+    /// workload's cgroup its controllers now refuse (EBUSY, f9), in the leaf. Run with SHARDS_TEST_CGROUP naming a cgroup this test may write,
     /// holding no process and offering memory and pids, on a hierarchy mounted with
     /// nsdelegate (a delegated scope's: `systemd-run --user --scope -p Delegate=yes`, its
     /// processes moved into a leaf of its own); else SKIP.
@@ -7630,12 +8291,17 @@ mod nesting_tests {
             "the hierarchy is mounted with nsdelegate in every guest, and must be here"
         );
         std::fs::write(format!("{base}/cgroup.subtree_control"), "+memory +pids").unwrap();
-        // Init's part: the workload's cgroup, its limits, and the leaf (grant_nesting).
+        // Init's part: the workload's cgroup, its limits, and the subtree with its leaf
+        // (grant_nesting).
         let w = format!("{base}/w-{}", std::process::id());
+        let root = format!("{w}/{DELEGATED}");
         std::fs::create_dir(&w).unwrap();
-        std::fs::create_dir(format!("{w}/{LEAF}")).unwrap();
+        std::fs::create_dir_all(format!("{root}/{LEAF}")).unwrap();
         std::fs::write(format!("{w}/memory.max"), "268435456").unwrap();
         std::fs::write(format!("{w}/pids.max"), "64").unwrap();
+        let ceiling = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&w).unwrap());
+        let fresh_dir = shards_testdir::TempDir::new("fresh-cgroup").unwrap();
+        let fresh = fresh_dir.path().to_str().unwrap().to_string();
 
         let (hold, held) = pipe().map_err(|f| f.message).unwrap();
         let held_fd = held.as_raw_fd();
@@ -7643,7 +8309,7 @@ mod nesting_tests {
         let (standby, mut said_standby) = forked(move |mut out| {
             // SAFETY: this child's copy of the test's end of the pipe it holds on.
             unsafe { libc::close(held_fd) };
-            let _ = out.write_all(standby_in(&standby_w).as_bytes());
+            let _ = out.write_all(standby_in(&standby_w, ceiling, &fresh).as_bytes());
             drop(out);
             // Its process stays in the leaf until the test is done with it.
             let _ = File::from(hold).read(&mut [0u8; 1]);
@@ -7653,7 +8319,7 @@ mod nesting_tests {
         assert_eq!(
             found,
             format!(
-                "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok root=[] leaf=[{standby}] boxes=ok enable=ok box-limits=ok root-memory={} root-pids={} ",
+                "enter=ok userns=ok unshare=ok mount=ok cgroups-rw=ok nesting=ok fresh=ok ceiling=hidden root=[] leaf=[{standby}] boxes=ok enable=ok box-limits=ok root-memory={} root-pids={} ",
                 libc::EPERM,
                 libc::EPERM
             )
@@ -7678,19 +8344,23 @@ mod nesting_tests {
         let own = w.strip_prefix("/sys/fs/cgroup").unwrap();
         assert_eq!(
             found,
-            format!("exec-root={} exec=ok cgroup=0::{own}/{LEAF}", libc::EBUSY)
+            format!(
+                "exec-root={} exec=ok cgroup=0::{own}/{DELEGATED}/{LEAF}",
+                libc::EBUSY
+            )
         );
         // From init's view: the root holds no process, its limit is init's.
         let read = |p: String| std::fs::read_to_string(p).unwrap().trim().to_string();
         assert_eq!(read(format!("{w}/cgroup.procs")), "");
-        assert_eq!(read(format!("{w}/{LEAF}/cgroup.procs")), standby.to_string());
+        assert_eq!(read(format!("{root}/cgroup.procs")), "");
+        assert_eq!(read(format!("{root}/{LEAF}/cgroup.procs")), standby.to_string());
         assert_eq!(read(format!("{w}/memory.max")), "268435456");
         assert_eq!(read(format!("{w}/pids.max")), "64");
 
         drop(held);
         // SAFETY: waits for the test's own child, which ends as its pipe closes.
         unsafe { libc::waitpid(standby, std::ptr::null_mut(), 0) };
-        for dir in [format!("{w}/boxes"), format!("{w}/{LEAF}"), w] {
+        for dir in [format!("{root}/boxes"), format!("{root}/{LEAF}"), root, w] {
             std::fs::remove_dir(&dir).unwrap();
         }
     }

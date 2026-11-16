@@ -16,6 +16,9 @@ pub struct AgentVolume {
     pub name: Option<String>,
     pub paths: Vec<String>,
     pub scoped: bool,
+    /// Whom `FOR` gives it to, as written: none named, every agent and harness. A share an
+    /// orchestrator gives members at one of its paths names no other (D277).
+    pub scope: shards_agentfile::agentfile::Scope,
 }
 
 /// The most a normalized Agentfile may be: what shards-init, which reads it in the guest,
@@ -397,6 +400,7 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
                 name: v.source.as_deref().map(text).transpose()?,
                 paths: v.paths.iter().map(|p| text(p)).collect::<Result<_, _>>()?,
                 scoped: !v.scope.names.is_empty(),
+                scope: v.scope.clone(),
             });
         }
     }
@@ -725,6 +729,7 @@ mod tests {
             source: b"./artifact".to_vec(),
             to: None,
             processes: Processes::Unbounded,
+            fetch: Default::default(),
         });
         let json = spec(&[declaration]);
         let expected = String::from_utf8(digest(&json)).unwrap();
@@ -811,6 +816,7 @@ mod tests {
             source: b"./artifact".to_vec(),
             to: None,
             processes: Processes::Unbounded,
+            fetch: Default::default(),
         };
         let declarations = [
             Directive::Harness(domain("h")),
@@ -888,6 +894,7 @@ mod tests {
                 source: b("./a"),
                 to: None,
                 processes: Processes::Unbounded,
+                fetch: Default::default(),
             })
         };
         let volume = |source: Option<&str>, path: &str, names: &[&str]| {
@@ -944,12 +951,17 @@ mod tests {
                 AgentVolume {
                     name: Some("data".into()),
                     paths: vec!["/data".into()],
-                    scoped: true
+                    scoped: true,
+                    scope: Scope {
+                        kind: None,
+                        names: vec![b"a".to_vec()],
+                    },
                 },
                 AgentVolume {
                     name: None,
                     paths: vec!["/x".into()],
-                    scoped: false
+                    scoped: false,
+                    scope: Scope::default(),
                 },
             ]
         );

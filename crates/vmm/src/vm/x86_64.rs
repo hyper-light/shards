@@ -1,18 +1,17 @@
 //! The x86_64 machine on any backend: RAM around the 32-bit MMIO gap, the in-kernel
-//! IOAPIC, ACPI tables, COM1, the i8042 and ACPI sleep ports the guest resets and powers
-//! off through (docs/research/kvm-x86_64-ground-truth.md §3-§6), and the VM generation ID
-//! that makes each restored copy reseed its RNG.
+//! IOAPIC, ACPI tables, the ACPI power ports the guest resets and powers off through
+//! (docs/research/kvm-x86_64-ground-truth.md §3-§6, D268), and the VM generation ID that
+//! makes each restored copy reseed its RNG.
 
 use std::fs::File;
 use std::sync::Arc;
 
 use super::{Config, Console, mapped};
 use crate::arch::x86_64::{self, acpi, boot, layout};
-use crate::devices::acpi_sleep::AcpiSleep;
+use crate::devices::acpi_power::AcpiPower;
 use crate::devices::control::Control;
-use crate::devices::i8042::I8042;
 use crate::devices::power::Power;
-use crate::devices::serial::Serial;
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{mmio as virtio_mmio, pmem};
 use crate::devices::vmgenid::VmGenId;
 use crate::devices::{Interrupt, MmioBus, SharedLine};
@@ -26,9 +25,10 @@ const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 /// Smallest guest that holds the kernel (loaded at 16 MiB), its bss and early allocations.
 const MIN_MEMORY_MIB: u64 = 128;
-/// Kernel parameters the machine depends on: restart through the i8042 (the device the
-/// VMM emulates), and no PCI bus (there is none yet).
-const MACHINE_CMDLINE: &str = "reboot=k";
+/// Kernel parameters the machine depends on: restart through the FADT's reset register,
+/// the power device's (arch/x86/kernel/reboot.c l. 608-610; D268), whatever `reboot=` the
+/// command line it is told says.
+const MACHINE_CMDLINE: &str = "reboot=a";
 /// Where the machine has no PCI bus, its kernel looks for none (D153).
 const NO_PCI_CMDLINE: &str = "pci=off";
 /// On WHP its kernel brings its APs up one at a time (kernel/cpu.c, `cpuhp.parallel`): in
@@ -206,9 +206,10 @@ pub struct Machine {
     pub vm: hv::Vm,
     pub memory: Arc<GuestMemory>,
     pub bus: Bus,
-    pub serial: Arc<Serial>,
+    /// Its console, hvc0: what it said, and its input.
+    pub console: Arc<ConsolePort>,
     pub control: Arc<Control>,
-    /// Power-off (ACPI sleep control) and reset (i8042).
+    /// Power-off (ACPI sleep control) and reset (ACPI reset register).
     pub power: Arc<Power>,
     pub finish: Finish,
     pub start: Start,
@@ -337,7 +338,7 @@ impl Interrupt for EdgeLine {
 struct Assembled {
     vm: hv::Vm,
     bus: Bus,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     power: Arc<Power>,
     vmgenid: VmGenId,
@@ -346,6 +347,8 @@ struct Assembled {
     pci: Option<acpi::PciBridge>,
     /// Its DAX windows' length in MiB, as its guest's addresses fit them (D189).
     share_window_mib: u64,
+    /// Its components' window's length in MiB, as its guest's addresses fit it (D270).
+    component_window_mib: u64,
     /// The GPU's window's length, where it has a GPU (D201).
     gpu_window: Option<u64>,
 }
@@ -378,15 +381,10 @@ fn ram_ranges(memory_mib: u64) -> Result<(u64, Vec<(u64, usize)>), String> {
 /// `gpu`, whether it has a GPU, and its window's length: as its renderer offers, where
 /// `Some(0)`, a boot's; that long, a restore's, where its renderer offers at least as much
 /// (D150, D201).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a boot's CPU baseline (D245) beside the machine's config, which a snapshot keeps without one"
-)]
 fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
-    console: Console,
-    said: usize,
+    console: super::ConsoleSetup,
     hosts: super::Hosts<'_>,
     gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
@@ -469,6 +467,8 @@ fn assemble(
     let (windows, top, share_window_mib) =
         super::share_windows(config, top, reach, hosts.window_heads.is_some())?;
     let window_heads = super::window_heads(&windows, hosts.window_heads)?;
+    // Its components' window past them (D270), which its slots' pmem functions map in.
+    let (component_window, top, component_window_mib) = super::component_layout(config, top, reach)?;
     if top > 1 << bits {
         return Err(format!(
             "the guest's memory and devices end at {top:#x}, past the {bits} address bits its CPU has"
@@ -490,6 +490,8 @@ fn assemble(
     if let Some(heads) = &window_heads {
         super::map_window_heads(&vm, heads)?;
     }
+    // Its components' window (D270): nothing of it mapped until a pmem function is plugged.
+    let components = super::components(&vm, component_window, config.pci_slots)?;
     let (hotplug, sizes) = super::hotplug_device(&vm, memory, config)?.unzip();
     let reporting = super::reporting_device(&vm, config);
     let swap = super::swap_window(&vm, swap_at)?;
@@ -510,6 +512,7 @@ fn assemble(
     let gpu = gpu
         .map(|(renderer, region)| super::gpu_device(&vm, renderer, region, ram))
         .transpose()?;
+    let (console_device, console) = console.device()?;
     let (devices, disk_sizes) = super::virtio_devices(
         config,
         &regions,
@@ -517,7 +520,8 @@ fn assemble(
         &windows,
         Some(&vm),
         hosts,
-        gpu.into_iter()
+        std::iter::once(Box::new(console_device) as Box<dyn crate::devices::virtio::VirtioDevice>)
+            .chain(gpu)
             .chain(hotplug)
             .chain(reporting)
             .chain(
@@ -577,23 +581,17 @@ fn assemble(
         control.on_mac(net.mac);
     }
     bus.mmio.insert(layout::CONTROL, 0x1000, control.clone())?;
+    bus.mmio.insert(
+        layout::PVPANIC,
+        0x1000,
+        Arc::new(crate::devices::pvpanic::PvPanic::new(console.clone())),
+    )?;
 
-    let serial = Arc::new(Serial::new(
-        super::console_out(console)?,
-        Arc::new(LevelLine {
-            irqs: irqs.clone(),
-            gsi: layout::GSI_COM1,
-        }),
-        said,
-    ));
     let power = Arc::new(Power::default());
-    bus.pio.insert(u64::from(layout::COM1), 8, serial.clone())?;
-    bus.pio
-        .insert(u64::from(layout::I8042), 5, Arc::new(I8042::new(power.clone())))?;
     bus.pio.insert(
-        u64::from(layout::ACPI_SLEEP),
-        2,
-        Arc::new(AcpiSleep::new(power.clone())),
+        u64::from(layout::ACPI_POWER),
+        u64::from(acpi::POWER_PORTS),
+        Arc::new(AcpiPower::new(power.clone())),
     )?;
     let vmgenid = VmGenId::new(
         memory.clone(),
@@ -638,6 +636,7 @@ fn assemble(
                 unpinnable: super::unpinnable(config),
                 #[cfg(target_os = "linux")]
                 vfio: vm.vfio_host(),
+                components: components.clone(),
             });
         }
         acpi::PciBridge {
@@ -652,13 +651,14 @@ fn assemble(
     Ok(Assembled {
         vm,
         bus,
-        serial,
+        console,
         control,
         power,
         vmgenid,
         virtio,
         pci,
         share_window_mib,
+        component_window_mib,
         gpu_window,
     })
 }
@@ -738,12 +738,12 @@ pub fn build_reported(
             io: cfg.io_limit,
             layer: layer.as_ref(),
             window_heads: None,
+            components: &[],
         };
         let a = assemble(
             &memory,
             &config,
-            cfg.console,
-            cfg.said,
+            super::ConsoleSetup::booted(cfg),
             hosts,
             (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
@@ -768,6 +768,7 @@ pub fn build_reported(
     // Its DAX windows' length as its guest's addresses fit them, which a snapshot keeps,
     // and its GPU's window's (D150).
     config.share_window_mib = a.share_window_mib;
+    config.component_window_mib = a.component_window_mib;
     config.gpu = a.gpu_window;
     let told = super::kernel_cmdline(cfg);
     let required = [
@@ -796,7 +797,7 @@ pub fn build_reported(
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: a.power,
         finish: a.vmgenid,
@@ -815,6 +816,7 @@ pub fn restore(
     said: usize,
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
+    report: Option<&mut super::GpuReportTo<'_>>,
 ) -> Result<Machine, String> {
     super::check_hosts(snap, hosts)?;
     let (vm_state, vcpus) = decode_state(&snap.arch)?;
@@ -827,15 +829,14 @@ pub fn restore(
     }
     let (ram, ranges) = ram_ranges(snap.config.memory_mib)?;
     let memory = Arc::new(super::restored_memory(&ranges, memory_file, snap, plug_at(ram))?);
-    // A machine with functions on its PCI bus saves no snapshot, so a restored one has
-    // none; it has the slots its snapshot's had, empty, as every snapshot's are (D214).
+    // A machine saves no snapshot with functions on its PCI bus but its components' (D270
+    // slice 5), which are plugged back below: it has the slots its snapshot's had (D214).
     let a = assemble(
         &memory,
         &snap.config,
-        console,
-        said,
+        super::ConsoleSetup::restored(console, said),
         hosts,
-        snap.config.gpu.map(|saw| super::MachineGpu { saw, report: None }),
+        snap.config.gpu.map(|saw| super::MachineGpu { saw, report }),
         super::Pci {
             slots: snap.config.pci_slots,
             ..super::Pci::default()
@@ -843,7 +844,9 @@ pub fn restore(
         // Its vCPUs are told the CPUID their snapshot keeps, the baseline within it.
         &[],
     )?;
+    super::window_kept(a.component_window_mib, &snap.config)?;
     super::replug(&memory, snap, memory_file, &a.vm)?;
+    super::replug_components(&a.control, &memory, snap, hosts.components)?;
     let guest: Vec<(u64, u64)> = memory
         .regions()
         .map(|(gpa, _, len)| (gpa, len as u64))
@@ -864,7 +867,7 @@ pub fn restore(
         vm: a.vm,
         memory,
         bus: a.bus,
-        serial: a.serial,
+        console: a.console,
         control: a.control,
         power: a.power,
         finish: a.vmgenid,
@@ -1065,12 +1068,46 @@ pub fn encode_state(vm: &hv::Vm, captured: Vec<Captured>) -> Result<Vec<u8>, Str
     Ok(w.into_bytes())
 }
 
+/// Each vCPU's state, in index order: at most one for each vCPU a machine may have
+/// ([`acpi::MAX_VCPUS`], 255), as many as [`encode_state`] writes. A literal 254 here, the
+/// MADT's bound before cfe037dac raised it to 255, refused the snapshot of every
+/// 255-vCPU machine as it restored ("sequence of 255 (limit 254)": snapshot.rs' storm at its
+/// most vCPUs on adacachy2, KVM).
+fn decode_vcpus(r: &mut Reader<'_>) -> crate::snapshot::codec::Result<Vec<hv::VcpuState>> {
+    let most = usize::try_from(acpi::MAX_VCPUS).unwrap_or(usize::MAX);
+    r.seq(most, 1, hv::VcpuState::decode)
+}
+
 fn decode_state(bytes: &[u8]) -> Result<(hv::VmState, Vec<hv::VcpuState>), String> {
     let mut r = Reader::new(bytes);
     let vm = hv::VmState::decode(&mut r).map_err(|e| format!("snapshot VM state: {e}"))?;
-    let vcpus = r
-        .seq(254, 1, hv::VcpuState::decode)
-        .map_err(|e| format!("snapshot vCPU state: {e}"))?;
+    let vcpus = decode_vcpus(&mut r).map_err(|e| format!("snapshot vCPU state: {e}"))?;
     r.finish().map_err(|e| format!("snapshot state: {e}"))?;
     Ok((vm, vcpus))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A snapshot holds as many vCPU states as a machine may have vCPUs, and no more: its
+    /// count is checked against [`acpi::MAX_VCPUS`] before any state is read. Red at
+    /// cf13e49e6, where the reader's bound was 254 and the MADT's 255. Do: a count of the
+    /// most, then of one more, each with no states after it. Expect: the first refused for
+    /// its missing bytes, the second for its count.
+    #[test]
+    fn a_snapshot_holds_a_state_for_each_vcpu_a_machine_may_have() {
+        let refusal = |count: u32| {
+            let mut w = Writer::default();
+            w.u32(count);
+            let bytes = w.into_bytes();
+            decode_vcpus(&mut Reader::new(&bytes))
+                .err()
+                .map(|e| e.to_string())
+        };
+        let most = refusal(acpi::MAX_VCPUS);
+        assert!(most.as_deref().is_some_and(|e| !e.contains("limit")), "{most:?}");
+        let past = refusal(acpi::MAX_VCPUS + 1);
+        assert!(past.as_deref().is_some_and(|e| e.contains("limit")), "{past:?}");
+    }
 }

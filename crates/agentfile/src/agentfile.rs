@@ -39,7 +39,31 @@ pub struct Domain {
     /// `TO`'s path, or none for `/agents/<name>` or `/harness/<name>` (§12.1).
     pub to: Option<Vec<u8>>,
     pub processes: Processes,
+    /// How its source is pinned and reached, where it is fetched (D54).
+    pub fetch: Fetch,
 }
+
+/// How an `AGENT` or `HARNESS` source is pinned and reached (D54): `--checksum`, the
+/// origins `--redirect` grants beyond the source's own, and an `s3://` source's
+/// `--endpoint`, `--region`, `--path-style` and `--version-id`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Fetch {
+    /// `sha256:<hex>`, what an http(s) or s3 source's bytes hash to; empty where none.
+    pub checksum: Vec<u8>,
+    /// Each `host[:port]` a redirect may reach, in the source's own scheme.
+    pub redirects: Vec<Vec<u8>>,
+    pub endpoint: Vec<u8>,
+    pub region: Vec<u8>,
+    pub path_style: bool,
+    pub version_id: Vec<u8>,
+    /// `--credentials=aws-default`: an s3 source signed through the host's AWS default
+    /// credential chain, which it opts into by name; else only the build's named secrets
+    /// sign it, or nothing does.
+    pub aws_default: bool,
+}
+
+/// `--credentials`'s one value: the host's AWS default credential chain (D54).
+pub const AWS_DEFAULT: &[u8] = b"aws-default";
 
 /// Whom a grant is for: `FOR`'s names, of the kind `--target-kind` says or each name's
 /// own. None named is every one.
@@ -69,6 +93,8 @@ pub struct Skill {
     pub exclude: Vec<Vec<u8>>,
     pub keep_git_dir: Option<bool>,
     pub checksum: Vec<u8>,
+    /// Each `host[:port]` its fetch may be redirected to, beyond its source's origin (D54).
+    pub redirects: Vec<Vec<u8>>,
     pub scope: Scope,
 }
 
@@ -79,6 +105,8 @@ pub struct Mcp {
     /// As written: a URL is a remote server; a path, git URL or OCI reference, one spoken
     /// to over stdio, `[:<version>]` naming what is fetched (§12.3).
     pub source: Vec<u8>,
+    /// Each `host[:port]` its fetch may be redirected to, beyond its source's origin (D54).
+    pub redirects: Vec<Vec<u8>>,
     pub scope: Scope,
 }
 
@@ -370,13 +398,37 @@ pub fn image_env(directives: &[Directive], env: &[impl AsRef<[u8]>]) -> Result<(
 pub enum Source {
     Git(crate::git::GitRef),
     Http(Vec<u8>),
+    /// `s3://BUCKET/KEY`, an object of an S3-compatible store (D54).
+    S3 {
+        bucket: Vec<u8>,
+        key: Vec<u8>,
+    },
     Path(Vec<u8>),
     Oci(Vec<u8>),
 }
 
+/// The source attribute that holds an Agentfile directive's fetch to its grant (D54): the
+/// origin its source names, and each `--redirect` origin, `,` apart. A source without it
+/// (an `ADD`'s) is fetched as BuildKit fetches it.
+pub const GRANT_ATTR: &[u8] = b"shards.grant";
+
 /// `src` told apart (§12.2). A path or URL takes no version: a final `:<tag>` on a path
 /// is refused, for it would read as an OCI reference's.
 pub fn source_of(src: &[u8]) -> Result<Source, Vec<u8>> {
+    if let Some(rest) = src.strip_prefix(b"s3://") {
+        // The key is the rest as written, as S3's own tools read `s3://BUCKET/KEY`: an
+        // object's key may hold any character.
+        return match rest.iter().position(|&b| b == b'/') {
+            Some(at) if at > 0 && at + 1 < rest.len() => Ok(Source::S3 {
+                bucket: rest.get(..at).unwrap_or_default().to_vec(),
+                key: rest.get(at + 1..).unwrap_or_default().to_vec(),
+            }),
+            _ => Err(errf(&[
+                go::quote(src).as_bytes(),
+                b" names no object: an S3 source is s3://BUCKET/KEY",
+            ])),
+        };
+    }
     match crate::git::parse_git_ref(src) {
         crate::git::Parsed::Git(g) if !g.indistinguishable_from_local => return Ok(Source::Git(g)),
         crate::git::Parsed::BadGit(e) => return Err(e),
@@ -474,7 +526,31 @@ fn for_names(after: Option<&[Vec<u8>]>, directive: &str) -> Result<Vec<Vec<u8>>,
 /// `AGENT [--processes=<n|none>] <name> FROM <source> [TO <path>]`, and `HARNESS`'s, alike.
 fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     req.flags.add("processes", FlagType::String, b"");
+    req.flags.add("checksum", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
+    req.flags.add("endpoint", FlagType::String, b"");
+    req.flags.add("region", FlagType::String, b"");
+    req.flags.add("path-style", FlagType::Bool, b"false");
+    req.flags.add("version-id", FlagType::String, b"");
+    req.flags.add("credentials", FlagType::String, b"");
     req.flags.parse()?;
+    let credentials = req.flags.value("credentials");
+    if !credentials.is_empty() && credentials != AWS_DEFAULT {
+        return Err(errf(&[
+            directive.as_bytes(),
+            b" --credentials is aws-default, the host's AWS default credential chain, not ",
+            go::quote(&credentials).as_bytes(),
+        ]));
+    }
+    let fetch = Fetch {
+        checksum: req.flags.value("checksum"),
+        redirects: req.flags.values("redirect"),
+        endpoint: req.flags.value("endpoint"),
+        region: req.flags.value("region"),
+        path_style: req.flags.is_true("path-style"),
+        version_id: req.flags.value("version-id"),
+        aws_default: !credentials.is_empty(),
+    };
     let processes = match req.flags.value("processes").as_slice() {
         b"" => Processes::Unbounded,
         b"none" => Processes::None,
@@ -521,12 +597,149 @@ fn domain(req: &mut Req<'_>, directive: &str) -> Result<Domain, Vec<u8>> {
     } else {
         "a harness"
     };
+    if !unexpanded(source) {
+        fetch_checked(directive, source, &fetch)?;
+    }
     Ok(Domain {
         name: name(n, what)?,
         source: source.clone(),
         to,
         processes,
+        fetch,
     })
+}
+
+/// Whether `word` names a variable its stage expands (`$NAME`, `${NAME…}`), as `ADD`'s
+/// sources may (D56): what it is is known only once the plan has expanded it, which checks
+/// it then. A `$` escaped to stand for itself is checked then too.
+pub(crate) fn unexpanded(word: &[u8]) -> bool {
+    word.contains(&b'$')
+}
+
+/// `fetch` held to what `source` is (D54): an http(s) source pinned by `--checksum`; an s3
+/// one by `--checksum` or `--version-id`; S3's own flags on an s3 source alone; a
+/// redirect granted only where a fetch can be redirected; each value well formed. As
+/// parsed, where its source names no variable; else once the plan has expanded it.
+pub(crate) fn fetch_checked(directive: &str, source: &[u8], fetch: &Fetch) -> Result<(), Vec<u8>> {
+    let refuse = |why: &str| Err(format!("{directive} {why}").into_bytes());
+    let kind = source_of(source)?;
+    let s3 = matches!(kind, Source::S3 { .. });
+    let fetched = matches!(kind, Source::Http(_) | Source::S3 { .. });
+    let s3_flags = !fetch.endpoint.is_empty()
+        || !fetch.region.is_empty()
+        || fetch.path_style
+        || !fetch.version_id.is_empty()
+        || fetch.aws_default;
+    if s3_flags && !s3 {
+        return refuse(
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        );
+    }
+    if !fetch.endpoint.is_empty()
+        && !(fetch.endpoint.starts_with(b"https://") || fetch.endpoint.starts_with(b"http://"))
+    {
+        return Err(errf(&[
+            directive.as_bytes(),
+            b" --endpoint is an http(s) URL, not ",
+            go::quote(&fetch.endpoint).as_bytes(),
+        ]));
+    }
+    redirects_checked(directive, &kind, &fetch.redirects)?;
+    if !fetch.checksum.is_empty() {
+        if !fetched {
+            return refuse(
+                "--checksum pins an http(s) or s3:// source; a Git source is pinned by the commit its #REF names",
+            );
+        }
+        let hex = fetch.checksum.strip_prefix(b"sha256:").unwrap_or_default();
+        if hex.len() != 64 || !hex.iter().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(errf(&[
+                directive.as_bytes(),
+                b" --checksum is sha256: and 64 lowercase hex digits, not ",
+                go::quote(&fetch.checksum).as_bytes(),
+            ]));
+        }
+    }
+    if matches!(kind, Source::Http(_)) && fetch.checksum.is_empty() {
+        return refuse("from an http(s) URL is pinned by --checksum=sha256:<hex> of what it serves");
+    }
+    if s3 && fetch.checksum.is_empty() && fetch.version_id.is_empty() {
+        return refuse("from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>");
+    }
+    Ok(())
+}
+
+/// `redirects` held to what a directive's source `kind` is (D54): granted only where its
+/// fetch can be redirected, an http(s) or Git source's, each `HOST[:PORT]`.
+fn redirects_checked(directive: &str, kind: &Source, redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    if !redirects.is_empty() && !matches!(kind, Source::Http(_) | Source::Git(_)) {
+        return Err(format!(
+            "{directive} --redirect grants where an http(s) or Git source is redirected; this source is not"
+        )
+        .into_bytes());
+    }
+    for r in redirects {
+        if redirect_origin(r).is_none() {
+            return Err(errf(&[
+                directive.as_bytes(),
+                b" --redirect is HOST or HOST:PORT, not ",
+                go::quote(r).as_bytes(),
+            ]));
+        }
+    }
+    Ok(())
+}
+
+/// A `--redirect` grant's host, lowercased, and its port if it names one: a DNS name or an
+/// IPv4 address, or an IPv6 address in brackets, and a port from 1 to 65535. No wildcard:
+/// a grant names one origin (D54).
+pub fn redirect_origin(grant: &[u8]) -> Option<(Vec<u8>, Option<u16>)> {
+    let (host, port) = match grant.strip_prefix(b"[") {
+        Some(v6) => {
+            let end = v6.iter().position(|&b| b == b']')?;
+            let host = v6.get(..end)?;
+            let after = v6.get(end + 1..)?;
+            if host.is_empty()
+                || !host
+                    .iter()
+                    .all(|c| c.is_ascii_hexdigit() || matches!(c, b':' | b'.'))
+            {
+                return None;
+            }
+            let port = match after {
+                [] => None,
+                [b':', p @ ..] => Some(p),
+                _ => return None,
+            };
+            ([b"[".as_slice(), host, b"]"].concat(), port)
+        }
+        None => {
+            let (host, port) = match grant.iter().position(|&b| b == b':') {
+                Some(at) => (grant.get(..at)?, Some(grant.get(at + 1..)?)),
+                None => (grant, None),
+            };
+            let label = |l: &[u8]| {
+                !l.is_empty()
+                    && l.len() <= 63
+                    && l.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+                    && !l.starts_with(b"-")
+                    && !l.ends_with(b"-")
+            };
+            if host.is_empty() || host.len() > 253 || !host.split(|&b| b == b'.').all(label) {
+                return None;
+            }
+            (go::to_lower(host), port)
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(p) => {
+            let n = std::str::from_utf8(p).ok()?.parse::<u16>().ok()?;
+            (n > 0 && p.first() != Some(&b'0')).then_some(n)?;
+            Some(n)
+        }
+    };
+    Some((host, port))
 }
 
 /// `SKILL [ADD's options] [--from=…] [--target-kind=…] <source> [<dest>] [FOR <name>…]`.
@@ -539,6 +752,7 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
     req.flags.add("exclude", FlagType::Strings, b"");
     req.flags.add("from", FlagType::String, b"");
     req.flags.add("target-kind", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
     req.flags.parse()?;
     let all = req.args.clone();
     let (taken, after) = split_at(&all, b"for");
@@ -562,6 +776,10 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
         _ => return Err(usage),
     };
     let f = &req.flags;
+    let redirects = f.values("redirect");
+    if !matches!(&source, SkillSource::Path(p) if unexpanded(p)) {
+        skill_checked(&source, &f.value("from"), &redirects)?;
+    }
     Ok(Skill {
         source,
         dest,
@@ -572,6 +790,7 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
         exclude: f.values("exclude"),
         keep_git_dir: f.used("keep-git-dir").then(|| f.is_true("keep-git-dir")),
         checksum: f.value("checksum"),
+        redirects,
         scope: Scope {
             kind: target_kind(req)?,
             names: for_names(after, "SKILL")?,
@@ -579,9 +798,39 @@ fn skill(req: &mut Req<'_>) -> Result<Skill, Vec<u8>> {
     })
 }
 
+/// A SKILL's `--redirect` grants held to its source (D54): a skill another stage or agent
+/// holds (`--from`) is copied, not fetched. As parsed, where its source names no variable;
+/// else once the plan has expanded it.
+pub(crate) fn skill_checked(source: &SkillSource, from: &[u8], redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    if redirects.is_empty() {
+        return Ok(());
+    }
+    let kind = match source {
+        SkillSource::Path(p) if from.is_empty() => source_of(p)?,
+        _ => Source::Path(Vec::new()),
+    };
+    redirects_checked("SKILL", &kind, redirects)
+}
+
+/// An MCP server's source held to what MCP takes (§4.4, D54): no s3:// source, and a
+/// `--redirect` only where its source is fetched, never a remote server's URL, which is
+/// reached at run. As parsed, where its source names no variable; else once the plan has
+/// expanded it.
+pub(crate) fn mcp_checked(source: &[u8], redirects: &[Vec<u8>]) -> Result<(), Vec<u8>> {
+    let kind = source_of(source)?;
+    if let Source::S3 { .. } = kind {
+        return Err(b"MCP takes no s3:// source: an agent's or harness's is pinned by AGENT's or HARNESS's --checksum or --version-id".to_vec());
+    }
+    if !redirects.is_empty() && matches!(kind, Source::Http(_)) {
+        return Err(b"MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched".to_vec());
+    }
+    redirects_checked("MCP", &kind, redirects)
+}
+
 /// `MCP [--target-kind=…] <name> FROM <source> [FOR <name>…]`.
 fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
     req.flags.add("target-kind", FlagType::String, b"");
+    req.flags.add("redirect", FlagType::Strings, b"");
     req.flags.parse()?;
     let all = req.args.clone();
     let (declared, after) = split_at(&all, b"for");
@@ -595,9 +844,14 @@ fn mcp(req: &mut Req<'_>) -> Result<Mcp, Vec<u8>> {
             b"MCP requires a name and FROM <source>: MCP <name> FROM <source> [FOR <name> ...]".to_vec(),
         );
     }
+    let redirects = req.flags.values("redirect");
+    if !unexpanded(source) {
+        mcp_checked(source, &redirects)?;
+    }
     Ok(Mcp {
         name: name(n, "an MCP server")?,
         source: source.clone(),
+        redirects,
         scope: Scope {
             kind: target_kind(req)?,
             names: for_names(after, "MCP")?,
@@ -1484,6 +1738,9 @@ pub fn mcp_endpoint(url: &[u8]) -> Option<(Vec<u8>, u16)> {
     if after > 0 && host.len() != after {
         return None;
     }
+    // RFC 1034 §3.1: the final dot denotes the root label, which query_name
+    // omits when joining DNS wire labels. Keep the grant in that same spelling.
+    let host = host.strip_suffix(b".").unwrap_or(host);
     (!host.is_empty() && port > 0).then(|| (host.to_ascii_lowercase(), port))
 }
 
@@ -2246,14 +2503,46 @@ fn tcp_reach(directives: &[Directive]) -> Vec<TcpReach<'_>> {
 
 /// What each member the Agentfile declares reaches past the microVM by name (D236, §4.4):
 /// its networks' destinations and its remote MCP servers', each a host and a TCP port, as
-/// its init lets it out to them; in the order the Agentfile declares its members, one that
-/// reaches none with none. Where [`held`] holds, a member reaches exactly those of them its
+/// its init lets it out to them, and every other name the image grants (any member's) on a
+/// port its networks open it to any address, as its init lets it out there to any address
+/// and the network process admits that name's addresses for whichever member asked it
+/// (D246, inithex-02); in the order the Agentfile declares its members, one that reaches
+/// none with none. Where [`held`] holds, a member reaches exactly those of them its
 /// microVM's network process keeps, so a run host can hold each member to a reach an
 /// orchestrator names (D246).
 pub fn named_reach(directives: &[Directive]) -> Vec<(TargetKind, Vec<u8>, Vec<Destination>)> {
-    tcp_reach(directives)
+    let members = tcp_reach(directives);
+    let mut granted: Vec<Destination> = Vec::new();
+    let mcp = directives.iter().filter_map(|d| match d {
+        Directive::Mcp(m) => mcp_endpoint(&m.source),
+        _ => None,
+    });
+    for name in joined(directives)
         .into_iter()
-        .map(|r| (r.member.0, r.member.1.to_vec(), r.named))
+        .flat_map(|net| destinations_on(directives, net, None))
+        .chain(mcp)
+    {
+        if !granted.contains(&name) {
+            granted.push(name);
+        }
+    }
+    members
+        .into_iter()
+        .map(
+            |TcpReach {
+                 member,
+                 wide,
+                 mut named,
+             }| {
+                for name in &granted {
+                    let opened = wide.iter().any(|&(lo, hi)| lo <= name.1 && name.1 <= hi);
+                    if opened && !named.contains(name) {
+                        named.push(name.clone());
+                    }
+                }
+                (member.0, member.1.to_vec(), named)
+            },
+        )
         .collect()
 }
 
@@ -2914,6 +3203,7 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
                                         .ok_or("processes neither none nor a number")?,
                                 ),
                             },
+                            fetch: Fetch::default(),
                         };
                         if at == 0 {
                             Directive::Agent(domain)
@@ -2938,11 +3228,13 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
                         exclude: Vec::new(),
                         keep_git_dir: None,
                         checksum: Vec::new(),
+                        redirects: Vec::new(),
                         scope: scope(v)?,
                     }),
                     3 => Directive::Mcp(Mcp {
                         name: bytes(v, "name")?,
                         source: bytes(v, "source")?,
+                        redirects: Vec::new(),
                         scope: scope(v)?,
                     }),
                     4 => {

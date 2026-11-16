@@ -1,0 +1,24 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+Previous HEAD position was d0fea6fb confine-05: hold one ownership turn across plug and unplug completion
+HEAD is now at 0d53a7fd confine: preserve HOME mount aliases and keep plug regression diagnostics compilable
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.57s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_init-c8e65a6b116a2bb8)
+
+running 1 test
+
+thread 'enter::tests::rejected_environment_values_never_enter_diagnostics' (3967524) panicked at crates/init/src/enter.rs:598:13:
+assertion failed: !error.to_string().contains(sentinel)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test enter::tests::rejected_environment_values_never_enter_diagnostics ... FAILED
+
+failures:
+
+failures:
+    enter::tests::rejected_environment_values_never_enter_diagnostics
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 276 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+

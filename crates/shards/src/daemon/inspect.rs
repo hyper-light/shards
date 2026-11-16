@@ -10,6 +10,44 @@ use shards_agentfile::image::{Image as Config, json_string};
 use shards_image::reference::Reference;
 use shards_image::store::Image;
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ShmOwnerRefused {
+    Cycle(String),
+    Missing(String),
+    Storage,
+}
+
+impl std::fmt::Display for ShmOwnerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cycle(id) => write!(f, "shared-memory ownership cycle at {id}"),
+            Self::Missing(id) => write!(f, "shared-memory owner {id} is unavailable"),
+            Self::Storage => f.write_str("shared-memory ownership storage is unavailable"),
+        }
+    }
+}
+
+fn shm_owner(
+    mut id: String,
+    mut run: shards_ipc::Run,
+    mut next: impl FnMut(&str, &shards_ipc::Run) -> Result<Option<(String, shards_ipc::Run)>, ShmOwnerRefused>,
+) -> Result<(String, shards_ipc::Run), ShmOwnerRefused> {
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        visited.try_reserve(1).map_err(|_| ShmOwnerRefused::Storage)?;
+        if !visited.insert(id.clone()) {
+            return Err(ShmOwnerRefused::Cycle(id));
+        }
+        match next(&id, &run)? {
+            Some((next_id, next_run)) => {
+                id = next_id;
+                run = next_run;
+            }
+            None => return Ok((id, run)),
+        }
+    }
+}
+
 /// What moby's collectRepoTagsAndDigests makes of an image's references: each name,
 /// familiar (a name with a digest among them); and each name's repository with the
 /// image's ID. Dangling names give neither.
@@ -525,8 +563,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                     .cloned()
                     .ok_or_else(|| format!("No such container: {given}"))
             });
-            match found {
-                Ok(c) => documents.push(self.container_value(&c, parsed.bool("size"))),
+            match found.and_then(|c| {
+                self.container_value(&c, parsed.bool("size"))
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(document) => documents.push(document),
                 Err(e) if e.starts_with("Error response") => errors.push(e),
                 Err(e) => errors.push(format!("shards: {e}")),
             }
@@ -545,9 +586,10 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             .made(id)
             .cloned()
             .ok_or_else(|| format!("No such container: {id}"))?;
-        let doc: serde_json::Value =
-            serde_json::from_str(&super::inspect_doc::json(&self.container_value(&c, false)))
-                .map_err(|e| e.to_string())?;
+        let doc: serde_json::Value = serde_json::from_str(&super::inspect_doc::json(
+            &self.container_value(&c, false).map_err(|e| e.to_string())?,
+        ))
+        .map_err(|e| e.to_string())?;
         let at = |path: &str| doc.pointer(path).cloned().unwrap_or_default();
         let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
         let strings = |path: &str| -> Vec<String> {
@@ -592,25 +634,29 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// container:NAME`), that one's; its own `--shm-size`; else its microVM's, half all the
     /// memory that microVM may have (`run::shm_bytes`), its own or that of the microVM it
     /// lives in: the one it joins (`--network container:NAME`), or whose own engine made it.
-    /// Each followed 64 steps at most, as a run names only those made before it. `request`
+    /// Each followed to its owner, refusing cycles and missing records. `request`
     /// is `c`'s as it was asked for.
-    fn shm_size(&self, c: &crate::containers::Container, request: &shards_ipc::Run) -> i64 {
-        let read = |reference: &str| self.stored_run(reference);
-        let (mut id, mut run) = (c.id.clone(), request.clone());
-        // Whose /dev/shm it is.
-        for _ in 0..64 {
-            if run.ipc == "none" {
-                return 0;
-            }
-            match run.ipc.strip_prefix("container:").and_then(read) {
-                Some(next) => (id, run) = next,
-                None => break,
-            }
+    fn shm_size(
+        &self,
+        c: &crate::containers::Container,
+        request: &shards_ipc::Run,
+    ) -> Result<i64, ShmOwnerRefused> {
+        let (id, run) = shm_owner(c.id.clone(), request.clone(), |_, run| {
+            run.ipc
+                .strip_prefix("container:")
+                .map(|reference| {
+                    self.stored_run(reference)
+                        .ok_or_else(|| ShmOwnerRefused::Missing(reference.into()))
+                })
+                .transpose()
+        })?;
+        if run.ipc == "none" {
+            return Ok(0);
         }
         if run.shm_size != 0 {
-            return run.shm_size;
+            return Ok(run.shm_size);
         }
-        i64::try_from(self.microvm_shm(&id, &run)).unwrap_or(i64::MAX)
+        Ok(i64::try_from(self.microvm_shm(&id, &run)?).unwrap_or(i64::MAX))
     }
 
     /// Container `reference`'s ID and the request it was made by, as it keeps it.
@@ -627,33 +673,40 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
     /// (D156): half the memory that microVM may have in all, by the run whose microVM it is:
     /// its own, the one it joined (`--network container:`), or the one whose engine made it
     /// (D181). Every run of every limit restores one template (D148): each is told its own.
-    pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> u64 {
-        let (mut id, mut run) = (id.to_string(), run.clone());
-        for _ in 0..64 {
+    pub(super) fn microvm_shm(&self, id: &str, run: &shards_ipc::Run) -> Result<u64, ShmOwnerRefused> {
+        let (_, run) = shm_owner(id.to_string(), run.clone(), |id, run| {
             let engine_of = super::lock(&self.containers)
-                .get(&id)
+                .get(id)
                 .and_then(|c| c.engine_made.as_ref().map(|m| m.of.clone()));
-            let next = match engine_of {
-                Some(of) => self.stored_run(&of),
-                None => run
-                    .network
-                    .strip_prefix("container:")
-                    .and_then(|r| self.stored_run(r)),
-            };
-            match next {
-                Some(next) => (id, run) = next,
-                None => break,
-            }
-        }
+            let owner = engine_of.or_else(|| run.network.strip_prefix("container:").map(str::to_string));
+            owner
+                .map(|reference| {
+                    self.stored_run(&reference)
+                        .ok_or(ShmOwnerRefused::Missing(reference))
+                })
+                .transpose()
+        })?;
         let (_, _, most) = crate::run::sizes(&run.resources, crate::build::host_memory());
-        crate::run::shm_bytes(most)
+        Ok(crate::run::shm_bytes(most))
     }
 
     pub(super) fn container_value(
         &self,
         c: &crate::containers::Container,
         sized: bool,
-    ) -> shards_template::Value {
+    ) -> Result<shards_template::Value, ShmOwnerRefused> {
+        self.container_document(c, sized, true)
+    }
+
+    /// `c`'s inspect document; with `shm` false, one whose HostConfig.ShmSize is 0, for a
+    /// listing's summary, which shows none (moby container.Summary): a run whose
+    /// shared-memory owner is gone still lists, where inspecting it is refused.
+    pub(super) fn container_document(
+        &self,
+        c: &crate::containers::Container,
+        sized: bool,
+        shm: bool,
+    ) -> Result<shards_template::Value, ShmOwnerRefused> {
         use super::inspect_doc::{Facts, Health, Net, document};
         let dir = super::lock(&self.containers).dir(&c.id);
         let mut request = std::fs::read(dir.join(super::REQUEST))
@@ -663,7 +716,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 image: c.image.clone(),
                 ..shards_ipc::Run::default()
             });
-        let shm = self.shm_size(c, &request);
+        let shm = if shm { self.shm_size(c, &request)? } else { 0 };
         // One its microVM's engine made is on that engine's network, or on the microVM's
         // own, its engine's host's (D181), as its engine says it.
         if let Some(m) = &c.engine_made {
@@ -673,7 +726,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 request.network = "host".into();
             }
         }
-        let (config, manifest) = self.image_facts(c.image_id.as_deref());
+        let (config, manifest) = self.image_facts(&c.image_id, c.image_manifest.as_deref());
         // The run's inbox is locked after `runs` is let go: a run's end holds its inbox
         // while it takes `runs` (take_messages, run_ended).
         let tracked = match super::lock(&self.runs).get(&c.id) {
@@ -826,7 +879,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                 });
             }
         }
-        document(&Facts {
+        Ok(document(&Facts {
             container: c,
             request: &request,
             image: config.as_ref(),
@@ -842,7 +895,7 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             user_nets,
             size: sized.then(|| self.container_sizes(c)),
             shm,
-        })
+        }))
     }
 
     /// MicroVM `c`'s SizeRw and SizeRootFs, inspect's fields (D170): the disk its writable
@@ -866,64 +919,83 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
             super::lock(&self.containers).get(&c.id).and_then(|c| c.size_rw)
         }
         .unwrap_or(0);
-        let image = c
-            .image_id
-            .as_deref()
-            .and_then(|id| {
-                let store = self.store().ok().flatten()?;
-                let found = store
-                    .images()
-                    .ok()?
-                    .into_iter()
-                    .find(|i| i.id.to_string() == id)?;
-                Some(found.unpacked)
-            })
-            .unwrap_or(0);
+        let image = (|| {
+            let store = self.store().ok().flatten()?;
+            let found = store
+                .images()
+                .ok()?
+                .into_iter()
+                .find(|i| i.id.to_string() == c.image_id)?;
+            Some(found.unpacked)
+        })()
+        .unwrap_or(0);
         let rw = i64::try_from(rw).unwrap_or(i64::MAX);
         (rw, rw.saturating_add(i64::try_from(image).unwrap_or(i64::MAX)))
     }
 
-    /// Image `id`'s config (its `config`), and the descriptor of its manifest for this
-    /// platform, as Go encodes one: from its index where it has one.
-    fn image_facts(&self, id: Option<&str>) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
-        let Some(id) = id else {
-            return (None, None);
-        };
+    /// The config and descriptor of this container's recorded image manifest.
+    pub(super) fn image_facts(
+        &self,
+        id: &str,
+        chosen: Option<&str>,
+    ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
         let Ok(Some(store)) = self.store() else {
             return (None, None);
         };
-        let Some(image) = store
-            .images()
-            .ok()
-            .and_then(|l| l.into_iter().find(|i| i.id.to_string() == id))
-        else {
-            return (None, None);
-        };
-        // Its config as clients read it (D112), a DockerOCIImageConfig, written as
-        // json.Marshal writes one: each field once, by its own name.
-        let config = image
-            .config
-            .as_deref()
-            .and_then(|b| Config::from_json(b).ok())
-            .and_then(|c| serde_json::from_str::<serde_json::Value>(&c.config.to_json()).ok());
-        let ours = image.manifest.to_string();
-        let manifest = if image.target.digest == ours {
-            serde_json::to_value(&image.target).ok()
-        } else {
-            std::fs::read(store.blob_path(&image.id))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .and_then(|index| {
-                    index
-                        .get("manifests")?
-                        .as_array()?
-                        .iter()
-                        .find(|m| m.get("digest").and_then(serde_json::Value::as_str) == Some(&ours))
-                        .cloned()
-                })
-        };
-        (config, manifest)
+        image_facts_in(&store, id, chosen)
     }
+}
+
+fn image_facts_in(
+    store: &shards_image::store::Store,
+    id: &str,
+    chosen: Option<&str>,
+) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    use shards_image::oci::{self, Document};
+    use shards_image::store::Held;
+    let Some(image) = store
+        .images()
+        .ok()
+        .and_then(|l| l.into_iter().find(|i| i.id.to_string() == id))
+    else {
+        return (None, None);
+    };
+    // A record with no selected manifest (one made before 2026-11-03 kept it) names no
+    // platform's facts: never the reference's preference now, which may be another platform
+    // than the one its microVM ran (D179).
+    let Some(ours) = chosen else {
+        return (None, None);
+    };
+    let descriptor = if image.target.digest == ours {
+        Some(image.target)
+    } else {
+        (|| {
+            let Held::Whole(bytes) = store.held(&image.target, oci::MAX_MANIFEST).ok()? else {
+                return None;
+            };
+            let Document::Index(index) = oci::parse_document(&bytes, &image.target.media_type).ok()? else {
+                return None;
+            };
+            index.manifests.into_iter().find(|m| m.digest == ours)
+        })()
+    };
+    let Some(descriptor) = descriptor else {
+        return (None, None);
+    };
+    let config = (|| {
+        let Held::Whole(bytes) = store.held(&descriptor, oci::MAX_MANIFEST).ok()? else {
+            return None;
+        };
+        let Document::Manifest(manifest) = oci::parse_document(&bytes, &descriptor.media_type).ok()? else {
+            return None;
+        };
+        let Held::Whole(bytes) = store.held(manifest.image_config(), oci::MAX_CONFIG).ok()? else {
+            return None;
+        };
+        let config = Config::from_json(&bytes).ok()?;
+        serde_json::from_str::<serde_json::Value>(&config.config.to_json()).ok()
+    })();
+    (config, serde_json::to_value(descriptor).ok())
 }
 
 /// The object types `inspect --type` names (docker/cli system/inspect.go, allTypes).
@@ -978,7 +1050,11 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
                             .ok_or_else(|| format!("No such container: {given}"))
                     });
                     match c {
-                        Ok(c) => return Ok(self.container_value(&c, parsed.bool("size"))),
+                        Ok(c) => {
+                            return self
+                                .container_value(&c, parsed.bool("size"))
+                                .map_err(|e| daemon_said(&e.to_string()));
+                        }
                         Err(e) if !any => return Err(daemon_said(&e)),
                         Err(_) => {}
                     }
@@ -1220,6 +1296,115 @@ fn query_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_facts_keep_the_runs_selected_manifest() {
+        use sha2::Digest as _;
+        use shards_image::oci::{self, Descriptor};
+        use shards_image::reference::{Algorithm, Digest};
+        use shards_image::store::Store;
+        let home = shards_testdir::TempDir::new("facts").unwrap();
+        let store = Store::open(&home).unwrap();
+        let put = |media: &str, value: serde_json::Value| {
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let digest = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(&bytes));
+            store
+                .ingest(&digest, bytes.len() as u64, &mut bytes.as_slice())
+                .unwrap();
+            Descriptor {
+                media_type: media.into(),
+                digest: digest.to_string(),
+                size: bytes.len() as i64,
+                platform: None,
+                annotations: Default::default(),
+            }
+        };
+        let variant = |arch: &str, user: &str| {
+            let config = put(
+                "application/vnd.oci.image.config.v1+json",
+                serde_json::json!({
+                    "architecture": arch, "os": "linux",
+                    "config": { "User": user, "Env": [format!("PLATFORM={arch}")] },
+                    "rootfs": { "type": "layers", "diff_ids": [] }
+                }),
+            );
+            let mut manifest = put(
+                oci::media::OCI_MANIFEST,
+                serde_json::json!({
+                    "schemaVersion": 2, "mediaType": oci::media::OCI_MANIFEST,
+                    "config": config, "layers": []
+                }),
+            );
+            manifest.platform = Some(oci::Platform {
+                os: "linux".into(),
+                architecture: arch.into(),
+                ..Default::default()
+            });
+            manifest
+        };
+        let arm = variant("arm64", "1100");
+        let amd = variant("amd64", "2200");
+        let index = put(
+            oci::media::OCI_INDEX,
+            serde_json::json!({
+                "schemaVersion": 2, "mediaType": oci::media::OCI_INDEX,
+                "manifests": [arm, amd]
+            }),
+        );
+        let id = index.digest().unwrap();
+        for preferred in [&arm, &amd] {
+            store
+                .tag("docker.io/library/facts:latest", preferred, &id, &[])
+                .unwrap();
+            for (selected, user, arch) in [(&arm, "1100", "arm64"), (&amd, "2200", "amd64")] {
+                let (config, descriptor) = image_facts_in(&store, &id.to_string(), Some(&selected.digest));
+                let config = config.unwrap();
+                assert_eq!(config["User"], user);
+                assert_eq!(config["Env"][0], format!("PLATFORM={arch}"));
+                assert_eq!(descriptor.unwrap()["digest"], selected.digest);
+            }
+            // A record with no selection has no facts, whatever the preference.
+            assert_eq!(image_facts_in(&store, &id.to_string(), None), (None, None));
+        }
+        let missing = Digest::from_hash(Algorithm::Sha256, &sha2::Sha256::digest(b"missing"));
+        assert_eq!(
+            image_facts_in(&store, &id.to_string(), Some(&missing.to_string())),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn shm_owner_follows_every_join_to_the_vm_budget() {
+        let runs: Vec<_> = (0..66)
+            .map(|n| {
+                let mut run = shards_ipc::Run::default();
+                run.resources.memory = if n == 0 { 512 << 20 } else { 0 };
+                if n != 0 {
+                    run.network = format!("container:{}", n - 1);
+                }
+                run
+            })
+            .collect();
+        let (_, owner) = shm_owner("65".into(), runs[65].clone(), |_, run| {
+            let Some(id) = run.network.strip_prefix("container:") else {
+                return Ok(None);
+            };
+            Ok(Some((id.into(), runs[id.parse::<usize>().unwrap()].clone())))
+        })
+        .unwrap();
+        assert_eq!(owner.resources.memory, 512 << 20);
+    }
+
+    #[test]
+    fn shm_owner_refuses_cycles_and_missing_records() {
+        let run = shards_ipc::Run::default();
+        let cycle = shm_owner("a".into(), run.clone(), |_, run| {
+            Ok(Some(("a".into(), run.clone())))
+        });
+        assert_eq!(cycle.unwrap_err(), ShmOwnerRefused::Cycle("a".into()));
+        let missing = shm_owner("a".into(), run, |_, _| Err(ShmOwnerRefused::Missing("b".into())));
+        assert_eq!(missing.unwrap_err(), ShmOwnerRefused::Missing("b".into()));
+    }
 
     /// As encoding/json's Indent lays out what it is given, by Go's own answers
     /// (docker-images.json, `indents`), strings' punctuation untouched.

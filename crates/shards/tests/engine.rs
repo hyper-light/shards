@@ -30,12 +30,8 @@ use serde_json::{Value, json};
 #[cfg(windows)]
 use shards_ipc::Stream as UnixStream;
 
-const TIMEOUT: Duration = Duration::from_secs(60);
-/// A client's call past this is taken for hung, and fails its test with what it said
-/// (`common::output_within`).
-const CLIENT: Duration = Duration::from_secs(600);
-
 /// `shards ARGS` in `home`, whose runs boot the test kernel and init.
+#[track_caller]
 fn shards_in(home: &Path, args: &[&str]) -> Run {
     let (kernel, init) = (kernel(), guest_init());
     let env: [(&str, &OsStr); 3] = [
@@ -115,24 +111,54 @@ struct Api {
     reader: BufReader<Patient>,
 }
 
-/// A connection's reads, each waited on past [`TIMEOUT`] while its home's daemon says
-/// something (`common::Said`): an answer that waits on a microVM its host boots slowly
-/// comes when the daemon has it, and one from a daemon that says nothing fails its test.
+/// A connection's reads, each a wait on its home's daemon judged as `common::run_command`'s
+/// is (`common::Patience`, D209): an answer that waits on a microVM its host boots slowly
+/// comes when the daemon has it, and one from a daemon that makes no progress over a whole
+/// window past the slowest answer seen fails its test. Its kind is the site of the call it
+/// reads the answer of (`site`, which each of [`Api`]'s calls sets as it sends): a `_ping`'s
+/// answer and a container's wait's are no one kind.
 struct Patient {
     conn: UnixStream,
-    said: common::Said,
+    home: std::path::PathBuf,
+    site: &'static std::panic::Location<'static>,
 }
 
 impl Read for Patient {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // What its daemon has sent already is read without waiting: no answer waited for,
+        // which would teach its kind a W* of one read (#77: engine.rs' `head`, refused "its
+        // daemon made no progress" by a kind such reads taught).
+        self.conn.set_nonblocking(true)?;
+        let read = self.conn.read(buf);
+        self.conn.set_nonblocking(false)?;
+        match read {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            read => return read,
+        }
+        let mut patience = common::Patience::at(&self.home, self.site);
         loop {
-            match self.conn.read(buf) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) && self.said.lately() => {}
-                read => return read,
+            let left = patience.next_look();
+            if !left.is_zero() {
+                self.conn.set_read_timeout(Some(left))?;
+                match self.conn.read(buf) {
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    read => {
+                        if read.is_ok() {
+                            patience.done();
+                        }
+                        return read;
+                    }
+                }
+            }
+            if !patience.holds() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "its daemon made no progress (its wait's account above)",
+                ));
             }
         }
     }
@@ -163,17 +189,20 @@ fn docker_host(home: &Path) -> String {
 }
 
 impl Api {
+    #[track_caller]
     fn new(home: &Path) -> Api {
         let conn = connect(home);
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         let reader = BufReader::new(Patient {
             conn: conn.try_clone().unwrap(),
-            said: common::Said::of(home),
+            home: home.to_path_buf(),
+            site: std::panic::Location::caller(),
         });
         Api { conn, reader }
     }
 
+    #[track_caller]
     fn send(&mut self, method: &str, path: &str, body: Option<&Value>, fields: &[(&str, &str)]) {
+        self.reader.get_mut().site = std::panic::Location::caller();
         let body = body.map(|b| b.to_string()).unwrap_or_default();
         let mut out = format!("{method} {path} HTTP/1.1\r\nHost: api\r\n");
         for (k, v) in fields {
@@ -236,13 +265,16 @@ impl Api {
         Answered { status, fields, body }
     }
 
+    #[track_caller]
     fn call(&mut self, method: &str, path: &str, body: Option<Value>) -> Answered {
         self.send(method, path, body.as_ref(), &[]);
         self.answer(method)
     }
 
     /// A call whose body is `bytes` of `kind`, and its answer.
+    #[track_caller]
     fn upload(&mut self, method: &str, path: &str, kind: &str, bytes: &[u8]) -> Answered {
+        self.reader.get_mut().site = std::panic::Location::caller();
         let head = format!(
             "{method} {path} HTTP/1.1\r\nHost: api\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n",
             bytes.len()
@@ -254,6 +286,7 @@ impl Api {
 
     /// A call whose answer runs until the connection closes: its status, fields and all it
     /// sends.
+    #[track_caller]
     fn downloaded(mut self, path: &str) -> Answered {
         self.send("GET", path, None, &[]);
         let (status, fields) = self.head();
@@ -264,6 +297,7 @@ impl Api {
 
     /// Asks for the connection to be taken over for a stream (`Connection: Upgrade`): its
     /// status and its content's type, once the engine has written them.
+    #[track_caller]
     fn upgrade(&mut self, path: &str, body: Option<Value>) -> (u16, String) {
         self.send(
             "POST",
@@ -288,6 +322,7 @@ impl Api {
     }
 
     /// [`upgrade`](Self::upgrade), and all the stream sends.
+    #[track_caller]
     fn upgraded(mut self, path: &str, body: Option<Value>) -> (u16, String, Vec<u8>) {
         let (status, kind) = self.upgrade(path, body);
         (status, kind, self.rest())
@@ -2155,7 +2190,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -2164,7 +2199,7 @@ fn the_docker_cli_checkpoints_and_restores_microvms() {
                 .env_remove("DOCKER_CONTEXT")
                 .env("DOCKER_CLI_HINTS", "false")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -2234,7 +2269,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker_with = |args: &[&str], set: &[(&str, &str)]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -2244,7 +2279,7 @@ fn the_docker_cli_runs_microvms_through_the_engine() {
                 .env("DOCKER_CLI_HINTS", "false")
                 .envs(set.iter().copied())
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),
@@ -4075,11 +4110,11 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     };
     // A runner's docker CLI may be older than the flag (docker/cli
     // cli/command/container/create.go): what it sends is what is tested, where it has it.
-    let help = common::output_within(
+    let help = common::client_output(
         std::process::Command::new(&docker)
             .args(["run", "--help"])
             .stdin(std::process::Stdio::null()),
-        CLIENT,
+        None,
     );
     if !String::from_utf8_lossy(&help.stdout).contains("--use-api-socket") {
         eprintln!("SKIP: this docker CLI has no --use-api-socket");
@@ -4101,7 +4136,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -4111,7 +4146,7 @@ fn the_docker_clis_use_api_socket_is_the_microvms_own_engine() {
                 .env("DOCKER_CLI_HINTS", "false")
                 .env("DOCKER_CLI_EXPERIMENTAL", "enabled")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),

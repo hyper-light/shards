@@ -18,9 +18,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 
 use shards_cmdline::flags::Parsed;
+use shards_ipc::device::Refusal;
 use shards_ipc::{device, kind};
 
 use super::commands::Reply;
@@ -44,8 +45,9 @@ pub(super) struct Plugged {
     /// Its place on the microVM's PCI bus (`devfn`), and its guest's address of it.
     pub devfn: u8,
     pub address: String,
-    /// A disk's file.
+    /// A disk's file, and its identity, which its claim is by ([`DiskClaims`]).
     pub file: Option<PathBuf>,
+    pub file_id: Option<crate::os::FileId>,
     /// A host's function's node in the workload and what it was had by.
     pub function: Option<Function>,
     /// The agent or harness a volume is plugged into (D235), by its member index; none for
@@ -93,8 +95,282 @@ pub(super) enum What {
 /// Each running microVM's plugged devices, by microVM ID, then by path.
 pub(super) type PluggedMap = HashMap<String, HashMap<String, Plugged>>;
 
-/// How long its guest is given to find, mount or let go of a device.
-const GUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Each running microVM's device steps (`plug`, `unplug`, `grow`), one at a time (D214):
+/// the microVMs one is under way in, and the wakeup of the steps waiting as one ends. A
+/// step reads what is plugged, changes the host's file or share, then asks its VM and its
+/// guest, each of which the next step's reading depends on; so a step holds its microVM
+/// from its first read to its last answer. A disk's growth read its file's length and set
+/// it apart, and two growths of one disk had, between them, set a length the larger had
+/// already given its guest's file system shorter again (devices-01).
+#[derive(Debug, Default)]
+pub(super) struct Steps {
+    under_way: Mutex<UnderWay>,
+    ended: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct UnderWay {
+    ids: std::collections::HashSet<String>,
+    /// How many steps wait for theirs: a test's view of a step held off.
+    #[cfg(test)]
+    waiting: usize,
+}
+
+/// A microVM's device step under way, until it drops.
+#[derive(Debug)]
+pub(super) struct Held<'a> {
+    steps: &'a Steps,
+    id: String,
+}
+
+impl Steps {
+    /// Waits until no device step of microVM `id` is under way, then holds it.
+    pub(super) fn hold(&self, id: &str) -> Held<'_> {
+        let mut under_way = lock(&self.under_way);
+        while under_way.ids.contains(id) {
+            #[cfg(test)]
+            {
+                under_way.waiting = under_way.waiting.saturating_add(1);
+            }
+            under_way = self
+                .ended
+                .wait(under_way)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            #[cfg(test)]
+            {
+                under_way.waiting = under_way.waiting.saturating_sub(1);
+            }
+        }
+        under_way.ids.insert(id.to_string());
+        Held {
+            steps: self,
+            id: id.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    fn waiting(&self) -> usize {
+        lock(&self.under_way).waiting
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        lock(&self.steps.under_way).ids.remove(&self.id);
+        self.steps.ended.notify_all();
+    }
+}
+
+/// Why a device step asked of a run's VM was not done (devices-10): the run's, before its
+/// VM was asked, or its VM's refusal, by cause ([`Refusal`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Asked {
+    Run(String),
+    Vm(Refusal),
+}
+
+impl std::fmt::Display for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Asked::Run(why) => f.write_str(why),
+            Asked::Vm(refusal) => write!(f, "its microVM: {refusal}"),
+        }
+    }
+}
+
+impl From<Asked> for String {
+    fn from(asked: Asked) -> String {
+        asked.to_string()
+    }
+}
+
+/// Which runs have each disk file plugged in, by the file's identity, never its path
+/// (devices-11, D214): two kernels that each mount one ext4 read-write corrupt it, which
+/// ext4's multiple-mount protection exists to refuse (Documentation/filesystems/ext4/mmp.rst),
+/// and their growths take different holds of [`Steps`]. So a file is plugged writable into
+/// one run's microVM at a time, at one path, and read-only into as many as ask while none
+/// has it writable. A claim is taken as its file is opened, before its VM is asked, and
+/// lasts until it is unplugged or its run ends; one whose plug fails goes as it drops.
+#[derive(Debug, Default)]
+pub(super) struct DiskClaims(Mutex<HashMap<crate::os::FileId, Vec<DiskClaim>>>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiskClaim {
+    run: String,
+    path: String,
+    writable: bool,
+}
+
+/// Why a disk file was not plugged in: a run has it already (devices-11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DiskHeld {
+    /// Run `run` has it plugged writable at `path`, which any other plug of it would see
+    /// change under it, or change too.
+    Writable { run: String, path: String },
+    /// Writable was asked, and run `run` has it plugged read-only at `path`.
+    ReadOnly { run: String, path: String },
+}
+
+impl std::fmt::Display for DiskHeld {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let short = |run: &str| run.chars().take(12).collect::<String>();
+        match self {
+            DiskHeld::Writable { run, path } => {
+                write!(
+                    f,
+                    "microVM {} has its file plugged in writable at {path}",
+                    short(run)
+                )
+            }
+            DiskHeld::ReadOnly { run, path } => write!(
+                f,
+                "microVM {} has its file plugged in read-only at {path}: it is plugged in writable only where nothing else has it",
+                short(run)
+            ),
+        }
+    }
+}
+
+/// A claim of a disk file, given back as it drops unless [`Claimed::keep`] keeps it.
+#[derive(Debug)]
+pub(super) struct Claimed<'a> {
+    claims: &'a DiskClaims,
+    id: crate::os::FileId,
+    claim: Option<DiskClaim>,
+}
+
+impl Claimed<'_> {
+    /// Kept as long as its run has it plugged in.
+    pub(super) fn keep(mut self) {
+        self.claim = None;
+    }
+}
+
+impl Drop for Claimed<'_> {
+    fn drop(&mut self) {
+        if let Some(claim) = self.claim.take() {
+            self.claims.give_back(self.id, |c| *c == claim);
+        }
+    }
+}
+
+impl DiskClaims {
+    /// File `id` claimed for run `run` at `path`, writable or not; refused where another
+    /// plug of it holds it so (`DiskHeld`). Claims of runs that are no longer `running`
+    /// are let go first, as their VMs, and the files they held, are gone.
+    pub(super) fn claim(
+        &self,
+        id: crate::os::FileId,
+        (run, path, writable): (&str, &str, bool),
+        running: impl Fn(&str) -> bool,
+    ) -> Result<Claimed<'_>, DiskHeld> {
+        let mut claims = lock(&self.0);
+        claims.retain(|_, held| {
+            held.retain(|c| running(&c.run));
+            !held.is_empty()
+        });
+        let held = claims.entry(id).or_default();
+        if let Some(c) = held.iter().find(|c| c.writable || writable) {
+            let (run, path) = (c.run.clone(), c.path.clone());
+            return Err(if c.writable {
+                DiskHeld::Writable { run, path }
+            } else {
+                DiskHeld::ReadOnly { run, path }
+            });
+        }
+        let claim = DiskClaim {
+            run: run.to_string(),
+            path: path.to_string(),
+            writable,
+        };
+        held.push(claim.clone());
+        Ok(Claimed {
+            claims: self,
+            id,
+            claim: Some(claim),
+        })
+    }
+
+    /// Run `run`'s claim of the disk file it has at `path` let go, as it is unplugged.
+    pub(super) fn release(&self, id: crate::os::FileId, run: &str, path: &str) {
+        self.give_back(id, |c| c.run == run && c.path == path);
+    }
+
+    fn give_back(&self, id: crate::os::FileId, which: impl Fn(&DiskClaim) -> bool) {
+        let mut claims = lock(&self.0);
+        if let Some(held) = claims.get_mut(&id) {
+            held.retain(|c| !which(c));
+            if held.is_empty() {
+                claims.remove(&id);
+            }
+        }
+    }
+}
+
+/// Why a disk was not grown (D214).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum NotGrown {
+    /// SIZE, in whole sectors, is less than its file has: a disk only grows, as a shorter
+    /// file takes sectors from under its guest's file system. Nothing was changed.
+    Smaller { asked: u64, has: u64 },
+    /// A step failed: finding it, its file, its VM's or its guest's answer.
+    Failed(String),
+}
+
+impl From<String> for NotGrown {
+    fn from(e: String) -> NotGrown {
+        NotGrown::Failed(e)
+    }
+}
+
+impl std::fmt::Display for NotGrown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotGrown::Smaller { asked, has } => {
+                write!(f, "{asked} bytes: less than its {has}, and a disk only grows")
+            }
+            NotGrown::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
+/// The disk `find` names in microVM `id` grown to `bytes`, whole sectors, and then its VM
+/// and guest told (`tell`): all of it under `steps`' hold of `id`, so that its file's
+/// length is read and set by one growth at a time, only ever longer, to the largest asked,
+/// and its VM reads the length its file has after that set. Refused, changing nothing,
+/// where `bytes` is less than its file has.
+fn grow_disk<T>(
+    steps: &Steps,
+    id: &str,
+    bytes: u64,
+    find: impl FnOnce() -> Result<Plugged, String>,
+    tell: impl FnOnce(&Plugged) -> Result<T, String>,
+) -> Result<T, NotGrown> {
+    let _held = steps.hold(id);
+    let plugged = find()?;
+    let file = plugged
+        .file
+        .as_ref()
+        .ok_or_else(|| NotGrown::Failed("its file is not known".into()))?;
+    let at = |e: std::io::Error| NotGrown::Failed(format!("{}: {e}", file.display()));
+    let opened = std::fs::OpenOptions::new().write(true).open(file).map_err(at)?;
+    // The file plugged in, not another put at its path since (devices-11).
+    if plugged.file_id.is_some() && plugged.file_id != Some(crate::os::file_id(&opened).map_err(at)?) {
+        return Err(NotGrown::Failed(format!(
+            "{}: not the file plugged in, which another has taken the place of",
+            file.display()
+        )));
+    }
+    let has = opened.metadata().map_err(at)?.len();
+    let asked = bytes / 512 * 512;
+    if asked < has {
+        return Err(NotGrown::Smaller { asked, has });
+    }
+    #[cfg(test)]
+    tests::checked();
+    opened.set_len(asked).map_err(at)?;
+    tell(&plugged).map_err(NotGrown::Failed)
+}
 
 /// `spec`, `SOURCE:PATH[:ro|:rw]`: its source, its path in the microVM, and whether it is
 /// read-only. The path is the guest's, absolute; the source anything before it, a Windows
@@ -293,37 +569,42 @@ impl<D: Disk> Daemon<D> {
         id: &str,
         step: &[u8],
         fds: &[shards_ipc::fd::BorrowedFd<'_>],
-    ) -> Result<String, String> {
+    ) -> Result<String, Asked> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let (inbox, socket) = match lock(&self.runs).get(id) {
             Some(RunState::Tracked(t)) if t.joined.is_none() => (t.inbox.clone(), t.socket.clone()),
             Some(RunState::Tracked(_)) => {
-                return Err("it runs in another's microVM: plug into that one".into());
+                return Err(Asked::Run(
+                    "it runs in another's microVM: plug into that one".into(),
+                ));
             }
-            _ => return Err("it is not running".into()),
+            _ => return Err(Asked::Run("it is not running".into())),
         };
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (told, answer) = mpsc::channel();
         {
             let mut inbox = lock(&inbox);
             if inbox.ended {
-                return Err("it is not running".into());
+                return Err(Asked::Run("it is not running".into()));
             }
             inbox.devices.push((number, told));
         }
         let ask = [&number.to_be_bytes()[..], step].concat();
-        if let Err(e) = socket.send(kind::DEVICE, &ask, fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::DEVICE, &ask, fds) {
             lock(&inbox).devices.retain(|(n, _)| *n != number);
-            return Err(format!("asking its microVM: {e}"));
+            return Err(Asked::Run(format!("asking its microVM: {e}")));
         }
         answer
             .recv()
-            .unwrap_or_else(|_| Err("its microVM stopped".into()))
-            .map_err(|e| format!("its microVM: {e}"))
+            .unwrap_or(Err(Refusal::ConnectionEnded))
+            .map_err(Asked::Vm)
     }
 
     /// Runs init's DEVICE built-in with `args` in running microVM `id`'s guest: its
-    /// answer, or why it failed.
+    /// answer, or why it failed. Waited for while its microVM's process runs, judged by the
+    /// built-in's own record (D215's judge, devices-08): init waits on the kernel's word and on
+    /// no clock (D214), so a step ends as its guest answers, as its microVM ends, or where it
+    /// runs no CPU past the slowest step of its kind seen, never at a picked time.
     fn guest_device(&self, id: &str, args: &[&str]) -> Result<String, String> {
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::DEVICE,
@@ -331,12 +612,11 @@ impl<D: Disk> Daemon<D> {
             ..Default::default()
         };
         let quiet = self
-            .exec_quietly(id, &spec, None, 1 << 12, GUEST_TIMEOUT)
+            .exec_answered(id, &spec, 1 << 12)
             .map_err(|e| format!("its guest: {e}"))?;
-        let said = String::from_utf8_lossy(&quiet.output).trim().to_string();
-        match quiet.status {
-            Some(0) => Ok(said),
-            _ => Err(format!("its guest: {said}")),
+        match (&quiet.cut, quiet.status) {
+            (None, Some(0)) => Ok(String::from_utf8_lossy(&quiet.output).trim().to_string()),
+            _ => Err(format!("its guest: {}", super::reclaim::said_of(&quiet))),
         }
     }
 
@@ -387,6 +667,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            let _held = self.device_steps.hold(&id);
             match what {
                 What::Function => {
                     if let Some((client, grants)) = whom {
@@ -444,6 +725,7 @@ impl<D: Disk> Daemon<D> {
         let flag = if read_only { "ro" } else { "rw" };
         // A share's notices of what its host changes (D235), told its guest once mounted.
         let mut notices = None;
+        let mut claimed = None;
         let (answer, file) = match what {
             What::Disk => {
                 let file = PathBuf::from(&source);
@@ -467,6 +749,13 @@ impl<D: Disk> Daemon<D> {
                 if let Some((client, grants)) = whom {
                     crate::client_grants::refuse_opened(client, grants, &shown, &opened, !read_only)?;
                 }
+                // The file opened, by what it is, not the path it was found at (devices-11).
+                let file_id = crate::os::file_id(&opened).map_err(|e| format!("{source}: {e}"))?;
+                let claim = self
+                    .disk_claims
+                    .claim(file_id, (id, &path, !read_only), |run| self.running(run))
+                    .map_err(|e| format!("{source}: {e}"))?;
+                claimed = Some((file_id, claim));
                 let flags = if read_only { device::READ_ONLY } else { 0 };
                 let step = [&[device::DISK, flags][..], name.as_bytes()].concat();
                 use shards_ipc::fd::AsFd as _;
@@ -497,7 +786,12 @@ impl<D: Disk> Daemon<D> {
             Err(e) => {
                 // Taken off again, its guest having found it or not.
                 let _ = self.guest_device(id, &[&["unmount", &address, &path][..], &into].concat());
-                let _ = self.ask_device(id, &[device::UNPLUG, devfn], &[]);
+                match (self.ask_device(id, &[device::UNPLUG, devfn], &[]), claimed) {
+                    // Off its bus: its claim goes as it drops.
+                    (Ok(_) | Err(Asked::Vm(Refusal::NoDevice { .. })), _) | (_, None) => {}
+                    // Its VM may have it still: claimed until its run ends.
+                    (Err(_), Some((_, claim))) => claim.keep(),
+                }
                 return Err(e);
             }
         };
@@ -515,10 +809,14 @@ impl<D: Disk> Daemon<D> {
                 devfn,
                 address: address.clone(),
                 file,
+                file_id: claimed.as_ref().map(|(file_id, _)| *file_id),
                 function: None,
                 member,
             },
         );
+        if let Some((_, claim)) = claimed {
+            claim.keep();
+        }
         Ok(if device.is_empty() {
             format!("{path} {address}")
         } else {
@@ -637,6 +935,7 @@ impl<D: Disk> Daemon<D> {
             return 1;
         };
         let done = self.running_own(given).and_then(|id| {
+            let _held = self.device_steps.hold(&id);
             if what == What::Function {
                 return self.unplug_function(&id, path);
             }
@@ -655,6 +954,9 @@ impl<D: Disk> Daemon<D> {
             self.ask_device(&id, &[device::UNPLUG, plugged.devfn], &[])?;
             if let Some(p) = lock(&self.plugged).get_mut(&id) {
                 p.remove(path.as_str());
+            }
+            if let Some(file_id) = plugged.file_id {
+                self.disk_claims.release(file_id, &id, path);
             }
             self.container_event(&id, "unplug", &[("path", path.clone())]);
             Ok(())
@@ -680,37 +982,26 @@ impl<D: Disk> Daemon<D> {
             reply.err("shards: grow disk takes a microVM, the path its disk is plugged in at, and a size");
             return 1;
         };
-        let done = self.running_own(given).and_then(|id| {
+        let done = self.running_own(given).map_err(NotGrown::Failed).and_then(|id| {
             let bytes = bytes_of(size)?;
-            let plugged = lock(&self.plugged)
-                .get(&id)
-                .and_then(|p| p.get(path.as_str()))
-                .filter(|p| p.what == What::Disk)
-                .cloned()
-                .ok_or_else(|| format!("no disk is plugged in at {path}"))?;
-            let file = plugged.file.ok_or("its file is not known")?;
-            let opened = std::fs::OpenOptions::new()
-                .write(true)
-                .open(&file)
-                .map_err(|e| format!("{}: {e}", file.display()))?;
-            let now = opened.metadata().map_err(|e| e.to_string())?.len();
-            let bytes = bytes / 512 * 512;
-            if bytes < now {
-                return Err(format!(
-                    "{size}: less than its {now} bytes, and a disk only grows"
-                ));
-            }
-            opened
-                .set_len(bytes)
-                .map_err(|e| format!("{}: {e}", file.display()))?;
-            let grown = self.ask_device(&id, &[device::GROW, plugged.devfn], &[])?;
-            let sectors = grown
-                .parse::<u64>()
-                .map_err(|_| format!("its microVM answered {grown:?}"))?
-                / 512;
-            self.guest_device(&id, &["grow", &plugged.address, path, &sectors.to_string()])?;
-            self.container_event(&id, "grow", &[("path", path.clone())]);
-            Ok(grown)
+            let find = || {
+                lock(&self.plugged)
+                    .get(&id)
+                    .and_then(|p| p.get(path.as_str()))
+                    .filter(|p| p.what == What::Disk)
+                    .cloned()
+                    .ok_or_else(|| format!("no disk is plugged in at {path}"))
+            };
+            grow_disk(&self.device_steps, &id, bytes, find, |plugged| {
+                let grown = self.ask_device(&id, &[device::GROW, plugged.devfn], &[])?;
+                let sectors = grown
+                    .parse::<u64>()
+                    .map_err(|_| format!("its microVM answered {grown:?}"))?
+                    / 512;
+                self.guest_device(&id, &["grow", &plugged.address, path, &sectors.to_string()])?;
+                self.container_event(&id, "grow", &[("path", path.clone())]);
+                Ok(grown)
+            })
         });
         match done {
             Ok(grown) => {
@@ -955,6 +1246,7 @@ impl<D: Disk> Daemon<D> {
                 devfn,
                 address: address.clone(),
                 file: None,
+                file_id: None,
                 function: Some(Function {
                     given: given.to_string(),
                     group: f.group.clone(),
@@ -1022,6 +1314,251 @@ impl<D: Disk> Daemon<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    const MIB: u64 = 1 << 20;
+
+    std::thread_local! {
+        /// What a growth on this thread does once it has read its file's length, before it
+        /// sets it: a test's pause there.
+        static CHECKED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+    }
+
+    pub(super) fn checked() {
+        if let Some(then) = CHECKED.with(|c| c.borrow_mut().take()) {
+            then();
+        }
+    }
+
+    fn disk_at(file: &Path) -> Plugged {
+        Plugged {
+            what: What::Disk,
+            devfn: 8,
+            address: "0000:00:01.0".into(),
+            file: Some(file.to_path_buf()),
+            file_id: None,
+            function: None,
+            member: None,
+        }
+    }
+
+    /// A file of `bytes`, sparse.
+    fn disk_file(dir: &Path, bytes: u64) -> PathBuf {
+        let file = dir.join("disk");
+        std::fs::File::create(&file).unwrap().set_len(bytes).unwrap();
+        file
+    }
+
+    /// What its guest wrote at `at`: there after every growth.
+    fn sentinel(file: &Path, at: u64) -> Vec<u8> {
+        let mut f = std::fs::File::open(file).unwrap();
+        f.seek(SeekFrom::Start(at)).unwrap();
+        let mut read = Vec::new();
+        f.take(8).read_to_end(&mut read).unwrap();
+        read
+    }
+
+    /// Its VM and guest told, once its file is `want` long: its guest writes past 128 MiB.
+    fn told(want: u64) -> impl FnOnce(&Plugged) -> Result<(), String> {
+        move |p| {
+            let file = p.file.as_ref().unwrap();
+            assert_eq!(std::fs::metadata(file).unwrap().len(), want);
+            write_sentinel(file, 200 * MIB);
+            Ok(())
+        }
+    }
+
+    fn write_sentinel(file: &Path, at: u64) {
+        let mut f = std::fs::OpenOptions::new().write(true).open(file).unwrap();
+        f.seek(SeekFrom::Start(at)).unwrap();
+        f.write_all(b"sentinel").unwrap();
+        f.sync_all().unwrap();
+    }
+
+    /// devices-11: a disk file is had by its identity, whatever path names it. A hard link
+    /// is the one file, so a writable plug of it through either name refuses the other;
+    /// read-only plugs share it while none has it writable; a claim whose plug failed, an
+    /// unplugged one and one of a run that ended let it go.
+    #[test]
+    fn a_disk_file_is_plugged_writable_into_one_run_at_a_time() {
+        let dir = shards_testdir::TempDir::new("claims").unwrap();
+        let file = disk_file(dir.path(), MIB);
+        let link = dir.path().join("link");
+        std::fs::hard_link(&file, &link).unwrap();
+        let other = dir.path().join("other");
+        std::fs::File::create(&other).unwrap();
+        let id = |p: &Path| crate::os::file_id(&std::fs::File::open(p).unwrap()).unwrap();
+        assert_eq!(id(&file), id(&link));
+        assert_ne!(id(&file), id(&other));
+        let claims = DiskClaims::default();
+        let all = |_: &str| true;
+        claims.claim(id(&file), ("a", "/data", true), all).unwrap().keep();
+        assert_eq!(
+            claims.claim(id(&link), ("b", "/data", true), all).unwrap_err(),
+            DiskHeld::Writable {
+                run: "a".into(),
+                path: "/data".into()
+            }
+        );
+        assert_eq!(
+            claims.claim(id(&link), ("b", "/data", false), all).unwrap_err(),
+            DiskHeld::Writable {
+                run: "a".into(),
+                path: "/data".into()
+            }
+        );
+        assert_eq!(
+            claims.claim(id(&file), ("a", "/again", true), all).unwrap_err(),
+            DiskHeld::Writable {
+                run: "a".into(),
+                path: "/data".into()
+            }
+        );
+        claims
+            .claim(id(&other), ("b", "/other", true), all)
+            .unwrap()
+            .keep();
+        claims.release(id(&file), "a", "/data");
+        claims.claim(id(&file), ("b", "/ro", false), all).unwrap().keep();
+        claims.claim(id(&link), ("c", "/ro", false), all).unwrap().keep();
+        assert_eq!(
+            claims.claim(id(&file), ("d", "/rw", true), all).unwrap_err(),
+            DiskHeld::ReadOnly {
+                run: "b".into(),
+                path: "/ro".into()
+            }
+        );
+        // b and c end: their claims go with them.
+        let only_d = |run: &str| run == "d";
+        let failed = claims.claim(id(&file), ("d", "/rw", true), only_d).unwrap();
+        drop(failed);
+        claims.claim(id(&file), ("e", "/rw", true), all).unwrap().keep();
+    }
+
+    /// devices-11: a growth grows the file plugged in, refused where another file has been
+    /// put at its path since.
+    #[test]
+    fn a_growth_refuses_a_file_put_in_its_disks_place() {
+        let dir = shards_testdir::TempDir::new("grow-moved").unwrap();
+        let file = disk_file(dir.path(), MIB);
+        let mut plugged = disk_at(&file);
+        plugged.file_id = Some(crate::os::file_id(&std::fs::File::open(&file).unwrap()).unwrap());
+        std::fs::rename(&file, dir.path().join("moved")).unwrap();
+        disk_file(dir.path(), MIB);
+        let steps = Steps::default();
+        let grown = grow_disk(&steps, "a", 2 * MIB, || Ok(plugged.clone()), |_| Ok(()));
+        assert!(matches!(grown, Err(NotGrown::Failed(e)) if e.contains("not the file plugged in")));
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), MIB);
+    }
+
+    /// devices-01: two growths of one 64 MiB disk, to 128 and 256 MiB, the smaller paused
+    /// once it has read its file's length and before it sets it, the larger asked
+    /// meanwhile, and its guest writing past 128 MiB once told: its file stays 256 MiB,
+    /// with what its guest wrote. Without its microVM's device steps held one at a time,
+    /// the larger completes in the smaller's pause, and the smaller then cuts its file
+    /// back to 128 MiB, the guest's write with it.
+    #[test]
+    fn growths_of_one_disk_never_shorten_its_file() {
+        let dir = shards_testdir::TempDir::new("grow-race").unwrap();
+        let file = disk_file(dir.path(), 64 * MIB);
+        let steps = Steps::default();
+        let (paused, at_pause) = mpsc::channel();
+        let (go, until_go) = mpsc::channel::<()>();
+        let (b_done, larger_done) = mpsc::channel();
+        std::thread::scope(|s| {
+            let smaller = s.spawn(|| {
+                CHECKED.with(|c| {
+                    *c.borrow_mut() = Some(Box::new(move || {
+                        paused.send(()).unwrap();
+                        until_go.recv().unwrap();
+                    }))
+                });
+                grow_disk(&steps, "vm", 128 * MIB, || Ok(disk_at(&file)), |_| Ok(()))
+            });
+            at_pause.recv().unwrap();
+            let larger = s.spawn(|| {
+                let grown = grow_disk(
+                    &steps,
+                    "vm",
+                    256 * MIB,
+                    || Ok(disk_at(&file)),
+                    |p| {
+                        write_sentinel(p.file.as_ref().unwrap(), 200 * MIB);
+                        Ok(())
+                    },
+                );
+                b_done.send(()).unwrap();
+                grown
+            });
+            // The larger growth either completes in the smaller's pause or waits for it.
+            while larger_done.try_recv().is_err() && steps.waiting() == 0 {
+                std::thread::yield_now();
+            }
+            go.send(()).unwrap();
+            let smaller = smaller.join().unwrap();
+            assert!(
+                matches!(smaller, Ok(()) | Err(NotGrown::Smaller { .. })),
+                "{smaller:?}"
+            );
+            assert_eq!(larger.join().unwrap(), Ok(()));
+        });
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), 256 * MIB);
+        assert_eq!(sentinel(&file, 200 * MIB), b"sentinel");
+    }
+
+    /// A growth to less than its disk's file has is refused, typed, its file and its guest
+    /// untouched; one to what it has changes nothing; and its VM is told only once its
+    /// file has the length asked.
+    #[test]
+    fn a_disk_grown_smaller_is_refused_and_keeps_its_bytes() {
+        let dir = shards_testdir::TempDir::new("grow-less").unwrap();
+        let file = disk_file(dir.path(), 64 * MIB);
+        let steps = Steps::default();
+        assert_eq!(
+            grow_disk(&steps, "vm", 256 * MIB, || Ok(disk_at(&file)), told(256 * MIB)),
+            Ok(())
+        );
+        let refused = grow_disk(
+            &steps,
+            "vm",
+            128 * MIB,
+            || Ok(disk_at(&file)),
+            |_| panic!("its VM told of a refused growth"),
+        );
+        assert_eq!(
+            refused,
+            Err::<(), _>(NotGrown::Smaller {
+                asked: 128 * MIB,
+                has: 256 * MIB
+            })
+        );
+        // Not whole sectors: rounded down to them, then judged.
+        let refused = grow_disk(&steps, "vm", 256 * MIB - 1, || Ok(disk_at(&file)), |_| Ok(()));
+        assert!(matches!(refused, Err(NotGrown::Smaller { .. })), "{refused:?}");
+        assert_eq!(
+            grow_disk(&steps, "vm", 256 * MIB, || Ok(disk_at(&file)), told(256 * MIB)),
+            Ok(())
+        );
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), 256 * MIB);
+        assert_eq!(sentinel(&file, 200 * MIB), b"sentinel");
+    }
+
+    /// A microVM's device steps wait for each other's end; another microVM's do not.
+    #[test]
+    fn device_steps_of_one_microvm_wait_for_each_other() {
+        let steps = Steps::default();
+        let held = steps.hold("a");
+        drop(steps.hold("b"));
+        std::thread::scope(|s| {
+            let next = s.spawn(|| drop(steps.hold("a")));
+            while steps.waiting() == 0 {
+                std::thread::yield_now();
+            }
+            drop(held);
+            next.join().unwrap();
+        });
+        drop(steps.hold("a"));
+    }
 
     /// `--for` names an agent or harness as an Agentfile's `FOR` does, by its name alone,
     /// and finds its member index, agents first; one of no such name, or one that runs no
@@ -1127,6 +1664,7 @@ mod tests {
                     devfn: 0,
                     address: String::new(),
                     file: None,
+                    file_id: None,
                     function: Some(Function {
                         given: name.into(),
                         group: PathBuf::new(),
@@ -1183,6 +1721,7 @@ mod tests {
                     devfn: 0,
                     address: String::new(),
                     file: None,
+                    file_id: None,
                     function: Some(Function {
                         given: name.into(),
                         group: PathBuf::new(),
@@ -1207,6 +1746,7 @@ mod tests {
                 devfn: 0,
                 address: String::new(),
                 file: None,
+                file_id: None,
                 function: None,
                 member: None,
             },

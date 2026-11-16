@@ -12,14 +12,33 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
 
-/// The most GPUs a selection names: the renderer's own bound, to which its patches hold a
-/// context's selection and, for a selected context, the host's Vulkan devices
-/// (`VIRGL_DEVICE_UUID_MAX_COUNT`, `VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`, `1 + UINT16_MAX`,
-/// resources/gpu/physical-*.patch), so that nothing here takes a selection the renderer
-/// refuses. Below it, before a host's GPUs are enumerated, a count is bounded by what carries
-/// it (a receipt's lines, a snapshot's bytes) and after, by the host's GPUs, each named once.
-/// The renderer's figure is still owed its derivation from its transport's own bound (D232).
-pub const MAX_PHYSICAL_GPUS: usize = 1 << u16::BITS;
+/// The bytes one GPU of a selection takes on its way to the renderer: its Vulkan deviceUUID
+/// (`VK_UUID_SIZE`, 16 bytes) as 32 hex digits and their NUL (`VIRGL_DEVICE_UUID_STRIDE`,
+/// resources/gpu/physical-transport-*.patch).
+pub const SELECTION_STRIDE: usize = 16 * 2 + 1;
+
+/// The most GPUs a selection names (devices-09, D232): as many identities as the renderer's
+/// transport carries, its payload's length a `uint32_t` (`virgl_device_selection_payload_size`)
+/// of [`SELECTION_STRIDE`] bytes each, 130,150,524. The renderer's patches hold a context's
+/// selection to the same (`VIRGL_DEVICE_UUID_MAX_COUNT`, `VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT`),
+/// so nothing here takes a selection the renderer refuses. A host's Vulkan devices are counted
+/// by Vulkan's own `uint32_t` instead ([`MAX_HOST_GPUS`]), and a selection names each at most
+/// once. Below it a count is bounded by what carries it (a receipt's lines, a snapshot's bytes,
+/// a command line's arguments) and by the memory reserved for it, fallibly. A consumer's own
+/// index space, Hex's scheduler's u16 device index, is that consumer's to hold its selections to.
+pub const MAX_PHYSICAL_GPUS: usize = u32::MAX as usize / SELECTION_STRIDE;
+
+/// The most GPUs a host's Vulkan lists: its counts are `uint32_t`
+/// (`vkEnumeratePhysicalDevices`'s `pPhysicalDeviceCount`).
+pub const MAX_HOST_GPUS: usize = u32::MAX as usize;
+
+/// Whether a selection of `count` GPUs fits the renderer's transport ([`MAX_PHYSICAL_GPUS`]).
+pub fn selection_fits(count: usize) -> Result<(), PhysicalGpuError> {
+    match count.checked_mul(SELECTION_STRIDE) {
+        Some(bytes) if bytes <= u32::MAX as usize => Ok(()),
+        _ => Err(PhysicalGpuError::Count),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhysicalGpu {
@@ -58,9 +77,7 @@ impl PhysicalGpu {
 }
 
 pub fn check_selection(devices: &[PhysicalGpu]) -> Result<(), PhysicalGpuError> {
-    if devices.len() > MAX_PHYSICAL_GPUS {
-        return Err(PhysicalGpuError::Count);
-    }
+    selection_fits(devices.len())?;
     let mut sorted = Vec::new();
     sorted
         .try_reserve_exact(devices.len())
@@ -149,7 +166,7 @@ impl fmt::Display for PhysicalGpuError {
             Self::Syntax => "expected pci:<domain>:<bus>:<device>.<function>, metal:<hex64> or luid:<hex64>",
             Self::PciAddress => "GPU PCI identity exceeds the native address fields",
             Self::MetalRegistry => "GPU Metal registry identity is unavailable",
-            Self::Count => "physical GPU count exceeds the u16 device-index space",
+            Self::Count => "physical GPU count exceeds what the renderer's selection carries",
             Self::Duplicate => "physical GPU selection contains a repeated native identity",
             Self::Allocation => "physical GPU selection storage is unavailable",
         })
@@ -178,7 +195,7 @@ impl fmt::Display for JoinError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Selection(error) => error.fmt(f),
-            Self::Count => f.write_str("Vulkan device count exceeds the physical device-index space"),
+            Self::Count => f.write_str("Vulkan device count exceeds Vulkan's uint32_t count"),
             Self::Allocation => f.write_str("native GPU join storage is unavailable"),
             Self::Missing => f.write_str("a selected native GPU has no exact live Vulkan identity"),
             Self::Ambiguous => f.write_str("native GPU or Vulkan UUID correspondence is ambiguous"),
@@ -203,7 +220,7 @@ impl core::error::Error for JoinError {}
 )]
 mod tests {
     use super::*;
-    use alloc::{string::ToString, vec};
+    use alloc::string::ToString;
 
     #[test]
     fn native_identity_roundtrips_without_narrowing() {
@@ -242,9 +259,33 @@ mod tests {
     fn duplicate_and_excessive_selections_are_refused() {
         let id = PhysicalGpu::MetalRegistry(7);
         assert_eq!(check_selection(&[id, id]), Err(PhysicalGpuError::Duplicate));
+    }
+
+    /// devices-09: a selection fits the renderer's transport, a `uint32_t` of bytes at 33 a
+    /// GPU, and no more: its largest count's bytes are within it and one more's past it, and
+    /// a count whose bytes overflow is refused rather than wrapped.
+    #[test]
+    fn a_selection_fits_the_renderers_transport_and_no_more() {
+        assert_eq!(MAX_PHYSICAL_GPUS, 130_150_524);
+        assert!(MAX_PHYSICAL_GPUS * SELECTION_STRIDE <= u32::MAX as usize);
+        assert!((MAX_PHYSICAL_GPUS + 1) * SELECTION_STRIDE > u32::MAX as usize);
+        assert_eq!(selection_fits(MAX_PHYSICAL_GPUS), Ok(()));
         assert_eq!(
-            check_selection(&vec![id; MAX_PHYSICAL_GPUS + 1]),
+            selection_fits(MAX_PHYSICAL_GPUS + 1),
             Err(PhysicalGpuError::Count)
         );
+        assert_eq!(selection_fits(usize::MAX), Err(PhysicalGpuError::Count));
+        // Past Hex's u16 index space, which bounded it before, a selection still fits.
+        assert_eq!(selection_fits((1 << u16::BITS) + 1), Ok(()));
+    }
+
+    /// devices-09: 65,537 distinct GPUs, one past the u16 index space a selection was held
+    /// to, are a selection the renderer's transport carries.
+    #[test]
+    fn a_selection_past_the_u16_index_space_is_taken() {
+        let many: Vec<_> = (1..=(1u64 << u16::BITS) + 1)
+            .map(PhysicalGpu::MetalRegistry)
+            .collect();
+        assert_eq!(check_selection(&many), Ok(()));
     }
 }

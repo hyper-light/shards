@@ -1,14 +1,15 @@
 //! ACPI tables for x86_64 guests (ACPI 6.5; research doc §3.5, §4.4). The guest kernel
 //! has neither MP-table parsing nor `virtio_mmio.device=`, so these are how it finds its
-//! CPUs, the IOAPIC, COM1, the virtio devices, and how it powers off:
+//! CPUs, the IOAPIC, the virtio devices (its console among them), and how it powers off:
 //!
 //! - RSDP (rev 2) → XSDT → FADT (HW-reduced, rev 6.5) + MADT, FADT → DSDT
 //! - MADT: one Local APIC per vCPU (APIC id = index) and the IOAPIC, GSI base 0
-//! - DSDT: COM1 (`PNP0501`), each virtio-mmio device (`LNRO0005`), the VM generation ID
+//! - DSDT: each virtio-mmio device (`LNRO0005`), the pvpanic device (`QEMU0001`), the VM generation ID
 //!   (`VMGENCTR`) with the Generic Event Device (`ACPI0013`) that tells the guest of a
 //!   new one, and `\_S5`
-//! - FADT SLEEP_CONTROL/STATUS registers on a port pair, so `reboot(RB_POWER_OFF)`
-//!   writes SLP_TYP 5 | SLP_EN and the VMM sees a power-off
+//! - FADT SLEEP_CONTROL/STATUS registers and RESET_REG on the power device's ports, so
+//!   `reboot(RB_POWER_OFF)` writes SLP_TYP 5 | SLP_EN and the VMM sees a power-off, and a
+//!   restart or panic writes RESET_VALUE and the VMM sees a reset (D268)
 
 use super::layout;
 
@@ -48,6 +49,17 @@ pub struct Tables {
 pub const S5_SLP_TYP: u8 = 5;
 /// SLEEP_CONTROL_REG's SLP_EN bit (ACPI 6.5 Table 4.19).
 pub const SLP_EN: u8 = 1 << 5;
+/// The power device's registers, each an 8-bit port, from [`layout::ACPI_POWER`] on:
+/// SLEEP_CONTROL_REG there, SLEEP_STATUS_REG after it, and RESET_REG after that, a
+/// register of its own so that no reset value is also a sleep request (D268).
+pub const SLEEP_STATUS: u16 = 1;
+pub const RESET: u16 = SLEEP_STATUS + 1;
+pub const POWER_PORTS: u16 = RESET + 1;
+/// The FADT's RESET_VALUE: what the guest writes to RESET_REG to reset its machine (ACPI
+/// 6.5 §4.8.3.6), which leaves the value to the platform. The power device's one bit
+/// that says "act now", SLEEP_CONTROL_REG's enable, so the device has no second literal
+/// for it (D268).
+pub const RESET_VALUE: u8 = SLP_EN;
 
 const OEM_ID: &[u8; 6] = b"SHARDS";
 const OEM_TABLE: &[u8; 8] = b"SHARDSVM";
@@ -97,14 +109,22 @@ fn fadt(dsdt: u64) -> Vec<u8> {
         }
     };
     // IAPC_BOOT_ARCH: VGA not present (2), CMOS RTC not present (5). The 8042 bit stays
-    // clear, so the guest binds no i8042 driver (research §3.1, §5.6).
+    // clear: the machine has no i8042 (research §3.1, §5.6; D268).
     put(109, &((1u16 << 2) | (1 << 5)).to_le_bytes());
-    // Flags: PWR_BUTTON (4) and SLP_BUTTON (5), i.e. no fixed buttons; HW_REDUCED_ACPI (20).
-    put(112, &((1u32 << 4) | (1 << 5) | (1 << 20)).to_le_bytes());
+    // Flags: PWR_BUTTON (4) and SLP_BUTTON (5), i.e. no fixed buttons; RESET_REG_SUP (10);
+    // HW_REDUCED_ACPI (20), under which OSPM ignores flag bits 1-3, 7, 8, 13, 14, 16 and
+    // 17 and the fields at 46-108 and 148-232 (ACPI 6.5 §5.2.9), RESET_REG_SUP and
+    // RESET_REG not among them (D268).
+    put(
+        112,
+        &((1u32 << 4) | (1 << 5) | (1 << 10) | (1 << 20)).to_le_bytes(),
+    );
+    put(116, &gas_io8(layout::ACPI_POWER + RESET)); // RESET_REG
+    put(128, &[RESET_VALUE]);
     put(131, &[5]); // FADT minor version
     put(140, &dsdt.to_le_bytes()); // X_DSDT
-    put(244, &gas_io8(layout::ACPI_SLEEP)); // SLEEP_CONTROL_REG
-    put(256, &gas_io8(layout::ACPI_SLEEP + 1)); // SLEEP_STATUS_REG
+    put(244, &gas_io8(layout::ACPI_POWER)); // SLEEP_CONTROL_REG
+    put(256, &gas_io8(layout::ACPI_POWER + SLEEP_STATUS)); // SLEEP_STATUS_REG
     put(268, b"SHARDSVM"); // hypervisor vendor identity
     sdt(b"FACP", 6, &b)
 }
@@ -254,15 +274,6 @@ mod aml {
         let mut content = integer(bytes.len() as u64);
         content.extend(bytes);
         with_pkg(&[0x11], content)
-    }
-
-    /// I/O Port descriptor, 16-bit decode (§6.4.2.5).
-    pub fn io(port: u16, len: u8) -> Vec<u8> {
-        let mut d = vec![0x47, 0x01];
-        d.extend_from_slice(&port.to_le_bytes());
-        d.extend_from_slice(&port.to_le_bytes());
-        d.extend_from_slice(&[1, len]);
-        d
     }
 
     /// 32-bit Fixed Memory Range descriptor, read/write (§6.4.3.4).
@@ -484,15 +495,6 @@ fn mcfg(p: &PciBridge) -> Vec<u8> {
 fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<Vec<u8>, String> {
     let crs = |descriptors: &[Vec<u8>]| aml::name(b"_CRS", aml::resources(descriptors));
     let mut devices = Vec::new();
-    devices.extend(aml::device(
-        "COM1",
-        [
-            aml::name(b"_HID", aml::eisa_id("PNP0501")),
-            aml::name(b"_UID", aml::integer(0)),
-            crs(&[aml::io(layout::COM1, 8), aml::interrupt_edge(layout::GSI_COM1)]),
-        ]
-        .concat(),
-    ));
     // Device order fixes the guest's /dev/vdX names.
     for (i, d) in virtio.iter().enumerate() {
         devices.extend(aml::device(
@@ -510,6 +512,16 @@ fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<
         ));
     }
     devices.extend(vmgenid_devices(vmgenid));
+    // pvpanic-mmio.c's ACPI match, QEMU's own _HID for it (docs/specs/pvpanic.rst).
+    devices.extend(aml::device(
+        "PEVT",
+        [
+            aml::name(b"_HID", aml::string("QEMU0001")),
+            aml::name(b"_UID", aml::integer(0)),
+            crs(&[aml::memory32_fixed(layout::PVPANIC as u32, 0x1000)]),
+        ]
+        .concat(),
+    ));
     if let Some(p) = pci {
         devices.extend(pci_bridge(p)?);
     }
@@ -613,9 +625,36 @@ mod tests {
             u64::from_le_bytes(fadt[140..148].try_into().unwrap()),
             find(b"DSDT").0
         );
-        assert_eq!(fadt[112..116], (0x0010_0030u32).to_le_bytes());
+        assert_eq!(fadt[112..116], (0x0010_0430u32).to_le_bytes());
         let (_, madt) = find(b"APIC");
         assert_eq!(madt.len(), 36 + 8 + 4 * 8 + 12);
+    }
+
+    /// The guest resets through the FADT's reset register (D268): Linux's `acpi_reboot`
+    /// writes RESET_VALUE to RESET_REG only with FADT revision 2 or later and RESET_REG_SUP
+    /// set (drivers/acpi/reboot.c l. 48-69), and ACPICA writes an I/O one 8 bits wide
+    /// (acpica/hwxface.c l. 48-62). RESET_REG is the power device's own port, beside the
+    /// sleep registers, and no sleep request.
+    #[test]
+    fn the_fadt_names_the_power_devices_reset_register() {
+        let fadt = fadt(0);
+        assert!(fadt[8] >= 2, "FADT revision");
+        let flags = u32::from_le_bytes(fadt[112..116].try_into().unwrap());
+        assert_ne!(flags & (1 << 10), 0, "RESET_REG_SUP");
+        assert_ne!(flags & (1 << 20), 0, "HW_REDUCED_ACPI");
+        assert_eq!(fadt[116], 1, "SystemIO");
+        assert_eq!(&fadt[117..120], &[8, 0, 1], "8 bits wide, offset 0, byte access");
+        let port = u64::from_le_bytes(fadt[120..128].try_into().unwrap());
+        assert_eq!(port, u64::from(layout::ACPI_POWER + RESET));
+        assert_eq!(fadt[128], RESET_VALUE);
+        let sleep = |at: usize| u64::from_le_bytes(fadt[at + 4..at + 12].try_into().unwrap());
+        assert_eq!(sleep(244), u64::from(layout::ACPI_POWER));
+        assert_eq!(sleep(256), u64::from(layout::ACPI_POWER + SLEEP_STATUS));
+        assert!(
+            (u64::from(layout::ACPI_POWER)..u64::from(layout::ACPI_POWER + POWER_PORTS)).contains(&port)
+                && ![sleep(244), sleep(256)].contains(&port),
+            "a register of the power device's own"
+        );
     }
 
     /// A PCI host bridge (D153): an MCFG table, linked and checksummed, of segment 0's

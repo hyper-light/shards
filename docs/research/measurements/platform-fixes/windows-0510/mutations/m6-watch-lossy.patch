@@ -1,0 +1,13 @@
+diff --git a/crates/ipc/src/slots/named.rs b/crates/ipc/src/slots/named.rs
+index f42bb6a5e..0484da371 100644
+--- a/crates/ipc/src/slots/named.rs
++++ b/crates/ipc/src/slots/named.rs
+@@ -760,7 +760,7 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
+ /// directory, and so no list in it, which a read says; any other failure refused.
+ fn watch(dir: &Path) -> io::Result<Option<Change>> {
+     use std::os::windows::ffi::OsStrExt as _;
+-    let dir: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
++    let dir: Vec<u16> = std::ffi::OsStr::new(&*dir.to_string_lossy()).encode_wide().chain([0]).collect();
+     // SAFETY: a NUL-terminated path; the notification is closed as its Change drops.
+     let raw = unsafe {
+         FindFirstChangeNotificationW(

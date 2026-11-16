@@ -24,15 +24,13 @@ use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use common::{Patience, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
+use common::{Party, Patience, TempDir, cannot_pool, cannot_run_vms, guest_init, kernel, workload_image};
 use shards_abi::run::Spec;
 use shards_ipc::Stream;
 use shards_ipc::fd::{AsFd as _, OwnedFd};
 use shards_ipc::kind;
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A pipe's ends, read and write: closed on exec, handed on by message alone.
 fn pipe() -> (File, File) {
@@ -88,6 +86,9 @@ struct Warm {
     daemon: Stream,
     /// The VM process's ID, once it is ready: on Windows the child's child.
     vm: Option<u32>,
+    /// One of this test's own VM processes (`common::OwnVm`), the child, for its waits'
+    /// party.
+    _own: common::OwnVm,
     /// On macOS, what grants the VM its files, as the daemon does.
     #[cfg(target_os = "macos")]
     _broker: Broker,
@@ -132,6 +133,8 @@ impl Drop for Broker {
 /// What the client holds while its command runs.
 struct Client {
     conn: Stream,
+    /// The warm VM's process ([`Warm::child`]), which [`told`] ends where its wait is refused.
+    vm: u32,
     stdin: Option<File>,
     stdout: BufReader<File>,
     stderr: File,
@@ -223,9 +226,9 @@ impl Warm {
             command.spawn().unwrap()
         };
         drop(theirs);
-        daemon.set_read_timeout(Some(TIMEOUT)).unwrap();
         let vm = Some(child.id());
         Warm {
+            _own: common::OwnVm::started(child.id()),
             child,
             daemon,
             vm,
@@ -270,16 +273,17 @@ impl Warm {
             spawned.unwrap()
         };
         drop(link);
-        daemon.set_read_timeout(Some(TIMEOUT)).unwrap();
         Warm {
+            _own: common::OwnVm::started(child.id()),
             child,
             daemon,
             vm: None,
         }
     }
 
+    #[track_caller]
     fn ready(&mut self) {
-        match shards_ipc::recv(&self.daemon) {
+        match told(&self.daemon, self.child.id(), "its READY") {
             Ok(Some(m)) => assert_eq!(m.kind, kind::READY),
             other => {
                 let _ = self.child.kill();
@@ -342,7 +346,9 @@ impl Warm {
         )
         .unwrap();
         assert!(
-            shards_ipc::recv(&self.daemon).unwrap().is_none(),
+            told(&self.daemon, self.child.id(), "its end without TAKEN")
+                .unwrap()
+                .is_none(),
             "the run was taken"
         );
         let _ = self.child.kill();
@@ -363,7 +369,30 @@ impl Warm {
     }
 
     /// [`Warm::run`], with the spec's `setup` entries (shards_abi::run::Spec).
+    #[track_caller]
     fn run_with(&self, argv: &[&str], interactive: bool, setup: Vec<Vec<u8>>) -> Client {
+        let head = shards_ipc::RunHead {
+            flags: if interactive {
+                shards_ipc::RUN_INTERACTIVE
+            } else {
+                0
+            },
+            ..Default::default()
+        };
+        self.run_given(argv, head, setup, &[])
+    }
+
+    /// [`Warm::run_with`], its request's head `head` (its log's retention given here) and
+    /// `extra` the files its flags bring after its client's stdio.
+    #[track_caller]
+    fn run_given(
+        &self,
+        argv: &[&str],
+        head: shards_ipc::RunHead,
+        setup: Vec<Vec<u8>>,
+        extra: &[shards_ipc::fd::BorrowedFd<'_>],
+    ) -> Client {
+        let interactive = head.flags & shards_ipc::RUN_INTERACTIVE != 0;
         let spec = Spec {
             argv: argv.iter().map(|a| a.as_bytes().to_vec()).collect(),
             env: vec![b"PATH=/bin".to_vec()],
@@ -388,37 +417,30 @@ impl Warm {
         // The log's retention, which a run without a log has no use for; its first
         // segment, and memory to plug: none (D148).
         shards_ipc::RunHead {
-            flags: if interactive {
-                shards_ipc::RUN_INTERACTIVE
-            } else {
-                0
-            },
             log_size: 20 << 20,
             log_files: 5,
-            ..Default::default()
+            ..head
         }
         .encode_into(&mut payload);
         payload.extend(spec.encode());
         let handed = shards_ipc::handed(&theirs).unwrap();
-        shards_ipc::send(
-            &self.daemon,
-            kind::RUN,
-            &payload,
-            &[
-                handed.as_fd(),
-                stdin_r.as_fd(),
-                stdout_w.as_fd(),
-                stderr_w.as_fd(),
-            ],
-        )
-        .unwrap();
+        let mut fds = vec![
+            handed.as_fd(),
+            stdin_r.as_fd(),
+            stdout_w.as_fd(),
+            stderr_w.as_fd(),
+        ];
+        fds.extend_from_slice(extra);
+        shards_ipc::send(&self.daemon, kind::RUN, &payload, &fds).unwrap();
         // Ours stay open until the warm VM has taken them, as the daemon's do.
-        let taken = shards_ipc::recv(&self.daemon).unwrap().expect("TAKEN");
+        let taken = told(&self.daemon, self.child.id(), "its TAKEN")
+            .unwrap()
+            .expect("TAKEN");
         assert_eq!(taken.kind, kind::TAKEN);
         drop(theirs);
-        conn.set_read_timeout(Some(TIMEOUT)).unwrap();
         Client {
             conn,
+            vm: self.child.id(),
             stdin: Some(stdin_w),
             stdout: BufReader::new(stdout_r),
             stderr: stderr_r,
@@ -428,24 +450,44 @@ impl Warm {
     /// The warm VM tells the daemon that its command started, if it did, and its
     /// `status`, with what kept it from starting if it did not (`not_run`), then ends,
     /// leaving the daemon's socket.
-    fn ends(mut self, status: u8, not_run: Option<&str>) {
+    #[track_caller]
+    fn ends(self, status: u8, not_run: Option<&str>) {
         let started = not_run.is_none();
-        // Within TIMEOUT, or past it while a VM process of this test's runs ([`Patience`]).
+        let said = self.ended(started);
+        let mut expected = Vec::new();
+        if started {
+            expected.push((kind::STARTED, Vec::new()));
+        }
+        let mut done = vec![status];
+        done.extend_from_slice(not_run.unwrap_or_default().as_bytes());
+        expected.push((kind::DONE, done));
+        assert_eq!(said, expected);
+    }
+
+    /// The warm VM ends, having served its run: what it told the daemon of it, past its
+    /// records, its working set and its one final use, each checked, in order.
+    #[track_caller]
+    fn ended(mut self, started: bool) -> Vec<(u8, Vec<u8>)> {
+        // While a VM process of this test's goes on ([`Patience`]).
         let mut patience = Patience::own();
         let exited = loop {
             if let Some(exited) = self.child.try_wait().unwrap() {
+                patience.done();
                 break exited;
             }
             if !patience.holds() {
                 let _ = self.child.kill();
                 break self.child.wait().unwrap();
             }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(patience.next_look());
         };
         assert!(exited.success(), "the warm VM exited with {exited}");
         let mut said = Vec::new();
         let mut done = false;
         let mut records = Vec::new();
+        let mut final_uses = Vec::new();
+        // Its peer has exited, its end of the link closed with it: what it sent is read to
+        // that end, with nothing to wait on.
         while let Some(m) = shards_ipc::recv(&self.daemon).unwrap() {
             // The records of the processes its run started and ended (D123), whole lines of
             // tab-separated fields, before the end.
@@ -469,28 +511,37 @@ impl Warm {
                 );
                 continue;
             }
+            // What its machine used in all once down (D260's final use), told once by a VM
+            // that took its run: as its own thread tells it, beside the workload's DONE.
+            if m.kind == kind::FINAL_USE {
+                final_uses.push(m.payload);
+                continue;
+            }
             done |= m.kind == kind::DONE;
             said.push((m.kind, m.payload));
         }
+        let [used] = final_uses.as_slice() else {
+            panic!("{} final uses told", final_uses.len());
+        };
+        let used = shards_abi::rate::read_used(used).unwrap();
+        let (times, host) = (used.guest.unwrap(), used.host.unwrap());
+        assert!(!times.vcpus.is_empty(), "{times:?}");
+        assert!(host.cpu_ns > 0, "{host:?}");
         let records = records.concat();
         assert!(
             !started || records.lines().any(|l| l.split('\t').nth(3) == Some("exec")),
             "no exec of its command in {records:?}"
         );
-        let mut expected = Vec::new();
-        if started {
-            expected.push((kind::STARTED, Vec::new()));
-        }
-        let mut done = vec![status];
-        done.extend_from_slice(not_run.unwrap_or_default().as_bytes());
-        expected.push((kind::DONE, done));
-        assert_eq!(said, expected);
+        said
     }
 }
 
 impl Client {
+    #[track_caller]
     fn exit(&self) -> u8 {
-        let m = shards_ipc::recv(&self.conn).unwrap().expect("an exit status");
+        let m = told(&self.conn, self.vm, "its exit status")
+            .unwrap()
+            .expect("an exit status");
         assert_eq!((m.kind, m.payload.len()), (kind::EXIT, 1));
         m.payload[0]
     }
@@ -510,48 +561,62 @@ impl Client {
     fn signal(&self, linux: u32) {
         shards_ipc::send(&self.conn, kind::SIGNAL, &linux.to_be_bytes(), &[]).unwrap();
     }
-
-    #[cfg(unix)]
-    fn stdout_ends(&mut self) -> bool {
-        ends(&mut self.stdout)
-    }
 }
 
-/// Whether `stdout` reads end of file within a second: the warm VM holds no copy of it.
-/// The client's copies went once the VM took them.
-#[cfg(unix)]
-fn ends(stdout: &mut BufReader<File>) -> bool {
-    let fd = stdout.get_ref().as_raw_fd();
-    // SAFETY: fcntl(2) on a descriptor this test owns.
-    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut sink = Vec::new();
-    loop {
-        match stdout.read_to_end(&mut sink) {
-            Ok(_) => return true,
-            Err(_) if Instant::now() >= deadline => return false,
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
+/// What `stream` says next, its peer the warm VM `vm` (on Windows the `shards` that started
+/// it, whose job ends it): judged as the tests' waits are (`common::judged`), its kind its
+/// caller's call site, its party this test's own VM processes. Refused, the VM is ended,
+/// which ends the read.
+#[track_caller]
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "a refused wait fails its test; the read's own error is its caller's"
+)]
+fn told(stream: &Stream, vm: u32, what: &str) -> std::io::Result<Option<shards_ipc::Message>> {
+    common::judged(Party::own(None), what, || end(vm), || shards_ipc::recv(stream))
+        .unwrap_or_else(|refused| panic!("{refused}"))
+}
+
+/// Ends process `pid`, a child of this test's it has not reaped (so no other process has
+/// its ID), whatever it has come to: SIGKILL on Unix, TerminateProcess on Windows.
+fn end(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: kill(2) of our own child, not yet reaped.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+        // SAFETY: a process's handle opened, used and closed here; none where it has gone.
+        unsafe {
+            let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !process.is_null() {
+                TerminateProcess(process, 128 + 9);
+                CloseHandle(process);
+            }
         }
     }
 }
 
-/// [`ends`] of an anonymous pipe, which Windows reads without blocking by no flag: its end
-/// is a peek that finds it broken (ERROR_BROKEN_PIPE, every writer gone), what it holds read
-/// meanwhile.
-#[cfg(windows)]
-fn ends(stdout: &mut BufReader<File>) -> bool {
-    ends_within(stdout, Duration::from_secs(1))
+/// Whether `stdout` has ended once what it holds is read, waiting for nothing: every writer
+/// of it gone. Nonblocking from here on on Unix; on Windows, which reads an anonymous pipe
+/// without blocking by no flag, its end is a peek that finds it broken (ERROR_BROKEN_PIPE).
+#[cfg(unix)]
+fn ended(stdout: &mut BufReader<File>) -> bool {
+    let fd = stdout.get_ref().as_raw_fd();
+    // SAFETY: fcntl(2) on a descriptor this test owns.
+    unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) };
+    stdout.read_to_end(&mut Vec::new()).is_ok()
 }
 
-/// Whether `stdout` reads end of file within `wait`, what it holds read meanwhile: with no
-/// wait, whether it has ended once what it holds is read.
 #[cfg(windows)]
-fn ends_within(stdout: &mut BufReader<File>, wait: Duration) -> bool {
+fn ended(stdout: &mut BufReader<File>) -> bool {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, GetLastError};
     use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     let handle = stdout.get_ref().as_raw_handle();
-    let deadline = Instant::now() + wait;
     let mut sink = vec![0u8; 64 << 10];
     loop {
         let mut held = 0u32;
@@ -570,15 +635,24 @@ fn ends_within(stdout: &mut BufReader<File>, wait: Duration) -> bool {
             // SAFETY: no arguments.
             return unsafe { GetLastError() } == ERROR_BROKEN_PIPE;
         }
-        if held > 0 {
-            let n = usize::try_from(held).unwrap().min(sink.len());
-            stdout.get_mut().read_exact(&mut sink[..n]).unwrap();
-        } else if Instant::now() >= deadline {
+        if held == 0 {
             return false;
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
         }
+        let n = usize::try_from(held).unwrap().min(sink.len());
+        stdout.get_mut().read_exact(&mut sink[..n]).unwrap();
     }
+}
+
+/// Waits until `stdout` ends, while a VM process of this test's goes on ([`Patience`], its
+/// kind its caller's call site).
+#[track_caller]
+fn until_ended(stdout: &mut BufReader<File>, what: &str) {
+    let mut patience = Patience::own();
+    while !ended(stdout) {
+        assert!(patience.holds(), "{what}");
+        std::thread::sleep(patience.next_look());
+    }
+    patience.done();
 }
 
 #[test]
@@ -756,6 +830,82 @@ fn warm_needs_a_socket_of_its_own() {
     }
 }
 
+/// A warm VM that takes no run tells its daemon nothing more: it ends, which tells the daemon
+/// the run never started and may go to another VM (daemon.rs `taken`). No final use (D260)
+/// stands where TAKEN would be, which the daemon could not tell from a run taken.
+#[test]
+fn a_warm_vm_that_takes_no_run_tells_no_final_use() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let dir = TempDir::new("warm-untaken");
+    let template = template(&dir);
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    // A request that brings none of its client's descriptors, which the VM refuses before it
+    // takes it (warm.rs `receive`).
+    let mut payload = Vec::new();
+    shards_ipc::RunHead {
+        log_size: 20 << 20,
+        log_files: 5,
+        ..Default::default()
+    }
+    .encode_into(&mut payload);
+    payload.extend(
+        Spec {
+            argv: vec![b"/bin/testguest".to_vec(), b"exit".to_vec(), b"0".to_vec()],
+            ..Spec::default()
+        }
+        .encode(),
+    );
+    shards_ipc::send(&warm.daemon, kind::RUN, &payload, &[]).unwrap();
+    let said = told(&warm.daemon, warm.child.id(), "its end without TAKEN").unwrap();
+    assert!(
+        said.is_none(),
+        "it said kind {:?} before its end",
+        said.map(|m| m.kind)
+    );
+    let _ = warm.child.wait();
+}
+
+/// A run a warm VM took, whose setup then failed, is told its end as any other (D260): its
+/// owner reads why (`UNSERVED`) and one `DONE`, of the status its client exits with for it,
+/// its client that status and why, and the VM ends, telling its final use. Here its group's
+/// CPU budget (D183) is an empty file, which no budget is. As first built the VM told
+/// nothing of a run it took and then could not set up: its owner read TAKEN, its final use
+/// and its link's end, its client its connection's end.
+#[test]
+fn a_run_a_warm_vm_took_and_could_not_set_up_is_told_its_end() {
+    if cannot_run_vms() || cannot_pool() {
+        return;
+    }
+    let dir = TempDir::new("warm-unset");
+    let template = template(&dir);
+    let mut warm = Warm::spawn(&template);
+    warm.ready();
+    let group = File::create(dir.join("group")).unwrap();
+    let head = shards_ipc::RunHead {
+        group: true,
+        ..Default::default()
+    };
+    let mut client = warm.run_given(
+        &["/bin/testguest", "exit", "0"],
+        head,
+        Vec::new(),
+        &[group.as_fd()],
+    );
+    assert_eq!(client.exit(), 125);
+    let mut err = String::new();
+    client.stderr.read_to_string(&mut err).unwrap();
+    let why = "its group's CPU budget: a group's CPU budget of 0 bytes, short of its";
+    assert!(err.starts_with(&format!("shards: {why}")), "{err:?}");
+    let said = warm.ended(false);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0].0, kind::UNSERVED, "{said:?}");
+    assert!(String::from_utf8_lossy(&said[0].1).starts_with(why), "{said:?}");
+    assert_eq!(said[1], (kind::DONE, vec![125]));
+}
+
 /// A warm VM lets go of its client's stdio before it sends the exit status, so a pipeline
 /// reading the client's output ends with the client; and when the client hangs up, so a
 /// command that outlives it writes nowhere.
@@ -771,34 +921,42 @@ fn a_warm_vm_lets_go_of_its_clients_stdio() {
     warm.ready();
     let mut client = warm.run(&["/bin/testguest", "exit", "0"], false);
     assert_eq!(client.exit(), 0);
-    // Frozen before it can tear down: whatever it still held, it would hold now. A Windows
-    // warm VM is gone sooner than any freeze takes its threads (a snapshot of the host's
-    // threads, on jupiter), so its client's stdout is looked at once its exit status is
-    // read, waiting for nothing: it must have ended by then, the VM letting go of it before
-    // saying it.
+    // Frozen before it can tear down: whatever it still held, it would hold now, so its
+    // client's stdout is looked at waiting for nothing: it must have ended by then, the VM
+    // letting go of it before saying its status. A Windows warm VM is gone sooner than any
+    // freeze takes its threads (a snapshot of the host's threads, on jupiter), so there it
+    // is looked at as soon as its exit status is read.
     #[cfg(unix)]
     let ended = {
         let _frozen = freeze(warm.vm.unwrap());
-        client.stdout_ends()
+        ended(&mut client.stdout)
     };
     #[cfg(windows)]
-    let ended = ends_within(&mut client.stdout, Duration::ZERO);
+    let ended = ended(&mut client.stdout);
     assert!(ended, "the warm VM held the client's stdout past its exit status");
     warm.ends(0, None);
 
+    // Its client hangs up: the VM lets go of its stdio while its command goes on. No later
+    // event of the VM's follows its let-go (its client's relay ends there), so the end is
+    // waited for while the VM goes on ([`until_ended`]), and the VM found still running past
+    // it shows the end was the let-go, not the VM's own; how long the let-go took is a
+    // measurement, told (D209).
     let mut warm = Warm::spawn(&template);
     warm.ready();
     let mut client = warm.run(&["/bin/testguest", "sleep"], false);
     assert_eq!(client.line(), "ready\n");
     let Client { conn, mut stdout, .. } = client;
+    let hung_up = Instant::now();
     drop(conn);
-    assert!(
-        ends(&mut stdout),
-        "the warm VM kept writing to a client that hung up"
-    );
+    until_ended(&mut stdout, "the warm VM kept writing to a client that hung up");
+    let let_go = hung_up.elapsed();
     assert!(
         warm.child.try_wait().unwrap().is_none(),
         "the command outlives its client"
+    );
+    common::measured(
+        "a warm VM's let-go of its client's stdio after it hung up",
+        &[let_go],
     );
     warm.child.kill().unwrap();
     warm.child.wait().unwrap();

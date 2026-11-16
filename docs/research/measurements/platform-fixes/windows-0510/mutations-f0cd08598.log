@@ -1,0 +1,75 @@
+
+
+
+== m1-unmap-exact (applied 0): cargo test -p shards-vmm hv::whp::tests::the_emulator_reaches exit 101
+test hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced ... FAILED
+thread 'hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced' (3736) panicked at crates\vmm\src\hv\whp\mod.rs:2036:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== m2-map-no-cut (applied 0): cargo test -p shards-vmm hv::whp::tests::the_emulator_reaches exit 101
+test hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced ... FAILED
+thread 'hv::whp::tests::the_emulator_reaches_no_memory_unmapped_or_replaced' (13352) panicked at crates\vmm\src\hv\whp\mod.rs:2046:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== m3-no-write-check (applied 0): cargo test -p shards-vmm hv::whp::tests::the_emulator_writes exit 101
+test hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read ... FAILED
+thread 'hv::whp::tests::the_emulator_writes_no_memory_the_guest_may_only_read' (5596) panicked at crates\vmm\src\hv\whp\mod.rs:2067:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== m4-lent-inheritable (applied 0): cargo test -p shards-ipc windows::tests::a_confined_childs_standard exit 101
+test windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them ... FAILED
+thread 'windows::tests::a_confined_childs_standard_handles_are_left_as_their_lender_has_them' (7984) panicked at crates\ipc\src\windows.rs:2926:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards-ipc --lib`
+
+
+== m5-std-unguarded (applied 0): cargo test -p shards-ipc windows::tests::a_child_of_stds exit 101
+test windows::tests::a_child_of_stds_takes_no_handle_held_inheritable_for_another ... FAILED
+thread 'windows::tests::a_child_of_stds_takes_no_handle_held_inheritable_for_another' (14960) panicked at crates\ipc\src\windows.rs:2982:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.20s
+error: test failed, to rerun pass `-p shards-ipc --lib`
+
+
+== m6-watch-lossy (applied 0): cargo test -p shards-ipc slots::named::tests::a_lists_directory_is_watched exit 101
+test slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused ... FAILED
+thread 'slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused' (7000) panicked at crates\ipc\src\slots\named.rs:956:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-ipc --lib`
+
+
+== m7-watch-swallow (applied 0): cargo test -p shards-ipc slots::named::tests::a_lists_directory_is_watched exit 101
+test slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused ... FAILED
+thread 'slots::named::tests::a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused' (12148) panicked at crates\ipc\src\slots\named.rs:961:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 82 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-ipc --lib`
+
+
+== m8-by-case (applied 0): cargo test -p shards-vmm platform::windows_files::tests::a_names_versions exit 101
+test platform::windows_files::tests::a_names_versions_are_found_whatever_their_case ... FAILED
+thread 'platform::windows_files::tests::a_names_versions_are_found_whatever_their_case' (14048) panicked at crates\vmm\src\platform\windows_files.rs:1070:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.05s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== m9-taken-ignored (applied 0): cargo test -p shards-vmm platform::windows_files::tests::a_taken_version exit 101
+test platform::windows_files::tests::a_taken_version_moves_the_next_past_it ... FAILED
+thread 'platform::windows_files::tests::a_taken_version_moves_the_next_past_it' (7560) panicked at crates\vmm\src\platform\windows_files.rs:1101:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+
+== m10-no-pool (applied 0): cargo test -p shards-vmm platform::windows_thread::tests::raised_threads_sharing exit 101
+test platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it ... FAILED
+thread 'platform::windows_thread::tests::raised_threads_sharing_a_cpu_take_no_more_than_half_of_it' (5428) panicked at crates\vmm\src\platform\windows_thread.rs:595:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 473 filtered out; finished in 3.93s
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+== done 2026-11-14T05:28:07.9530190Z
+rc=0
+[exited with code 0]

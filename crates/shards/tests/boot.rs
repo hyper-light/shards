@@ -15,7 +15,6 @@ use common::{
     test_guest, vm_run,
 };
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
@@ -61,7 +60,7 @@ fn boots_to_root_mount_without_a_root_device() {
         "--memory",
         "256",
         "--cmdline",
-        "console=ttyS0 panic=-1",
+        "console=hvc0 panic=-1",
     ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     for line in machine_lines() {
@@ -88,7 +87,7 @@ fn a_reset_with_no_console_says_its_guests_panic() {
         "256",
         "--no-console",
         "--cmdline",
-        "console=ttyS0 panic=-1",
+        "console=hvc0 panic=-1",
     ]);
     assert_eq!(r.status, Some(EXIT_RESET), "{r}");
     assert!(
@@ -131,7 +130,7 @@ fn a_dax_windows_page_structures_take_none_of_its_guests_memory() {
                     "--share-window",
                     window,
                     "--cmdline",
-                    "console=ttyS0 panic=-1 shards_test=memory",
+                    "console=hvc0 panic=-1 shards_test=memory",
                 ]);
                 assert_eq!(r.status, Some(0), "{r}");
                 // `SHARDS-TEST MEMORY <MemTotal> <MemFree> <MemAvailable> <uptime> <listed>`
@@ -194,7 +193,7 @@ fn a_long_dax_window_costs_its_boot_next_to_nothing() {
                         "--share-window",
                         window,
                         "--cmdline",
-                        "console=ttyS0 panic=-1 shards_test=memory",
+                        "console=hvc0 panic=-1 shards_test=memory",
                     ],
                     &[("SHARDS_TIMING", std::ffi::OsStr::new("1"))],
                 );
@@ -234,7 +233,7 @@ fn a_pci_bus_reaches_its_function() {
         g,
         "--pci-test",
         "--cmdline",
-        "console=ttyS0 panic=-1 shards_test=pci",
+        "console=hvc0 panic=-1 shards_test=pci",
     ]);
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
     assert_eq!(r.status, Some(0), "{r}");
@@ -257,7 +256,7 @@ fn brings_up_every_vcpu() {
             "--memory",
             "512",
             "--cmdline",
-            "console=ttyS0 panic=-1",
+            "console=hvc0 panic=-1",
         ]);
         assert!(
             r.stdout.contains(&format!("smp: Brought up 1 node, {n} CPUs")),
@@ -279,7 +278,7 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     let mut cfg = Config::new(kernel().to_path_buf(), None);
     cfg.vcpus = 2;
     cfg.memory_mib = 512;
-    cfg.cmdline = "console=ttyS0 panic=-1".into();
+    cfg.cmdline = "console=hvc0 panic=-1".into();
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
     cfg.said = usize::MAX;
@@ -288,11 +287,10 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     std::thread::spawn(move || {
         let _ = tx.send(running.wait());
     });
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::Reset),
-        None => panic!(
-            "two vCPUs did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
-            common::DAEMON_QUIET,
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::Reset),
+        Err(refused) => panic!(
+            "two vCPUs did not reach their end in this process: {refused}\n{}",
             String::from_utf8_lossy(&handle.console_said().lines)
         ),
     }
@@ -319,16 +317,16 @@ fn boots_the_hosts_maximum_vcpu_count() {
         "--memory".as_ref(),
         "1024".as_ref(),
         "--cmdline".as_ref(),
-        "console=ttyS0 panic=-1".as_ref(),
+        "console=hvc0 panic=-1".as_ref(),
     ]);
     let configured = kernel_nr_cpus();
     let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
-    // A count other than the one asked for fails at once, with what the guest said. Past
-    // TIMEOUT while it says something new: of more vCPUs than its host has CPUs, its VM
-    // process's CPU time counts only before its first line (`Heard::of`).
-    let said = vm.wait_for_any_within(&["smp: Brought up"], TIMEOUT, None);
+    // A count other than the one asked for fails at once, with what the guest said. While it
+    // says something new: of more vCPUs than its host has CPUs, its VM process's CPU time
+    // counts only before its first line (`Heard::streaming`).
+    let said = vm.wait_for_any_streamed(&["smp: Brought up"], None);
     vm.kill();
     let seen = vm.seen.join("\n");
     assert!(said.contains(&brought), "{seen}");
@@ -355,7 +353,7 @@ fn runs_init_as_pid_1_and_powers_off() {
         "--init",
         init,
         "--cmdline",
-        "console=ttyS0 quiet panic=-1",
+        "console=hvc0 quiet panic=-1",
     ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("shards-init: pid 1 running"), "{r}");
@@ -464,7 +462,7 @@ fn explains_when_this_host_cannot_run_vms() {
     };
     let r = vm_run(&["--kernel", "k"]);
     assert_eq!(r.status, Some(1), "{r}");
-    assert!(r.stderr.contains(&why), "{r}");
+    assert!(r.stderr.contains(&why.to_string()), "{r}");
 }
 
 #[test]
@@ -545,7 +543,7 @@ fn a_nested_guest_is_a_kvm_host() {
         "--memory",
         "512",
         "--cmdline",
-        "console=ttyS0 panic=-1 shards_test=kmsg",
+        "console=hvc0 panic=-1 shards_test=kmsg",
     ]);
     if r.stderr.contains("this Mac gives a guest no EL2") {
         eprintln!("SKIP: this Mac gives a guest no EL2");
@@ -604,7 +602,7 @@ fn a_pci_functions_interrupts_reach_the_guest() {
         "--pci-test",
         "--cmdline",
         &format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
+            "console=hvc0 panic=-1 vfio.enable_unsafe_noiommu_mode=1{} shards_test=pci-irq",
             unsafe_interrupts()
         ),
     ]);
@@ -637,10 +635,7 @@ fn a_pci_functions_dma_goes_through_its_iommu() {
         test_guest().to_str().unwrap(),
         "--pci-test",
         "--cmdline",
-        &format!(
-            "console=ttyS0 panic=-1{} shards_test=pci-dma",
-            unsafe_interrupts()
-        ),
+        &format!("console=hvc0 panic=-1{} shards_test=pci-dma", unsafe_interrupts()),
     ]);
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains(DMA_THROUGH_IOMMU), "{r}");
@@ -694,7 +689,7 @@ fn a_nested_guest_runs_vms_of_its_own() {
         .file("l2", 0o644, &read(nested));
     std::fs::write(&initrd, cpio.finish()).unwrap();
     let outer = |args: &[&str], cmdline: &str| {
-        let cmdline = format!("console=ttyS0 panic=-1 shards_test=host {cmdline}");
+        let cmdline = format!("console=hvc0 panic=-1 shards_test=host {cmdline}");
         let mut all = vec![
             "--kernel",
             nested.to_str().unwrap(),
@@ -915,7 +910,7 @@ fn a_hosts_pci_function_is_assigned_where_its_hypervisor_assigns_one() {
         .map(|d| format!(" shards_pci_driver={d}"))
         .unwrap_or_default();
     let cmdline = format!(
-        "console=ttyS0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
+        "console=hvc0 panic=-1 shards_test=pci-host shards_pci_ids={}:{}{driver}",
         id("VEN_"),
         id("DEV_")
     );
@@ -966,7 +961,7 @@ fn a_run_is_given_a_hosts_vfio_group() {
             .file("init", 0o755, &read(test_guest()));
     };
     let outer = |initrd: &std::path::Path, cmdline: &str| {
-        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}");
+        let cmdline = format!("console=hvc0 panic=-1 {cmdline}");
         vm_run(&[
             "--kernel",
             nested.to_str().unwrap(),
@@ -1052,7 +1047,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
             Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
         };
-        let cmdline = format!("console=ttyS0 panic=-1 {cmdline}{unsafe_msis}");
+        let cmdline = format!("console=hvc0 panic=-1 {cmdline}{unsafe_msis}");
         let mut args = vec![
             "--kernel",
             nested.to_str().unwrap(),
@@ -1088,8 +1083,8 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // 11 of 24 rounds, where the one that failed passed 9 of 9 alone (PM M346).
     // SHARDS_L1_TESTS names others instead (`binary` or `binary:filter`, comma-separated),
     // SHARDS_L1_LOG their SHARDS_LOG, SHARDS_TEST_LOG_SHOWN how much of a failing
-    // test's logs they show, and SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
-    // plug.
+    // test's logs they show, SHARDS_PLUG_ROUNDS how many rounds tests/hotplug.rs's
+    // plug, and SHARDS_STORM_CPUS the vCPUs of snapshot.rs' storms.
     let runs: Vec<(String, String)> = match std::env::var("SHARDS_L1_TESTS") {
         Ok(chosen) => chosen
             .split(',')
@@ -1203,6 +1198,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     if let Ok(rounds) = std::env::var("SHARDS_PLUG_ROUNDS") {
         env.push_str(&format!("SHARDS_PLUG_ROUNDS={rounds}\n"));
     }
+    if let Ok(cpus) = std::env::var("SHARDS_STORM_CPUS") {
+        env.push_str(&format!("SHARDS_STORM_CPUS={cpus}\n"));
+    }
     if let Some(k) = functions_kernel {
         env.push_str(&format!("SHARDS_TEST_NESTED_KERNEL={}\n", k.display()));
     }
@@ -1241,7 +1239,7 @@ fn a_snapshot_keeps_memory_to_plug() {
     }
     let dir = common::TempDir::new("snap-plug");
     let snapshot = dir.join("s");
-    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=snapshot-plug shards_plug_mib=512 memhp_default_state=online_movable";
+    let cmdline = "console=hvc0 quiet panic=-1 shards_test=snapshot-plug shards_plug_mib=512 memhp_default_state=online_movable";
     let booted = run_shards(
         &["run"],
         &[
@@ -1280,7 +1278,7 @@ fn a_snapshot_keeps_the_memory_its_guest_plugged() {
     }
     let dir = common::TempDir::new("plug-snap");
     let snapshot = dir.join("s");
-    let cmdline = "console=ttyS0 quiet panic=-1 shards_test=plug-snapshot shards_plug_mib=512 memhp_default_state=online_movable";
+    let cmdline = "console=hvc0 quiet panic=-1 shards_test=plug-snapshot shards_plug_mib=512 memhp_default_state=online_movable";
     let booted = run_shards(
         &["run"],
         &[
@@ -1333,7 +1331,7 @@ fn a_guest_grows_and_gives_back_its_memory() {
         .args(["run", "--kernel", kernel().to_str().unwrap()])
         .args(["--init", test_guest().to_str().unwrap()])
         .args(["--memory", "256", "--memory-max", "1280", "--cmdline"])
-        .arg("console=ttyS0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
+        .arg("console=hvc0 panic=-1 shards_test=hotplug shards_plug_mib=1024 memhp_default_state=online_movable")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -1359,26 +1357,25 @@ fn a_guest_grows_and_gives_back_its_memory() {
             }
         }
     });
-    let start = std::time::Instant::now();
     let mut said = String::new();
-    // Within TIMEOUT of its start, or past it while its guest says something new or its VM
-    // process runs (D209): on an arm64 Windows host nested under QEMU's TCG its kernel was
-    // still onlining the gigabyte it asked for as the test's minute ran out (the parity
-    // plan's step 10), and says nothing as it does. One of neither for DAEMON_QUIET fails.
-    let mut heard = common::Heard::running(front);
-    let mut until = |heard: &mut common::Heard<'_>, marker: &str| -> String {
+    // While its guest says something new or its VM process runs (D209,
+    // `common::Heard::running`, each wait's kind its call site): on an arm64 Windows host
+    // nested under QEMU's TCG its kernel was still onlining the gigabyte it asked for as the
+    // test's minute ran out (the parity plan's step 10), and says nothing as it does.
+    let mut until = |mut heard: common::Heard<'_>, marker: &str| -> String {
         loop {
-            // Asked each pass, so that each slice of its VM process's is judged as it comes.
-            let progressing = heard.lately(true);
-            let line = match lines.recv_timeout(Duration::from_secs(1)) {
+            let line = match lines.recv_timeout(heard.next_look()) {
                 Ok(line) => line,
-                Err(Timeout) if start.elapsed() < TIMEOUT || progressing => continue,
+                Err(Timeout) => {
+                    if let Err(refused) = heard.look(true) {
+                        let _ = child.kill();
+                        panic!("no {marker:?}: {refused}\n{said}");
+                    }
+                    continue;
+                }
                 Err(_) => {
                     let _ = child.kill();
-                    panic!(
-                        "no {marker:?} within {TIMEOUT:?}, nor anything new from its guest nor CPU time of its VM process's for {:?} after:\n{said}",
-                        common::DAEMON_QUIET
-                    );
+                    panic!("no {marker:?} before its output ended:\n{said}");
                 }
             };
             heard.said(!said.lines().any(|l| l == line));
@@ -1389,11 +1386,14 @@ fn a_guest_grows_and_gives_back_its_memory() {
                 panic!("{said}");
             }
             if let Some((_, rest)) = line.split_once(marker) {
+                heard.answered();
                 return rest.trim().to_string();
             }
         }
     };
-    let plugged_ms: u64 = until(&mut heard, "SHARDS-TEST PLUGGED").parse().unwrap();
+    let plugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST PLUGGED")
+        .parse()
+        .unwrap();
     #[cfg(unix)]
     let pid = front;
     #[cfg(windows)]
@@ -1405,28 +1405,35 @@ fn a_guest_grows_and_gives_back_its_memory() {
     let footprint = || shards_vmm::platform::process_usage(pid).unwrap().footprint;
     let full = footprint();
     stdin.write_all(b"\n").unwrap();
-    let unplugged_ms: u64 = until(&mut heard, "SHARDS-TEST UNPLUGGED").parse().unwrap();
+    let unplugged_ms: u64 = until(common::Heard::running(front), "SHARDS-TEST UNPLUGGED")
+        .parse()
+        .unwrap();
     // The guest's kernel counts a memory block gone from MemTotal as it takes it offline,
     // before it asks the device to unplug it (drivers/virtio/virtio_mem.c,
     // virtio_mem_sbm_unplug_sb_online: virtio_mem_fake_offline, then
     // virtio_mem_sbm_unplug_sb): as the guest says it gave all back, its last block, 128
     // MiB, may still be the host's to give back, as it was on windows-2025 (964 MiB, then
     // 196). What it gives back stays given back until the guest is answered, so the
-    // footprint is read until it has fallen, or the test's time is up and it has neither
-    // fallen further nor its VM process run for DAEMON_QUIET: a fall is its progress.
+    // footprint is read until it has fallen, or its wait is refused, it having neither
+    // fallen further nor its VM process run over a whole window past the slowest fall of
+    // its kind seen: a fall is its progress.
     let mut least = full;
+    let mut heard = common::Heard::running(front);
     let given_back = loop {
         let now = footprint();
         heard.said(now < least);
         least = least.min(now);
-        let progressing = heard.lately(true);
-        if full.saturating_sub(now) >= 768 << 20 || (start.elapsed() >= TIMEOUT && !progressing) {
+        if full.saturating_sub(now) >= 768 << 20 {
+            heard.answered();
+            break now;
+        }
+        if heard.look(true).is_err() {
             break now;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
     stdin.write_all(b"\n").unwrap();
-    until(&mut heard, "SHARDS-TEST PASS");
+    until(common::Heard::running(front), "SHARDS-TEST PASS");
     eprintln!(
         "1 GiB plugged in {plugged_ms} ms, unplugged in {unplugged_ms} ms; the VM process held {} MiB, then {} MiB",
         full >> 20,
@@ -1573,7 +1580,7 @@ fn boots_at_once(cases: &[(usize, usize, &str)]) {
                 .args(["run", "--kernel"])
                 .arg(k)
                 .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
-                .args(["--cmdline", &format!("console=ttyS0 earlycon panic=-1{told}")])
+                .args(["--cmdline", &format!("console=hvc0 panic=-1{told}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -1754,7 +1761,7 @@ fn cold_boot_threads_cost() {
             .args(["run", "--kernel"])
             .arg(kernel())
             .args(["--cpus", &vcpus.to_string(), "--memory", "512"])
-            .args(["--cmdline", &format!("console=ttyS0 earlycon panic=0{told}")])
+            .args(["--cmdline", &format!("console=hvc0 panic=0{told}")])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1898,7 +1905,7 @@ fn cold_boots_profiled() {
                             "512",
                             "--cmdline",
                             &format!(
-                                "console=ttyS0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
+                                "console=hvc0 panic=-1 quiet profile=4 initcall_debug log_buf_len=1M{told} shards_test=profile"
                             ),
                         ],
                     )
@@ -2003,7 +2010,7 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
             "--memory",
             "256",
             "--cmdline",
-            "console=ttyS0 quiet panic=-1 shards_test=share",
+            "console=hvc0 quiet panic=-1 shards_test=share",
             "--share",
             rw.to_str().unwrap(),
             "--share",
@@ -2053,7 +2060,7 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
         "256",
         // The echo guest serves until it is ended: the run is still going at its deadline.
         "--cmdline",
-        "console=ttyS0 quiet shards_test=echo",
+        "console=hvc0 quiet shards_test=echo",
         "--share",
         rw.to_str().unwrap(),
     ];
@@ -2137,7 +2144,7 @@ fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
-    let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
+    let spec = |mode: &str| api_spec(&format!("console=hvc0 quiet panic=-1 shards_test={mode}"));
     conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
         serving: spec("echo"),
@@ -2172,7 +2179,7 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
                 read_only: true,
             },
         ],
-        ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+        ..api_spec("console=hvc0 quiet panic=-1 shards_test=share")
     };
     let guest = shards_api::Shards.boot(&spec).unwrap();
     assert_eq!(guest.wait_while_runs().unwrap(), shards_api::End::PowerOff);
@@ -2185,13 +2192,18 @@ fn shards_api_shares_a_directory_and_a_read_only_one() {
 
 /// A managed guest's rate (D255): a guest booted `--host-managed`, spinning its one vCPU, is
 /// held by its VM's governor to the quarter CPU a client asks on its vsock socket (`RATE`,
-/// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its VM process uses no more of the
-/// host's CPU than a quarter of the time passing, two of its governor's periods (its share
-/// where the window and the periods do not line up, and what its vCPU overruns before the
-/// governor reads, at the window's two ends) and what its VMM's own threads used past its
-/// vCPU's whole CPU over a window unheld just before. Its vCPU's whole CPU holds nothing, and
-/// none lifts its hold; each answer says the period its build's hold holds over. A guest
-/// booted without `--host-managed` closes the ask unanswered.
+/// `shards_abi::rate`), as `ManagedGuest::rate` asks it. Its vCPU runs its guest no more than
+/// a quarter of the time passing, two of its governor's periods (its share where the window
+/// and the periods do not line up, and what its vCPU overruns before the governor reads, at
+/// the window's two ends) and one step of its guest time's count (`guest_time_step`), read
+/// by `USE`: the hold holds its vCPUs, never its VM process's governor or devices, whose CPU
+/// is shards' own (D191). Its vCPU's whole CPU holds nothing, and
+/// none lifts its hold; each answer says the period its VM derives from g as it knows it then,
+/// 4g held to a quarter and g let be (D191). Its use
+/// (D260, `USE`, as `ManagedGuest::host_use` asks it), sampled twice a window apart once let
+/// be: its one vCPU's guest time and its VM process's own use, every part read, its vCPU's
+/// grown by no more than the time between the asks and its process's CPU holding it. A guest
+/// booted without `--host-managed` closes either ask unanswered.
 #[test]
 fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     use shards_abi::rate::{Answer, ask, read_answer};
@@ -2212,7 +2224,7 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             cmd.arg("--host-managed");
         }
         cmd.arg("--cmdline")
-            .arg("console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
+            .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=600000 shards_idle_ms=0")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -2259,53 +2271,92 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     let socket = dir.join("v");
     let mut child = boot(&socket, true);
     listening(&socket, &mut child);
-    // `shards run --kernel` becomes the VM process on Unix, the same pid; on Windows it
-    // starts the VM process, its child.
-    let pid = child.id();
-    #[cfg(windows)]
-    let pid = {
-        let found = common::vm_processes(pid);
-        assert_eq!(found.len(), 1, "shards {pid}'s VM processes: {found:?}");
-        found[0]
+    let used = |socket: &std::path::Path| {
+        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        s.write_all(shards_abi::rate::USE_ASK).unwrap();
+        let mut answer = Vec::new();
+        s.read_to_end(&mut answer).unwrap();
+        answer
     };
-    let cpu = || shards_vmm::platform::process_usage(pid).unwrap().cpu_ns;
-    let window = || {
-        let (start, before) = (Instant::now(), cpu());
-        std::thread::sleep(Duration::from_secs(2));
-        (cpu() - before, u64::try_from(start.elapsed().as_nanos()).unwrap())
+    let read = |answer: &[u8]| {
+        let u = shards_abi::rate::read_used(answer).unwrap();
+        (u.guest.unwrap(), u.host.unwrap())
     };
-    let (free, free_wall) = window();
+    // The step its guest time is read in, measured as its vCPU spins unheld.
+    let step =
+        u64::try_from(common::guest_time_step(|| read(&used(&socket)).0.total_ns()).as_nanos()).unwrap();
     let line = asked(&socket, 250).unwrap();
     let Ok(Answer::Held { milli, period_ns }) = read_answer(line.as_bytes()) else {
         panic!("asked a quarter CPU: {line:?}");
     };
     assert_eq!(milli, NonZeroU64::new(250));
-    assert_eq!(
-        Duration::from_nanos(period_ns.get()),
-        shards_vmm::vm::hold_period()
-    );
-    let (used, wall) = window();
-    let own = free.saturating_sub(free_wall);
-    let most = wall / 4 + 2 * period_ns.get() + own;
+    // D191's period for its one vCPU at a quarter CPU: 4g, g its VM process's own and never
+    // under the governor's least wait.
     assert!(
-        used <= most,
-        "{used} ns of CPU in {wall} ns, held to a quarter CPU (unheld: {free} ns in {free_wall} ns)"
+        Duration::from_nanos(period_ns.get()) >= 4 * shards_vmm::platform::granule::LEAST_WAIT,
+        "held over {period_ns} ns"
+    );
+    // Its window from before the first read is asked until the second is answered: the
+    // reads fall within it.
+    let (start, before) = (Instant::now(), read(&used(&socket)).0.total_ns());
+    std::thread::sleep(Duration::from_secs(2));
+    let ran = read(&used(&socket)).0.total_ns() - before;
+    let wall = u64::try_from(start.elapsed().as_nanos()).unwrap();
+    let most = wall / 4 + 2 * period_ns.get() + step;
+    assert!(
+        ran <= most,
+        "{ran} ns of guest in {wall} ns, held to a quarter CPU over {period_ns} ns, read in {step} ns steps"
     );
     assert!(
-        used >= wall / 20,
-        "{used} ns of CPU in {wall} ns: held, and never let go"
+        ran >= wall / 20,
+        "{ran} ns of guest in {wall} ns: held, and never let go"
     );
+    // Let be, an answer says g as its VM knows it then (D191, migrate-09: a let-be is said
+    // over g): never under the least wait, and never above the g its quarter was held over,
+    // a quarter of that period, nor the g a let-be said before, as g only falls.
+    let mut g = Duration::from_nanos(period_ns.get() / 4);
     for (whole_or_none, said) in [(1000, "its one vCPU's whole CPU"), (0, "none")] {
         let line = asked(&socket, whole_or_none).unwrap();
-        assert_eq!(
-            read_answer(line.as_bytes()),
-            Ok(Answer::Held {
-                milli: None,
-                period_ns
-            }),
-            "{said}"
+        let Ok(Answer::Held {
+            milli: None,
+            period_ns: let_be,
+        }) = read_answer(line.as_bytes())
+        else {
+            panic!("{said}: {line:?}");
+        };
+        let let_be = Duration::from_nanos(let_be.get());
+        assert!(
+            (shards_vmm::platform::granule::LEAST_WAIT..=g).contains(&let_be),
+            "{said}: let be over {let_be:?}, g {g:?} before"
         );
+        g = let_be;
     }
+    let first_asked = Instant::now();
+    let first = used(&socket);
+    std::thread::sleep(Duration::from_secs(2));
+    let second = used(&socket);
+    let span = u64::try_from(first_asked.elapsed().as_nanos()).unwrap();
+    let ((g1, h1), (g2, h2)) = (read(&first), read(&second));
+    for g in [&g1, &g2] {
+        assert_eq!(g.vcpus.len(), 1, "{g:?}");
+        assert!(g.vcpus.iter().all(|v| v.unread.is_none()), "{g:?}");
+    }
+    let grew = g2.total_ns() - g1.total_ns();
+    assert!(
+        grew <= span,
+        "its one vCPU ran {grew} ns of its guest in {span} ns"
+    );
+    assert!(
+        grew >= span / 20,
+        "its spinning vCPU ran {grew} ns of its guest in {span} ns, let be"
+    );
+    assert!(h2.cpu_ns >= h1.cpu_ns, "{h1:?} then {h2:?}");
+    assert!(
+        h2.cpu_ns >= g2.total_ns(),
+        "its VM process's {} ns of CPU, read after its vCPU's {} ns of guest time",
+        h2.cpu_ns,
+        g2.total_ns()
+    );
     let _ = child.kill();
     let _ = child.wait();
     let plain_socket = dir.join("u");
@@ -2316,8 +2367,62 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         None,
         "a guest not booted --host-managed"
     );
+    assert!(
+        used(&plain_socket).is_empty(),
+        "a guest not booted --host-managed told its use"
+    );
     let _ = plain.kill();
     let _ = plain.wait();
+    assert!(
+        !shards_api::final_use_file(&socket).exists(),
+        "a guest killed recorded a final use"
+    );
+}
+
+/// D260's final use, a managed guest's: a guest booted `--host-managed` that spins its one
+/// vCPU and powers off has, as its process ends, its final use recorded beside its vsock
+/// socket (`shards_api::final_use_file`), whole: its one vCPU by its index with the guest time
+/// it ran, none departed apart from it, and its VM process's CPU time, which holds it. A guest
+/// not booted `--host-managed` records none.
+#[test]
+fn a_managed_guest_records_its_final_use_as_it_ends() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("final");
+    let run = |socket: &std::path::Path, managed: bool| {
+        let mut cmd = common::command();
+        cmd.args(["run", "--kernel", kernel().to_str().unwrap()])
+            .args(["--init", test_guest().to_str().unwrap()])
+            .args(["--cpus", "1", "--memory", "256", "--no-console", "--vsock"])
+            .arg(socket);
+        if managed {
+            cmd.arg("--host-managed");
+        }
+        cmd.arg("--cmdline")
+            .arg("console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms=500 shards_idle_ms=0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+    };
+    let socket = dir.join("v");
+    assert!(run(&socket, true).success());
+    let record = std::fs::read(shards_api::final_use_file(&socket)).unwrap();
+    let used = shards_abi::rate::read_used(&record).unwrap();
+    let (times, host) = (used.guest.unwrap(), used.host.unwrap());
+    assert_eq!(
+        times.vcpus.iter().map(|v| v.index).collect::<Vec<_>>(),
+        [0],
+        "{times:?}"
+    );
+    assert_eq!(times.departed_ns, 0, "{times:?}");
+    assert!(times.vcpus[0].guest_ns > 0, "{times:?}");
+    assert!(host.cpu_ns >= times.total_ns(), "{host:?} {times:?}");
+    let plain = dir.join("u");
+    assert!(run(&plain, false).success());
+    assert!(!shards_api::final_use_file(&plain).exists());
 }
 
 /// Measures shards-api's boot of the test guest to its echo port answering, here, side by
@@ -2337,7 +2442,7 @@ fn shards_api_boot_under_the_suites_load() {
         .map(|_| {
             let start = std::time::Instant::now();
             let guest = shards_api::Shards
-                .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
+                .boot(&api_spec("console=hvc0 quiet shards_test=echo"))
                 .unwrap();
             drop(guest.connect_while_runs(1234).unwrap());
             start.elapsed()
@@ -2362,7 +2467,7 @@ fn shards_api_boot_under_the_suites_load() {
                         read_only: true,
                     },
                 ],
-                ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+                ..api_spec("console=hvc0 quiet panic=-1 shards_test=share")
             };
             let start = std::time::Instant::now();
             let guest = shards_api::Shards.boot(&spec).unwrap();
@@ -2391,7 +2496,7 @@ fn shards_api_boot_under_the_suites_load() {
 fn answered_boot() -> Duration {
     let start = std::time::Instant::now();
     let guest = shards_api::Shards
-        .boot(&api_spec("console=ttyS0 quiet panic=-1 shards_test=echo"))
+        .boot(&api_spec("console=hvc0 quiet panic=-1 shards_test=echo"))
         .unwrap_or_else(|e| panic!("boot: {e}"));
     drop(
         guest

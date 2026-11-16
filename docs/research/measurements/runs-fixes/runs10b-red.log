@@ -1,0 +1,13 @@
+# runs-10 follow-up, red by mutation. CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY/SHARDS_SERVER_BINARY a stand-in; carrier /tmp/runs-tail-carrier (run.sh, mutate2.py, cost.sh); aws-lc-sys build warnings removed
+## kiln r1904, macOS 26.2 25C56 arm64, adas-mac-studio-3.local (Adas-Mac-Studio-4.local), rustc 1.98.1, at 66012636: MUT=cache (the version cache keyed by path alone)
+test helpers::tests::a_helper_whose_bytes_changed_is_written_again_before_it_starts ... FAILED
+  panicked at crates/shards/src/helpers.rs:748:9: left: [117, 104, ...] right: [116, 104, ...] (the flipped byte started as it is)
+test helpers::tests::a_helper_is_read_again_only_once_its_file_changed ... FAILED
+  panicked at crates/shards/src/helpers.rs:785:9: assertion failed: open_checked(&path, &sha(bytes)).unwrap().is_none()
+test result: FAILED. 6 passed; 2 failed; 1 ignored
+## kiln r1863, macOS 26.2 25C56 arm64, adas-mac-studio-3.local (Adas-Mac-Studio-4.local), rustc 1.98.1, at e81b6da8: MUT="cache digest ends" (the bytes unread as well)
+FAILED: a_changed_helper_that_cannot_be_written_again_is_refused (unwrap_err on Ok), a_helper_is_read_again_only_once_its_file_changed,
+        a_helper_whose_bytes_changed_is_written_again_before_it_starts; daemon::ends 6 passed (Unix has no versions: runs-12's red is Windows')
+## cost (PM M580): kiln r1863 cost.sh, --profile test-release, load 2.93
+helper check, 2976656 bytes: version known: n 200 p50 27.125µs p90 27.709µs p99 37.166µs max 80.625µs; bytes read: n 200 p50 1.25975ms p90 1.861291ms p99 3.143291ms max 3.470167ms
+helper check, 4326400 bytes: version known: n 200 p50 27.084µs p90 27.5µs p99 34.375µs max 157.875µs; bytes read: n 200 p50 1.698834ms p90 2.049625ms p99 4.545291ms max 4.820708ms

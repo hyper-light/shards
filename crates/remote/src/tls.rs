@@ -196,7 +196,7 @@ fn certified(identity: &Identity) -> Result<CertifiedKey, Error> {
 /// protocol has, bidirectional ones a client opens, a command or a join each. A peer may open
 /// no stream the other would not read (RFC 9000 §4.6), whose bytes its side would hold: none one
 /// way, and none of a client's. A daemon's clients may have quinn-proto's 100 open at once.
-fn transport(serves: bool, known: Known) -> TransportConfig {
+pub(crate) fn transport(serves: bool, known: Known) -> TransportConfig {
     let mut transport = TransportConfig::default();
     transport.max_idle_timeout(None);
     transport.keep_alive_interval(None);

@@ -927,7 +927,7 @@ mod tests {
     //! does, and the workload a listener in a test directory, as Hex's relay is in
     //! `/run/hex/channel`.
 
-    use std::io::{Read as _, Write as _};
+    use std::io::{ErrorKind, Read as _, Write as _};
     use std::net::{Ipv4Addr, SocketAddr};
     use std::num::NonZeroU16;
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -936,10 +936,22 @@ mod tests {
 
     use super::{Admission, Connect, Reply};
     use crate::control::{
-        Controller, Dialed, Ended, Endpoint, Fault, Revoke, Socket, Streams, Subscriptions,
+        Controller, Dialed, Ended, Endpoint, Fault, Revoke, Socket, Streams, Subscriptions, Wake,
     };
     use crate::identity::{Fingerprint, Identity};
     use crate::managed::{Reason, RunId};
+
+    /// How long a test waits for what it awaits: a patience of its own.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A socket lane's ask, its answer waited for within the tests' patience: the lane, or why
+    /// not.
+    macro_rules! answered {
+        ($ask:expr) => {
+            $ask.and_then(|mut ask| ask.wait(PATIENCE))
+                .map(|got| got.expect("answered within the tests' patience"))
+        };
+    }
 
     /// What the run's request admits: `lanes` at once, `window` bytes in flight each way per
     /// lane; the cases derive their byte counts from them.
@@ -1041,7 +1053,7 @@ mod tests {
         let sockets = dialed.sockets.expect("socket lanes subscribed");
 
         let sent = pattern(admission(4).window);
-        let mut lane: Socket = sockets.connect("control.sock").unwrap();
+        let mut lane: Socket = answered!(sockets.connect("control.sock")).unwrap();
         lane.write_all(&sent).unwrap();
         lane.shutdown_write().unwrap();
         let mut back = Vec::new();
@@ -1072,9 +1084,12 @@ mod tests {
         let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
         let sockets = dialed.sockets.take().unwrap();
         let errno = |e: i32| Err(Fault::Unreached(NonZeroU16::new(e as u16).unwrap()));
-        assert_eq!(sockets.connect("absent.sock").map(|_| ()), errno(libc::ENOENT));
         assert_eq!(
-            sockets.connect("gone.sock").map(|_| ()),
+            answered!(sockets.connect("absent.sock")).map(|_| ()),
+            errno(libc::ENOENT)
+        );
+        assert_eq!(
+            answered!(sockets.connect("gone.sock")).map(|_| ()),
             errno(libc::ECONNREFUSED)
         );
     }
@@ -1098,7 +1113,7 @@ mod tests {
             long.as_str(),
         ] {
             assert_eq!(
-                sockets.connect(name).map(|_| ()),
+                answered!(sockets.connect(name)).map(|_| ()),
                 Err(Fault::Refused(Reason::Protocol)),
                 "{name:?}"
             );
@@ -1124,7 +1139,7 @@ mod tests {
             let listener = listener.try_clone().unwrap();
             move || drop(listener.accept().unwrap())
         });
-        let mut lane = sockets.connect("files.sock").unwrap();
+        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
         closer.join().unwrap();
         let sent = pattern(admission(4).window);
         let wrote = lane.write_all(&sent).and_then(|()| lane.flush());
@@ -1140,7 +1155,7 @@ mod tests {
             let mut got = Vec::new();
             conn.read_to_end(&mut got).map(|_| got.len())
         });
-        let mut lane = sockets.connect("files.sock").unwrap();
+        let mut lane = answered!(sockets.connect("files.sock")).unwrap();
         lane.write_all(b"partial").unwrap();
         lane.abort().unwrap();
         // The workload's read ends (EOF or ECONNRESET), whichever its socket says.
@@ -1175,7 +1190,7 @@ mod tests {
                 got
             }
         });
-        let mut lane = sockets.connect("cut.sock").unwrap();
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
         lane.write_all(&sent).unwrap();
         assert_eq!(
             workload.join().unwrap(),
@@ -1219,7 +1234,7 @@ mod tests {
             conn.read_to_end(&mut got).unwrap();
             got
         });
-        let mut lane = sockets.connect("half.sock").unwrap();
+        let mut lane = answered!(sockets.connect("half.sock")).unwrap();
         let mut said = Vec::new();
         assert_eq!(
             lane.read_to_end(&mut said).map_err(|e| e.kind()),
@@ -1231,6 +1246,383 @@ mod tests {
         lane.write_all(&sent).unwrap();
         lane.shutdown_write().unwrap();
         assert_eq!(workload.join().unwrap(), sent, "what the controller sent after");
+    }
+
+    /// Tries `try_` until it says other than `WouldBlock`, the controller's wake drained before
+    /// each try and waited for after each `WouldBlock`, as a controller of many lanes on one
+    /// thread does: a wake lost leaves the wait ringless at the tests' patience, which fails.
+    #[allow(clippy::panic_in_result_fn)]
+    fn woken<T>(wake: &Wake, mut try_: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        loop {
+            wake.drain().unwrap();
+            match try_() {
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    assert!(
+                        wake.wait(PATIENCE).unwrap(),
+                        "no ring within patience: a wake lost"
+                    );
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Nothing come is `WouldBlock`, never a wait: the workload's bytes, its end and then a
+    /// write past the lane's room each ring the controller's wake, and a try after it finds
+    /// what rang. The workload writes in pieces as the controller drains, so that a ring
+    /// races each drain.
+    #[test]
+    fn a_lanes_bytes_end_and_room_ring_its_controllers_wake() {
+        let dir = shards_testdir::TempDir::new("sy").unwrap();
+        let listener = UnixListener::bind(dir.path().join("try.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let sent = pattern(admission(4).window);
+        let (go, gone) = mpsc::channel::<()>();
+        let workload = std::thread::spawn({
+            let sent = sent.clone();
+            move || {
+                let (mut conn, _) = listener.accept().unwrap();
+                gone.recv().unwrap();
+                // Pieces of every size from one byte up, each written as it comes.
+                let mut at = 0;
+                for size in 1.. {
+                    let end = sent.len().min(at + size);
+                    conn.write_all(&sent[at..end]).unwrap();
+                    at = end;
+                    if at == sent.len() {
+                        break;
+                    }
+                }
+                conn.shutdown(std::net::Shutdown::Write).unwrap();
+                gone.recv().unwrap();
+                let mut got = Vec::new();
+                conn.read_to_end(&mut got).unwrap();
+                got
+            }
+        });
+        let mut lane = answered!(sockets.connect("try.sock")).unwrap();
+        let mut buf = vec![0u8; 4096];
+        assert_eq!(
+            lane.try_read(&mut buf).map_err(|e| e.kind()),
+            Err(ErrorKind::WouldBlock),
+            "nothing come"
+        );
+        go.send(()).unwrap();
+        let mut back = Vec::new();
+        loop {
+            match woken(&dialed.wake, || lane.try_read(&mut buf)).unwrap() {
+                0 => break,
+                n => back.extend_from_slice(&buf[..n]),
+            }
+        }
+        assert_eq!(back, sent, "the workload's bytes exactly, then its end");
+        assert_eq!(lane.try_read(&mut buf).unwrap(), 0, "its end, again");
+
+        // The workload reads nothing yet: the lane's room runs out, and its try says so.
+        let mut wrote = 0;
+        loop {
+            match lane.try_write(&sent) {
+                Ok(n) => wrote += n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => panic!("a write refused: {e}"),
+            }
+        }
+        go.send(()).unwrap();
+        // Room that comes as the workload reads rings the wake: a try after it is taken.
+        let more = woken(&dialed.wake, || lane.try_write(b"more")).unwrap();
+        assert!(more > 0);
+        lane.shutdown_write().unwrap();
+        let got = workload.join().unwrap();
+        assert_eq!(got.len(), wrote + more, "every byte taken reached the workload");
+    }
+
+    /// A socket cut short rings the wake: its reader's try reads `ConnectionReset`, as its read
+    /// does, and its writer's after it too.
+    #[test]
+    fn a_lanes_fault_rings_its_controllers_wake() {
+        let dir = shards_testdir::TempDir::new("sf").unwrap();
+        let listener = UnixListener::bind(dir.path().join("cut.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let workload = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut got = [0u8; 5];
+            conn.read_exact(&mut got).unwrap();
+            // Closed here, its controller's way still open: a cut.
+            got
+        });
+        let mut lane = answered!(sockets.connect("cut.sock")).unwrap();
+        assert_eq!(woken(&dialed.wake, || lane.try_write(b"hello")).unwrap(), 5);
+        assert_eq!(&workload.join().unwrap(), b"hello");
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            woken(&dialed.wake, || lane.try_read(&mut buf)).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a cut, read as its read reads it"
+        );
+        assert_eq!(
+            woken(&dialed.wake, || lane.try_write(b"after")).map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionReset),
+            "a write after the cut"
+        );
+    }
+
+    /// One controller thread drives several lanes at once without waiting on any: each lane's
+    /// workload echoes what it reads as it reads it, so that every lane's bytes cross both
+    /// ways while the others' do; the thread sleeps on the wake alone.
+    #[test]
+    fn one_thread_drives_several_lanes_on_its_wake() {
+        struct Driven {
+            lane: Socket,
+            wrote: usize,
+            shut: bool,
+            back: Vec<u8>,
+            ended: bool,
+        }
+        const LANES: u32 = 3;
+        let dir = shards_testdir::TempDir::new("sm").unwrap();
+        let listener = UnixListener::bind(dir.path().join("echo.sock")).unwrap();
+        let echo = std::thread::spawn(move || {
+            let echoes: Vec<_> = (0..LANES)
+                .map(|_| {
+                    let (conn, _) = listener.accept().unwrap();
+                    std::thread::spawn(move || {
+                        std::io::copy(&mut &conn, &mut &conn).unwrap();
+                        conn.shutdown(std::net::Shutdown::Write).unwrap();
+                    })
+                })
+                .collect();
+            for echo in echoes {
+                echo.join().unwrap();
+            }
+        });
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(LANES));
+        let _host = host(dir.path().to_owned(), asks);
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(LANES));
+        let sockets = dialed.sockets.take().unwrap();
+        let sent = pattern(admission(LANES).window);
+        let mut lanes: Vec<Driven> = (0..LANES)
+            .map(|_| Driven {
+                lane: answered!(sockets.connect("echo.sock")).unwrap(),
+                wrote: 0,
+                shut: false,
+                back: Vec::new(),
+                ended: false,
+            })
+            .collect();
+        let mut buf = vec![0u8; 8192];
+        while lanes.iter().any(|l| !l.ended) {
+            dialed.wake.drain().unwrap();
+            for l in &mut lanes {
+                while l.wrote < sent.len() {
+                    match l.lane.try_write(&sent[l.wrote..]) {
+                        Ok(n) => l.wrote += n,
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) => panic!("a lane's write refused: {e}"),
+                    }
+                }
+                if l.wrote == sent.len() && !l.shut {
+                    l.lane.shutdown_write().unwrap();
+                    l.shut = true;
+                }
+                while !l.ended {
+                    match l.lane.try_read(&mut buf) {
+                        Ok(0) => l.ended = true,
+                        Ok(n) => l.back.extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(e) => panic!("a lane's read refused: {e}"),
+                    }
+                }
+            }
+            if lanes.iter().any(|l| !l.ended) {
+                assert!(
+                    dialed.wake.wait(PATIENCE).unwrap(),
+                    "no ring within patience: a wake lost"
+                );
+            }
+        }
+        for l in &lanes {
+            assert_eq!(l.back, sent, "each lane's bytes echoed exactly");
+        }
+        drop(lanes);
+        echo.join().unwrap();
+    }
+
+    /// What each exec's (and MCP connection's) streams are admitted: records of `record`
+    /// bytes, each output's window one record and its data frame's head, each stdin's its
+    /// taken frame; the handshake's and datagrams' a member stream's.
+    fn exec_admissions(record: usize) -> crate::control::exec::Admissions {
+        use crate::managed::{Admitted, DATA_HEAD, DATAGRAM_BYTES, input};
+        let link = |transport_bytes: usize| Admitted {
+            record_bytes: record,
+            transport_bytes: transport_bytes as u64,
+            // RFC 8446 §4: a handshake message's uint24 length and its four-byte head.
+            handshake_bytes: (1 << 24) - 1 + 4,
+            datagram_bytes: DATAGRAM_BYTES,
+        };
+        crate::control::exec::Admissions {
+            output: link(record + DATA_HEAD),
+            input: link(input::TAKEN_BYTES),
+        }
+    }
+
+    /// One controller thread drives an MCP connection's output and input and a socket lane at
+    /// once, without waiting on any: the harness echoes each record it is sent as its own, the
+    /// workload each byte it reads, so that every lane's bytes cross both ways while the
+    /// others' do; the thread sleeps on the wake alone. Then the connection ends as `write`'s
+    /// side ends it, its output finished and its end told.
+    #[test]
+    fn one_thread_drives_an_output_an_input_and_a_socket_lane_on_its_wake() {
+        use crate::control::exec::{Reply, Start};
+        use crate::control::{Got, McpConnection};
+        use crate::managed::input::Next;
+        use shards_abi::run::managed::InputEnd;
+        const RECORD: usize = 1024;
+        let dir = shards_testdir::TempDir::new("so").unwrap();
+        let listener = UnixListener::bind(dir.path().join("echo.sock")).unwrap();
+        let workload = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            std::io::copy(&mut &conn, &mut &conn).unwrap();
+            conn.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (endpoint, served) = Endpoint::bind(
+            &vm,
+            hex.fingerprint(),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            Streams {
+                outputs: &[],
+                inputs: &[],
+                execs: Some(exec_admissions(RECORD)),
+                sockets: Some(admission(1)),
+            },
+        )
+        .unwrap();
+        let at = endpoint.address;
+        std::thread::spawn(move || endpoint.run());
+        let _host = host(dir.path().to_owned(), served.sockets.unwrap());
+        let starts = served.execs.unwrap();
+        // The MCP connection's host: its harness echoes every record it is sent.
+        let harness = std::thread::spawn(move || {
+            let Start {
+                stdout,
+                stdin,
+                steer,
+                replies,
+                ..
+            } = starts.recv_timeout(PATIENCE).unwrap();
+            replies.tell(Reply::Started);
+            let (relay, input) = stdin.unwrap();
+            let mut written = 0u64;
+            loop {
+                match relay.next() {
+                    Next::Record { bytes, .. } => {
+                        written += bytes.len() as u64;
+                        stdout.0.wait_capacity().unwrap();
+                        let mut record = stdout.0.take_buffer().unwrap().unwrap();
+                        record.extend_from_slice(&bytes);
+                        stdout.0.submit(record).unwrap();
+                        relay.delivered(bytes);
+                    }
+                    Next::End => {
+                        input.ended(written, InputEnd::Closed);
+                        break;
+                    }
+                    Next::Abort(_) | Next::Gone => break,
+                }
+            }
+            stdout.1.finish().unwrap();
+            replies.tell(Reply::Exited(0));
+            while steer.recv().is_ok() {}
+            drop((stdout, input));
+        });
+        let (controller, mut dialed) = Controller::dial(
+            &hex,
+            vm.fingerprint(),
+            at,
+            Subscriptions {
+                outputs: &[],
+                inputs: &[],
+                execs: Some(exec_admissions(RECORD)),
+                sockets: Some(admission(1)),
+            },
+        )
+        .unwrap();
+        std::thread::spawn(move || controller.run());
+        let (execs, sockets) = (dialed.execs.take().unwrap(), dialed.sockets.take().unwrap());
+        let McpConnection {
+            mut from,
+            mut to,
+            mut end,
+        } = answered!(execs.mcp(0)).unwrap();
+        let mut lane = answered!(sockets.connect("echo.sock")).unwrap();
+
+        let sent = pattern(admission(1).window);
+        let said = &sent[..8 * RECORD + 1];
+        let (mut put, mut back) = (0, Vec::new());
+        let (mut wrote, mut shut, mut echoed, mut ended) = (0, false, Vec::new(), false);
+        let mut buf = vec![0u8; 8192];
+        while back.len() < said.len() || !ended {
+            dialed.wake.drain().unwrap();
+            while put < said.len() {
+                match to.try_write(&said[put..]) {
+                    Ok(Some(n)) => put += n,
+                    Ok(None) => break,
+                    Err(fault) => panic!("the input refused: {fault}"),
+                }
+            }
+            while back.len() < said.len() {
+                match from.try_next_record() {
+                    Ok(Some(Got::Record { at, bytes })) => {
+                        assert_eq!(at, back.len() as u64);
+                        back.extend_from_slice(&bytes);
+                    }
+                    Ok(None) => break,
+                    other => panic!("the output said {other:?}"),
+                }
+            }
+            while wrote < sent.len() {
+                match lane.try_write(&sent[wrote..]) {
+                    Ok(n) => wrote += n,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => panic!("the socket's write refused: {e}"),
+                }
+            }
+            if wrote == sent.len() && !shut {
+                lane.shutdown_write().unwrap();
+                shut = true;
+            }
+            while !ended {
+                match lane.try_read(&mut buf) {
+                    Ok(0) => ended = true,
+                    Ok(n) => echoed.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) => panic!("the socket's read refused: {e}"),
+                }
+            }
+            if back.len() < said.len() || !ended {
+                assert!(
+                    dialed.wake.wait(PATIENCE).unwrap(),
+                    "no ring within patience: a wake lost"
+                );
+            }
+        }
+        assert_eq!(back, said, "the harness's echo exactly");
+        assert_eq!(echoed, sent, "the workload's echo exactly");
+        assert_eq!(to.end(), Ok((said.len() as u64, InputEnd::Closed)));
+        assert_eq!(from.next_record(), Ok(Got::Finished));
+        assert_eq!(end.wait(), Ok(0));
+        harness.join().unwrap();
+        drop(lane);
+        workload.join().unwrap();
     }
 
     #[test]
@@ -1246,18 +1638,49 @@ mod tests {
         let _host = host(dir.path().to_owned(), asks);
         let mut dialed = dial(&hex, vm.fingerprint(), at, admission(2));
         let sockets = dialed.sockets.take().unwrap();
-        let first = sockets.connect("stdio.sock").unwrap();
-        let _second = sockets.connect("stdio.sock").unwrap();
+        let first = answered!(sockets.connect("stdio.sock")).unwrap();
+        let _second = answered!(sockets.connect("stdio.sock")).unwrap();
         assert_eq!(
-            sockets.connect("stdio.sock").map(|_| ()),
+            answered!(sockets.connect("stdio.sock")).map(|_| ()),
             Err(Fault::Refused(Reason::Capacity))
         );
         let mut first = first;
         first.abort().unwrap();
         drop(first);
         // Room comes back as the endpoint lets the aborted lane go: the next connect is taken.
-        let _third = sockets.connect("stdio.sock").unwrap();
+        let _third = answered!(sockets.connect("stdio.sock")).unwrap();
         drop(holder);
+    }
+
+    /// A socket lane's ask let go before its answer leaves nothing held: the lane its host
+    /// connects after its asker has gone is cut (RESET_STREAM and STOP_SENDING), and the
+    /// workload's socket ends with it.
+    #[test]
+    fn a_socket_lane_let_go_unanswered_is_cut_as_it_connects() {
+        let dir = shards_testdir::TempDir::new("sw").unwrap();
+        let listener = UnixListener::bind(dir.path().join("late.sock")).unwrap();
+        let (vm, hex) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (at, asks, _revoke) = serving(&vm, hex.fingerprint(), admission(4));
+        let mut dialed = dial(&hex, vm.fingerprint(), at, admission(4));
+        let sockets = dialed.sockets.take().unwrap();
+        let ask = sockets.connect("late.sock").unwrap();
+        let connect = asks.recv_timeout(PATIENCE).unwrap();
+        drop(ask);
+        let stream = UnixStream::connect(dir.path().join(connect.name())).unwrap();
+        let (mut workload, _) = listener.accept().unwrap();
+        workload.set_read_timeout(Some(PATIENCE)).unwrap();
+        // Its lane may be gone at the endpoint already, which lets the socket go itself.
+        let _ = connect.reply(Reply::Connected(stream));
+        let mut byte = [0u8; 1];
+        let read = workload.read(&mut byte);
+        assert!(
+            matches!(&read, Ok(0))
+                || read.as_ref().is_err_and(|e| !matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                )),
+            "the workload's socket ended, not held: {read:?}"
+        );
     }
 
     #[test]
@@ -1271,7 +1694,7 @@ mod tests {
         let dialed = dial(&stranger, vm.fingerprint(), at, admission(4));
         let sockets = dialed.sockets.unwrap();
         assert!(matches!(
-            sockets.connect("control.sock").map(|_| ()),
+            answered!(sockets.connect("control.sock")).map(|_| ()),
             Err(Fault::Lost(Ended::NotEnrolled(_)))
         ));
         assert!(matches!(asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
@@ -1326,7 +1749,7 @@ mod tests {
         std::thread::spawn(move || controller.run());
         let sockets = dialed.sockets.unwrap();
         assert_eq!(
-            sockets.connect("control.sock").map(|_| ()),
+            answered!(sockets.connect("control.sock")).map(|_| ()),
             Err(Fault::Refused(Reason::Scope))
         );
         drop(served);

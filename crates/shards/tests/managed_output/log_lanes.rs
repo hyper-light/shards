@@ -15,6 +15,15 @@ use shards_remote::control::{Controller, Dialed, Execs, Fault, Got, Log, Logged,
 use shards_remote::identity::Fingerprint;
 use shards_remote::managed::{self as wire, Admitted, RunId};
 
+/// A lane's ask, its answer waited for as long as it takes (`Duration::MAX`), as a caller
+/// with no bound of its own waits: what it answered, or why not.
+macro_rules! answered {
+    ($ask:expr) => {
+        $ask.and_then(|mut ask| ask.wait(std::time::Duration::MAX))
+            .map(|got| got.expect("Duration::MAX waits until the answer"))
+    };
+}
+
 /// Agent `a`, owned by the run's controller (`shards.output=agent:a`), and agent `b`, which the
 /// daemon drains: declared in that order, so indexed 0 and 1.
 const A: u32 = 0;
@@ -151,9 +160,9 @@ impl Home {
         Home { home, owner }
     }
 
-    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
-    /// `_until`, its case's end, bounds it no more.
-    fn command(&self, args: &[&str], _until: Instant) -> common::Run {
+    /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`).
+    #[track_caller]
+    fn command(&self, args: &[&str]) -> common::Run {
         common::run_shards_env(
             &[],
             args,
@@ -167,7 +176,7 @@ impl Home {
 
     /// Builds `tag`: the tests' own image (never a registry's beyond this host) with agents
     /// `a` and `b`, the test guest each, run with `a_options` and `b_options`.
-    fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str], until: Instant) {
+    fn image(&self, tag: &str, a_options: &[&str], b_options: &[&str]) {
         let context = common::TempDir::new("lanes-ctx");
         let (image, _) = common::served();
         for (name, options) in [("a", a_options), ("b", b_options)] {
@@ -192,13 +201,13 @@ impl Home {
             format!("FROM {image}\nAGENT a FROM ./a\nAGENT b FROM ./b\n"),
         )
         .unwrap();
-        let built = self.command(&["build", "image", "-t", tag, context.to_str().unwrap()], until);
+        let built = self.command(&["build", "image", "-t", tag, context.to_str().unwrap()]);
         assert_eq!(built.status, Some(0), "{built}");
     }
 
     /// Starts `image` detached as `name`, its agent-control endpoint asked for and agent `a`
     /// owned, with `options` beside, its command `command`.
-    fn run(&self, name: &str, options: &[&str], image: &str, command: &[&str], until: Instant) -> Started {
+    fn run(&self, name: &str, options: &[&str], image: &str, command: &[&str]) -> Started {
         let mut args = vec![
             "run",
             "vm",
@@ -213,7 +222,7 @@ impl Home {
         args.extend_from_slice(options);
         args.push(image);
         args.extend_from_slice(command);
-        let started = self.command(&args, until);
+        let started = self.command(&args);
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(
@@ -226,10 +235,9 @@ impl Home {
     }
 
     /// Stops its daemon, which ends its runs, and checks it let go of its home.
-    fn stop(&self, until: Instant) -> Result<(), String> {
-        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.command(&["stop", "daemon"], until)
-        }));
+    fn stop(&self) -> Result<(), String> {
+        let stopped =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.command(&["stop", "daemon"])));
         match stopped {
             Ok(stopped) if stopped.status != Some(0) => Err(format!("stop daemon: {stopped}")),
             Ok(_) if !daemon_gone(&self.home) => {
@@ -248,7 +256,7 @@ impl Home {
         }
         let home = Home::new(name);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(&home)));
-        let stopped = home.stop(Instant::now() + WITHIN);
+        let stopped = home.stop();
         if let Err(error) = result {
             let _ = writeln!(std::io::stderr(), "log lanes cleanup: {stopped:?}");
             std::panic::resume_unwind(error);
@@ -258,12 +266,17 @@ impl Home {
 }
 
 /// Drives a dialed controller while `body` runs with its execs and agent `a`'s outputs, then
-/// hangs it up. Should `until` pass first, it is hung up then, so that every read of its lanes
-/// ends with the connection's end and the test fails at that read rather than waiting on.
+/// hangs it up. Should its wait on `home`'s run be refused first (a `Patience`, D209: past the
+/// slowest of its kind, a whole window with no progress of its daemon or microVMs), it is hung
+/// up then, so that every read of its lanes ends with the connection's end and the test fails
+/// at that read rather than waiting on. Its wait's kind is its caller's site: each test's body
+/// does its own work (a quick read of logs written, or agents writing past a log cap), and one
+/// kind for all of them taught the quickest's record to the slowest.
+#[track_caller]
 fn controlled<T>(
     controller: Controller,
     dialed: Dialed,
-    until: Instant,
+    home: &Path,
     body: impl FnOnce(&Execs, Vec<Output>) -> T,
 ) -> T {
     let Dialed {
@@ -274,15 +287,26 @@ fn controlled<T>(
     } = dialed;
     let execs = execs.unwrap();
     let (done, finished) = mpsc::channel::<()>();
+    let site = std::panic::Location::caller();
     std::thread::scope(|scope| {
         let driver = scope.spawn(move || controller.run());
         scope.spawn(move || {
-            let left = until.saturating_duration_since(Instant::now());
-            if let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(left) {
-                let _ = writeln!(
-                    std::io::stderr(),
-                    "log lanes: the test's patience passed; its controller hung up"
-                );
+            let mut patience = common::Patience::at(home, site);
+            loop {
+                match finished.recv_timeout(patience.next_look()) {
+                    Err(mpsc::RecvTimeoutError::Timeout) if patience.holds() => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "log lanes: its wait on the run refused; its controller hung up"
+                        );
+                        break;
+                    }
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        patience.done();
+                        break;
+                    }
+                }
             }
             drop(hangup);
         });
@@ -402,16 +426,14 @@ fn written(name: &str) -> [Vec<u8>; 2] {
 #[test]
 fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from_a_cursor() {
     Home::with("lanes", |home| {
-        let until = Instant::now() + WITHIN;
         home.image(
             "lanes:1",
             &["managed-capture", "a", "exit"],
             &["managed-capture", "b", "exit"],
-            until,
         );
-        let run = home.run("lanes", &[], "lanes:1", &["managed-capture", "cmd"], until);
+        let run = home.run("lanes", &[], "lanes:1", &["managed-capture", "cmd"]);
         let (controller, dialed) = run.control.dial(&home.owner);
-        controlled(controller, dialed, until, |execs, outputs| {
+        controlled(controller, dialed, &home.home, |execs, outputs| {
             std::thread::scope(|scope| {
                 // Agent `a`'s output is its owner's to read: its channels end as it is read.
                 let owned: Vec<_> = outputs
@@ -422,9 +444,9 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 // The command's log, followed from the oldest until all it writes is there: its
                 // cursor after its first record is where the lane of step 3 goes on.
                 let command = written("cmd");
-                let mut lane = execs
-                    .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, true))
+                        .unwrap();
                 let mut followed = Read::default();
                 let mut first = None;
                 while followed.bytes != command {
@@ -447,9 +469,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
                 // 1. Read whole, unfollowed, from the oldest: every byte, each at its place.
                 let whole = read_whole(
-                    &mut execs
-                        .log(LogSource::Command, LogChannels::BOTH, LogCursor::OLDEST, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(
+                        LogSource::Command,
+                        LogChannels::BOTH,
+                        LogCursor::OLDEST,
+                        false
+                    ))
+                    .unwrap(),
                     LogCursor::OLDEST,
                 );
                 assert_eq!(whole.bytes, command, "the command's log read whole");
@@ -465,9 +491,7 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 let mut after = command.clone();
                 after[channel_at(*channel)].drain(..had.len());
                 let rest = read_whole(
-                    &mut execs
-                        .log(LogSource::Command, LogChannels::BOTH, mid, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(LogSource::Command, LogChannels::BOTH, mid, false)).unwrap(),
                     mid,
                 );
                 assert_eq!(rest.bytes, after, "a lane from a cursor read what came before it");
@@ -476,14 +500,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 // channels, the owned one's as the drained one's.
                 for (member, name) in [(B, "b"), (A, "a")] {
                     let read = read_whole(
-                        &mut execs
-                            .log(
-                                LogSource::Member(member),
-                                LogChannels::BOTH,
-                                LogCursor::OLDEST,
-                                true,
-                            )
-                            .unwrap(),
+                        &mut answered!(execs.log(
+                            LogSource::Member(member),
+                            LogChannels::BOTH,
+                            LogCursor::OLDEST,
+                            true,
+                        ))
+                        .unwrap(),
                         LogCursor::OLDEST,
                     );
                     assert_eq!(read.bytes, written(name), "agent {name}'s log");
@@ -493,16 +516,14 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
                 assert_eq!(owned, written("a"), "agent a's owned output");
 
                 // 3, again: past every record of a lane read to its end, nothing.
-                let mut lane = execs
-                    .log(LogSource::Member(A), LogChannels::BOTH, LogCursor::OLDEST, false)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Member(A), LogChannels::BOTH, LogCursor::OLDEST, false))
+                        .unwrap();
                 read_whole(&mut lane, LogCursor::OLDEST);
                 let end = lane.cursor();
                 drop(lane);
                 let nothing = read_whole(
-                    &mut execs
-                        .log(LogSource::Member(A), LogChannels::BOTH, end, false)
-                        .unwrap(),
+                    &mut answered!(execs.log(LogSource::Member(A), LogChannels::BOTH, end, false)).unwrap(),
                     end,
                 );
                 assert_eq!(
@@ -513,14 +534,13 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
                 // 4. A member the run lacks: the first index past its agents.
                 assert_eq!(
-                    execs
-                        .log(
-                            LogSource::Member(B + 1),
-                            LogChannels::BOTH,
-                            LogCursor::OLDEST,
-                            false
-                        )
-                        .map(|_| ()),
+                    answered!(execs.log(
+                        LogSource::Member(B + 1),
+                        LogChannels::BOTH,
+                        LogCursor::OLDEST,
+                        false
+                    ))
+                    .map(|_| ()),
                     Err(Fault::Unlogged(Unlogged::Unknown))
                 );
             });
@@ -528,7 +548,7 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 
         // 5. `shards read logs`: the command's own, then each agent's lines after its label,
         // the owned agent's as the drained one's.
-        let logs = home.command(&["read", "logs", "lanes"], until);
+        let logs = home.command(&["read", "logs", "lanes"]);
         assert_eq!(logs.status, Some(0), "{logs}");
         let shown = format!("{}{}", logs.stdout, logs.stderr);
         for line in [
@@ -550,12 +570,10 @@ fn log_lanes_read_a_runs_command_and_each_agents_log_at_its_place_and_go_on_from
 #[test]
 fn log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy() {
     Home::with("unlogged", |home| {
-        let until = Instant::now() + WITHIN;
         home.image(
             "unlogged:1",
             &["managed-capture", "a", "exit"],
             &["managed-capture", "b", "exit"],
-            until,
         );
         // Where the shipped log goes: a socket of the test's, on loopback, that nothing reads.
         let syslog = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -586,14 +604,13 @@ fn log_lanes_are_refused_typed_where_a_run_keeps_no_log_or_no_copy() {
             ),
         ];
         for (name, options, refused) in cases {
-            let run = home.run(name, &options, "unlogged:1", &["managed-capture", "cmd"], until);
+            let run = home.run(name, &options, "unlogged:1", &["managed-capture", "cmd"]);
             let (controller, dialed) = run.control.dial(&home.owner);
-            controlled(controller, dialed, until, |execs, _| {
+            controlled(controller, dialed, &home.home, |execs, _| {
                 for (source, why) in refused {
                     for follow in [false, true] {
                         assert_eq!(
-                            execs
-                                .log(*source, LogChannels::BOTH, LogCursor::OLDEST, follow)
+                            answered!(execs.log(*source, LogChannels::BOTH, LogCursor::OLDEST, follow))
                                 .map(|_| ()),
                             Err(Fault::Unlogged(*why)),
                             "{name}: {source:?}, followed {follow}"
@@ -621,13 +638,11 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
     let bound = segment * files;
     let each = bound + segment;
     Home::with("capped", |home| {
-        let until = Instant::now() + WITHIN;
         let (a_bytes, b_bytes) = (each.to_string(), each.to_string());
         home.image(
             "capped:1",
             &["bulk", a_bytes.as_str(), "1"],
             &["bulk", b_bytes.as_str(), "2"],
-            until,
         );
         let (size, count) = (format!("max-size={segment}"), format!("max-file={files}"));
         let run = home.run(
@@ -642,10 +657,9 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
             ],
             "capped:1",
             &["managed-capture", "cmd"],
-            until,
         );
         let (controller, dialed) = run.control.dial(&home.owner);
-        let capped = controlled(controller, dialed, until, |execs, outputs| {
+        let capped = controlled(controller, dialed, &home.home, |execs, outputs| {
             // Both agents' output written whole: `a`'s read by its owner to its end, `b`'s
             // followed in its log to its channels' end.
             let owned: usize = std::thread::scope(|scope| {
@@ -653,9 +667,9 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                     .into_iter()
                     .map(|output| scope.spawn(move || drained(output).len()))
                     .collect();
-                let mut lane = execs
-                    .log(LogSource::Member(B), LogChannels::BOTH, LogCursor::OLDEST, true)
-                    .unwrap();
+                let mut lane =
+                    answered!(execs.log(LogSource::Member(B), LogChannels::BOTH, LogCursor::OLDEST, true))
+                        .unwrap();
                 loop {
                     match lane.next_record() {
                         Ok(Logged::Record(_)) => {}
@@ -684,14 +698,13 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                 2 * each
             );
             for &member in &capped {
-                let mut lane = execs
-                    .log(
-                        LogSource::Member(member),
-                        LogChannels::BOTH,
-                        LogCursor::OLDEST,
-                        false,
-                    )
-                    .unwrap();
+                let mut lane = answered!(execs.log(
+                    LogSource::Member(member),
+                    LogChannels::BOTH,
+                    LogCursor::OLDEST,
+                    false,
+                ))
+                .unwrap();
                 let Ok(Logged::Record(LogRecord::Rotated { oldest })) = lane.next_record() else {
                     panic!("member {member}'s lane from the oldest did not begin with what the cap let go");
                 };
@@ -701,8 +714,7 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
                     stderr: Some(LogPos::default()),
                 };
                 assert_eq!(
-                    execs
-                        .log(LogSource::Member(member), LogChannels::BOTH, before, false)
+                    answered!(execs.log(LogSource::Member(member), LogChannels::BOTH, before, false))
                         .map(|_| ()),
                     Err(Fault::Unlogged(Unlogged::Rotated { oldest })),
                     "member {member}: a place before the oldest kept"
@@ -740,7 +752,7 @@ fn the_runs_one_log_cap_is_said_by_logs_and_by_a_lane_from_the_oldest_and_holds_
         );
 
         // `logs` says the cap's losses first, each of whose log it cut.
-        let logs = home.command(&["read", "logs", "capped"], until);
+        let logs = home.command(&["read", "logs", "capped"]);
         assert_eq!(logs.status, Some(0), "{}", logs.stderr);
         for member in capped {
             let whose = format!(

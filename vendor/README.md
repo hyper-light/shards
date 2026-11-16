@@ -31,9 +31,13 @@ it. CI installs the official NASM 3.02 build, pinned by hash.
 ## Seeded by the OS
 
 `.cargo/config.toml` sets `AWS_LC_SYS_NO_JITTER_ENTROPY=1`. AWS-LC then seeds its DRBG
-from the OS CSPRNG (`CRYPTO_sysrand`: `CCRandomGenerateBytes`, getrandom or `urandom`,
-`BCryptGenRandom`), as BoringSSL and ring do. RDRAND or RNDR supply its personalization
-string where the CPU has one (`crypto/fipsmodule/rand/entropy/entropy_sources.c`). AWS-LC
+from the OS CSPRNG (`CRYPTO_sysrand`: on macOS `getentropy`, on Linux getrandom or
+`urandom`, on Windows `ProcessPrng`; `crypto/rand_extra/`), as BoringSSL and ring do.
+Linux's needs `<linux/random.h>` where AWS-LC is built (aws-lc-sys's `linux_random_h`
+probe), else it takes `getentropy`: zig carries Linux's headers, and Alpine builds add
+`linux-headers` (`scripts/musl-ci`).
+RDRAND or RNDR supply its personalization string where the CPU has one
+(`crypto/fipsmodule/rand/entropy/entropy_sources.c`). AWS-LC
 picks this configuration itself on Linux when `/dev/sysgenid` says a VM snapshot can
 clone the process (`crypto/ube/vm_ube_detect.c`).
 

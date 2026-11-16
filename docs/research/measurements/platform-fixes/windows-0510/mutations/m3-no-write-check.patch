@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/hv/whp/mod.rs b/crates/vmm/src/hv/whp/mod.rs
+index 0860f0045..1b4feffe5 100644
+--- a/crates/vmm/src/hv/whp/mod.rs
++++ b/crates/vmm/src/hv/whp/mod.rs
+@@ -513,7 +513,7 @@ impl Ram {
+         let len = data.len() as u64;
+         let Some(at) = self.0.iter().find_map(|m| {
+             let offset = gpa.checked_sub(m.gpa)?;
+-            let allowed = !write || m.flags & WHvMapGpaRangeFlagWrite != 0;
++            let allowed = true;
+             (allowed && offset.checked_add(len)? <= m.len).then(|| (m.host + offset as usize) as *mut u8)
+         }) else {
+             return Reached::Elsewhere;

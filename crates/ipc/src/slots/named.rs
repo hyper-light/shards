@@ -27,8 +27,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT,
+    GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
@@ -67,6 +67,7 @@ fn stream_instance(name: &str) -> io::Result<File> {
         CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
     };
     let attributes = pipe::attributes()?;
+    let quota = pipe::system_quota()?;
     let wide = pipe::wide(name);
     // SAFETY: a NUL-terminated name, attributes that live through the call.
     let raw = unsafe {
@@ -75,8 +76,10 @@ fn stream_instance(name: &str) -> io::Result<File> {
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            pipe::BUFFER,
-            pipe::BUFFER,
+            // A client's own bytes, its stdin, stdout or stderr: no frame of shards', the
+            // system's default buffer.
+            quota,
+            quota,
             0,
             &raw const attributes,
         )
@@ -124,7 +127,7 @@ fn lists(dir: &Path) -> io::Result<([String; 2], [Keeper; 2])> {
     let made = [FREE, FREE_STREAMS].map(|file| -> io::Result<(String, Keeper)> {
         let name = format!("{prefix}-{file}");
         let wide = pipe::wide(&name);
-        let server = pipe::instance(&wide, true, false, pipe::LINE_BUFFER, false)?;
+        let server = pipe::instance(&wide, true, false, crate::Window::System, false)?;
         let client = pipe::open(&wide, true)?;
         if !pipe::connected(server.as_raw_handle(), &[])? {
             return Err(io::Error::other("a list's own instance did not connect"));
@@ -225,7 +228,7 @@ impl Requests {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("slot numbers"))?;
         let name = self.names.get(list(streams)).ok_or(io::ErrorKind::InvalidInput)?;
-        let instance = pipe::instance(&pipe::wide(name), false, false, pipe::LINE_BUFFER, false)?;
+        let instance = pipe::instance(&pipe::wide(name), false, false, crate::Window::System, false)?;
         let kept = instance.try_clone()?;
         let streams = if streams {
             Some([
@@ -290,6 +293,26 @@ impl Requests {
     pub fn remove(&self, n: u64) {
         lock(&self.made).remove(&n);
     }
+
+    /// Never: a slot is taken by its instance's opening, its taker known as it is, whose end
+    /// ends its wait ([`Slot::wait`]); none is taken unknown, for a hold to find.
+    pub fn quiet(&self) -> io::Result<Option<Quiet<'_>>> {
+        Ok(None)
+    }
+}
+
+/// Unix's hold of its take lock, which Windows' slots need not ([`Requests::quiet`]).
+#[derive(Debug)]
+pub struct Quiet<'r>(std::marker::PhantomData<&'r ()>);
+
+/// Whether a slot's taker is known ([`Slot::probe`]): on Windows, as it takes it.
+#[derive(Debug)]
+pub struct Probe;
+
+impl Probe {
+    pub fn named(&self) -> bool {
+        true
+    }
 }
 
 /// A slot the daemon made: waited on by [`Slot::wait`].
@@ -325,12 +348,19 @@ impl Slot {
         Ok(Stopper(self.stop.try_clone()?))
     }
 
+    /// What tells whether its taker is known: always, as a client takes an instance by
+    /// opening it, and its end is the instance's ([`Slot::wait`]).
+    pub fn probe(&self) -> io::Result<Probe> {
+        Ok(Probe)
+    }
+
     /// Waits for a client to take this slot and begin its request, or for its stop: a
-    /// client's bytes first where both have come. A client that opens it is told its number;
-    /// once it has said which streams it opened, the streams it did not are let go of, and
+    /// client's bytes first where both have come. A client that opens it is told its number,
+    /// `named` told as it has: its taker is the instance's client, whose end ends the wait.
+    /// Once it has said which streams it opened, the streams it did not are let go of, and
     /// one it says it opened and did not is refused. A client that ends before its first
     /// byte leaves the slot gone, which its maker replaces.
-    pub fn wait(self) -> io::Result<Waited> {
+    pub fn wait(self, named: impl FnOnce()) -> io::Result<Waited> {
         let Slot {
             n,
             line,
@@ -340,6 +370,7 @@ impl Slot {
         if !pipe::connected(line.raw(), &[&stop])? {
             return Ok(Waited::Stopped);
         }
+        named();
         match line.write_within(record(n)?.as_bytes(), &[&stop], None) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => return Ok(Waited::Stopped),
@@ -705,8 +736,18 @@ impl Drop for Change {
 /// daemon that made its lists again (`Requests::renew`) offers on another name, which a
 /// wait on the old one, held by the clients it serves still, would not see. Where the list
 /// changed first, the thread is left to its wait, which ends as an instance of the old name
-/// frees or its last closes, or with this process.
+/// frees or its last closes, or with this process: a call starts one thread at most, after
+/// its watch is made, and leaves one only where the daemon named its lists anew.
 fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
+    let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    // The watch first: one refused starts no thread, and one that finds no directory, no
+    // list there, has the list read again, which says so (platform-08).
+    let Some(mut change) = watch(dir)? else {
+        return Ok(Freed::Listed);
+    };
+    if listed_name(at)?.as_deref() != Some(name) {
+        return Ok(Freed::Listed);
+    }
     let done = Event::new()?;
     let theirs = done.try_clone()?;
     let (said, heard) = std::sync::mpsc::channel();
@@ -720,29 +761,10 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
             let _ = said.send(if free { 0 } else { unsafe { GetLastError() } });
             theirs.set();
         })?;
-    let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
-    let dir = pipe::wide(&dir.to_string_lossy());
     loop {
-        // SAFETY: a NUL-terminated path; the notification is closed as `change` drops.
-        let raw = unsafe {
-            FindFirstChangeNotificationW(
-                dir.as_ptr(),
-                0,
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
-            )
-        };
-        // No directory: no list there, which a read says.
-        let change = (raw != INVALID_HANDLE_VALUE).then_some(Change(raw));
-        if change.is_none() || listed_name(at)?.as_deref() != Some(name) {
-            return Ok(Freed::Listed);
-        }
-        let handles: Vec<HANDLE> = [Some(done.raw()), change.as_ref().map(|c| c.0)]
-            .into_iter()
-            .flatten()
-            .collect();
-        let count = u32::try_from(handles.len()).map_err(io::Error::other)?;
+        let handles = [done.raw(), change.0];
         // SAFETY: handles that live through the wait.
-        let woke = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, INFINITE) };
+        let woke = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
         if woke == WAIT_OBJECT_0 {
             return match heard.recv().map_err(io::Error::other)? {
                 0 => Ok(Freed::Instance),
@@ -753,7 +775,38 @@ fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
         if woke != WAIT_OBJECT_0 + 1 {
             return Err(io::Error::last_os_error());
         }
-        // The directory changed: the list is read again, under a notification made anew.
+        // The directory changed: the list read again, under a notification made anew.
+        change = match watch(dir)? {
+            Some(change) => change,
+            None => return Ok(Freed::Listed),
+        };
+        if listed_name(at)?.as_deref() != Some(name) {
+            return Ok(Freed::Listed);
+        }
+    }
+}
+
+/// A change notification on the names and writes of directory `dir`, by its own name, which
+/// need be no Unicode (an unpaired surrogate NTFS keeps as given): `None` where there is no
+/// directory, and so no list in it, which a read says; any other failure refused.
+fn watch(dir: &Path) -> io::Result<Option<Change>> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let dir: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated path; the notification is closed as its Change drops.
+    let raw = unsafe {
+        FindFirstChangeNotificationW(
+            dir.as_ptr(),
+            0,
+            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+        )
+    };
+    if raw != INVALID_HANDLE_VALUE {
+        return Ok(Some(Change(raw)));
+    }
+    let e = io::Error::last_os_error();
+    match code(&e) {
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => Ok(None),
+        _ => Err(e),
     }
 }
 
@@ -896,7 +949,7 @@ mod tests {
         s: &'s std::thread::Scope<'s, '_>,
         slot: Slot,
     ) -> std::thread::ScopedJoinHandle<'s, io::Result<Waited>> {
-        s.spawn(move || slot.wait())
+        s.spawn(move || slot.wait(|| {}))
     }
 
     /// Stops each slot it holds as it drops, as a failed assertion unwinds too: a slot's
@@ -917,6 +970,59 @@ mod tests {
                 let _ = stopper.stop();
             }
         }
+    }
+
+    /// Do: watch a directory whose name is no Unicode (an unpaired surrogate, which NTFS
+    /// keeps as it is given), a file, and a directory that is not there. Expect the first
+    /// watched, the second refused with its error, and the third none to watch: a watch that
+    /// failed for its directory's name, or for any error but its absence, is no list changed,
+    /// which had a waiting client start another waiting thread each time it looked
+    /// (platform-08).
+    #[test]
+    fn a_lists_directory_is_watched_by_its_own_name_and_a_failed_watch_is_refused() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let home = home("slot-watch");
+        let odd = home.join(std::ffi::OsString::from_wide(&[u16::from(b'r'), 0xD800]));
+        std::fs::create_dir(&odd).unwrap();
+        assert!(
+            watch(&odd).unwrap().is_some(),
+            "a directory not watched by its name"
+        );
+        let file = home.join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(watch(&file).is_err(), "a file's watch said no list there");
+        assert!(watch(&home.join("gone")).unwrap().is_none());
+    }
+
+    /// Do: in a home whose name is no Unicode, offer a slot and remove it, have a client take
+    /// one, then offer another. Expect the client to wait, and take the slot offered next: its
+    /// wait watches the list's directory by its own name (platform-08).
+    #[test]
+    fn a_client_of_a_home_named_in_no_unicode_waits_for_its_slot() {
+        use std::os::windows::ffi::OsStringExt as _;
+        let base = home("slot-odd");
+        let home = base.join(std::ffi::OsString::from_wide(&[u16::from(b'h'), 0xDC00]));
+        std::fs::create_dir(&home).unwrap();
+        let mut requests = Requests::open(&home).unwrap();
+        let gone = requests.make(false).unwrap();
+        requests.offer(gone.number(), false).unwrap();
+        requests.remove(gone.number());
+        gone.stopper().unwrap().stop().unwrap();
+        assert!(matches!(gone.wait(|| {}).unwrap(), Waited::Stopped));
+        std::thread::scope(|s| {
+            let client = s.spawn(|| take(&home, 0).unwrap());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!client.is_finished(), "a client took a removed slot");
+            let next = requests.make(false).unwrap();
+            requests.offer(next.number(), false).unwrap();
+            let served = waiting(s, next);
+            let Taken::Slot(client) = client.join().unwrap() else {
+                panic!("no slot");
+            };
+            assert_eq!(client.n, 1);
+            drop(client);
+            assert!(matches!(served.join().unwrap().unwrap(), Waited::Gone));
+        });
     }
 
     /// A list's waiting slots are those made on it that no client has taken, counted
@@ -1098,7 +1204,7 @@ mod tests {
                     stops.hold(&slot);
                     let (n, done) = (slot.number(), done.clone());
                     s.spawn(move || {
-                        let _ = slot.wait();
+                        let _ = slot.wait(|| {});
                         let _ = done.send(n);
                     });
                 }
@@ -1192,7 +1298,7 @@ mod tests {
         // Removed, its wait ended, as a sweep removes one.
         requests.remove(gone.number());
         gone.stopper().unwrap().stop().unwrap();
-        assert!(matches!(gone.wait().unwrap(), Waited::Stopped));
+        assert!(matches!(gone.wait(|| {}).unwrap(), Waited::Stopped));
         std::thread::scope(|s| {
             let client = s.spawn(|| take(&home, 0).unwrap());
             std::thread::sleep(Duration::from_millis(50));
@@ -1256,7 +1362,7 @@ mod tests {
             &pipe::wide(&stream_name(&list, requests.next, "in")),
             false,
             false,
-            pipe::BUFFER,
+            crate::Window::System,
             false,
         )
         .unwrap();
@@ -1406,7 +1512,7 @@ mod tests {
         let slot = requests.make(false).unwrap();
         std::thread::scope(|s| {
             let opened = s.spawn(|| {
-                let Waited::Opened(opened) = slot.wait().unwrap() else {
+                let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
                     panic!("no client opened the slot");
                 };
                 opened.request().unwrap()
@@ -1487,7 +1593,7 @@ mod tests {
             requests.offer(slot.number(), false).unwrap();
             std::thread::scope(|s| {
                 let served = s.spawn(move || {
-                    let Waited::Opened(opened) = slot.wait().unwrap() else {
+                    let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
                         panic!("no client opened the slot");
                     };
                     let got = opened.request_within(stall, None).unwrap();

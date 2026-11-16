@@ -1,12 +1,12 @@
 //! Emulated devices and the MMIO bus that routes trapped guest accesses to them.
 
-pub mod acpi_sleep;
+pub mod acpi_power;
 pub mod control;
-pub mod i8042;
 pub mod pci;
 pub mod power;
+pub mod pvpanic;
 pub mod rtc;
-pub mod serial;
+pub mod said;
 pub mod virtio;
 pub mod vmgenid;
 

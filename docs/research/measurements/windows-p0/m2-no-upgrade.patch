@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/devices/virtio/fs/window_whp.rs b/crates/vmm/src/devices/virtio/fs/window_whp.rs
+index 515f2cd13..c114d487e 100644
+--- a/crates/vmm/src/devices/virtio/fs/window_whp.rs
++++ b/crates/vmm/src/devices/virtio/fs/window_whp.rs
+@@ -183,7 +183,7 @@ impl Table {
+         let node = self.nodes.entry(entry.mapped.node).or_default();
+         node.count += 1;
+         if let Some(file) = file
+-            && (node.file.is_none() || (writable && !node.writable))
++            && node.file.is_none()
+         {
+             node.file = Some(file);
+             node.writable = writable;

@@ -14,17 +14,19 @@ use super::machine::{self, Machine};
 use super::{AfterSnapshot, Config, ExitReason, Precopied, Precopying, RestoreConfig, Save, SnapshotPolicy};
 use crate::devices::control::Control;
 use crate::devices::power::PowerEvent;
-use crate::devices::serial::Serial;
 use crate::devices::virtio::block::Join;
+use crate::devices::virtio::console::Port as ConsolePort;
 use crate::devices::virtio::{head, pmem};
 use crate::hv;
 use crate::memory::GuestMemory;
 use crate::snapshot::{self, MachineConfig, Snapshot, codec::Writer};
 use crate::sync::{lock, wait};
 use crate::{debug, info, platform, warn};
+use shards_abi::run::members::KEY_LEN;
+use shards_ipc::device::Refusal;
 
 /// Ok when this host can run VMs; otherwise, why not.
-pub fn check_host() -> Result<(), String> {
+pub fn check_host() -> Result<(), shards_abi::host::Unusable> {
     hv::check_host()
 }
 
@@ -75,19 +77,88 @@ impl<W: std::io::Write> std::io::Write for Carried<'_, W> {
 #[derive(Debug, Clone)]
 pub struct Handle {
     shared: Arc<Shared>,
-    serial: Arc<Serial>,
+    console: Arc<ConsolePort>,
     control: Arc<Control>,
     memory: Arc<GuestMemory>,
+}
+
+/// Plugs component `key`'s image `file` into the machine of `control` and `memory` (D270):
+/// at its components' window's first free range and its bus's first free slot, or, where a
+/// snapshot kept it (`at`, slice 5), back at that range and place. Its function is one a
+/// snapshot keeps ([`Window::saves`](crate::devices::pci::hotplug::Window::saves)), by `key`:
+/// refused for a key of another length than its digest's hex, which no snapshot's decoding
+/// would read back.
+pub(crate) fn plug_component(
+    control: &Control,
+    memory: &Arc<GuestMemory>,
+    file: std::fs::File,
+    key: &str,
+    at: Option<&pmem::Kept>,
+) -> Result<super::Plugged, Refusal> {
+    if key.len() != KEY_LEN {
+        return Err(Refusal::InvalidRequest(format!(
+            "a component's key of {} bytes: a component is keyed by its digest's {KEY_LEN} hex digits",
+            key.len()
+        )));
+    }
+    let plugs = control.plugs().ok_or(Refusal::NoBus)?;
+    let window = plugs.components.clone().ok_or_else(|| {
+        Refusal::Unsupported("this microVM has no components' window to map a component in".into())
+    })?;
+    let region = Arc::new(pmem::Region::of_file(file, "a component's image").map_err(Refusal::Host)?);
+    let len = region.len() as u64;
+    let gpa = match at {
+        None => window.place(&region, key)?,
+        Some(kept) if kept.len != len => {
+            return Err(Refusal::Host(format!(
+                "component {key}'s image is {len} bytes, not the {} its snapshot kept",
+                kept.len
+            )));
+        }
+        Some(kept) => window.place_at(&region, key, kept.gpa)?,
+    };
+    // Its pages reached by its machine's other devices as the guest names them, as a
+    // boot's pmem files' are (D189's device DMA).
+    // SAFETY: the region stays mapped while the window holds it, which it does until the
+    // unplug takes it back here first (`unplug`).
+    let given = unsafe { memory.give_plugged(gpa, region.host(), region.len()) }.map_err(Refusal::Host);
+    let device: Box<dyn crate::devices::virtio::VirtioDevice> = Box::new(pmem::Pmem::new(region, gpa));
+    let guest = memory.clone();
+    let make = move |slot: &crate::devices::pci::hotplug::Slot| {
+        let f = crate::devices::virtio::pci::VirtioPci::new(device, guest, slot.emulated_msi())?;
+        Ok(Arc::new(f) as Arc<dyn crate::devices::pci::hotplug::Plugged>)
+    };
+    let plugged = given.and_then(|()| match at {
+        None => plugs.hotplug.plug(make),
+        Some(kept) => plugs.hotplug.plug_at(kept.devfn, make),
+    });
+    match plugged {
+        Ok(devfn) => {
+            window.held_by(gpa, devfn);
+            plugs.hotplug.saves(devfn);
+            Ok(super::Plugged {
+                devfn,
+                address: super::guest_address((devfn >> 3, devfn & 7)),
+                size: None,
+                steps: Vec::new(),
+                region: Some((gpa, len)),
+            })
+        }
+        Err(refused) => {
+            memory.take_plugged(gpa);
+            if let Err(e) = window.release_at(gpa) {
+                warn!("a component's range at {gpa:#x}, its plug refused, stays mapped: {e}");
+            }
+            Err(refused)
+        }
+    }
 }
 
 impl Handle {
     /// Plugs `device` into its PCI bus's first free slot (D214), on virtio's PCI
     /// transport: an error where it has no slots, or none free.
-    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, String> {
-        let plugs = self
-            .control
-            .plugs()
-            .ok_or("this microVM has no PCI slots to plug a device into")?;
+    fn plug(&self, device: Box<dyn crate::devices::virtio::VirtioDevice>) -> Result<u8, Refusal> {
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
         let memory = self.memory.clone();
         plugs.hotplug.plug(|slot| {
             let f = crate::devices::virtio::pci::VirtioPci::new(device, memory, slot.emulated_msi())?;
@@ -103,9 +174,11 @@ impl Handle {
         file: std::fs::File,
         read_only: bool,
         serial: &str,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         let io = self.control.plugs().and_then(|p| p.io);
-        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)?.with_limit(io);
+        let disk = crate::devices::virtio::block::Block::of_file(file, read_only, serial)
+            .map_err(Refusal::Host)?
+            .with_limit(io);
         let size = disk.size();
         let devfn = self.plug(Box::new(disk))?;
         Ok(super::Plugged {
@@ -113,7 +186,21 @@ impl Handle {
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size,
             steps: Vec::new(),
+            region: None,
         })
+    }
+
+    /// Plugs component `key`'s EROFS image into the running machine (D270): a read-only
+    /// virtio-pmem function, its region `file` mapped at a free range of its components'
+    /// window, which every VM of its host mapping the same file shares in its page cache, as
+    /// an image's root is shared (D15). Its guest finds it as its init rescans its PCI bus,
+    /// and maps its files from the host's pages (DAX). A snapshot keeps it by `key`, and a
+    /// restore given its image by that key plugs it back where it was (D270 slice 5).
+    /// Refused where the machine has no window, no free slot, or no free range as long as
+    /// the file ([`Refusal::NoRoom`]), and for a key of another length than a digest's hex
+    /// ([`Refusal::InvalidRequest`]).
+    pub fn plug_pmem(&self, file: std::fs::File, key: &str) -> Result<super::Plugged, Refusal> {
+        plug_component(&self.control, &self.memory, file, key, None)
     }
 
     /// Plugs a shared directory into the running machine (D214): virtio-fs, mounted by
@@ -123,15 +210,18 @@ impl Handle {
         &self,
         tag: &str,
         slot: crate::devices::virtio::fs::Share,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         let io = self.control.plugs().and_then(|p| p.io);
-        let share = crate::devices::virtio::fs::Fs::new(tag, slot)?.with_limit(io);
+        let share = crate::devices::virtio::fs::Fs::new(tag, slot)
+            .map_err(Refusal::Host)?
+            .with_limit(io);
         let devfn = self.plug(Box::new(share))?;
         Ok(super::Plugged {
             devfn,
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
             steps: Vec::new(),
+            region: None,
         })
     }
 
@@ -142,7 +232,7 @@ impl Handle {
     /// or address space mapping what its endpoint's domain maps. Opened by its group's or
     /// its device's node: its guest finds it as its init rescans its PCI bus.
     #[cfg(target_os = "linux")]
-    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, Refusal> {
         self.plug_vfio_with(f, None)
     }
 
@@ -150,8 +240,12 @@ impl Handle {
     /// its host's limit ([`super::plug_refused`]), Windows' that it gives a microVM one as it
     /// starts alone, changing nothing.
     #[cfg(not(target_os = "linux"))]
-    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, String> {
-        Err(format!("{}: {}", f.name, super::plug_refused()))
+    pub fn plug_vfio(&self, f: &super::Vfio) -> Result<super::Plugged, Refusal> {
+        Err(Refusal::Unsupported(format!(
+            "{}: {}",
+            f.name,
+            super::plug_refused()
+        )))
     }
 
     /// [`plug_vfio`](Self::plug_vfio), of a function opened by another process, as a
@@ -162,7 +256,7 @@ impl Handle {
         &self,
         f: &super::Vfio,
         files: super::VfioFiles,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         self.plug_vfio_with(f, Some(files))
     }
 
@@ -171,34 +265,33 @@ impl Handle {
         &self,
         f: &super::Vfio,
         files: Option<super::VfioFiles>,
-    ) -> Result<super::Plugged, String> {
+    ) -> Result<super::Plugged, Refusal> {
         use crate::devices::pci::{self, vfio as v};
-        let plugs = self
-            .control
-            .plugs()
-            .ok_or("this microVM has no PCI slots to plug a device into")?;
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
         let named = |e: String| format!("{}: {e}", f.name);
         if f.iommu && f.noiommu {
-            return Err(named("a group without an IOMMU cannot follow the guest's".into()));
+            return Err(Refusal::InvalidRequest(named(
+                "a group without an IOMMU cannot follow the guest's".into(),
+            )));
         }
         let behind = plugs.hotplug.slots_behind_iommu();
         match (f.iommu, behind) {
             (true, false) => {
-                return Err(named(
+                return Err(Refusal::Unsupported(named(
                     "behind its microVM's IOMMU, where its slots are not: a microVM takes a host's function behind its IOMMU as it runs where it was booted for one (D214)".into(),
-                ));
+                )));
             }
             (false, true) => {
-                return Err(named(
+                return Err(Refusal::Unsupported(named(
                     "outside its microVM's IOMMU, where its slots sit behind it: a function plugged in there is behind it too".into(),
-                ));
+                )));
             }
             _ => {}
         }
         if !f.iommu
             && let Some(why) = &plugs.unpinnable
         {
-            return Err(named(why.clone()));
+            return Err(Refusal::Unsupported(named(why.clone())));
         }
         // Each step timed (PM M430): `Plugged::steps`, and the VM's log at debug.
         let mut clock = v::Clock::new();
@@ -303,17 +396,24 @@ impl Handle {
             address: super::guest_address((devfn >> 3, devfn & 7)),
             size: None,
             steps,
+            region: None,
         })
     }
 
     /// Takes the device plugged at `devfn` off its PCI bus (D214), once its guest has let
     /// it go: an error, changing nothing, where its guest's driver still drives it.
-    pub fn unplug(&self, devfn: u8) -> Result<(), String> {
-        self.control
-            .plugs()
-            .ok_or("this microVM has no PCI slots")?
-            .hotplug
-            .unplug(devfn)
+    pub fn unplug(&self, devfn: u8) -> Result<(), Refusal> {
+        let plugs = self.control.plugs().ok_or(Refusal::NoBus)?;
+        plugs.hotplug.unplug(devfn)?;
+        // A component's range taken back once nothing of its guest's drives it (D270): from
+        // its devices first, then from the guest and this process.
+        let Some(window) = &plugs.components else {
+            return Ok(());
+        };
+        if let Some((gpa, _)) = window.range_of(devfn) {
+            self.memory.take_plugged(gpa);
+        }
+        window.release(devfn).map_err(Refusal::Host)
     }
 
     /// What grows its file disk `index` of those it was made with (D214), as its host
@@ -357,12 +457,17 @@ impl Handle {
     /// ([`MILLI_PER_CPU`](super::MILLI_PER_CPU) a whole CPU's), its run's limit (D191) or
     /// its orchestrator's rate (D247), whatever its guest does with its own cgroups; 0, or
     /// every vCPU's whole CPU, lets them be. Returns what it holds them to, none where it
-    /// lets them be. Its governor's thread is made with the first limit.
-    pub fn hold_rate(&self, milli: u64) -> Result<Option<std::num::NonZeroU64>, String> {
+    /// lets them be, and the period it holds over, derived from g (D191, `granule::period`);
+    /// refused, the hold as it was, where that period outgrows a u64 of ns. Its governor's
+    /// thread is made with the first limit.
+    pub fn hold_rate(&self, milli: u64) -> Result<super::Rated, String> {
         let sh = &self.shared;
-        let held = sh.hold.set(milli);
-        if held.is_none() {
-            return Ok(None);
+        let held = sh
+            .hold
+            .set(milli)
+            .map_err(|e| format!("its hold's period: {e}"))?;
+        if held.milli.is_none() {
+            return Ok(held);
         }
         let mut governor = lock(&sh.governor);
         // Under the lock the teardown takes it by, once the machine stops: none is made
@@ -371,7 +476,11 @@ impl Handle {
             let shared = sh.clone();
             let made = std::thread::Builder::new()
                 .name("hold".into())
-                .spawn(move || shared.hold.govern(&|| shared.kick_all()))
+                .spawn(move || {
+                    shared
+                        .hold
+                        .govern(&|| shared.kick_all(), &|| shared.guest.charged())
+                })
                 .map_err(|e| format!("starting the hold on its vCPUs: {e}"))?;
             *governor = Some(made);
         }
@@ -387,13 +496,20 @@ impl Handle {
         if governor.is_some() {
             return Err("this microVM is held by a group's budget already".into());
         }
+        if group.budget().is_none() {
+            return Err("its group's CPU budget was never written".into());
+        }
         if sh.exiting() {
             return Ok(());
         }
         let shared = sh.clone();
         let made = std::thread::Builder::new()
             .name("hold-group".into())
-            .spawn(move || shared.hold.govern_group(&group, &|| shared.kick_all()))
+            .spawn(move || {
+                shared
+                    .hold
+                    .govern_group(&group, &|| shared.kick_all(), &|| shared.guest.charged())
+            })
             .map_err(|e| format!("starting its group's hold on its vCPUs: {e}"))?;
         *governor = Some(made);
         Ok(())
@@ -469,20 +585,8 @@ impl Handle {
         if sh.template.load(Ordering::Acquire) {
             return Err("the microVM has its template still to save".into());
         }
-        {
-            let mut saving = lock(&sh.saving);
-            if sh.exiting() {
-                return Err("the microVM has stopped".into());
-            }
-            if *saving {
-                return Err("the microVM is being saved already".into());
-            }
-            *saving = true;
-        }
-        let saved = self.save_parked(parts, save);
-        *lock(&sh.saving) = false;
-        sh.saved.notify_all();
-        saved
+        let _reading = sh.begin_read(HostRead::Save).map_err(|e| e.to_string())?;
+        self.save_parked(parts, save)
     }
 
     /// Copies the running machine's memory, writable layer and run's swap into `out` for a
@@ -510,6 +614,7 @@ impl Handle {
         if sh.released_at_us.get().is_none() {
             return Err("the microVM has not started".into());
         }
+        let _reading = sh.begin_read(HostRead::Precopy).map_err(|e| e.to_string())?;
         let vm = parts.vm.upgrade().ok_or("the microVM has stopped")?;
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let carried = Carried {
@@ -564,9 +669,15 @@ impl Handle {
                 swap.as_ref().map(|s| s.run_data()).transpose(),
             )
         };
-        self.resume();
+        let found = found.0.and_then(|layer| found.1.map(|swap| (layer, swap)));
+        let outcome = match found {
+            Ok(runs) => Scanned::Mapped(runs),
+            Err(e) if self.control.lost() => Scanned::Lost(e),
+            Err(e) => Scanned::Failed(e),
+        };
+        let found = self.shared.finish_scan(outcome);
         precopied.paused_us = crate::log::uptime_us().saturating_sub(paused);
-        let (layer_runs, swap_runs) = (found.0?, found.1?);
+        let (layer_runs, swap_runs) = found?;
         let mut buf = vec![0u8; live::MAX_RECORD];
         let mut send = |kind: u8, runs: &[(u64, u64)], read: &Reader<'_>| {
             for &(off, len) in runs {
@@ -628,8 +739,8 @@ impl Handle {
         let fail = |e: std::io::Error| format!("sending its memory: {e}");
         let (layer, swap) = (self.control.layer(), self.control.swap());
         for gpa in written.iter() {
-            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa) {
-                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, bytes)
+            if let Some((plugged, at, bytes)) = self.memory.page_at(gpa).map_err(|e| e.to_string())? {
+                w.record(if plugged { live::PLUGGED } else { live::RAM }, at, &bytes)
                     .map_err(fail)?;
                 continue;
             }
@@ -675,6 +786,8 @@ impl Handle {
             config: &parts.config,
             join: parts.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
+            components: self.control.plugs().and_then(|p| p.components.clone()),
         };
         if !sh.snapshot.wait_parked(&|| sh.exiting()) {
             return Err("the microVM has stopped".into());
@@ -820,17 +933,38 @@ impl Handle {
         self.shared.released_at_us.get().copied()
     }
 
-    /// Feeds bytes to the guest console as if typed, waiting while its UART has no room
-    /// for them (`Serial::input`).
+    /// Feeds bytes to the guest console as if typed, into the buffers its guest posted,
+    /// waiting while it has posted none (`console::Port::input`).
     pub fn console_input(&self, bytes: &[u8]) {
-        self.serial.input(bytes);
+        self.console.input(bytes);
     }
 
     /// The whole lines of the last bytes its guest wrote to its console, as many as it was
     /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
     /// says there why it resets its machine (`panic=-1`).
-    pub fn console_said(&self) -> crate::devices::serial::Said {
-        self.serial.said()
+    ///
+    /// A kernel that stopped before its console registered (hvc0 does as its driver probes)
+    /// said it to its printk ring alone: where the console carried nothing, its last lines
+    /// are read from the guest's memory instead, under the same bound (`printk::read`).
+    pub fn console_said(&self) -> crate::devices::said::Said {
+        let said = self.console.said();
+        let keep = self.console.keep();
+        if !said.lines.is_empty() || keep == 0 {
+            return said;
+        }
+        match crate::printk::read(&self.memory, keep) {
+            Ok(logged) if !logged.lines.is_empty() => logged,
+            Ok(_) => said,
+            Err(e) => {
+                crate::debug!("the guest's kernel log: {e}");
+                said
+            }
+        }
+    }
+
+    /// Whether its guest's kernel said it panicked (pvpanic): what a reset alone does not say.
+    pub fn panicked(&self) -> bool {
+        self.console.panicked()
     }
 
     /// Whether the VM is recording a working set ([`SnapshotPolicy::working_set`]).
@@ -871,6 +1005,57 @@ impl Handle {
     pub fn guest_times(&self) -> GuestTimes {
         self.shared.guest.sample()
     }
+
+    /// Whether this process's OS charges its vCPUs' guest time to their threads, as their
+    /// spans have told it ([`guest_time::Charged`], D265).
+    pub fn charged(&self) -> guest_time::Charged {
+        self.shared.guest.charged()
+    }
+
+    /// What each of its vCPUs ran of its guest in all, by index, those gone among them at
+    /// what they read as they left (D260's final use): read once the machine is down
+    /// ([`Running::wait_then`]'s `free`), after its last guest instruction, it is the whole.
+    pub fn whole_guest_times(&self) -> GuestTimes {
+        self.shared.guest.whole()
+    }
+}
+
+/// Whether extent discovery left every withdrawn mapping available to the guest.
+enum Scanned<T> {
+    Mapped(T),
+    Failed(String),
+    Lost(String),
+}
+
+/// Host operations that keep mappings alive until their last read, including errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostRead {
+    Save,
+    Precopy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadRefused {
+    Stopped,
+    Busy(HostRead),
+}
+
+impl std::fmt::Display for ReadRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => f.write_str("the microVM has stopped"),
+            Self::Busy(kind) => write!(f, "the microVM has a {kind:?} reader already"),
+        }
+    }
+}
+
+struct Reading<'a>(&'a Shared);
+
+impl Drop for Reading<'_> {
+    fn drop(&mut self) {
+        *lock(&self.0.saving) = None;
+        self.0.saved.notify_all();
+    }
 }
 
 #[derive(Debug)]
@@ -908,9 +1093,9 @@ struct Shared {
     parts: OnceLock<Parts>,
     /// Whether a template's snapshot is still to be taken, its coordinator waiting.
     template: AtomicBool,
-    /// Whether a snapshot the host asked for is being taken: one at a time, and the
-    /// machine is taken apart only once it is done (`Running::teardown`).
-    saving: Mutex<bool>,
+    /// The host reader, if any: save and precopy exclude each other and teardown
+    /// cannot release mappings until that reader has finished, including error paths.
+    saving: Mutex<Option<HostRead>>,
     saved: Condvar,
     /// The host's hold on the vCPUs' CPU time, a run's limit (D191), and its governor's
     /// thread, made as the first limit comes and joined as the machine is taken apart.
@@ -1002,19 +1187,48 @@ impl Shared {
             committed: Condvar::new(),
             parts: OnceLock::new(),
             template: AtomicBool::new(false),
-            saving: Mutex::new(false),
+            saving: Mutex::new(None),
             saved: Condvar::new(),
             hold: Hold::new(vcpus as usize),
-            guest: GuestClocks::default(),
+            guest: GuestClocks::known(crate::hv::GUEST_TIME_CHARGED),
             governor: Mutex::new(None),
             group_governor: Mutex::new(None),
         }
     }
 
-    /// Waits until no save the host asked for reads the machine.
+    fn finish_scan<T>(&self, outcome: Scanned<T>) -> Result<T, String> {
+        match outcome {
+            Scanned::Mapped(value) => {
+                self.hold.resume();
+                Ok(value)
+            }
+            Scanned::Failed(e) => {
+                self.hold.resume();
+                Err(e)
+            }
+            Scanned::Lost(e) => {
+                self.stop(ExitReason::Error(e.clone()));
+                Err(e)
+            }
+        }
+    }
+
+    fn begin_read(&self, kind: HostRead) -> Result<Reading<'_>, ReadRefused> {
+        let mut reading = lock(&self.saving);
+        if self.exiting() {
+            return Err(ReadRefused::Stopped);
+        }
+        if let Some(kind) = *reading {
+            return Err(ReadRefused::Busy(kind));
+        }
+        *reading = Some(kind);
+        Ok(Reading(self))
+    }
+
+    /// Waits until no host save or live copy reads the machine.
     fn await_save(&self) {
         let mut saving = lock(&self.saving);
-        while *saving {
+        while saving.is_some() {
             saving = wait(&self.saved, saving);
         }
     }
@@ -1281,6 +1495,23 @@ pub fn restore(cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
 /// has checked ([`check_host`]): a restore that read it to learn its backing files reads
 /// and decodes it once, and resumes the very generation it checked (review 1.12).
 pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Handle, Running), String> {
+    restore_reported(cfg, pinned, None)
+}
+
+/// [`restore_from`], `report` given what the restored machine's renderer comes to as it rejoins
+/// the selection its snapshot keeps (D232's format 29, D233), as [`start_gpu_report`]'s boot
+/// gives it its own: before any guest vCPU runs. A snapshot of no selected GPU is refused, as
+/// such a boot is (`GpuProbeError::Empty`).
+pub fn restore_reported(
+    cfg: &RestoreConfig,
+    pinned: snapshot::Pinned,
+    report: Option<&mut super::GpuReportTo<'_>>,
+) -> Result<(Handle, Running), String> {
+    if report.is_some()
+        && (pinned.snapshot.config.gpu.is_none() || pinned.snapshot.config.gpu_devices.is_empty())
+    {
+        return Err(shards_abi::gpu::GpuProbeError::Empty.to_string());
+    }
     let snapshot::Pinned {
         snapshot: snap,
         memory: memory_file,
@@ -1356,8 +1587,10 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
             io: cfg.io_limit,
             layer: layer.as_ref(),
             window_heads: window_heads.as_ref(),
+            components: &cfg.components,
         },
         working_set.unwrap_or_default(),
+        report,
     )?;
     // The run's swap a snapshot of a run kept (D176), back where its guest had it before
     // any vCPU runs.
@@ -1443,7 +1676,7 @@ fn launch(
         vm,
         memory,
         bus,
-        serial,
+        console,
         control,
         power,
         finish,
@@ -1588,7 +1821,7 @@ fn launch(
     Ok((
         Handle {
             shared,
-            serial,
+            console,
             control,
             memory: memory.clone(),
         },
@@ -1632,15 +1865,22 @@ fn vcpu_thread(
     if let Some(slot) = sh.kickers.get(index) {
         let _ = slot.set(vcpu.kicker());
     }
-    // Its clock, by which the host holds the vCPUs to their run's CPUs (D191).
-    if let Err(e) = sh.hold.register(index) {
+    // Its clocks, by which the host holds the vCPUs to their run's CPUs (D191): its thread's,
+    // and its guest time, counted as its OS charges it (D265).
+    let guest_read = vcpu.guest_clock();
+    if let Err(e) = sh
+        .hold
+        .register(index, Some(Box::new(move || guest_read.read().ok())))
+    {
         warn!("vCPU {index}: its CPU time unread, so not held to its run's CPUs: {e}");
     }
     // Its guest time among its machine's, before its machine is said to be started: read a
     // last time as this goes, on this thread, before the vCPU itself goes (dropped after).
-    let _guest = sh
-        .guest
-        .join(u32::try_from(index).unwrap_or(u32::MAX), guest_clock(&vcpu));
+    let _guest = sh.guest.join(
+        u32::try_from(index).unwrap_or(u32::MAX),
+        guest_clock(&vcpu),
+        thread_clock(index),
+    );
     let _ = created.send(Ok(set_up));
     if let Some(offset) = sh.wait_release()
         && let Err(e) = machine::set_counter_offset(&mut vcpu, offset)
@@ -1655,13 +1895,28 @@ fn vcpu_thread(
             return;
         }
         // Out of the guest while its run's CPU time is spent (D191), or until a snapshot
-        // needs it parked.
-        sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested());
+        // needs it parked; its guest told where it was held through a pause (D267).
+        if sh.hold.wait(&|| sh.exiting() || sh.snapshot.requested()) {
+            vcpu.went_on();
+        }
         match vcpu.run(io) {
             Ok(hv::Exit::Canceled) => sh.park_for_snapshot(index, &vcpu),
             Ok(hv::Exit::Shutdown) => return sh.stop(ExitReason::PowerOff),
             Ok(hv::Exit::Reset) => return sh.stop(ExitReason::Reset),
             Err(e) => return sh.stop(ExitReason::Error(format!("vCPU {index}: {e}"))),
+        }
+    }
+}
+
+/// How vCPU `index`'s thread's CPU time is read, from any thread: its own clock, the calling
+/// thread's, which beside its guest time tells whether its OS charges that to it (D265); none
+/// where it has none.
+fn thread_clock(index: usize) -> Option<guest_time::Ran> {
+    match crate::platform::ThreadClock::current() {
+        Ok(clock) => Some(Box::new(move || clock.read().ok())),
+        Err(e) => {
+            warn!("vCPU {index}: its thread's CPU time unread, so its guest time's charge is not told: {e}");
+            None
         }
     }
 }
@@ -1709,6 +1964,8 @@ impl Coordinator {
             config: &self.config,
             join: self.join,
             swap: self.control.swap().map(|w| &**w),
+            init: self.control.guest_abi(),
+            components: self.control.plugs().and_then(|p| p.components.clone()),
         }
     }
 
@@ -1849,6 +2106,10 @@ struct Cut<'a> {
     join: Option<&'static Join>,
     /// Its swap window (D159), where it has one.
     swap: Option<&'a pmem::SwapWindow>,
+    /// The contract its guest's init announced, which its snapshot records (D176).
+    init: Option<u64>,
+    /// Its components' window (D270), whose components its snapshot keeps (slice 5).
+    components: Option<Arc<pmem::Components>>,
 }
 
 impl Cut<'_> {
@@ -1889,10 +2150,18 @@ impl Cut<'_> {
         Ok(Some(Snapshot {
             config: self.config.clone(),
             plugged: self.memory.plugged_runs(),
+            // Each component plugged into it (D270 slice 5), read with its devices quiet,
+            // which a restore plugs back.
+            components: self
+                .components
+                .as_deref()
+                .map(pmem::Components::kept)
+                .unwrap_or_default(),
             // Its memory's save says them.
             data: None,
             arch,
             devices: w.into_bytes(),
+            init: self.init,
         }))
     }
 
@@ -1909,6 +2178,51 @@ impl Cut<'_> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming() {
+        let sh = Shared::new(0);
+        let result = sh.finish_scan::<()>(Scanned::Lost("layer map-back failed".into()));
+        assert_eq!(result, Err("layer map-back failed".into()));
+        assert!(sh.exiting(), "a live copy resumed after losing its layer mapping");
+    }
+
+    #[test]
+    fn a_live_copy_with_intact_mappings_can_continue_after_a_scan_error() {
+        let sh = Shared::new(0);
+        assert_eq!(sh.finish_scan(Scanned::Mapped(7)), Ok(7));
+        assert_eq!(
+            sh.finish_scan::<()>(Scanned::Failed("extent read failed".into())),
+            Err("extent read failed".into())
+        );
+        assert!(!sh.exiting());
+    }
+
+    #[test]
+    fn live_copy_excludes_save_and_teardown_until_its_guard_is_gone() {
+        let sh = Shared::new(0);
+        let reading = sh.begin_read(HostRead::Precopy).unwrap();
+        assert!(matches!(
+            sh.begin_read(HostRead::Save),
+            Err(ReadRefused::Busy(HostRead::Precopy))
+        ));
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                sh.await_save();
+                ended.send(()).unwrap();
+            });
+            assert!(end.try_recv().is_err());
+            drop(reading);
+            end.recv().unwrap();
+        });
+        drop(sh.begin_read(HostRead::Save).unwrap());
+        sh.stop(ExitReason::Stopped);
+        assert!(matches!(
+            sh.begin_read(HostRead::Precopy),
+            Err(ReadRefused::Stopped)
+        ));
+    }
 
     /// A restore copies its generation's writable layer into an empty file or into a clone
     /// of another generation's, takes a clone of its own generation's as it is, and refuses
@@ -1954,11 +2268,14 @@ mod tests {
                 share_window_mib: 0,
                 layer_mib: 0,
                 pci_slots: 0,
+                component_window_mib: 0,
             },
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         assert_eq!(pmem::ALIGN, 2 << 20);
         assert_eq!(guest_pages(&snap), ((16 + 4 + 4) << 20) / machine::PAGE);

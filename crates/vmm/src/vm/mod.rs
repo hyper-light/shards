@@ -85,6 +85,12 @@ impl From<String> for StartError {
     }
 }
 
+impl From<shards_abi::host::Unusable> for StartError {
+    fn from(why: shards_abi::host::Unusable) -> Self {
+        Self::Legacy(why.into())
+    }
+}
+
 impl From<&str> for StartError {
     fn from(message: &str) -> Self {
         Self::Legacy(message.into())
@@ -196,23 +202,30 @@ pub const RESTORES_RECORD: bool = cfg!(any(hv = "kvm", hv = "whp"));
 mod barrier;
 pub mod group;
 mod guest_time;
-pub use guest_time::{GuestTimes, VcpuTime};
+pub use guest_time::{Charged, GuestTimes, VcpuTime};
 /// A CPU in the hold's unit, the milli-CPU: a rate is a whole CPU's time in thousandths, as
 /// Kubernetes counts CPU, no finer than `1m` ("Resource Management for Pods and Containers",
 /// CPU resource units), and as Hex charges and caps a microVM (`hex_api::MIN_CPU_MILLI`). A
 /// unit, not a tuning: a daemon's whole CPUs are this many of it (D191, D247).
 pub const MILLI_PER_CPU: u64 = 1000;
-/// The period a machine's hold holds its vCPUs to their rate over (D191, D247): CFS
-/// bandwidth control's default, `cpu.max`'s 100000 µs (kernel/sched/sched.h l. 445-447,
-/// `default_bw_period_us`, Linux 1590cf03), which Docker's `--cpus` is a quota of. Its
-/// derivation from what the governor resolves is decided, waiting on a measurement (D191).
-const HOLD_PERIOD: std::time::Duration = std::time::Duration::from_millis(100);
+/// What a hold holds its vCPUs to (D191, D247): the rate, none where it lets them be, and the
+/// period its governor holds it over, derived from what this process has learned of its
+/// step (`granule::period`). Where it lets them be, the period a hold of every vCPU's whole
+/// CPU would have, g itself: the finest it resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rated {
+    pub milli: Option<std::num::NonZeroU64>,
+    pub period: std::time::Duration,
+}
 
-/// The period this build's hold holds a machine's vCPUs to their rate over: what a run's
-/// host tells its orchestrator (D247), which derives its own window from it rather than
-/// copying a number.
-pub fn hold_period() -> std::time::Duration {
-    HOLD_PERIOD
+impl Rated {
+    /// Its period in nanoseconds, as a rate's answer says it: none where it is none or past
+    /// what a u64 counts, which no period `granule::period` derives is.
+    pub fn period_ns(&self) -> Option<std::num::NonZeroU64> {
+        u64::try_from(self.period.as_nanos())
+            .ok()
+            .and_then(std::num::NonZeroU64::new)
+    }
 }
 #[cfg(any(hv, test))]
 mod hold;
@@ -226,7 +239,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, start_gpu_report, working_set_limit,
+    restore_from, restore_reported, restores_here, start, start_gpu_report, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -260,6 +273,15 @@ pub use unsupported::{
 };
 
 #[cfg(not(hv))]
+pub fn restore_reported(
+    cfg: &RestoreConfig,
+    pinned: crate::snapshot::Pinned,
+    _report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Handle, Running), String> {
+    restore_from(cfg, pinned)
+}
+
+#[cfg(not(hv))]
 pub fn start_gpu_report(
     cfg: &Config,
     _report: &mut GpuReportTo<'_>,
@@ -288,12 +310,35 @@ pub(crate) struct Hosts<'a> {
     /// The heads of its DAX windows a snapshot kept (D189), which a restore maps privately;
     /// none for a boot's, whose are its own memory.
     pub window_heads: Option<&'a std::fs::File>,
+    /// Each component's image a restore plugs back (D270 slice 5), by its key: one for each
+    /// its snapshot holds. None for a boot.
+    pub components: &'a [(String, std::fs::File)],
 }
 
-/// A snapshot's vsock and network devices, and the restore's host sides for them, come
-/// together or not at all.
+/// A snapshot's vsock and network devices and its components, and the restore's host sides
+/// and images for them, come together or not at all.
 #[cfg(hv)]
 fn check_hosts(snap: &crate::snapshot::Snapshot, hosts: Hosts<'_>) -> Result<(), String> {
+    // Each component it holds, given its image; none given that it holds not (D270 slice 5).
+    if let Some(k) = snap
+        .components
+        .iter()
+        .find(|k| !hosts.components.iter().any(|(key, _)| *key == k.key))
+    {
+        return Err(format!(
+            "the snapshot holds component {}: the restore gives no image of it",
+            k.key
+        ));
+    }
+    if let Some((key, _)) = hosts
+        .components
+        .iter()
+        .find(|(key, _)| !snap.components.iter().any(|k| k.key == *key))
+    {
+        return Err(format!(
+            "the restore gives component {key}'s image, which the snapshot holds none of"
+        ));
+    }
     match (snap.config.vsock, hosts.vsock) {
         (true, None) => {
             return Err(
@@ -542,6 +587,32 @@ fn restored_memory(
     }
 }
 
+/// Each component `snap` holds plugged back from its image in `images`, by its key, where the
+/// snapshot kept it (D270 slice 5): its range of the components' window and its place on the
+/// bus, before the devices' state is put back on its function ([`check_hosts`] has each image).
+#[cfg(hv)]
+fn replug_components(
+    control: &Arc<crate::devices::control::Control>,
+    memory: &Arc<GuestMemory>,
+    snap: &crate::snapshot::Snapshot,
+    images: &[(String, std::fs::File)],
+) -> Result<(), String> {
+    for kept in &snap.components {
+        let (_, image) = images.iter().find(|(key, _)| *key == kept.key).ok_or_else(|| {
+            format!(
+                "the snapshot holds component {}: the restore gives no image of it",
+                kept.key
+            )
+        })?;
+        let file = image
+            .try_clone()
+            .map_err(|e| format!("component {}'s image: {e}", kept.key))?;
+        runtime::plug_component(control, memory, file, &kept.key, Some(kept))
+            .map_err(|e| format!("component {} plugged back: {e}", kept.key))?;
+    }
+    Ok(())
+}
+
 /// The memory `snap`'s machine had plugged, plugged again in `memory` and read back from
 /// the snapshot's memory `file` (D176), given to the guest through `vm`'s stage 2 as a plug
 /// gives it: once the VM exists, and before any vCPU runs.
@@ -594,6 +665,11 @@ impl pmem::Slots for crate::hv::DeviceSlots {
     unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<(), String> {
         // SAFETY: forwarded caller contract.
         unsafe { crate::hv::DeviceSlots::map(self, i, host, gpa, len, writable) }.map_err(|e| e.to_string())
+    }
+
+    unsafe fn map_programs(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<(), String> {
+        // SAFETY: forwarded caller contract.
+        unsafe { crate::hv::DeviceSlots::map_programs(self, i, host, gpa, len) }.map_err(|e| e.to_string())
     }
 
     fn unmap(&self, i: u32, gpa: u64, len: usize) -> Result<(), String> {
@@ -661,6 +737,84 @@ fn swap_layout(
     }
     let end = at.checked_add(len).ok_or_else(overflow)?;
     Ok((Some((at, len)), end))
+}
+
+/// A components' window's place, `(guest address, length)` where it has one, the address past
+/// it, and its length in MiB (D270).
+#[cfg(hv)]
+type ComponentsAt = (Option<(u64, u64)>, u64, u64);
+
+/// Where its components' window goes (D270), if it has one: at the first GiB boundary at or
+/// past `top`, whole [`pmem::ALIGN`]s within the guest's addresses `limit`, fitted where they
+/// leave less than asked (said); and the address past it, or `top` where it has none. Its
+/// fitted length in MiB, which the machine's config keeps, so that a restore lays its
+/// guest's addresses out as its save had them.
+#[cfg(hv)]
+fn component_layout(
+    config: &crate::snapshot::MachineConfig,
+    top: u64,
+    limit: u64,
+) -> Result<ComponentsAt, String> {
+    const GIB: u64 = 1 << 30;
+    if config.component_window_mib == 0 {
+        return Ok((None, top, 0));
+    }
+    let overflow = || {
+        format!(
+            "a components' window of {} MiB overflows the address space",
+            config.component_window_mib
+        )
+    };
+    let asked = config
+        .component_window_mib
+        .checked_mul(1 << 20)
+        .ok_or_else(overflow)?;
+    let at = top.checked_next_multiple_of(GIB).ok_or_else(overflow)?;
+    let room = limit.saturating_sub(at) / pmem::ALIGN * pmem::ALIGN;
+    let len = asked.min(room);
+    if len < asked {
+        crate::warn!(
+            "a components' window of {} MiB where the guest's addresses leave {} MiB",
+            asked >> 20,
+            room >> 20
+        );
+    }
+    if len < pmem::ALIGN {
+        return Ok((None, top, 0));
+    }
+    let end = at.checked_add(len).ok_or_else(overflow)?;
+    Ok((Some((at, len)), end, len >> 20))
+}
+
+/// A restore's components' window laid out as its save's was (D270), `fitted` MiB of it:
+/// where this host's guest addresses leave it shorter, its guest's would end elsewhere than
+/// the snapshot's did, and the restore is refused.
+#[cfg(hv)]
+fn window_kept(fitted: u64, saved: &crate::snapshot::MachineConfig) -> Result<(), String> {
+    if fitted == saved.component_window_mib {
+        return Ok(());
+    }
+    Err(format!(
+        "its components' window of {} MiB: this host's guest addresses leave it {fitted} MiB",
+        saved.component_window_mib
+    ))
+}
+
+/// The components' window of `layout` (D270), its files mapped through a slot of its own for
+/// each of the machine's PCI slots, as many functions as its bus holds at once; none where
+/// it has none.
+#[cfg(hv)]
+fn components(
+    vm: &crate::hv::Vm,
+    layout: Option<(u64, u64)>,
+    pci_slots: u8,
+) -> Result<Option<Arc<pmem::Components>>, String> {
+    let Some((gpa, len)) = layout else {
+        return Ok(None);
+    };
+    let count = u32::from(pci_slots);
+    let slots = Box::new(vm.device_slots(count));
+    Ok(Some(Arc::new(pmem::Components::new(gpa, len, slots, count)?)))
 }
 
 /// Whether `config`'s machine has DAX windows (D189): a length for them, and a shared
@@ -1196,7 +1350,62 @@ fn kernel_cmdline(cfg: &Config) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Where the serial console's output goes.
+/// Whether a booted machine's console is given what its kernel logged before it registered
+/// (`devices::virtio::console`, D261): where the kernel's command line, as it boots, tells
+/// it no level to print at, every record it logs is one its console prints.
+#[cfg(hv)]
+fn console_backfill(cfg: &Config) -> bool {
+    !cmdline::kernel_part(&kernel_cmdline(cfg))
+        .split_whitespace()
+        .any(|word| word == "quiet" || word.starts_with("loglevel="))
+}
+
+/// What a machine's console is made of: where its output goes, how much of it is kept to
+/// quote (D12), and whether it is given what its kernel logged before it registered (D261).
+#[cfg(hv)]
+#[derive(Debug, Clone, Copy)]
+struct ConsoleSetup {
+    console: Console,
+    said: usize,
+    backfill: bool,
+}
+
+#[cfg(hv)]
+impl ConsoleSetup {
+    /// A booted machine's, as `cfg` has it.
+    fn booted(cfg: &Config) -> ConsoleSetup {
+        ConsoleSetup {
+            console: cfg.console,
+            said: cfg.said,
+            backfill: console_backfill(cfg),
+        }
+    }
+
+    /// A restored machine's: its guest's console registered before its snapshot, so
+    /// nothing was missed.
+    fn restored(console: Console, said: usize) -> ConsoleSetup {
+        ConsoleSetup {
+            console,
+            said,
+            backfill: false,
+        }
+    }
+
+    /// The console's device, and its port for the machine's handle.
+    fn device(
+        self,
+    ) -> Result<
+        (
+            crate::devices::virtio::console::Console,
+            Arc<crate::devices::virtio::console::Port>,
+        ),
+        String,
+    > {
+        crate::devices::virtio::console::Console::new(console_out(self.console)?, self.said, self.backfill)
+    }
+}
+
+/// Where the console's output goes.
 #[cfg(hv)]
 fn console_out(console: Console) -> Result<Box<dyn std::io::Write + Send>, String> {
     Ok(match console {
@@ -1241,6 +1450,7 @@ fn machine_config(cfg: &Config) -> Result<crate::snapshot::MachineConfig, String
         // Its file system's length, once its layer is open (`boot_layer`).
         layer_mib: 0,
         pci_slots: cfg.pci_slots,
+        component_window_mib: cfg.component_window_mib,
     })
 }
 
@@ -1283,7 +1493,7 @@ pub struct Config {
     pub cmdline: String,
     pub vcpus: u32,
     pub memory_mib: u64,
-    /// Where guest console (UART) output goes.
+    /// Where guest console (hvc0, virtio-console) output goes.
     pub console: Console,
     /// How many of its console's last bytes it keeps to quote (`Handle::console_said`):
     /// what its spawner learned its kernel's failure reports need
@@ -1355,6 +1565,10 @@ pub struct Config {
     /// shared directories and, on Linux, host functions, each found by its guest as its
     /// init rescans the bus. 0 for none; with any, the machine has a PCI bus.
     pub pci_slots: u8,
+    /// A components' window of this many MiB (D270): guest addresses past its DAX windows
+    /// where each read-only pmem function plugged into one of its slots maps a component's
+    /// image; 0 for none, as with no slots. Nothing of it is mapped until one is plugged.
+    pub component_window_mib: u64,
     /// Its slots behind its own IOMMU (virtio-iommu, D214), each slot's requester ID one
     /// its firmware names from boot and the IOMMU translates while a function is plugged
     /// there: what a host's function plugged in as it runs needs for its guest's VFIO to
@@ -1373,13 +1587,16 @@ pub struct Config {
 /// A device plugged into a running machine (D214): its place on bus 0 (`devfn`, device <<
 /// 3 | function), its guest's name for it there, which its init rescans the bus to find and
 /// writes `remove` of to let it go, and, for a disk, what grows it; for a host's function,
-/// how long each step of its plug took, in their order (PM M430), none for the others.
+/// how long each step of its plug took, in their order (PM M430), none for the others; for
+/// a component's pmem function (D270), its region's guest address and length, which its
+/// guest's libnvdimm names it by.
 #[derive(Debug, Clone)]
 pub struct Plugged {
     pub devfn: u8,
     pub address: String,
     pub size: Option<crate::devices::virtio::block::DiskSize>,
     pub steps: Vec<(&'static str, std::time::Duration)>,
+    pub region: Option<(u64, u64)>,
 }
 
 /// A host PCI function a VM is given (D154): its name as the host has it (`0000:01:00.0`)
@@ -1445,7 +1662,7 @@ pub fn passthrough_refused() -> PassthroughRefusal {
     }
     #[cfg(not(any(target_os = "macos", hv = "whp")))]
     {
-        PassthroughRefusal::NoBackend(check_host().err().unwrap_or_default())
+        PassthroughRefusal::NoBackend(check_host().err().map(String::from).unwrap_or_default())
     }
 }
 
@@ -2376,12 +2593,12 @@ pub struct VsockHost {
     ///
     /// [`ports`]: VsockHost::ports
     pub every: Vec<(u32, ServedPort)>,
-    /// A managed machine's rate (D255): a host client's `RATE <milli>` line on
-    /// [`path`](VsockHost::path)'s socket comes here with its connection, for this process
-    /// to hold the vCPUs to and answer on (`shards_abi::rate`). Only a dial on that socket
-    /// says one: a guest's connections arrive as its packets. None for every other
-    /// machine, whose muxer closes such a dial unanswered.
-    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, u64)>>,
+    /// A managed machine's host asks: a host client's `RATE <milli>` (D255) or `USE` (D260)
+    /// line on [`path`](VsockHost::path)'s socket comes here with its connection, for this
+    /// process to hold the vCPUs to, or read their use, and answer on (`shards_abi::rate`).
+    /// Only a dial on that socket says one: a guest's connections arrive as its packets.
+    /// None for every other machine, whose muxer closes such a dial unanswered.
+    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, shards_abi::rate::Asked)>>,
 }
 
 /// What a [`ServedPort::Admitted`] port's owner did with a guest's connection: took it, or
@@ -2481,8 +2698,7 @@ impl VsockHost {
     }
 }
 
-/// The memory a VM has unless it is given more or less, in MiB.
-pub const MEMORY_MIB: u64 = 256;
+pub use shards_ipc::size::MEMORY_MIB;
 
 impl Config {
     /// A VM with shards' defaults: 1 CPU, [`MEMORY_MIB`], and a console on stdout.
@@ -2491,7 +2707,7 @@ impl Config {
             kernel,
             initrd: None,
             init,
-            cmdline: "console=ttyS0 earlycon panic=-1".into(),
+            cmdline: format!("{} panic=-1", shards_abi::CONSOLE),
             vcpus: 1,
             memory_mib: MEMORY_MIB,
             console: Console::Stdout,
@@ -2516,6 +2732,7 @@ impl Config {
             pci_test: Vec::new(),
             vfio: Vec::new(),
             pci_slots: 0,
+            component_window_mib: 0,
             pci_slots_iommu: false,
             cpu_baseline: Vec::new(),
         }
@@ -2568,6 +2785,9 @@ pub struct RestoreConfig {
     /// The snapshot generation whose layer `layer` is a clone of, where its spawner made
     /// one (APFS, btrfs, XFS).
     pub layer_cloned: Option<String>,
+    /// Each component's image its snapshot holds (D270 slice 5), by its key, which the restore
+    /// plugs back where the snapshot kept it before its devices' state is put back.
+    pub components: Vec<(String, std::fs::File)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2930,7 +3150,7 @@ mod tests {
             cfg.console = console;
             kernel_cmdline(&cfg).into_owned()
         };
-        let base = "console=ttyS0 earlycon panic=-1";
+        let base = "console=hvc0 panic=-1";
         assert_eq!(told(base, Console::Discard), format!("{base} quiet"));
         assert_eq!(told(base, Console::Stdout), base);
         for own in [format!("{base} loglevel=7"), format!("{base} quiet")] {
@@ -2953,10 +3173,10 @@ mod tests {
             kernel_cmdline(&cfg).into_owned()
         };
         assert_eq!(
-            told("console=ttyS0 -- managed-network capabilities"),
-            "console=ttyS0 quiet -- managed-network capabilities"
+            told("console=hvc0 -- managed-network capabilities"),
+            "console=hvc0 quiet -- managed-network capabilities"
         );
-        assert_eq!(told("console=ttyS0 -- quiet"), "console=ttyS0 quiet -- quiet");
+        assert_eq!(told("console=hvc0 -- quiet"), "console=hvc0 quiet -- quiet");
         assert_eq!(told("loglevel=7 -- x"), "loglevel=7 -- x");
     }
 
@@ -2999,6 +3219,7 @@ mod tests {
             share_window_mib: 0,
             layer_mib: 0,
             pci_slots: 0,
+            component_window_mib: 0,
         }
     }
 
@@ -3026,9 +3247,11 @@ mod tests {
         let snap = |vsock, net| Snapshot {
             config: machine(vsock, net),
             plugged: Vec::new(),
+            components: Vec::new(),
             data: None,
             arch: Vec::new(),
             devices: Vec::new(),
+            init: None,
         };
         let hosts = |v: bool, n: bool| Hosts {
             vsock: v.then_some(&vsock),
@@ -3039,6 +3262,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let mac = Some([2, 0, 0, 0, 0, 1]);
         for (has_vsock, has_net) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -3059,6 +3283,47 @@ mod tests {
         assert!(e.contains("--vsock PATH"), "{e}");
         let e = check_hosts(&snap(false, mac), hosts(false, false)).unwrap_err();
         assert!(e.contains("its own network process"), "{e}");
+    }
+
+    /// A restore gives each component its snapshot holds its image, by its key, and none that
+    /// it holds not (D270 slice 5): one missing, or one more, is refused, naming it.
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_gives_each_component_its_snapshot_holds_and_no_other() {
+        fn hosts(components: &[(String, std::fs::File)]) -> Hosts<'_> {
+            Hosts {
+                vsock: None,
+                net: None,
+                shares: &[],
+                join: None,
+                join_share: None,
+                io: None,
+                layer: None,
+                window_heads: None,
+                components,
+            }
+        }
+        let key = |c: char| c.to_string().repeat(64);
+        let image = || std::fs::File::open("/dev/null").unwrap();
+        let snap = Snapshot {
+            config: machine(false, None),
+            plugged: Vec::new(),
+            components: vec![crate::devices::virtio::pmem::Kept {
+                devfn: 3 << 3,
+                gpa: 1 << 32,
+                len: 2 << 20,
+                key: key('a'),
+            }],
+            data: None,
+            arch: Vec::new(),
+            devices: Vec::new(),
+            init: None,
+        };
+        check_hosts(&snap, hosts(&[(key('a'), image())])).unwrap();
+        let e = check_hosts(&snap, hosts(&[])).unwrap_err();
+        assert!(e.contains(&key('a')) && e.contains("gives no image"), "{e}");
+        let e = check_hosts(&snap, hosts(&[(key('a'), image()), (key('b'), image())])).unwrap_err();
+        assert!(e.contains(&key('b')) && e.contains("holds none of"), "{e}");
     }
 
     /// Each share's DAX window and the join share's (D189), at GiB boundaries from where
@@ -3183,6 +3448,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, hosts, Vec::new(), 4)
             .err()
@@ -3225,6 +3491,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()
@@ -3239,6 +3506,7 @@ mod tests {
             io: None,
             layer: None,
             window_heads: None,
+            components: &[],
         };
         let e = virtio_devices(&config, &regions, None, &[], None, missing, Vec::new(), 5)
             .err()

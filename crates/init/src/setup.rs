@@ -141,11 +141,87 @@ fn errno_words(e: &io::Error) -> String {
 /// Sets sysctl `key` to `value`; a failure in the words scripts read of a start's
 /// (internal/sys WriteSysctls).
 pub fn write_sysctl(key: &str, value: &str) -> Result<(), String> {
-    let path = key.replace('.', "/");
-    let shown = format!("/proc/sys/{path}");
+    let shown = format!("/proc/sys/{}", key.replace('.', "/"));
     let dir = PROC_SYS
         .get()
         .ok_or_else(|| format!("open sysctl {key} file: open {shown}: no such file or directory"))?;
+    write_sysctl_at(dir, key, value)
+}
+
+/// The sysctls by which a network namespace's conntrack keeps a UDP flow past its last
+/// packet: unanswered (or answered within its first 2 s), and answered after
+/// (nf_conntrack_proto_udp.c, udp_packet). Each in seconds (proc_dointvec_jiffies), each
+/// namespace's own, every new one starting at the kernel's 30 s and 120 s
+/// (nf_conntrack_udp_init_net), never its creator's.
+const UDP_TIMEOUTS: [&str; 2] = [
+    "net.netfilter.nf_conntrack_udp_timeout",
+    "net.netfilter.nf_conntrack_udp_timeout_stream",
+];
+
+/// What [`keep_udp_flows`] found of the namespace's conntrack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpFlows {
+    /// Each UDP flow it tracks lives `shards_abi::bounds::UDP_MAPPING_IDLE` past its last
+    /// packet, answered or not.
+    Kept,
+    /// A kernel without conntrack's sysctls (no CONFIG_NF_CONNTRACK, or no
+    /// CONFIG_SYSCTL): it tracks no flow to keep.
+    Untracked,
+}
+
+/// Has the calling thread's network namespace's conntrack keep a UDP flow as the network
+/// process, init's relay and the members' proxy keep one (D46, D124, D181): RFC 4787
+/// §4.3 REQ-5's two minutes past its last datagram, either way, answered or not, so that
+/// the microVM's own NAT and stateful filters (init's namespace's, each gate's) end a flow
+/// when the host's does, never at the kernel's 30 s. Written beneath init's own
+/// `/proc/sys`, which looks `net` up in the caller's namespace (net/sysctl_net.c).
+pub fn keep_udp_flows() -> Result<UdpFlows, String> {
+    let dir = PROC_SYS
+        .get()
+        .ok_or_else(|| "keeping UDP flows: no /proc/sys kept".to_string())?;
+    keep_udp_flows_at(dir)
+}
+
+fn keep_udp_flows_at(dir: &OwnedFd) -> Result<UdpFlows, String> {
+    let secs = shards_abi::bounds::UDP_MAPPING_IDLE.as_secs().to_string();
+    let mut present = [false; UDP_TIMEOUTS.len()];
+    for (key, there) in UDP_TIMEOUTS.iter().zip(&mut present) {
+        let c = CString::new(key.replace('.', "/")).map_err(|_| format!("{key}: a NUL in its name"))?;
+        // SAFETY: faccessat(2) of a NUL-terminated path below our own descriptor.
+        if unsafe { libc::faccessat(dir.as_raw_fd(), c.as_ptr(), libc::F_OK, 0) } == 0 {
+            *there = true;
+        } else {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ENOENT) {
+                return Err(format!(
+                    "/proc/sys/{}: {}",
+                    key.replace('.', "/"),
+                    errno_words(&e)
+                ));
+            }
+        }
+    }
+    match present {
+        [false, false] => Ok(UdpFlows::Untracked),
+        [true, true] => {
+            for key in UDP_TIMEOUTS {
+                write_sysctl_at(dir, key, &secs)?;
+            }
+            Ok(UdpFlows::Kept)
+        }
+        // One table registers both (nf_conntrack_standalone.c): a kernel with one alone
+        // is none shards knows, and its flows' lifetimes are not guessed.
+        [first, _] => {
+            let [a, b] = UDP_TIMEOUTS;
+            let (has, lacks) = if first { (a, b) } else { (b, a) };
+            Err(format!("this kernel's conntrack has {has} without {lacks}"))
+        }
+    }
+}
+
+fn write_sysctl_at(dir: &OwnedFd, key: &str, value: &str) -> Result<(), String> {
+    let path = key.replace('.', "/");
+    let shown = format!("/proc/sys/{path}");
     let c = CString::new(path).map_err(|_| format!("open sysctl {key} file: a NUL in its name"))?;
     // SAFETY: openat(2) of a NUL-terminated path below our own descriptor.
     let fd = unsafe {
@@ -613,10 +689,10 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
         let flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV;
         mount("", "/sys/fs/cgroup", "", flags, "")?;
     } else if entry == shards_abi::run::nesting::GRANT {
-        // The nesting grant (D234): the command into its leaf, the hierarchy made writable
-        // by the `cgroups-rw` before this entry, its namespace still rooted at the workload's
-        // cgroup.
-        enter_leaf("/sys/fs/cgroup").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
+        // The nesting grant (D234): the command into a cgroup namespace rooted beneath the
+        // workload's cgroup, which holds its device program, then into its leaf; the
+        // hierarchy made writable by the `cgroups-rw` before this entry.
+        delegate("/sys/fs/cgroup").map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
     } else if let Some(list) = entry.strip_prefix(shards_abi::run::nesting::GPUS) {
         // The grant's GPUs (D234), where its command reads them.
         write_gpus(std::path::Path::new(GPUS_FILE), list)
@@ -634,15 +710,54 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     Ok(())
 }
 
-/// Puts this process, the command's standby, in the leaf [`crate::run::LEAF`] of `root`,
-/// its cgroup namespace's root as its own mount shows it: under the nesting grant (D234) its
-/// command starts there, so that the root holds no process and the workload may enable
-/// controllers for children beside the leaf (cgroup-v2.rst, "no internal processes").
-pub fn enter_leaf(root: &str) -> io::Result<()> {
-    let mut procs = std::fs::OpenOptions::new()
-        .write(true)
-        .open(format!("{root}/{}/cgroup.procs", crate::run::LEAF))?;
-    io::Write::write_all(&mut procs, b"0")
+/// Hands this process, the command's standby under the nesting grant (D234), the subtree
+/// [`crate::run::DELEGATED`] of `root`, the workload's cgroup as its own mount shows it:
+/// into that subtree; the workload's controllers enabled for it, which no cgroup holding a
+/// process may enable (cgroup-v2.rst, "no internal processes"), and nsdelegate lets a
+/// namespace's root write (its `cgroup.subtree_control`); a cgroup namespace of its own
+/// rooted there; the hierarchy mounted afresh, writable, over `root`, in place of the mount
+/// that showed the workload's cgroup; then into the leaf [`crate::run::LEAF`].
+///
+/// The workload's cgroup holds its device program (`devices::confine_by_default`, D44):
+/// every process its command makes is beneath it, so the program bounds each, and the
+/// boxes' own programs beneath (BPF_F_ALLOW_MULTI, kernel/bpf/cgroup.c
+/// compute_effective_progs). With CAP_SYS_ADMIN a process may detach a program it can name
+/// the cgroup of (BPF_PROG_QUERY, BPF_PROG_GET_FD_BY_ID, BPF_PROG_DETACH): no process of the
+/// command's has any way to name the workload's cgroup, above its namespace's root
+/// (inithex-01). Its command's root holds none, and no limit, which stay the workload's.
+pub fn delegate(root: &str) -> io::Result<()> {
+    let enter = |dir: &str| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(format!("{dir}/cgroup.procs"))
+            .and_then(|mut procs| io::Write::write_all(&mut procs, b"0"))
+    };
+    let delegated = format!("{root}/{}", crate::run::DELEGATED);
+    enter(&delegated)?;
+    let controllers = std::fs::read_to_string(format!("{root}/cgroup.controllers"))?;
+    let enable: Vec<String> = controllers.split_whitespace().map(|c| format!("+{c}")).collect();
+    if !enable.is_empty() {
+        std::fs::write(format!("{root}/cgroup.subtree_control"), enable.join(" "))?;
+    }
+    let path = c(root).ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: unshare(2), umount2(2) and mount(2) of NUL-terminated strings that outlive
+    // the calls, in the standby, a single-threaded fork of init, in a mount namespace of
+    // its own.
+    let done = unsafe {
+        libc::unshare(libc::CLONE_NEWCGROUP) == 0
+            && libc::umount2(path.as_ptr(), libc::MNT_DETACH) == 0
+            && libc::mount(
+                c"cgroup2".as_ptr(),
+                path.as_ptr(),
+                c"cgroup2".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV,
+                std::ptr::null(),
+            ) == 0
+    };
+    if !done {
+        return Err(io::Error::last_os_error());
+    }
+    enter(&format!("{root}/{}", crate::run::LEAF))
 }
 
 /// Where a run given the nesting grant finds the GPUs it names (D234): one identity a line,
@@ -1310,7 +1425,8 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
     }
     if entry == shards_abi::run::nesting::GRANT {
         return format!(
-            "moving the command into its cgroup's leaf, {}, for its nesting grant: {err}",
+            "moving the command into its cgroup, {}/{}, for its nesting grant: {err}",
+            crate::run::DELEGATED,
             crate::run::LEAF
         );
     }
@@ -1351,6 +1467,41 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guest kernel's conntrack kept an unanswered UDP flow 30 s, where the network
+    /// process, init's relay and the members' proxy keep each REQ-5's two minutes. Do: a
+    /// `/proc/sys` of conntrack's two files at the kernel's 30 and 120. Expect: both
+    /// `UDP_MAPPING_IDLE`'s seconds; a `/proc/sys` without them untracked and left so; one
+    /// with one alone refused.
+    #[test]
+    fn a_namespaces_conntrack_keeps_udp_flows_as_the_host_does() {
+        let tmp = shards_testdir::TempDir::new("udp-ct").unwrap();
+        let root = tmp.path().join("sys");
+        let open = |at: &std::path::Path| -> OwnedFd {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+                .open(at)
+                .unwrap()
+                .into()
+        };
+        let netfilter = root.join("net/netfilter");
+        std::fs::create_dir_all(&netfilter).unwrap();
+        assert_eq!(keep_udp_flows_at(&open(&root)).unwrap(), UdpFlows::Untracked);
+        assert_eq!(std::fs::read_dir(&netfilter).unwrap().count(), 0, "nothing made");
+        let (once, stream) = (
+            netfilter.join("nf_conntrack_udp_timeout"),
+            netfilter.join("nf_conntrack_udp_timeout_stream"),
+        );
+        std::fs::write(&once, "30\n").unwrap();
+        assert!(keep_udp_flows_at(&open(&root)).unwrap_err().contains("without"));
+        std::fs::write(&stream, "120\n").unwrap();
+        assert_eq!(keep_udp_flows_at(&open(&root)).unwrap(), UdpFlows::Kept);
+        let secs = shards_abi::bounds::UDP_MAPPING_IDLE.as_secs().to_string();
+        assert_eq!(std::fs::read_to_string(&once).unwrap(), secs);
+        assert_eq!(std::fs::read_to_string(&stream).unwrap(), secs);
+    }
 
     #[test]
     fn managed_capture_metadata_is_not_a_workload_mount() {
@@ -1456,33 +1607,21 @@ mod tests {
         }
     }
 
-    /// A cgroup tree of plain files, as a test may make one: its root's and its leaf's
-    /// `cgroup.procs`, each empty.
-    fn tree(name: &str) -> shards_testdir::TempDir {
-        let dir = shards_testdir::TempDir::new(name).unwrap();
-        std::fs::create_dir(dir.path().join(crate::run::LEAF)).unwrap();
-        std::fs::write(dir.path().join("cgroup.procs"), b"").unwrap();
-        std::fs::write(dir.path().join(crate::run::LEAF).join("cgroup.procs"), b"").unwrap();
-        dir
-    }
-
-    /// Under the nesting grant (D234) the command's standby enters the leaf `init` of its
-    /// cgroup namespace's root, and never the root, which holds no process of it.
+    /// Under the nesting grant (D234) a standby whose workload's cgroup has no subtree for
+    /// its command starts none: init makes the subtree before any process of the command's
+    /// is born, and the standby changes nothing of its namespaces before it is in it (the
+    /// whole of `delegate`, on a real kernel: run.rs's nesting tests).
     #[test]
-    fn a_granted_command_starts_in_its_leaf() {
-        let dir = tree("leaf");
+    fn a_granted_command_starts_in_no_cgroup_but_its_subtree() {
+        let dir = shards_testdir::TempDir::new("leaf").unwrap();
+        std::fs::write(dir.path().join("cgroup.procs"), b"").unwrap();
         let root = dir.path().to_str().unwrap();
-        enter_leaf(root).unwrap();
-        assert_eq!(std::fs::read(dir.path().join("init/cgroup.procs")).unwrap(), b"0");
+        assert_eq!(delegate(root).unwrap_err().kind(), io::ErrorKind::NotFound);
         assert_eq!(
             std::fs::read(dir.path().join("cgroup.procs")).unwrap(),
             b"",
-            "the root holds none"
+            "the workload's cgroup holds none"
         );
-        // No leaf, no start: init makes it before any process of the command's is born.
-        std::fs::remove_dir_all(dir.path().join("init")).unwrap();
-        assert_eq!(enter_leaf(root).unwrap_err().kind(), io::ErrorKind::NotFound);
-        assert_eq!(std::fs::read(dir.path().join("cgroup.procs")).unwrap(), b"");
     }
 
     /// The run's GPUs, one identity a line in D232's grammar, in a file every user of the

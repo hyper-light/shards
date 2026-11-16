@@ -5,7 +5,7 @@ mod common;
 
 #[path = "common/managed_capture.rs"]
 mod managed_capture;
-use managed_capture::{Ask, Event, Metadata, Observer};
+use managed_capture::{Ask, Event, Metadata, Observer, Until};
 
 #[path = "managed_output/tenant_exit.rs"]
 mod tenant_exit;
@@ -31,7 +31,7 @@ static MANAGED_ALLOC: managed_alloc::ManagedAlloc = managed_alloc::ManagedAlloc:
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
@@ -39,8 +39,38 @@ use shards_remote::identity::Identity;
 use shards_remote::managed::{Reason, Scope};
 use shards_remote::net::Command;
 
-// Test patience, matching the neighboring real-VM build fixtures; never runtime policy.
-const WITHIN: Duration = Duration::from_secs(120);
+/// What a fixture's wait is held to: judged on its home's daemon and microVMs (D209), or a
+/// coordinator campaign's own phase deadline, its caller's input.
+#[derive(Clone, Copy)]
+enum Bound {
+    Judged,
+    At(Instant),
+}
+
+impl From<Instant> for Bound {
+    fn from(at: Instant) -> Self {
+        Bound::At(at)
+    }
+}
+
+impl Bound {
+    /// An observer's wait on `home`'s run, held as this is.
+    fn on(self, home: &Path) -> Until<'_> {
+        match self {
+            Bound::Judged => Until::Judged(home),
+            Bound::At(at) => Until::At(at),
+        }
+    }
+
+    /// What a command is given of it: nothing bounds a command's wait, judged already
+    /// (`common::run_command`), so only a campaign's deadline is told.
+    fn left(self) -> Duration {
+        match self {
+            Bound::Judged => Duration::MAX,
+            Bound::At(at) => at.saturating_duration_since(Instant::now()),
+        }
+    }
+}
 
 fn payload(member: &str, channel: Channel) -> Vec<u8> {
     let tail: &[u8] = match channel {
@@ -90,6 +120,7 @@ impl Fixture {
 
     /// `shards ARGS` in its home, waited on as long as it goes on (`common::run_command`):
     /// `_within`, its callers' share of their case's time, bounds it no more.
+    #[track_caller]
     fn command(&self, args: &[&str], _within: Duration) -> common::Run {
         common::run_shards_env(
             &[],
@@ -109,7 +140,7 @@ impl Fixture {
             "",
             None,
             None,
-            Instant::now() + WITHIN,
+            Bound::Judged,
         );
     }
 
@@ -120,8 +151,9 @@ impl Fixture {
         directives: &str,
         agent_tasks: Option<u32>,
         publish_ports: Option<&[u16]>,
-        until: Instant,
+        until: impl Into<Bound>,
     ) {
+        let until: Bound = until.into();
         let processes = agent_tasks
             .map(|tasks| {
                 assert!(
@@ -184,10 +216,10 @@ impl Fixture {
                 "owner-output:1",
                 self.context.to_str().unwrap(),
             ],
-            until.saturating_duration_since(Instant::now()),
+            until.left(),
         );
         assert_eq!(built.status, Some(0), "{built}");
-        let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
+        let run = |args: &[&str]| self.command(args, until.left());
         let stdin = self.stdin.map(|members| format!("shards.stdin={members}"));
         // Its owner reads both members' output (D240): the daemon drains none of it.
         let mut args = vec![
@@ -240,7 +272,7 @@ impl Fixture {
         channel: Channel,
         offered: Option<Scope>,
         outsider: bool,
-        until: Instant,
+        until: impl Into<Bound>,
     ) -> usize {
         let metadata = self.metadata.as_ref().unwrap();
         let _ = writeln!(
@@ -254,7 +286,7 @@ impl Fixture {
             metadata,
             offered.unwrap_or_else(|| metadata.scope(member, channel)),
             metadata.endpoints[&(member, channel as u8)],
-            until,
+            Into::<Bound>::into(until).on(&self.home),
         );
         #[cfg(unix)]
         self.observer_sockets.extend_from_slice(&observer.held);
@@ -287,12 +319,13 @@ impl Fixture {
         );
     }
 
+    #[track_caller]
     fn consume(&mut self, member: u32, label: &str, channel: Channel) {
-        let observer = self.observe(member, channel, None, false, Instant::now() + WITHIN);
+        let observer = self.observe(member, channel, None, false, Bound::Judged);
         let expected = payload(label, channel);
         let (_, wire) =
-            self.observers[observer].exact(declared_label(member), &expected, Instant::now() + WITHIN);
-        self.observers[observer].ack_and_finish(wire, Instant::now() + WITHIN);
+            self.observers[observer].exact(declared_label(member), &expected, Until::Judged(&self.home));
+        self.observers[observer].ack_and_finish(wire, Until::Judged(&self.home));
         self.observed.insert((member, channel as u8), (wire, wire));
         let _ = writeln!(
             std::io::stdout(),
@@ -302,17 +335,16 @@ impl Fixture {
         );
     }
 
-    fn shutdown(&mut self, until: Instant) -> Result<(), String> {
+    fn shutdown(&mut self, until: impl Into<Bound>) -> Result<(), String> {
+        let until: Bound = until.into();
+        let home = self.home.to_path_buf();
         let _ = writeln!(std::io::stdout(), "managed-owner owner stop");
         let mut errors = Vec::new();
         for observer in &self.observers {
             observer.sender.request_stop();
         }
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.command(
-                &["stop", "daemon"],
-                until.saturating_duration_since(Instant::now()),
-            )
+            self.command(&["stop", "daemon"], until.left())
         })) {
             Ok(stopped) if stopped.status != Some(0) => errors.push(format!("owner stop: {stopped}")),
             // A stop returns once its daemon has exited (cli/client.rs `stop`), which lets go
@@ -327,7 +359,7 @@ impl Fixture {
             _ => {}
         }
         for observer in &mut self.observers {
-            if let Err(error) = observer.join(until) {
+            if let Err(error) = observer.join(until.on(&home)) {
                 errors.push(error);
             }
         }
@@ -518,7 +550,7 @@ fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
         fixture.start();
         test(&mut fixture);
     }));
-    let stopped = fixture.shutdown(Instant::now() + WITHIN);
+    let stopped = fixture.shutdown(Bound::Judged);
     if let Err(error) = result {
         let _ = writeln!(std::io::stderr(), "owner cleanup: {stopped:?}");
         std::panic::resume_unwind(error);
@@ -530,22 +562,24 @@ fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
 #[test]
 fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent() {
     let Some(fixture) = with_fixture(|fixture| {
-        let held = fixture.observe(1, Channel::Stdout, None, false, Instant::now() + WITHIN);
+        let held = fixture.observe(1, Channel::Stdout, None, false, Bound::Judged);
         let (start, end) = fixture.observers[held].exact(
             declared_label(1),
             &payload("agent", Channel::Stdout),
-            Instant::now() + WITHIN,
+            Until::Judged(&fixture.home),
         );
         fixture.observed.insert((1, Channel::Stdout as u8), (end, start));
         fixture.consume(1, "agent", Channel::Stderr);
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         fixture.observers[held]
             .sender
             .send(Command::Handler(Ask::Cancel))
             .unwrap();
-        fixture.observers[held].join(Instant::now() + WITHIN).unwrap();
+        fixture.observers[held]
+            .join(Until::Judged(&fixture.home))
+            .unwrap();
         let _ = writeln!(std::io::stdout(), "managed-owner local cancellation complete");
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         // The sibling receives its first output credit only after observer loss.
         fixture.consume(2, "harness", Channel::Stdout);
         fixture.consume(2, "harness", Channel::Stderr);
@@ -565,19 +599,19 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
 #[test]
 fn private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope() {
     let Some(fixture) = with_fixture(|fixture| {
-        let outsider = fixture.observe(1, Channel::Stdout, None, true, Instant::now() + WITHIN);
+        let outsider = fixture.observe(1, Channel::Stdout, None, true, Bound::Judged);
         // The current public Driver erases the typed TLS cause. A peer close without
         // an application code is observed; local errors/deadlines/data are failures.
-        fixture.observers[outsider].refused(None, Instant::now() + WITHIN);
+        fixture.observers[outsider].refused(None, Until::Judged(&fixture.home));
         let mut stale = fixture.metadata.as_ref().unwrap().scope(1, Channel::Stderr);
         stale.generation = stale.generation.checked_add(1).unwrap();
-        let observer = fixture.observe(1, Channel::Stderr, Some(stale), false, Instant::now() + WITHIN);
-        fixture.observers[observer].refused(Some(Reason::Stale), Instant::now() + WITHIN);
+        let observer = fixture.observe(1, Channel::Stderr, Some(stale), false, Bound::Judged);
+        fixture.observers[observer].refused(Some(Reason::Stale), Until::Judged(&fixture.home));
         let other = fixture.metadata.as_ref().unwrap().scope(1, Channel::Stdout);
-        let observer = fixture.observe(2, Channel::Stdout, Some(other), false, Instant::now() + WITHIN);
-        fixture.observers[observer].refused(Some(Reason::Scope), Instant::now() + WITHIN);
+        let observer = fixture.observe(2, Channel::Stdout, Some(other), false, Bound::Judged);
+        fixture.observers[observer].refused(Some(Reason::Scope), Until::Judged(&fixture.home));
         fixture.consume(2, "harness", Channel::Stderr);
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
     }) else {
         return;
     };
@@ -653,18 +687,16 @@ fn unanswered_observer() -> (std::net::UdpSocket, Observer) {
         &metadata,
         metadata.scope(1, Channel::Stdout),
         metadata.endpoints[&(1, 1)],
-        Instant::now() + WITHIN,
+        Until::Ordered,
     );
     (silent, observer)
 }
 
 /// Sends `ask` once the observer's one admitted command slot is free: its driver frees it as
-/// it takes the Connect `Observer::start` sent.
+/// it takes the Connect `Observer::start` sent, an order of its own thread's, no bound.
 fn admit(observer: &Observer, ask: Ask) {
-    let until = Instant::now() + WITHIN;
     let mut command = Command::Handler(ask);
     while let Err(std::sync::mpsc::TrySendError::Full(back)) = observer.sender.try_send(command) {
-        assert!(Instant::now() < until, "observer driver took no command");
         command = back;
         std::thread::yield_now();
     }
@@ -682,10 +714,8 @@ fn said(panic: &(dyn std::any::Any + Send)) -> String {
 #[test]
 fn a_lost_observer_stream_says_how_its_driver_ended() {
     let lost = |observer: &Observer| {
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            observer.next(Instant::now() + WITHIN)
-        }))
-        .unwrap_err();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.next(Until::Ordered)))
+            .unwrap_err();
         said(panic.as_ref())
     };
     // A driver that ends normally: its observer's own cancel.
@@ -693,18 +723,19 @@ fn a_lost_observer_stream_says_how_its_driver_ended() {
     admit(&cancelled, Ask::Cancel);
     let said = lost(&cancelled);
     assert!(said.contains("driver ended Ok"), "{said}");
-    cancelled.join(Instant::now() + WITHIN).unwrap();
+    cancelled.join(Until::Ordered).unwrap();
     // A driver whose thread panics, as it is asked to.
     let (_silent, mut panicked) = unanswered_observer();
     admit(&panicked, Ask::Panic);
     let said = lost(&panicked);
     assert!(said.contains("panicked"), "{said}");
-    assert!(panicked.join(Instant::now() + WITHIN).is_err());
+    assert!(panicked.join(Until::Ordered).is_err());
 }
 
 /// A helper that panics while the test reads an observer beside it ends that read at once,
-/// before its deadline, and the helper's own panic is what fails: the read is never left to
-/// wait it out, as member_stdin's was behind its writer at d5afadbc8.
+/// and the helper's own panic is what fails: the read is never left to wait it out, as
+/// member_stdin's was behind its writer at d5afadbc8. Its observer and its read have no
+/// deadline at all (`Until::Ordered`), so only the stop the panic sends ends the read.
 #[test]
 fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
     fn helper() {
@@ -712,11 +743,11 @@ fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
     }
     let (_silent, mut observer) = unanswered_observer();
     let began = Instant::now();
-    let until = began + WITHIN;
     let read = std::cell::Cell::new(None);
     let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         beside(&observer, helper, || {
-            let next = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.next(until)));
+            let next =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer.next(Until::Ordered)));
             let how = match next {
                 Ok(event) => format!("{event:?}"),
                 Err(panic) => said(panic.as_ref()),
@@ -726,17 +757,83 @@ fn a_helpers_panic_ends_the_read_beside_it_and_is_what_fails() {
     }))
     .unwrap_err();
     assert_eq!(said(failed.as_ref()), "the helper's own failure");
-    // Ended by the stop the helper's panic sent, its driver's end: not by the observer's own
-    // deadline (its Failed) nor the read's, which come WITHIN after it began.
+    // Ended by the stop the helper's panic sent, its driver's end, as neither the observer nor
+    // its read has a deadline.
     let (ended, how) = read.take().unwrap();
     assert!(
         how.contains("driver ended Ok"),
         "the read ended {:?} after it began, by {how}",
         ended.duration_since(began)
     );
-    observer.join(until).unwrap();
+    observer.join(Until::Ordered).unwrap();
 }
 
+/// A socket of this process's is found once by its address while other sockets come and go
+/// (`managed_capture::bound`, which finds an observer's): CI's aarch64 musl run 43513425954
+/// found one twice, `[114149, 114149]`. /proc/net/udp is no snapshot: its reader takes the
+/// table as little as each read(2) asks, resuming by position, so a socket inserted or removed
+/// meanwhile has another listed twice or not at all. Do: hold a socket; on as many threads as
+/// this host runs at once, keep twice a page of /proc/net/udp's lines (each 128 bytes,
+/// udp4_format_sock's width) of other sockets, closing and binding them anew; meanwhile find
+/// the held one by its address, as many times as a churner keeps sockets. Expect: found once
+/// each time. (Before, adacachy2 at 54286a668 found 329 of 2,048 twice.)
+#[cfg(target_os = "linux")]
+#[test]
+fn a_socket_is_found_once_while_others_come_and_go() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let SocketAddr::V4(at) = held.local_addr().unwrap() else {
+        panic!("an IPv4 socket");
+    };
+    // SAFETY: sysconf(3) reads a value and changes nothing.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
+    let batch = 2 * page / 128;
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    // Its churners hold `threads * batch` sockets at once: the soft descriptor limit raised to
+    // the hard one, as the daemon raises its own (a systemd unit's soft limit is 1024, under
+    // 32 threads' 2,048: KVM c36 refused EMFILE).
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) and setrlimit(2) on a struct of ours.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+    }
+    let wanted = u64::try_from(threads * batch).unwrap();
+    assert!(
+        limit.rlim_max > wanted,
+        "its churners need {wanted} descriptors; this host's hard limit is {}",
+        limit.rlim_max
+    );
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                let mut kept = std::collections::VecDeque::new();
+                while !stop.load(Ordering::Relaxed) {
+                    if kept.len() >= batch {
+                        kept.pop_front();
+                    }
+                    kept.push_back(std::net::UdpSocket::bind("127.0.0.1:0").unwrap());
+                }
+            });
+        }
+        let found: Vec<Vec<u64>> = (0..batch).map(|_| managed_capture::bound(at)).collect();
+        stop.store(true, Ordering::Relaxed);
+        let torn: Vec<_> = found.iter().filter(|ids| ids.len() != 1).collect();
+        assert!(
+            torn.is_empty(),
+            "{} of {} finds not once: {:?}",
+            torn.len(),
+            found.len(),
+            torn.first()
+        );
+    });
+    drop(held);
+}
 /// The binary's tests share this process: another test's descriptors come and go while an
 /// observer lives. Its own sockets, told apart by their kernel identity (managed_capture's
 /// Held), are what its shutdown checks. Unix's alone: Windows names a socket by nothing a
@@ -774,7 +871,7 @@ fn observer_sockets_are_checked_by_identity_beside_other_tests_descriptors() {
         .spawn()
         .unwrap();
     admit(&observer, Ask::Cancel);
-    observer.join(Instant::now() + WITHIN).unwrap();
+    observer.join(Until::Ordered).unwrap();
     drop((silent, observer, neighbor));
     let after = count();
     // Alone in its process this prints equal counts beside the leak; beside the binary's other

@@ -1,0 +1,5 @@
+Mac resumed r19, exit 0 (Kiln completion notification):
+Removed only fix-memory-v1 target; source and retained local evidence preserved.
+
+Linux resumed r24, exit 0:
+Removed only fix-memory-v1-linux target; source and committed evidence preserved.

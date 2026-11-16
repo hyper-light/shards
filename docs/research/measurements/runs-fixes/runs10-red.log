@@ -1,0 +1,21 @@
+# kiln r1785: FILTERS="disk::tests helpers::tests" bash run.sh mutant
+# mutate.py: verified() takes a file of the carried length as it is (the base's complete()/write_gpu check)
+Host adas-mac-studio-3.local (Adas-Mac-Studio-4.local), Darwin 25.2.0 arm64, macOS 26.2 25C56, rustc 1.98.1. Source 22d03c1a (p/runs-tail-v1 merged with main 2e00a1043), CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true, carrier /tmp/runs-tail-carrier (run.sh, mutate.py). aws-lc-sys build warnings removed.
+=== cargo test -j 4 -p shards --bin shards helpers::tests
+running 6 tests
+test helpers::tests::helpers_are_written_whole_once_and_found_after ... ok
+test helpers::tests::other_builds_helpers_go_once_no_process_holds_them ... ok
+test helpers::tests::a_changed_helper_that_cannot_be_written_again_is_refused ... FAILED
+test helpers::tests::a_carried_shards_starts_the_helpers_beside_it ... ok
+test helpers::tests::a_helper_whose_bytes_changed_is_written_again_before_it_starts ... FAILED
+test helpers::tests::concurrent_gpu_writers_publish_their_own_complete_files ... ok
+---- helpers::tests::a_changed_helper_that_cannot_be_written_again_is_refused stdout ----
+thread '...' panicked at crates/shards/src/helpers.rs:649:31:
+called `Result::unwrap_err()` on an `Ok` value: ".../shards-tests/45137/helper-ro-0/helper"
+---- helpers::tests::a_helper_whose_bytes_changed_is_written_again_before_it_starts stdout ----
+thread '...' panicked at crates/shards/src/helpers.rs:635:9:
+assertion `left == right` failed
+  left: [117, 104, 105, 115, 32, 98, 117, 105, 108, 100, 39, 115, 32, 104, 101, 108, 112, 101, 114]
+ right: [116, 104, 105, 115, 32, 98, 117, 105, 108, 100, 39, 115, 32, 104, 101, 108, 112, 101, 114]
+(the flipped first byte, 'u' for 't', returned as the helper)
+test result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 920 filtered out; finished in 0.02s

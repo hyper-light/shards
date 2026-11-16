@@ -54,7 +54,7 @@ diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
     if (result != VK_SUCCESS)
        return result;
 +   if (filter->state == VKR_PHYSICAL_DEVICE_FILTER_SELECTED &&
-+       (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT))
++       !count)
 +      return VK_ERROR_INITIALIZATION_FAILED;
  
     VkPhysicalDevice *handles = calloc(count, sizeof(*handles));
@@ -112,7 +112,7 @@ diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
 +   VkResult result = vkEnumeratePhysicalDeviceGroups(instance->base.handle.instance, &count, NULL);
 +   if (result != VK_SUCCESS)
 +      return result;
-+   if (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++   if (!count)
 +      return VK_ERROR_INITIALIZATION_FAILED;
 +   if (sizeof(*groups) > SIZE_MAX / (size_t)count)
 +      return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -217,10 +217,10 @@ new file mode 100644
 +#include <stdlib.h>
 +#include <string.h>
 +
-+/* Vulkan deviceUUID is VK_UUID_SIZE (16) opaque bytes. The host selector uses
-+ * two hex digits per byte; its list fits the caller's u16 device-index space.
++/* Vulkan deviceUUID is VK_UUID_SIZE (16) opaque bytes. The host selector uses two hex
++ * digits per byte and a NUL: a selection is as long as its transport's uint32_t carries.
 + */
-+#define VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT (UINT32_C(1) + UINT16_MAX)
++#define VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT (UINT32_MAX / (VK_UUID_SIZE * 2u + 1u))
 +
 +enum vkr_physical_device_filter_state {
 +   VKR_PHYSICAL_DEVICE_FILTER_UNSET,
@@ -323,7 +323,7 @@ new file mode 100644
 +                                  uint32_t *count)
 +{
 +   if (filter->state != VKR_PHYSICAL_DEVICE_FILTER_SELECTED || !get_properties ||
-+       *count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++       !handles || !count)
 +      return VK_ERROR_INITIALIZATION_FAILED;
 +
 +   bool *found = calloc(filter->count, sizeof(*found));
@@ -393,7 +393,7 @@ new file mode 100644
 +                              struct vkr_physical_device_filter_handle **out)
 +{
 +   *out = NULL;
-+   if (!count || count > VKR_PHYSICAL_DEVICE_FILTER_MAX_COUNT)
++   if (!count)
 +      return VK_ERROR_INITIALIZATION_FAILED;
 +   if (sizeof(**out) > SIZE_MAX / (size_t)count)
 +      return VK_ERROR_OUT_OF_HOST_MEMORY;

@@ -50,6 +50,7 @@ fn agents_and_harnesses_take_a_name_a_source_and_where_they_go() {
             source: b("some.registry.com/claude-opus-5-5"),
             to: None,
             processes: Processes::Unbounded,
+            fetch: Default::default(),
         })
     );
     assert_eq!(
@@ -59,6 +60,7 @@ fn agents_and_harnesses_take_a_name_a_source_and_where_they_go() {
             source: b("./agent"),
             to: Some(b("/opt/main")),
             processes: Processes::None,
+            fetch: Default::default(),
         })
     );
     assert_eq!(
@@ -68,6 +70,7 @@ fn agents_and_harnesses_take_a_name_a_source_and_where_they_go() {
             source: b("https://github.com/org/harness.git#v1:dist"),
             to: None,
             processes: Processes::AtMost(8),
+            fetch: Default::default(),
         })
     );
     // The name first, never after AS (§12.4), the line rewritten.
@@ -126,6 +129,7 @@ fn mcp_servers_are_named_and_offered_to_every_agent_or_those_named() {
         Directive::Mcp(Mcp {
             name: b("files"),
             source: b("./servers/files"),
+            redirects: Vec::new(),
             scope: Scope {
                 kind: None,
                 names: vec![b("main")]
@@ -137,6 +141,7 @@ fn mcp_servers_are_named_and_offered_to_every_agent_or_those_named() {
         Directive::Mcp(Mcp {
             name: b("web"),
             source: b("https://mcp.example.com/sse"),
+            redirects: Vec::new(),
             scope: Scope::default()
         })
     );
@@ -1328,6 +1333,22 @@ fn agents_have_ipv6_where_a_joined_network_says_so() {
 
 /// A remote MCP server's host and port, as its URL says or its scheme's own (§4.4).
 #[test]
+fn mcp_absolute_name_matches_its_dns_question() {
+    let mut question = vec![0; 12];
+    question[5] = 1;
+    question.extend_from_slice(b"\x03MCP\x07example\0\0\x01\0\x01");
+    let name = shards_dns::query_name(&question).unwrap();
+    for url in ["https://MCP.example./sse", "http://MCP.example.:8080/mcp"] {
+        let (host, _) = shards_agentfile::agentfile::mcp_endpoint(url.as_bytes()).unwrap();
+        assert_eq!(
+            host,
+            name.as_bytes(),
+            "the grant must match its DNS question: {url}"
+        );
+    }
+}
+
+#[test]
 fn a_remote_mcp_servers_endpoint_is_its_urls() {
     use shards_agentfile::agentfile::mcp_endpoint;
     let e = |u: &str| mcp_endpoint(u.as_bytes()).map(|(h, p)| (String::from_utf8(h).unwrap(), p));
@@ -1672,6 +1693,46 @@ fn each_member_reaches_its_own_names() {
     assert_eq!(by_member(said(&read)), by_member(said(&directives)));
 }
 
+/// A member's port grant to any address reaches every name the image grants on that port
+/// (D246, inithex-02): its init lets it out there to any address, and the network process
+/// admits a kept name's addresses for any member that asks them. Do: read an Agentfile whose
+/// agent a reaches a provider by name on one network, and a and b are both granted its port
+/// to any address on another, beside an agent c granted another port alone. Expect: a and b
+/// each reach the provider, c nothing; and the Agentfile still builds, as every member
+/// granted the port reaches it alike.
+#[test]
+fn a_port_grant_reaches_every_name_the_image_grants_on_it() {
+    use shards_agentfile::agentfile as af;
+    let text = "FROM alpine\nAGENT a FROM ./a\nAGENT b FROM ./b\nAGENT c FROM ./c\n\
+        NETWORK --egress=api.example:443 named\nEXPOSE 443 AS egress FOR named\n\
+        CONNECT a WITH a ON named\n\
+        NETWORK --egress=443 wide\nEXPOSE 443 AS egress FOR wide\n\
+        CONNECT a WITH a ON wide\nCONNECT b WITH b ON wide\n\
+        NETWORK --egress=8443 other\nEXPOSE 8443 AS egress FOR other\nCONNECT c WITH c ON other\n";
+    let directives = af::resolve_targets(&stage_directives(text)).unwrap();
+    af::connections(&directives).unwrap();
+    af::held(&directives).unwrap();
+    let reach: Vec<(String, Vec<String>)> = af::named_reach(&directives)
+        .into_iter()
+        .map(|(_, name, named)| {
+            let named = named
+                .iter()
+                .map(|(host, port)| format!("{}:{port}", String::from_utf8_lossy(host)))
+                .collect();
+            (String::from_utf8(name).unwrap(), named)
+        })
+        .collect();
+    let owned = |list: &[&str]| list.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        reach,
+        [
+            ("a".to_string(), owned(&["api.example:443"])),
+            ("b".to_string(), owned(&["api.example:443"])),
+            ("c".to_string(), owned(&[])),
+        ]
+    );
+}
+
 /// What no destination of a network's is, refused by name and why: one let in rather than
 /// reached, of a network carrying no TCP, an all-digit or patterned host, an IPv6 address,
 /// UDP, and the member's own loopback; a port, a range and a Unix socket read as before.
@@ -1832,4 +1893,323 @@ fn a_destination_reaches_the_world() {
         ),
         Ok(())
     );
+}
+
+/// `AGENT` and `HARNESS` fetch from Git, http(s) and S3-compatible stores, each source
+/// pinned (D54): an http(s) URL by `--checksum`, an `s3://` object by `--checksum` or
+/// `--version-id`, with its endpoint, region and path style; each other form refused with
+/// what to write instead.
+#[test]
+fn fetched_sources_are_pinned_and_say_where_they_are() {
+    use shards_agentfile::agentfile::{Fetch, Source, source_of};
+    let sum = format!("sha256:{}", "ab".repeat(32));
+    let Directive::Harness(h) = one(&format!(
+        "HARNESS --checksum={sum} --redirect=objects.githubusercontent.com --redirect=[::1]:8443 ci FROM https://github.com/o/r/releases/download/v1/ci.tgz"
+    )) else {
+        panic!()
+    };
+    assert_eq!(
+        h.fetch,
+        Fetch {
+            checksum: b(&sum),
+            redirects: vec![b("objects.githubusercontent.com"), b("[::1]:8443")],
+            ..Fetch::default()
+        }
+    );
+    let Directive::Agent(a) = one(
+        "AGENT --endpoint=https://acct.r2.cloudflarestorage.com --region=auto --path-style --version-id=3HL4kq main FROM s3://agents/claude/v1.tar.gz",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        (
+            a.fetch.endpoint,
+            a.fetch.region,
+            a.fetch.path_style,
+            a.fetch.version_id
+        ),
+        (
+            b("https://acct.r2.cloudflarestorage.com"),
+            b("auto"),
+            true,
+            b("3HL4kq")
+        )
+    );
+    assert_eq!(
+        source_of(b"s3://agents/claude/v1.tar.gz"),
+        Ok(Source::S3 {
+            bucket: b("agents"),
+            key: b("claude/v1.tar.gz")
+        })
+    );
+    // Pinned or refused.
+    for (line, words) in [
+        (
+            "AGENT a FROM https://h.example/a.tgz",
+            "AGENT from an http(s) URL is pinned by --checksum=sha256:<hex>",
+        ),
+        (
+            "AGENT a FROM s3://b/k.tgz",
+            "AGENT from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>",
+        ),
+        (
+            "AGENT --checksum=sha256:00 a FROM s3://b/k",
+            "AGENT --checksum is sha256: and 64 lowercase hex digits, not \"sha256:00\"",
+        ),
+        (
+            "AGENT --checksum=md5:00 a FROM s3://b/k",
+            "AGENT --checksum is sha256: and 64 lowercase hex digits",
+        ),
+        (
+            "AGENT a FROM s3://bucket",
+            "\"s3://bucket\" names no object: an S3 source is s3://BUCKET/KEY",
+        ),
+        ("AGENT a FROM s3:///key", "names no object"),
+        (
+            "AGENT --region=us-east-1 a FROM ./a",
+            "--endpoint, --region, --path-style, --version-id and --credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=aws-default a FROM https://h/a.tgz",
+            "--credentials are an s3:// source's",
+        ),
+        (
+            "AGENT --credentials=env --version-id=1 a FROM s3://b/k",
+            "AGENT --credentials is aws-default, the host's AWS default credential chain, not \"env\"",
+        ),
+        ("AGENT --version-id=1 a FROM https://h/a.tgz", "an s3:// source's"),
+        (
+            "AGENT --endpoint=ftp://x --version-id=1 a FROM s3://b/k",
+            "AGENT --endpoint is an http(s) URL, not \"ftp://x\"",
+        ),
+        (
+            "AGENT --checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000 a FROM ./a",
+            "--checksum pins an http(s) or s3:// source",
+        ),
+        (
+            "AGENT --redirect=x.example a FROM ./a",
+            "--redirect grants where an http(s) or Git source is redirected",
+        ),
+        (
+            "AGENT --redirect=*.example a FROM https://github.com/o/r.git",
+            "AGENT --redirect is HOST or HOST:PORT, not \"*.example\"",
+        ),
+        (
+            "AGENT --redirect=x.example:0 a FROM https://github.com/o/r.git",
+            "not \"x.example:0\"",
+        ),
+        ("MCP m FROM s3://b/k", "MCP takes no s3:// source"),
+    ] {
+        let got = refused(line);
+        assert!(got.contains(words), "{line}: {got}");
+    }
+    // A Git source needs no checksum: its commit is what its ref resolves to.
+    let Directive::Agent(g) = one("AGENT --redirect=mirror.example g FROM https://github.com/o/r.git#v1")
+    else {
+        panic!()
+    };
+    assert_eq!(g.fetch.redirects, vec![b("mirror.example")]);
+}
+
+/// An extension's source that names a variable expands as `ADD`'s does (D56) and is held to
+/// its directive's checks once expanded (D54): `AGENT main FROM $SRC` parses as written, and
+/// what its stage makes of it is pinned and refused as a source written out is.
+#[test]
+fn a_sources_variables_expand_before_it_is_checked() {
+    use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+    use shards_agentfile::platform::Platform;
+    /// Every base image, as one of one layer for linux/amd64.
+    struct Bases;
+    impl Resolver for Bases {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let Directive::Agent(a) = one("AGENT main FROM $SRC") else {
+        panic!()
+    };
+    assert_eq!(a.source, b("$SRC"));
+    let Directive::Mcp(m) = one("MCP files FROM ${MCP_SRC}") else {
+        panic!()
+    };
+    assert_eq!(m.source, b("${MCP_SRC}"));
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: Dialect::Agentfile,
+        ..Default::default()
+    };
+    for (text, words) in [
+        (
+            "FROM alpine\nARG SRC=https://h.example/a.tgz\nAGENT a FROM $SRC\n",
+            "AGENT from an http(s) URL is pinned by --checksum=sha256:<hex>",
+        ),
+        (
+            "FROM alpine\nARG SRC=s3://b/k.tgz\nHARNESS h FROM $SRC\n",
+            "HARNESS from s3:// is pinned by --checksum=sha256:<hex> or --version-id=<id>",
+        ),
+        (
+            "FROM alpine\nARG M=s3://b/k\nMCP m FROM $M\n",
+            "MCP takes no s3:// source",
+        ),
+        (
+            "FROM alpine\nARG S=./s.md\nSKILL --redirect=x.example $S /skills/s/SKILL.md\n",
+            "SKILL --redirect grants where an http(s) or Git source is redirected",
+        ),
+    ] {
+        let e = plan::plan(text.as_bytes(), &opts, &Bases).unwrap_err();
+        let got = String::from_utf8_lossy(&e.message);
+        assert!(got.contains(words), "{text}: {got}");
+    }
+}
+
+/// SKILL and MCP take `--redirect` as AGENT and HARNESS do (D54): where their source is
+/// fetched from an http(s) URL or Git and can be redirected, each `HOST[:PORT]`; refused for
+/// a context path, a skill copied from another stage, and a remote MCP server, which is
+/// reached at run rather than fetched.
+#[test]
+fn skills_and_mcp_servers_grant_their_redirects() {
+    let Directive::Skill(sk) = one(
+        "SKILL --redirect=objects.githubusercontent.com --redirect=[::1]:8443 https://github.com/o/r/raw/main/s.md /skills/s/SKILL.md",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        sk.redirects,
+        [b("objects.githubusercontent.com"), b("[::1]:8443")]
+    );
+    let Directive::Mcp(m) =
+        one("MCP --redirect=mirror.example files FROM https://git.example/o/files.git#main")
+    else {
+        panic!()
+    };
+    assert_eq!(m.redirects, [b("mirror.example")]);
+    for (line, words) in [
+        (
+            "SKILL --redirect=cdn.example ./skills/s",
+            "SKILL --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+        (
+            "SKILL --from=build --redirect=cdn.example /out/s",
+            "SKILL --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+        (
+            "SKILL --redirect=*.example https://h.example/s.md /skills/s/SKILL.md",
+            "SKILL --redirect is HOST or HOST:PORT, not \"*.example\"",
+        ),
+        (
+            "MCP --redirect=cdn.example web FROM https://mcp.example.com/sse",
+            "MCP --redirect grants where a fetched source is redirected; a remote server's URL is reached, not fetched",
+        ),
+        (
+            "MCP --redirect=cdn.example files FROM ./servers/files",
+            "MCP --redirect grants where an http(s) or Git source is redirected; this source is not",
+        ),
+    ] {
+        assert!(refused(line).contains(words), "{line}: {}", refused(line));
+    }
+}
+
+/// What the planner makes of a fetched source (D54): an http(s) one checked against its
+/// checksum and held to its grant; an s3 one with its pins and where it is; and an `ADD`
+/// of the same URL as BuildKit makes it, with no grant.
+#[test]
+fn fetched_sources_carry_their_pins_and_grants_into_the_plan() {
+    use shards_agentfile::llb::Kind as Op;
+    use shards_agentfile::plan::{self, EpochSource, Options, Resolved, Resolver};
+    use shards_agentfile::platform::Platform;
+    struct Bases;
+    impl Resolver for Bases {
+        fn resolve(&self, name: &[u8], _: Option<&Platform>, _: &[u8]) -> Result<Resolved, Vec<u8>> {
+            Ok(Resolved {
+                reference: name.to_vec(),
+                digest: None,
+                config: br#"{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":["sha256:24454f830cdb571e2c4ad15481119c43b3cafd48dd869a9b2945d1036d1dc68d"]}}"#.to_vec(),
+            })
+        }
+
+        fn epoch(&self, _: &EpochSource) -> Result<Option<plan::Epoch>, Vec<u8>> {
+            Ok(None)
+        }
+    }
+    let opts = Options {
+        target_platform: Platform::new("linux", "amd64"),
+        build_platforms: vec![Platform::new("linux", "amd64")],
+        dialect: Dialect::Agentfile,
+        ..Default::default()
+    };
+    let sum = format!("sha256:{}", "cd".repeat(32));
+    let text = format!(
+        "FROM alpine\n\
+         HARNESS --checksum={sum} --redirect=cdn.example h FROM https://h.example/d/h.tgz\n\
+         AGENT --checksum={sum} --version-id=v7 --endpoint=http://127.0.0.1:9000 --region=us-east-1 --path-style a FROM s3://agents/a/v1.tgz\n\
+         AGENT g FROM https://git.example/o/r.git#main\n\
+         ADD https://h.example/d/h.tgz /x\n"
+    );
+    let built = plan::plan(text.as_bytes(), &opts, &Bases).unwrap();
+    let sources: Vec<(String, std::collections::BTreeMap<String, String>)> = built
+        .graph
+        .vertices
+        .iter()
+        .filter_map(|v| match &v.kind {
+            Op::Source { identifier, attrs }
+                if !identifier.starts_with(b"docker-image://") && !identifier.starts_with(b"local://") =>
+            {
+                Some((
+                    String::from_utf8_lossy(identifier).into_owned(),
+                    attrs
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                String::from_utf8_lossy(k).into_owned(),
+                                String::from_utf8_lossy(v).into_owned(),
+                            )
+                        })
+                        .collect(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let attrs = |id: &str, grant: bool| {
+        sources
+            .iter()
+            .find(|(i, a)| i == id && a.contains_key("shards.grant") == grant)
+            .map(|(_, a)| a.clone())
+            .unwrap_or_else(|| panic!("{id} (grant {grant}) in {sources:#?}"))
+    };
+    let h = attrs("https://h.example/d/h.tgz", true);
+    assert_eq!(h.get("http.checksum"), Some(&sum));
+    assert_eq!(h.get("shards.grant").map(String::as_str), Some("cdn.example"));
+    let s3 = attrs("s3://agents/a/v1.tgz", true);
+    for (k, v) in [
+        ("s3.checksum", sum.as_str()),
+        ("s3.versionid", "v7"),
+        ("s3.endpoint", "http://127.0.0.1:9000"),
+        ("s3.region", "us-east-1"),
+        ("s3.pathstyle", "true"),
+        ("s3.filename", "v1.tgz"),
+        ("shards.grant", ""),
+    ] {
+        assert_eq!(s3.get(k).map(String::as_str), Some(v), "{k}");
+    }
+    // Signed only by what the build names: no opt-in to the host's chain unless written.
+    assert!(!s3.contains_key("s3.credentials"), "{s3:?}");
+    let g = sources
+        .iter()
+        .find(|(i, _)| i.starts_with("git://git.example/o/r.git"))
+        .map(|(_, a)| a)
+        .unwrap();
+    assert_eq!(g.get("shards.grant").map(String::as_str), Some(""));
+    // ADD's own source is BuildKit's: no grant, no checksum it did not ask for.
+    let add = attrs("https://h.example/d/h.tgz", false);
+    assert!(!add.contains_key("http.checksum"), "{add:?}");
 }

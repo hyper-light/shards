@@ -1,0 +1,32 @@
+
+
+== 74a405cd platform-07: the registry depends on shards-ipc on every host, for spawn_std on Windows 2026-11-14T05:28:55.1552455Z
+== cargo test -p shards-registry credentials exit 0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-pc-windows-msvc'
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' failed - Err(Error { kind: 
+test credentials::tests::a_clients_credentials_cross_as_they_were ... ok
+test auth::tests::credentials_never_show_their_secrets ... ok
+test proxy::tests::a_proxys_credentials_authorize_it_and_stay_hidden ... ok
+test registry::tests::a_registry_named_insecure_is_asked_in_plain_http_without_credentials ... ok
+test search::tests::docker_hubs_index_is_searched_with_its_tokens_and_credentials ... ok
+test credentials::tests::an_auth_config_in_the_environment_comes_first_and_falls_back_with_a_warning ... ok
+test credentials::tests::tokens_come_before_passwords ... ok
+test credentials::tests::logins_are_found_under_legacy_registry_keys ... ok
+test credentials::tests::malformed_logins_are_refused ... ok
+test credentials::tests::logins_are_kept_in_the_config_and_forgotten ... ok
+test auth::tests::basic_challenges_need_credentials has been running for over 60 seconds
+test auth::tests::credentials_answer_the_origin_that_asked_for_them has been running for over 60 seconds
+test auth::tests::credentials_answer_the_origin_that_asked_for_them ... ok
+test auth::tests::basic_challenges_need_credentials ... ok
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 154 filtered out; finished in 120.04s
+== done 2026-11-14T05:31:59.7869987Z status 0
+
+[exited with code 0]

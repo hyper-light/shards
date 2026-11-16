@@ -506,7 +506,12 @@ no bound, and the threaded host waited on a body that would never come).
 
 ## Owed
 
-- Slice 3 (kiln): `RunLessor` answering capture, refresh and revoke from the broker.
+- Slice 3 (kiln), built on kiln main bd2565641 (D242's "step 8's third slice"): `RunLessor` answering capture,
+  refresh and revoke from the broker, its tests in kiln's `secrets::` written and not run (the person's rule of
+  2026-11-16: no builds or tests in lanes). ROOT: `cargo clippy -p kiln --all-targets -- -D warnings` and
+  `cargo test -p kiln --lib -- secrets::` at kiln main bd2565641 or later.
+- kiln granting a run's sign-ins (its sandbox to `ShardsImage::sign_ins`) and staging a later run's CLI file; the
+  broker keeping a sign-in's placeholders across refreshes and restarts.
 - ROOT: a real `claude auth login` and `codex login --device-auth` in a microVM through the injector, each surviving a
   refresh answered outside; a real request with the captured token filled in at egress; the `scope` a claude.ai
   sign-in's token response carries (whether `org:create_api_key` is granted).

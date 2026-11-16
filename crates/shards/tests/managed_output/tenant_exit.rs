@@ -70,6 +70,7 @@ enum ReadGoal {
 }
 
 impl Capture {
+    #[track_caller]
     fn receive(&mut self, observer: &Observer, expected: &[u8], goal: ReadGoal, until: Instant) {
         loop {
             let Event::Record(offset, chunk) = observer.next(until) else {

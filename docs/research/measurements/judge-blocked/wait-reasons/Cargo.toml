@@ -1,0 +1,15 @@
+[package]
+name = "wait-reasons"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A measurement harness of its own, outside the workspace: what src/main.rs says.
+[workspace]
+
+[dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Wdk_System_SystemInformation",
+  "Win32_Foundation",
+  "Win32_System_WindowsProgramming",
+] }

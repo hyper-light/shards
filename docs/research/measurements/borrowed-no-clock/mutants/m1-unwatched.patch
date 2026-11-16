@@ -1,0 +1,13 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index 14806ab54..e575d65d4 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -1596,7 +1596,7 @@ fn borrowed(identity: &Identity, port: u32, wait: HandshakeWait<'_>) -> Result<B
+     #[cfg(windows)]
+     let held = borrowed_windows::Held::find(identity.pid, identity.started).map_err(process_failure)?;
+     let wait = match wait {
+-        HandshakeWait::Unbounded => HandshakeWait::Watched(held.exit()),
++        HandshakeWait::Unbounded => HandshakeWait::Unbounded,
+         wait => wait,
+     };
+     let mut cost = Duration::ZERO;

@@ -188,14 +188,24 @@ impl<D: Disk> Daemon<D> {
                         let (_, boot, most) = crate::run::sizes(&merged, crate::build::host_memory());
                         let bytes = most.saturating_sub(boot).saturating_mul(1 << 20);
                         socket
-                            .send(shards_ipc::kind::PLUG, &bytes.to_be_bytes(), &[])
+                            .send(
+                                &self.answers.run_send,
+                                shards_ipc::kind::PLUG,
+                                &bytes.to_be_bytes(),
+                                &[],
+                            )
                             .map_err(|e| cannot(format!("its microVM: {e}")))?;
                     }
                     // The CPUs its vCPUs are held to (D191), as its guest's cgroup is
                     // written after.
                     if cpus_moved {
                         socket
-                            .send(shards_ipc::kind::CPUS, &u64::from(held).to_be_bytes(), &[])
+                            .send(
+                                &self.answers.run_send,
+                                shards_ipc::kind::CPUS,
+                                &u64::from(held).to_be_bytes(),
+                                &[],
+                            )
                             .map_err(|e| cannot(format!("its microVM: {e}")))?;
                     }
                 }
@@ -208,8 +218,8 @@ impl<D: Disk> Daemon<D> {
             let q = self
                 .exec_answered(&id, &spec, 1 << 12)
                 .map_err(|e| cannot(e.to_string()))?;
-            if q.status != Some(0) {
-                return Err(cannot(String::from_utf8_lossy(&q.output).trim().to_string()));
+            if q.cut.is_some() || q.status != Some(0) {
+                return Err(cannot(super::reclaim::said_of(&q)));
             }
         }
         run.resources = merged;

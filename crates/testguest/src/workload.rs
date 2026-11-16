@@ -46,7 +46,7 @@ pub fn main() -> ! {
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
     let code = match arg(0) {
         "report" => report(),
-        "cleanup" => crate::cleanup::main(arg(1), arg(2), arg(3), arg(4)),
+        "cleanup" => crate::cleanup::main(arg(1), arg(2), arg(3)),
         "cleanup-control" => crate::cleanup::control(args.get(1..).unwrap_or_default()),
         "managed-lifecycle" => crate::managed_lifecycle::probe(arg(1)),
         "managed-limits" => crate::managed_limits::actor(arg(1), arg(2), arg(3), arg(4), arg(5), arg(6)),
@@ -54,10 +54,11 @@ pub fn main() -> ! {
         "managed-limits-nonce" => crate::managed_limits::nonce(arg(1)),
         "managed-lifecycle-exit" => crate::managed_lifecycle::exit_after_report(arg(1)),
         "managed-lifecycle-challenge" => crate::managed_lifecycle::challenge(arg(1), arg(2)),
-        "managed-reap" => crate::managed_reap::run(arg(1), arg(2), arg(3)),
+        "managed-reap" => crate::managed_reap::run(arg(1), arg(2)),
         "managed-reap-child" => crate::managed_reap::child(arg(1), arg(2)),
         "cat" => cat(),
         "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
+        "plugged-volumes" => crate::plugged::volumes(args.get(1..).unwrap_or_default()),
         "inotify" => crate::watch::main(arg(1)),
         // The steps of names differing in case alone in DIR, each its result (D235).
         "case" => {
@@ -475,6 +476,7 @@ pub fn main() -> ! {
             arg(3) == "escape",
         ),
         "trap" => trap(arg(1)),
+        "say-trap" => say_trap(arg(1), arg(2)),
         "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
@@ -488,9 +490,12 @@ pub fn main() -> ! {
         "addrs" => addrs(),
         "neighbors" => neighbors(),
         "spawn" => spawn(args.get(1..).unwrap_or_default()),
+        "run-when" => run_when(args.get(1..).unwrap_or_default()),
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
+        "reach-each" => reach_each(arg(1)),
         "fetch" => fetch(args.get(1..).unwrap_or_default()),
+        "tls-ask" => crate::tls_ask::main(args.get(1..).unwrap_or_default()),
         // One call of the Engine API at $DOCKER_HOST, as a program in a run reaches its
         // microVM's own engine (D181): `api METHOD PATH [BODY [upgrade]]`, `upgrade` asking
         // for the connection to be taken over for a stream, as attaches and execs ask.
@@ -635,6 +640,24 @@ pub fn main() -> ! {
         "swap-kept" => swap_kept(arg(1).parse().unwrap_or(0)),
         // A counter in memory, printed as it grows, every `arg(1)` ms (100 if none): what a
         // saved microVM keeps, and a restore of it goes on from (D176).
+        // The guest's watchdogs across a pause of its run (D267), into directory `arg(1)`.
+        "watchdogs" => watchdogs(std::path::Path::new(arg(1))),
+        // `ready`, then each `arg(1)` ms (100 if none) a line of its count and its clock's
+        // time, CLOCK_REALTIME in ns: a member whose run is paused goes on from its count, its
+        // clock the host's (D267).
+        "ticks" => {
+            let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
+            let _ = writeln!(io::stdout(), "ready");
+            let mut n = 0u64;
+            loop {
+                n += 1;
+                let ns = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos());
+                let _ = writeln!(io::stdout(), "{n} {ns}");
+                std::thread::sleep(every);
+            }
+        }
         "counter" => {
             let every = std::time::Duration::from_millis(arg(1).parse().unwrap_or(100));
             let _ = writeln!(io::stdout(), "ready");
@@ -701,6 +724,37 @@ pub fn main() -> ! {
         // the line read back and printed: a file a guest holds that no path reaches, whose
         // bytes a save keeps and a restore of it holds again (D176).
         "unlinked-held" => unlinked_held(arg(1), arg(2).parse().ok()),
+        // A harness that starts as an MCP client does (D254): runs its member's MCP bridge, its
+        // stdio piped, writes `initialize` into it and holds it open; says `ready`, then sleeps
+        // until a signal ends it.
+        "mcp-hello" => 'hello: {
+            let bridge = std::process::Command::new(shards_abi::run::mcp::BRIDGE)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn();
+            let mut bridge = match bridge {
+                Ok(bridge) => bridge,
+                Err(e) => {
+                    let _ = writeln!(io::stderr(), "its MCP bridge: {e}");
+                    break 'hello 1;
+                }
+            };
+            let sent = match bridge.stdin.as_mut() {
+                Some(to) => to
+                    .write_all(shards_testguest::MCP_INITIALIZE)
+                    .and_then(|()| to.flush()),
+                None => Err(io::Error::other("no stdin")),
+            };
+            if let Err(e) = sent {
+                let _ = writeln!(io::stderr(), "its MCP bridge's stdin: {e}");
+                break 'hello 1;
+            }
+            let _ = writeln!(io::stdout(), "ready");
+            loop {
+                // SAFETY: blocks until a signal arrives.
+                unsafe { libc::pause() };
+            }
+        }
         "sleep" => {
             let _ = writeln!(io::stdout(), "ready");
             loop {
@@ -1174,6 +1228,62 @@ fn kernlog(words: &[String]) -> i32 {
     }
 }
 
+/// The guest's soft-lockup and RCU stall watchdogs across a pause of its run (D267): its
+/// threshold (`watchdog_thresh`) and whether its soft-lockup watchdog is on, then the kernel's
+/// taint (a soft lockup's report sets `L`, kernel/watchdog.c `add_taint(TAINT_SOFTLOCKUP)`) and
+/// its count of RCU stalls (`/sys/kernel/rcu_stall_count`, kernel/rcu/tree_stall.h), written to
+/// `dir/before`; then, once one sleep of the watchdog's sample period has spanned more than its
+/// soft-lockup threshold (the run paused that long, its clock running on through it), and one
+/// sample period more, so that the watchdog has looked since its vCPUs went on, the taint and
+/// the count again, to `dir/after`. The threshold is twice `watchdog_thresh` and the watchdog
+/// looks five times within it, the kernel's own rule (kernel/watchdog.c,
+/// `get_softlockup_thresh`, `NUM_SAMPLE_PERIODS`). Each file is written whole, then named.
+fn watchdogs(dir: &std::path::Path) -> i32 {
+    let read = |path: &str| match std::fs::read_to_string(path) {
+        Ok(text) => text.trim().to_string(),
+        Err(e) => format!("errno-{}", e.raw_os_error().unwrap_or(0)),
+    };
+    let state = || {
+        format!(
+            "tainted {} stalls {}",
+            read("/proc/sys/kernel/tainted"),
+            read("/sys/kernel/rcu_stall_count")
+        )
+    };
+    let write = |name: &str, text: String| {
+        let part = dir.join(format!("{name}.part"));
+        std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, dir.join(name)))
+    };
+    let thresh = read("/proc/sys/kernel/watchdog_thresh");
+    let said = format!(
+        "thresh {thresh} soft {} {}\n",
+        read("/proc/sys/kernel/soft_watchdog"),
+        state()
+    );
+    if write("before", said).is_err() {
+        return 1;
+    }
+    let Some(threshold) = thresh
+        .parse::<u64>()
+        .ok()
+        .filter(|t| *t > 0)
+        .map(|t| std::time::Duration::from_secs(t.saturating_mul(2)))
+    else {
+        return 1;
+    };
+    // kernel/watchdog.c's NUM_SAMPLE_PERIODS: the watchdog's looks within its threshold.
+    let sample = threshold / 5;
+    loop {
+        let began = std::time::Instant::now();
+        std::thread::sleep(sample);
+        if began.elapsed() > threshold {
+            break;
+        }
+    }
+    std::thread::sleep(sample);
+    i32::from(write("after", format!("{}\n", state())).is_err())
+}
+
 fn report() -> i32 {
     let mut out = String::new();
     // SAFETY: plain getters.
@@ -1534,6 +1644,26 @@ fn tcp(addr: &str) -> i32 {
             let _ = writeln!(io::stdout(), "tcp error {e}");
             1
         }
+    }
+}
+
+/// `reach-each HOST:PORT`: connects to it again and again, a connection at a time, each given
+/// a second, and says how each went as it goes, `reach ok` or `reach errno N`, until it is
+/// ended: what a run's grants let it reach as they change (D273).
+fn reach_each(addr: &str) -> i32 {
+    use std::net::ToSocketAddrs as _;
+    let wait = std::time::Duration::from_secs(1);
+    loop {
+        let said = match addr.to_socket_addrs().map(|mut a| a.next()) {
+            Ok(Some(to)) => match std::net::TcpStream::connect_timeout(&to, wait) {
+                Ok(_) => "reach ok".to_string(),
+                Err(e) => format!("reach errno {}", e.raw_os_error().unwrap_or(0)),
+            },
+            Ok(None) => "reach errno 0".to_string(),
+            Err(e) => format!("reach errno {}", e.raw_os_error().unwrap_or(0)),
+        };
+        let _ = writeln!(io::stdout(), "{said}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -2598,6 +2728,30 @@ fn spawn(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Runs each program of `paths`, in order, once it is there (D279's test: a share's, given its
+/// member as it starts, then a plug's, once plugged), as the test guest's own `exit 0`, saying
+/// how each went: `ran CODE`, or `run errno E` where exec(2) refused it (EACCES, 13, from a
+/// `noexec` mount); `never there PATH` past a minute without it.
+fn run_when(paths: &[String]) -> i32 {
+    for path in paths {
+        let mut looks = 0u32;
+        while std::fs::symlink_metadata(path).is_err() {
+            looks += 1;
+            if looks > 3000 {
+                let _ = writeln!(io::stdout(), "never there {path}");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let said = match std::process::Command::new(path).args(["exit", "0"]).status() {
+            Ok(status) => format!("ran {}", status.code().unwrap_or(-1)),
+            Err(e) => format!("run errno {}", e.raw_os_error().unwrap_or(0)),
+        };
+        let _ = writeln!(io::stdout(), "{said}");
+    }
+    0
 }
 
 /// Runs `/bin/testguest ARGS I` as a child `n` times, one after another, I its round, each
@@ -4283,6 +4437,15 @@ fn ignore(name: &str) -> i32 {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
     }
+}
+
+/// `say-trap PATH SIG`: says file `PATH`'s text, trimmed, or `none` where it cannot be read,
+/// then waits for `SIG` as [`trap`] does: what a member's generation finds at its path, a
+/// component swapped in or its image's own (D270 slice 4).
+fn say_trap(path: &str, name: &str) -> i32 {
+    let said = std::fs::read_to_string(path).map_or_else(|_| "none".to_string(), |t| t.trim().to_string());
+    let _ = writeln!(io::stdout(), "{said}");
+    trap(name)
 }
 
 fn trap(name: &str) -> i32 {

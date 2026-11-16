@@ -17,7 +17,7 @@ use shards_image::platform::{self, Target};
 use shards_image::reference::{Digest, Reference};
 use shards_image::store::{Held, Layer, Limits, Store};
 
-use crate::registry::Registry;
+use crate::registry::{Notice, Registry};
 use crate::{Error, ErrorKind};
 
 /// The image configs a runnable image has (image-spec config.md; Docker's schema 2).
@@ -74,6 +74,9 @@ pub enum Event<'a> {
     /// The pull waits for its registry's credential helper to answer: what it waits on
     /// ([`Registry::saying_waits`], D184).
     Waiting(&'a str),
+    /// A trouble of its registry's outlasted the longest its path had passed: told once,
+    /// and ridden out while it lasts (D222).
+    RanOut(&'a crate::http::RunOut),
 }
 
 /// Pulls `reference` for the platforms `targets` into `store`, its root filesystem built
@@ -116,7 +119,13 @@ fn pull_as(
     registry.keep_in(store);
     let pull = || pulled(registry, store, reference, targets, limits, report, fresh);
     registry
-        .saying_waits(&|notice| report(Event::Waiting(notice)), pull)
+        .saying_waits(
+            &|notice| match notice {
+                Notice::Helper(notice) => report(Event::Waiting(notice)),
+                Notice::RanOut(run_out) => report(Event::RanOut(run_out)),
+            },
+            pull,
+        )
         .map_err(|e| {
             // daemon/containerd/image_pull.go: a refused authorization in dockerd's own
             // words, but for want of basic credentials, which it leaves containerd's.

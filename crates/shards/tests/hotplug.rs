@@ -14,34 +14,41 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use common::{cannot_run_vms, kernel, test_guest};
+use shards_ipc::device::Refusal;
 use shards_testdir::TempDir;
 use shards_vmm::vm::{self, Config, Console, ExitReason, Handle};
 
-const TIMEOUT: Duration = Duration::from_secs(60);
 const MIB: u64 = 1 << 20;
 const SALT: u64 = 0x5107;
 
 /// Waits for the guest's console to say `line`, and gives what it said before it since the
-/// last time it was asked: the step's answer. Within TIMEOUT, or past it while its console
-/// says something new within DAEMON_QUIET (`common::Heard::console`: its vCPUs are threads
-/// of this process, whose CPU time is its other tests' and this poll's too).
+/// last time it was asked: the step's answer. While its console says something new or this
+/// process's threads beside this one run (`common::Heard::console`: its vCPUs, its devices
+/// and the host's work for them are threads of this process).
+#[track_caller]
 fn until(handle: &Handle, line: &str) -> String {
-    let end = Instant::now() + TIMEOUT;
-    let mut heard = common::Heard::console();
+    until_asked(handle, "", line)
+}
+
+/// [`until`], `asked` what its guest was asked for `line`: its wait's kind its call site's,
+/// `asked`'s and `line`'s, so that each kind of step is judged by its own answers, never a
+/// quicker step's (#77, ROOT's KVM run c33: `WAIT 2`, a rescan and a disk's first read,
+/// refused 1.09 ms into its quiet by the W* of `WAIT 1`, a grow).
+#[track_caller]
+fn until_asked(handle: &Handle, asked: &str, line: &str) -> String {
+    let mut heard = common::Heard::console(&format!("{asked} => {line}"));
     let mut before = handle.console_said();
     loop {
         let console = handle.console_said();
         heard.said(console != before);
         let said = String::from_utf8_lossy(&console.lines).into_owned();
         if let Some(before) = said.rsplit_once(line).map(|(before, _)| before) {
+            heard.answered();
             return before.to_string();
         }
-        if Instant::now() > end && !heard.lately(true) {
+        if let Err(refused) = heard.look(true) {
             handle.stop();
-            panic!(
-                "the guest did not say {line:?} in {TIMEOUT:?}, nor anything new for {:?} after: {said}",
-                common::DAEMON_QUIET
-            );
+            panic!("the guest did not say {line:?}: {refused}\n{said}");
         }
         before = console;
         std::thread::sleep(Duration::from_millis(1));
@@ -107,7 +114,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     std::fs::write(shared.join("hello"), "hello from a plugged share\n").unwrap();
 
     let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-    cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+    cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
@@ -127,7 +134,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         until(handle, &format!("SHARDS-PLUG WAIT {step}"));
         handle.console_input(format!("{what}\n").as_bytes());
         step += 1;
-        until(handle, &format!("SHARDS-PLUG WAIT {step}"))
+        until_asked(handle, &what, &format!("SHARDS-PLUG WAIT {step}"))
     };
 
     // The disk it was made with, grown as it runs, once its driver has it: its driver told.
@@ -158,7 +165,10 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         readies.push(words[2].parse().unwrap());
         // Driven by its guest: not to be taken from under it.
         let refused = handle.unplug(plugged.devfn).unwrap_err();
-        assert!(refused.contains("still drives it"), "{refused}");
+        assert!(
+            matches!(&refused, Refusal::StillDriven { devfn, .. } if *devfn == plugged.devfn),
+            "{refused}"
+        );
         if round == 0 {
             let file = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
             file.set_len(8 * MIB).unwrap();
@@ -168,7 +178,13 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
             let shrunk = std::fs::OpenOptions::new().write(true).open(&disk).unwrap();
             shrunk.set_len(4 * MIB).unwrap();
             let e = plugged.size.as_ref().unwrap().grow().unwrap_err();
-            assert!(e.contains("only grows"), "{e}");
+            assert_eq!(
+                e,
+                Refusal::Shrink {
+                    has: 8 * MIB,
+                    asked: 4 * MIB
+                }
+            );
             shrunk.set_len(8 * MIB).unwrap();
         }
         let said = ask(&handle, format!("remove {}", plugged.address));
@@ -190,7 +206,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
             .unwrap();
     }
     let unplugged = handle.unplug(0x10).unwrap_err();
-    assert!(unplugged.contains("no function is plugged"), "{unplugged}");
+    assert_eq!(unplugged, Refusal::NoDevice { devfn: 0x10 });
 
     // A shared directory, served by a server of this process's: over a socket pair on
     // Unix, and on Windows over a duplex pipe, as its daemon makes a share's (D197).
@@ -205,7 +221,10 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         #[cfg(windows)]
         let (ours, theirs) = {
-            let (server_end, vm_end) = shards_ipc::byte_pair().unwrap();
+            let (server_end, vm_end) = shards_ipc::byte_pair(
+                shards_ipc::Window::frame(shards_vmm::devices::virtio::fs::STREAM_FRAME).unwrap(),
+            )
+            .unwrap();
             (
                 shards_vmm::platform::PipeStream::from_handle(vm_end).unwrap(),
                 shards_vmm::platform::PipeStream::from_handle(server_end).unwrap(),
@@ -233,12 +252,9 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     until(&handle, &format!("SHARDS-PLUG WAIT {step}"));
     handle.console_input(b"done\n");
     let said = until(&handle, "SHARDS-TEST PASS");
-    match common::machine_ended(&handle, &rx, TIMEOUT) {
-        Some(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
-        None => panic!(
-            "the guest did not power off in {TIMEOUT:?}, nor said anything new for {:?} after",
-            common::DAEMON_QUIET
-        ),
+    match common::machine_ended(&handle, &rx) {
+        Ok(reason) => assert_eq!(reason, ExitReason::PowerOff, "{said}"),
+        Err(refused) => panic!("the guest did not power off: {refused}"),
     }
     // What a PCI bus with slots and nothing on it costs a boot: from its vCPUs' release to
     // its PID 1's first word, booted alternately with four slots and with no bus.
@@ -250,7 +266,7 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     for i in 0..2 * boots {
         let slots = if i % 2 == 0 { 4 } else { 0 };
         let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-        cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+        cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
         cfg.memory_mib = 512;
         cfg.console = Console::Discard;
         // Its whole console kept: this test reads it as it goes (D12).
@@ -329,7 +345,7 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
     let f = vm::Vfio::of(&name).unwrap_or_else(|e| panic!("{e}"));
 
     let mut cfg = Config::new(kernel().to_path_buf(), Some(test_guest().to_path_buf()));
-    cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
+    cfg.cmdline = "console=hvc0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
@@ -341,7 +357,7 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
         until(handle, &format!("SHARDS-PLUG WAIT {step}"));
         handle.console_input(format!("{what}\n").as_bytes());
         step += 1;
-        until(handle, &format!("SHARDS-PLUG WAIT {step}"))
+        until_asked(handle, &what, &format!("SHARDS-PLUG WAIT {step}"))
     };
     // SHARDS_PLUG_ROUNDS times (twice where unset), each step timed as the disk's are.
     let rounds: usize = std::env::var("SHARDS_PLUG_ROUNDS")

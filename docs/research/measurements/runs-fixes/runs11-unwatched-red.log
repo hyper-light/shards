@@ -1,0 +1,10 @@
+# runs-11 UNWATCHED, red by mutation. macOS arm64, adas-mac-studio-3.local, kiln r1963, at c1fe80299 plus each mutation.
+== MUTATION m-logs (logs -f falls back: each.watch = super::watch(..).ok())
+test daemon::tests::a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown ... FAILED
+panicked at crates/shards/src/daemon.rs:13238:17: ["logs", "-f", "logged"] followed its run unwatched:
+== MUTATION m-procs (watch processes swallows its refusal)
+test daemon::tests::a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown ... FAILED
+panicked at crates/shards/src/daemon.rs:13239:17: assertion `left == right` failed: ["watch", "processes", "processed"]:
+== MUTATION m-ship (the shipper ends Ok without its watch)
+test daemon::tests::a_shipper_no_watch_can_be_made_for_ends_typed ... FAILED
+panicked at crates/shards/src/daemon.rs:13279:17: a shipper followed its log unwatched

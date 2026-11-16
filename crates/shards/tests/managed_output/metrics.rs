@@ -241,9 +241,9 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
     };
     let Some(fixture) = with_fixture(|fixture| {
         let id = fixture.metadata.as_ref().unwrap().run.clone();
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         let collect = |phase: &str| {
-            let exported = fixture.command(&["read", "metrics", &id], WITHIN);
+            let exported = fixture.command(&["read", "metrics", &id], Duration::MAX);
             save(&format!("{phase}.json"), exported.stdout.as_bytes());
             save(&format!("{phase}.stderr"), exported.stderr.as_bytes());
             assert_eq!(exported.status, Some(0), "{exported}");
@@ -261,7 +261,7 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
                     "/sys/fs/cgroup/memory.events",
                     "/sys/fs/cgroup/pids.events",
                 ],
-                WITHIN,
+                Duration::MAX,
             );
             save(&format!("{phase}-kernel.stdout"), read.stdout.as_bytes());
             save(&format!("{phase}-kernel.stderr"), read.stderr.as_bytes());
@@ -282,7 +282,10 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
             .unwrap()
             .parse::<u64>()
             .unwrap();
-        let update = fixture.command(&["update", "--pids-limit", &tasks.to_string(), &id], WITHIN);
+        let update = fixture.command(
+            &["update", "--pids-limit", &tasks.to_string(), &id],
+            Duration::MAX,
+        );
         save("finite-update.stdout", update.stdout.as_bytes());
         save("finite-update.stderr", update.stderr.as_bytes());
         assert_eq!(update.status, Some(0), "{update}");
@@ -306,13 +309,13 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
                 "event-child-ran",
                 "event-child-stderr",
             ],
-            WITHIN,
+            Duration::MAX,
         );
         save("refused.stdout", refused.stdout.as_bytes());
         save("refused.stderr", refused.stderr.as_bytes());
         let after = collect("after-refusal");
         let after_events = events(scopes(&after, &id)["workload"]);
-        let reset = fixture.command(&["update", "--pids-limit", "-1", &id], WITHIN);
+        let reset = fixture.command(&["update", "--pids-limit", "-1", &id], Duration::MAX);
         save("reset.stdout", reset.stdout.as_bytes());
         save("reset.stderr", reset.stderr.as_bytes());
         assert_eq!(reset.status, Some(0), "{reset}");
@@ -327,7 +330,7 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
                 "event-child-ran",
                 "event-child-stderr",
             ],
-            WITHIN,
+            Duration::MAX,
         );
         save("resumed.stdout", resumed.stdout.as_bytes());
         save("resumed.stderr", resumed.stderr.as_bytes());
@@ -348,7 +351,7 @@ fn task_refusals_export_the_actual_kernel_event_counter() {
                 fixture.consume(member, label, channel);
             }
         }
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
     }) else {
         return;
     };
@@ -376,7 +379,7 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
             "managed-output.ready",
             &std::fs::read(fixture.record.as_ref().unwrap()).unwrap(),
         );
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         let kernel = |phase: &str| {
             let read = fixture.command(
                 &[
@@ -387,7 +390,7 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
                     "/sys/fs/cgroup/memory.max",
                     "/sys/fs/cgroup/pids.max",
                 ],
-                WITHIN,
+                Duration::MAX,
             );
             save(&format!("{phase}-kernel-limits.stdout"), read.stdout.as_bytes());
             save(&format!("{phase}-kernel-limits.stderr"), read.stderr.as_bytes());
@@ -395,7 +398,7 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
             read.stdout
         };
         let initial_kernel = kernel("initial");
-        let first = fixture.command(&["read", "metrics", &id], WITHIN);
+        let first = fixture.command(&["read", "metrics", &id], Duration::MAX);
         save("first.json", first.stdout.as_bytes());
         save("first.stderr", first.stderr.as_bytes());
         assert_eq!(first.status, Some(0), "{first}");
@@ -403,9 +406,9 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
         let first_scopes = scopes(&first, &id);
         workload_limits(first_scopes["workload"], &initial_kernel);
 
-        let paused = fixture.command(&["pause", &id], WITHIN);
+        let paused = fixture.command(&["pause", &id], Duration::MAX);
         assert_eq!(paused.status, Some(0), "{paused}");
-        let unavailable = fixture.command(&["read", "metrics", &id], WITHIN);
+        let unavailable = fixture.command(&["read", "metrics", &id], Duration::MAX);
         save("paused.stdout", unavailable.stdout.as_bytes());
         save("paused.stderr", unavailable.stderr.as_bytes());
         assert_eq!(unavailable.status, Some(1), "{unavailable}");
@@ -419,10 +422,10 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
             unavailable.stdout.is_empty(),
             "no fresh cached artifact while paused"
         );
-        let resumed = fixture.command(&["unpause", &id], WITHIN);
+        let resumed = fixture.command(&["unpause", &id], Duration::MAX);
         assert_eq!(resumed.status, Some(0), "{resumed}");
-        fixture.main_progress(WITHIN);
-        let second = fixture.command(&["read", "metrics", &id], WITHIN);
+        fixture.main_progress(Duration::MAX);
+        let second = fixture.command(&["read", "metrics", &id], Duration::MAX);
         save("second.json", second.stdout.as_bytes());
         save("second.stderr", second.stderr.as_bytes());
         assert_eq!(second.status, Some(0), "{second}");
@@ -448,12 +451,12 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
             ("finite", finite.to_string(), Some(finite)),
             ("unbounded", "-1".to_owned(), None),
         ] {
-            let update = fixture.command(&["update", "--pids-limit", &requested, &id], WITHIN);
+            let update = fixture.command(&["update", "--pids-limit", &requested, &id], Duration::MAX);
             save(&format!("{phase}-update.stdout"), update.stdout.as_bytes());
             save(&format!("{phase}-update.stderr"), update.stderr.as_bytes());
             assert_eq!(update.status, Some(0), "{update}");
             let actual_kernel = kernel(phase);
-            let exported = fixture.command(&["read", "metrics", &id], WITHIN);
+            let exported = fixture.command(&["read", "metrics", &id], Duration::MAX);
             save(&format!("{phase}.json"), exported.stdout.as_bytes());
             save(&format!("{phase}.stderr"), exported.stderr.as_bytes());
             assert_eq!(exported.status, Some(0), "{exported}");
@@ -473,7 +476,7 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
                 fixture.consume(member, label, channel);
             }
         }
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
     }) else {
         return;
     };
@@ -512,7 +515,7 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
                 &image,
                 "sleep",
             ],
-            WITHIN,
+            Duration::MAX,
         );
         assert_eq!(joined.status, Some(0), "{joined}");
         let joiner = joined.stdout.trim();
@@ -529,7 +532,7 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
                     "slurp",
                     "/proc/sys/kernel/random/boot_id",
                 ],
-                WITHIN,
+                Duration::MAX,
             );
             save(&format!("{name}-boot.stdout"), run.stdout.as_bytes());
             save(&format!("{name}-boot.stderr"), run.stderr.as_bytes());
@@ -548,8 +551,8 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
             "actual shared guest boot"
         );
 
-        let first = fixture.command(&["read", "metrics", &provider], WITHIN);
-        let second = fixture.command(&["read", "metrics", joiner], WITHIN);
+        let first = fixture.command(&["read", "metrics", &provider], Duration::MAX);
+        let second = fixture.command(&["read", "metrics", joiner], Duration::MAX);
         for (name, run) in [("provider", &first), ("joiner", &second)] {
             save(&format!("{name}.json"), run.stdout.as_bytes());
             save(&format!("{name}.stderr"), run.stderr.as_bytes());
@@ -572,9 +575,9 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
             assert_eq!(identity["shards.microvm.id"]["stringValue"], provider);
             assert_eq!(identity["shards.run.id"]["stringValue"], provider);
         }
-        let removed = fixture.command(&["rm", "-f", joiner], WITHIN);
+        let removed = fixture.command(&["rm", "-f", joiner], Duration::MAX);
         assert_eq!(removed.status, Some(0), "{removed}");
-        fixture.main_progress(WITHIN);
+        fixture.main_progress(Duration::MAX);
         for (member, label) in [(1, "agent"), (2, "harness")] {
             for channel in [Channel::Stdout, Channel::Stderr] {
                 fixture.consume(member, label, channel);

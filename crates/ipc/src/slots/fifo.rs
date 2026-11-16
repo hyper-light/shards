@@ -104,7 +104,8 @@ impl Read for Within<'_> {
 /// that goes whole or not at all (POSIX write(2)), and a FIFO may say it has room while it has
 /// less (macOS's, local stream sockets, writable at their low-water mark: poll(2) said POLLOUT
 /// with 504 bytes free, and a write of 512 then waited, PM M549). A wait that fails, its
-/// reader gone, is told no end.
+/// reader gone, is told no end: past PIPE_BUF its wait ends only with a write after it that
+/// moved bytes, as its reader's end wakes the wait too (waits-04).
 pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> io::Result<()> {
     let mut rest = buf;
     while !rest.is_empty() {
@@ -118,7 +119,7 @@ pub fn write_all_waiting(to: &File, buf: &[u8], mut waits: impl FnMut(Wait)) -> 
             (&*to).write_all(rest)?;
             rest = &[];
         } else {
-            await_room(to)?;
+            rest = rest.get(write_after_room(to, rest)?..).unwrap_or_default();
         }
         waits(Wait::Ended(began.elapsed()));
     }
@@ -143,6 +144,18 @@ fn write_now(to: &File, buf: &[u8]) -> io::Result<Option<usize>> {
         Err(e) => return Err(e),
     };
     restored.map(|()| wrote)
+}
+
+/// Writes what of `rest` the FIFO `to` takes once its reader has made room: how much, never
+/// none, waiting again where a wake found no room after all. Its reader's end wakes the wait
+/// and fails the write after it (`EPIPE`), so a wait that took nothing returns no count.
+fn write_after_room(to: &File, rest: &[u8]) -> io::Result<usize> {
+    loop {
+        await_room(to)?;
+        if let Some(n) = write_now(to, rest)?.filter(|&n| n > 0) {
+            return Ok(n);
+        }
+    }
 }
 
 /// Waits until the FIFO `to` has room for some of what is left, however long its reader
@@ -219,9 +232,131 @@ fn both_ends(path: &Path) -> io::Result<(File, File)> {
     Ok((blocking(reader)?, writer))
 }
 
-/// The names of slot `n`'s FIFOs in `dir`: say, answer, in, out, err.
-fn names(dir: &Path, n: u64) -> [PathBuf; 5] {
-    ["say", "answer", "in", "out", "err"].map(|what| dir.join(format!("{n}.{what}")))
+/// The names of slot `n`'s FIFOs in `dir`: say, answer, in, out, err, and taker.
+fn names(dir: &Path, n: u64) -> [PathBuf; 6] {
+    ["say", "answer", "in", "out", "err", "taker"].map(|what| dir.join(format!("{n}.{what}")))
+}
+
+/// The file a client holds shared from before it reads a record until it has named itself
+/// in the slot it took (`N.taker`), and the daemon exclusive, not waiting, to find what was
+/// taken by a client that ended in between ([`Requests::quiet`]): flock(2)'s, which goes
+/// with its holder's end, as its open file goes.
+const TAKING: &str = "taking";
+
+/// Where the daemon makes its [`TAKING`] before it renames it into place.
+const TAKING_MADE: &str = ".taking.new";
+
+/// The longest a taker's name is, `PID START\n` ([`crate::this_process`]): a `u32`'s
+/// digits, a space, a `u64`'s, a newline. Written in one write, far under `PIPE_BUF`, it is
+/// read whole or not at all (POSIX write(2)).
+const TAKER_MOST: usize = digits(u32::MAX as u64) + 1 + digits(u64::MAX) + 1;
+
+/// The decimal digits of `n`.
+const fn digits(mut n: u64) -> usize {
+    let mut d = 1;
+    while n >= 10 {
+        n /= 10;
+        d += 1;
+    }
+    d
+}
+
+/// The end of the process a slot's taker named itself as (`N.taker`, [`crate::Named`]): a
+/// descriptor readable once it has ended ([`exit_watch`](crate::unix::exit_watch)), to wait
+/// on beside the slot's own. `None` where it has ended already, or its ID names a process that started after it (its start, read once
+/// its end is watched).
+fn taker_end(named: &crate::Named) -> io::Result<Option<std::os::fd::OwnedFd>> {
+    let pid = libc::pid_t::try_from(named.pid)
+        .ok()
+        .filter(|&pid| pid > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker named no process"))?;
+    let Some(end) = crate::unix::exit_watch(pid)? else {
+        return Ok(None);
+    };
+    Ok(named.lives().then_some(end))
+}
+
+/// What a slot's taker named itself as, read from its `taker` FIFO once it is readable: one
+/// write of [`TAKER_MOST`] bytes at most.
+fn read_taker(fifo: &File) -> io::Result<crate::Named> {
+    let mut name = [0u8; TAKER_MOST + 1];
+    let got = read_some(&mut &*fifo, &mut name)?;
+    name.get(..got)
+        .filter(|_| got <= TAKER_MOST)
+        .and_then(|name| std::str::from_utf8(name).ok())
+        .and_then(|name| crate::Named::parse(name).ok())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a taker's name that names no process"))
+}
+
+/// A client's shared hold of its daemon's [`TAKING`], let go of as it drops, before its file
+/// closes (M244).
+struct Taking(File);
+
+impl Taking {
+    /// Its hold of `dir`'s [`TAKING`]; none where there is none to hold.
+    fn shared(dir: &Path) -> io::Result<Option<Taking>> {
+        let file = match File::open(dir.join(TAKING)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        loop {
+            // SAFETY: flock(2) of a descriptor `file` holds open.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0 {
+                return Ok(Some(Taking(file)));
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+    }
+}
+
+impl Drop for Taking {
+    fn drop(&mut self) {
+        // SAFETY: flock(2) of a descriptor this holds open.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// Whether `list` still names the list `opened`: the same file, not one made since in its
+/// place ([`Requests::renew`]) nor none.
+fn still_names(list: &Path, opened: &File) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    let named = match std::fs::metadata(list) {
+        Ok(named) => named,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let held = opened.metadata()?;
+    Ok(named.dev() == held.dev() && named.ino() == held.ino())
+}
+
+/// The daemon's exclusive hold of its [`TAKING`] ([`Requests::quiet`]): no client is taking
+/// a slot while it is held. Let go of as it drops.
+#[derive(Debug)]
+pub struct Quiet<'r>(&'r File);
+
+impl Drop for Quiet<'_> {
+    fn drop(&mut self) {
+        // SAFETY: flock(2) of a descriptor its `Requests` holds open.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+/// What tells whether a slot's taker has named itself ([`Slot::probe`]): its `taker` FIFO's
+/// reader, which has the name to read until the slot's wait reads it, and the wait says it
+/// has before it does.
+#[derive(Debug)]
+pub struct Probe(File);
+
+impl Probe {
+    /// Whether the name is there to read.
+    pub fn named(&self) -> bool {
+        crate::await_any_within(&[self.0.as_fd()], Some(Duration::ZERO))
+            .is_ok_and(|ready| ready.first().copied().unwrap_or(false))
+    }
 }
 
 /// The daemon's side: the home's slots, and the lists it offers them on.
@@ -234,7 +369,28 @@ pub struct Requests {
     /// A reader of each list's own, that never waits: what no client has taken is read
     /// back through it ([`untaken`](Self::untaken)).
     back: [File; 2],
+    /// Its [`TAKING`], made with its lists.
+    taking: File,
     next: u64,
+}
+
+/// Makes `dir`'s [`TAKING`] anew, before its lists are made, so that a client finds one
+/// beside every list it opens: made under a name of its own and renamed over an old one,
+/// whose holders are left with it, so that its name is never without a file.
+fn taking(dir: &Path) -> io::Result<File> {
+    let made = dir.join(TAKING_MADE);
+    match std::fs::remove_file(&made) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&made)?;
+    std::fs::rename(&made, dir.join(TAKING))?;
+    Ok(file)
 }
 
 /// Makes `dir`'s two lists, `free` and `free-streams`: each one's writer, and a reader of
@@ -288,11 +444,13 @@ impl Requests {
             }
             Err(e) => return Err(e),
         }
+        let taking = taking(&dir)?;
         let (free, back) = lists(&dir)?;
         Ok(Requests {
             dir,
             free,
             back,
+            taking,
             next: 0,
         })
     }
@@ -312,8 +470,28 @@ impl Requests {
                 _ => {}
             }
         }
+        self.taking = taking(&self.dir)?;
         (self.free, self.back) = lists(&self.dir)?;
         Ok(())
+    }
+
+    /// Its exclusive hold of [`TAKING`], where no client is taking a slot now: then every
+    /// slot taken whose taker has not named itself is one whose taker ended taking it.
+    /// `None` while a client holds it, from before it reads a record until it has named
+    /// itself (or waits for a record, the list empty); not waited for.
+    pub fn quiet(&self) -> io::Result<Option<Quiet<'_>>> {
+        loop {
+            // SAFETY: flock(2) of a descriptor this holds open.
+            if unsafe { libc::flock(self.taking.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                return Ok(Some(Quiet(&self.taking)));
+            }
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EWOULDBLOCK) => return Ok(None),
+                Some(libc::EINTR) => {}
+                _ => return Err(e),
+            }
+        }
     }
 
     /// A new slot, with `streams` or without: its FIFOs made and its ends held, offered to
@@ -324,12 +502,14 @@ impl Requests {
             .next
             .checked_add(1)
             .ok_or_else(|| io::Error::other("slot numbers"))?;
-        let [say, answer, input, output, errors] = names(&self.dir, n);
+        let [say, answer, input, output, errors, taker] = names(&self.dir, n);
         let made = (|| {
             make_fifo(&say)?;
             make_fifo(&answer)?;
+            make_fifo(&taker)?;
             let (say, say_own) = both_ends(&say)?;
             let (answer_own, answer) = both_ends(&answer)?;
+            let (taker, taker_own) = both_ends(&taker)?;
             let stream = |path: &Path, reads: bool| -> io::Result<(File, File)> {
                 make_fifo(path)?;
                 let (reader, writer) = both_ends(path)?;
@@ -352,6 +532,8 @@ impl Requests {
                 say_own,
                 answer,
                 answer_own,
+                taker,
+                taker_own,
                 streams,
                 stop,
                 stops,
@@ -435,6 +617,11 @@ pub struct Slot {
     answer: File,
     /// A reader of its own, so that `answer` has one until a client opens its own.
     answer_own: File,
+    /// Where its taker names itself ([`crate::Named`]) as it takes it, before it opens
+    /// anything else of it, and a writer of its own, so that a read of it ends with no
+    /// client's end.
+    taker: File,
+    taker_own: File,
     /// A slot with streams: in, out and err, each the daemon's end (what it hands a run's
     /// VM) and the other, its own.
     streams: Option<[(File, File); 3]>,
@@ -465,28 +652,63 @@ impl Slot {
         Ok(Stopper(self.stops.try_clone()?))
     }
 
+    /// What tells whether its taker has named itself, for its maker to look at while no
+    /// client is taking a slot ([`Requests::quiet`]).
+    pub fn probe(&self) -> io::Result<Probe> {
+        Ok(Probe(self.taker.try_clone()?))
+    }
+
     /// Waits for a client to take this slot and begin its request, or for its stop: a
-    /// client's bytes first where both have come. Once a client has said which streams it
-    /// opened, the daemon lets go of their other ends, and of `say`'s writer and `answer`'s
-    /// reader: then the client's end ends the session's reads, and a client that ends
-    /// before its request is whole leaves [`Opened::request`] none.
-    pub fn wait(self) -> io::Result<Waited> {
+    /// client's bytes first where both have come. A client names itself as it takes the
+    /// slot (`N.taker`): told `named` first (before the name is read, so that its
+    /// [`Probe`] or `named` says so throughout), the wait follows that process, and a slot
+    /// whose taker ended before its first byte is [`Waited::Gone`], never left for a sweep
+    /// on a clock (runs-11). Once a client has said which streams it opened, the daemon
+    /// lets go of their other ends, and of `say`'s writer and `answer`'s reader: then the
+    /// client's end ends the session's reads, and a client that ends before its request is
+    /// whole leaves [`Opened::request`] none.
+    pub fn wait(self, named: impl FnOnce()) -> io::Result<Waited> {
         let Slot {
             n,
             say,
             say_own,
             answer,
             answer_own,
+            taker,
+            taker_own,
             streams: kept,
             stop,
             stops,
         } = self;
-        let ready = crate::await_any(&[say.as_fd(), stop.as_fd()])?;
-        if !ready.first().copied().unwrap_or(false) {
-            drop((stop, stops));
-            return Ok(Waited::Stopped);
+        let mut named = Some(named);
+        let mut ended: Option<std::os::fd::OwnedFd> = None;
+        loop {
+            let third = ended.as_ref().map_or_else(|| taker.as_fd(), AsFd::as_fd);
+            let ready = crate::await_any(&[say.as_fd(), stop.as_fd(), third])?;
+            let at = |i: usize| ready.get(i).copied().unwrap_or(false);
+            if at(0) {
+                break;
+            }
+            if at(1) {
+                return Ok(Waited::Stopped);
+            }
+            if ended.is_some() {
+                // Its taker ended: what it wrote before it did goes first.
+                let left = crate::await_any_within(&[say.as_fd()], Some(Duration::ZERO))?;
+                if left.first().copied().unwrap_or(false) {
+                    break;
+                }
+                return Ok(Waited::Gone);
+            }
+            if let Some(named) = named.take() {
+                named();
+            }
+            match taker_end(&read_taker(&taker)?)? {
+                Some(end) => ended = Some(end),
+                None => return Ok(Waited::Gone),
+            }
         }
-        drop((stop, stops));
+        drop((stop, stops, taker, taker_own));
         let mut first = [0u8; 1];
         if read_some(&mut &say, &mut first)? == 0 {
             return Ok(Waited::Gone);
@@ -662,6 +884,19 @@ pub fn take(home: &Path, streams: u8) -> io::Result<Taken> {
             Ok(free) => Waits::new(free),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Taken::NoDaemon),
             Err(e) => return Err(e),
+        };
+        // Held from before its record is read until it has named itself in its slot, or
+        // found it gone: a client that ends in between leaves its daemon able to tell
+        // ([`Requests::quiet`]).
+        let Some(_taking) = Taking::shared(&dir)? else {
+            // A list with no take lock beside it, which a daemon makes before its lists:
+            // a daemon of a build from before takers named themselves, never asked (D36,
+            // D185); or the list was made again since it was opened, or went: the one
+            // there now.
+            if still_names(&list, &waits.free)? {
+                return Ok(Taken::NoTakeLock);
+            }
+            continue 'list;
         };
         loop {
             // None there and no writer is no daemon.
@@ -874,9 +1109,17 @@ impl Waits {
     }
 }
 
-/// Opens slot `n` of `dir`: `answer` and the `streams` named, then `say`.
+/// Names this process in the slot it took, at `taker`, as its daemon follows it until its
+/// first byte ([`Slot::wait`]): in one write, whole. A slot its daemon removed since it was
+/// offered has none (ENOENT) or no reader of it (ENXIO), which [`take`] passes over.
+fn name_taker(taker: &Path) -> io::Result<()> {
+    (&open_now(taker, true)?).write_all(crate::this_process()?.as_bytes())
+}
+
+/// Opens slot `n` of `dir`: its taker named, `answer` and the `streams` named, then `say`.
 fn open_slot(dir: &Path, n: u64, streams: u8) -> io::Result<Client> {
-    let [say, answer, input, output, errors] = names(dir, n);
+    let [say, answer, input, output, errors, taker] = names(dir, n);
+    name_taker(&taker)?;
     let answer = blocking(open_now(&answer, false)?)?;
     let open = |path: &Path, bit: u8, write: bool| -> io::Result<Option<File>> {
         if streams & bit == 0 {
@@ -1248,7 +1491,7 @@ mod tests {
         // Removed, its wait ended, as a sweep removes one.
         requests.remove(gone.number());
         gone.stopper().unwrap().stop().unwrap();
-        assert!(matches!(gone.wait().unwrap(), Waited::Stopped));
+        assert!(matches!(gone.wait(|| {}).unwrap(), Waited::Stopped));
         std::thread::scope(|s| {
             let waiting = s.spawn(|| take(&home, 0).unwrap());
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1262,7 +1505,7 @@ mod tests {
             // One that opened its slot and ended unwritten leaves it waiting, as fresh.
             drop(client);
             let stopper = next.stopper().unwrap();
-            let waited = s.spawn(move || next.wait().unwrap());
+            let waited = s.spawn(move || next.wait(|| {}).unwrap());
             std::thread::sleep(std::time::Duration::from_millis(50));
             assert!(!waited.is_finished(), "a slot no client wrote to ended its wait");
             stopper.stop().unwrap();
@@ -1308,7 +1551,7 @@ mod tests {
         // Cut short: a header that says ten bytes, and three of them.
         let slot = requests.make(false).unwrap();
         let mut cut = client(slot.number(), "\\0\\0\\007\\0\\0\\0\\012abc");
-        let Waited::Opened(opened) = slot.wait().unwrap() else {
+        let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
             panic!("no client opened the slot");
         };
         std::thread::scope(|s| {
@@ -1343,7 +1586,7 @@ mod tests {
             requests.offer(slot.number(), false).unwrap();
             std::thread::scope(|s| {
                 let served = s.spawn(move || {
-                    let Waited::Opened(opened) = slot.wait().unwrap() else {
+                    let Waited::Opened(opened) = slot.wait(|| {}).unwrap() else {
                         panic!("no client opened the slot");
                     };
                     let got = opened.request_within(stall, None).unwrap();
@@ -1409,5 +1652,144 @@ mod tests {
         };
         assert_eq!(asked.request, ps);
         assert!(!asked.waited, "a rest there at once waited on its client");
+    }
+
+    /// A wait on a FIFO's reader is a take only where a write after it moved bytes (D185,
+    /// waits-04): a reader that goes while a write of more than PIPE_BUF waits for room
+    /// wakes that wait too (`await_fifo_room`), and the write after it fails, so that wait
+    /// is told no end. Red with its end told as the wait woke: a take learned from a client
+    /// that took nothing. Its twin, a reader that drains as each wait begins, is a take each.
+    #[test]
+    fn a_readers_end_is_no_take() {
+        let home = home("fifo-take");
+        let path = home.join("f");
+        make_fifo(&path).unwrap();
+        let fill = |writer: &File| while write_now(writer, &[0; 1 << 16]).unwrap().is_some() {};
+        let drain = |reader: &File| {
+            let mut buf = vec![0; 1 << 16];
+            loop {
+                match (&*reader).read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                    Err(e) => panic!("{e}"),
+                }
+            }
+        };
+        let rest = vec![1u8; libc::PIPE_BUF * 4];
+        // Its reader gone as the wait begins.
+        let mut reader = Some(open_now(&path, false).unwrap());
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        let failed = write_all_waiting(&writer, &rest, |w| {
+            drop(reader.take());
+            waits.push(w);
+        })
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::BrokenPipe, "{failed}");
+        assert!(matches!(waits.as_slice(), [Wait::Began(_)]), "{waits:?}");
+        drop(writer);
+        // Its reader draining as each wait begins: each wait a take.
+        let reader = open_now(&path, false).unwrap();
+        let writer = blocking(open_now(&path, true).unwrap()).unwrap();
+        fill(&writer);
+        let mut waits = Vec::new();
+        write_all_waiting(&writer, &rest, |w| {
+            if matches!(w, Wait::Began(_)) {
+                drain(&reader);
+            }
+            waits.push(w);
+        })
+        .unwrap();
+        assert!(!waits.is_empty() && waits.len() % 2 == 0, "{waits:?}");
+        for pair in waits.chunks(2) {
+            assert!(matches!(pair, [Wait::Began(_), Wait::Ended(_)]), "{waits:?}");
+        }
+    }
+
+    /// A slot's taker named, its wait follows that process: one that ends before its first
+    /// byte leaves the slot gone, its wait told it was named first, and no sweep on a clock
+    /// is needed to find it (runs-11; before, the daemon's maker let such a slot go at the
+    /// second of two sweeps 60 s apart). One named by a process gone already is gone at once.
+    #[test]
+    fn a_slot_whose_taker_ends_before_its_request_is_gone() {
+        let home = home("slot-taker-ends");
+        let mut requests = Requests::open(&home).unwrap();
+        let mut taker = Command::new("/bin/sleep").arg("600").spawn().unwrap();
+        let named = format!("{} {}\n", taker.id(), crate::started(taker.id()).unwrap());
+        let dir = home.join(DIR);
+        let slot = requests.make(false).unwrap();
+        let n = slot.number();
+        let [.., at] = names(&dir, n);
+        let probe = slot.probe().unwrap();
+        assert!(!probe.named(), "named before its taker came");
+        (&open_now(&at, true).unwrap())
+            .write_all(named.as_bytes())
+            .unwrap();
+        assert!(probe.named(), "its taker's name unseen");
+        let (said, told) = std::sync::mpsc::channel();
+        let (ended, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(slot.wait(move || {
+                let _ = said.send(());
+            }));
+        });
+        told.recv_timeout(Duration::from_secs(60))
+            .expect("not told its taker named itself");
+        taker.kill().unwrap();
+        taker.wait().unwrap();
+        let waited = waited
+            .recv_timeout(Duration::from_secs(60))
+            .expect("its taker's end unseen");
+        assert!(matches!(waited, Ok(Waited::Gone)), "{waited:?}");
+        // Its ID names no live process now.
+        let slot = requests.make(false).unwrap();
+        let [.., at] = names(&dir, slot.number());
+        (&open_now(&at, true).unwrap())
+            .write_all(named.as_bytes())
+            .unwrap();
+        assert!(matches!(slot.wait(|| {}), Ok(Waited::Gone)));
+    }
+
+    /// A daemon makes its take lock before its lists, and makes it again in place as it
+    /// makes them again, so that every list a client opens has one beside it; a list with
+    /// none is a daemon of a build from before takers named themselves, refused typed and
+    /// never asked: its slot stays offered. Red before legacy4, which took the slot with
+    /// no hold (`Taking(None)`).
+    #[test]
+    fn a_list_with_no_take_lock_beside_it_is_refused() {
+        use std::os::unix::fs::MetadataExt as _;
+        let home = home("slot-no-take-lock");
+        let mut requests = Requests::open(&home).unwrap();
+        let dir = home.join(DIR);
+        assert!(dir.join(TAKING).is_file() && !dir.join(TAKING_MADE).exists());
+        let made = std::fs::metadata(dir.join(TAKING)).unwrap();
+        requests.renew().unwrap();
+        let again = std::fs::metadata(dir.join(TAKING)).unwrap();
+        assert_ne!(again.ino(), made.ino(), "its take lock not made again");
+        let slot = requests.make(false).unwrap();
+        requests.offer(slot.number(), false).unwrap();
+        std::fs::remove_file(dir.join(TAKING)).unwrap();
+        assert!(matches!(take(&home, 0), Ok(Taken::NoTakeLock)));
+        assert_eq!(requests.waiting(false).unwrap(), 1, "a slot taken unheld");
+    }
+
+    /// The take lock: a client holds it shared from before its record's read until it has
+    /// named itself, so that a daemon holds it exclusive only while no client is taking a
+    /// slot ([`Requests::quiet`]), and every slot then taken unnamed is a dead taker's.
+    #[test]
+    fn the_daemon_holds_the_take_lock_only_while_no_client_takes_a_slot() {
+        let home = home("slot-take-lock");
+        let requests = Requests::open(&home).unwrap();
+        let dir = home.join(DIR);
+        {
+            let quiet = requests.quiet().unwrap();
+            assert!(quiet.is_some(), "no client takes, yet not quiet");
+        }
+        let taking = Taking::shared(&dir).unwrap().unwrap();
+        assert!(requests.quiet().unwrap().is_none(), "quiet while a client takes");
+        drop(taking);
+        assert!(requests.quiet().unwrap().is_some(), "a taker's hold outlived it");
     }
 }

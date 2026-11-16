@@ -1,0 +1,33 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/devices-carrier-5a6c0d1d02/devices.bundle
+ * branch                p/fix-devices-v1 -> FETCH_HEAD
+Previous HEAD position was 74924eba3 test(vmm): reproduce reset blocked by a limiter wait
+HEAD is now at de1da2168 fix(vmm): cancel block limiter waits before reset joins workers
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.96s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 7 tests
+test devices::virtio::block::tests::config_space_reports_capacity_segments_and_block_size ... ok
+test devices::virtio::block::tests::a_join_disk_writes_only_its_writable_ranges ... ok
+test devices::virtio::block::tests::a_transfer_reaches_device_memory_and_its_lost_pages_fail_it ... ok
+test devices::virtio::block::tests::a_refused_worker_leaves_the_queue_paused ... ok
+test devices::virtio::block::tests::reset_cancels_only_its_own_limiter_wait ... ok
+test devices::virtio::block::tests::a_join_disk_reads_each_image_at_its_range ... ok
+test devices::virtio::block::tests::a_through_range_moves_a_request_whole ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 492 filtered out; finished in 0.06s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 4 tests
+test devices::virtio::limit::tests::requests_are_paced_at_their_rates ... ok
+test devices::virtio::limit::tests::a_late_request_keeps_its_place ... ok
+test devices::virtio::limit::tests::no_limit_waits_for_nothing ... ok
+test devices::virtio::limit::tests::a_pause_lets_a_waiting_request_go ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 495 filtered out; finished in 0.08s
+
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/ipc)
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-devices/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.31s

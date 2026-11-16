@@ -416,6 +416,9 @@ impl<D: Disk> Daemon<D> {
         let generation = shards_vmm::snapshot::generation(&dir)
             .map_err(|_| format!("{given} has no snapshot named {name}"))?;
         let unusable = |e: &dyn std::fmt::Display| format!("{given}'s snapshot {name}: {e}");
+        // Its guest's init, frozen in its memory, speaks this build's contract, or it is
+        // refused before anything restores it (D176).
+        shards_vmm::snapshot::resumable(&dir).map_err(|e| unusable(&e))?;
         let record = shards_vmm::platform::read_input(&generation.join(RESUME), max_resume())
             .map_err(|e| unusable(&e))?
             .ok_or_else(|| unusable(&"it was saved by no run"))?;
@@ -452,6 +455,7 @@ impl<D: Disk> Daemon<D> {
         r: &Resumable,
         mac: Option<[u8; 6]>,
         parent: &str,
+        told: &dyn Fn(&str),
     ) -> Result<super::Ready, String> {
         let pinned = shards_vmm::snapshot::read(&r.dir)?;
         let mut args: Vec<OsString> = vec![
@@ -476,7 +480,7 @@ impl<D: Disk> Daemon<D> {
             .then(|| super::layers::LayerFile::for_restore(&self.home, &pinned.path))
             .transpose()?;
         drop(pinned);
-        self.start_for_run(threads, &args, net, parent, layer)
+        self.start_for_run(threads, &args, net, parent, layer, told)
     }
 
     /// `shards list snapshots MICROVM` (D176): its snapshots, newest first, each one's name,
@@ -831,7 +835,7 @@ impl<D: Disk> Daemon<D> {
             0
         };
         let payload = save_ask(flags, tokens, [staged.name(), snapshot, &microvm]);
-        if let Err(e) = socket.send(kind::SAVE, &payload, &fds) {
+        if let Err(e) = socket.send(&self.answers.run_send, kind::SAVE, &payload, &fds) {
             lock(&inbox).saving = None;
             return Err(format!("asking its microVM: {e}"));
         }

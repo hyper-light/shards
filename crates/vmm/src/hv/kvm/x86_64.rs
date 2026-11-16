@@ -1,6 +1,6 @@
 //! The KVM backend's x86_64 VM and vCPUs. On x86 the guest powers off and resets through
-//! devices (ACPI sleep control, i8042), so those come from the machine, and a triple fault
-//! is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
+//! devices (ACPI sleep control and reset registers), so those come from the machine, and a
+//! triple fault is a reset. Ground truth: docs/research/kvm-x86_64-ground-truth.md.
 
 use std::io;
 use std::os::fd::RawFd;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::state::{VcpuState, VmState};
 use super::{Error, Kicker, Result, Slots, Thread, call, install_kick_handler, kvm, sys};
-use crate::arch::x86_64::{Boot, Segment, cpuid, layout};
+use crate::arch::x86_64::{Boot, Segment, cpuid, layout, xsave};
 use crate::hv::{Exit, Io};
 use crate::sync::lock;
 
@@ -105,7 +105,7 @@ fn template(kvm: &sys::Kvm) -> Result<Vec<cpuid::Leaf>> {
 /// This host's CPU as KVM shows a guest (D176 part 6): its vendor and feature leaves
 /// ([`cpuid::identity`]), which a CPU baseline is the meet of across a fleet.
 pub fn host_cpu_id() -> Result<Vec<[u32; 7]>> {
-    let kvm = kvm().map_err(Error::Guest)?;
+    let kvm = kvm().map_err(|e| Error::Guest(e.into()))?;
     Ok(cpuid::identity(&template(kvm)?))
 }
 
@@ -153,7 +153,7 @@ impl Vm {
     /// (research doc §9 step 2). No PIT: with a HW-reduced FADT the guest never uses one.
     pub fn new(config: VmConfig) -> Result<Vm> {
         install_kick_handler()?;
-        let kvm = kvm().map_err(Error::Guest)?;
+        let kvm = kvm().map_err(|e| Error::Guest(e.into()))?;
         // Type 0, KVM_X86_DEFAULT_VM.
         let fd = Arc::new(kvm.create_vm(0).map_err(call("KVM_CREATE_VM"))?);
         fd.set_tss_addr(layout::TSS).map_err(call("KVM_SET_TSS_ADDR"))?;
@@ -162,10 +162,12 @@ impl Vm {
         fd.create_irqchip().map_err(call("KVM_CREATE_IRQCHIP"))?;
         let mut cpuid = template(kvm)?;
         cpuid::within(&mut cpuid, &config.baseline);
-        let tsc_deadline = kvm
-            .check_extension(sys::CAP_TSC_DEADLINE_TIMER)
-            .map_err(call("KVM_CHECK_EXTENSION"))?
-            > 0;
+        let tsc_deadline = cpuid::deadline_timer(
+            kvm.check_extension(sys::CAP_TSC_DEADLINE_TIMER)
+                .map_err(call("KVM_CHECK_EXTENSION"))?
+                > 0,
+            &config.baseline,
+        );
         let msrs = kvm.msr_index_list().map_err(call("KVM_GET_MSR_INDEX_LIST"))?;
         let xsave2 = fd
             .check_extension(sys::CAP_XSAVE2)
@@ -547,6 +549,16 @@ const MSR_IA32_TSC: u32 = 0x10;
 const TSC_KHZ_TOLERANCE_PPM: u64 = 250;
 
 impl Vcpu {
+    /// It goes on from a pause its host held it through (D267): its guest's kvmclock told it
+    /// was stopped (KVM_KVMCLOCK_CTRL, which sets PVCLOCK_GUEST_STOPPED; api.rst 4.70), so that
+    /// its soft-lockup and RCU-stall watchdogs take the pause for its host's, not a hang
+    /// (`kvm_check_and_clear_guest_paused`), as QEMU tells it as a stopped VM goes on
+    /// (hw/i386/kvm/clock.c `kvmclock_vm_state_change`). On this vCPU's own thread, before it
+    /// enters its guest again. Refused, harmlessly, for a guest that never enabled kvmclock.
+    pub fn went_on(&self) {
+        let _ = self.fd.kvmclock_ctrl();
+    }
+
     /// Captures the vCPU's state, in the order Firecracker's comments give: MP state first,
     /// since reading it may change the LAPIC's, and the events last; but the LAPIC after the
     /// MSRs. Each of these ioctls loads the vCPU, and one that loads it on another host CPU
@@ -683,8 +695,23 @@ impl Vcpu {
         // Another CPU than the snapshot's (D176 part 6): one with every feature its guest
         // found is given the guest's CPUID, which the guest goes on believing; one short of
         // any is refused, naming what it lacks.
-        if !same_cpu(&st.cpuid, &self.cpuid) {
+        let other = !same_cpu(&st.cpuid, &self.cpuid);
+        if other {
             cpuid::covers(&self.cpuid, &st.cpuid).map_err(|lacks| Error::Guest(lacks.to_string()))?;
+        }
+        // KVM_SET_XSAVE reads an area of this host's size (KVM_CAP_XSAVE2) laid out as this
+        // host's CPUID leaf 0xD says: one of another size, another host's, is laid into one
+        // of this size by its own host's layout (the guest's CPUID, as KVM offered it there)
+        // and this one's, before anything of this vCPU is set (migrate-07).
+        let laid;
+        let xsave: &[u8] = if st.xsave.len() == self.xsave_size {
+            &st.xsave
+        } else {
+            laid = xsave::lay_into(&st.xsave, &st.cpuid, xcr0(&st.xcrs), &self.cpuid, self.xsave_size)
+                .map_err(Error::Xsave)?;
+            &laid
+        };
+        if other {
             let leaves: Vec<sys::kvm_cpuid_entry2> = st
                 .cpuid
                 .iter()
@@ -701,13 +728,6 @@ impl Vcpu {
                 .collect();
             self.fd.set_cpuid(&leaves).map_err(call("KVM_SET_CPUID2"))?;
             self.cpuid.clone_from(&st.cpuid);
-        }
-        if st.xsave.len() < self.xsave_size {
-            return Err(Error::Guest(format!(
-                "the snapshot's XSAVE area is {} bytes; this CPU's is {}",
-                st.xsave.len(),
-                self.xsave_size
-            )));
         }
         if crate::log::enabled(crate::log::Level::Debug) {
             let deadline = st.msrs.iter().find(|&&(index, _)| index == MSR_IA32_TSC_DEADLINE);
@@ -736,7 +756,7 @@ impl Vcpu {
             size_of::<sys::kvm_sregs>(),
             "KVM_SET_SREGS",
         )?;
-        set(sys::KVM_SET_XSAVE, &st.xsave, sys::XSAVE_SIZE, "KVM_SET_XSAVE")?;
+        set(sys::KVM_SET_XSAVE, xsave, self.xsave_size, "KVM_SET_XSAVE")?;
         set(sys::KVM_SET_XCRS, &st.xcrs, sys::XCRS_SIZE, "KVM_SET_XCRS")?;
         set(
             sys::KVM_SET_DEBUGREGS,
@@ -853,6 +873,29 @@ impl Vcpu {
     }
 }
 
+/// XCR0's value among `xcrs`, a `struct kvm_xcrs` (nr_xcrs, flags, then 16 of xcr,
+/// reserved, value; Linux arch/x86/include/uapi/asm/kvm.h): 0 where it names none, as KVM
+/// writes of a host without XSAVE, whose guest enables nothing XSAVE lays out.
+fn xcr0(xcrs: &[u8]) -> u64 {
+    let word = |at: usize, n: usize| xcrs.get(at..at + n);
+    let count = word(0, 4)
+        .and_then(|b| b.try_into().ok())
+        .map_or(0, u32::from_ne_bytes);
+    (0..count.min(sys::MAX_XCRS))
+        .filter_map(|k| {
+            let at = 8 + 16 * k as usize;
+            let xcr = word(at, 4)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_ne_bytes)?;
+            let value = word(at + 8, 8)
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_ne_bytes)?;
+            (xcr == 0).then_some(value)
+        })
+        .next()
+        .unwrap_or(0)
+}
+
 /// Whether two vCPUs' CPUID tables are one CPU's, as a snapshot asks of the vCPU it is
 /// restored to: every leaf alike but those that describe the caches (leaf 4, 0x8000_0005,
 /// 0x8000_0006 and 0x8000_001D). KVM fills those from the core its ioctl ran on, and on a
@@ -874,6 +917,23 @@ fn same_cpu(a: &[[u32; 7]], b: &[[u32; 7]]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// XCR0 is read from KVM_GET_XCRS's bytes wherever among its XCRs it is, and is 0
+    /// where they name none (migrate-07's layout of a saved XSAVE area).
+    #[test]
+    fn xcr0_is_read_from_a_vcpus_xcrs() {
+        let mut xcrs = vec![0u8; sys::XCRS_SIZE];
+        assert_eq!(xcr0(&xcrs), 0);
+        xcrs[..4].copy_from_slice(&2u32.to_ne_bytes());
+        xcrs[8..12].copy_from_slice(&1u32.to_ne_bytes());
+        xcrs[16..24].copy_from_slice(&7u64.to_ne_bytes());
+        xcrs[24..28].copy_from_slice(&0u32.to_ne_bytes());
+        xcrs[32..40].copy_from_slice(&0x2e7u64.to_ne_bytes());
+        assert_eq!(xcr0(&xcrs), 0x2e7);
+        xcrs[..4].copy_from_slice(&u32::MAX.to_ne_bytes());
+        assert_eq!(xcr0(&xcrs), 0x2e7, "a count past KVM_MAX_XCRS reads no further");
+        assert_eq!(xcr0(&xcrs[..20]), 0, "nor past the bytes");
+    }
 
     /// Two cores of a hybrid host, as KVM described them (PM M258): their caches differ,
     /// and nothing else of what a vCPU is given; a feature that differs is another CPU.

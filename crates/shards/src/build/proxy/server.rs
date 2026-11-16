@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use shards_agentfile::url as gourl;
-use shards_registry::http::{Cancel, Client, Patience, Request};
+use shards_registry::http::{Cancel, Client, Request};
 use shards_registry::url::{Scheme, Url};
 
 use sha2::Digest as _;
@@ -48,7 +48,7 @@ fn close_gracefully(sock: &UnixStream) {
     let mut dropped = [0u8; 4096];
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
+        if left.is_zero() || shards_ipc::timeout_set(sock.set_read_timeout(Some(left))).is_err() {
             return;
         }
         if !matches!(crate::build::reading(sock).read(&mut dropped), Ok(n) if n > 0) {
@@ -810,14 +810,11 @@ impl<'p> Session<'p> {
         }
         let cancel = Cancel::new();
         let tls = proxy.tls.clone();
-        // As the client wrote it: its own User-Agent or none; waiting as long as the step
-        // does, as Go's transport has no bound; never to the host itself.
+        // As the client wrote it: its own User-Agent or none; its answers and silences
+        // waited for as long as the step does, as Go's transport has no bound, the step's own
+        // client their judge (D110, D276); never to the host itself.
         let client = Client::new(Box::new(move |_| Ok(tls.clone())), "")
-            .with_patience(Patience {
-                head: None,
-                stall: None,
-                ..Patience::default()
-            })
+            .following_liveness()
             .reaching(proxy.reach)
             .with_proxies(upstream)
             .cancelled_by(cancel.clone());
@@ -1271,7 +1268,7 @@ impl<'p> Session<'p> {
         reader.get_mut().conn.send_close_notify();
         let _ = reader.get_mut().flush();
         let _ = sock.shutdown(std::net::Shutdown::Write);
-        if sock.set_read_timeout(Some(self.proxy.head_time)).is_ok() {
+        if shards_ipc::timeout_set(sock.set_read_timeout(Some(self.proxy.head_time))).is_ok() {
             let mut sink = [0u8; 4096];
             while matches!(crate::build::reading(sock).read(&mut sink), Ok(n) if n > 0) {}
         }
@@ -1387,7 +1384,7 @@ impl Read for Timed<'_> {
             }
             None => None,
         };
-        self.sock.set_read_timeout(left)?;
+        shards_ipc::timeout_set(self.sock.set_read_timeout(left))?;
         crate::build::reading(self.sock).read(buf)
     }
 }

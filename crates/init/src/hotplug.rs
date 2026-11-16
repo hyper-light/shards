@@ -14,6 +14,15 @@
 //!   at DST; with `member N`, in the N-th domain's mount namespace instead of the
 //!   workload's (D235), DST beneath one of the run's plug roots, its mount point made there,
 //!   and the host's files the domain's.
+//! - `pmem ADDR GPA KEY`: a component's EROFS image (D270) on the read-only pmem function at
+//!   ADDR, its region at guest address GPA: libnvdimm's drivers bind its region and namespace
+//!   of themselves, with page structures, so that its files are mapped from its host's pages
+//!   (DAX); mounted read-only, `nosuid` and `nodev`, `dax=always`, beside the run's writable
+//!   layer at `components/KEY`, where no path from the run's root reaches, as the in-VM
+//!   server's binary is (domains.rs). KEY is the component's digest, 64 hex digits. Answers
+//!   its block device's name.
+//! - `unpmem ADDR KEY`: the component at KEY unmounted, refused while anything holds it,
+//!   then the function let go (its `remove`), for its host to unplug.
 //! - `unmount ADDR DST [member N]`: DST unmounted in the workload, or the N-th domain,
 //!   refused while anything there is in use, then the function let go (its `remove`), for
 //!   its host to unplug.
@@ -112,6 +121,8 @@ const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;
 const MOUNT_ATTR_RDONLY: u64 = 0x1;
 const MOUNT_ATTR_NOSUID: u64 = 0x2;
 const MOUNT_ATTR_NODEV: u64 = 0x4;
+/// include/uapi/linux/mount.h:121 (Linux 7.2-rc4): `/* Disallow program execution */`.
+const MOUNT_ATTR_NOEXEC: u64 = 0x8;
 const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
 
 /// Does what `args` ask in the microVM whose workload is process `workload` and whose
@@ -140,6 +151,12 @@ pub fn device(
         }
         ["share", addr, tag, dst, rest @ ..] => {
             let read_only = rest.contains(&"ro");
+            // Its files refused execution (D279): the mount `noexec` (fs/exec.c `path_noexec`).
+            let noexec = if rest.contains(&"noexec") {
+                MOUNT_ATTR_NOEXEC
+            } else {
+                0
+            };
             // A domain's beneath one of the run's plug roots (D235), refused before its
             // function is taken.
             let member = member_of(rest, domains)?;
@@ -160,14 +177,19 @@ pub fn device(
             // the host's notices touch through a mount of their own (D235, notice.rs), which
             // a read-only file system would refuse; its server refuses the guest's writes.
             let (Some((id, cgroup)), Some(parts)) = (member, parts) else {
-                let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 };
+                let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 } | noexec;
                 let mounted = fs_mount(c"virtiofs", &tag, false, attrs)?;
                 return attach(mounted, workload, dst);
             };
             // A domain's, as a volume given it is (D109): `nosuid` and `nodev`, and the
             // files the host made there its user's, which it is told while the mount is
             // still writable, as a read-only mount takes no attribute.
-            let mounted = fs_mount(c"virtiofs", &tag, false, MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV)?;
+            let mounted = fs_mount(
+                c"virtiofs",
+                &tag,
+                false,
+                MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | noexec,
+            )?;
             crate::setup::name_owner_as(&format!("/proc/self/fd/{}", mounted.as_raw_fd()), id, id);
             if read_only {
                 set_attrs(&mounted, MOUNT_ATTR_RDONLY)?;
@@ -176,6 +198,46 @@ pub fn device(
                 mount_point(&parts)?;
                 move_to(&mounted, dst)
             })
+        }
+        ["pmem", addr, gpa, key] => {
+            let gpa = parse_u64(gpa)?;
+            let at = component_at(key)?;
+            let disk = component_disk(addr, gpa)?;
+            let node = crate::devices::device_handle(&disk)?;
+            let source =
+                CString::new(format!("/proc/self/fd/{}", node.as_raw_fd())).map_err(io::Error::other)?;
+            let mounted = fs_mount_with(
+                c"erofs",
+                &source,
+                true,
+                MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
+                &[(c"dax", c"always")],
+            )?;
+            std::fs::create_dir_all(&at)?;
+            move_to(&mounted, &at)?;
+            write!(out, "{disk}")
+        }
+        ["unpmem", addr, key] => {
+            let at = component_at(key)?;
+            let path = CString::new(at.as_str()).map_err(io::Error::other)?;
+            // SAFETY: umount2(2) of a NUL-terminated path.
+            if unsafe { libc::umount2(path.as_ptr(), 0) } != 0 {
+                let e = io::Error::last_os_error();
+                // Not mounted (EINVAL): a plug whose mount failed, or an unplug asked again.
+                if e.raw_os_error() != Some(libc::EINVAL) {
+                    let kind = if e.raw_os_error() == Some(libc::EBUSY) {
+                        io::ErrorKind::ResourceBusy
+                    } else {
+                        e.kind()
+                    };
+                    return Err(io::Error::new(kind, format!("unmounting component {key}: {e}")));
+                }
+            }
+            let _ = std::fs::remove_dir(&at);
+            match crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}")) {
+                Some(_) => crate::devices::sysfs_write(&format!("bus/pci/devices/{addr}/remove"), "1"),
+                None => Ok(()),
+            }
         }
         ["unmount", addr, dst, rest @ ..] => {
             let unmount = || {
@@ -297,6 +359,62 @@ pub fn device(
     }
 }
 
+/// Where component `key` is mounted (D270): beside the run's writable layer, as the in-VM
+/// server's binary is, where no path from the run's root reaches; `key` its digest's 64 hex
+/// digits, refused otherwise, so that it names one directory there and nothing else.
+pub(crate) fn component_at(key: &str) -> io::Result<String> {
+    if key.len() != 64 || !key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{key:?}: a component is named by its digest's 64 lowercase hex digits"),
+        ));
+    }
+    let upper = crate::changes::upper()
+        .ok_or_else(|| io::Error::other("the run's writable layer was not kept, where components lie"))?;
+    Ok(format!("{upper}/../{COMPONENTS}/{key}"))
+}
+
+/// The directory beside the run's writable layer that components are mounted in (D270).
+const COMPONENTS: &str = "components";
+
+/// A decimal or `0x` hexadecimal u64, as a device step's words give one.
+fn parse_u64(text: &str) -> io::Result<u64> {
+    let parsed = match text.strip_prefix("0x") {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => text.parse(),
+    };
+    parsed.map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, format!("{text:?}: {e}")))
+}
+
+/// The block device of the component's pmem region at `gpa`, on the function at PCI address
+/// `addr`, once libnvdimm has made it: virtio_pmem registers its region as it binds, and the
+/// region's namespace is bound by nd_pmem, each asynchronously (drivers/nvdimm/bus.c,
+/// `nd_device_register`), each told by its uevent.
+fn component_disk(addr: &str, gpa: u64) -> io::Result<String> {
+    let events = rescan(addr)?;
+    events
+        .arrival(|| pmem_disk_at(gpa))
+        .map_err(|e| io::Error::other(format!("waiting for the component's disk at {addr}: {e}")))
+}
+
+/// The block device of the nd region whose resource starts at `gpa`: its namespace's.
+fn pmem_disk_at(gpa: u64) -> Option<String> {
+    let region = crate::devices::sysfs_list("bus/nd/devices")?
+        .into_iter()
+        .filter(|n| n.starts_with("region"))
+        .find(|n| {
+            crate::devices::sysfs_read(&format!("bus/nd/devices/{n}/resource"))
+                .and_then(|r| parse_u64(r.trim()).ok())
+                == Some(gpa)
+        })?;
+    let namespace = crate::devices::sysfs_list(&format!("bus/nd/devices/{region}"))?
+        .into_iter()
+        .find(|n| n.strip_prefix("namespace").is_some_and(|r| r.contains('.')))?;
+    crate::devices::sysfs_list(&format!("bus/nd/devices/{namespace}/block"))?
+        .into_iter()
+        .next()
+}
+
 /// The block device of the virtio disk at PCI address `addr`, once its driver has it.
 fn block_device(addr: &str) -> io::Result<String> {
     let events = rescan(addr)?;
@@ -366,6 +484,17 @@ pub(crate) fn fs_mount(
     read_only: bool,
     attrs: u64,
 ) -> io::Result<OwnedFd> {
+    fs_mount_with(fstype, source, read_only, attrs, &[])
+}
+
+/// [`fs_mount`], with the file system's own `options`, each a key and its value.
+fn fs_mount_with(
+    fstype: &std::ffi::CStr,
+    source: &std::ffi::CStr,
+    read_only: bool,
+    attrs: u64,
+    options: &[(&std::ffi::CStr, &std::ffi::CStr)],
+) -> io::Result<OwnedFd> {
     const FSOPEN_CLOEXEC: u32 = 0x1;
     const FSCONFIG_SET_FLAG: u32 = 0;
     const FSCONFIG_SET_STRING: u32 = 1;
@@ -388,6 +517,9 @@ pub(crate) fn fs_mount(
         }
     };
     config(FSCONFIG_SET_STRING, c"source".as_ptr(), source.as_ptr())?;
+    for (key, value) in options {
+        config(FSCONFIG_SET_STRING, key.as_ptr(), value.as_ptr())?;
+    }
     if read_only {
         config(FSCONFIG_SET_FLAG, c"ro".as_ptr(), null)?;
     }
@@ -641,7 +773,8 @@ fn member_of<'a>(
     let id = crate::domains::FIRST_ID
         .checked_add(n)
         .ok_or_else(|| io::Error::other(format!("member {n}: past the domains' IDs")))?;
-    Ok(Some((id, started.cgroup.as_str())))
+    // Where its processes are (D270): its generation's leaf.
+    Ok(Some((id, started.population.as_str())))
 }
 
 /// A process's PID in a domain's PID namespace, a child of init's, from its `status`
@@ -664,6 +797,17 @@ fn domain_pid(status: &str) -> Option<u32> {
 /// namespace of its own (managed.rs), its command (PID 2 there) first. Each is held before
 /// it is checked to be the domain's still, so that a PID another process took meanwhile is
 /// never entered: one that ended once held fails setns(2), and the next is tried.
+/// The PID, in init's namespace, of the process `pidfd` names (`/proc/self/fdinfo`'s `Pid:`,
+/// proc(5)): -1 there once it has ended, which is refused.
+pub(crate) fn pid_of(pidfd: &OwnedFd) -> io::Result<libc::pid_t> {
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd()))?;
+    info.lines()
+        .find_map(|l| l.strip_prefix("Pid:"))
+        .and_then(|p| p.trim().parse::<libc::pid_t>().ok())
+        .filter(|p| *p > 0)
+        .ok_or_else(|| io::Error::from_raw_os_error(libc::ESRCH))
+}
+
 pub(crate) fn member_process(cgroup: &str) -> io::Result<OwnedFd> {
     let procs = std::fs::read_to_string(format!("{cgroup}/cgroup.procs"))
         .map_err(|e| io::Error::new(e.kind(), format!("{cgroup}: {e}")))?;
@@ -868,6 +1012,56 @@ fn grow_ext4(dst: &str, bytes: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pidfd's process is known by its PID in this namespace (D270's kept namespaces read its
+    /// `/proc`), and one of no live process is refused.
+    #[test]
+    fn a_pidfds_process_is_known_by_its_pid() {
+        // SAFETY: pidfd_open(2) of this process, with no flags; getpid(2).
+        let (fd, me) = unsafe {
+            (
+                libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0u32),
+                libc::getpid(),
+            )
+        };
+        // SAFETY: the descriptor pidfd_open just made, owned here alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).unwrap()) };
+        assert_eq!(pid_of(&fd).unwrap(), me);
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        // SAFETY: as above, of the child before it is waited for.
+        let theirs = unsafe {
+            OwnedFd::from_raw_fd(i32::try_from(libc::syscall(libc::SYS_pidfd_open, pid, 0u32)).unwrap())
+        };
+        let mut child = child;
+        child.wait().unwrap();
+        assert_eq!(pid_of(&theirs).unwrap_err().raw_os_error(), Some(libc::ESRCH));
+    }
+
+    /// A component is named by its digest's 64 lowercase hex digits alone (D270), so that its
+    /// key names one directory beside the run's writable layer and nothing else: one that
+    /// climbs, has a separator, is short or uppercase, is refused before anything is reached.
+    #[test]
+    fn a_components_key_is_its_digest_alone() {
+        let hex = "0123456789abcdef".repeat(4);
+        for bad in [
+            String::new(),
+            "../../etc".to_string(),
+            format!("{}/x", "a".repeat(62)),
+            hex.to_uppercase(),
+            "a".repeat(63),
+            format!("{hex}0"),
+        ] {
+            let refused = component_at(&bad).unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
+        }
+        // A good key goes on to the writable layer, which a unit test's process has none of.
+        let kept = component_at(&hex).unwrap_err();
+        assert_ne!(kept.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(parse_u64("0x40000000").unwrap(), 1 << 30);
+        assert_eq!(parse_u64("1073741824").unwrap(), 1 << 30);
+        assert!(parse_u64("0xg").is_err() && parse_u64("").is_err() && parse_u64("-1").is_err());
+    }
 
     /// A plugged function's node, and a fresh disk's top, are given the user and group the
     /// workload runs as, its effective IDs, not its real or saved ones (proc(5)'s order);

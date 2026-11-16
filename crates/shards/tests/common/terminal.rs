@@ -7,11 +7,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::{as_tests_run, guest_init, kernel, shards};
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The user's terminal: a pty whose peer is a shell's controlling terminal, the session's
 /// leader, which runs the client in its foreground group as a login shell would, so that
@@ -27,10 +25,8 @@ pub struct Terminal {
     seen: String,
     /// The settings before the client ran.
     before: libc::termios,
-    /// What its home's daemon has said, for a wait past its deadline ([`super::Said`]).
-    said: super::Said,
-    /// Its home, whose microVMs' processes a wait past its deadline shows
-    /// ([`super::guests_processes`]).
+    /// Its home, whose daemon a wait follows with its shell ([`super::Party`]), and whose
+    /// microVMs' processes a refused wait shows ([`super::guests_processes`]).
     home: std::path::PathBuf,
 }
 
@@ -107,34 +103,53 @@ impl Terminal {
             shell,
             seen: String::new(),
             before,
-            said: super::Said::of(home),
             home: home.to_path_buf(),
         }
     }
 
     /// Reads what the terminal shows until `text` has appeared since the last wait, and
-    /// returns everything read since then: failing past [`TIMEOUT`] once its home's daemon
-    /// says nothing ([`super::Said`]).
+    /// returns everything read since then: a wait judged as [`super::run_command`]'s is
+    /// ([`super::Wait`]), its kind its call site, its party the shell and what it runs and
+    /// its home's daemon, what the terminal shows its output.
+    #[track_caller]
     pub fn wait_for(&mut self, text: &str) -> String {
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), text);
         let mut buf = [0u8; 4096];
         loop {
             if let Some(at) = self.seen.find(text) {
+                wait.answered();
                 let upto = at + text.len();
                 let read: String = self.seen.drain(..upto).collect();
                 return read;
             }
-            match self.master.read(&mut buf) {
-                Ok(n) if n > 0 => self.seen.push_str(&String::from_utf8_lossy(&buf[..n])),
-                _ => {
-                    assert!(
-                        Instant::now() < deadline || self.said.lately(),
-                        "{text:?} did not come; the terminal showed {:?}{}",
-                        self.seen,
-                        super::guests_processes(&self.home)
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
+            // Seen before the read, so that a read after it finds all it wrote.
+            let ended = self.shell.try_wait().unwrap().is_some();
+            let shown = match self.master.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    self.seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    true
                 }
+                _ => false,
+            };
+            if let Err(stall) = wait.look(shown) {
+                panic!(
+                    "{text:?} did not come: {}\nthe terminal showed {:?}{}",
+                    wait.refused(&stall),
+                    self.seen,
+                    super::guests_processes(&self.home)
+                );
+            }
+            // Its shell ended, and nothing more to show: nothing more comes.
+            if ended && !shown {
+                panic!(
+                    "{text:?} did not come before its shell ended; the terminal showed {:?}{}",
+                    self.seen,
+                    super::guests_processes(&self.home)
+                );
+            }
+            if !shown {
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
     }
@@ -165,6 +180,7 @@ impl Terminal {
     /// whether it left the terminal's settings as it found them. XNU sets PENDIN itself
     /// when a terminal goes back to canonical mode, to retype pending input (bsd/kern/
     /// tty.c, ttioctl): a state, not a setting.
+    #[track_caller]
     pub fn exit(&mut self) -> (String, i32, bool) {
         let shown = self.wait_for("exit ");
         let shown = shown.strip_suffix("exit ").unwrap_or_default().to_string();
@@ -176,15 +192,22 @@ impl Terminal {
             && (a.c_lflag & !libc::PENDIN) == (b.c_lflag & !libc::PENDIN)
             && a.c_cc == b.c_cc;
         // The shell's exit waits for its terminal's output to drain (ttywait, above), so
-        // the master is read meanwhile.
+        // the master is read meanwhile: a wait judged as `wait_for`'s, its answer the
+        // shell's end.
         self.type_in(b"\n");
-        let deadline = Instant::now() + TIMEOUT;
+        let kind = super::WaitKind::at(std::panic::Location::caller());
+        let mut wait = super::Wait::begin(kind, self.shell.id(), Some(&self.home), "its shell's exit");
         let mut buf = [0u8; 4096];
         while self.shell.try_wait().unwrap().is_none() {
-            assert!(Instant::now() < deadline, "the shell did not exit");
-            let _ = self.master.read(&mut buf);
-            std::thread::sleep(Duration::from_millis(5));
+            let shown = matches!(self.master.read(&mut buf), Ok(n) if n > 0);
+            if let Err(stall) = wait.look(shown) {
+                panic!("the shell did not exit: {}", wait.refused(&stall));
+            }
+            if !shown {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
+        wait.answered();
         (shown, status.trim().parse().unwrap(), restored)
     }
 }

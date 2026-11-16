@@ -121,45 +121,124 @@ pub struct Control {
     members: Vec<AbortState>,
     inputs: Vec<InputState>,
 }
+/// How a run's managed control scope ended, as its guest said it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Served {
+    /// Its own end (`MANAGED_CONTROL_END`): the signal connection goes on to its relay's end.
+    ControlEnded,
+    /// Its relay's end (`SIGNALS_END`), the scope's with it: init says it so where a failure
+    /// broke its relay, then its words and its end on the run's connection (init run.rs).
+    RelayEnded,
+}
+/// What a run's managed control scope refused of its guest, which init never says there
+/// (init capture.rs `ControlQueue`): the frame named, so that the scope's loss says what came.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A frame of a kind, or of a length, that the scope never takes: its header's words.
+    Frame { kind: u8, len: u32 },
+    /// Eight bytes that are no frame's header (shards-abi `parse_header`).
+    Header([u8; run::HEADER]),
+    /// An abort's or an input end's payload, which does not decode as one.
+    Payload { kind: u8, why: managed::Error },
+    /// An abort of a member the run did not admit.
+    Tenant(u32),
+    /// An input's end of a member whose input is not open: none asked, or its end said.
+    Input(u32),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Frame { kind, len } => write!(f, "a frame of kind {kind}, {len} bytes long"),
+            Self::Header(header) => write!(f, "a header that is no frame's, {header:02x?}"),
+            Self::Payload { kind, why } => {
+                write!(f, "a frame of kind {kind} whose payload is refused: {why}")
+            }
+            Self::Tenant(member) => write!(f, "an abort of member {member}, which the run did not admit"),
+            Self::Input(member) => write!(f, "an input's end of member {member}, whose input is not open"),
+        }
+    }
+}
+
+/// How a run's managed control scope failed: its connection or its owner's link failed, or
+/// its guest said what it never says there.
+#[derive(Debug)]
+pub enum Unserved {
+    Failed(io::Error),
+    Refused(Refusal),
+}
+
+impl From<io::Error> for Unserved {
+    fn from(e: io::Error) -> Self {
+        Self::Failed(e)
+    }
+}
+
+impl std::fmt::Display for Unserved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(e) => write!(f, "{e}"),
+            Self::Refused(refusal) => write!(f, "its guest sent {refusal}"),
+        }
+    }
+}
+
 impl Control {
-    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> io::Result<()> {
+    /// [`Control::serve`]; the guest's run connection, `boundary`, ended where its control is
+    /// refused or ends unannounced.
+    pub fn supervise(self, signals: &UnixStream, boundary: &UnixStream) -> Result<Served, Unserved> {
         let result = self.serve(signals);
-        if result.is_err() {
+        if let Err(e) = &result {
+            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(format!("its managed control ended: {e}"));
+            CONTROL_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
             super::end_guest(boundary);
         }
         result
     }
-    pub fn serve(mut self, signals: &UnixStream) -> io::Result<()> {
+    pub fn serve(mut self, signals: &UnixStream) -> Result<Served, Unserved> {
         let mut read = shards_ipc::Polled(signals);
         loop {
             let mut header = [0; run::HEADER];
             read.read_exact(&mut header)?;
             match run::parse_header(header) {
-                Some((kind::MANAGED_CONTROL_END, 0)) => return Ok(()),
+                Some((kind::MANAGED_CONTROL_END, 0)) => return Ok(Served::ControlEnded),
+                Some((kind::SIGNALS_END, 0)) => return Ok(Served::RelayEnded),
                 Some((kind::MANAGED_ABORT, n)) if n == managed::ABORT_LEN as u32 => {}
                 Some((kind::MANAGED_INPUT_ENDED, n)) if n == managed::INPUT_ENDED_LEN as u32 => {
                     let mut payload = [0; managed::INPUT_ENDED_LEN];
                     read.read_exact(&mut payload)?;
-                    let ended = managed::InputEnded::decode(&payload).map_err(invalid)?;
-                    let state = self
-                        .inputs
-                        .get_mut(usize::try_from(ended.member).map_err(invalid)?)
+                    let ended = managed::InputEnded::decode(&payload).map_err(|why| {
+                        Unserved::Refused(Refusal::Payload {
+                            kind: kind::MANAGED_INPUT_ENDED,
+                            why,
+                        })
+                    })?;
+                    let state = usize::try_from(ended.member)
+                        .ok()
+                        .and_then(|member| self.inputs.get_mut(member))
                         .filter(|s| **s == InputState::Open)
-                        .ok_or_else(|| invalid("managed input end of a member with no open input"))?;
+                        .ok_or(Unserved::Refused(Refusal::Input(ended.member)))?;
                     crate::warm::managed_input_ended(&self.daemon, &payload)?;
                     *state = InputState::Ended;
                     continue;
                 }
-                _ => return Err(invalid("managed abort frame")),
+                Some((kind, len)) => return Err(Unserved::Refused(Refusal::Frame { kind, len })),
+                None => return Err(Unserved::Refused(Refusal::Header(header))),
             }
             let mut payload = [0; managed::ABORT_LEN];
             read.read_exact(&mut payload)?;
             let payload = payload.as_slice();
-            let abort = managed::Abort::decode(payload).map_err(invalid)?;
-            let state = self
-                .members
-                .get_mut(usize::try_from(abort.member).map_err(invalid)?)
-                .ok_or_else(|| invalid("managed abort tenant"))?;
+            let abort = managed::Abort::decode(payload).map_err(|why| {
+                Unserved::Refused(Refusal::Payload {
+                    kind: kind::MANAGED_ABORT,
+                    why,
+                })
+            })?;
+            let state = usize::try_from(abort.member)
+                .ok()
+                .and_then(|member| self.members.get_mut(member))
+                .ok_or(Unserved::Refused(Refusal::Tenant(abort.member)))?;
             if matches!(*state, AbortState::Aborted) {
                 continue;
             }
@@ -335,11 +414,112 @@ fn start_inputs(spec: &mut run::Spec, inputs: &[[u8; 4]], owner: shards_ipc::Str
     Ok(())
 }
 
-/// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]).
+/// Mints member `member`'s next generation's input token (D270 slice 3b), registers it as its
+/// first's was ([`start_inputs`]), and hands the connection whose hello says it to the run's
+/// owner `owner` on a thread of its own, as its first's was handed: the token, for the
+/// generation's `MEMBER_START`. Its first's hand-over has ended with its hellos, so each later
+/// generation's has a thread of its own, which ends once its one connection is handed.
+pub fn next_input(member: u32, owner: shards_ipc::Stream) -> Result<[u8; run::TOKEN], String> {
+    let mut token = [0; run::TOKEN];
+    shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("managed input token: {e}"))?;
+    let (to, from) = std::sync::mpsc::sync_channel(1);
+    super::register(token, super::Target::Input { member, to })?;
+    if let Err(e) = std::thread::Builder::new()
+        .name("managed-input-next".into())
+        .spawn(move || {
+            for (member, conn) in from {
+                if let Err(e) = crate::warm::hand_input(&owner, member, conn) {
+                    shards_vmm::debug!("managed input of member {member}: its owner did not take it: {e}");
+                }
+            }
+        })
+    {
+        super::hellos::forget(&token);
+        return Err(format!("managed input worker: {e}"));
+    }
+    Ok(token)
+}
+
+/// Why the run's managed capture ended the run, where its relay broke ([`relay_ending`]) or
+/// its control was refused or ended unannounced ([`Control::supervise`]), said whole.
 static ENDED_RUN: Mutex<Option<String>> = Mutex::new(None);
 
-/// Why the run's managed capture ended its run, where it did ([`relay_ending`]), taken: for
-/// its serve to say, in place of the end of the run's connection it caused.
+/// Its guest's managed control ended unannounced, and this VM ended its guest for it: what its
+/// end quotes its console for (vm_run.rs), as a reset's does, its guest's last words being why.
+static CONTROL_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether its guest's managed control ended unannounced ([`CONTROL_ENDED`]), or its run failed
+/// as its guest stopped ([`guest_failed`]).
+pub fn control_ended() -> bool {
+    CONTROL_ENDED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Its run failed as its guest stopped, its command not ended (workload.rs): its end quotes its
+/// console too ([`CONTROL_ENDED`]).
+pub fn guest_failed() {
+    CONTROL_ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A run's members held for their next generation, and the channels of those whose next
+/// generation started, waiting for its owner's credit to open them again (D270 slice 3b), as
+/// its owner and its guest said them: a member held for its next generation ends no capture as
+/// its channels end, and its next generation's channels open as new streams. One run's per VM
+/// process. Locked after a relay's ledger, never before it.
+struct Generations {
+    held: std::collections::BTreeSet<u32>,
+    reopening: std::collections::BTreeSet<(u32, u8)>,
+}
+
+static GENERATIONS: Mutex<Generations> = Mutex::new(Generations {
+    held: std::collections::BTreeSet::new(),
+    reopening: std::collections::BTreeSet::new(),
+});
+
+fn generations() -> std::sync::MutexGuard<'static, Generations> {
+    GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Its owner held member `member` for its next generation, or let it go (`MEMBER_HOLD`).
+pub fn hold(member: u32, held: bool) {
+    let mut g = generations();
+    if held {
+        g.held.insert(member);
+    } else {
+        g.held.remove(&member);
+    }
+}
+
+/// Member `member`'s next generation started (its guest's `MEMBER_STARTED`, unrefused): held no
+/// more, its channels open again at its owner's next credit of each.
+pub fn started(member: u32) {
+    let mut g = generations();
+    g.held.remove(&member);
+    for channel in [Channel::Stdout, Channel::Stderr] {
+        g.reopening.insert((member, channel as u8));
+    }
+}
+
+/// Whether a relay whose flows are `streams` is done: every channel admitted has ended, and no
+/// member is held for, or has started, a next generation whose channels are still to open.
+fn done(streams: &[[Flow; 2]], g: &Generations) -> bool {
+    g.held.is_empty()
+        && g.reopening.is_empty()
+        && streams.iter().all(|pair| {
+            pair.iter()
+                .all(|slot| matches!(slot.credit, Credit::Inactive) || slot.stream.terminal())
+        })
+}
+
+/// Whether a credit of its owner's for `slot`, member `member`'s channel `channel` that has
+/// ended, opens it again as its next generation's (D270 slice 3b): taken from `g` where so.
+fn reopened(slot: &Flow, member: u32, channel: Channel, g: &mut Generations) -> bool {
+    matches!(slot.credit, Credit::Closed)
+        && slot.stream.terminal()
+        && g.reopening.remove(&(member, channel as u8))
+}
+
+/// Why the run's managed capture ended its run, where it did ([`ENDED_RUN`]), taken: for its
+/// serve to say, in place of the end of the run's connection it caused.
 pub fn ended_run() -> Option<String> {
     ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
@@ -365,7 +545,8 @@ fn relay_ending(
             "one of its sides ended its connection",
         )),
         Relayed::Broke(e) => {
-            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) = Some(e.to_string());
+            *ENDED_RUN.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(format!("its members' output could not be relayed: {e}"));
             super::end_guest(run);
             Err(e)
         }
@@ -440,7 +621,22 @@ fn credits(
                 let slot = flow(&mut flows, credit.member, credit.channel)?;
                 match slot.credit {
                     Credit::Waiting => {
+                        // A channel its member's last generation never opened, opening as its
+                        // next's (D270 slice 3b): nothing of the last's is to come on it.
+                        if slot.stream == StreamState::New {
+                            generations()
+                                .reopening
+                                .remove(&(credit.member, credit.channel as u8));
+                        }
                         slot.credit = Credit::Granted(capacity);
+                        break;
+                    }
+                    // Its member's next generation's channel, opening (D270 slice 3b).
+                    Credit::Closed if reopened(slot, credit.member, credit.channel, &mut generations()) => {
+                        *slot = Flow {
+                            credit: Credit::Granted(capacity),
+                            stream: StreamState::New,
+                        };
                         break;
                     }
                     Credit::Forwarding => {
@@ -513,10 +709,7 @@ fn records(
             } else {
                 Credit::Waiting
             };
-            flows.streams.iter().all(|pair| {
-                pair.iter()
-                    .all(|slot| matches!(slot.credit, Credit::Inactive) || slot.stream.terminal())
-            })
+            done(&flows.streams, &generations())
         };
         ledger.changed.notify_all();
         if done {
@@ -666,7 +859,10 @@ mod tests {
         };
         let (ended, why) = relaying(&|owner, _| send_credit(owner, 0, Channel::Stdout, capacity));
         assert!(ended, "a relay that broke left its run's connection open");
-        assert_eq!(why.as_deref(), Some("duplicate or closed managed credit"));
+        assert_eq!(
+            why.as_deref(),
+            Some("its members' output could not be relayed: duplicate or closed managed credit")
+        );
         let (ended, why) = relaying(&|_, guest| {
             guest.shutdown(std::net::Shutdown::Both).unwrap();
         });
@@ -679,7 +875,11 @@ mod tests {
 
     #[test]
     fn explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for graceful in [true, false] {
+            ended_run();
             let (signals, mut peer) = UnixStream::pair().unwrap();
             let (boundary, mut layer) = UnixStream::pair().unwrap();
             let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
@@ -704,10 +904,55 @@ mod tests {
                 (&retained_boundary).write_all(b"x").unwrap();
                 assert_eq!(record(&mut layer), (kind::LAYER, b"x".to_vec()));
             } else {
-                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+                assert!(
+                    matches!(&result, Err(Unserved::Failed(e)) if e.kind() == io::ErrorKind::UnexpectedEof),
+                    "{result:?}"
+                );
+                assert_eq!(
+                    ended_run().as_deref(),
+                    Some("its managed control ended: failed to fill whole buffer")
+                );
                 assert!(matches!(layer.read(&mut [0]), Ok(0)));
             }
         }
+    }
+
+    /// A guest whose relay ends inside the control scope, as init's does on a failure that
+    /// breaks its relay (run.rs: `say_signals_end` after the loop, then `SYSTEM_ERR` and `EXIT`
+    /// on the run's connection), has said its end: the scope ends with it, the run's
+    /// connection is left open for those words, and nothing is refused. Refused as "managed
+    /// abort frame", it ended the run's connection before they were read, and the run ended
+    /// "the guest stopped before the command ended: failed to fill whole buffer" (CI run
+    /// 43513425954, api_image's staged_credentials case, its signal connection lost to
+    /// "invalid data" just before).
+    #[test]
+    fn a_relays_end_within_the_control_scope_ends_it_and_leaves_the_run_open() {
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ended_run();
+        let (signals, mut peer) = UnixStream::pair().unwrap();
+        let (boundary, mut guests_run) = UnixStream::pair().unwrap();
+        let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
+        let control = Control {
+            daemon,
+            members: vec![AbortState::Active],
+            inputs: vec![InputState::None],
+        };
+        let retained = boundary.try_clone().unwrap();
+        let worker = std::thread::spawn(move || control.supervise(&signals, &boundary));
+        peer.write_all(&run::header(kind::SIGNALS_END, 0)).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap(), Served::RelayEnded);
+        assert_eq!(ended_run(), None);
+        // The guest's words after its relay's end reach the host on the run's connection.
+        guests_run.write_all(&run::header(kind::EXIT, 4)).unwrap();
+        guests_run.write_all(&3u32.to_be_bytes()).unwrap();
+        let mut said = [0; run::HEADER + 4];
+        (&retained).read_exact(&mut said).unwrap();
+        assert_eq!(said[run::HEADER..], 3u32.to_be_bytes());
+        // And the host's way to the guest is open too.
+        (&retained).write_all(b"x").unwrap();
+        assert_eq!(guests_run.read(&mut [0]).unwrap(), 1);
     }
 
     #[test]
@@ -841,7 +1086,80 @@ mod tests {
             // Closed after: a relay that took them all reads its end, never hangs.
             drop(peer);
             let refused = worker.join().unwrap().unwrap_err();
-            assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+            assert!(
+                matches!(refused, Unserved::Refused(Refusal::Input(1))),
+                "{refused:?}"
+            );
+        }
+    }
+
+    /// What the guest says within its run's managed control scope that the scope never takes
+    /// is named where the scope's loss is said, in the VM process's log and in the run's end.
+    /// At c120c8a95 every refusal said "invalid data" alone (ROOT's KVM runs of api_image on
+    /// adacachy2, 2026-11-13: `the guest's signal connection is lost: invalid data: its
+    /// workload takes no more signals, ...`), and what had come could not be told.
+    #[test]
+    fn what_the_control_scope_refuses_is_named_in_the_loss_it_says() {
+        use super::super::{Lost, Signals, ToGuest, Unsent, signal_guest, take_signals, will_run};
+        let _serial = super::super::hellos::TESTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let abort = managed::Abort { member: 4, errno: 5 }.encode().unwrap();
+        let cases = [
+            (
+                run::header(kind::STDOUT, 3).to_vec(),
+                Refusal::Frame {
+                    kind: kind::STDOUT,
+                    len: 3,
+                },
+            ),
+            // What init wrote where a failure broke its relay with three bytes of an abort
+            // gone: its end at once after them (init run.rs, the relay's end tests).
+            (
+                [
+                    &run::header(kind::MANAGED_ABORT, 0)[..3],
+                    &run::header(kind::SIGNALS_END, 0),
+                ]
+                .concat(),
+                Refusal::Header([kind::MANAGED_ABORT, 0, 0, kind::SIGNALS_END, 0, 0, 0, 0]),
+            ),
+            (
+                [
+                    &run::header(kind::MANAGED_ABORT, managed::ABORT_LEN as u32)[..],
+                    &abort,
+                ]
+                .concat(),
+                Refusal::Tenant(4),
+            ),
+        ];
+        for (said, refused) in cases {
+            ended_run();
+            let to: &'static ToGuest = Box::leak(Box::new(ToGuest::new(Signals::new())));
+            will_run(to);
+            let (host, mut guest) = UnixStream::pair().unwrap();
+            let (boundary, mut guests_run) = UnixStream::pair().unwrap();
+            let (daemon, _owner) = shards_ipc::Stream::pair().unwrap();
+            let control = Control {
+                daemon,
+                members: vec![AbortState::Active],
+                inputs: vec![InputState::None],
+            };
+            guest.write_all(&said).unwrap();
+            take_signals(to, host, Some((control, boundary)));
+            let lost = signal_guest(to, 15).unwrap_err();
+            assert_eq!(lost, Unsent::Lost(Lost::Refused(refused)));
+            assert_eq!(
+                lost.to_string(),
+                format!("the guest's signal connection is lost: its managed control refused {refused}")
+            );
+            assert_eq!(
+                ended_run(),
+                Some(format!("its managed control ended: its guest sent {refused}"))
+            );
+            assert!(
+                matches!(guests_run.read(&mut [0]), Ok(0)),
+                "the run's connection ended"
+            );
         }
     }
 }

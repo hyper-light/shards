@@ -1,0 +1,47 @@
+warning: trait `Opens` is more private than the item `Test`
+     --> crates/shards/src/daemon.rs:10531:5
+      |
+10531 |     pub(super) struct Test<D: Disk + Opens = Real> {
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ struct `Test` is reachable at visibility `pub(in crate::daemon)`
+      |
+note: but trait `Opens` is only usable at visibility `pub(self)`
+     --> crates/shards/src/daemon.rs:10496:5
+      |
+10496 |     trait Opens {
+      |     ^^^^^^^^^^^
+      = note: `#[warn(private_bounds)]` on by default
+
+warning: trait `Opens` is more private than the item `Test<D>`
+     --> crates/shards/src/daemon.rs:10544:5
+      |
+10544 |     impl<D: Disk + Opens> Test<D> {
+      |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ implementation `Test<D>` is reachable at visibility `pub(in crate::daemon)`
+      |
+note: but trait `Opens` is only usable at visibility `pub(self)`
+     --> crates/shards/src/daemon.rs:10496:5
+      |
+10496 |     trait Opens {
+      |     ^^^^^^^^^^^
+
+warning: `shards` (bin "shards" test) generated 2 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-waits-v1/target/debug/deps/shards-d5f1f46506fb89e1)
+
+running 1 test
+test daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back ... FAILED
+
+failures:
+
+---- daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back stdout ----
+
+thread 'daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back' (53865581) panicked at crates/shards/src/daemon/groups.rs:1036:9:
+a pending word was treated as a completed failed pass
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::groups::tests::a_pending_member_word_is_not_a_failed_give_back
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 888 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`

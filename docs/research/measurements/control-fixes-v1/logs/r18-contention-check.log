@@ -1,0 +1,20 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/control-check3-carrier-ed62582569/source.bundle
+   d95f61049..717b0f974  p/fix-control-v1 -> carrier/control
+Previous HEAD position was d95f61049 Merge main 33d28bf88 after push contention; preserve focused green at 7765f515d
+HEAD is now at 717b0f974 Merge main 5f42c9452 after contention; host check required, init inputs disjoint
+Source: 717b0f97417c74eb2d034a7f1aed2a23c7401478
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/control-target/debug/build/aws-lc-sys-d98af8b5bc544aaa/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-control/crates/vmm)
+    Checking shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-control/crates/shards)
+    Finished `dev` profile [unoptimized] target(s) in 13.13s

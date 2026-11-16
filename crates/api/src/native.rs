@@ -8,7 +8,10 @@ use std::time::Instant;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::{GuestSpec, LaunchError, PreparedBoot, Refusal, RuntimePaths, Share};
+use crate::{
+    GuestSpec, Identity, LaunchError, ManagedEnd, PreparedBoot, Refusal, ReleaseRefusal, RuntimePaths, Share,
+    TerminalScope,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageIdentity {
@@ -201,6 +204,45 @@ impl NativeStartup<'_> {
     }
     pub fn verify_kernel(&self, deadline: Instant) -> Result<File, Refusal> {
         verify_native_image(self.kernel, self.images.kernel, deadline)
+    }
+}
+
+/// Deletes the AppContainer profiles a managed VM's `shards` made on Windows, and their
+/// records in its cache's `containers` (D141), once its native owner has ended the VM's whole
+/// scope: `end` its positive [`TerminalScope::Released`] fact. A `shards` that ends as it
+/// should deletes them itself, and one killed (its job ended) leaves them for the next VM's
+/// spawner to sweep; this deletes them now, so that a killed VM leaves none. `vm` is the
+/// identity its launch recorded, whose pid named the profiles (`shards.<role>.<pid>.<n>`):
+/// only profiles recorded in `paths`' cache under that pid are deleted, never another
+/// cache's. The answer is how many were deleted: none where a sweep took them first, or the
+/// VM made none.
+///
+/// Refused, nothing deleted: [`ReleaseRefusal::ScopeLive`] for an end short of Released, as
+/// a process of the VM's may still run in a profile; [`ReleaseRefusal::Held`] where a record
+/// is held, which only a live process does. An I/O failure is [`Refusal::ManagedIo`]; a
+/// profile whose deletion failed keeps its record, for a later sweep. On macOS and Linux a VM
+/// has no AppContainer: none is deleted, after the same check of `end`.
+pub fn release_app_containers(
+    paths: &RuntimePaths,
+    vm: &Identity,
+    end: ManagedEnd,
+) -> Result<usize, Refusal> {
+    if end.scope != TerminalScope::Released {
+        return Err(Refusal::Release(ReleaseRefusal::ScopeLive));
+    }
+    #[cfg(windows)]
+    {
+        match shards_ipc::release(&paths.cache().join("containers"), vm.pid)
+            .map_err(|why| io("releasing AppContainers", why))?
+        {
+            shards_ipc::Released::Deleted(n) => Ok(n),
+            shards_ipc::Released::Held => Err(Refusal::Release(ReleaseRefusal::Held)),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (paths, vm);
+        Ok(0)
     }
 }
 

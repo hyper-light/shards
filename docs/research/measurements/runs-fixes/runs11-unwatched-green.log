@@ -1,0 +1,8 @@
+# runs-11 UNWATCHED, green. macOS arm64, adas-mac-studio-3.local, kiln r1963 (at c1fe80299) and r1958 (same code).
+# cargo test -j 6 -p shards --bin shards -- a_follow_no_watch a_shipper_no_watch a_daemon_that_cannot_watch
+test daemon::tests::a_daemon_that_cannot_watch_its_home_is_not_started ... ok
+test daemon::tests::a_shipper_no_watch_can_be_made_for_ends_typed ... ok
+test daemon::tests::a_follow_no_watch_can_be_made_for_is_refused_before_anything_is_shown ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 944 filtered out; finished in 0.09s
+# cargo test -j 6 -p shards --bin shards daemon::  (r1958)
+test result: ok. 439 passed; 0 failed; 7 ignored; 0 measured; 501 filtered out; finished in 66.22s

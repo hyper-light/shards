@@ -5,11 +5,7 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The guest reaches the host over vsock alone, and its init holds the host's ports, the
 /// run and signal ports, before the workload starts: a workload that dials them, the
@@ -189,7 +185,6 @@ fn a_local_mcp_server_reaches_only_what_its_caller_reaches() {
         ],
         "aw-mcp",
         ("confined-ready", 2),
-        TIMEOUT,
     );
     let all = format!("{}{}", ran.stdout, ran.stderr);
     assert_eq!(ran.status, Some(0), "{all}");

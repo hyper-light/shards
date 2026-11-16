@@ -28,12 +28,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{Exit, Io};
 use crate::sync::lock;
+use shards_abi::host::Unusable;
 
 /// A failed KVM call, or guest behavior the VMM does not emulate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    Call { op: &'static str, error: String },
+    Call {
+        op: &'static str,
+        error: String,
+    },
     Guest(String),
+    /// A snapshot's XSAVE area this host's cannot take (migrate-07).
+    Xsave(crate::arch::x86_64::xsave::XsaveRefused),
 }
 
 impl fmt::Display for Error {
@@ -41,6 +47,7 @@ impl fmt::Display for Error {
         match self {
             Error::Call { op, error } => write!(f, "{op} failed: {error}"),
             Error::Guest(msg) => f.write_str(msg),
+            Error::Xsave(refused) => refused.fmt(f),
         }
     }
 }
@@ -69,32 +76,30 @@ const COMMON: [(u64, &str); 7] = [
     (sys::CAP_IRQFD_RESAMPLE, "KVM_CAP_IRQFD_RESAMPLE"),
 ];
 
-fn open() -> std::result::Result<sys::Kvm, String> {
+fn open() -> std::result::Result<sys::Kvm, Unusable> {
     let kvm = sys::Kvm::open().map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => {
-            "KVM is unavailable on this host: /dev/kvm does not exist (no hardware virtualization, or the kvm module is not loaded)".to_string()
-        }
-        io::ErrorKind::PermissionDenied => {
-            "cannot open /dev/kvm: permission denied (add this user to the `kvm` group)".to_string()
-        }
-        _ => format!("cannot open /dev/kvm: {e}"),
+        #[cfg(target_arch = "x86_64")]
+        io::ErrorKind::NotFound if super::no_nested() => Unusable::NoNested,
+        io::ErrorKind::NotFound => Unusable::KvmMissing,
+        io::ErrorKind::PermissionDenied => Unusable::KvmDenied,
+        _ => Unusable::Unasked(format!("cannot open /dev/kvm: {e}")),
     })?;
     let version = kvm
         .api_version()
-        .map_err(|e| format!("KVM_GET_API_VERSION: {e}"))?;
+        .map_err(|e| Unusable::Unasked(format!("KVM_GET_API_VERSION: {e}")))?;
     if version != sys::API_VERSION {
-        return Err(format!(
+        return Err(Unusable::Lacks(format!(
             "KVM API version {version}; shards needs {}",
             sys::API_VERSION
-        ));
+        )));
     }
     for &(cap, name) in COMMON.iter().chain(REQUIRED) {
         if kvm
             .check_extension(cap)
-            .map_err(|e| format!("KVM_CHECK_EXTENSION: {e}"))?
+            .map_err(|e| Unusable::Unasked(format!("KVM_CHECK_EXTENSION: {e}")))?
             <= 0
         {
-            return Err(format!("this host's KVM lacks {name}"));
+            return Err(Unusable::Lacks(format!("this host's KVM lacks {name}")));
         }
     }
     prepare();
@@ -105,7 +110,7 @@ fn open() -> std::result::Result<sys::Kvm, String> {
 /// host runs VMs, how many vCPUs one may have, and made its VM, each opening it and
 /// asking its API version and capabilities again. Only a handle that passed is kept: a
 /// host whose KVM is missing now is looked at again next time.
-fn kvm() -> std::result::Result<&'static sys::Kvm, String> {
+fn kvm() -> std::result::Result<&'static sys::Kvm, Unusable> {
     static KVM: OnceLock<sys::Kvm> = OnceLock::new();
     if let Some(kvm) = KVM.get() {
         return Ok(kvm);
@@ -115,7 +120,7 @@ fn kvm() -> std::result::Result<&'static sys::Kvm, String> {
 }
 
 /// Ok when this host can run VMs: /dev/kvm opens and offers what shards needs.
-pub fn check_host() -> std::result::Result<(), String> {
+pub fn check_host() -> std::result::Result<(), Unusable> {
     kvm().map(drop)
 }
 
@@ -127,7 +132,7 @@ pub fn restores() -> bool {
 /// The most vCPUs one VM can have: KVM's limit, and the architecture's machine's
 /// ([`VCPU_LIMIT`]).
 pub fn max_vcpus() -> Result<u32> {
-    let kvm = kvm().map_err(Error::Guest)?;
+    let kvm = kvm().map_err(|e| Error::Guest(e.into()))?;
     let max = kvm
         .check_extension(sys::CAP_MAX_VCPUS)
         .map_err(call("KVM_CHECK_EXTENSION"))?;
@@ -455,10 +460,24 @@ impl DeviceSlots {
     }
 
     /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these, read-only
-    /// to the guest unless `writable`: its writes there exit as MMIO writes to nothing.
+    /// to the guest and executable: a component's programs, which its member runs through
+    /// DAX (D270).
     ///
     /// # Safety
     /// `host..host+len` must stay mapped until slot `i` is unmapped or the VM is destroyed.
+    pub unsafe fn map_programs(&self, i: u32, host: *mut u8, gpa: u64, len: usize) -> Result<()> {
+        // A read-only slot refuses writes alone (Linux 7.2-rc4): arm64's stage 2 gains execute
+        // at an exec fault (arch/arm64/kvm/mmu.c:1995-1996), and x86's maps a fault ACC_ALL with
+        // only `map_writable` cleared (arch/x86/kvm/mmu/mmu.c:4629, :4851).
+        // SAFETY: forwarded caller contract.
+        unsafe { self.map(i, host, gpa, len, false) }
+    }
+
+    /// Maps `len` bytes of host memory at `host` at `gpa`, as slot `i` of these, read-only
+    /// to the guest unless `writable`: its writes there exit as MMIO writes to nothing.
+    ///
+    /// # Safety
+    /// As for [`map_programs`](Self::map_programs).
     pub unsafe fn map(&self, i: u32, host: *mut u8, gpa: u64, len: usize, writable: bool) -> Result<()> {
         let region = sys::kvm_userspace_memory_region {
             slot: self.slot(i)?,
@@ -801,7 +820,8 @@ impl Drop for Vcpu {
 
 /// A vCPU's guest run time, read from any thread: its thread's guest time as Linux keeps it
 /// ([`thread_guest_ns`](crate::platform::thread_guest_ns)), charged as KVM_RUN runs its guest
-/// in whole scheduler ticks, and said in 10 ms steps. Its thread is the one its vCPU names
+/// in whole scheduler ticks, said in 10 ms steps, and never more than its thread's runtime.
+/// Its thread is the one its vCPU names
 /// ([`this_thread`]), until the vCPU drops: reading it costs the vCPU nothing.
 #[derive(Debug, Clone)]
 pub struct GuestClock(Arc<Mutex<Option<Thread>>>);

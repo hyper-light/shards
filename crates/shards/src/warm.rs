@@ -42,6 +42,11 @@ impl Link {
         Link { daemon }
     }
 
+    /// Another handle of the same link, which keeps it open as long as it lives.
+    pub fn try_clone(&self) -> io::Result<Link> {
+        Ok(Link::new(self.daemon.try_clone()?))
+    }
+
     /// The daemon's socket at `fd`, which must be an open Unix socket other than stdio.
     #[cfg(unix)]
     pub fn from_fd(fd: RawFd) -> Result<Link, String> {
@@ -202,7 +207,7 @@ fn unpublish(release: &shards_vmm::platform::UnixStream, asked: impl FnOnce()) -
             return false;
         }
         asked();
-        release.set_read_timeout(None).is_ok()
+        shards_ipc::timeout_set(release.set_read_timeout(None)).is_ok()
             && matches!(shards_ipc::read_message(release), Ok(Some(m)) if m.kind == kind::UNPUBLISH)
     }
 }
@@ -237,11 +242,10 @@ pub fn inherited_socket(flag: &str, fd: RawFd) -> Result<UnixStream, String> {
     Ok(socket)
 }
 
-/// A request, as the daemon hands it over.
+/// A request, as the daemon hands it over. Its client, once the VM takes it, is the run's
+/// [`Taken`]'s.
 pub struct Request {
     pub capture: Option<workload::capture::Given>,
-    /// None for a detached run.
-    pub client: Option<UnixStream>,
     pub spec: Spec,
     /// The command reads the client's stdin.
     pub interactive: bool,
@@ -275,6 +279,48 @@ pub struct Request {
     /// A run its microVM was restored from a save of (D176): the save's tokens, which its
     /// guest dials the host again with; its request brings them in place of a command.
     pub tokens: Option<Vec<u8>>,
+}
+
+/// A run this VM took: TAKEN said, its one way out of untaken (R04). From then on its owner
+/// reads exactly one end of it on its link, its `DONE` ([`Taken::end`]), whatever fails
+/// after: its setup, here or in the VM process, its guest's refusal, its serving. A VM that
+/// takes none ends, which its owner reads where TAKEN would be.
+pub struct Taken {
+    /// Its client, which hears its end after its owner: none for a detached run.
+    client: Option<UnixStream>,
+    /// The handle of its link its final use goes on (D260), where the VM could clone it.
+    final_link: Option<Link>,
+    /// Its end told: by whichever comes first of its workload's end and its serving's.
+    told: std::sync::atomic::AtomicBool,
+}
+
+impl Taken {
+    /// The handle of its link its final use goes on ([`final_use`]).
+    pub fn final_link(&self) -> Option<&Link> {
+        self.final_link.as_ref()
+    }
+
+    /// Tells its owner on `link`, then its client, how it ended, `served` ([`finish`]), the
+    /// first time alone: a later call tells nothing. `facts` reads, for the call that tells
+    /// it alone, its timing line and the working set its VM recorded.
+    pub fn end(
+        &self,
+        link: &Link,
+        served: &Result<workload::Ended, String>,
+        facts: impl FnOnce() -> (Option<String>, Option<(String, Vec<u8>)>),
+    ) {
+        if self.told.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let (timing, working_set) = facts();
+        finish(
+            link,
+            self.client.as_ref(),
+            served,
+            timing.as_deref(),
+            working_set.as_ref(),
+        );
+    }
 }
 
 /// Tells the daemon of the files a share's DAX window maps (D189), for it to watch them
@@ -458,12 +504,18 @@ fn reserve_descriptors(daemon: &UnixStream) -> Result<(), String> {
 }
 
 /// A run its microVM was restored from a save of (`resumed`, D176) is asked for as any
-/// other, its request bringing the save's tokens in place of a command.
+/// other, its request bringing the save's tokens in place of a command. `took` gets the run
+/// ([`Taken`]: its client, and a handle of `link` for its final use) as the VM tells its
+/// daemon TAKEN, and only then, whatever fails after: a taken run's failure is its end,
+/// told ([`Taken::end`]); a VM that took no run tells no end and no final use
+/// ([`final_use`]), so that its daemon or run host reads its end, not a message, where TAKEN
+/// would be.
 pub fn receive(
     link: &Link,
     to: &'static ToGuest,
     may_take: &dyn Fn() -> Result<(), String>,
     resumed: bool,
+    took: &std::sync::OnceLock<Taken>,
 ) -> Result<Request, String> {
     let daemon = &link.daemon;
     // The relays' threads start while the VM is idle, so that none starts on a request's
@@ -589,6 +641,18 @@ pub fn receive(
     // What must hold for this VM to take a run, checked while the daemon may still give
     // it to another.
     may_take()?;
+    // One run a VM: a second is refused untaken, and so is never told as the first.
+    if took.get().is_some() {
+        return Err("this VM has taken a run already".into());
+    }
+    // Made before TAKEN, so that nothing fails between the VM taking the run and its final
+    // use's link being there; a VM that cannot clone it serves the run, telling no final use.
+    let final_link = link
+        .try_clone()
+        .inspect_err(|e| {
+            let _ = writeln!(io::stderr(), "shards: its final use's link: {e}");
+        })
+        .ok();
     // TAKEN before anything of the client's is touched or anything starts: a VM that ends
     // without it never started the run, which the daemon may then hand to another VM
     // (daemon.rs, hand_over). A daemon gone by now has no copies left to close, and hands
@@ -602,6 +666,11 @@ pub fn receive(
     {
         return Err(format!("telling the daemon the request is taken: {e}"));
     }
+    let taken = took.get_or_init(|| Taken {
+        client,
+        final_link,
+        told: std::sync::atomic::AtomicBool::new(false),
+    });
     // Its windows' files watched by the daemon from their first mapping on (D189), a
     // restored run's among them, which its shares map again as they are given.
     #[cfg(target_os = "linux")]
@@ -630,7 +699,7 @@ pub fn receive(
         .map_err(|e| format!("the daemon's connection: {e}"))?;
     daemon_relay.relay(from_daemon, From::Daemon(segments));
     // A detached run's client has no relay: its thread ends as its handle goes.
-    if let Some(client) = &client {
+    if let Some(client) = &taken.client {
         let signals = client
             .try_clone()
             .map_err(|e| format!("the client's connection: {e}"))?;
@@ -638,7 +707,6 @@ pub fn receive(
     }
     Ok(Request {
         capture,
-        client,
         plug,
         io,
         cpus,
@@ -812,6 +880,18 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     drop(held);
                 }
             }
+            // A member held for its next generation, or let go (D270 slice 3b), its owner's
+            // ask: held for the guest's signal connection.
+            kind::MEMBER_HOLD if matches!(from, From::Daemon(_)) => {
+                if let Some(hold) = shards_abi::run::members::Hold::decode(&message.payload) {
+                    // Its channels' ends end no capture while it is held (capture.rs `done`).
+                    workload::capture::hold(hold.member, hold.held);
+                    let _ = workload::hold_member(to, hold);
+                }
+            }
+            // A member's next generation (D270 slice 3b), its owner's ask: its input's token
+            // minted where it has an input, then held for the guest's signal connection.
+            kind::MEMBER_START if matches!(from, From::Daemon(_)) => start_next(conn, to, &message.payload),
             // A lane to a socket of its run's own command (D251), its owner's ask: opened on a
             // thread of its own, its owner answered by the lane's number.
             kind::LANE_OPEN if matches!(from, From::Daemon(_)) => {
@@ -845,10 +925,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // at once: what its daemon tells its guest of comes after.
             kind::DEVICE if matches!(from, From::Daemon(_)) => {
                 if let Some((number, step)) = message.payload.split_first_chunk::<8>() {
-                    let answer = match crate::vm_run::device(step, message.fds) {
-                        Ok(text) => [&number[..], &[0], text.as_bytes()].concat(),
-                        Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
+                    let outcome = crate::vm_run::device(step, message.fds);
+                    // An answer it has no memory for ends its link: its asker reads that
+                    // as a step that may have been done (`Refusal::ConnectionEnded`).
+                    let Ok(body) = shards_ipc::device::encode(&outcome) else {
+                        shards_ipc::end(conn);
+                        break;
                     };
+                    let answer = [&number[..], &body].concat();
                     if let Err(e) = to_daemon(conn, kind::DEVICED, &answer, &[]) {
                         let _ = writeln!(io::stderr(), "shards: answering a device step: {e}");
                     }
@@ -869,9 +953,14 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             // what it holds them to, or why not.
             kind::RATE if matches!(from, From::Daemon(_)) => {
                 if let Some((number, milli)) = rate_asked(&message.payload) {
-                    let answer = match crate::vm_run::hold_rate(milli) {
-                        Ok(held) => {
-                            let held = held.map(|m| m.to_string()).unwrap_or_default();
+                    // Its line a managed machine's (`shards_abi::rate`): what it holds them to
+                    // and the period it derived for them (D191).
+                    let answer = match crate::vm_run::rate_answer(|| crate::vm_run::hold_rate(milli)) {
+                        Ok((milli, period_ns)) => {
+                            let held = shards_abi::rate::answer(&shards_abi::rate::Answer::Held {
+                                milli,
+                                period_ns,
+                            });
                             [&number[..], &[0], held.as_bytes()].concat()
                         }
                         Err(e) => [&number[..], &[1], e.as_bytes()].concat(),
@@ -925,8 +1014,11 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         .get()
                         .and_then(|s| s.get(u32::from_be_bytes(*share) as usize))
                         .and_then(|slot| slot.window());
+                    // A cut its window cannot follow tells its guest nothing here: the next
+                    // request about the file follows it again, and is refused its reply
+                    // where it still cannot (memory-01's twin).
                     if let Some(window) = window {
-                        window.cut(u64::from_be_bytes(*node));
+                        let _ = window.cut(u64::from_be_bytes(*node));
                     }
                 }
             }
@@ -1617,6 +1709,18 @@ fn joiner(link: &UnixStream, range: Result<(u64, u64), String>, to: &'static ToG
     Ok(())
 }
 
+/// A run's `DONE`: the status its microVM keeps, then, where its guest said why its command
+/// did not run or its run failed (`SYSTEM_ERR`, `not_run`), init's own words, which each
+/// reader renders at its own boundary (D249): the daemon as dockerd says them
+/// (`start_failed`), the run host as its run's typed failure.
+fn done(status: u8, not_run: Option<&str>) -> Vec<u8> {
+    let words = not_run.map_or(&[][..], str::as_bytes);
+    let mut done = Vec::with_capacity(1 + words.len());
+    done.push(status);
+    done.extend_from_slice(words);
+    done
+}
+
 /// Tells the daemon how a joiner ended, then its client, as [`finish`] tells a run's: what
 /// kept its command from starting goes to the client's stderr first. Unlike a run's, the
 /// VM's own stdio is not the joiner's, and stays as it is.
@@ -1650,11 +1754,7 @@ fn joined_finish(
             let _ = to_daemon(link, kind::PIDS, facts, &[]);
         }
     }
-    let mut done = vec![status];
-    if let Some((said, _)) = &failed {
-        done.extend_from_slice(said.as_bytes());
-    }
-    let _ = to_daemon(link, kind::DONE, &done, &[]);
+    let _ = to_daemon(link, kind::DONE, &done(status, not_run.as_deref()), &[]);
     if let Some(client) = client {
         // Its client's stderr is the one its request gave, not this process's.
         if let (Some(text), Some(mut stderr)) = (text, stderr) {
@@ -2027,10 +2127,7 @@ pub fn finish(
     if let Ok(null) = workload::null() {
         let_go(&null);
     }
-    let mut done = vec![status];
-    if let Some((said, _)) = &failed {
-        done.extend_from_slice(said.as_bytes());
-    }
+    let done = done(status, not_run);
     if let Ok(ended) = &served {
         tell_lost(&link.daemon, ended);
     }
@@ -2077,6 +2174,65 @@ pub fn processes(link: &Link, records: &[u8]) {
 /// Gives the run's owner a member's end (D231), which only an owner that asked hears.
 pub fn member_ended(link: &Link, ended: &[u8]) {
     let _ = to_daemon(&link.daemon, kind::MEMBER_ENDED, ended, &[]);
+}
+
+/// Gives the run's owner what came of a member's next generation (D270 slice 3b), as its guest
+/// said it (`MEMBER_STARTED`).
+pub fn member_started(link: &Link, answer: &[u8]) {
+    // Its next generation's channels open again at its owner's credit, which its owner gives
+    // once it hears this answer: told the capture's relay first (capture.rs `started`).
+    if let Ok(said) = shards_abi::run::members::StartAnswer::decode(answer) {
+        if said.refused.is_none() {
+            workload::capture::started(said.member);
+        } else {
+            workload::capture::hold(said.member, false);
+        }
+    }
+    let _ = to_daemon(&link.daemon, kind::MEMBER_STARTED, answer, &[]);
+}
+
+/// A member's next generation, its owner's `MEMBER_START` (D270 slice 3b): a flag, 1 where the
+/// member has an input, whose token this VM mints and registers as it minted its first's
+/// (capture.rs `next_input`), then the start as `run::members::Start` encodes it, its input
+/// none; held for the guest's signal connection. One this VM cannot give the guest is refused
+/// to its owner in the guest's answer's shape (`StartAnswer`, `Failed`), so that its owner
+/// waits on no answer that will not come.
+fn start_next(owner: &UnixStream, to: &'static ToGuest, payload: &[u8]) {
+    use shards_abi::run::members::{Start, StartAnswer, StartRefusal};
+    let refuse = |member: u32, generation: u32, why: String| {
+        let answer = StartAnswer {
+            member,
+            generation,
+            refused: Some((StartRefusal::Failed, why.into_bytes())),
+        };
+        if let Ok(bytes) = answer.encode() {
+            let _ = to_daemon(owner, kind::MEMBER_STARTED, &bytes, &[]);
+        }
+    };
+    let Some((&flag, rest)) = payload.split_first() else {
+        return refuse(0, 0, "an empty start".into());
+    };
+    let mut start = match Start::decode(rest) {
+        Ok(start) => start,
+        Err(e) => return refuse(0, 0, format!("a malformed start: {e}")),
+    };
+    if flag == 1 {
+        let token = owner
+            .try_clone()
+            .map_err(|e| format!("its owner's link: {e}"))
+            .and_then(|link| workload::capture::next_input(start.member, link));
+        match token {
+            Ok(token) => start.input = Some(token),
+            Err(e) => return refuse(start.member, start.generation, format!("its input: {e}")),
+        }
+    }
+    let held = start
+        .encode()
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| workload::start_member(to, &bytes).map_err(|e| e.to_string()));
+    if let Err(e) = held {
+        refuse(start.member, start.generation, format!("its guest: {e}"));
+    }
 }
 
 /// Gives the run's owner each move of its command's readiness under the nesting grant
@@ -2204,6 +2360,16 @@ pub fn tell_kept() {
             payload.as_ref().map_or(&[][..], |p| p),
             &[],
         );
+    }
+}
+
+/// Tells its owner what the machine used in all (`FINAL_USE`, D260's final use): `used`, a
+/// use's answer as `shards_abi::rate::used` writes it, on the link [`receive`] kept as the VM
+/// took its run. Its owner reads it until the link closes, which it does as this process
+/// ends.
+pub fn final_use(link: &Link, used: &str) {
+    if let Err(e) = to_daemon(&link.daemon, kind::FINAL_USE, used.as_bytes(), &[]) {
+        let _ = writeln!(io::stderr(), "shards: telling its final use: {e}");
     }
 }
 
@@ -2424,6 +2590,17 @@ fn open_lane(owner: &UnixStream, to: &'static ToGuest, number: [u8; 8], name: Ve
 mod tests {
     use super::*;
 
+    /// Do write the `DONE` of a run that ended, of one whose init said why it failed with words
+    /// dockerd amends (`start_failed`: "not a directory"), and the code its microVM keeps.
+    /// Expect: the status alone; the status, then init's words as init said them, which the
+    /// daemon says as dockerd does and the run host types as its failure (D249).
+    #[test]
+    fn a_runs_done_carries_inits_own_words() {
+        assert_eq!(done(3, None), [3]);
+        let words = "mkdir /data: not a directory";
+        assert_eq!(done(127, Some(words)), [&[127u8][..], words.as_bytes()].concat());
+    }
+
     /// A side [`pass`] reads: its bytes, then how it ends (`Ok(0)`, its writes' end, or an
     /// error).
     #[cfg(windows)]
@@ -2625,9 +2802,10 @@ mod tests {
         ] {
             let (ours, daemon) = UnixStream::pair().unwrap();
             let link = Link::new(ours);
+            let took = std::sync::OnceLock::new();
             let fds = vec![file.as_fd(); given];
             let refused = std::thread::scope(|s| {
-                let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false));
+                let receiving = s.spawn(|| receive(&link, &TO_GUEST, &|| Ok(()), false, &took));
                 assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
                 let mut payload = Vec::new();
                 // Its log's first segment, and memory to plug: none (D148).
@@ -2643,9 +2821,17 @@ mod tests {
                 receiving.join().unwrap().err()
             });
             assert_eq!(refused.as_deref(), Some(said));
-            // Nothing taken.
+            // Nothing taken, and no final use's link kept: the VM's end is all its daemon
+            // reads where TAKEN would be.
+            assert!(took.get().is_none(), "a final use's link for a run not taken");
             daemon.set_nonblocking(true).unwrap();
             assert!(shards_ipc::recv(&daemon).is_err_and(|e| e.kind() == io::ErrorKind::WouldBlock));
+            drop(link);
+            daemon.set_nonblocking(false).unwrap();
+            assert!(
+                shards_ipc::recv(&daemon).unwrap().is_none(),
+                "the link held past the VM's end"
+            );
         }
     }
 
@@ -2863,5 +3049,119 @@ mod tests {
             drop((lanes_held().remove(&accepted.number), m.fds));
             closed(relay);
         }
+    }
+
+    /// A VM's final use (D260) goes to its owner on a handle of its link of its own, as said,
+    /// the link open until that handle goes too.
+    #[cfg(unix)]
+    #[test]
+    fn a_final_use_reaches_its_owner_on_its_link_as_said() {
+        let (vm, owner) = UnixStream::pair().unwrap();
+        let link = Link::new(vm);
+        let held = link.try_clone().unwrap();
+        drop(link);
+        let used = shards_abi::rate::used(Err("the microVM has not started"), Err("its VM process: x"));
+        final_use(&held, &used);
+        drop(held);
+        let m = shards_ipc::recv(&owner).unwrap().unwrap();
+        assert_eq!((m.kind, m.payload.as_slice()), (kind::FINAL_USE, used.as_bytes()));
+        assert!(
+            shards_ipc::recv(&owner).unwrap().is_none(),
+            "closed with its last handle"
+        );
+    }
+
+    /// Whose process is the VM's side of
+    /// [`a_run_taken_is_told_exactly_one_end_whatever_fails_after`], its link at descriptor 3.
+    #[cfg(unix)]
+    const TAKEN_CHILD: &str = "SHARDS_WARM_TAKEN_CHILD";
+
+    /// A run the VM took is told exactly one end on its link, whatever fails after TAKEN:
+    /// here its setup's failure, as the VM process's own setup returns it once [`receive`]
+    /// has taken the run, then told as the VM process tells a taken run's end after its
+    /// serving, twice, as its workload's end and its serving's may both tell it. Its owner
+    /// reads TAKEN, why (`UNSERVED`) and one `DONE` of the status its client exits with, then
+    /// its link's end; its client reads that status, and its stderr why. The VM's side runs
+    /// in a process of its own, as `receive` makes its client's stdio its process's.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_taken_is_told_exactly_one_end_whatever_fails_after() {
+        use std::io::Read as _;
+        use std::os::unix::process::CommandExt as _;
+        let why = "its group's CPU budget: a group's CPU budget of 0 bytes, short of its 65536";
+        if std::env::var_os(TAKEN_CHILD).is_some() {
+            static TO_GUEST: ToGuest = ToGuest::new(workload::Signals::new());
+            static TAKEN: std::sync::OnceLock<Taken> = std::sync::OnceLock::new();
+            workload::hold_null(File::open(NULL).unwrap());
+            let link = Link::from_fd(3).unwrap();
+            let served = receive(&link, &TO_GUEST, &|| Ok(()), false, &TAKEN)
+                .and_then(|_| Err::<workload::Ended, String>(why.into()));
+            let taken = TAKEN.get().expect("the run taken");
+            taken.end(&link, &served, || (None, None));
+            taken.end(&link, &served, || panic!("its end told twice"));
+            std::process::exit(0);
+        }
+        let (daemon, theirs) = UnixStream::pair().unwrap();
+        let fd = theirs.as_raw_fd();
+        let name = concat!(
+            module_path!(),
+            "::a_run_taken_is_told_exactly_one_end_whatever_fails_after"
+        );
+        let name = name.split_once("::").map_or(name, |(_, test)| test);
+        let mut vm = std::process::Command::new(std::env::current_exe().unwrap());
+        vm.args(["--exact", name, "--nocapture"])
+            .env(TAKEN_CHILD, "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null());
+        // SAFETY: runs in the child between fork and exec, calling only dup2(2) and fcntl(2),
+        // which are async-signal-safe.
+        unsafe {
+            vm.pre_exec(move || {
+                if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut vm = vm.spawn().unwrap();
+        drop(theirs);
+        assert_eq!(shards_ipc::recv(&daemon).unwrap().unwrap().kind, kind::READY);
+        let (client, theirs) = UnixStream::pair().unwrap();
+        let (stdin, _stdin) = io::pipe().unwrap();
+        let (_stdout, stdout) = io::pipe().unwrap();
+        let (mut stderr_r, stderr) = io::pipe().unwrap();
+        let mut payload = Vec::new();
+        shards_ipc::RunHead {
+            log_size: 1,
+            log_files: 1,
+            ..Default::default()
+        }
+        .encode_into(&mut payload);
+        Spec::default().encode_into(&mut payload);
+        let fds = [theirs.as_fd(), stdin.as_fd(), stdout.as_fd(), stderr.as_fd()];
+        shards_ipc::send(&daemon, kind::RUN, &payload, &fds).unwrap();
+        drop((theirs, stdin, stdout, stderr));
+        let mut said = Vec::new();
+        while let Some(m) = shards_ipc::recv(&daemon).unwrap() {
+            said.push((m.kind, m.payload));
+        }
+        assert_eq!(
+            said,
+            [
+                (kind::TAKEN, Vec::new()),
+                (kind::UNSERVED, why.as_bytes().to_vec()),
+                (kind::DONE, vec![NOT_RUN]),
+            ]
+        );
+        let exit = shards_ipc::recv(&client).unwrap().unwrap();
+        assert_eq!((exit.kind, exit.payload.as_slice()), (kind::EXIT, &[NOT_RUN][..]));
+        assert!(
+            shards_ipc::recv(&client).unwrap().is_none(),
+            "a second word to its client"
+        );
+        let mut err = String::new();
+        stderr_r.read_to_string(&mut err).unwrap();
+        assert!(err.contains(&format!("shards: {why}\n")), "{err:?}");
+        assert!(vm.wait().unwrap().success());
     }
 }

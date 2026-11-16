@@ -1,0 +1,26 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/control-check4-carrier-4108bc96f6/source.bundle
+   d95f6104..41a97260  p/fix-control-v1 -> carrier/control
+Previous HEAD position was d95f6104 Merge main 33d28bf88 after push contention; preserve focused green at 7765f515d
+HEAD is now at 41a97260 Merge main dc23bc71f; only init inputs changed after host check 717b0f974
+Source: 41a972609212d38fa838a844e90fe23ca10bce2f
+   Compiling autocfg v1.5.1
+   Compiling libc v0.2.189
+    Checking memchr v2.8.3
+    Checking regex-syntax v0.8.11
+    Checking aho-corasick v1.1.5
+   Compiling shards-abi v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/abi)
+    Checking regex-automata v0.4.18
+   Compiling num-traits v0.2.19
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/template)
+    Checking shards-archive v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/testdir)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/user)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/dns)
+    Checking num-integer v0.1.47
+    Checking num-bigint v0.4.8
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/cmdline)
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-control/crates/init)
+    Finished `dev` profile [unoptimized] target(s) in 29.98s

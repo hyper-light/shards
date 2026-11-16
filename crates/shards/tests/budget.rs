@@ -15,12 +15,9 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use common::{
-    DAEMON_QUIET, Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env,
-    served,
+    Patience, TempDir, cannot_pool, cannot_run_vms, home_with, processes_with, run_shards_env, served,
 };
 use shards_vmm::devices::virtio::fs::headroom::reads_room;
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The file every phase reads, a gigabyte, and its reader's block, a MiB (as large as a
 /// share's largest request).
@@ -332,7 +329,7 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
             .unwrap_or(0)
     };
     let short_now = || {
-        let deadline = Instant::now() + TIMEOUT;
+        let mut patience = Patience::of(&home);
         let (current, stat) = loop {
             let current: u64 = std::fs::read_to_string(cgroup.join("memory.current"))
                 .unwrap()
@@ -341,13 +338,14 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
                 .unwrap();
             let stat = std::fs::read_to_string(cgroup.join("memory.stat")).unwrap();
             if stat_of(&stat, "anon") + stat_of(&stat, "file") <= current {
+                patience.done();
                 break (current, stat);
             }
             assert!(
-                Instant::now() < deadline,
+                patience.holds(),
                 "{slice}'s statistics still count more than it holds ({current} bytes):\n{stat}"
             );
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(patience.next_look());
         };
         let mapped = stat_of(&stat, "file_mapped");
         let unmapped = stat_of(&stat, "file")
@@ -367,23 +365,35 @@ fn a_microvm_held_to_a_budget_reads_through_fuse_at_the_pace_of_reads_held_to_no
     // kernel takes back more of the slice as its budget falls than its statistics said it
     // keeps beside what its processes map, and the daemon counts the room the slice has
     // after (22 MiB under 229 MiB in budget E2E 40148135044's h, 1 of 608 runs). A budget
-    // that leaves none is said at once.
-    let (mut asked, mut short): (Vec<u64>, u64) = (Vec::new(), 0);
-    let deadline = Instant::now() + TIMEOUT;
+    // that leaves none is said at once. Set again once the daemon has answered the budget
+    // before (a budget set anew is always said: its microVM held within it, short of it, or
+    // with room again, daemon/budget.rs), or once the slice has moved so that the budget it
+    // leaves is another; waited for while the daemon and its microVMs go on ([`Patience`]).
+    let (mut asked, mut short): (Vec<u64>, Option<u64>) = (Vec::new(), None);
+    let answered = |since: usize| {
+        said()
+            .get(since..)
+            .is_some_and(|l| l.contains(&format!("container {id}: its microVM")))
+    };
+    let mut since = 0;
+    let mut patience = Patience::of(&home);
     while !held_least() {
         assert!(
-            Instant::now() < deadline,
+            patience.holds(),
             "no microVM said to be held within the least room a run goes on in, under budgets of {asked:?} MiB\nthe daemon's log:\n{}",
             said()
         );
-        short = short_now();
-        budget(&short.to_string());
-        asked.push(short >> 20);
-        let set = Instant::now();
-        while !held_least() && set.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(20));
+        let now = short_now();
+        if short != Some(now) || answered(since) {
+            since = said().len();
+            budget(&now.to_string());
+            asked.push(now >> 20);
+            short = Some(now);
         }
+        std::thread::sleep(patience.next_look());
     }
+    patience.done();
+    let short = short.unwrap_or_default();
     let held_short: Vec<u64> = (0..3)
         .map(|_| {
             judged(
@@ -564,7 +574,7 @@ enum Phase {
 /// they come, judged by `record` ([`Record`]). Before its first mark it is waited on for the
 /// slowest start seen, and past it for as long as its daemon or a microVM shows progress
 /// ([`Patience`], judged as D215's judge judges a wait, its first mark its answer) or the
-/// slice `cgroup` has been held by its host within [`DAEMON_QUIET`] ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
+/// slice `cgroup` has been held by its host since the look before ([`stalled`]); from its first mark, for the slowest read seen, and past that looked at
 /// once each window as long, each having to read what the slowest MiB seen keeps over it
 /// ([`Record::judging`]); with nothing seen yet, until it ends. Each look past the slowest
 /// read seen says the slice `cgroup`'s state on stderr. Refused, its command is ended and
@@ -585,7 +595,7 @@ fn follow(
         cmd.env(k, v);
     }
     let began = Instant::now();
-    let mut child = common::spawn(&mut cmd).unwrap();
+    let mut child = cmd.spawn().unwrap();
     let pid = child.id();
     let (tell, heard) = mpsc::channel();
     // Read on threads of their own, as `run_command` reads: a pipe another process still
@@ -612,7 +622,7 @@ fn follow(
             let status = child.wait().ok().and_then(|st| st.code());
             let _ = tell.send(Heard::Exited(status));
         });
-        let judged = judge(&heard, began, home, record, cgroup);
+        let judged = judge(&heard, began, Patience::of(home), record, cgroup);
         if judged.is_err() {
             // Killed, not asked to end: a client asked waits on its exec, which a refused
             // read's microVM may never end. The slice's stop takes the microVM (`Stopped`).
@@ -624,18 +634,21 @@ fn follow(
 }
 
 /// [`follow`]'s judge: what `heard` brings of a read whose command began at `began`, until
-/// its command has ended having said its whole read, or with both its pipes closed.
+/// its command has ended having said its whole read, or with both its pipes closed. Its
+/// start is waited on with `patience`, its caller's: a kind of its own, which the starts its
+/// caller judges teach (a kind taught other callers' starts, a play's of none, is refused at
+/// once by a party idle past them).
 fn judge(
     heard: &mpsc::Receiver<Heard>,
     began: Instant,
-    home: &Path,
+    patience: Patience,
     record: &Record,
     cgroup: &Path,
 ) -> Result<Followed, Stalled> {
     // Its start's wait, taught its answer by the first mark.
-    let mut patience = Some(Patience::of(home));
-    // The slice's stall total when last looked at, and when it last grew: a hold.
-    let mut stalls = (stalled(cgroup), None::<Instant>);
+    let mut patience = Some(patience);
+    // The slice's stall total when last looked at: grown since, its host's hold.
+    let mut stalls = stalled(cgroup);
     let mut phase = Phase::Starting { looked: None };
     let (mut marks, mut stdout, mut stderr) = (Vec::new(), String::new(), String::new());
     let (mut status, mut closed) = (None::<Option<i32>>, 0);
@@ -715,14 +728,15 @@ fn judge(
         let at = Instant::now();
         match &mut phase {
             Phase::Starting { looked } => {
-                let progresses = patience.as_mut().is_some_and(Patience::holds);
+                // The slice read first, at the look's own time: read after its patience's
+                // look, which lists the host's processes, the next look, due a window past
+                // this one's time, could read it again at once, and find a slice its host
+                // holds all along held by nothing (adacachy2 at 4449dcff0, 7b9ef4b1f and
+                // a35f11f7d: a start held 220 to 340 ms in refused).
                 let now = stalled(cgroup);
-                if now > stalls.0 {
-                    stalls = (now, Some(at));
-                }
-                let held = stalls
-                    .1
-                    .is_some_and(|t| at.saturating_duration_since(t) < DAEMON_QUIET);
+                let held = now > stalls;
+                stalls = now;
+                let progresses = patience.as_mut().is_some_and(Patience::holds);
                 if !progresses && !held {
                     return Err(Stalled::Unstarted {
                         waited: at.saturating_duration_since(began),
@@ -809,7 +823,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     match judge(
         &play(Duration::ZERO, Duration::from_millis(50), (0, Duration::ZERO)),
         Instant::now(),
-        &home,
+        Patience::of(&home),
         &seen,
         &cgroup,
     ) {
@@ -822,7 +836,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     let read = judge(
         &play(Duration::ZERO, Duration::from_micros(2_400), (0, Duration::ZERO)),
         Instant::now(),
-        &home,
+        Patience::of(&home),
         &seen,
         &cgroup,
     )
@@ -839,7 +853,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     let read = judge(
         &play(Duration::ZERO, Duration::ZERO, (512, Duration::from_secs(1))),
         Instant::now(),
-        &home,
+        Patience::of(&home),
         &cold,
         &cgroup,
     )
@@ -849,7 +863,7 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     // No mark past the slowest start seen, no daemon in its home and no microVM under this
     // test's process showing progress: refused, the look after its patience ran out.
     let (tell, heard) = mpsc::channel::<Heard>();
-    match judge(&heard, Instant::now(), &home, &seen, &cgroup) {
+    match judge(&heard, Instant::now(), Patience::of(&home), &seen, &cgroup) {
         Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= Duration::from_millis(100)),
         Err(other) => panic!("refused otherwise: {other}"),
         Ok(_) => panic!("not refused"),
@@ -857,17 +871,21 @@ fn a_read_is_judged_by_the_pace_of_the_reads_held_to_none() {
     drop(tell);
 }
 
-/// A start slower than the slowest seen is refused only once a whole slice of its microVMs
-/// has shown no progress (R03: past the bound, a wait goes on while progress shows, and is
-/// refused only after a whole window with none), and a host's hold of its slice counts as
-/// held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
+/// A start slower than the slowest seen is refused only once a whole window past the slowest
+/// start its patience has seen (`Patience`'s W*) has shown no progress of its party (R03:
+/// past the bound, a wait goes on while progress shows, and is refused only after a whole
+/// window with none), and a host's hold of its slice counts as held. adacachy2 at 8bfa6150e and 9d2da923d refused a read under the budget 97.49 ms after
 /// its command began, the third look of 32.44 ms, the slowest start seen, while its daemon's
-/// warm microVMs had not been looked at once ([`common::Ran`] judges each over a slice) and
+/// warm microVMs had not been looked at once (`common::Ran`, then, judged each over a slice) and
 /// its slice was at its `memory.high` (4345 `high` events). Do: a stand-in VM process under
-/// this test's, idle, and a start of 500 ms against a slowest seen of 30 ms; then a start of
-/// as long in a slice whose tasks stall on memory, as PSI counts them, no microVM to follow;
-/// then a start that never comes, the stand-in idle. Expect: the first two followed to their
-/// ends, the third refused, past a whole slice.
+/// this test's, running, and a start of 500 ms against a slowest seen of 30 ms; then a start
+/// of as long in a slice whose tasks stall on memory, as PSI counts them, no microVM to
+/// follow; then a start that never comes, the stand-in idle. Each waited on with one kind of
+/// patience, this test's own, which the first start teaches. Expect: the first two followed to
+/// their ends, the third refused, past the slowest start the first taught. (CI run
+/// 43513425954 and ROOT's KVM run at d513d0a0b refused the first at 60 ms: its stand-in idle,
+/// and every `judge` waiting with one kind, which `a_read_is_judged_by_the_pace_of_the_reads_held_to_none`'s
+/// starts of none had taught a W* of microseconds.)
 #[test]
 fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
     let home = TempDir::new("budget-start");
@@ -893,11 +911,18 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
         heard
     };
     let start = Duration::from_millis(500);
+    // One kind for the three: a call site's.
+    let patience = || Patience::of(&home);
     {
-        let _vm = StandIn::under(&home);
-        let read = judge(&late(start), Instant::now(), &home, &seen, &home.join("no-slice")).unwrap_or_else(
-            |stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"),
-        );
+        let _vm = StandIn::running();
+        let read = judge(
+            &late(start),
+            Instant::now(),
+            patience(),
+            &seen,
+            &home.join("no-slice"),
+        )
+        .unwrap_or_else(|stalled| panic!("a start of {start:?} with a VM not yet judged refused: {stalled}"));
         assert!(read.start() >= Some(start), "{:?}", read.start());
     }
     // A slice whose tasks stall on memory all along, as PSI says it (`some ... total=` µs).
@@ -918,43 +943,54 @@ fn a_slow_start_is_refused_only_past_a_whole_slice_without_progress_or_hold() {
                 std::thread::sleep(Duration::from_millis(5));
             }
         });
-        let read = judge(&late(start), Instant::now(), &home, &seen, &slice);
+        let read = judge(&late(start), Instant::now(), patience(), &seen, &slice);
         holding.store(false, std::sync::atomic::Ordering::Relaxed);
         let read =
             read.unwrap_or_else(|stalled| panic!("a start of {start:?} held by its host refused: {stalled}"));
         assert!(read.start() >= Some(start), "{:?}", read.start());
     });
-    let _vm = StandIn::under(&home);
+    let _vm = StandIn::idle();
     let (tell, heard) = mpsc::channel::<Heard>();
-    match judge(&heard, Instant::now(), &home, &seen, &home.join("no-slice")) {
-        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= common::PROGRESS_SLICE, "{waited:?}"),
+    match judge(&heard, Instant::now(), patience(), &seen, &home.join("no-slice")) {
+        // Its patience's kind taught by the first start above, its first mark its answer (the
+        // second's patience found no party, and its host's hold kept it).
+        Err(Stalled::Unstarted { waited, .. }) => assert!(waited >= start, "{waited:?}"),
         Err(other) => panic!("refused otherwise: {other}"),
         Ok(_) => panic!("not refused"),
     }
     drop(tell);
 }
 
-/// An idle stand-in for a VM process under this test's: `sleep` run through a link named as
-/// `common::vm_processes_under` finds VM processes (Linux names a process after the path it
-/// ran, a link's own name; its first argument stays `sleep`, as busybox's applets need),
-/// ended as it drops.
-struct StandIn(std::process::Child);
+/// A stand-in for a VM process of this test's own (`common::OwnVm`), ended as it drops.
+struct StandIn {
+    child: std::process::Child,
+    _own: common::OwnVm,
+}
 
 impl StandIn {
-    fn under(dir: &Path) -> StandIn {
-        use std::os::unix::process::CommandExt as _;
-        let link = dir.join("shards-vm");
-        if !link.exists() {
-            std::os::unix::fs::symlink("/bin/sleep", &link).unwrap();
+    /// Idle: `sleep`.
+    fn idle() -> StandIn {
+        StandIn::of("/bin/sleep", &["600"])
+    }
+
+    /// Running all along, as a booting guest's VM process does: `sh` in a loop of its own.
+    fn running() -> StandIn {
+        StandIn::of("/bin/sh", &["-c", "while :; do :; done"])
+    }
+
+    fn of(program: &str, args: &[&str]) -> StandIn {
+        let child = Command::new(program).args(args).spawn().unwrap();
+        StandIn {
+            _own: common::OwnVm::started(child.id()),
+            child,
         }
-        StandIn(Command::new(&link).arg0("sleep").arg("600").spawn().unwrap())
     }
 }
 
 impl Drop for StandIn {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

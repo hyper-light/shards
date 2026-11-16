@@ -24,6 +24,8 @@ pub fn main() {
             "work" => work(),
             "spin" => spin(),
             "kmsg" => kmsg(),
+            // What its console costs (docs/research/measurements/console-cost).
+            "console" => console_cost(),
             "beat" => beat(),
             "vsock" => vsock(),
             // The vsock path's measurements (docs/research/measurements/vsock-path-v1).
@@ -79,7 +81,7 @@ pub fn main() {
         let _ = writeln!(io::stdout(), "SHARDS-TEST FAIL reporting the verdict: {e}");
     }
     // SAFETY: PID 1 waiting for its console to send what it wrote, flushing and powering
-    // off. The console's tty holds a write until its UART has sent it, and the kernel's
+    // off. The console's tty holds a write until its console device has taken it, and the kernel's
     // own lines as it powers off go past it: powering off at once can drop the last line.
     unsafe {
         libc::tcdrain(1);
@@ -1285,7 +1287,8 @@ fn storm() -> Result<(), String> {
 /// the echo has carried nothing for more looks than it ever went without while it carried,
 /// the stand is a stall and the kernel says all it can of it ([`stood_still`]), once. What
 /// stops the main thread past the snapshot stops what it says too, a lost timer and a
-/// stuck console alike; printk's console polls the UART, needing none of its interrupts,
+/// stuck console alike; printk's console spins on its virtqueue until the device has used
+/// each buffer (virtio_console.c `__send_to_port`), needing none of its interrupts,
 /// so the kernel's word reaches the host either way.
 ///
 /// The kernel's whole account waits for the stream to stop too because it is no cheap read
@@ -1509,6 +1512,35 @@ fn kmsg() -> Result<(), String> {
     }
     // SAFETY: closing our own descriptor.
     unsafe { libc::close(fd) };
+    Ok(())
+}
+
+/// Writes `shards_console_kib` KiB to its console as 64-byte lines (63 printable bytes and
+/// a newline, so a KiB is 16 of them and the host counts what came whole), then waits for
+/// the console to have sent them (`tcdrain`), and reports how long that took on the guest's
+/// clock. What it costs whichever console the kernel was given (`console=hvc0`, `hvc0`):
+/// docs/research/measurements/console-cost.
+fn console_cost() -> Result<(), String> {
+    let kib = env_u64("shards_console_kib")?;
+    let lines = kib.checked_mul(16).ok_or("shards_console_kib is too large")?;
+    let mut line = [0u8; 64];
+    let mut out = io::stdout().lock();
+    let began = monotonic_ns();
+    for n in 0..lines {
+        for (i, b) in line.iter_mut().enumerate() {
+            *b = b'!' + ((n as usize).wrapping_add(i) % 94) as u8;
+        }
+        if let Some(end) = line.last_mut() {
+            *end = b'\n';
+        }
+        out.write_all(&line)
+            .map_err(|e| format!("writing to the console: {e}"))?;
+    }
+    out.flush().map_err(|e| format!("flushing the console: {e}"))?;
+    // SAFETY: waits on our own stdout's descriptor.
+    unsafe { libc::tcdrain(1) };
+    let took = monotonic_ns().saturating_sub(began);
+    let _ = writeln!(out, "SHARDS-CONSOLE kib={kib} ns={took}");
     Ok(())
 }
 
@@ -2512,7 +2544,7 @@ fn host() -> Result<(), String> {
         // or behind the inner machine's IOMMU, KVM's, whose ITS isolates its MSIs, which
         // VFIO's type 1 then needs no leave to take.
         .arg(format!(
-            "console=ttyS0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
+            "console=hvc0 panic=-1 vfio.enable_unsafe_noiommu_mode=1 shards_test={test}"
         ))
         .args(args.split(',').filter(|a| !a.is_empty()))
         .output()
@@ -3696,6 +3728,34 @@ fn bench_connection(mut conn: std::fs::File) -> Result<(), String> {
                 ));
             }
             bench_serve(b'S', count, &mut conn)
+        }
+        // A guest's own end of a stream while its host's way is open (D251, amended): `C`
+        // sends `count` bytes, each its offset modulo 251, then closes (close(2): one
+        // SHUTDOWN of RCV and SEND); `X` sends them, then cuts as shards-init's relay does
+        // (relay.rs `cut`: its reads' end, then both ways), then closes.
+        b'C' | b'X' => {
+            let mut buf = vec![0u8; 64 << 10];
+            let mut sent = 0u64;
+            while sent < count {
+                let n = usize::try_from(count - sent).unwrap_or(usize::MAX).min(buf.len());
+                let chunk = buf.get_mut(..n).ok_or("pattern slice")?;
+                for (i, b) in chunk.iter_mut().enumerate() {
+                    *b = ((sent + i as u64) % 251) as u8;
+                }
+                conn.write_all(chunk).map_err(|e| format!("{op} write: {e}"))?;
+                sent += n as u64;
+            }
+            if op == b'X' {
+                use std::os::fd::AsRawFd as _;
+                for how in [libc::SHUT_RD, libc::SHUT_RDWR] {
+                    // SAFETY: shutdown(2) of the connection this measurement owns.
+                    if unsafe { libc::shutdown(conn.as_raw_fd(), how) } != 0 {
+                        return Err(format!("X shutdown: {}", io::Error::last_os_error()));
+                    }
+                }
+            }
+            drop(conn);
+            Ok(())
         }
         other => Err(format!("no measurement {other}")),
     }

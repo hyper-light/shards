@@ -1,0 +1,13 @@
+diff --git a/crates/vmm/src/hv/whp/mod.rs b/crates/vmm/src/hv/whp/mod.rs
+index 0860f0045..c8fd0b001 100644
+--- a/crates/vmm/src/hv/whp/mod.rs
++++ b/crates/vmm/src/hv/whp/mod.rs
+@@ -495,7 +495,7 @@ impl Ram {
+ 
+     /// Takes `len` bytes at `gpa` out, unmapped: what is left of each range they cut kept.
+     fn unmap(&mut self, gpa: u64, len: u64) {
+-        cut(&mut self.0, gpa, len);
++        self.0.retain(|m| m.gpa != gpa || m.len != len);
+     }
+ 
+     /// Reads `data.len()` bytes at `gpa` into `data`, or writes them there where `write`, if

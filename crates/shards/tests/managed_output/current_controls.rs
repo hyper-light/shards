@@ -108,6 +108,7 @@ impl Trace<'_> {
         write_json(self.directory, &format!("{stem}.json"), &value);
     }
 
+    #[track_caller]
     fn next(&mut self, observer: &Observer, phase: &str, until: Instant) -> Event {
         left(until);
         let event = observer.next(until);

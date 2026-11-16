@@ -12,7 +12,10 @@ mod agent;
 mod agentfile;
 #[cfg(all(feature = "alloc-count", unix))]
 mod alloc_count;
+mod api_build;
+mod api_check;
 mod api_run;
+mod api_volumes;
 mod aws;
 mod build;
 mod cli;
@@ -23,15 +26,14 @@ mod context;
 mod daemon;
 mod disk;
 mod filters;
+mod final_use;
 mod from_image;
 mod frontend;
 mod google;
-#[cfg(any(target_os = "macos", windows))]
 mod grant;
-#[cfg(any(target_os = "macos", windows))]
 mod grant_answer;
 // The VM's half, which the daemon's tests answer.
-#[cfg(all(test, any(target_os = "macos", windows)))]
+#[cfg(test)]
 mod grant_ask;
 mod guest;
 mod helpers;
@@ -91,12 +93,15 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("disk") => disk::command(args),
         Some(kind @ ("agent" | "harness" | "mcp")) => agent::command(kind, args),
         // the VM's broker (`shards run vm --kernel`, `shards restore vm`): not for people to run.
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         Some("grants") => grant_answer::broker(),
         // the recorder of how a directly booted VM's console report came out (D12): not
         // for people to run.
         #[cfg(unix)]
         Some("console-said") => said::recorder(args),
+        // the keeper of a managed VM's final use (D260): not for people to run.
+        #[cfg(unix)]
+        Some("final-use") => final_use::keeper(args),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),
@@ -108,6 +113,13 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // an image's run for an orchestrator, which shards-api starts (D231): not for
         // people to run.
         Some("api-run") => api_run::command(),
+        // whether this host runs microVMs now, which shards-api asks (D262): not for people
+        // to run.
+        Some("api-check") => api_check::command(),
+        // an Agentfile's build for shards-api (D263): not for people to run.
+        Some("api-build") => api_build::command(),
+        // a home's volumes listed and cleared for shards-api (D281): not for people to run.
+        Some("api-volumes") => api_volumes::command(args),
         // what serves a client's binds for a run through its context that goes on without
         // its command (D228): not for people to run.
         Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),

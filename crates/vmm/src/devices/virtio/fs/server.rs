@@ -93,16 +93,6 @@ mod init {
 
 /// `fuse_attr.flags`' FUSE_ATTR_DAX: the guest maps this file into its DAX window (D189).
 const ATTR_DAX: u32 = 1 << 1;
-/// The smallest file the guest is told to map into its DAX window, 1 MiB: the smallest of
-/// the sizes measured from 4 KiB to 2 MiB at which, and at each larger one, a file read,
-/// re-read and overwritten through a window was no worse than through FUSE at p50 and p99
-/// beyond the rounds' spread, held no more memory, and left a working tree's files no slower
-/// to read, on the Mac and on Fedora's performance and efficient cores (PM M338): from
-/// 256 KiB on the Mac and Fedora's efficient cores, from 1 MiB on its performance cores,
-/// where a 256 KiB file's cold overwrite took 251 to 258 µs at p50 through a window and 202
-/// to 209 through FUSE. Smaller files are read through FUSE, which a mapping, a round trip
-/// to the share process and a host mmap(2), costs them more than it saves.
-pub const DAX_SMALLEST: u64 = 1 << 20;
 
 mod fattr {
     pub const MODE: u32 = 1 << 0;
@@ -187,10 +177,16 @@ enum Slot {
     Handle(u64),
 }
 
-/// A descriptor in `State::fds`: a plain one, or a directory handle's stream.
+/// A descriptor in `State::fds`: a plain one, a directory's to be searched alone, or a
+/// directory handle's stream.
 #[derive(Debug)]
 enum Held {
     Fd(host::Owned),
+    /// A directory node's whose host lets the server, its files' owner, search it but not
+    /// read it, as an exec-only one (mode 0111; memory-19): names are looked up through it,
+    /// as a kernel's walk asks no more of a directory (path_resolution(7)); its listing, its
+    /// record and a change of it are refused, as its host refuses the server them.
+    Search(host::Owned),
     Dir(DirStream),
 }
 
@@ -495,6 +491,18 @@ fn cstring(s: &str) -> Result<CString, Errno> {
 thread_local! {
     /// The names this thread's server has opened, for a test of what it never opens.
     static OPENED: std::cell::RefCell<Vec<CString>> = const { std::cell::RefCell::new(Vec::new()) };
+    static OWNER_ERRORS: std::cell::Cell<(Option<Errno>, Option<Errno>)> = const { std::cell::Cell::new((None, None)) };
+}
+
+#[cfg(test)]
+fn owner_fault(name: &CStr, writing: bool) -> Result<(), Errno> {
+    if name == owner_xattr()?.as_c_str() {
+        let (read, write) = OWNER_ERRORS.get();
+        if let Some(error) = if writing { write } else { read } {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 /// What a file system holds and has room for, as a guest's STATFS asks it.
@@ -557,7 +565,7 @@ fn rekey(root: host::Raw, nodes: &mut HashMap<u64, Node>) -> Result<(), String> 
         };
         let parent = match dirs {
             [] => None,
-            dirs => match open_beneath(root, dirs) {
+            dirs => match walk_beneath(root, dirs) {
                 Ok(dir) => Some(dir),
                 Err(_) => continue,
             },
@@ -1016,21 +1024,22 @@ impl Server {
         reopen_for_changes(s.root.raw())
     }
 
-    /// The paths within the share an event of its watches is of (D235): a name made,
-    /// written, changed, moved or removed in a directory the guest holds, or that directory
-    /// itself; every directory it holds where events were lost (`IN_Q_OVERFLOW`); none for
-    /// another's watch.
+    /// The changes within the share an event of its watches is of (D235): at a name made,
+    /// written, changed, moved or removed in a directory the guest holds, or at that
+    /// directory itself; beneath the share's root where events were lost (`IN_Q_OVERFLOW`),
+    /// which every node the guest holds tells ([`held_beneath`](Self::held_beneath)); none
+    /// for another's watch.
     #[cfg(target_os = "linux")]
-    pub fn noticed(&self, event: &crate::platform::Named) -> Vec<Vec<u8>> {
+    pub fn noticed(&self, event: &crate::platform::Named) -> Vec<super::notices::Change> {
+        use super::notices::Change;
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(w) = s.watching.as_mut() else {
             return Vec::new();
         };
-        let nodes: Vec<u64> = if event.watched < 0 {
-            w.of_node.keys().copied().collect()
-        } else {
-            w.nodes_of.get(&event.watched).cloned().unwrap_or_default()
-        };
+        if event.watched < 0 {
+            return vec![Change::Beneath(Vec::new())];
+        }
+        let nodes: Vec<u64> = w.nodes_of.get(&event.watched).cloned().unwrap_or_default();
         if event.mask & libc::IN_IGNORED != 0
             && let Some(gone) = w.nodes_of.remove(&event.watched)
         {
@@ -1043,15 +1052,46 @@ impl Server {
             let Some(mut path) = path_of(&s, node) else {
                 continue;
             };
-            if event.watched >= 0 && !event.name.is_empty() {
+            if !event.name.is_empty() {
                 if !path.is_empty() {
                     path.push(b'/');
                 }
                 path.extend_from_slice(&event.name);
             }
-            paths.push(path);
+            paths.push(Change::At(path));
         }
         paths
+    }
+
+    /// How many nodes the guest holds now, the share's root among them: every file a watch
+    /// of the guest's can be of (notices.rs, [`Pending`](super::notices::Pending)).
+    pub fn held(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .nodes
+            .len()
+    }
+
+    /// The path within the share of every node the guest holds at `place` or beneath it
+    /// (empty for the share's root), its names joined by `/`: what tells a change lost
+    /// there (D235). None in a join share, whose changes are told of nothing.
+    pub fn held_beneath(&self, place: &[u8]) -> Vec<Vec<u8>> {
+        let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if s.joined {
+            return Vec::new();
+        }
+        let within = |path: &[u8]| {
+            place.is_empty()
+                || path
+                    .strip_prefix(place)
+                    .is_some_and(|rest| rest.is_empty() || rest.first() == Some(&b'/'))
+        };
+        s.nodes
+            .keys()
+            .filter_map(|&node| path_of(&s, node))
+            .filter(|path| within(path))
+            .collect()
     }
 
     /// Whether the directory at `path` within the share, its names joined by `/`, is one
@@ -1082,7 +1122,7 @@ impl Server {
         let st = if names.is_empty() {
             stat_fd(root)
         } else {
-            open_beneath(root, &names).and_then(|fd| stat_fd(fd.raw()))
+            walk_beneath(root, &names).and_then(|fd| stat_fd(fd.raw()))
         };
         let Ok(st) = st else {
             return false;
@@ -1245,16 +1285,16 @@ impl Server {
     }
 
     /// Whether the guest is told to map node `node`'s file, `st`, into its DAX window
-    /// (D189): a regular file of at least [`DAX_SMALLEST`] the server may read, as a
-    /// mapping does; and write, in a volume the guest may write, wherever a mapping's
-    /// descriptor is opened to write too (window::SHARED_NEEDS_WRITE).
+    /// (D189): a regular file the server may read, as a mapping does; and write, in a
+    /// volume the guest may write, wherever a mapping's descriptor is opened to write too
+    /// (window::SHARED_NEEDS_WRITE). Of these, its device maps those of the sizes it learned
+    /// its window serves for less than FUSE (memory-09, `crossover`); the rest it reads.
     fn dax_of(&self, s: &State, node: u64, st: &Stat) -> bool {
         if s.windowless {
             return false;
         }
         let euid = served_by();
         let mode = mode_of(st);
-        let size = st.size;
         // The owner's bits where the server owns it, else others': a group's members are
         // not looked up, and a file only a group gives is read through FUSE.
         #[allow(clippy::unnecessary_cast)]
@@ -1263,10 +1303,10 @@ impl Server {
         } else {
             (host::S_IROTH as u32, host::S_IWOTH as u32)
         };
-        let large = mode & S_IFMT == S_IFREG && size >= DAX_SMALLEST;
+        let regular = mode & S_IFMT == S_IFREG;
         let reachable = mode & read != 0
             && (!super::window::SHARED_NEEDS_WRITE || (mode & write != 0 && self.writable(s, node).is_ok()));
-        large && reachable
+        regular && reachable
     }
 
     /// A descriptor of node `node`'s file for a DAX window's mapping of it (D189), opened
@@ -2044,10 +2084,11 @@ impl Server {
             caller.1
         };
         let dir = dir_fd(s, parent)?;
-        let mode = match stat_at(dir, name) {
+        let host = stat_at(dir, name);
+        let mode = match &host {
             Ok(host) => kept
                 .mode
-                .filter(|m| *m != mode_of(&host) & 0o7777 || kept.kind.is_some()),
+                .filter(|m| *m != mode_of(host) & 0o7777 || kept.kind.is_some()),
             Err(_) => kept.mode,
         };
         let owner = Owner {
@@ -2063,13 +2104,24 @@ impl Server {
         let recorded = if owner == Owner::default() && set_owner_of(s, parent).is_none() {
             Ok(())
         } else {
-            open_meta(dir, name, None)
-                .and_then(|fd| fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0))
+            match open_meta(dir, name, None) {
+                Ok(fd) => fset_xattr(fd.raw(), &owner_xattr()?, owner.encode().as_bytes(), 0),
+                // These native kinds cannot carry user.* metadata; regular files must.
+                Err(ENODATA)
+                    if kept.kind.is_none()
+                        && host
+                            .as_ref()
+                            .is_ok_and(|h| native_without_owner(mode_of(h) & S_IFMT)) =>
+                {
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         };
-        // A node made in another's place is the guest's kind only as recorded: unrecorded,
-        // it is no node of the guest's.
-        if let (Err(e), Some(_)) = (recorded, kept.kind) {
-            let _ = unlink_at(dir, name, false);
+        // Without its record a later run would inherit this node as a host-made file.
+        if let Err(e) = recorded {
+            let directory = is_dir(&stat_at(dir, name)?);
+            unlink_at(dir, name, directory)?;
             return Err(e);
         }
         Ok(())
@@ -2092,6 +2144,11 @@ impl Server {
         let uid = a.u32()?;
         let gid = a.u32()?;
         let (dir, name) = at(s, nodeid)?;
+        // A directory the server may search alone (memory-19) it changes nothing of: its host
+        // refuses the server its reading, which no change of the guest's widens.
+        if searched_only(s, nodeid) {
+            return Err(EACCES);
+        }
         // A directory's own descriptor, which `at` gave: its attributes are changed through it.
         let own = s.nodes.get(&nodeid).is_some_and(|n| n.dir).then_some(dir);
         let mut owner = node_owner(s, nodeid, None)?;
@@ -2240,16 +2297,24 @@ impl NodeFd {
 /// `name` in `dir`, opened only to read and set its attributes: not followed, not waiting
 /// on a FIFO's writer, taking no terminal. A device node is not opened, as its driver's
 /// open acts (a serial line raises DTR, a tape rewinds as it closes) where the guest only
-/// looked, as at an `ls -l` of a shared /dev: it has no attributes here (ENODATA), as
+/// looked, as at an `ls -l` of a shared /dev. Unix symlinks are not opened for metadata
+/// either: a no-follow open can refuse one. Both stay root's (ENODATA), as
 /// Linux gives a special file no `user.` ones (fs/xattr.c `xattr_permission`), the
 /// owner's among them (audit V08). `known` is the node's file type where the caller has
 /// just looked at it, which spares looking again.
+/// Native devices and symlinks cannot be opened for these attributes without
+/// entering a driver or following a link. Linux also disallows user.* on FIFOs/sockets.
+fn native_without_owner(kind: u32) -> bool {
+    (DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK | S_IFLNK))
+        || (cfg!(target_os = "linux") && matches!(kind, S_IFIFO | S_IFSOCK))
+}
+
 fn open_meta(dir: host::Raw, name: &CStr, known: Option<u32>) -> Result<NodeFd, Errno> {
     let kind = match known {
         Some(kind) => kind,
         None => mode_of(&stat_at(dir, name)?) & S_IFMT,
     };
-    if DEVICE_OPENS_DRIVER && matches!(kind, S_IFCHR | S_IFBLK) {
+    if native_without_owner(kind) {
         return Err(ENODATA);
     }
     open_at(dir, name, META_FLAGS, 0).map(NodeFd::Owned)
@@ -2263,7 +2328,16 @@ fn node_fd(s: &mut State, nodeid: u64) -> Result<NodeFd, Errno> {
 fn node_fd_known(s: &mut State, nodeid: u64, known: Option<u32>) -> Result<NodeFd, Errno> {
     let node = s.nodes.get(&nodeid).ok_or(ENOENT)?;
     if node.dir {
-        return Ok(NodeFd::Borrowed(dir_fd(s, nodeid)?));
+        let fd = dir_fd(s, nodeid)?;
+        // Its attributes are read and set through a descriptor that reads it: one its host
+        // refuses the server is refused them, as its host refuses it them (xattr(7)).
+        if searched_only(s, nodeid) {
+            return Err(EACCES);
+        }
+        return Ok(NodeFd::Borrowed(fd));
+    }
+    if let Some((pin, _)) = s.pins.get(&nodeid) {
+        return Ok(NodeFd::Borrowed(pin.raw()));
     }
     let (dir, name) = reach(s, nodeid)?;
     open_meta(dir, &name, known)
@@ -2355,14 +2429,36 @@ fn node_owner(s: &mut State, nodeid: u64, st: Option<&Stat>) -> Result<Owner, Er
     let unrecorded = unrecorded_owner(s, nodeid);
     let fd = match node_fd_known(s, nodeid, st.map(|st| mode_of(st) & S_IFMT)) {
         Ok(fd) => fd,
-        Err(ENODATA) => return Ok(Owner::default()),
-        Err(_) => return Ok(unrecorded),
+        // A directory the server may search alone (memory-19) holds no record it can read:
+        // its host's, made so by its host, as the guest's own modes always leave the server
+        // its directories ([`host_perm`]).
+        Err(EACCES) if searched_only(s, nodeid) => return Ok(unrecorded),
+        Err(ENODATA) => {
+            let found;
+            let st = match st {
+                Some(st) => st,
+                None => {
+                    found = node_stat(s, nodeid)?;
+                    &found
+                }
+            };
+            let kind = mode_of(st) & S_IFMT;
+            if !native_without_owner(kind) {
+                return Err(ENODATA);
+            }
+            // Devices remain root's; an unrecorded link/FIFO/socket is a host file.
+            return Ok(if matches!(kind, S_IFCHR | S_IFBLK) {
+                Owner::default()
+            } else {
+                unrecorded
+            });
+        }
+        Err(e) => return Err(e),
     };
-    Ok(fget_xattr(fd.raw(), &owner_xattr()?)
-        .ok()
-        .flatten()
-        .and_then(|v| Owner::parse(&v))
-        .unwrap_or(unrecorded))
+    match fget_xattr(fd.raw(), &owner_xattr()?)? {
+        Some(bytes) => Owner::parse(&bytes).ok_or(EIO),
+        None => Ok(unrecorded),
+    }
 }
 
 /// Directory node `nodeid`'s descriptor: the root's; one held; or one opened again along
@@ -2381,8 +2477,27 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         return Err(ENOTDIR);
     }
     let want = node.key;
-    if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(nodeid)) {
-        return Ok(fd.raw());
+    match s.fds.get(Slot::Node(nodeid)) {
+        Some(Held::Fd(fd)) => return Ok(fd.raw()),
+        // Held while its host refuses the server its reading: one its host lets it read
+        // again is held to be read once more, so that a search-only hold says the host now.
+        Some(Held::Search(fd)) => {
+            let search = fd.raw();
+            return match open_at(
+                search,
+                c".",
+                host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
+                0,
+            ) {
+                Ok(read) => {
+                    let raw = read.raw();
+                    s.fds.insert(Slot::Node(nodeid), Held::Fd(read));
+                    Ok(raw)
+                }
+                Err(_) => Ok(search),
+            };
+        }
+        _ => {}
     }
     // The names down to it; a chain that breaks (a node the guest forgot) or loops (a
     // directory found again under one of its own, through a bind mount) leads nowhere.
@@ -2398,7 +2513,7 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         if let Some(v) = s.volumes.get(&at) {
             break v.fd.raw();
         }
-        if let Some(Held::Fd(fd)) = s.fds.get(Slot::Node(at)) {
+        if let Some(Held::Fd(fd) | Held::Search(fd)) = s.fds.get(Slot::Node(at)) {
             break fd.raw();
         }
         if names.len() > s.nodes.len() {
@@ -2406,14 +2521,35 @@ fn dir_fd(s: &mut State, nodeid: u64) -> Result<host::Raw, Errno> {
         }
     };
     names.reverse();
-    let fd = open_beneath(from, &names)?;
+    // [`walk_beneath`], held as what it was opened for.
+    let (fd, held): (_, fn(host::Owned) -> Held) = match open_beneath(from, &names) {
+        Ok(fd) => (fd, Held::Fd),
+        Err(EACCES) => (search_beneath(from, &names)?, Held::Search),
+        Err(e) => return Err(e),
+    };
     let st = stat_fd(fd.raw())?;
     if !is_dir(&st) || key(&st) != want {
         return Err(ESTALE);
     }
     let raw = fd.raw();
-    s.fds.insert(Slot::Node(nodeid), Held::Fd(fd));
+    s.fds.insert(Slot::Node(nodeid), held(fd));
     Ok(raw)
+}
+
+/// The directory `names` lead to beneath `dir`, to look at or look in: opened to be read, or,
+/// where its host refuses the server that, to be searched (memory-19), as a kernel's walk
+/// goes through a directory it may search and not read (path_resolution(7)).
+fn walk_beneath(dir: host::Raw, names: &[CString]) -> Result<host::Owned, Errno> {
+    match open_beneath(dir, names) {
+        Err(EACCES) => search_beneath(dir, names),
+        opened => opened,
+    }
+}
+
+/// Whether directory node `nodeid`'s descriptor, as [`dir_fd`] has just held it, searches
+/// it alone ([`Held::Search`]).
+fn searched_only(s: &State, nodeid: u64) -> bool {
+    matches!(s.fds.open.get(&Slot::Node(nodeid)), Some((Held::Search(_), _)))
 }
 
 /// An error opening a node's path, as the guest hears it: a path that no longer leads to a
@@ -2492,7 +2628,21 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
     let at = (volume, k.0, k.1);
     // The root, and a volume's, keep their names.
     let rooted = |s: &State, id: u64| id == ROOT || s.volumes.contains_key(&id);
-    let id = match s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id)) {
+    let previous = s.by_key.get(&at).copied().filter(|id| s.nodes.contains_key(id));
+    let id = previous.unwrap_or_else(|| fresh_node(s));
+    // Admit the native watch before publishing/counting the guest reference. A
+    // failed LOOKUP must retain neither a node nor a silently unwatched directory. One the
+    // server may not read (memory-19) alone is walked through unwatched: inotify(7) watches
+    // only what its caller may read (EACCES), so no unprivileged program on its host is told
+    // of what changes in it; the guest sees that as its entries expire ([`VALID_S`]).
+    #[cfg(target_os = "linux")]
+    if is_dir(&st) {
+        match watch_dir(s, id, dir, name) {
+            Ok(()) | Err(EACCES) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let id = match previous {
         Some(id) => {
             let fixed = rooted(s, id);
             if let Some(n) = s.nodes.get_mut(&id) {
@@ -2517,7 +2667,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
             id
         }
         None => {
-            let id = fresh_node(s);
             s.nodes.insert(
                 id,
                 Node {
@@ -2534,10 +2683,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
             id
         }
     };
-    #[cfg(target_os = "linux")]
-    if is_dir(&st) {
-        watch_dir(s, id, dir, name);
-    }
     let owner = node_owner(s, id, Some(&st))?;
     Ok((id, st, owner))
 }
@@ -2545,7 +2690,6 @@ fn lookup(s: &mut State, parent: u64, name: &CStr) -> Result<(u64, Stat, Owner),
 /// Node `node`'s path within its share, its names from the root down joined by `/`, as the
 /// guest last named them: none where its chain is broken, or longer than the tables, which
 /// is a loop no directory has.
-#[cfg(target_os = "linux")]
 fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
     let mut names: Vec<&[u8]> = Vec::new();
     let mut at = node;
@@ -2562,25 +2706,24 @@ fn path_of(s: &State, node: u64) -> Option<Vec<u8>> {
 }
 
 /// Watches directory node `id`, `name` in the directory `dir` holds, where its share's
-/// notices are told and it is not watched already (D235); one that cannot be watched (the
-/// user's watches all taken) is not, and the guest is told nothing of it.
+/// notices are told and it is not watched already (D235). Native admission failure
+/// refuses the guest lookup, preserving its errno and permitting a later retry.
 #[cfg(target_os = "linux")]
-fn watch_dir(s: &mut State, id: u64, dir: host::Raw, name: &CStr) {
+fn watch_dir(s: &mut State, id: u64, dir: host::Raw, name: &CStr) -> Result<(), Errno> {
     let Some(w) = s.watching.as_mut() else {
-        return;
+        return Ok(());
     };
     if w.of_node.contains_key(&id) {
-        return;
+        return Ok(());
     }
     let mut path = format!("/proc/self/fd/{dir}/").into_bytes();
     path.extend_from_slice(name.to_bytes());
-    let Ok(path) = CString::new(path) else {
-        return;
-    };
-    if let Ok(watched) = crate::platform::watch_named(&path, WATCHED, w.number, &w.sink) {
-        w.of_node.insert(id, watched);
-        w.nodes_of.entry(watched).or_default().push(id);
-    }
+    let path = CString::new(path).map_err(|_| EINVAL)?;
+    let watched = crate::platform::watch_named(&path, WATCHED, w.number, &w.sink)
+        .map_err(|e| e.raw_os_error().unwrap_or(EIO))?;
+    w.of_node.insert(id, watched);
+    w.nodes_of.entry(watched).or_default().push(id);
+    Ok(())
 }
 
 /// Directory node `id`'s watch let go of, the guest having forgotten it (D235).
@@ -3197,6 +3340,269 @@ mod tests {
         (p, server)
     }
 
+    fn reply_holds(s: &Server) -> (usize, u64, usize, usize, usize) {
+        let state = s.state.lock().unwrap();
+        (
+            state.nodes.len(),
+            state.nodes.values().map(|n| n.lookups).sum::<u64>(),
+            state.handles.len(),
+            state.fds.open.len(),
+            state.pins.len(),
+        )
+    }
+
+    fn refused_reply_holds(opcode: u32, delivery: Option<(u64, u32)>) {
+        let (p, s) = dir();
+        const BASE: u64 = 0x10000;
+        let mem = crate::memory::GuestMemory::anonymous(&[(BASE, 0x10000)]).unwrap();
+        let before = reply_holds(&s);
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            for i in 0..8 {
+                let file = format!("f{i}");
+                let body = if opcode == op::CREATE {
+                    // A CREATE takes both its entry reference and an open handle.
+                    let mut body = Vec::new();
+                    for word in [2 | linux::O_CREAT | linux::O_EXCL, 0o100_400, 0, 0] {
+                        body.extend_from_slice(&word.to_le_bytes());
+                    }
+                    body.extend(name(&file));
+                    body
+                } else {
+                    std::fs::write(p.join(&file), "f").unwrap();
+                    name(&file)
+                };
+                let request = req(opcode, ROOT, 0, &body);
+                let mut reply = Vec::new();
+                if let Some((addr, len)) = delivery {
+                    use super::super::super::queue::{Chain, Descriptor};
+                    mem.access().unwrap().write(BASE, &request).unwrap();
+                    let chain = Chain {
+                        head: 0,
+                        descriptors: vec![
+                            Descriptor {
+                                addr: BASE,
+                                len: request.len() as u32,
+                                writable: false,
+                            },
+                            Descriptor {
+                                addr,
+                                len,
+                                writable: true,
+                            },
+                        ],
+                    };
+                    let written = super::super::serve_with(
+                        &chain,
+                        &mem,
+                        &slot,
+                        None,
+                        None,
+                        &mut super::super::Buffers::default(),
+                    );
+                    assert_eq!(written, if addr == BASE + 0x1000 { 16 } else { 0 });
+                } else {
+                    assert!(slot.ask_into(&request, &mut reply).unwrap());
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                    assert!(slot.refuse(&request, &mut reply));
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), -EIO);
+                }
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(
+            reply_holds(&s),
+            before,
+            "a refused reply left server resources held"
+        );
+    }
+
+    #[test]
+    fn refused_lookups_leave_the_held_count_unchanged() {
+        refused_reply_holds(op::LOOKUP, None);
+    }
+
+    #[test]
+    fn refused_creates_leave_the_held_count_unchanged() {
+        refused_reply_holds(op::CREATE, None);
+    }
+
+    #[test]
+    fn replies_that_do_not_fit_or_reach_guest_memory_leave_nothing_held() {
+        for opcode in [op::LOOKUP, op::CREATE] {
+            for buffer in [(0x11000, 16), (0x20000, 4096)] {
+                refused_reply_holds(opcode, Some(buffer));
+            }
+        }
+    }
+
+    #[test]
+    fn a_refused_lookup_of_a_node_the_guest_holds_keeps_its_reference() {
+        let (p, s) = dir();
+        std::fs::write(p.join("kept"), "kept").unwrap();
+        let lookup = req(op::LOOKUP, ROOT, 0, &name("kept"));
+        let (errno, entry) = answer(&s, &lookup);
+        assert_eq!(errno, 0);
+        let node = u64::from_le_bytes(entry[..8].try_into().unwrap());
+        let before = reply_holds(&s);
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            for _ in 0..8 {
+                let mut reply = Vec::new();
+                assert!(slot.ask_into(&lookup, &mut reply).unwrap());
+                assert_eq!(u64::from_le_bytes(reply[16..24].try_into().unwrap()), node);
+                assert!(slot.refuse(&lookup, &mut reply));
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(reply_holds(&s), before);
+        assert_eq!(
+            s.state.lock().unwrap().nodes.get(&node).map(|n| n.lookups),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn refusing_an_open_preserves_the_guests_earlier_node_handle_and_pin() {
+        let (_p, s) = dir();
+        let (node, fh) = create(&s, ROOT, "kept", 2, 0o644);
+        assert_eq!(write(&s, node, fh, 0, b"kept"), 0);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("kept"))).0, 0);
+        let before = reply_holds(&s);
+        assert_eq!(before.4, 1, "the original handle's unlinked file is pinned");
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            let request = req(op::OPEN, node, 0, &[0; 8]);
+            for _ in 0..8 {
+                let mut reply = Vec::new();
+                assert!(slot.ask_into(&request, &mut reply).unwrap());
+                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                assert!(slot.refuse(&request, &mut reply));
+                // Refusing an already failed reply must acquire or release nothing.
+                assert!(slot.refuse(&request, &mut reply));
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(reply_holds(&s), before);
+        assert_eq!(read(&s, node, fh, 0, 4), (0, b"kept".to_vec()));
+    }
+
+    #[test]
+    fn refused_directory_replies_release_their_entries_and_new_handle_only() {
+        let (p, s) = dir();
+        for n in ["a", "b", "c"] {
+            std::fs::write(p.join(n), n).unwrap();
+        }
+        let request = req(op::OPENDIR, ROOT, 0, &[0; 8]);
+        let (_, opened) = answer(&s, &request);
+        let fh = u64::from_le_bytes(opened[..8].try_into().unwrap());
+        let before = reply_holds(&s);
+        #[cfg(unix)]
+        let (served, device) = super::super::Stream::pair().unwrap();
+        #[cfg(windows)]
+        let (served, device) = crate::platform::pipe_stream::pair(true);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| super::super::answer(&s, served).unwrap());
+            let slot = super::super::Slot::new();
+            slot.attach(device).unwrap();
+            for _ in 0..8 {
+                for request in [
+                    request.clone(),
+                    req(op::READDIRPLUS, ROOT, 0, &readdir(fh, 0, 4096)),
+                ] {
+                    let mut reply = Vec::new();
+                    assert!(slot.ask_into(&request, &mut reply).unwrap());
+                    assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), 0);
+                    assert!(slot.refuse(&request, &mut reply));
+                }
+            }
+            drop(slot);
+            worker.join().unwrap();
+        });
+        assert_eq!(reply_holds(&s), before);
+        assert_eq!(answer(&s, &req(op::READDIR, ROOT, 0, &readdir(fh, 0, 4096))).0, 0);
+    }
+
+    #[test]
+    fn a_broken_cleanup_exchange_detaches_its_server_and_a_refused_release_does_not() {
+        for failure in ["closed", "empty", "errno"] {
+            let (_p, s) = dir();
+            let mut body = Vec::new();
+            for word in [2 | linux::O_CREAT, 0o100_644, 0, 0] {
+                body.extend_from_slice(&word.to_le_bytes());
+            }
+            body.extend(name("f"));
+            let request = req(op::CREATE, ROOT, 0, &body);
+            let mut reply = s.handle(&request).unwrap();
+            let created = u64::from_le_bytes(reply[16..24].try_into().unwrap());
+            #[cfg(unix)]
+            let (mut served, device) = super::super::Stream::pair().unwrap();
+            #[cfg(windows)]
+            let (mut served, device) = crate::platform::pipe_stream::pair(true);
+            std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    let release = super::super::read_frame(&mut served).unwrap().unwrap();
+                    assert_eq!(u32::from_le_bytes(release[4..8].try_into().unwrap()), op::RELEASE);
+                    match failure {
+                        "closed" => {}
+                        "empty" => super::super::write_frame(&mut served, &[]).unwrap(),
+                        _ => {
+                            let refused = super::super::proto::unfollowed(&release).unwrap();
+                            super::super::write_frame(&mut served, &refused).unwrap();
+                            // Its entry is forgotten all the same, and the stream serves on.
+                            let forget = super::super::read_frame(&mut served).unwrap().unwrap();
+                            assert_eq!(u32::from_le_bytes(forget[4..8].try_into().unwrap()), op::FORGET);
+                            assert_eq!(u64::from_le_bytes(forget[16..24].try_into().unwrap()), created);
+                            super::super::write_frame(&mut served, &[]).unwrap();
+                            super::super::answer(&s, served).unwrap();
+                            return;
+                        }
+                    }
+                    drop(served);
+                });
+                let slot = super::super::Slot::new();
+                slot.attach(device).unwrap();
+                assert!(slot.refuse(&request, &mut reply));
+                assert_eq!(i32::from_le_bytes(reply[4..8].try_into().unwrap()), -EIO);
+                if failure == "errno" {
+                    let mut looked = Vec::new();
+                    let lookup = req(op::LOOKUP, ROOT, 0, &name("f"));
+                    assert!(slot.ask_into(&lookup, &mut looked).unwrap());
+                    assert_eq!(i32::from_le_bytes(looked[4..8].try_into().unwrap()), 0);
+                    drop(slot);
+                } else {
+                    assert!(slot.conn.lock().unwrap().is_none(), "{failure}");
+                    assert_eq!(
+                        slot.ask_into(&request, &mut Vec::new()).unwrap_err().kind(),
+                        std::io::ErrorKind::NotConnected
+                    );
+                }
+                worker.join().unwrap();
+            });
+        }
+    }
+
     /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
     /// which a directory is opened by.
     fn root_of(p: &std::path::Path) -> host::Owned {
@@ -3313,17 +3719,10 @@ mod tests {
         std::fs::set_permissions(p, perms).unwrap();
     }
 
-    /// DAX_SMALLEST is what PM M338's measurement found by its rule: 1 MiB, the smallest
-    /// measured size from which a window was no worse than FUSE on the Mac (from 256 KiB)
-    /// and on Fedora's performance cores (from 1 MiB) and efficient ones (from 256 KiB).
-    #[test]
-    fn dax_smallest_is_what_its_measurement_found() {
-        assert_eq!(DAX_SMALLEST, 1 << 20, "PM M338");
-    }
-
     /// A guest that maps files into a DAX window (D189) is told the host's page size its
-    /// mappings' offsets are whole multiples of, and which files to map: a regular file of
-    /// `DAX_SMALLEST` bytes or more the server may read, never one a byte short, and where a
+    /// mappings' offsets are whole multiples of, and which files may be mapped: a regular
+    /// file the server may read, whatever its size (which of them are is its device's to
+    /// learn, memory-09: a file a byte short of 1 MiB was never offered), and where a
     /// mapping's descriptor is opened to write too (Hypervisor.framework's), one it may
     /// write, in a share written to. A mapping's file, which the guest names by its node
     /// alone, is opened to read, and to write too where the share is written to; never a
@@ -3331,9 +3730,9 @@ mod tests {
     #[test]
     fn dax_is_offered_for_files_a_window_maps() {
         let (p, s) = dir();
-        std::fs::write(p.join("big"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
-        std::fs::write(p.join("small"), vec![1u8; DAX_SMALLEST as usize - 1]).unwrap();
-        std::fs::write(p.join("kept"), vec![1u8; DAX_SMALLEST as usize]).unwrap();
+        std::fs::write(p.join("big"), vec![1u8; 1 << 20]).unwrap();
+        std::fs::write(p.join("small"), vec![1u8; (1 << 20) - 1]).unwrap();
+        std::fs::write(p.join("kept"), vec![1u8; 1 << 20]).unwrap();
         host_read_only(&p.join("kept"), true);
         let mut init = Vec::new();
         for word in [
@@ -3366,7 +3765,7 @@ mod tests {
         let (_, small_flags) = looked("small");
         let (_, kept_flags) = looked("kept");
         assert_eq!(big_flags & ATTR_DAX, ATTR_DAX);
-        assert_eq!(small_flags & ATTR_DAX, 0);
+        assert_eq!(small_flags & ATTR_DAX, ATTR_DAX);
         let read_alone = if super::super::window::SHARED_NEEDS_WRITE {
             0
         } else {
@@ -3446,6 +3845,72 @@ mod tests {
         s.remove(&c("b"));
         assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("b"))).0, -ENOENT);
         assert_eq!(answer(&s, &req(op::LOOKUP, vb, 0, &name("y"))).0, -ESTALE);
+    }
+
+    /// memory-19 (docs/bugs/2026-11-13/memory.md): a host directory its owner, the share
+    /// process, may search but not read (mode 0111) is walked through, as a kernel's walk asks
+    /// only search permission of each directory on the way (path_resolution(7)): the file
+    /// `a/b/c/file` beneath it is opened and read, as a bind mount reads it. Nothing more of
+    /// it is had: its listing is refused, as its host refuses it, and so is a change of its
+    /// mode, which the server never makes of a directory it may not read. On Linux its
+    /// share is watched, as a running microVM's are (D235), and the directory, which inotify
+    /// watches for none who may not read it, is walked through unwatched. Root reads every
+    /// directory, so as root this is a SKIP.
+    #[cfg(unix)]
+    #[test]
+    fn an_exec_only_directory_is_walked_through_and_never_listed() {
+        // SAFETY: geteuid reads this process's effective uid.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("SKIP: root reads every directory");
+            return;
+        }
+        let (root, s) = dir();
+        #[cfg(target_os = "linux")]
+        let _events = {
+            let (tx, rx) = std::sync::mpsc::channel();
+            s.watch_dirs(1, tx).unwrap();
+            rx
+        };
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/file"), "reached").unwrap();
+        let mode = |m| {
+            std::fs::set_permissions(root.join("a/b"), std::os::unix::fs::PermissionsExt::from_mode(m))
+                .unwrap();
+        };
+        mode(0o111);
+        let id = |r: (i32, Vec<u8>)| match r.0 {
+            0 => Ok(u64::from_le_bytes(r.1[0..8].try_into().unwrap())),
+            e => Err(e),
+        };
+        let mut b = None;
+        let walked = (|| -> Result<Vec<u8>, i32> {
+            let a = id(answer(&s, &req(op::LOOKUP, ROOT, 0, &name("a"))))?;
+            let at = id(answer(&s, &req(op::LOOKUP, a, 0, &name("b"))))?;
+            b = Some(at);
+            let c = id(answer(&s, &req(op::LOOKUP, at, 0, &name("c"))))?;
+            let f = id(answer(&s, &req(op::LOOKUP, c, 0, &name("file"))))?;
+            let fh = id(answer(&s, &req(op::OPEN, f, 0, &[0; 8])))?;
+            // fuse_read_in: fh, offset, size, read_flags, lock_owner, flags, padding.
+            let mut body = fh.to_le_bytes().to_vec();
+            body.extend(0u64.to_le_bytes());
+            body.extend(64u32.to_le_bytes());
+            body.extend([0u8; 4 + 8 + 4 + 4]);
+            match answer(&s, &req(op::READ, f, 0, &body)) {
+                (0, data) => Ok(data),
+                (e, _) => Err(e),
+            }
+        })();
+        let refused = b.map(|b| {
+            (
+                answer(&s, &req(op::OPENDIR, b, 0, &[0; 8])).0,
+                answer(&s, &req(op::SETATTR, b, 0, &setattr(fattr::MODE, 0o755))).0,
+            )
+        });
+        let left = std::fs::metadata(root.join("a/b")).unwrap().permissions();
+        mode(0o755);
+        assert_eq!(walked, Ok(b"reached".to_vec()));
+        assert_eq!(refused, Some((-EACCES, -EACCES)));
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&left) & 0o7777, 0o111);
     }
 
     /// A snapshot keeps the share (D176): a server of the same directory, given what one
@@ -3909,6 +4374,67 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unrecorded_nondevice_nodes_keep_the_runs_user() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (path, s) = dir();
+        std::fs::write(path.join("target"), b"host").unwrap();
+        std::os::unix::fs::symlink("target", path.join("link")).unwrap();
+        let fifo = CString::new(path.join("fifo").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a live NUL-terminated path of this test's disposable FIFO.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        assert_eq!(owned(&s, ROOT, "link").1, 1000);
+        assert_eq!(owned(&s, ROOT, "fifo").1, 1000);
+    }
+
+    /// A metadata failure must never turn a guest-made node into the next user's file.
+    #[test]
+    fn owner_metadata_failures_refuse_creation_and_lookup() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                OWNER_ERRORS.set((None, None));
+            }
+        }
+        let _reset = Reset;
+        let (path, s) = dir();
+        assert_eq!(
+            answer(&s, &req(op::SETXATTR, ROOT, 0, &owner_word("1000:1000"))).0,
+            0
+        );
+        OWNER_ERRORS.set((None, Some(EIO)));
+        let mut body = 0o600u32.to_le_bytes().to_vec();
+        body.extend_from_slice(&[0; 12]);
+        body.extend(name("private"));
+        assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &body)).0, -EIO);
+        assert!(!path.join("private").exists());
+        let mut mkdir = 0o700u32.to_le_bytes().to_vec();
+        mkdir.extend_from_slice(&[0; 4]);
+        mkdir.extend(name("private-dir"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir)).0, -EIO);
+        assert!(!path.join("private-dir").exists());
+        OWNER_ERRORS.set((None, None));
+        assert_eq!(answer(&s, &req(op::MKNOD, ROOT, 0, &body)).0, 0);
+        OWNER_ERRORS.set((Some(EIO), None));
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
+        OWNER_ERRORS.set((None, None));
+        let file = std::fs::File::open(path.join("private")).unwrap();
+        use super::host::AsRaw as _;
+        fset_xattr(
+            host::Owned::from(file).raw(),
+            &owner_xattr().unwrap(),
+            b"broken",
+            0,
+        )
+        .unwrap();
+        assert_eq!(answer(&s, &req(op::LOOKUP, ROOT, 1000, &name("private"))).0, -EIO);
+    }
+
     /// A join share's volumes each take their own owner of the host's files (D38): set on
     /// the volume's node, never the share's root.
     #[test]
@@ -4118,6 +4644,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&p);
     }
 
+    /// confine-08: a directory whose watch the host refuses (its user's watches all taken,
+    /// `max_inotify_watches`, ENOSPC) is refused its LOOKUP with that errno, holding no
+    /// guest reference, rather than served unwatched; once a watch is free again, it is
+    /// looked up. The limit is a user namespace's own (inotify(7), `/proc/sys/user`), so the
+    /// test runs as root of a namespace of its own (`unshare --map-auto --map-root-user`),
+    /// lowering its namespace's limit to the watches it holds; else a SKIP.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_host_watch_admission_refuses_lookup() {
+        use std::io::Write as _;
+        const LIMIT: &str = "/proc/sys/user/max_inotify_watches";
+        let own_namespace = std::fs::read_to_string("/proc/self/uid_map")
+            .is_ok_and(|m| m.split_whitespace().collect::<Vec<_>>() != ["0", "0", "4294967295"]);
+        // SAFETY: geteuid reads this process's effective uid.
+        if unsafe { libc::geteuid() } != 0 || !own_namespace {
+            let _ = writeln!(std::io::stderr(), "SKIP: not root of a user namespace of its own");
+            return;
+        }
+        let Ok(was) = std::fs::read_to_string(LIMIT) else {
+            let _ = writeln!(std::io::stderr(), "SKIP: {LIMIT} unreadable");
+            return;
+        };
+        let (p, s) = dir();
+        std::fs::create_dir(p.join("d")).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        // The share's root is watched; no other watch may be had now.
+        if std::fs::write(LIMIT, "1").is_err() {
+            let _ = writeln!(std::io::stderr(), "SKIP: {LIMIT} not writable");
+            return;
+        }
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        let held = s.holds_dir(b"d");
+        std::fs::write(LIMIT, was.trim()).unwrap();
+        assert_eq!(error, -libc::ENOSPC);
+        assert!(!held, "a refused lookup kept a guest reference");
+        let (error, _) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(error, 0, "admitted once a watch is free");
+        assert!(s.holds_dir(b"d"));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
     /// On Linux, its host's changes in the directories the guest holds come as inotify
     /// events of the process's one instance, each of the path within the share it names
     /// (D235); a directory the guest forgot is watched no more.
@@ -4138,7 +4706,9 @@ mod tests {
                 let event = rx
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap_or_else(|_| panic!("no event of {last:?}; heard {paths:?}"));
-                paths.extend(s.noticed(&event));
+                paths.extend(s.noticed(&event).into_iter().map(|c| match c {
+                    super::super::notices::Change::At(p) | super::super::notices::Change::Beneath(p) => p,
+                }));
             }
             paths
         };
@@ -4151,6 +4721,38 @@ mod tests {
         std::fs::write(p.join("after"), "1").unwrap();
         let paths = heard(b"after");
         assert!(!paths.iter().any(|p| p == b"d/y"), "{paths:?}");
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    /// confine-06: where the host's watcher lost events (`IN_Q_OVERFLOW`), a file the guest
+    /// holds deep in the share, which a guest's watch of it alone may be all that waits on,
+    /// is told, not only the directories the share watches.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lost_events_wake_a_file_the_guest_holds() {
+        let (p, s) = dir();
+        std::fs::create_dir(p.join("d")).unwrap();
+        std::fs::write(p.join("d").join("f"), "1").unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        s.watch_dirs(1, tx).unwrap();
+        let (e, entry) = answer(&s, &req(op::LOOKUP, ROOT, 0, &name("d")));
+        assert_eq!(e, 0);
+        let d = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+        assert_eq!(answer(&s, &req(op::LOOKUP, d, 0, &name("f"))).0, 0);
+        let lost = crate::platform::Named {
+            watched: -1,
+            mask: libc::IN_Q_OVERFLOW,
+            name: Vec::new(),
+        };
+        assert_eq!(
+            s.noticed(&lost),
+            [super::super::notices::Change::Beneath(Vec::new())]
+        );
+        let mut held = s.held_beneath(b"");
+        held.sort();
+        assert_eq!(held, [&b""[..], b"d", b"d/f"]);
+        assert_eq!(s.held_beneath(b"d/f"), [b"d/f"]);
+        assert!(s.held_beneath(b"e").is_empty());
         let _ = std::fs::remove_dir_all(&p);
     }
 

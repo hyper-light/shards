@@ -1,0 +1,67 @@
+# Slice 1 (memory-06, 07, 08, 10, 12, 13): tree 97f404be8 + b2.patch (sha256 f905033ad661d419…)
+# and + b2-mutants.patch (slice1-mutants.py applied; 4d2e6f44140b3457…), kiln runs r1882, r1883.
+
+== adacachy2 Linux x86_64 (nice -n 10, cold target ~/g121-tmp/mem-r03/target)
+== cargo test -p shards-init -- plug::tests
+test plug::tests::a_driver_that_stopped_for_good_is_given_up ... ok
+test plug::tests::a_grower_held_from_looking_is_not_stalled ... ok
+test plug::tests::memory_that_came_within_a_peaks_period_is_kept ... ok
+test plug::tests::memory_that_comes_after_a_third_ask_is_waited_for ... ok
+test plug::tests::a_refused_ask_and_a_lowered_request_end_the_wait ... ok
+test plug::tests::a_guests_first_memory_is_waited_for_however_long_it_takes ... ok
+test plug::tests::the_growers_looks_follow_their_cost_against_the_wait ... ok
+test plug::tests::memory_that_stops_coming_is_asked_for_again ... ok
+test plug::tests::memory_that_comes_slowly_is_waited_for ... ok
+(and the 22 other plug::tests, all ok)
+test result: ok. 31 passed; 0 failed
+== cargo test -p shards-vmm --lib -- platform::pressure
+test platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted ... ok
+test platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does ... ok
+test platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total ... ok
+test platform::pressure::tests::the_hosts_memory_pressure_can_be_watched ... ok
+test result: ok. 4 passed; 0 failed
+== cargo clippy -p shards-init -p shards-vmm --all-targets -- -D warnings: clean
+(at b1, the same vmm/abi sources: cargo clippy -p shards-init -p shards-vmm -p shards-abi --all-targets -- -D warnings: clean)
+MUTANTS
+test plug::tests::memory_that_came_within_a_peaks_period_is_kept ... FAILED
+test plug::tests::the_growers_looks_follow_their_cost_against_the_wait ... FAILED
+test plug::tests::memory_that_comes_after_a_third_ask_is_waited_for ... FAILED
+test result: FAILED. 28 passed; 3 failed
+test platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted ... FAILED
+test platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total ... FAILED
+test platform::pressure::tests::a_windows_stall_is_pressure_once_it_costs_what_acting_does ... FAILED
+test result: FAILED. 1 passed; 3 failed
+
+== adas-mac-studio.local Darwin arm64 (cold target ~/g121-tmp/mem-r03/target)
+== cargo test -p shards-abi pace
+test pace::tests::a_pause_weighs_a_looks_cost_against_the_wait_so_far ... ok
+== cargo test -p shards-api --lib a_pause
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+== cargo test -p shards-vmm --lib -- headroom pressure
+test devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held ... ok
+test devices::virtio::fs::headroom::tests::a_budget_set_later_counts_at_a_later_look ... ok
+test platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted ... ok
+test platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total ... ok
+(and 4 more, ok) test result: ok. 8 passed; 0 failed
+== SHARDS_HELPERS=skip cargo test -p shards --bin shards -- build::give build::builder::tests::a_giver pressure:: daemon::budget daemon::groups daemon::reclaim
+test build::builder::tests::a_giver_past_its_deadline_looks_at_once ... ok
+test build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience ... ok
+test daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short ... ok
+test daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are ... ok
+test pressure::saying::a_pressure_is_said_as_it_doubles ... ok
+(and the other give, builder, budget, groups, reclaim and pressure tests, ok)
+test result: ok. 33 passed; 0 failed
+== SHARDS_HELPERS=skip cargo clippy -p shards --all-targets -- -D warnings: clean
+(at b1: SHARDS_HELPERS=skip cargo clippy -p shards-abi -p shards-api -p shards-vmm -p shards --all-targets -- -D warnings: clean)
+MUTANTS
+test devices::virtio::fs::headroom::tests::a_look_is_due_as_its_cost_weighs_against_how_long_its_verdicts_held ... FAILED
+test platform::pressure::tests::a_lasting_pressure_is_said_again_as_its_act_weighs_against_how_long_it_lasted ... FAILED
+test platform::pressure::tests::a_psi_files_stall_so_far_is_its_some_total ... FAILED
+test result: FAILED. 5 passed; 3 failed
+test daemon::groups::tests::the_groups_passes_follow_their_cost_against_how_long_groups_stayed_as_they_are ... FAILED
+test pressure::saying::a_pressure_is_said_as_it_doubles ... FAILED
+test daemon::budget::tests::a_microvm_held_short_is_told_again_as_telling_it_weighs_against_how_long_it_was_short ... FAILED
+test build::give::tests::a_cold_pass_judges_no_ask_and_its_first_answer_teaches_its_patience ... FAILED
+test build::builder::tests::a_giver_past_its_deadline_looks_at_once ... FAILED
+test result: FAILED. 12 passed; 5 failed
+(The landed tree is b2 + `cargo fmt --all`, whitespace alone; the merged tree is checked again before it lands.)

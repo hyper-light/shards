@@ -10,11 +10,7 @@
 
 mod common;
 
-use std::time::Duration;
-
 use common::{TempDir, Vm, cannot_run_vms, guest_init, kernel, run_shards_env, served};
-
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A detached run's microVM given a disk, made empty ext4 of 64 MiB, written through,
 /// grown to 128 MiB with its file system as it runs, unplugged, and plugged again with what
@@ -120,6 +116,27 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
         none.stderr
     );
 
+    // Concurrent same-destination requests have one owner and leave no hidden mount.
+    let contested = format!("{}:/contended", dir.display());
+    let barrier = std::sync::Barrier::new(2);
+    let attempt = || {
+        barrier.wait();
+        run_shards_env(&["plug"], &["volume", "plugged", &contested], &env)
+    };
+    let results = std::thread::scope(|scope| {
+        let a = scope.spawn(attempt);
+        let b = scope.spawn(attempt);
+        [a.join().unwrap(), b.join().unwrap()]
+    });
+    assert_eq!(
+        results.iter().filter(|r| r.status == Some(0)).count(),
+        1,
+        "statuses/errors: {:?}",
+        results.iter().map(|r| (r.status, &r.stderr)).collect::<Vec<_>>()
+    );
+    shards(&["unplug"], &["volume", "plugged", "/contended"]);
+    assert!(inside(&["slurp", "/contended/from-host"]).contains("errno 2"));
+
     // Off Linux no host's function is plugged in: refused by name, with its host's own
     // limit, as a run's start refuses one (D154; PM M401, M402, M403).
     #[cfg(not(target_os = "linux"))]
@@ -214,18 +231,15 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     let said = shards(&["plug", "volume", "--for", "a", "plugm", &spec]);
     assert!(said.starts_with(&format!("{dest} ")), "{said}");
     let seen_at = proj.join("seen");
-    let started = std::time::Instant::now();
+    let mut patience = common::Patience::of(&home);
     let seen = loop {
         if let Ok(seen) = std::fs::read_to_string(&seen_at) {
             break seen;
         }
-        assert!(
-            started.elapsed() < TIMEOUT,
-            "the agent wrote no {}",
-            seen_at.display()
-        );
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(patience.holds(), "the agent wrote no {}", seen_at.display());
+        std::thread::sleep(patience.next_look());
     };
+    patience.done();
     for root in &roots {
         let line = format!("root {root} mkdir errno 30 create errno 30");
         assert!(seen.lines().any(|l| l == line), "no {line:?} in\n{seen}");
@@ -254,8 +268,6 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     if cannot_run_vms() {
         return;
     }
-    /// Test patience, a loaded host's: never a runtime policy.
-    const PATIENCE: Duration = Duration::from_secs(60);
     let (image, _) = served();
     let home = TempDir::new("notice");
     let env = [
@@ -290,12 +302,12 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
     for (dir, at) in dirs.iter().zip(["/rw", "/ro", "/plugged"]) {
         let mut watch = Vm::spawn_env(&["exec", "noticed", "/bin/testguest", "inotify", at], &vm_env);
-        watch.wait_for("inotify ready", PATIENCE);
+        watch.wait_for("inotify ready");
         std::fs::write(dir.join("f"), "host").unwrap();
-        watch.wait_for("inotify IN_MODIFY f", PATIENCE);
+        watch.wait_for("inotify IN_MODIFY f");
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "host", "{at}");
         std::fs::remove_file(dir.join("f")).unwrap();
-        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ", PATIENCE);
+        watch.wait_for("inotify IN_MODIFY|IN_ISDIR ");
         watch.kill();
         let left: Vec<_> = std::fs::read_dir(dir).unwrap().collect();
         assert!(left.is_empty(), "{at}: {left:?}");
@@ -315,7 +327,6 @@ fn notices_latency() {
     if cannot_run_vms() {
         return;
     }
-    const PATIENCE: Duration = Duration::from_secs(60);
     let samples: usize = std::env::var("SHARDS_NOTICE_SAMPLES")
         .ok()
         .and_then(|n| n.parse().ok())
@@ -337,13 +348,13 @@ fn notices_latency() {
     assert_eq!(r.status, Some(0), "{}", r.stderr);
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
     let mut watch = Vm::spawn_env(&["exec", "lat", "/bin/testguest", "inotify", "/w"], &vm_env);
-    watch.wait_for("inotify ready", PATIENCE);
+    watch.wait_for("inotify ready");
     let mut took = Vec::with_capacity(samples);
     for i in 0..samples + 10 {
         let name = format!("f{i}");
         let start = std::time::Instant::now();
         std::fs::write(files.join(&name), "x").unwrap();
-        watch.wait_for(&format!("inotify IN_MODIFY {name}"), PATIENCE);
+        watch.wait_for(&format!("inotify IN_MODIFY {name}"));
         if i >= 10 {
             took.push(start.elapsed().as_secs_f64() * 1e3);
         }

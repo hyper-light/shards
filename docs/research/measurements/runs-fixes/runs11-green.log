@@ -1,0 +1,8 @@
+# runs-11 (handoff tries). CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY/SHARDS_SERVER_BINARY a stand-in; carrier /tmp/runs-tail-carrier (run.sh, mutate2.py, cost.sh); aws-lc-sys build warnings removed
+## kiln r1904, macOS 26.2 25C56 arm64, adas-mac-studio-3.local (Adas-Mac-Studio-4.local), rustc 1.98.1, at 66012636 (p/runs-tail-v1 over main 94c9c7e46)
+cargo test -j 4 -p shards --bin shards daemon::tests::: 137 passed; 0 failed (20.89s), untaken_pooled_vms_give_way_to_each_other_and_a_fresh_one_ends_the_start among them
+  (its log: "warm VM … did not take a run: it ended first" four times, then the fifth served)
+cargo clippy -p shards -p shards-vmm --all-targets -- -D warnings: Finished, clean
+## Windows 11 x86_64 10.0.26200 (the container on adacachy), at 66012636 (2026-11-14T05:50Z)
+cargo test -p shards --bin shards daemon::tests::untaken_pooled: 1 passed
+cargo test -p shards --bin shards daemon::tests::a_handoff: 1 passed (a_handoff_is_retried_only_where_the_run_surely_did_not_start)

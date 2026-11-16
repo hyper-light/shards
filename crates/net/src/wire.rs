@@ -33,6 +33,12 @@ const ND_HOP_LIMIT: u8 = 255;
 /// IPv6's minimum MTU (RFC 8200 §5): an ICMPv6 error, its quote included, is no longer
 /// (RFC 4443 §2.4 (c)).
 const IPV6_MIN_MTU: usize = 1280;
+/// The TTL, and IPv6's hop limit, of what the gateway sends: the default the Assigned
+/// Numbers registry recommends (RFC 1700, "IP Time To Live Parameter", now IANA's
+/// ip-parameters registry), which RFC 1122 §3.2.1.7 has a host use, and which RFC 4861
+/// §6.3.2 has IPv6's CurHopLimit default to. The guest is one link away, so any value
+/// from 1 reaches it; this one is the registered value, not a choice.
+const DEFAULT_TTL: u8 = 64;
 pub const PROTO_ICMP: u8 = 1;
 /// ICMP's destination unreachable (RFC 792).
 pub const ICMP_UNREACHABLE: u8 = 3;
@@ -146,8 +152,10 @@ pub fn ipv4(b: &[u8]) -> Option<Ip<'_>> {
 }
 
 /// An IPv6 packet, its extension headers skipped: hop-by-hop options, routing and
-/// destination options (RFC 8200 §4), at most eight of them, each its own length. A
-/// fragment header drops it, as IPv4's fragments are dropped.
+/// destination options (RFC 8200 §4), each its own length, in any order and any number of
+/// times, as §4.1 has a node accept them, but hop-by-hop options first alone. Each is
+/// at least 8 bytes and read within the packet, so the packet's own length bounds the walk.
+/// A fragment header drops it, as IPv4's fragments are dropped.
 pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
     if *b.first()? >> 4 != 6 {
         return None;
@@ -156,9 +164,8 @@ pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
     let packet = b.get(..end)?;
     let mut next = *packet.get(6)?;
     let mut at = IPV6;
-    let mut skipped = 0;
     while matches!(next, 0 | 43 | 60) {
-        if skipped == 8 {
+        if next == 0 && at != IPV6 {
             return None;
         }
         let ext = packet.get(at..at + 2)?;
@@ -167,7 +174,6 @@ pub fn ipv6(b: &[u8]) -> Option<Ip<'_>> {
         };
         next = following;
         at = at.checked_add((usize::from(len) + 1) * 8)?;
-        skipped += 1;
     }
     if next == 44 {
         return None;
@@ -366,7 +372,7 @@ impl Frames {
         out.extend_from_slice(&[0x45, 0]);
         out.extend_from_slice(&total.to_be_bytes());
         // ID 0 and Don't Fragment, as Linux sends what it will not fragment.
-        out.extend_from_slice(&[0, 0, 0x40, 0, 64, proto, 0, 0]);
+        out.extend_from_slice(&[0, 0, 0x40, 0, DEFAULT_TTL, proto, 0, 0]);
         out.extend_from_slice(&src.octets());
         out.extend_from_slice(&dst.octets());
         let sum = checksum(out.get(at..).unwrap_or_default());
@@ -393,7 +399,7 @@ impl Frames {
         match (src, dst) {
             (IpAddr::V6(s), IpAddr::V6(d)) => {
                 self.start(out, ETHERTYPE_IPV6, l4_checked);
-                self.ipv6(out, s, d, proto, len, 64);
+                self.ipv6(out, s, d, proto, len, DEFAULT_TTL);
             }
             (IpAddr::V4(s), IpAddr::V4(d)) => {
                 self.start(out, ETHERTYPE_IPV4, l4_checked);
@@ -425,7 +431,7 @@ impl Frames {
         if let (IpAddr::V6(s), IpAddr::V6(d)) = (src, dst) {
             let mut msg = vec![ICMPV6_ECHO_REPLY, 0, 0, 0];
             msg.extend_from_slice(data);
-            self.icmpv6(out, s, d, msg, 64);
+            self.icmpv6(out, s, d, msg, DEFAULT_TTL);
             return;
         }
         self.ip(out, src, dst, PROTO_ICMP, 4 + data.len(), false);
@@ -447,7 +453,7 @@ impl Frames {
             let room = IPV6_MIN_MTU - IPV6 - 8;
             let mut msg = vec![ICMPV6_UNREACHABLE, ICMPV6_ADMIN_PROHIBITED, 0, 0, 0, 0, 0, 0];
             msg.extend_from_slice(ip.packet.get(..ip.packet.len().min(room)).unwrap_or_default());
-            self.icmpv6(out, s, d, msg, 64);
+            self.icmpv6(out, s, d, msg, DEFAULT_TTL);
             return;
         }
         let data = ip.payload.get(..ip.payload.len().min(8)).unwrap_or_default();
@@ -726,6 +732,26 @@ mod tests {
         // Anything short of its headers is dropped, never read past.
         for cut in 0..opts.len() {
             let _ = ipv6(&opts[..cut]).and_then(|i| udp(i.payload));
+        }
+        // network-12: any number of destination options and routing headers is taken
+        // (RFC 8200 §4.1: in any order, any number of times), nine as well as one, each
+        // read within the packet; a hop-by-hop header anywhere but first drops it.
+        let chain = |kinds: &[u8]| {
+            let mut ext = Vec::new();
+            for (i, _) in kinds.iter().enumerate() {
+                let following = kinds.get(i + 1).copied().unwrap_or(PROTO_UDP);
+                ext.extend_from_slice(&[following, 0, 1, 4, 0, 0, 0, 0]);
+            }
+            packet(kinds[0], &ext, &datagram)
+        };
+        let nine = chain(&[60, 43, 60, 60, 43, 60, 60, 60, 60]);
+        let ip = ipv6(&nine).expect("nine extension headers");
+        assert_eq!((ip.proto, ip.header.len()), (PROTO_UDP, IPV6 + 9 * 8));
+        assert_eq!(udp(ip.payload).unwrap().payload, b"x");
+        assert!(ipv6(&chain(&[0, 60])).is_some(), "hop-by-hop first");
+        assert!(ipv6(&chain(&[60, 0])).is_none(), "hop-by-hop after another");
+        for cut in 0..nine.len() {
+            let _ = ipv6(&nine[..cut]).and_then(|i| udp(i.payload));
         }
     }
 

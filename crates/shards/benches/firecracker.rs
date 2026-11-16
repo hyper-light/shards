@@ -122,16 +122,18 @@ mod compare {
 
     const FIRECRACKER: &str = "v1.17.0";
     const READY: &str = "SHARDS-TEST READY";
-    /// The guest's command line. shards' x86_64 machine appends `reboot=k pci=off`, so
-    /// Firecracker gets the same there.
-    const CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=idle";
+    /// The guest's command line. shards' x86_64 machine appends `reboot=a pci=off`, so
+    /// Firecracker gets the same there: its FADT names no reset register, so its guest's
+    /// `acpi_reboot` returns at once and restarts through its i8042 (drivers/acpi/reboot.c
+    /// l. 54-55, arch/x86/kernel/reboot.c l. 608-619).
+    const CMDLINE: &str = "console=hvc0 quiet panic=-1 shards_test=idle";
     const WARMUP: usize = 3;
     const TIMEOUT: Duration = Duration::from_secs(60);
     const READINGS: usize = 20;
     const READING_PERIOD: Duration = Duration::from_millis(10);
     const MIB: f64 = 1024.0 * 1024.0;
     /// The restore comparison's guest: the test guest beating.
-    const BEAT_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=beat";
+    const BEAT_CMDLINE: &str = "console=hvc0 quiet panic=-1 shards_test=beat";
     /// The beats shards' guest runs before it asks for its snapshot.
     const SNAPSHOT_AFTER: u32 = 20;
 
@@ -164,7 +166,7 @@ mod compare {
     }
 
     /// The walking guest's command line (testguest `walk`, 512 MiB).
-    const WALK_CMDLINE: &str = "console=ttyS0 quiet panic=-1 shards_test=walk shards_walk_mib=512";
+    const WALK_CMDLINE: &str = "console=hvc0 quiet panic=-1 shards_test=walk shards_walk_mib=512";
 
     /// THP's A/B (`--thp-ab all,never`, PM M157): shards alone, its guest memory on huge
     /// pages as shards advises it (`all`: its kernel's image as it boots, the rest once its
@@ -1369,11 +1371,15 @@ mod compare {
         cmdline: &str,
         name: &str,
     ) -> PathBuf {
+        // Each VMM's guest writes to its own console: shards' a virtio-console (hvc0),
+        // Firecracker's a 16550 UART (src/vmm/src/devices/legacy/serial.rs), both `quiet`,
+        // so a run's few lines are what the console costs either way.
+        let cmdline = cmdline.replacen("console=hvc0", "console=ttyS0", 1);
         // shards' x86_64 machine appends these (vm/x86_64.rs, MACHINE_CMDLINE).
         let cmdline = if common::ARCH == "x86_64" {
-            format!("{cmdline} reboot=k pci=off")
+            format!("{cmdline} reboot=a pci=off")
         } else {
-            cmdline.to_string()
+            cmdline
         };
         let json = format!(
             "{{\"boot-source\":{{\"kernel_image_path\":{},\"initrd_path\":{},\"boot_args\":{}}},\

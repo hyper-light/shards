@@ -265,22 +265,28 @@ fn open_browser(url: &str) -> Result<(), String> {
     }
 }
 
+/// Runs `program` (found on `PATH`) with `url`, on this process's standard streams and no
+/// other descriptor of its (`shards_ipc::spawn`, D248), and waits for it.
 #[cfg(unix)]
 fn run(program: &str, url: &str) -> Result<(), String> {
-    let status = std::process::Command::new(program)
-        .arg(url)
-        .status()
-        .map_err(|e| format!("{program}: {e}"))?;
-    if status.success() {
+    use std::os::fd::AsFd as _;
+    let failed = |e: io::Error| format!("{program}: {e}");
+    let found = shards_ipc::on_path(std::path::Path::new(program), None).map_err(failed)?;
+    let (stdin, stdout, stderr) = (io::stdin(), io::stdout(), io::stderr());
+    let fds = [(stdin.as_fd(), 0), (stdout.as_fd(), 1), (stderr.as_fd(), 2)];
+    let status = shards_ipc::spawn(&found, &[url.as_ref()], &fds, false)
+        .and_then(|child| child.wait())
+        .map_err(failed)?;
+    if status == 0 {
         Ok(())
     } else {
-        Err(format!("{program}: {status}"))
+        Err(format!("{program}: exit status: {status}"))
     }
 }
 
 /// The request line's target of an HTTP request read from `conn`, its head consumed.
 fn request_target(conn: &mut TcpStream) -> Option<String> {
-    conn.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    shards_ipc::timeout_set(conn.set_read_timeout(Some(Duration::from_secs(2)))).ok()?;
     let mut reader = io::BufReader::new(&*conn);
     let mut line = String::new();
     (&mut reader).take(16 << 10).read_line(&mut line).ok()?;

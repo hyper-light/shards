@@ -1,0 +1,31 @@
+
+running 10 tests
+test devices::virtio::pmem::tests::a_layers_head_holds_its_sections_page_structures ... ok
+[93106      50335us WARN] a guest's flush of its writable layer: its layer: its writable layer was let go of as its machine stopped
+test devices::virtio::pmem::tests::a_readied_file_goes_under_a_layers_device_in_place_of_its_own ... ok
+test devices::virtio::pmem::tests::a_layers_flush_is_answered_once_its_writes_are_its_files ... ok
+test devices::virtio::pmem::tests::a_layers_save_asks_where_its_file_holds_data_with_its_mappings_away ... ok
+test devices::virtio::pmem::tests::a_booted_head_is_mapped_back_from_its_saved_copy ... ok
+test devices::virtio::pmem::tests::a_placed_heads_guest_gives_it_up_while_it_is_mapped_back ... ok
+test devices::virtio::pmem::tests::a_layer_is_kept_by_a_save_and_mapped_back_by_its_restore ... ok
+test devices::virtio::pmem::tests::a_heads_alike_blocks_are_kept_once ... ok
+test devices::virtio::pmem::tests::a_runs_swap_is_kept_by_a_save_and_mapped_back_by_its_restore ... ok
+test devices::virtio::pmem::tests::a_live_layer_read_waits_for_the_mapping_owner ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 485 filtered out; finished in 1.06s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-memory-v1/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 6 tests
+test vm::runtime::tests::a_restore_copies_its_layer_unless_given_its_own_generations_clone ... ok
+test vm::runtime::carried_tests::a_rounds_stream_tells_what_it_carried_as_it_goes ... ok
+test vm::runtime::tests::a_live_copy_with_intact_mappings_can_continue_after_a_scan_error ... ok
+test vm::runtime::tests::a_live_copy_whose_mapping_was_lost_stops_instead_of_resuming ... ok
+test vm::runtime::tests::live_copy_excludes_save_and_teardown_until_its_guard_is_gone ... ok
+test vm::runtime::tests::a_granted_pmem_files_pages_count ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 489 filtered out; finished in 0.00s
+
+    Checking shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-memory-v1/src/crates/vmm)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.66s

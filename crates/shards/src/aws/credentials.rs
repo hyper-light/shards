@@ -58,7 +58,7 @@ const IMDS_TOKEN_SECONDS: &str = "300";
 /// What IMDS is given: to connect, for an answer's head, and for each operation (imds
 /// defaultDialerTimeout, defaultResponseHeaderTimeout, defaultOperationTimeout).
 const IMDS_PATIENCE: Patience = Patience {
-    connect: Duration::from_millis(250),
+    connect: Some(Duration::from_millis(250)),
     head: Some(Duration::from_millis(500)),
     stall: Some(Duration::from_secs(5)),
 };
@@ -81,6 +81,9 @@ pub struct Chain<'a> {
     listed: Option<&'a [String]>,
     files: Files,
     region: String,
+    /// What it has reached, in order, each once: each endpoint's origin, and
+    /// `credential_process` where it ran one.
+    reached: std::cell::RefCell<Vec<String>>,
 }
 
 impl<'a> Chain<'a> {
@@ -90,6 +93,22 @@ impl<'a> Chain<'a> {
             listed: None,
             files: Files::of(env),
             region: String::new(),
+            reached: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// What it has reached so far: each endpoint's origin, and `credential_process` where
+    /// it ran one, in order.
+    pub fn reached(&self) -> Vec<String> {
+        self.reached.borrow().clone()
+    }
+
+    /// Notes that `url` (or a credential process) is reached.
+    fn reach(&self, url: &str) {
+        let origin = Url::parse(url).map_or_else(|_| url.to_string(), |u| u.origin());
+        let mut reached = self.reached.borrow_mut();
+        if !reached.contains(&origin) {
+            reached.push(origin);
         }
     }
 
@@ -320,6 +339,7 @@ impl<'a> Chain<'a> {
         let body = super::form(&pairs);
         let url =
             Url::parse(&self.service(Some(top), "STS", "sts", &self.region)?).map_err(|e| e.to_string())?;
+        self.reach(&url.origin());
         let (status, answer) = super::post_signed(
             &self.client(Some(top))?,
             &url,
@@ -364,6 +384,7 @@ impl<'a> Chain<'a> {
             ("WebIdentityToken", token.trim()),
         ]);
         let url = self.service(top, "STS", "sts", &self.region)?;
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(top)?,
             "POST",
@@ -420,6 +441,7 @@ impl<'a> Chain<'a> {
         // is given.
         let env = |k: &str| if k == "AWS_CA_BUNDLE" { None } else { (self.env)(k) };
         let client = super::client(&env, None, Patience::default())?;
+        self.reach(url);
         let mut fields = vec![("Accept", "application/json")];
         if let Some(t) = token.filter(|t| !t.is_empty()) {
             fields.push(("Authorization", t));
@@ -502,6 +524,7 @@ impl<'a> Chain<'a> {
                 }
             }
         };
+        self.reach(&base);
         let v1 = !env_bool(self.env, "AWS_EC2_METADATA_V1_DISABLED")?
             .or_else(|| top.and_then(|p| p.ec2_metadata_v1_disabled))
             .unwrap_or(false);
@@ -596,6 +619,7 @@ impl<'a> Chain<'a> {
             super::query_escape(&p.sso_account_id),
             super::query_escape(&p.sso_role_name)
         );
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(Some(top))?,
             "GET",
@@ -661,6 +685,7 @@ impl<'a> Chain<'a> {
         })
         .to_string();
         let url = format!("{}/token", self.service(Some(top), "SSO OIDC", "oidc", region)?);
+        self.reach(&url);
         let (status, answer) = exchange(
             &self.client(Some(top))?,
             "POST",
@@ -734,6 +759,7 @@ impl<'a> Chain<'a> {
                 "{}/v1/token",
                 self.service(Some(top), "Signin", "signin", &self.region)?
             );
+            self.reach(&url);
             let proof = dpop(&text(&token, "dpopKey").unwrap_or_default(), &url)?;
             let body = serde_json::json!({
                 "clientId": text(&token, "clientId"),
@@ -804,6 +830,7 @@ impl<'a> Chain<'a> {
     /// minute at most; its output `{"Version": 1, "AccessKeyId", "SecretAccessKey",
     /// "SessionToken", "Expiration"}`.
     fn process(&self, command: &str) -> Result<Found, String> {
+        self.reach("credential_process");
         let out = run_process(command, &self.process_env())?;
         let v: Value =
             serde_json::from_slice(&out).map_err(|e| format!("credential_process: its output: {e}"))?;
@@ -1069,27 +1096,25 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
 #[cfg(not(unix))]
 fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Vec<u8>, String> {
     use std::io::Read as _;
-    use std::os::windows::process::CommandExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     let said = |e: &dyn std::fmt::Display| format!("credential_process: {e}");
-    let mut child = std::process::Command::new("cmd.exe")
-        .arg("/C")
-        // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
-        .raw_arg(format!("\"{command}\""))
-        .env_clear()
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .spawn()
-        .map_err(|e| said(&e))?;
-    let stdout = child.stdout.take();
-    let mut ended = |why: String| {
-        let _ = child.kill();
+    let cmd = shards_ipc::on_path(Path::new("cmd.exe"), None).map_err(|e| said(&e))?;
+    let (stdout, write) = std::io::pipe().map_err(|e| said(&e))?;
+    let null = crate::os::null().map_err(|e| said(&e))?;
+    let stderr = std::io::stderr();
+    let mut fds = vec![(null.as_handle(), 0), (write.as_handle(), 1)];
+    if !stderr.as_handle().as_raw_handle().is_null() {
+        fds.push((stderr.as_handle(), 2));
+    }
+    let vars: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(k, v)| (k.as_str(), v.as_os_str())).collect();
+    // Keep the configured shell text's quotes: cmd.exe does not use CRT escaping.
+    let line = std::ffi::OsString::from(format!("/C \"{command}\""));
+    let child = shards_ipc::spawn_in_raw(&cmd, &line, &fds, &vars).map_err(|e| said(&e))?;
+    drop(write);
+    let ended = |why: String| {
+        let _ = child.kill(shards_ipc::signal::SIGKILL);
         let _ = child.wait();
         Err(said(&why))
-    };
-    let Some(stdout) = stdout else {
-        return ended("no output to read".into());
     };
     // Read on a thread of its own, so that waiting for it can end in time.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1113,8 +1138,8 @@ fn run_process(command: &str, env: &[(String, std::ffi::OsString)]) -> Result<Ve
         Err(_) => return ended(format!("it ran past {} s", PROCESS_WAIT.as_secs())),
     };
     match child.wait() {
-        Ok(status) if status.success() => Ok(out),
-        Ok(status) => Err(said(&format!("it exited {status}"))),
+        Ok(0) => Ok(out),
+        Ok(code) => Err(said(&format!("it exited {code}"))),
         Err(e) => Err(said(&e)),
     }
 }
@@ -1805,7 +1830,8 @@ credential_process = echo no >&2 & exit /b 3
         } else {
             "exited 3"
         };
-        assert!(run("fails").err().unwrap().contains(exited));
+        let failed = run("fails").err().unwrap();
+        assert!(failed.contains(exited), "{failed}");
         if cfg!(windows) {
             let found = run("quoted").unwrap();
             assert_eq!(found.creds.access_key.as_str(), "listed");

@@ -56,11 +56,11 @@ impl Control {
     }
 
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_read_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_read_timeout(timeout))
     }
 
     pub fn set_write_timeout(&self, timeout: Option<std::time::Duration>) -> std::io::Result<()> {
-        self.socket.set_write_timeout(timeout)
+        shards_ipc::timeout_set(self.socket.set_write_timeout(timeout))
     }
 }
 
@@ -135,7 +135,9 @@ impl NetLink {
     /// the wait's then.
     pub fn follow<'r>(&self, record: &'r shards_api::Record) -> Option<shards_api::Follow<'r>> {
         let followed = shards_api::Followed::of_pid(self.pid).ok().flatten()?;
-        shards_api::Follow::begin(record, followed).ok().flatten()
+        shards_api::Follow::begin(record, followed, shards_api::Bound::Rate)
+            .ok()
+            .flatten()
     }
 }
 
@@ -375,7 +377,8 @@ pub fn start(
     let region = shards_netring::memory().map_err(at)?;
     let (vm_sleeps, net_rings) = shards_netring::doorbell().map_err(at)?;
     let (net_sleeps, vm_rings) = shards_netring::doorbell().map_err(at)?;
-    let binary = crate::helpers::net()?;
+    // Checked, and held until it has started (`helpers::program`).
+    let binary = crate::helpers::program(&crate::helpers::net()?)?;
     let (policy, proxy) = policy_args(policy)?;
     let pair = || std::os::unix::net::UnixStream::pair().map_err(|e| format!("a VM's network control: {e}"));
     let (control, theirs) = pair()?;
@@ -446,8 +449,8 @@ pub fn start(
         args.extend::<[&std::ffi::OsStr; 2]>(["--dialer".as_ref(), "8".as_ref()]);
         fds.push((theirs.as_fd(), 8));
     }
-    let child = shards_ipc::spawn_in_group(group, &binary, &args, &fds, false, &env_pairs(&env))
-        .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    let child = shards_ipc::spawn_in_group(group, &binary.path(), &args, &fds, false, &env_pairs(&env))
+        .map_err(|e| format!("starting {}: {e}", binary.shown()))?;
     Ok((
         child,
         VmSide {
@@ -735,7 +738,7 @@ pub fn start(
     group: Option<&shards_ipc::GroupJob>,
 ) -> Result<NetProcess, String> {
     use std::os::windows::io::AsHandle as _;
-    let binary = crate::helpers::net()?;
+    let binary = crate::helpers::program(&crate::helpers::net()?)?;
     let container = crate::helpers::containers().and_then(|records| {
         shards_ipc::AppContainer::new("net", &records)
             .map_err(|e| format!("a VM network's AppContainer: {e}"))
@@ -767,7 +770,7 @@ pub fn start(
     let err = std::io::stderr();
     let env = child_env();
     let mut child = shards_ipc::spawn_confined(&shards_ipc::Spawn {
-        program: &binary,
+        program: &binary.path(),
         args: &args,
         grants_at: 0,
         given: &[
@@ -794,7 +797,7 @@ pub fn start(
         group,
         graphics: false,
     })
-    .map_err(|e| format!("starting {}: {e}", binary.display()))?;
+    .map_err(|e| format!("starting {}: {e}", binary.shown()))?;
     drop(theirs);
     // An AppContainer reaches no socket by its path, nor the host's own addresses: this
     // process dials them for it, over a link of the two's own, as on macOS (D31).
@@ -1004,7 +1007,7 @@ mod reap_tests {
 
     /// The helper end a home's record keeps, in milliseconds: none where it keeps none.
     fn kept(home: &Path) -> Option<u64> {
-        std::fs::read_to_string(home.join(crate::daemon::ends::RECORD))
+        crate::daemon::ends::newest(&home.join(crate::daemon::ends::RECORD))
             .unwrap_or_default()
             .lines()
             .find_map(|line| line.strip_prefix("helper ")?.parse().ok())
@@ -1016,6 +1019,18 @@ mod reap_tests {
     fn sh(script: &str, arg: &Path) -> NetProcess {
         let args = [OsStr::new("-c"), OsStr::new(script), arg.as_os_str()];
         shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap()
+    }
+
+    /// Waits until process `pid` is seen stopped, as D215's readers see it: a stop that
+    /// lasts, a wait for that fact. Not waitid(2): a spawner of this process's may have made it.
+    pub(super) fn until_stopped(pid: u32) {
+        let watched = || {
+            let followed = shards_api::Followed::of_pid(pid).unwrap().unwrap();
+            shards_api::Watch::of(followed).unwrap().unwrap()
+        };
+        while !watched().stopped() {
+            std::thread::yield_now();
+        }
     }
 
     /// A network or share process whose VM has gone is waited on past its slice while it
@@ -1043,11 +1058,13 @@ mod reap_tests {
         assert!(took >= slice * 5, "ended while it went on: {took:?}");
         let ms = kept(&home).expect("its own end was not kept");
         assert!(ms >= 1000, "{ms} ms kept");
-        // Asleep, as one waiting on what never comes: ended at its first look, its end
-        // none of its own.
+        // Stopped, as one that runs nothing whatever its host does: ended at its first look,
+        // its end none of its own. Not asleep: a cgroup freezer's cycles wake a sleeper, a
+        // kiln run's about six a second (PM M562), and no stopped one.
         let home = shards_testdir::TempDir::new("reap-asleep").unwrap();
         let ends = Ends::kept_in(&home);
-        let asleep = sh("exec /bin/sleep 60", &home);
+        let asleep = sh("kill -STOP $$", &home);
+        until_stopped(asleep.id());
         let began = Instant::now();
         reap_by(&asleep, &ends, Some(slice));
         let took = began.elapsed();
@@ -1127,10 +1144,11 @@ mod ask_tests {
         let record = shards_api::Record::new();
         let slowest = Duration::from_millis(200);
         record.teach(slowest, Duration::from_millis(1));
-        let asleep = stand("exec /bin/sleep 60");
+        // Stopped, waited for to its stop, its start's own CPU behind it: a cgroup freezer's
+        // cycles wake a sleeper, a kiln run's about six a second (PM M562), and no stopped one.
+        let asleep = stand("kill -STOP $$");
         let (net, theirs) = link(asleep.0.id());
-        // Its first look a moment after its start's own CPU.
-        std::thread::sleep(Duration::from_millis(200));
+        super::reap_tests::until_stopped(asleep.0.id());
         let began = Instant::now();
         let refused = ask(&net, &record, shards_ipc::kind::NET_NAMES, b"none", &[]).unwrap_err();
         assert!(began.elapsed() >= slowest, "{:?}", began.elapsed());

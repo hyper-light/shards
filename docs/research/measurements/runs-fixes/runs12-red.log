@@ -1,0 +1,13 @@
+# runs-12, red by mutation: ends::newest opens the plain name (open_in), as Slowest::read read it before. Windows 11 x86_64 10.0.26200 (the Windows 11 container on adacachy, ssh -p 2222, key SHA256:Zy41Whwy7VAoSyleXvGlHx8kZUutMMXqCuCRP/vJfCI), rustc 1.98.1, CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip, script runs-tail-win.ps1 (C:\g121\runs-tail)
+## at 66012636 (2026-11-14T05:48Z), the helpers cache mutation applied beside it
+test daemon::ends::tests::each_published_record_is_read_back_by_the_next_process ... FAILED
+  panicked at crates\shards\src\daemon\ends.rs:242:13: assertion `left == right` failed: after 1000  left: None  right: Some(1s)
+test daemon::ends::tests::a_homes_processes_keep_one_record_of_its_ends ... FAILED
+  panicked at crates\shards\src\daemon\ends.rs:323:9: left: None right: Some(12.5s)
+test daemon::ends::tests::a_hosts_ends_are_learned_and_kept_in_its_home ... FAILED (ends.rs:223:36)
+test daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima ... FAILED
+  panicked at crates\shards\src\daemon\ends.rs:280:9: left: None right: Some(9s)
+test result: FAILED. 1 passed; 4 failed
+(runs-07's own three tests fail on Windows with the plain read: main's Windows unit tests at 45ae96862..aca3953c5 are red for them)
+## the same run, helpers cache keyed by path alone:
+FAILED a_helper_is_read_again_only_once_its_file_changed (helpers.rs:785:9), a_helper_whose_bytes_changed_is_written_again_before_it_starts (helpers.rs:748:9)

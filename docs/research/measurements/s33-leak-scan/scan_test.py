@@ -15,6 +15,7 @@ import io
 import json
 import mmap
 import os
+import re
 import tempfile
 import tracemalloc
 import unittest
@@ -250,6 +251,45 @@ class LeakTest(unittest.TestCase):
         self.assertEqual(said.count("FOUND"), len(planted), said)
         for offset, value in planted:
             self.assertIn("memory offset %d length %d: a run of" % (offset, len(value)), said)
+
+    def test_a_sparse_files_holes_are_not_read_and_what_lies_against_them_is_found(self):
+        """A save's memory and swap are sparse files as long as the host's memory, mostly
+        holes (CI's x86_64 runners: two scans of a save took 28.6 minutes). Do: plant, each in
+        a sparse 64 MiB file of its own (APFS, macOS 26.4, allocates a hole shorter than
+        16 MiB, here between two writes), ACCESS
+        ending where its file's data ends, and REFRESH's UTF-16LE ending a byte short of it,
+        its last unit's zero the hole's first byte. Expect: both found where a read of the whole
+        files finds them, and a page or so read of each."""
+        p = Planted()
+        size, page = 64 << 20, mmap.PAGESIZE
+        whole = []
+        index = scan.Index(scan.documents([p.secrets]), [])
+        for name, value in (("memory", ACCESS.encode()), ("swap", REFRESH.encode("utf-16-le")[:-1])):
+            path = os.path.join(p.saved, name)
+            with open(path, "wb") as f:
+                f.truncate(size)
+                f.seek((32 << 20) + page - len(value))
+                f.write(value)
+            with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+                whole += [(name, *found) for found in scan.leaks(buf, index)]
+        self.assertEqual(len(whole), 2, whole)
+        code, said = p.scan()
+        self.assertEqual(code, 3, said)
+        for name, offset, length, label in whole:
+            self.assertIn("%s offset %d length %d: a run of %s" % (name, offset, length, label), said)
+        read = int(re.search(r"\(%d bytes, (\d+) read\)" % (2 * size), said).group(1))
+        self.assertLessEqual(read, 2 * (2 * page + 2 * index.zeros()), said)
+
+    def test_a_secret_holding_nul_has_its_files_holes_read(self):
+        """A run of a secret's own bytes can lie in zeros where it holds NUL: there, holes are
+        read as the rest is."""
+        p = Planted(secrets={"tokens": {"access_token": "\0" * (2 * RUN)}})
+        path = os.path.join(p.saved, "memory")
+        with open(path, "wb") as f:
+            f.truncate(1 << 20)
+        code, said = p.scan()
+        self.assertEqual(code, 3, said)
+        self.assertIn("(%d bytes, %d read)" % (1 << 20, 1 << 20), said)
 
     def test_what_cannot_be_read_is_said_without_a_value(self):
         p = Planted()

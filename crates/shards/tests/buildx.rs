@@ -10,13 +10,9 @@ mod common;
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use common::{TempDir, cannot_run_vms, guest_init, kernel, run_shards_env, served};
 
-/// A client's call past this is taken for hung, and fails its test with what it said
-/// (`common::output_within`).
-const CLIENT: Duration = Duration::from_secs(600);
 /// The BuildKit the builder runs: pinned, as the research it is held to is
 /// (docs/research/docker-compose-compat.md, BK).
 const BUILDKIT: &str = "moby/buildkit:v0.33.0";
@@ -112,7 +108,7 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
     std::fs::create_dir_all(&no_helpers).unwrap();
     let host = docker_host(&home);
     let docker = |args: &[&str]| {
-        let out = common::output_within(
+        let out = common::client_output(
             std::process::Command::new(&docker)
                 .args(args)
                 .env("DOCKER_HOST", &host)
@@ -121,7 +117,7 @@ fn buildx_builds_with_its_own_builder_in_a_microvm() {
                 .env_remove("DOCKER_CONTEXT")
                 .env("BUILDX_NO_DEFAULT_ATTESTATIONS", "1")
                 .stdin(std::process::Stdio::null()),
-            CLIENT,
+            Some(&*home),
         );
         (
             out.status.code(),

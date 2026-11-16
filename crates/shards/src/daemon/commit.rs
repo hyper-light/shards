@@ -64,13 +64,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
             Err(e) => return refuse(e),
         };
         // Its image: the manifest and config it was made from.
-        let base = record.image_id.as_deref().and_then(|want| {
-            store
-                .images()
-                .ok()?
-                .into_iter()
-                .find(|i| i.id.to_string() == want)
-        });
+        let base = store
+            .images()
+            .ok()
+            .and_then(|images| images.into_iter().find(|i| i.id.to_string() == record.image_id));
         let Some(base) = base else {
             return refuse(format!("microVM {id}: the image it was made from is gone"));
         };

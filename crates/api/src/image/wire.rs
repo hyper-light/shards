@@ -42,7 +42,7 @@ pub use shards_abi::run::nesting::Ready;
 /// binds none refuses the run as it is asked; 16, the host GPUs the run names
 /// ([`Request::gpu_devices`], D232, D234's `gpus=`), so that a side that binds none starts no
 /// run without them; 17, the period the run's governor holds its rate over
-/// ([`Started::rate_period`], D191, D247), so that its orchestrator derives its window from
+/// (`Started`'s, until version 31 moved it to each rate's answer; D191, D247), so that its orchestrator derives its window from
 /// the run's own period, never from a number of its own; 18, each member's run-time arguments
 /// ([`MemberStage::args`], D256), so that a side that passes none starts no member without
 /// the flags its orchestrator asked; 19, how the run's microVM started ([`Started::from`],
@@ -62,8 +62,57 @@ pub use shards_abi::run::nesting::Ready;
 /// [`to_client::REFRESH`] and [`to_client::REVOKE`], answered [`to_host::CAPTURED`] and
 /// [`to_host::REFRESHED`]), so that a side that knows no sign-in refuses the run by its version; 25, each member's MCP
 /// bridge ([`MemberStage::mcp`], D254), so that a side that makes none never starts a harness
-/// whose MCP config names one that is not there.
-pub const VERSION: u8 = 25;
+/// whose MCP config names one that is not there; 26, the run's upstream roots
+/// ([`Request::upstream_roots`], D242), so that a side that knows none never runs an injector
+/// that trusts fewer roots than its orchestrator named; 27, a member's end typed
+/// ([`MemberEnded::end`]: exited, or killed by a signal), so that no side reads a signal as an
+/// exit of 128 plus it; 28, the run's final use with its end ([`RunEnded::final_use`], D260):
+/// what its microVM used in all, read once its machine was down, or why none was, so that a
+/// side that tells none is never read as having used nothing; 29, the run's GPU report
+/// (D233): the scope its orchestrator names ([`Request::gpu_report`]) and its VM process's
+/// report relayed ([`to_client::GPU_REPORT`]), so that a side that relays none never starts a
+/// GPU run whose orchestrator waits for its renderer's word; 30, every socket the run's
+/// agent-control endpoint holds, each named ([`ControlAt::waker`], [`ControlAt::wake`]; D252),
+/// so that its orchestrator can hold each UDP socket the run holds to exactly those, where its
+/// host's table shows no socket's peer (Windows); 31, each rate's period with its answer
+/// ([`Rated::period`], D191), which the run's governor derives for that rate from what it has
+/// learned of its step, in place of the one period version 17 told as the run started, so that
+/// a host of an earlier version, which tells a period no rate is held over, starts no run; 32,
+/// a warm host's use asked while it waits for its run ([`to_host::USE`], answered
+/// [`to_client::USED`]; D253's pools), so that an orchestrator charges a warm host what its VM
+/// process holds, and a host that answers none is never asked, as it would end at the frame; 33, the run paused and resumed by its owner (`PAUSE`, answered `PAUSED`;
+/// D267), an ask that needs its guest refused at once while it is paused (`ASK_PAUSED`), and the
+/// time it has been paused told with the run's stats ([`Stats::paused`]) and with its end
+/// ([`RunEnded::paused`]), so that a side that pauses nothing refuses the run as it is asked,
+/// before any pause is; 34, the running run's network changed by its owner in place (`NET`,
+/// answered `NET_CHANGED`; D269): a port published and let go of as the run goes, so that a
+/// side that changes none refuses the run as it is asked, before any change is; 35, the plug
+/// roots its orchestrator grants the run at its start ([`Request::plug_roots`], D271), and a
+/// plug of a host directory or a volume of the home's into several members at once
+/// ([`PlugAsk::members`], [`PlugFrom`]), so that a side that knows neither refuses the run as
+/// it is asked, before any plug is; 36, the run's grants past its microVM changed as it goes
+/// ([`NetChange::Egress`], D273), the run's grants as its host holds them told with its start
+/// ([`Started::egress`]) and with each change ([`NetChanged::egress`]), so that a side that
+/// changes none refuses the run as it is asked, before any change is; 37, the members each share
+/// is given to as they start ([`ShareAt::members`], D277), so that a side that gives none
+/// refuses the run as it is asked, rather than starting a member without the directory its
+/// orchestrator gave it; 38, a member's generations (D270 slice 3b): a member started again in
+/// its microVM ([`to_host::RESTART`], [`RestartAsk`], [`RestartAnswer`]), each of its output,
+/// input and end frames saying the generation it is of, so that a side that knows none refuses
+/// the run as it is asked, rather than reading one generation's bytes as another's; 39, each
+/// member's own reach past its microVM (D278): the most it may be given ([`Request::egress_ceiling`])
+/// and its reach set as the run goes ([`NetChange::Member`]), so that a side that holds no
+/// member apart in its guest refuses the run as it is asked, rather than leaving a member the
+/// reach its orchestrator took back; 40, components swapped into a running microVM (D270 slice
+/// 4): a member's component at its path asked by digest or its image's back ([`to_host::SWAP`],
+/// [`SwapAsk`], [`SwapAnswer`]), so that a side that swaps none refuses the run as it is asked;
+/// 41, whether a share's or a plug's files may be run from it (D279: [`ShareAt::exec`],
+/// [`PlugAsk::exec`]), so that a side that mounts none `noexec` refuses the run as it is asked,
+/// rather than running what its orchestrator said may not be run; 42, a member's working
+/// directory that no mount given it as it starts holds, refused as the run is asked
+/// ([`Cause::Workdir`], D277), so that its orchestrator is told so typed, rather than the
+/// member's start failing in its guest.
+pub const VERSION: u8 = 42;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -109,6 +158,18 @@ pub mod to_host {
     /// A [`RefreshAnswer`](super::RefreshAnswer): the token response a sign-in's CLI is to
     /// have, refreshed outside, or why not, by its ask's id.
     pub const REFRESHED: u8 = 35;
+    /// A warm host's use, asked while it waits for its run (D253's pools), its payload empty:
+    /// answered [`USED`](super::to_client::USED), before `CREATE` alone.
+    pub const USE: u8 = 40;
+    /// A [`PauseAsk`](super::PauseAsk): the run's microVM paused where it is, or let go on
+    /// (D267).
+    pub const PAUSE: u8 = 42;
+    /// A [`NetAsk`](super::NetAsk): the running run's network changed in place (D269).
+    pub const NET: u8 = 45;
+    /// A member started again in its microVM (D270 slice 3b): [`RestartAsk`].
+    pub const RESTART: u8 = 47;
+    /// A member's component swapped by digest, or its image's back (D270 slice 4): [`SwapAsk`].
+    pub const SWAP: u8 = 49;
 }
 
 /// What the run host sends.
@@ -125,7 +186,7 @@ pub mod to_client {
     pub const MEMBER_ENDED: u8 = 20;
     /// [`StatsAnswer`](super::StatsAnswer).
     pub const STATS: u8 = 21;
-    /// [`RunEnd`](super::RunEnd), last: the run has ended.
+    /// [`RunEnded`](super::RunEnded), last: the run has ended, and what it used in all.
     pub const ENDED: u8 = 22;
     /// [`Ready`](super::Ready): the run's own command moved its readiness under the nesting
     /// grant (D234), as its init said it ([`ready`](super::ready) reads it).
@@ -162,6 +223,28 @@ pub mod to_client {
     /// [`Revoked`](super::Revoked): the run's VM revoked a sign-in, answered in its network
     /// process; told, unanswered.
     pub const REVOKE: u8 = 38;
+    /// The run's VM process's GPU report (D232, D233), its frame's bytes as that process wrote
+    /// them on its private pipe, for a run whose request named a scope
+    /// ([`Request::gpu_report`]): once, before [`STARTED`], or before [`REFUSED`] where its VM
+    /// was refused its selection. Its orchestrator reads it as a managed launch's client reads
+    /// its own (`GpuReport::parse` against its scope and selection).
+    pub const GPU_REPORT: u8 = 39;
+    /// A warm host's VM process's use ([`used`](super::used)), each answering one
+    /// [`USE`](super::to_host::USE) in order.
+    pub const USED: u8 = 41;
+    /// [`PauseAnswer`](super::PauseAnswer): a pause's or a resume's outcome, by its ask's id
+    /// (D267).
+    pub const PAUSED: u8 = 43;
+    /// [`AskPaused`](super::AskPaused): an ask that needs the run's guest, refused at once as
+    /// its run is paused or pausing, by its ask's id (D267): its guest runs nothing to answer
+    /// it until the run goes on.
+    pub const ASK_PAUSED: u8 = 44;
+    /// [`NetAnswer`](super::NetAnswer): a network change's outcome, by its ask's id (D269).
+    pub const NET_CHANGED: u8 = 46;
+    /// What came of a [`to_host::RESTART`](super::to_host::RESTART): [`RestartAnswer`].
+    pub const RESTARTED: u8 = 48;
+    /// What came of a swap (D270 slice 4): [`SwapAnswer`], the run's components after it.
+    pub const SWAPPED: u8 = 50;
 }
 
 /// Why a payload could not be read or written.
@@ -185,6 +268,12 @@ pub enum WireError {
     Unread,
     /// A GPU's identity not in D232's grammar, or a selection D232 refuses (`shards_abi::gpu`).
     Gpu,
+    /// A member's end by a signal no Linux has, out of `1..=run::NSIG` (version 27).
+    Signal(u32),
+    /// A plug into no member, or into one twice (version 35, D271).
+    PlugMembers,
+    /// A share given to members it names none of, or one twice (version 37, D277).
+    ShareMembers,
 }
 
 impl std::fmt::Display for WireError {
@@ -199,6 +288,9 @@ impl std::fmt::Display for WireError {
             Self::Order { what } => write!(f, "{what} out of order"),
             Self::Unread => f.write_str("a vCPU's unread cause this side does not parse"),
             Self::Gpu => f.write_str("a GPU's identity D232's grammar or selection refuses"),
+            Self::Signal(n) => write!(f, "a member's end by signal {n}, which no Linux has"),
+            Self::PlugMembers => f.write_str("a plug into no member, or into one twice"),
+            Self::ShareMembers => f.write_str("a share given to members it names none of, or one twice"),
         }
     }
 }
@@ -348,6 +440,27 @@ pub struct MemberReach {
     pub destinations: Vec<String>,
 }
 
+/// A member's reach past its microVM, whole (D278): the ports it may open flows on to any
+/// address, as an Agentfile writes them (`443/tcp`, `8000-8010/udp`); the remote MCP servers and
+/// the destinations it reaches by name, `host:port` (D236); and whether it asks names past it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reach {
+    pub ports: Vec<String>,
+    pub mcp: Vec<String>,
+    pub destinations: Vec<String>,
+    pub dns: bool,
+}
+
+/// The most a member may be given past its image's grants as its run goes (D278): the member,
+/// by the kind and name its image's Agentfile declares, and that reach. The person's own policy:
+/// its run host takes it as the most, never as a grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberCeiling {
+    pub kind: MemberKind,
+    pub name: String,
+    pub reach: Reach,
+}
+
 /// A run's credential grants and the injector's decision with them (D242): shards-dns's, which
 /// the network process's injector decides with too (both name a grant's hosts by its rules).
 /// A grant rides this channel by reference with the hosts it may be filled in toward and the
@@ -482,6 +595,28 @@ pub struct ShareAt {
     /// Where the guest sees it: absolute.
     pub at: String,
     pub read_only: bool,
+    /// The members given it too as they start, each at `at` in its own root before its
+    /// command runs (D277); none, the run's own root alone (a member's default deny, D59).
+    /// Appended in version 37.
+    pub members: Option<ShareTo>,
+    /// Whether its files may be run from it: where not, each mount of it is `noexec` (D279).
+    /// Appended in version 41.
+    pub exec: bool,
+}
+
+/// Whom a share is given to as they start, beside the run's own root (D277): every member of
+/// the image that runs, or those named, each one it declares that runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareTo {
+    Every,
+    Members(Vec<ShareMember>),
+}
+
+/// A member a share names, as its image declares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareMember {
+    pub kind: MemberKind,
+    pub name: String,
 }
 
 /// The run an orchestrator asks for.
@@ -519,6 +654,21 @@ pub struct Request {
     /// tokens kept outside and its CLI given placeholders. Empty for a run with none. Appended
     /// in version 24.
     pub sign_ins: Vec<SignInGrant>,
+    /// The roots the run's injector trusts beside the host's own, each a certificate's DER
+    /// (D242), for its injected flows alone; empty for the host's alone. Appended in version 26.
+    pub upstream_roots: Vec<Vec<u8>>,
+    /// The scope of the run's GPU report (D233): its VM process frames its renderer's report
+    /// with it, which its host relays ([`to_client::GPU_REPORT`]); none, no report. Nonzero,
+    /// and only with [`gpu_devices`](Self::gpu_devices). Appended in version 29.
+    pub gpu_report: Option<[u8; 16]>,
+    /// The plug roots its orchestrator grants the run beside its host's own (D235, D271): each
+    /// a top-level directory of its members' view (`/session`), as
+    /// `shards_abi::run::plug::root_name` takes one, beneath which what is plugged into them
+    /// as it runs lies. Appended in version 35.
+    pub plug_roots: Vec<String>,
+    /// The most each member may be given past its image's grants as the run goes (D278), each
+    /// member once; empty, nothing past them. Appended in version 39.
+    pub egress_ceiling: Vec<MemberCeiling>,
 }
 
 /// What a run's agent-control endpoint takes and serves (D252): the one key it takes, its
@@ -545,17 +695,33 @@ pub struct SocketGrant {
 }
 
 /// Where a run's agent-control endpoint is bound, and the SHA-256 of its microVM's own key,
-/// which its controller pins (D252).
+/// which its controller pins (D252); and the two other sockets it holds (version 30, D252).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlAt {
+    /// Where it serves, which its controller reaches.
     pub address: SocketAddr,
     pub vm: [u8; 32],
+    /// Its driver's waker: a loopback socket connected to `wake`, sending to it alone.
+    pub waker: SocketAddr,
+    /// Its driver's wake: a loopback socket connected to `waker`, taking datagrams from it
+    /// alone.
+    pub wake: SocketAddr,
+}
+
+impl ControlAt {
+    /// Every socket the endpoint holds: its served address, its waker's and its wake's.
+    pub fn sockets(&self) -> [SocketAddr; 3] {
+        [self.address, self.waker, self.wake]
+    }
 }
 
 /// Room for `bytes` more of member `member`'s `channel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Credit {
     pub member: u32,
+    /// The generation whose channel the room is for (D270): a late one's for a generation past
+    /// is no room for the next.
+    pub generation: u32,
     pub channel: Channel,
     pub bytes: u64,
 }
@@ -617,14 +783,15 @@ pub struct Started {
     pub members: Vec<MemberInfo>,
     pub published: Vec<Bound>,
     /// Where the run's endpoint is bound, where it asked for one (D252); appended in version
-    /// 15.
+    /// 15. Versions 17 to 30 told a rate's period after it, which each rate's answer carries
+    /// from version 31 ([`Rated::period`]).
     pub control: Option<ControlAt>,
-    /// The period its VM's governor holds a rate over (D191, D247), as its host's build
-    /// holds one: on the channel in nanoseconds, never none; appended in
-    /// version 17.
-    pub rate_period: std::time::Duration,
     /// How its microVM started (D253); appended in version 19.
     pub from: StartedFrom,
+    /// The run's grants past its microVM as its host holds them (D273): what of its image's
+    /// each list keeps, written out whole (`Keep::Only`), so that its owner changes them by
+    /// what they are; appended in version 36.
+    pub egress: Narrowing,
 }
 
 /// How a run's microVM came to be ready (D253), as its run host started it.
@@ -668,12 +835,17 @@ pub enum Cause {
     /// A warm run host's microVM is another request's than the run's (D253's pools): the run
     /// is its orchestrator's to start on a host of its own.
     Unfit = 5,
+    /// A member's working directory that no mount given it as it starts holds (D277): it
+    /// could not start there. Appended in version 42.
+    Workdir = 6,
 }
 
 /// A member's bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub member: u32,
+    /// The member's generation the bytes are of (D270): 0 its first, each restart's one more.
+    pub generation: u32,
     pub channel: Channel,
     pub bytes: Vec<u8>,
 }
@@ -684,6 +856,7 @@ pub struct Output {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub member: u32,
+    pub generation: u32,
     pub bytes: Secret,
 }
 
@@ -692,6 +865,7 @@ pub struct Input {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputEnd {
     pub member: u32,
+    pub generation: u32,
     pub end: StreamEnd,
 }
 
@@ -700,6 +874,7 @@ pub struct InputEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputRoom {
     pub member: u32,
+    pub generation: u32,
     pub bytes: u64,
 }
 
@@ -707,6 +882,7 @@ pub struct InputRoom {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputEnded {
     pub member: u32,
+    pub generation: u32,
     pub written: u64,
     pub end: StreamEnd,
 }
@@ -723,6 +899,7 @@ pub enum StreamEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputEnd {
     pub member: u32,
+    pub generation: u32,
     pub channel: Channel,
     pub end: StreamEnd,
 }
@@ -730,8 +907,14 @@ pub struct OutputEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemberEnded {
     pub member: u32,
-    /// As `docker run` reports one: its code, or 128 plus a fatal signal's number.
-    pub status: u32,
+    /// The generation that ended (D270).
+    pub generation: u32,
+    /// How its command ended: exited with its code, or killed by a signal (version 27), as
+    /// its init's reaper saw it.
+    pub end: shards_abi::run::members::End,
+    /// Whether its restart ended it at once (D270 slice 3b, `MEMBER_KILL`), its graceful end
+    /// having outlasted its patience: its end, then, is the kill's.
+    pub killed: bool,
 }
 
 /// What init's `STATS` says, each line `None` where it said none; and, for the run, what its
@@ -754,6 +937,21 @@ pub struct Stats {
     /// The run's alone ([`StatsScope::Run`]), as its run host reads it: none for its command
     /// or a member, whose cgroups are inside the microVM it costs.
     pub microvm: Option<Microvm>,
+    /// The run's alone, as [`microvm`](Self::microvm) is: how long it has been paused by its
+    /// owner (D267). While it is paused, init's lines above are what its init last said of the
+    /// run before the pause (none where it was never asked), its guest saying nothing until it
+    /// goes on, and its microVM part is read as it stands.
+    pub paused: Option<Paused>,
+}
+
+/// How long a run has been paused by its owner (D267), on its run host's clock: from its VM's
+/// word that every vCPU is held to its word that they go on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Paused {
+    /// Every pause's time, the one under way so far among it: zero for a run never paused.
+    pub total: std::time::Duration,
+    /// Whether it was paused as this was read.
+    pub now: bool,
 }
 
 /// What a run's microVM costs its host, which no cgroup of its guest holds, as a daemon's
@@ -767,43 +965,19 @@ pub struct Microvm {
     pub guest: Result<GuestTimes, String>,
 }
 
-/// What a VM process uses of its host, as the host counts it (`platform::process_usage`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostUse {
-    /// Its CPU time, user and system together, in ns: its vCPUs' guest time among it.
-    pub cpu_ns: u64,
-    pub resident_bytes: u64,
-    /// Its own memory, as memory per VM is counted (PM M30): macOS's physical footprint,
-    /// Linux's anonymous resident pages, Windows' private working set.
-    pub footprint_bytes: u64,
-}
+/// What a VM process uses of its host, and what a microVM's vCPUs have run of its guest, each
+/// by index, with what those it no longer has ran (guest-cpu-time-v1): one form for the VM
+/// process, an image run's stats and a managed guest's use (D260).
+pub use shards_abi::guest_time::{Charged, GuestTimes, HostUse, VcpuTime};
 
-/// What a microVM's vCPUs have run of its guest, as its hypervisor counts it: each by index,
-/// and what those it no longer has ran, which stay its machine's (guest-cpu-time-v1).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct GuestTimes {
-    /// In index order, each index once.
-    pub vcpus: Vec<VcpuTime>,
-    pub departed_ns: u64,
-}
-
-impl GuestTimes {
-    /// Its machine's: what every vCPU it has had ran of its guest.
-    pub fn total_ns(&self) -> u64 {
-        self.vcpus
-            .iter()
-            .fold(self.departed_ns, |total, v| total.saturating_add(v.guest_ns))
+impl Microvm {
+    /// Its VMM's own CPU time, in ns: its VM process's less what its vCPUs ran of its guest,
+    /// none less than none past the clocks' steps (D241, D260); none where either was not read.
+    pub fn vmm_ns(&self) -> Option<u64> {
+        let host = self.host.as_ref().ok()?;
+        let guest = self.guest.as_ref().ok()?;
+        Some(host.cpu_ns.saturating_sub(guest.total_ns()))
     }
-}
-
-/// One vCPU's guest time, as a sample read it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VcpuTime {
-    pub index: u32,
-    /// Nanoseconds, never less than an earlier sample of the same vCPU said.
-    pub guest_ns: u64,
-    /// Why this sample did not read it, typed: `guest_ns` is then the most it read before.
-    pub unread: Option<shards_abi::guest_time::Unread>,
 }
 
 impl Stats {
@@ -884,12 +1058,23 @@ pub struct RateAsk {
     pub rate: Option<NonZeroU64>,
 }
 
-/// What the run's VM holds its vCPUs to, by its ask's id: the milli-CPU, none where it lets
-/// them be (no rate, or every vCPU's whole CPU or more), or why it holds them to nothing.
+/// What the run's VM holds its vCPUs to, by its ask's id, and over what period; or why it
+/// holds them to nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateAnswer {
     pub id: u32,
-    pub result: Result<Option<NonZeroU64>, String>,
+    pub result: Result<Rated, String>,
+}
+
+/// What a run's VM holds its vCPUs to (D191, D247): the milli-CPU, none where it lets them be
+/// (no rate, or every vCPU's whole CPU or more); and the period its governor holds that over,
+/// which it derived for the rate from what it has learned of its step (vcpus × g over the
+/// share; where it lets them be, g), on the channel in nanoseconds, never none; appended in
+/// version 31.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rated {
+    pub milli: Option<NonZeroU64>,
+    pub period: std::time::Duration,
 }
 
 /// A host directory plugged into running member `member` as the run goes (D235), as
@@ -900,12 +1085,26 @@ pub struct RateAnswer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlugAsk {
     pub id: u32,
-    pub member: u32,
-    /// Absolute, UTF-8: the host's directory.
-    pub host: String,
-    /// Absolute: where its member sees it.
+    /// The members it is plugged into, by their declared indices, in order, each once and
+    /// one at least (version 35, D271): each its own device, as one member's plug is (D235).
+    pub members: Vec<u32>,
+    pub from: PlugFrom,
+    /// Absolute: where its members see it.
     pub at: String,
     pub read_only: bool,
+    /// Whether its files may be run from it: where not, each member's mount of it is
+    /// `noexec` (D279). Appended in version 41.
+    pub exec: bool,
+}
+
+/// What a plug gives its members (version 35, D271).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlugFrom {
+    /// A host directory: absolute, UTF-8.
+    Host(String),
+    /// A volume of the run's home's store, by its name, made where it is not there as a
+    /// run's `-v NAME:PATH` makes one.
+    Volume(String),
 }
 
 /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
@@ -935,6 +1134,10 @@ pub enum PlugRefusal {
     Unknown = 6,
     /// An unplug's: something in the member uses it.
     Busy = 7,
+    /// A volume its home's store would not give: a name the store takes no volume by,
+    /// another microVM's engine's, or one an image's Agentfile gives its members elsewhere
+    /// (D109).
+    Volume = 8,
 }
 
 fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
@@ -947,6 +1150,7 @@ fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
         5 => PlugRefusal::Device,
         6 => PlugRefusal::Unknown,
         7 => PlugRefusal::Busy,
+        8 => PlugRefusal::Volume,
         tag => {
             return Err(WireError::Tag {
                 what: "a plug's refusal",
@@ -1009,6 +1213,228 @@ pub struct SaveAnswer {
     pub result: Result<(), (SaveRefusal, String)>,
 }
 
+/// The run's microVM paused where it is (`pause`), every vCPU held out of its guest, or let go
+/// on (D267).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PauseAsk {
+    pub id: u32,
+    pub pause: bool,
+}
+
+/// A pause's or a resume's outcome, by its ask's id: the run's paused time as it stands once it
+/// is done (a pause of a paused run and a resume of a running one done already, D267), or why
+/// its VM did neither, in its VM's words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PauseAnswer {
+    pub id: u32,
+    pub result: Result<Paused, String>,
+    /// The processes of the run its pause holds, by pid, while it is paused (its VM's): what
+    /// its owner's waits on them take for its host's hold ([`crate::Watch`]), never a stall.
+    /// None once it goes on.
+    pub held: Vec<u32>,
+}
+
+/// An ask refused at once as its run is paused or pausing (D267), by its ask's id: one its
+/// guest would answer, which runs nothing until the run goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AskPaused {
+    pub id: u32,
+}
+
+/// A change of the running run's network, asked by its owner and made in its running microVM
+/// in place (D269): no image built, no template saved, its guest neither restarted nor
+/// rebooted. Each is explicit, and checked as the run's start checks its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetChange {
+    /// A guest port published on the host, bound as the run's start binds those its
+    /// [`Request::publish`] names.
+    Publish(Publish),
+    /// The port bound at `host` for `proto` let go of: one of the run's published ports
+    /// ([`NetChanged::published`]), the start's among them.
+    Unpublish { proto: Proto, host: SocketAddr },
+    /// The run's grants past its microVM, whole, as its owner asks them to be from now on
+    /// (version 36, D273): checked as its start's are, its image's grants their ceiling.
+    Egress(Narrowing),
+    /// A member's own reach past its microVM, by its declared index, whole, in place of what it
+    /// reached; or none, its image's grants back (version 39, D278): within its image's grants
+    /// and its ceiling ([`Request::egress_ceiling`]), held in its guest.
+    Member { member: u32, reach: Option<Reach> },
+}
+
+/// A network change asked (D269), its answer named by `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetAsk {
+    pub id: u32,
+    pub change: NetChange,
+}
+
+/// Why a network change was refused, by what refused it (D269).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetRefusal {
+    /// The run has no network: it started with nothing published, kept or linked past its
+    /// microVM, which so has no network device to change.
+    NoNetwork = 0,
+    /// Past what the image grants, as its start refuses it: a port its Agentfile declares `AS
+    /// egress`, or, for a run with no command of its own, one it gives no member coming in.
+    Widening = 1,
+    /// The host's port could not be bound: taken, or refused by the host.
+    Bind = 2,
+    /// Nothing of it is published to let go of.
+    Unknown = 3,
+    /// Its network process did not take it, or has ended.
+    Network = 4,
+    /// The image's own declaration of it: a port it gives a member that is none of the run's.
+    Image = 5,
+    /// Members whose reach, so changed, the microVM cannot hold apart (D278, D236's `held`):
+    /// on a TCP port one reaches by name, another by other names or a port grant.
+    Unheld = 6,
+}
+
+fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
+    Ok(match tag {
+        0 => NetRefusal::NoNetwork,
+        1 => NetRefusal::Widening,
+        2 => NetRefusal::Bind,
+        3 => NetRefusal::Unknown,
+        4 => NetRefusal::Network,
+        5 => NetRefusal::Image,
+        6 => NetRefusal::Unheld,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a network change's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A network change made (D269): what it bound or let go of, and every port the run
+/// publishes and its grants past its microVM (version 36, D273) once it was made, as its host
+/// holds them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetChanged {
+    pub changed: Vec<Bound>,
+    pub published: Vec<Bound>,
+    pub egress: Narrowing,
+}
+
+/// A network change's outcome, by its ask's id: made, or refused and why. Its host makes one
+/// change at a time and answers each before the next, so that each answer's
+/// [`NetChanged::published`] is the run's as it stands once that change is made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetAnswer {
+    pub id: u32,
+    pub result: Result<NetChanged, (NetRefusal, String)>,
+}
+
+/// A member started again in its microVM (D270 slice 3b), by an ask's id: its current
+/// generation asked to end (SIGTERM to its command), ended at once where its graceful end
+/// stalls or outlasts `patience`, then its next started with `args` after its image's command,
+/// in the namespaces, server instance and volumes its generations keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartAsk {
+    pub id: u32,
+    pub member: u32,
+    pub args: Vec<Vec<u8>>,
+    pub patience: std::time::Duration,
+}
+
+/// Why a member was not started again (D270), as its init's
+/// [`StartRefusal`](shards_abi::run::members::StartRefusal) codes them, and its run host's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartRefusal {
+    /// No such member runs in this run.
+    Unknown = 1,
+    /// A restart of it is under way, or its last generation has not ended.
+    Running = 2,
+    /// The generation asked of its init is not the one past its last.
+    Generation = 3,
+    /// It starts once, as said: one given a port among others (D122).
+    Unsupported = 4,
+    /// Its start failed, in its init's or its run host's words.
+    Failed = 5,
+}
+
+/// A restart's outcome, by its ask's id: the generation started, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartAnswer {
+    pub id: u32,
+    pub result: Result<u32, (RestartRefusal, String)>,
+}
+
+/// When a swap takes its member (D270 slice 4): at its next start (its next restart, by its
+/// orchestrator or its own end), or now, its member restarted at once as [`RestartAsk`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapWhen {
+    NextStart = 0,
+    Now = 1,
+}
+
+/// What a swap asks (D270 slice 4): a member's component at its path (`/agents/NAME`,
+/// `/harness/NAME`, `/mcp/NAME`), an OSI artifact of the run host's store by its manifest's
+/// digest (`sha256:…`), or its image's own back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwapChange {
+    Swap { at: String, digest: String },
+    Restore { at: String },
+}
+
+/// A swap asked, its answer named by `id`, waiting at most `patience` for each of its steps (its
+/// member's restart's among them, where `when` is now).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapAsk {
+    pub id: u32,
+    pub change: SwapChange,
+    pub when: SwapWhen,
+    pub patience: std::time::Duration,
+}
+
+/// One member's component as its run host holds it (D270 slice 4): its path; the component its
+/// next start lays there, by digest, none for its image's own; and the one its current
+/// generation runs with, none for its image's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentAt {
+    pub at: String,
+    pub desired: Option<String>,
+    pub held: Option<String>,
+}
+
+/// Why a swap was refused (D270 slice 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapRefusal {
+    /// No member of the run's image runs at that path.
+    Unknown = 1,
+    /// No OSI artifact of that digest in its host's store, or one it cannot read.
+    Artifact = 2,
+    /// An artifact of another kind than its path's (an agent's at a harness's path).
+    Kind = 3,
+    /// An artifact of another platform than its microVM's.
+    Platform = 4,
+    /// An artifact that asks past what its member is granted.
+    Asks = 5,
+    /// Its microVM could not take it: no bus, no slot, no room in its components' window.
+    Device = 6,
+    /// A swap or restart of its member is under way.
+    Running = 7,
+    /// Its swap failed, in its guest's or its host's words.
+    Failed = 8,
+}
+
+/// What a swap did (D270 slice 4): every member's component after it, and, where its member was
+/// restarted now, its index and the generation it started, whose output, input and end are its.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Swapped {
+    pub components: Vec<ComponentAt>,
+    pub started: Option<(u32, u32)>,
+}
+
+/// A swap's outcome, by its ask's id: what it did, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapAnswer {
+    pub id: u32,
+    pub result: Result<Swapped, (SwapRefusal, String)>,
+}
+
 /// How the run ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEnd {
@@ -1016,9 +1442,123 @@ pub enum RunEnd {
     Exited(u32),
     /// `STOP`: its VM killed at once.
     Stopped,
-    /// Its VM, its host or its guest failed, or its own command never started, in its VM's
-    /// words (D249).
+    /// Its VM, its host or its guest failed, in their words: among them its own command never
+    /// started, or its guest's init failed its run after it started, each in init's words
+    /// (D249), never as an exit status.
     Failed(String),
+}
+
+/// A run's end and what its microVM used in all (D260's final use): the run host's `ENDED`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunEnded {
+    pub end: RunEnd,
+    pub final_use: FinalUse,
+    /// How long it was paused by its owner in all (D267), told however it ended: a paused run
+    /// ends only as it is stopped or fails, with no final use read.
+    pub paused: std::time::Duration,
+}
+
+/// What a run's microVM used of its host in all (D260's final use): read by its VM process once
+/// its machine was down, every vCPU stopped after its guest's last instruction, and before that
+/// process let go of the machine's memory; or why it was not. A part of it not read is its
+/// words ([`Microvm`]), never a zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinalUse {
+    /// Each vCPU's guest time in all, by its index, those gone among them (so
+    /// [`GuestTimes::departed_ns`] 0), then its VM process's own use, read after it.
+    Read(Microvm),
+    /// None read, and why.
+    Unread(Unused),
+}
+
+/// Why a run's end carries no final use of its microVM (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unused {
+    /// The run's microVM never started: it was stopped or refused before it did.
+    NotStarted,
+    /// Its VM was killed before its machine was down (`STOP`, or its orchestrator's asks
+    /// ending it): what it used went with it. A run's end awaited before its stop carries it.
+    Killed,
+    /// Its VM ended without telling it: it failed, its link to its run host broke, or its run
+    /// host ended without its run's end or broke its channel.
+    Untold,
+    /// What its VM told of it is none of the protocol's.
+    Broken(UseBroken),
+}
+
+/// Why a VM's use is none of its protocol's (D260).
+pub use shards_abi::rate::UseBroken;
+
+impl RunEnded {
+    /// `end`, its microVM's final use not read for `why`.
+    pub fn unused(end: RunEnd, why: Unused) -> RunEnded {
+        RunEnded {
+            end,
+            final_use: FinalUse::Unread(why),
+            paused: std::time::Duration::ZERO,
+        }
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(self.end.encode()?);
+        match &self.final_use {
+            FinalUse::Read(microvm) => {
+                w.u8(0);
+                w.microvm(Some(microvm))?;
+            }
+            FinalUse::Unread(why) => {
+                w.u8(1);
+                match why {
+                    Unused::NotStarted => w.u8(0),
+                    Unused::Killed => w.u8(1),
+                    Unused::Untold => w.u8(2),
+                    Unused::Broken(broken) => {
+                        w.u8(3);
+                        w.u8(match broken {
+                            UseBroken::Long => 0,
+                            UseBroken::Text => 1,
+                            UseBroken::Word => 2,
+                            UseBroken::Guest => 3,
+                            UseBroken::Host => 4,
+                        });
+                    }
+                }
+            }
+        }
+        w.duration(self.paused);
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RunEnded, WireError> {
+        let mut r = Reader(payload);
+        let end = r.run_end()?;
+        let tag = |what, tag| WireError::Tag { what, tag };
+        let final_use = match r.u8()? {
+            0 => FinalUse::Read(r.microvm()?.ok_or(tag("a microVM's final use", 0))?),
+            1 => FinalUse::Unread(match r.u8()? {
+                0 => Unused::NotStarted,
+                1 => Unused::Killed,
+                2 => Unused::Untold,
+                3 => Unused::Broken(match r.u8()? {
+                    0 => UseBroken::Long,
+                    1 => UseBroken::Text,
+                    2 => UseBroken::Word,
+                    3 => UseBroken::Guest,
+                    4 => UseBroken::Host,
+                    t => return Err(tag("a broken use", t)),
+                }),
+                t => return Err(tag("why no final use", t)),
+            }),
+            t => return Err(tag("a run's final use", t)),
+        };
+        let paused = r.duration()?;
+        r.end()?;
+        Ok(RunEnded {
+            end,
+            final_use,
+            paused,
+        })
+    }
 }
 
 /// A frame's header for `kind` and a payload of `len` bytes, refused past the bound.
@@ -1082,38 +1622,53 @@ pub fn read_frame_into(
     Ok(Some((kind, len)))
 }
 
-struct Writer(Vec<u8>);
+pub(crate) struct Writer(pub(crate) Vec<u8>);
 
 impl Writer {
-    fn u8(&mut self, v: u8) {
+    pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
-    fn u16(&mut self, v: u16) {
+    pub(crate) fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u32(&mut self, v: u32) {
+    pub(crate) fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u64(&mut self, v: u64) {
+    pub(crate) fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn i32(&mut self, v: i32) {
+    pub(crate) fn i32(&mut self, v: i32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn i64(&mut self, v: i64) {
+    pub(crate) fn i64(&mut self, v: i64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn count(&mut self, n: usize) -> Result<(), WireError> {
+    pub(crate) fn count(&mut self, n: usize) -> Result<(), WireError> {
         self.u32(u32::try_from(n).map_err(|_| WireError::TooLong)?);
         Ok(())
     }
-    fn bytes(&mut self, b: &[u8]) -> Result<(), WireError> {
+    pub(crate) fn bytes(&mut self, b: &[u8]) -> Result<(), WireError> {
         self.count(b.len())?;
         self.0.extend_from_slice(b);
         Ok(())
     }
-    fn text(&mut self, s: &str) -> Result<(), WireError> {
+    pub(crate) fn text(&mut self, s: &str) -> Result<(), WireError> {
         self.bytes(s.as_bytes())
+    }
+    /// A duration in nanoseconds, a u64's most past it (584 years).
+    fn duration(&mut self, d: std::time::Duration) {
+        self.u64(u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    }
+    /// 0 for none, or 1, its total ([`duration`](Self::duration)) and whether it is paused now.
+    fn paused(&mut self, paused: Option<&Paused>) {
+        match paused {
+            None => self.u8(0),
+            Some(p) => {
+                self.u8(1);
+                self.duration(p.total);
+                self.u8(u8::from(p.now));
+            }
+        }
     }
     /// A capture's access reference and its placeholder, then 1 and its refresh token's
     /// placeholder where it has one, else 0 (D242, step 8).
@@ -1125,6 +1680,70 @@ impl Writer {
             Some(refresh) => {
                 self.u8(1);
                 self.text(refresh)?;
+            }
+        }
+        Ok(())
+    }
+    /// Whether the members are held apart, then each member's kind, name and names (D246).
+    fn reach(&mut self, members: Option<&[MemberReach]>) -> Result<(), WireError> {
+        match members {
+            None => self.u8(0),
+            Some(members) => {
+                self.u8(1);
+                self.count(members.len())?;
+                for m in members {
+                    self.u8(m.kind as u8);
+                    self.text(&m.name)?;
+                    self.count(m.destinations.len())?;
+                    for d in &m.destinations {
+                        self.text(d)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// A member's reach past its microVM (D278): its ports', remote MCP servers' and
+    /// destinations' lists, each a count and its texts, then 1 where it asks names, else 0.
+    fn reach_past(&mut self, r: &Reach) -> Result<(), WireError> {
+        for list in [&r.ports, &r.mcp, &r.destinations] {
+            self.count(list.len())?;
+            for item in list {
+                self.text(item)?;
+            }
+        }
+        self.u8(u8::from(r.dns));
+        Ok(())
+    }
+    /// A run's grants past its microVM whole (D273): its ports', remote MCP servers' and
+    /// destinations' lists, whether names are asked, and its members' reach.
+    fn narrowing(&mut self, n: &Narrowing) -> Result<(), WireError> {
+        self.keep(&n.egress)?;
+        self.keep(&n.mcp)?;
+        self.keep(&n.destinations)?;
+        self.u8(u8::from(n.dns));
+        self.reach(n.members.as_deref())
+    }
+    /// A port to publish: its guest port, protocol, host address (or none) and host port.
+    fn publish(&mut self, p: &Publish) {
+        self.u16(p.guest_port);
+        self.u8(p.proto as u8);
+        self.ip(p.host);
+        self.u16(p.host_port);
+    }
+    /// A list of ports bound, each its guest port, protocol, host address and port, and the
+    /// members it reaches.
+    fn bounds(&mut self, bounds: &[Bound]) -> Result<(), WireError> {
+        self.count(bounds.len())?;
+        for b in bounds {
+            self.u16(b.guest_port);
+            self.u8(b.proto as u8);
+            self.ip(Some(b.host.ip()));
+            self.u16(b.host.port());
+            self.count(b.to.len())?;
+            for r in &b.to {
+                self.u32(r.member);
+                self.u16(r.port);
             }
         }
         Ok(())
@@ -1176,6 +1795,7 @@ impl Writer {
                 self.u64(h.cpu_ns);
                 self.u64(h.resident_bytes);
                 self.u64(h.footprint_bytes);
+                self.u8(h.charged.tag());
             }
             Err(why) => {
                 self.u8(1);
@@ -1207,7 +1827,7 @@ impl Writer {
         }
         Ok(())
     }
-    fn done(self) -> Result<Vec<u8>, WireError> {
+    pub(crate) fn done(self) -> Result<Vec<u8>, WireError> {
         if self.0.len() > run::MAX_PAYLOAD as usize {
             return Err(WireError::TooLong);
         }
@@ -1215,7 +1835,7 @@ impl Writer {
     }
 }
 
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Reader<'a> {
     /// What [`Writer::captured`] wrote.
@@ -1235,25 +1855,34 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], WireError> {
         self.take(N)?.try_into().map_err(|_| WireError::Short)
     }
-    fn u8(&mut self) -> Result<u8, WireError> {
+    /// A VM process's charge (`Charged::tag`).
+    fn charged(&mut self) -> Result<Charged, WireError> {
+        let tag = self.u8()?;
+        Charged::from_tag(tag).ok_or(WireError::Tag {
+            what: "a VM process's charge",
+            tag,
+        })
+    }
+
+    pub(crate) fn u8(&mut self) -> Result<u8, WireError> {
         Ok(u8::from_be_bytes(self.array()?))
     }
-    fn u16(&mut self) -> Result<u16, WireError> {
+    pub(crate) fn u16(&mut self) -> Result<u16, WireError> {
         Ok(u16::from_be_bytes(self.array()?))
     }
-    fn u32(&mut self) -> Result<u32, WireError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, WireError> {
         Ok(u32::from_be_bytes(self.array()?))
     }
-    fn u64(&mut self) -> Result<u64, WireError> {
+    pub(crate) fn u64(&mut self) -> Result<u64, WireError> {
         Ok(u64::from_be_bytes(self.array()?))
     }
-    fn i32(&mut self) -> Result<i32, WireError> {
+    pub(crate) fn i32(&mut self) -> Result<i32, WireError> {
         Ok(i32::from_be_bytes(self.array()?))
     }
-    fn i64(&mut self) -> Result<i64, WireError> {
+    pub(crate) fn i64(&mut self) -> Result<i64, WireError> {
         Ok(i64::from_be_bytes(self.array()?))
     }
-    fn flag(&mut self) -> Result<bool, WireError> {
+    pub(crate) fn flag(&mut self) -> Result<bool, WireError> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -1262,19 +1891,122 @@ impl<'a> Reader<'a> {
     }
     /// A count no larger than the bytes left could hold, each item at least `least` bytes:
     /// a hostile count allocates nothing it cannot fill.
-    fn count(&mut self, least: usize) -> Result<usize, WireError> {
+    pub(crate) fn count(&mut self, least: usize) -> Result<usize, WireError> {
         let n = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
         if n.checked_mul(least.max(1)).is_none_or(|need| need > self.0.len()) {
             return Err(WireError::Short);
         }
         Ok(n)
     }
-    fn bytes(&mut self) -> Result<&'a [u8], WireError> {
+    pub(crate) fn bytes(&mut self) -> Result<&'a [u8], WireError> {
         let n = usize::try_from(self.u32()?).map_err(|_| WireError::TooLong)?;
         self.take(n)
     }
-    fn text(&mut self) -> Result<String, WireError> {
+    pub(crate) fn text(&mut self) -> Result<String, WireError> {
         String::from_utf8(self.bytes()?.to_vec()).map_err(|_| WireError::Text)
+    }
+    fn duration(&mut self) -> Result<std::time::Duration, WireError> {
+        Ok(std::time::Duration::from_nanos(self.u64()?))
+    }
+    /// What [`Writer::paused`] wrote.
+    fn paused(&mut self) -> Result<Option<Paused>, WireError> {
+        if !self.flag()? {
+            return Ok(None);
+        }
+        Ok(Some(Paused {
+            total: self.duration()?,
+            now: self.flag()?,
+        }))
+    }
+    /// What [`Writer::reach`] wrote: each member at least its kind (one byte), its name's
+    /// length (four) and its names' count (four), and each name at least its length (four).
+    fn reach(&mut self) -> Result<Option<Vec<MemberReach>>, WireError> {
+        if !self.flag()? {
+            return Ok(None);
+        }
+        let n = self.count(1 + 4 + 4)?;
+        let mut reach = Vec::with_capacity(n);
+        for _ in 0..n {
+            let kind = member_kind(self.u8()?)?;
+            let name = self.text()?;
+            let k = self.count(4)?;
+            let mut destinations = Vec::with_capacity(k);
+            for _ in 0..k {
+                destinations.push(self.text()?);
+            }
+            reach.push(MemberReach {
+                kind,
+                name,
+                destinations,
+            });
+        }
+        Ok(Some(reach))
+    }
+    /// What [`Writer::reach_past`] wrote.
+    fn reach_past(&mut self) -> Result<Reach, WireError> {
+        let mut lists: [Vec<String>; 3] = Default::default();
+        for list in &mut lists {
+            let n = self.count(4)?;
+            list.reserve(n);
+            for _ in 0..n {
+                list.push(self.text()?);
+            }
+        }
+        let [ports, mcp, destinations] = lists;
+        Ok(Reach {
+            ports,
+            mcp,
+            destinations,
+            dns: self.flag()?,
+        })
+    }
+    /// What [`Writer::narrowing`] wrote.
+    fn narrowing(&mut self) -> Result<Narrowing, WireError> {
+        Ok(Narrowing {
+            egress: self.keep()?,
+            mcp: self.keep()?,
+            destinations: self.keep()?,
+            dns: self.flag()?,
+            members: self.reach()?,
+        })
+    }
+    /// What [`Writer::publish`] wrote.
+    fn publish(&mut self) -> Result<Publish, WireError> {
+        Ok(Publish {
+            guest_port: self.u16()?,
+            proto: proto(self.u8()?)?,
+            host: self.ip()?,
+            host_port: self.u16()?,
+        })
+    }
+    /// What [`Writer::bounds`] wrote: each bound address an address, never none.
+    fn bounds(&mut self) -> Result<Vec<Bound>, WireError> {
+        let n = self.count(2 + 1 + 1 + 2 + 4)?;
+        let mut bounds = Vec::with_capacity(n);
+        for _ in 0..n {
+            let guest_port = self.u16()?;
+            let proto = proto(self.u8()?)?;
+            let ip = self.ip()?.ok_or(WireError::Tag {
+                what: "a bound address",
+                tag: 0,
+            })?;
+            let port = self.u16()?;
+            let receivers = self.count(4 + 2)?;
+            let mut to = Vec::with_capacity(receivers);
+            for _ in 0..receivers {
+                to.push(Receiving {
+                    member: self.u32()?,
+                    port: self.u16()?,
+                });
+            }
+            bounds.push(Bound {
+                guest_port,
+                proto,
+                host: SocketAddr::new(ip, port),
+                to,
+            });
+        }
+        Ok(bounds)
     }
     fn ip(&mut self) -> Result<Option<IpAddr>, WireError> {
         match self.u8()? {
@@ -1311,6 +2043,19 @@ impl<'a> Reader<'a> {
             tag => Err(WireError::Tag { what, tag }),
         }
     }
+    fn run_end(&mut self) -> Result<RunEnd, WireError> {
+        Ok(match self.u8()? {
+            0 => RunEnd::Exited(self.u32()?),
+            1 => RunEnd::Stopped,
+            2 => RunEnd::Failed(self.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a run's end",
+                    tag,
+                });
+            }
+        })
+    }
     fn microvm(&mut self) -> Result<Option<Microvm>, WireError> {
         match self.u8()? {
             0 => return Ok(None),
@@ -1327,6 +2072,7 @@ impl<'a> Reader<'a> {
                 cpu_ns: self.u64()?,
                 resident_bytes: self.u64()?,
                 footprint_bytes: self.u64()?,
+                charged: self.charged()?,
             }),
             1 => Err(self.text()?),
             tag => {
@@ -1380,7 +2126,7 @@ impl<'a> Reader<'a> {
         };
         Ok(Some(Microvm { host, guest }))
     }
-    fn end(self) -> Result<(), WireError> {
+    pub(crate) fn end(self) -> Result<(), WireError> {
         if self.0.is_empty() {
             Ok(())
         } else {
@@ -1470,10 +2216,7 @@ impl Request {
         }
         w.count(self.publish.len())?;
         for p in &self.publish {
-            w.u16(p.guest_port);
-            w.u8(p.proto as u8);
-            w.ip(p.host);
-            w.u16(p.host_port);
+            w.publish(p);
         }
         w.keep(&self.egress.egress)?;
         w.keep(&self.egress.mcp)?;
@@ -1523,21 +2266,7 @@ impl Request {
         }
         // Each member's reach of the names kept, appended in version 12 (D246): whether the
         // members are held apart, then each member's kind, name and names.
-        match &self.egress.members {
-            None => w.u8(0),
-            Some(members) => {
-                w.u8(1);
-                w.count(members.len())?;
-                for m in members {
-                    w.u8(m.kind as u8);
-                    w.text(&m.name)?;
-                    w.count(m.destinations.len())?;
-                    for d in &m.destinations {
-                        w.text(d)?;
-                    }
-                }
-            }
-        }
+        w.reach(self.egress.members.as_deref())?;
         // The run's agent-control endpoint, appended in version 15 (D252): whether it asks one,
         // its controller's key, then whether it grants sockets, their directory and admission.
         match &self.control {
@@ -1595,6 +2324,53 @@ impl Request {
         // Each member's MCP bridge, in the members' order, appended in version 25 (D254).
         for m in &self.members {
             w.u8(u8::from(m.mcp));
+        }
+        // The run's upstream roots, appended in version 26 (D242): their count, then each DER.
+        w.count(self.upstream_roots.len())?;
+        for root in &self.upstream_roots {
+            w.bytes(root)?;
+        }
+        // The run's GPU report's scope, appended in version 29 (D233).
+        match &self.gpu_report {
+            None => w.u8(0),
+            Some(scope) => {
+                w.u8(1);
+                w.0.extend_from_slice(scope);
+            }
+        }
+        // Its plug roots, appended in version 35 (D271).
+        w.count(self.plug_roots.len())?;
+        for root in &self.plug_roots {
+            w.text(root)?;
+        }
+        // Each share's members, in the shares' order, appended in version 37 (D277): 0 the
+        // run's own root alone, 1 every member that runs, 2 those named, each its kind and name.
+        for share in &self.shares {
+            match &share.members {
+                None => w.u8(0),
+                Some(ShareTo::Every) => w.u8(1),
+                Some(ShareTo::Members(named)) => {
+                    w.u8(2);
+                    w.count(named.len())?;
+                    for m in named {
+                        w.u8(m.kind as u8);
+                        w.text(&m.name)?;
+                    }
+                }
+            }
+        }
+        // Each member's ceiling past its microVM, appended in version 39 (D278): its kind, its
+        // name and its reach.
+        w.count(self.egress_ceiling.len())?;
+        for c in &self.egress_ceiling {
+            w.u8(c.kind as u8);
+            w.text(&c.name)?;
+            w.reach_past(&c.reach)?;
+        }
+        // Whether each share's files may be run from it, in the shares' order, appended in
+        // version 41 (D279).
+        for share in &self.shares {
+            w.u8(u8::from(share.exec));
         }
         w.done()
     }
@@ -1656,16 +2432,7 @@ impl Request {
         let n = r.count(2 + 1 + 1 + 2)?;
         let mut publish = Vec::with_capacity(n);
         for _ in 0..n {
-            let guest_port = r.u16()?;
-            let proto = proto(r.u8()?)?;
-            let host = r.ip()?;
-            let host_port = r.u16()?;
-            publish.push(Publish {
-                guest_port,
-                proto,
-                host,
-                host_port,
-            });
+            publish.push(r.publish()?);
         }
         // Its destinations come last, appended in version 3.
         let (egress, mcp, dns) = (r.keep()?, r.keep()?, r.flag()?);
@@ -1675,7 +2442,13 @@ impl Request {
             let host = r.text()?;
             let at = r.text()?;
             let read_only = r.flag()?;
-            shares.push(ShareAt { host, at, read_only });
+            shares.push(ShareAt {
+                host,
+                at,
+                read_only,
+                members: None,
+                exec: true,
+            });
         }
         let nesting = r.flag()?;
         let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
@@ -1716,30 +2489,8 @@ impl Request {
         for m in &mut members {
             m.terminal = r.flag()?;
         }
-        // Each member's reach of the names kept, appended in version 12 (D246): each member
-        // is at least its kind (one byte), its name's length (four) and its names' count
-        // (four), and each name at least its length (four).
-        egress.members = if r.flag()? {
-            let n = r.count(1 + 4 + 4)?;
-            let mut reach = Vec::with_capacity(n);
-            for _ in 0..n {
-                let kind = member_kind(r.u8()?)?;
-                let name = r.text()?;
-                let k = r.count(4)?;
-                let mut destinations = Vec::with_capacity(k);
-                for _ in 0..k {
-                    destinations.push(r.text()?);
-                }
-                reach.push(MemberReach {
-                    kind,
-                    name,
-                    destinations,
-                });
-            }
-            Some(reach)
-        } else {
-            None
-        };
+        // Each member's reach of the names kept, appended in version 12 (D246).
+        egress.members = r.reach()?;
         // The run's agent-control endpoint, appended in version 15 (D252).
         let control = if r.flag()? {
             let controller = r.array::<32>()?;
@@ -1807,6 +2558,81 @@ impl Request {
         for m in &mut members {
             m.mcp = r.flag()?;
         }
+        // The run's upstream roots, appended in version 26 (D242): each at least its length's
+        // four bytes.
+        let n = r.count(4)?;
+        let mut upstream_roots = Vec::with_capacity(n);
+        for _ in 0..n {
+            upstream_roots.push(r.bytes()?.to_vec());
+        }
+        // The run's GPU report's scope, appended in version 29 (D233): nonzero, and of a run
+        // that names its GPUs, as a managed launch's is (`PreparedBoot::with_gpu_report`).
+        let gpu_report = if r.flag()? { Some(r.array::<16>()?) } else { None };
+        if gpu_report.is_some_and(|scope| scope == [0; 16] || gpu_devices.is_empty()) {
+            return Err(WireError::Gpu);
+        }
+        // Its plug roots, appended in version 35 (D271): each at least its length's four bytes.
+        let n = r.count(4)?;
+        let mut plug_roots = Vec::with_capacity(n);
+        for _ in 0..n {
+            plug_roots.push(r.text()?);
+        }
+        // Each share's members, appended in version 37 (D277): refused for a named list of
+        // none, or one named twice, as the run host would refuse it.
+        for share in &mut shares {
+            share.members = match r.u8()? {
+                0 => None,
+                1 => Some(ShareTo::Every),
+                2 => {
+                    // Each at least its kind's byte and its name's length.
+                    let n = r.count(1 + 4)?;
+                    let mut named: Vec<ShareMember> = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        let m = ShareMember {
+                            kind: member_kind(r.u8()?)?,
+                            name: r.text()?,
+                        };
+                        if named.contains(&m) {
+                            return Err(WireError::ShareMembers);
+                        }
+                        named.push(m);
+                    }
+                    if named.is_empty() {
+                        return Err(WireError::ShareMembers);
+                    }
+                    Some(ShareTo::Members(named))
+                }
+                tag => {
+                    return Err(WireError::Tag {
+                        what: "a share's members",
+                        tag,
+                    });
+                }
+            };
+        }
+        // Each member's ceiling, appended in version 39 (D278): each at least its kind's byte,
+        // its name's length, its three lists' counts and its names' flag; a member named twice
+        // refused, as the run host would refuse it.
+        let n = r.count(1 + 4 + 4 * 3 + 1)?;
+        let mut egress_ceiling: Vec<MemberCeiling> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (kind, name) = (member_kind(r.u8()?)?, r.text()?);
+            if egress_ceiling.iter().any(|c| c.kind == kind && c.name == name) {
+                return Err(WireError::Tag {
+                    what: "a member's ceiling, twice",
+                    tag: kind as u8,
+                });
+            }
+            egress_ceiling.push(MemberCeiling {
+                kind,
+                name,
+                reach: r.reach_past()?,
+            });
+        }
+        // Whether each share's files may be run from it, appended in version 41 (D279).
+        for share in &mut shares {
+            share.exec = r.flag()?;
+        }
         r.end()?;
         Ok(Request {
             image,
@@ -1823,6 +2649,10 @@ impl Request {
             control,
             gpu_devices,
             sign_ins,
+            upstream_roots,
+            gpu_report,
+            plug_roots,
+            egress_ceiling,
         })
     }
 }
@@ -2056,6 +2886,7 @@ impl Credit {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u8(self.channel as u8);
         w.u64(self.bytes);
         w.0
@@ -2065,6 +2896,7 @@ impl Credit {
         let mut r = Reader(payload);
         let c = Credit {
             member: r.u32()?,
+            generation: r.u32()?,
             channel: channel(r.u8()?)?,
             bytes: r.u64()?,
         };
@@ -2074,24 +2906,65 @@ impl Credit {
 }
 
 impl PlugAsk {
+    /// Its id, its members' count and indices, then 0 and a host directory or 1 and a
+    /// volume's name, where they see it, and whether read-only.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
-        w.u32(self.member);
-        w.text(&self.host)?;
+        w.count(self.members.len())?;
+        for m in &self.members {
+            w.u32(*m);
+        }
+        match &self.from {
+            PlugFrom::Host(host) => {
+                w.u8(0);
+                w.text(host)?;
+            }
+            PlugFrom::Volume(name) => {
+                w.u8(1);
+                w.text(name)?;
+            }
+        }
         w.text(&self.at)?;
         w.u8(u8::from(self.read_only));
+        // Appended in version 41 (D279).
+        w.u8(u8::from(self.exec));
         w.done()
     }
 
+    /// Refused for no member, or one named twice, as the run host would refuse it.
     pub fn decode(payload: &[u8]) -> Result<PlugAsk, WireError> {
         let mut r = Reader(payload);
+        let id = r.u32()?;
+        let n = r.count(4)?;
+        let mut members = Vec::with_capacity(n);
+        for _ in 0..n {
+            let m = r.u32()?;
+            if members.contains(&m) {
+                return Err(WireError::PlugMembers);
+            }
+            members.push(m);
+        }
+        if members.is_empty() {
+            return Err(WireError::PlugMembers);
+        }
+        let from = match r.u8()? {
+            0 => PlugFrom::Host(r.text()?),
+            1 => PlugFrom::Volume(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a plug's source",
+                    tag,
+                });
+            }
+        };
         let ask = PlugAsk {
-            id: r.u32()?,
-            member: r.u32()?,
-            host: r.text()?,
+            id,
+            members,
+            from,
             at: r.text()?,
             read_only: r.flag()?,
+            exec: r.flag()?,
         };
         r.end()?;
         Ok(ask)
@@ -2204,6 +3077,436 @@ impl SaveAnswer {
     }
 }
 
+impl PauseAsk {
+    /// Its id, then 1 to pause or 0 to go on.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u8(u8::from(self.pause));
+        w.0
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PauseAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = PauseAsk {
+            id: r.u32()?,
+            pause: r.flag()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl PauseAnswer {
+    /// Its id, then 0 and the run's paused time, its total in ns and whether it is paused now;
+    /// or 1 and why not; then the pids it holds.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(paused) => {
+                w.u8(0);
+                w.duration(paused.total);
+                w.u8(u8::from(paused.now));
+            }
+            Err(why) => {
+                w.u8(1);
+                w.text(why)?;
+            }
+        }
+        w.count(self.held.len())?;
+        for pid in &self.held {
+            w.u32(*pid);
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PauseAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(Paused {
+                total: r.duration()?,
+                now: r.flag()?,
+            }),
+            1 => Err(r.text()?),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a pause's answer",
+                    tag,
+                });
+            }
+        };
+        let n = r.count(4)?;
+        let mut held = Vec::with_capacity(n);
+        for _ in 0..n {
+            held.push(r.u32()?);
+        }
+        r.end()?;
+        Ok(PauseAnswer { id, result, held })
+    }
+}
+
+impl AskPaused {
+    pub fn encode(&self) -> Vec<u8> {
+        self.id.to_be_bytes().to_vec()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<AskPaused, WireError> {
+        let mut r = Reader(payload);
+        let ask = AskPaused { id: r.u32()? };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl NetAsk {
+    /// Its id, then its change: 0 and the port to publish; 1, the protocol, the bound address
+    /// and its port to let go of; or 2 and the run's grants past its microVM whole.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.change {
+            NetChange::Publish(p) => {
+                w.u8(0);
+                w.publish(p);
+            }
+            NetChange::Unpublish { proto, host } => {
+                w.u8(1);
+                w.u8(*proto as u8);
+                w.ip(Some(host.ip()));
+                w.u16(host.port());
+            }
+            NetChange::Egress(n) => {
+                w.u8(2);
+                w.narrowing(n)?;
+            }
+            NetChange::Member { member, reach } => {
+                w.u8(3);
+                w.u32(*member);
+                match reach {
+                    None => w.u8(0),
+                    Some(r) => {
+                        w.u8(1);
+                        w.reach_past(r)?;
+                    }
+                }
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<NetAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let change = match r.u8()? {
+            0 => NetChange::Publish(r.publish()?),
+            1 => {
+                let proto = proto(r.u8()?)?;
+                let ip = r.ip()?.ok_or(WireError::Tag {
+                    what: "a bound address",
+                    tag: 0,
+                })?;
+                NetChange::Unpublish {
+                    proto,
+                    host: SocketAddr::new(ip, r.u16()?),
+                }
+            }
+            2 => NetChange::Egress(r.narrowing()?),
+            3 => {
+                let member = r.u32()?;
+                let reach = if r.flag()? { Some(r.reach_past()?) } else { None };
+                NetChange::Member { member, reach }
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a network change",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(NetAsk { id, change })
+    }
+}
+
+impl NetAnswer {
+    /// Its id, then 0, what the change bound or let go of and every port published; or 1,
+    /// its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(changed) => {
+                w.u8(0);
+                w.bounds(&changed.changed)?;
+                w.bounds(&changed.published)?;
+                w.narrowing(&changed.egress)?;
+            }
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<NetAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(NetChanged {
+                changed: r.bounds()?,
+                published: r.bounds()?,
+                egress: r.narrowing()?,
+            }),
+            1 => Err((net_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a network change's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(NetAnswer { id, result })
+    }
+}
+
+impl RestartAsk {
+    /// Its id, member, its arguments (a count, then each's length and bytes) and its patience.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u32(self.member);
+        w.count(self.args.len())?;
+        for a in &self.args {
+            w.bytes(a)?;
+        }
+        w.duration(self.patience);
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RestartAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let member = r.u32()?;
+        let n = r.count(size_of::<u32>())?;
+        let mut args = Vec::with_capacity(n);
+        for _ in 0..n {
+            args.push(r.bytes()?.to_vec());
+        }
+        let patience = r.duration()?;
+        r.end()?;
+        Ok(RestartAsk {
+            id,
+            member,
+            args,
+            patience,
+        })
+    }
+}
+
+impl SwapAsk {
+    /// Its id, then its change: 0, the path and the digest; or 1 and the path; then when (0 its
+    /// next start, 1 now) and its patience.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.change {
+            SwapChange::Swap { at, digest } => {
+                w.u8(0);
+                w.text(at)?;
+                w.text(digest)?;
+            }
+            SwapChange::Restore { at } => {
+                w.u8(1);
+                w.text(at)?;
+            }
+        }
+        w.u8(self.when as u8);
+        w.duration(self.patience);
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SwapAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let change = match r.u8()? {
+            0 => SwapChange::Swap {
+                at: r.text()?,
+                digest: r.text()?,
+            },
+            1 => SwapChange::Restore { at: r.text()? },
+            tag => return Err(WireError::Tag { what: "a swap", tag }),
+        };
+        let when = match r.u8()? {
+            0 => SwapWhen::NextStart,
+            1 => SwapWhen::Now,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a swap's when",
+                    tag,
+                });
+            }
+        };
+        let patience = r.duration()?;
+        r.end()?;
+        Ok(SwapAsk {
+            id,
+            change,
+            when,
+            patience,
+        })
+    }
+}
+
+impl SwapAnswer {
+    /// Its id, then 0, each member's component (its path, then each digest's flag and text) and
+    /// the generation started (0, or 1, its member and its generation); or 1, its refusal's tag
+    /// and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(Swapped { components, started }) => {
+                w.u8(0);
+                w.count(components.len())?;
+                for c in components {
+                    w.text(&c.at)?;
+                    for digest in [&c.desired, &c.held] {
+                        match digest {
+                            None => w.u8(0),
+                            Some(d) => {
+                                w.u8(1);
+                                w.text(d)?;
+                            }
+                        }
+                    }
+                }
+                match started {
+                    None => w.u8(0),
+                    Some((member, generation)) => {
+                        w.u8(1);
+                        w.u32(*member);
+                        w.u32(*generation);
+                    }
+                }
+            }
+            Err((why, words)) => {
+                w.u8(1);
+                w.u8(*why as u8);
+                w.text(words)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SwapAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => {
+                // Each at least its path's length and its two flags.
+                let n = r.count(4 + 1 + 1)?;
+                let mut components = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let at = r.text()?;
+                    let desired = if r.flag()? { Some(r.text()?) } else { None };
+                    let held = if r.flag()? { Some(r.text()?) } else { None };
+                    components.push(ComponentAt { at, desired, held });
+                }
+                let started = if r.flag()? {
+                    Some((r.u32()?, r.u32()?))
+                } else {
+                    None
+                };
+                Ok(Swapped { components, started })
+            }
+            1 => {
+                let why = match r.u8()? {
+                    1 => SwapRefusal::Unknown,
+                    2 => SwapRefusal::Artifact,
+                    3 => SwapRefusal::Kind,
+                    4 => SwapRefusal::Platform,
+                    5 => SwapRefusal::Asks,
+                    6 => SwapRefusal::Device,
+                    7 => SwapRefusal::Running,
+                    8 => SwapRefusal::Failed,
+                    tag => {
+                        return Err(WireError::Tag {
+                            what: "a swap's refusal",
+                            tag,
+                        });
+                    }
+                };
+                Err((why, r.text()?))
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a swap's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(SwapAnswer { id, result })
+    }
+}
+
+impl RestartAnswer {
+    /// Its id, then 0 and the generation started; or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(generation) => {
+                w.u8(0);
+                w.u32(*generation);
+            }
+            Err((why, words)) => {
+                w.u8(1);
+                w.u8(*why as u8);
+                w.text(words)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RestartAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(r.u32()?),
+            1 => {
+                let why = match r.u8()? {
+                    1 => RestartRefusal::Unknown,
+                    2 => RestartRefusal::Running,
+                    3 => RestartRefusal::Generation,
+                    4 => RestartRefusal::Unsupported,
+                    5 => RestartRefusal::Failed,
+                    tag => {
+                        return Err(WireError::Tag {
+                            what: "a restart's refusal",
+                            tag,
+                        });
+                    }
+                };
+                Err((why, r.text()?))
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a restart's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RestartAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -2248,18 +3551,7 @@ impl Started {
             w.text(&m.name)?;
             w.u8(u8::from(m.runs));
         }
-        w.count(self.published.len())?;
-        for b in &self.published {
-            w.u16(b.guest_port);
-            w.u8(b.proto as u8);
-            w.ip(Some(b.host.ip()));
-            w.u16(b.host.port());
-            w.count(b.to.len())?;
-            for r in &b.to {
-                w.u32(r.member);
-                w.u16(r.port);
-            }
-        }
+        w.bounds(&self.published)?;
         // Where the run's endpoint is bound and its microVM's key, appended in version 15.
         match &self.control {
             None => w.u8(0),
@@ -2268,12 +3560,17 @@ impl Started {
                 w.ip(Some(at.address.ip()));
                 w.u16(at.address.port());
                 w.0.extend_from_slice(&at.vm);
+                // Its waker's and its wake's, in version 30 (D252).
+                for held in [at.waker, at.wake] {
+                    w.ip(Some(held.ip()));
+                    w.u16(held.port());
+                }
             }
         }
-        // The rate's period, appended in version 17 (D247).
-        w.u64(u64::try_from(self.rate_period.as_nanos()).map_err(|_| WireError::TooLong)?);
         // How its microVM started, appended in version 19 (D253).
         w.u8(self.from as u8);
+        // Its grants past its microVM as its host holds them, appended in version 36 (D273).
+        w.narrowing(&self.egress)?;
         w.done()
     }
 
@@ -2289,74 +3586,54 @@ impl Started {
                 runs: r.flag()?,
             });
         }
-        let n = r.count(2 + 1 + 1 + 2 + 4)?;
-        let mut published = Vec::with_capacity(n);
-        for _ in 0..n {
-            let guest_port = r.u16()?;
-            let proto = proto(r.u8()?)?;
-            let ip = r.ip()?.ok_or(WireError::Tag {
-                what: "a bound address",
-                tag: 0,
-            })?;
-            let port = r.u16()?;
-            let receivers = r.count(4 + 2)?;
-            let mut to = Vec::with_capacity(receivers);
-            for _ in 0..receivers {
-                to.push(Receiving {
-                    member: r.u32()?,
-                    port: r.u16()?,
-                });
-            }
-            published.push(Bound {
-                guest_port,
-                proto,
-                host: SocketAddr::new(ip, port),
-                to,
-            });
-        }
+        let published = r.bounds()?;
         let control = if r.flag()? {
             let ip = r.ip()?.ok_or(WireError::Tag {
                 what: "an endpoint's address",
                 tag: 0,
             })?;
             let port = r.u16()?;
+            let vm = r.array::<32>()?;
+            let mut held = |what| -> Result<SocketAddr, WireError> {
+                let ip = r.ip()?.ok_or(WireError::Tag { what, tag: 0 })?;
+                Ok(SocketAddr::new(ip, r.u16()?))
+            };
             Some(ControlAt {
                 address: SocketAddr::new(ip, port),
-                vm: r.array::<32>()?,
+                vm,
+                waker: held("an endpoint's waker")?,
+                wake: held("an endpoint's wake")?,
             })
         } else {
             None
         };
-        // A governor holds over some time: a period of none is no period.
-        let rate_period = NonZeroU64::new(r.u64()?)
-            .map(|ns| std::time::Duration::from_nanos(ns.get()))
-            .ok_or(WireError::Tag {
-                what: "a rate period",
-                tag: 0,
-            })?;
         let from = started_from(r.u8()?)?;
+        let egress = r.narrowing()?;
         r.end()?;
         Ok(Started {
             members,
             published,
             control,
-            rate_period,
             from,
+            egress,
         })
     }
 }
 
 impl Request {
     /// What a warm run host is started with and holds each run it is handed to (D253's
-    /// pools): this request with its members' stages, its deadline and its control ask taken
-    /// out, what alone may differ between the runs of one microVM; none of a run's secrets
-    /// is in it. Everything else is the microVM's: its image, size, command, ports, network,
+    /// pools): this request with its members' stages, its deadline, its control ask, its GPU
+    /// report's scope (D233) and its plug roots (D271, its members' domains' setup alone) taken
+    /// out, what alone may differ between the runs of one microVM; none of a run's secrets is
+    /// in it. Everything else is the microVM's: its image, size, command, ports, network,
     /// shares, nesting, credential grants and GPUs.
     pub fn exemplar(&self) -> Request {
         Request {
             members: Vec::new(),
             ready_by: None,
             control: None,
+            gpu_report: None,
+            plug_roots: Vec::new(),
             ..self.clone()
         }
     }
@@ -2378,6 +3655,53 @@ pub fn read_warmed(payload: &[u8]) -> Result<StartedFrom, WireError> {
     }
 }
 
+/// [`to_host::USE`]'s payload: none.
+pub fn read_use(payload: &[u8]) -> Result<(), WireError> {
+    Reader(payload).end()
+}
+
+/// [`to_client::USED`]'s payload: what a warm host's VM process costs its host, as a run's
+/// stats carry it ([`Microvm::host`]), or why it could not be read.
+pub fn used(used: &Result<HostUse, String>) -> Result<Vec<u8>, WireError> {
+    let mut w = Writer(Vec::new());
+    match used {
+        Ok(h) => {
+            w.u8(0);
+            w.u64(h.cpu_ns);
+            w.u64(h.resident_bytes);
+            w.u64(h.footprint_bytes);
+            w.u8(h.charged.tag());
+        }
+        Err(why) => {
+            w.u8(1);
+            w.text(why)?;
+        }
+    }
+    w.done()
+}
+
+/// What [`used`] wrote.
+pub fn read_used(payload: &[u8]) -> Result<Result<HostUse, String>, WireError> {
+    let mut r = Reader(payload);
+    let used = match r.u8()? {
+        0 => Ok(HostUse {
+            cpu_ns: r.u64()?,
+            resident_bytes: r.u64()?,
+            footprint_bytes: r.u64()?,
+            charged: r.charged()?,
+        }),
+        1 => Err(r.text()?),
+        tag => {
+            return Err(WireError::Tag {
+                what: "a warm host's use",
+                tag,
+            });
+        }
+    };
+    r.end()?;
+    Ok(used)
+}
+
 impl Refused {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
@@ -2395,6 +3719,7 @@ impl Refused {
             3 => Cause::Boot,
             4 => Cause::Unsupported,
             5 => Cause::Unfit,
+            6 => Cause::Workdir,
             tag => {
                 return Err(WireError::Tag {
                     what: "a refusal's cause",
@@ -2411,16 +3736,18 @@ impl Refused {
 impl Output {
     /// Its head, before its bytes: a payload is the head then the bytes, unframed, so that
     /// the run host writes a member's bytes as they came, with no copy into another buffer.
-    pub fn head(member: u32, channel: Channel) -> [u8; 5] {
+    pub fn head(member: u32, generation: u32, channel: Channel) -> [u8; 9] {
         let [a, b, c, d] = member.to_be_bytes();
-        [a, b, c, d, channel as u8]
+        let [e, f, g, h] = generation.to_be_bytes();
+        [a, b, c, d, e, f, g, h, channel as u8]
     }
 
     pub fn decode(payload: &[u8]) -> Result<Output, WireError> {
-        let (head, bytes) = payload.split_first_chunk::<5>().ok_or(WireError::Short)?;
-        let [a, b, c, d, ch] = *head;
+        let (head, bytes) = payload.split_first_chunk::<9>().ok_or(WireError::Short)?;
+        let [a, b, c, d, e, f, g, h, ch] = *head;
         Ok(Output {
             member: u32::from_be_bytes([a, b, c, d]),
+            generation: u32::from_be_bytes([e, f, g, h]),
             channel: channel(ch)?,
             bytes: bytes.to_vec(),
         })
@@ -2429,14 +3756,18 @@ impl Output {
 
 impl Input {
     /// Its head, before its bytes, as [`Output::head`] is an output's.
-    pub fn head(member: u32) -> [u8; 4] {
-        member.to_be_bytes()
+    pub fn head(member: u32, generation: u32) -> [u8; 8] {
+        let [a, b, c, d] = member.to_be_bytes();
+        let [e, f, g, h] = generation.to_be_bytes();
+        [a, b, c, d, e, f, g, h]
     }
 
     pub fn decode(payload: &[u8]) -> Result<Input, WireError> {
-        let (head, bytes) = payload.split_first_chunk::<4>().ok_or(WireError::Short)?;
+        let (head, bytes) = payload.split_first_chunk::<8>().ok_or(WireError::Short)?;
+        let [a, b, c, d, e, f, g, h] = *head;
         Ok(Input {
-            member: u32::from_be_bytes(*head),
+            member: u32::from_be_bytes([a, b, c, d]),
+            generation: u32::from_be_bytes([e, f, g, h]),
             bytes: Secret(bytes.to_vec()),
         })
     }
@@ -2446,6 +3777,7 @@ impl InputEnd {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.stream_end(self.end);
         w.0
     }
@@ -2453,9 +3785,14 @@ impl InputEnd {
     pub fn decode(payload: &[u8]) -> Result<InputEnd, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnd { member, end })
+        Ok(InputEnd {
+            member,
+            generation,
+            end,
+        })
     }
 }
 
@@ -2463,6 +3800,7 @@ impl InputRoom {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u64(self.bytes);
         w.0
     }
@@ -2471,6 +3809,7 @@ impl InputRoom {
         let mut r = Reader(payload);
         let room = InputRoom {
             member: r.u32()?,
+            generation: r.u32()?,
             bytes: r.u64()?,
         };
         r.end()?;
@@ -2482,6 +3821,7 @@ impl InputEnded {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u64(self.written);
         w.stream_end(self.end);
         w.0
@@ -2490,10 +3830,16 @@ impl InputEnded {
     pub fn decode(payload: &[u8]) -> Result<InputEnded, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let written = r.u64()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnded { member, written, end })
+        Ok(InputEnded {
+            member,
+            generation,
+            written,
+            end,
+        })
     }
 }
 
@@ -2501,6 +3847,7 @@ impl OutputEnd {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u8(self.channel as u8);
         match self.end {
             StreamEnd::Closed => w.u8(0),
@@ -2515,6 +3862,7 @@ impl OutputEnd {
     pub fn decode(payload: &[u8]) -> Result<OutputEnd, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let channel = channel(r.u8()?)?;
         let end = match r.u8()? {
             0 => StreamEnd::Closed,
@@ -2527,43 +3875,87 @@ impl OutputEnd {
             }
         };
         r.end()?;
-        Ok(OutputEnd { member, channel, end })
+        Ok(OutputEnd {
+            member,
+            generation,
+            channel,
+            end,
+        })
     }
 }
 
 impl MemberEnded {
+    /// Its member and generation, then its end as the guest's `MEMBER_ENDED` carries it
+    /// (`run::members::End`: a tag, exited 0 or signaled 1, and its code or signal), then 1
+    /// where its restart killed it, else 0.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
-        w.u32(self.status);
+        w.u32(self.generation);
+        w.0.extend_from_slice(&self.end.encode());
+        w.u8(u8::from(self.killed));
         w.0
     }
 
     pub fn decode(payload: &[u8]) -> Result<MemberEnded, WireError> {
+        use shards_abi::run::members::End;
         let mut r = Reader(payload);
-        let e = MemberEnded {
-            member: r.u32()?,
-            status: r.u32()?,
-        };
+        let member = r.u32()?;
+        let generation = r.u32()?;
+        let tag = r.u8()?;
+        let word = r.u32()?;
+        let killed = r.u8()?;
         r.end()?;
-        Ok(e)
+        let end = match tag {
+            0 => End::Exited(word),
+            1 if (1..=shards_abi::run::NSIG).contains(&word) => End::Signaled(word),
+            1 => return Err(WireError::Signal(word)),
+            _ => {
+                return Err(WireError::Tag {
+                    what: "a member's end",
+                    tag,
+                });
+            }
+        };
+        let killed = match killed {
+            0 => false,
+            1 => true,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a member's kill",
+                    tag,
+                });
+            }
+        };
+        Ok(MemberEnded {
+            member,
+            generation,
+            end,
+            killed,
+        })
     }
 }
+
+/// What a stats answer says ([`StatsAnswer::encode`]): init's lines as it said them, the run's
+/// microVM, and the run's paused time (D267), the last two the run's alone.
+pub type StatsSaid<'a> = (&'a [u8], Option<&'a Microvm>, Option<&'a Paused>);
 
 impl StatsAnswer {
     /// Its id, then 0, init's lines as it said them and the run's microVM (0 for none, or 1
     /// and what it costs: its VM process's use, 0 and its CPU time, resident and own memory,
     /// or 1 and why none was read; its vCPUs' guest time, 0, what departed vCPUs ran and each
-    /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), or
-    /// 1 and why none came.
-    pub fn encode(id: u32, result: Result<(&[u8], Option<&Microvm>), &str>) -> Result<Vec<u8>, WireError> {
+    /// vCPU's index, time and 0, or 1 and why it went unread; or 1 and why none was read), then
+    /// the run's paused time (0 for none, or 1, its total in ns and 1 where it is paused now),
+    /// or 1 and why none came.
+    pub fn encode(id: u32, result: Result<StatsSaid<'_>, &str>) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(id);
         match result {
-            Ok((lines, microvm)) => {
+            Ok((lines, microvm, paused)) => {
                 w.u8(0);
                 w.bytes(lines)?;
                 w.microvm(microvm)?;
+                w.paused(paused);
             }
             Err(why) => {
                 w.u8(1);
@@ -2580,6 +3972,7 @@ impl StatsAnswer {
             0 => {
                 let mut stats = Stats::parse(&String::from_utf8_lossy(r.bytes()?));
                 stats.microvm = r.microvm()?;
+                stats.paused = r.paused()?;
                 Ok(stats)
             }
             1 => Err(r.text()?),
@@ -2738,14 +4131,16 @@ impl RateAsk {
 }
 
 impl RateAnswer {
-    /// Its id, then 0 and the milli-CPU the vCPUs are held to (0 for none), or 1 and why.
+    /// Its id, then 0, the milli-CPU the vCPUs are held to (0 for none) and the period in
+    /// nanoseconds (version 31), or 1 and why.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
         match &self.result {
             Ok(held) => {
                 w.u8(0);
-                w.u64(held.map_or(0, NonZeroU64::get));
+                w.u64(held.milli.map_or(0, NonZeroU64::get));
+                w.u64(u64::try_from(held.period.as_nanos()).map_err(|_| WireError::TooLong)?);
             }
             Err(why) => {
                 w.u8(1);
@@ -2759,7 +4154,18 @@ impl RateAnswer {
         let mut r = Reader(payload);
         let id = r.u32()?;
         let result = match r.u8()? {
-            0 => Ok(NonZeroU64::new(r.u64()?)),
+            0 => {
+                let milli = NonZeroU64::new(r.u64()?);
+                // A governor holds over some time: a period of none is no period.
+                let period = NonZeroU64::new(r.u64()?).ok_or(WireError::Tag {
+                    what: "a rate period",
+                    tag: 0,
+                })?;
+                Ok(Rated {
+                    milli,
+                    period: std::time::Duration::from_nanos(period.get()),
+                })
+            }
             1 => Err(r.text()?),
             tag => {
                 return Err(WireError::Tag {
@@ -2894,17 +4300,7 @@ impl RunEnd {
 
     pub fn decode(payload: &[u8]) -> Result<RunEnd, WireError> {
         let mut r = Reader(payload);
-        let end = match r.u8()? {
-            0 => RunEnd::Exited(r.u32()?),
-            1 => RunEnd::Stopped,
-            2 => RunEnd::Failed(r.text()?),
-            tag => {
-                return Err(WireError::Tag {
-                    what: "a run's end",
-                    tag,
-                });
-            }
-        };
+        let end = r.run_end()?;
         r.end()?;
         Ok(end)
     }
@@ -2929,26 +4325,56 @@ mod tests {
     use super::*;
 
     /// A plug's ask, an unplug's and their answer come back as they went, each refusal by
-    /// its tag; a truncated, trailing or unknown-tagged one is refused, never a default.
+    /// its tag; a truncated, trailing or unknown-tagged one is refused, never a default. A plug
+    /// of a host directory and of a volume into one member and into two (version 35, D271);
+    /// one into no member, or into one twice, refused as the run host would.
     #[test]
     fn plugs_round_trip_and_bad_ones_are_refused() {
-        let ask = PlugAsk {
-            id: 7,
-            member: 2,
-            host: "/Users/u/proj".into(),
-            at: "/Users/u/proj".into(),
-            read_only: true,
+        for (members, from) in [
+            (vec![2], PlugFrom::Host("/Users/u/proj".into())),
+            (vec![1, 2], PlugFrom::Volume("kiln-session".into())),
+        ] {
+            let ask = PlugAsk {
+                id: 7,
+                members,
+                from,
+                at: "/Users/u/proj".into(),
+                read_only: true,
+                exec: false,
+            };
+            let bytes = ask.encode().unwrap();
+            assert_eq!(PlugAsk::decode(&bytes).unwrap(), ask);
+            assert_eq!(PlugAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+            assert_eq!(
+                PlugAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+            let mut flag = bytes.clone();
+            *flag.last_mut().unwrap() = 2;
+            assert!(matches!(PlugAsk::decode(&flag), Err(WireError::Tag { .. })));
+        }
+        let at = |members: Vec<u32>, tag: u8| {
+            let mut ask = PlugAsk {
+                id: 7,
+                members,
+                from: PlugFrom::Host("/h".into()),
+                at: "/Users/u/proj".into(),
+                read_only: false,
+                exec: true,
+            }
+            .encode()
+            .unwrap();
+            // The source's tag follows the id and the members: 4 + 4 + 4 bytes each.
+            let source = 8 + 4 * ask[4..8].iter().fold(0usize, |n, b| n * 256 + usize::from(*b));
+            ask[source] = tag;
+            ask
         };
-        let bytes = ask.encode().unwrap();
-        assert_eq!(PlugAsk::decode(&bytes).unwrap(), ask);
-        assert_eq!(PlugAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
-        assert_eq!(
-            PlugAsk::decode(&[bytes.as_slice(), &[0]].concat()),
-            Err(WireError::Trailing)
-        );
-        let mut flag = bytes.clone();
-        *flag.last_mut().unwrap() = 2;
-        assert!(matches!(PlugAsk::decode(&flag), Err(WireError::Tag { .. })));
+        assert_eq!(PlugAsk::decode(&at(Vec::new(), 0)), Err(WireError::PlugMembers));
+        assert_eq!(PlugAsk::decode(&at(vec![3, 3], 0)), Err(WireError::PlugMembers));
+        assert!(matches!(
+            PlugAsk::decode(&at(vec![3], 2)),
+            Err(WireError::Tag { .. })
+        ));
         let un = UnplugAsk {
             id: 8,
             at: "/Users/u/proj".into(),
@@ -2964,12 +4390,13 @@ mod tests {
             Err((PlugRefusal::Device, String::new())),
             Err((PlugRefusal::Unknown, String::new())),
             Err((PlugRefusal::Busy, String::new())),
+            Err((PlugRefusal::Volume, "kiln-session: another microVM's".into())),
         ] {
             let answer = PlugAnswer { id: 9, result };
             assert_eq!(PlugAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
         assert!(matches!(
-            PlugAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            PlugAnswer::decode(&[0, 0, 0, 9, 1, 9, 0, 0, 0, 0]),
             Err(WireError::Tag { .. })
         ));
         assert!(matches!(
@@ -2978,8 +4405,219 @@ mod tests {
         ));
     }
 
+    /// Version 34 (D269). Do: carry a publish to an address and to none, an unpublish of an
+    /// IPv4 and an IPv6 binding, an answer with bindings and their receivers, an empty one, and
+    /// each refusal; cut each, trail a byte, and give a change, a refusal or an answer a tag no
+    /// version has, and an unpublish no address. Expect: each read back exactly; each cut,
+    /// trailing byte and unknown tag refused, never a default.
+    #[test]
+    fn network_changes_and_their_answers_cross_the_channel() {
+        const { assert!(VERSION >= 36, "the channel's version 36 carries the run's grants") };
+        let granted = Narrowing {
+            egress: Keep::Only(vec!["443/tcp".into(), "8000-8010/udp".into()]),
+            mcp: Keep::Only(vec!["mcp.example.com:443".into()]),
+            destinations: Keep::Only(Vec::new()),
+            dns: false,
+            members: Some(vec![
+                MemberReach {
+                    kind: MemberKind::Harness,
+                    name: "codex".into(),
+                    destinations: vec!["mcp.example.com:443".into()],
+                },
+                MemberReach {
+                    kind: MemberKind::Agent,
+                    name: "helper".into(),
+                    destinations: Vec::new(),
+                },
+            ]),
+        };
+        let publish = |host: Option<IpAddr>| Publish {
+            guest_port: 7100,
+            proto: Proto::Tcp,
+            host,
+            host_port: 0,
+        };
+        let asks = [
+            NetChange::Publish(publish(Some("127.0.0.1".parse().unwrap()))),
+            NetChange::Publish(publish(None)),
+            NetChange::Unpublish {
+                proto: Proto::Udp,
+                host: "127.0.0.1:53".parse().unwrap(),
+            },
+            NetChange::Unpublish {
+                proto: Proto::Tcp,
+                host: "[::1]:8080".parse().unwrap(),
+            },
+            NetChange::Egress(granted.clone()),
+            NetChange::Egress(Narrowing::default()),
+            // A member's own reach set whole, none of it, and its image's back (D278).
+            NetChange::Member {
+                member: 1,
+                reach: Some(Reach {
+                    ports: vec!["8443/tcp".into(), "5000-5010/udp".into()],
+                    mcp: vec!["mcp.example.com:443".into()],
+                    destinations: vec!["api.example.com:443".into()],
+                    dns: true,
+                }),
+            },
+            NetChange::Member {
+                member: 0,
+                reach: Some(Reach::default()),
+            },
+            NetChange::Member {
+                member: u32::MAX,
+                reach: None,
+            },
+        ];
+        for change in asks {
+            let ask = NetAsk { id: 7, change };
+            let bytes = ask.encode().unwrap();
+            assert_eq!(NetAsk::decode(&bytes), Ok(ask));
+            for cut in 1..bytes.len() {
+                assert!(NetAsk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                NetAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            NetAsk::decode(&[0, 0, 0, 7, 4]),
+            Err(WireError::Tag { .. })
+        ));
+        // An unpublish names the address it lets go of: none is no binding.
+        assert!(matches!(
+            NetAsk::decode(&[0, 0, 0, 7, 1, 6, 0, 0, 80]),
+            Err(WireError::Tag { .. })
+        ));
+        let bound = Bound {
+            guest_port: 7100,
+            proto: Proto::Tcp,
+            host: "127.0.0.1:41000".parse().unwrap(),
+            to: vec![Receiving {
+                member: 1,
+                port: 7101,
+            }],
+        };
+        let alone = Bound {
+            guest_port: 53,
+            proto: Proto::Udp,
+            host: "[::]:5353".parse().unwrap(),
+            to: Vec::new(),
+        };
+        let mut results = vec![
+            Ok(NetChanged {
+                changed: vec![bound.clone()],
+                published: vec![alone.clone(), bound],
+                egress: granted,
+            }),
+            Ok(NetChanged {
+                changed: Vec::new(),
+                published: Vec::new(),
+                egress: Narrowing::default(),
+            }),
+        ];
+        for cause in [
+            NetRefusal::Unheld,
+            NetRefusal::NoNetwork,
+            NetRefusal::Widening,
+            NetRefusal::Bind,
+            NetRefusal::Unknown,
+            NetRefusal::Network,
+            NetRefusal::Image,
+        ] {
+            results.push(Err((cause, "why".to_string())));
+        }
+        for result in results {
+            let answer = NetAnswer { id: 9, result };
+            let bytes = answer.encode().unwrap();
+            assert_eq!(NetAnswer::decode(&bytes), Ok(answer));
+            for cut in 1..bytes.len() {
+                assert!(NetAnswer::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                NetAnswer::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            NetAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            NetAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        // A count of bindings past the bytes left is refused, allocating nothing.
+        assert_eq!(
+            NetAnswer::decode(&[0, 0, 0, 9, 0, 255, 255, 255, 255]),
+            Err(WireError::Short)
+        );
+    }
+
     /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a
     /// truncated, trailing or unknown-tagged one is refused, never a default.
+    /// A pause's ask, its answer and a refusal as the run is paused read back as written
+    /// (D267), a run's stats carry its paused time, and what is none of them is refused: a
+    /// flag neither 0 nor 1, an answer's unknown tag, bytes short or past their last field.
+    #[test]
+    fn pauses_round_trip_and_bad_ones_are_refused() {
+        for pause in [true, false] {
+            let ask = PauseAsk { id: 7, pause };
+            assert_eq!(PauseAsk::decode(&ask.encode()), Ok(ask));
+        }
+        assert!(matches!(
+            PauseAsk::decode(&[0, 0, 0, 7, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert_eq!(PauseAsk::decode(&[0, 0, 0, 7]), Err(WireError::Short));
+        assert_eq!(PauseAsk::decode(&[0, 0, 0, 7, 1, 0]), Err(WireError::Trailing));
+        let paused = Paused {
+            total: std::time::Duration::from_nanos(u64::MAX),
+            now: true,
+        };
+        for result in [
+            Ok(paused),
+            Ok(Paused::default()),
+            Err("its microVM: the microVM has stopped".to_string()),
+        ] {
+            for held in [vec![], vec![4242, u32::MAX]] {
+                let answer = PauseAnswer {
+                    id: 9,
+                    result: result.clone(),
+                    held,
+                };
+                assert_eq!(PauseAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+            }
+        }
+        assert!(matches!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        // A count of pids past the bytes left is refused, allocating nothing.
+        assert_eq!(
+            PauseAnswer::decode(&[0, 0, 0, 9, 1, 0, 0, 0, 0, 255, 255, 255, 255]),
+            Err(WireError::Short)
+        );
+        let refused = AskPaused { id: 11 };
+        assert_eq!(AskPaused::decode(&refused.encode()), Ok(refused));
+        assert_eq!(AskPaused::decode(&[0, 0, 11]), Err(WireError::Short));
+        // A run's stats with its paused time, and with none (its command's, a member's).
+        let bytes = StatsAnswer::encode(3, Ok((b"cpu 10\n", None, Some(&paused)))).unwrap();
+        let stats = StatsAnswer::decode(&bytes).unwrap().result.unwrap();
+        assert_eq!((stats.cpu_ns, stats.paused), (Some(10), Some(paused)));
+        assert_eq!(
+            StatsAnswer::decode(&bytes[..bytes.len() - 1]),
+            Err(WireError::Short)
+        );
+        let none = StatsAnswer::encode(3, Ok((b"", None, None))).unwrap();
+        assert_eq!(StatsAnswer::decode(&none).unwrap().result.unwrap().paused, None);
+    }
+
     #[test]
     fn saves_round_trip_and_bad_ones_are_refused() {
         let ask = SaveAsk {
@@ -3220,6 +4858,8 @@ mod tests {
                 host: "/home/u/work".into(),
                 at: "/work".into(),
                 read_only: false,
+                members: None,
+                exec: true,
             }],
             nesting: false,
             ready_by: None,
@@ -3227,6 +4867,10 @@ mod tests {
             control: None,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -3251,10 +4895,11 @@ mod tests {
             },
         ];
         assert_eq!(Request::decode(&credited.encode().unwrap()).unwrap(), credited);
-        // A placeholder is the grants' last field, before the sign-ins' count (version 24) and
-        // the member's MCP bridge's flag (version 25): a request cut in it is refused.
+        // A placeholder is the grants' last field, before the sign-ins' count (version 24), the
+        // member's MCP bridge's flag (version 25), the upstream roots' count (version 26) and
+        // the GPU report's flag (version 29): a request cut in it is refused.
         let bytes = credited.encode().unwrap();
-        assert!(Request::decode(&bytes[..bytes.len() - 1 - 4 - 1]).is_err());
+        assert!(Request::decode(&bytes[..bytes.len() - 1 - 4 - 1 - 4 - 1]).is_err());
         // Each member's working directory, or none, in the members' order (version 5),
         // whether its input is the orchestrator's (version 6), and its run-time arguments, none,
         // several, or an empty one among others (version 18).
@@ -3313,20 +4958,26 @@ mod tests {
         .encode()
         .unwrap();
         // ... the control ask's absence (version 15), the GPUs' count (version 16), the
-        // member's arguments' count (version 18), the sign-ins' count (version 24) and the
-        // member's MCP bridge (version 25) last.
+        // member's arguments' count (version 18), the sign-ins' count (version 24), the
+        // member's MCP bridge (version 25), the upstream roots' count (version 26), the GPU
+        // report's flag (version 29), the plug roots' count (version 35), the share's members
+        // (none, version 37), the members' ceilings' count (version 39) and the share's exec flag
+        // (version 41) last.
         assert_eq!(
-            asked.get(asked.len() - 33..).unwrap(),
+            asked.get(asked.len() - 48..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
              (zero, version 8), the member's terminal (none, version 11), whether the members \
              are held apart (no, version 12), the control ask (none, version 15), the GPUs' \
              count (zero, version 16), the member's arguments' count (zero, version 18), then \
-             the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25)"
+             the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25), then \
+             the upstream roots' count (zero, version 26), then the GPU report's flag (none, \
+             version 29), then the plug roots' count (zero, version 35), then the members' \
+             ceilings' count (zero, version 39), then the share's exec flag (yes, version 41)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -3348,11 +4999,13 @@ mod tests {
         for c in [
             Credit {
                 member: 0,
+                generation: 0,
                 channel: Channel::Stdout,
                 bytes: 0,
             },
             Credit {
                 member: u32::MAX,
+                generation: u32::MAX,
                 channel: Channel::Stderr,
                 bytes: u64::MAX,
             },
@@ -3399,8 +5052,18 @@ mod tests {
                 },
             ],
             control: None,
-            rate_period: std::time::Duration::from_millis(100),
             from: StartedFrom::Saved,
+            egress: Narrowing {
+                egress: Keep::Only(vec!["443/tcp".into()]),
+                mcp: Keep::Only(Vec::new()),
+                destinations: Keep::Only(vec!["api.openai.com:443".into()]),
+                dns: false,
+                members: Some(vec![MemberReach {
+                    kind: MemberKind::Agent,
+                    name: "main".into(),
+                    destinations: vec!["api.openai.com:443".into()],
+                }]),
+            },
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
         let bytes = started.encode().unwrap();
@@ -3410,17 +5073,30 @@ mod tests {
                 "cut at {cut}"
             );
         }
-        let refused = Refused {
-            cause: Cause::Widening,
-            why: "egress 22/tcp: the image grants none".into(),
-        };
-        assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
-        let mut out = Output::head(3, Channel::Stderr).to_vec();
+        for (cause, why) in [
+            (Cause::Widening, "egress 22/tcp: the image grants none"),
+            (
+                Cause::Workdir,
+                "Harness codex: /Users/ada/proj: no share given it there",
+            ),
+        ] {
+            let refused = Refused {
+                cause,
+                why: why.into(),
+            };
+            assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
+        }
+        assert!(matches!(
+            Refused::decode(&[7, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 7, .. })
+        ));
+        let mut out = Output::head(3, 2, Channel::Stderr).to_vec();
         out.extend_from_slice(b"\xff\x00no newline");
         assert_eq!(
             Output::decode(&out).unwrap(),
             Output {
                 member: 3,
+                generation: 2,
                 channel: Channel::Stderr,
                 bytes: b"\xff\x00no newline".to_vec()
             }
@@ -3428,21 +5104,56 @@ mod tests {
         for end in [StreamEnd::Closed, StreamEnd::Aborted(libc_eio())] {
             let e = OutputEnd {
                 member: 1,
+                generation: 7,
                 channel: Channel::Stdout,
                 end,
             };
             assert_eq!(OutputEnd::decode(&e.encode()).unwrap(), e);
         }
-        let ended = MemberEnded {
-            member: 2,
-            status: 137,
-        };
-        assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
+        for (end, killed) in [
+            (shards_abi::run::members::End::Exited(137), false),
+            (shards_abi::run::members::End::Exited(143), false),
+            (shards_abi::run::members::End::Signaled(15), false),
+            (shards_abi::run::members::End::Signaled(9), true),
+        ] {
+            let ended = MemberEnded {
+                member: 2,
+                generation: 1,
+                end,
+                killed,
+            };
+            assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
+        }
+        // A tag of neither end, a signal no Linux has, or a kill neither said nor unsaid, is
+        // no end.
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 1, 0]),
+            Err(WireError::Tag {
+                what: "a member's end",
+                tag: 2
+            })
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]),
+            Err(WireError::Signal(0))
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 9, 2]),
+            Err(WireError::Tag {
+                what: "a member's kill",
+                tag: 2
+            })
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            Err(WireError::Short)
+        );
         for end in [RunEnd::Exited(0), RunEnd::Stopped, RunEnd::Failed("x".into())] {
             assert_eq!(RunEnd::decode(&end.encode().unwrap()).unwrap(), end);
         }
         let answer =
-            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None))).unwrap()).unwrap();
+            StatsAnswer::decode(&StatsAnswer::encode(4, Ok((b"cpu 10\npids 3\n", None, None))).unwrap())
+                .unwrap();
         assert_eq!(answer.id, 4);
         let stats = answer.result.unwrap();
         assert_eq!(
@@ -3457,25 +5168,182 @@ mod tests {
         5
     }
 
+    /// A swap (D270 slice 4) round-trips, of a digest and of its image's back, at its next start
+    /// and now; its answer too, every member's component or why not; a cut one, one of another
+    /// change, when or refusal, and one trailing a byte, refused.
+    #[test]
+    fn a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused() {
+        const { assert!(VERSION >= 40, "the channel's version 40 carries swaps") };
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        for ask in [
+            SwapAsk {
+                id: 7,
+                change: SwapChange::Swap {
+                    at: "/harness/codex".into(),
+                    digest: digest.clone(),
+                },
+                when: SwapWhen::Now,
+                patience: std::time::Duration::from_secs(30),
+            },
+            SwapAsk {
+                id: u32::MAX,
+                change: SwapChange::Restore {
+                    at: "/agents/helper".into(),
+                },
+                when: SwapWhen::NextStart,
+                patience: std::time::Duration::ZERO,
+            },
+        ] {
+            let bytes = ask.encode().unwrap();
+            assert_eq!(SwapAsk::decode(&bytes), Ok(ask));
+            for cut in 1..bytes.len() {
+                assert!(SwapAsk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                SwapAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            SwapAsk::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        let restore = SwapAsk {
+            id: 1,
+            change: SwapChange::Restore { at: "/mcp/x".into() },
+            when: SwapWhen::Now,
+            patience: std::time::Duration::ZERO,
+        };
+        let mut when = restore.encode().unwrap();
+        let at = 4 + 1 + 4 + "/mcp/x".len();
+        when[at] = 2;
+        assert!(matches!(
+            SwapAsk::decode(&when),
+            Err(WireError::Tag {
+                what: "a swap's when",
+                ..
+            })
+        ));
+        for answer in [
+            SwapAnswer {
+                id: 7,
+                result: Ok(Swapped {
+                    components: vec![
+                        ComponentAt {
+                            at: "/harness/codex".into(),
+                            desired: Some(digest.clone()),
+                            held: None,
+                        },
+                        ComponentAt {
+                            at: "/agents/helper".into(),
+                            desired: None,
+                            held: Some(digest.clone()),
+                        },
+                    ],
+                    started: Some((1, 3)),
+                }),
+            },
+            SwapAnswer {
+                id: 8,
+                result: Ok(Swapped {
+                    components: Vec::new(),
+                    started: None,
+                }),
+            },
+            SwapAnswer {
+                id: 9,
+                result: Err((SwapRefusal::Kind, "an agent's at a harness's path".into())),
+            },
+        ] {
+            let bytes = answer.encode().unwrap();
+            assert_eq!(SwapAnswer::decode(&bytes), Ok(answer));
+            for cut in 1..bytes.len() {
+                assert!(SwapAnswer::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+        }
+        for cause in [
+            SwapRefusal::Unknown,
+            SwapRefusal::Artifact,
+            SwapRefusal::Kind,
+            SwapRefusal::Platform,
+            SwapRefusal::Asks,
+            SwapRefusal::Device,
+            SwapRefusal::Running,
+            SwapRefusal::Failed,
+        ] {
+            let answer = SwapAnswer {
+                id: 1,
+                result: Err((cause, String::new())),
+            };
+            assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        assert!(matches!(
+            SwapAnswer::decode(&[0, 0, 0, 1, 1, 9, 0, 0, 0, 0]),
+            Err(WireError::Tag {
+                what: "a swap's refusal",
+                ..
+            })
+        ));
+    }
+
+    /// A restart's ask and answer round-trip (D270 slice 3b): its arguments as they are, empty
+    /// ones among them, its patience to the nanosecond, its answer's generation or its refusal
+    /// typed; a tag no version has is refused.
+    #[test]
+    fn a_restart_round_trips_and_its_malformed_answers_are_refused() {
+        let ask = RestartAsk {
+            id: 9,
+            member: 2,
+            args: vec![b"--resume".to_vec(), Vec::new(), b"\xff\x00".to_vec()],
+            patience: std::time::Duration::from_nanos(1_500_000_001),
+        };
+        assert_eq!(RestartAsk::decode(&ask.encode().unwrap()).unwrap(), ask);
+        for result in [
+            Ok(3),
+            Err((RestartRefusal::Unknown, "no member 9".to_owned())),
+            Err((RestartRefusal::Running, "its restart is under way".to_owned())),
+            Err((RestartRefusal::Generation, "4 asked".to_owned())),
+            Err((RestartRefusal::Unsupported, "it starts once".to_owned())),
+            Err((RestartRefusal::Failed, "its exec: ENOENT".to_owned())),
+        ] {
+            let answer = RestartAnswer { id: 9, result };
+            assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 6, .. })
+        ));
+        assert!(matches!(
+            RestartAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { tag: 2, .. })
+        ));
+    }
+
     /// A member's input both ways round-trips: its bytes as they are, its ends typed, a flag
     /// or tag no version has refused.
     #[test]
     fn a_members_input_round_trips_and_its_malformed_frames_are_refused() {
-        let mut bytes = Input::head(7).to_vec();
+        let mut bytes = Input::head(7, 3).to_vec();
         bytes.extend_from_slice(b"\0\xff\x80{\"id\":1}\nno-newline");
         assert_eq!(
             Input::decode(&bytes).unwrap(),
             Input {
                 member: 7,
+                generation: 3,
                 bytes: Secret(b"\0\xff\x80{\"id\":1}\nno-newline".to_vec())
             }
         );
-        assert_eq!(Input::decode(&[0, 0, 1]), Err(WireError::Short));
+        assert_eq!(Input::decode(&[0, 0, 0, 7, 0, 0, 1]), Err(WireError::Short));
         for end in [StreamEnd::Closed, StreamEnd::Aborted(libc_eio())] {
-            let e = InputEnd { member: 2, end };
+            let e = InputEnd {
+                member: 2,
+                generation: 1,
+                end,
+            };
             assert_eq!(InputEnd::decode(&e.encode()).unwrap(), e);
             let ended = InputEnded {
                 member: 2,
+                generation: 1,
                 written: u64::MAX,
                 end,
             };
@@ -3483,6 +5351,7 @@ mod tests {
         }
         let room = InputRoom {
             member: 4,
+            generation: 0,
             bytes: 65536,
         };
         assert_eq!(InputRoom::decode(&room.encode()).unwrap(), room);
@@ -3490,16 +5359,18 @@ mod tests {
         long.push(0);
         assert_eq!(InputRoom::decode(&long), Err(WireError::Trailing));
         assert!(matches!(
-            InputEnd::decode(&[0, 0, 0, 1, 2]),
+            InputEnd::decode(&[0, 0, 0, 1, 0, 0, 0, 0, 2]),
             Err(WireError::Tag { tag: 2, .. })
         ));
         // A member's input flag, before the credential grants' count (version 8), its
         // terminal's flag (version 11) and the members' reach (version 12), that is no flag.
-        // One member, so its input is the twentieth byte from the end (the count's four, its
+        // One member, so its input is the thirtieth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
-        // count and the sign-ins' count follow it).
+        // count, the sign-ins' count, its MCP bridge, the upstream roots' count, the GPU
+        // report's flag, the plug roots' count, the share's members, the members' ceilings'
+        // count, version 39's, and the share's exec flag, version 41's, follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 21;
+        let at = bad.len() - 36;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -3512,6 +5383,88 @@ mod tests {
                 tag: 2
             })
         ));
+    }
+
+    /// Each share's members (version 37, D277). Do: give shares to none, to every member that
+    /// runs, and to members named. Expect: each reads back as written, after the plug roots.
+    /// Do: name none, name one twice, and write a members tag no version has. Expect: each
+    /// refused by type, never read as another request.
+    #[test]
+    fn each_shares_members_ride_the_request_last() {
+        let with = |members: Option<ShareTo>| {
+            let mut r = request();
+            r.shares = vec![ShareAt {
+                host: "/home/u/proj".into(),
+                at: "/home/u/proj".into(),
+                read_only: false,
+                members,
+                exec: true,
+            }];
+            r
+        };
+        let codex = ShareMember {
+            kind: MemberKind::Harness,
+            name: "codex".into(),
+        };
+        let helper = ShareMember {
+            kind: MemberKind::Agent,
+            name: "helper".into(),
+        };
+        for members in [
+            None,
+            Some(ShareTo::Every),
+            Some(ShareTo::Members(vec![codex.clone()])),
+            Some(ShareTo::Members(vec![codex.clone(), helper])),
+        ] {
+            let r = with(members);
+            assert_eq!(Request::decode(&r.encode().unwrap()), Ok(r));
+        }
+        for refused in [
+            Some(ShareTo::Members(Vec::new())),
+            Some(ShareTo::Members(vec![codex.clone(), codex])),
+        ] {
+            let bytes = with(refused).encode().unwrap();
+            assert_eq!(Request::decode(&bytes), Err(WireError::ShareMembers));
+        }
+        // The share's members' tag, before the members' ceilings' count (version 39) and the
+        // share's exec flag (version 41).
+        let mut bytes = with(None).encode().unwrap();
+        let at = bytes.len() - 1 - 4 - 1;
+        bytes[at] = 3;
+        assert_eq!(
+            Request::decode(&bytes),
+            Err(WireError::Tag {
+                what: "a share's members",
+                tag: 3
+            })
+        );
+    }
+
+    /// Whether each share's files may be run from it (version 41, D279): its flag, in the
+    /// shares' order, the request's last bytes; a flag of another value refused by type.
+    #[test]
+    fn each_shares_exec_rides_the_request_last() {
+        let mut r = request();
+        let share = r.shares.first().cloned().unwrap();
+        r.shares = vec![
+            ShareAt {
+                exec: false,
+                ..share.clone()
+            },
+            ShareAt { exec: true, ..share },
+        ];
+        let bytes = r.encode().unwrap();
+        assert_eq!(bytes.get(bytes.len() - 2..), Some(&[0, 1][..]));
+        assert_eq!(Request::decode(&bytes), Ok(r));
+        let mut bad = bytes.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert_eq!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        );
     }
 
     /// A request cut anywhere short, or with a byte past its end, is refused by type; no
@@ -3579,9 +5532,11 @@ mod tests {
             }
         }
         // The reach's flag, before the control ask's, the GPUs' count, the member's arguments'
-        // count and the sign-ins' count where none is held apart.
+        // count, the sign-ins' count, the MCP bridges, the upstream roots' count, the GPU
+        // report's flag, the plug roots' count, the share's members and the members' ceilings'
+        // count (version 39) where none is held apart.
         let mut flag = held(None).encode().unwrap();
-        let at = flag.len() - 15;
+        let at = flag.len() - 29;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3595,8 +5550,11 @@ mod tests {
             .encode()
             .unwrap();
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
-        // one member's arguments' count (version 18) and the sign-ins' count (version 24).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1);
+        // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
+        // bridge (version 25), the upstream roots' count (version 26), the GPU report's flag
+        // (version 29), the plug roots' count (version 35), the share's members (version 37), the
+        // members' ceilings' count (version 39) and the share's exec flag (version 41).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -3609,7 +5567,7 @@ mod tests {
         // Held apart, with four billion members in a few bytes, in place of the reach's flag
         // and what follows it.
         let mut hostile = held(None).encode().unwrap();
-        hostile.truncate(hostile.len() - 15);
+        hostile.truncate(hostile.len() - 25);
         hostile.push(1);
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3658,15 +5616,18 @@ mod tests {
                 );
             }
         }
-        // The second member's one argument, "ü", last before the sign-ins' count (version 24):
+        // The second member's one argument, "ü", last before the sign-ins' count (version 24),
+        // the MCP bridges, the upstream roots' count (version 26), the GPU report's flag
+        // (version 29), the plug roots' count (version 35) and the share's members (version 37):
         // its bytes made no UTF-8.
         let mut bad = with(&["--resume"], &["ü"]).encode().unwrap();
-        let at = bad.len() - 2 - 4 - "ü".len();
+        // ... and the members' ceilings' count (version 39).
+        let at = bad.len() - 1 - 4 - 1 - 4 - 2 - 4 - 4 - "ü".len();
         bad[at] = 0xff;
         assert_eq!(Request::decode(&bad), Err(WireError::Text));
         // The second member's count, before the sign-ins', said as four billion in no bytes.
         let mut hostile = with(&[], &[]).encode().unwrap();
-        hostile.truncate(hostile.len() - 2 - 4);
+        hostile.truncate(hostile.len() - 1 - 4 - 1 - 4 - 2 - 4);
         let at = hostile.len() - 4;
         hostile[at..].copy_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(Request::decode(&hostile), Err(WireError::Short));
@@ -3769,6 +5730,24 @@ mod tests {
         v24.truncate(v24.len() - 1);
         v24[0] = 24;
         assert_eq!(Request::decode(&v24), Err(WireError::Version(24)));
+        // One of version 28, without its GPU report's scope: refused by its version (D233), so a
+        // run host never starts a GPU run whose orchestrator waits for a report none relays.
+        let mut v28 = request().encode().unwrap();
+        v28.truncate(v28.len() - 1);
+        v28[0] = 28;
+        assert_eq!(Request::decode(&v28), Err(WireError::Version(28)));
+        // One of version 29 asks as version 30 does, but its host tells its endpoint's address
+        // alone, where this side reads its waker's and its wake's after it: refused by its
+        // version (D252), so no orchestrator reads a `Started` laid out otherwise.
+        let mut v29 = request().encode().unwrap();
+        v29[0] = 29;
+        assert_eq!(Request::decode(&v29), Err(WireError::Version(29)));
+        // One of version 30 asks as version 31 does, but its host tells a period with `Started`
+        // that no rate is held over, and none with a rate's answer: refused by its version
+        // (D191), so no orchestrator reads a `RATED` laid out otherwise.
+        let mut v30 = request().encode().unwrap();
+        v30[0] = 30;
+        assert_eq!(Request::decode(&v30), Err(WireError::Version(30)));
         // One of version 13 reads a vCPU's unread guest time as free words
         // (guest-cpu-time-v1), and one of 19 carries every field version 20 does, but its
         // client ends the run at a lease its host asks: each refused by its version, before
@@ -3781,10 +5760,13 @@ mod tests {
         // The nesting flag, before the deadline's tag, the destinations', the one member's
         // working directory's and input's, the credential grants' count (version 8), the
         // member's terminal's (version 11), the members' reach (version 12), the control ask
-        // (version 15), the GPUs' count (version 16), its arguments' count (version 18) and the
-        // sign-ins' count (version 24): no flag.
+        // (version 15), the GPUs' count (version 16), its arguments' count (version 18), the
+        // sign-ins' count (version 24), its MCP bridge (version 25), the upstream roots' count
+        // (version 26), the GPU report's flag (version 29), the plug roots' count (version 35)
+        // the share's members (version 37), the members' ceilings' count (version 39) and the
+        // share's exec flag (version 41): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 25;
+        let at = flag.len() - 36;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -3795,10 +5777,12 @@ mod tests {
         );
         // The destinations' list, before the member's working directory and input, the
         // credential grants' count, the member's terminal, the members' reach, the control ask,
-        // the GPUs' count, the member's arguments' count and the sign-ins' count: no list of
-        // version 3's and on.
+        // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge,
+        // the upstream roots' count, the GPU report's flag, the plug roots' count, the share's
+        // members, the members' ceilings' count (version 39) and the share's exec flag (version
+        // 41): no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 23;
+        let at = list.len() - 38;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -3808,7 +5792,7 @@ mod tests {
             })
         );
         assert!(matches!(
-            Credit::decode(&[0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 1]),
+            Credit::decode(&[0, 0, 0, 1, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1]),
             Err(WireError::Tag {
                 what: "a channel",
                 tag: 3
@@ -4009,12 +5993,14 @@ mod tests {
             result: Err("x".repeat(run::MAX_PAYLOAD as usize)),
         };
         assert_eq!(long.encode(), Err(WireError::TooLong));
+        // ... and the members' ceilings' count (version 39) after them.
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 16;
+        let at = bad.len() - 29;
         assert_eq!(
             bad[at], 0,
             "the member's terminal flag precedes the members' reach, the control ask, the GPUs, \
-             its arguments and the sign-ins"
+             its arguments, the sign-ins, its MCP bridge, the upstream roots, the GPU report and \
+             the plug roots"
         );
         bad[at] = 2;
         assert_eq!(
@@ -4040,10 +6026,16 @@ mod tests {
             let ask = RateAsk { id: 7, rate };
             assert_eq!(RateAsk::decode(&ask.encode()), Ok(ask));
         }
+        let rated = |milli, ns| {
+            Ok(Rated {
+                milli: NonZeroU64::new(milli),
+                period: std::time::Duration::from_nanos(ns),
+            })
+        };
         for result in [
-            Ok(None),
-            Ok(NonZeroU64::new(1)),
-            Ok(NonZeroU64::new(u64::MAX)),
+            rated(0, 1_050_000),
+            rated(1, 1),
+            rated(u64::MAX, u64::MAX),
             Err("the microVM has not started".to_string()),
         ] {
             let answer = RateAnswer { id: u32::MAX, result };
@@ -4071,7 +6063,7 @@ mod tests {
         assert_eq!(RateAsk::decode(&padded), Err(WireError::Trailing));
         let answer = RateAnswer {
             id: 1,
-            result: Ok(NonZeroU64::new(250)),
+            result: rated(250, 31_250_000),
         }
         .encode()
         .unwrap();
@@ -4099,45 +6091,51 @@ mod tests {
         assert_eq!(long.encode(), Err(WireError::TooLong));
     }
 
-    /// The period a run's rate is held over reads back as its host said it, from a
-    /// nanosecond to the most a u64 counts (D247), its eight bytes last; a period of none, or
-    /// one past what a u64 counts in nanoseconds, is no period, refused each way.
+    /// The period a rate is held over reads back with its answer as its VM said it, from a
+    /// nanosecond to the most a u64 counts (D191, version 31), its eight bytes last; a period
+    /// of none, or one past what a u64 counts in nanoseconds, is no period, refused each way.
     #[test]
-    fn a_runs_rate_period_reads_back_as_its_host_said_it() {
+    fn a_rates_period_reads_back_as_its_vm_said_it() {
         use std::time::Duration;
-        let started = |rate_period| Started {
-            members: Vec::new(),
-            published: Vec::new(),
-            control: None,
-            rate_period,
-            from: StartedFrom::Booted,
+        const {
+            assert!(
+                VERSION >= 31,
+                "the channel's version 31 carries each rate's period"
+            )
+        };
+        let answer = |period| RateAnswer {
+            id: 9,
+            result: Ok(Rated {
+                milli: NonZeroU64::new(625),
+                period,
+            }),
         };
         for period in [
             Duration::from_nanos(1),
-            Duration::from_millis(100),
+            Duration::from_micros(31_250),
             Duration::from_nanos(u64::MAX),
         ] {
-            let said = started(period);
+            let said = answer(period);
             let bytes = said.encode().unwrap();
-            let last = bytes.get(bytes.len() - 9..bytes.len() - 1).unwrap();
+            let last = bytes.get(bytes.len() - 8..).unwrap();
             assert_eq!(last, u64::try_from(period.as_nanos()).unwrap().to_be_bytes());
-            assert_eq!(Started::decode(&bytes).unwrap(), said);
+            assert_eq!(RateAnswer::decode(&bytes).unwrap(), said);
         }
-        let mut none = started(Duration::from_millis(100)).encode().unwrap();
-        let at = none.len() - 9;
-        none.get_mut(at..at + 8).unwrap().fill(0);
+        let mut none = answer(Duration::from_millis(100)).encode().unwrap();
+        let at = none.len() - 8;
+        none.get_mut(at..).unwrap().fill(0);
         assert_eq!(
-            Started::decode(&none),
+            RateAnswer::decode(&none),
             Err(WireError::Tag {
                 what: "a rate period",
                 tag: 0
             })
         );
         assert_eq!(
-            started(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
+            answer(Duration::from_nanos(u64::MAX) + Duration::from_nanos(1)).encode(),
             Err(WireError::TooLong)
         );
-        assert_eq!(started(Duration::MAX).encode(), Err(WireError::TooLong));
+        assert_eq!(answer(Duration::MAX).encode(), Err(WireError::TooLong));
     }
 
     /// How a run's microVM started (D253) reads back as its host said it, its byte last; a
@@ -4161,15 +6159,16 @@ mod tests {
                 members: Vec::new(),
                 published: Vec::new(),
                 control: None,
-                rate_period: std::time::Duration::from_millis(100),
                 from,
+                egress: Narrowing::default(),
             };
             let mut bytes = said.encode().unwrap();
-            assert_eq!(bytes.last(), Some(&(from as u8)));
+            // How it started, before its grants (version 36): two lists of All, then
+            // destinations' All, the names' flag and the reach's.
+            let at = bytes.len() - 1 - 1 - 1 - 1 - 1 - 1;
+            assert_eq!(bytes[at], from as u8);
             assert_eq!(Started::decode(&bytes).unwrap(), said);
-            if let Some(last) = bytes.last_mut() {
-                *last = 5;
-            }
+            bytes[at] = 5;
             assert_eq!(
                 Started::decode(&bytes),
                 Err(WireError::Tag {
@@ -4178,6 +6177,42 @@ mod tests {
                 })
             );
         }
+    }
+
+    /// D253's pools: a warm host's use reads back as written, its error too; its ask carries
+    /// nothing, and either with bytes past its fields is refused.
+    #[test]
+    fn a_warm_hosts_use_reads_back_as_written() {
+        const {
+            assert!(
+                VERSION >= 32,
+                "the channel's version 32 carries a warm host's use"
+            )
+        };
+        let read = HostUse {
+            cpu_ns: 7,
+            resident_bytes: 300 << 20,
+            footprint_bytes: 280 << 20,
+            charged: Charged::ToThread,
+        };
+        for used in [Ok(read), Err("its VM process: gone".to_string())] {
+            let bytes = super::used(&used).unwrap();
+            assert_eq!(read_used(&bytes).unwrap(), used);
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert_eq!(read_used(&longer), Err(WireError::Trailing));
+        }
+        assert_eq!(
+            read_used(&[2]),
+            Err(WireError::Tag {
+                what: "a warm host's use",
+                tag: 2
+            })
+        );
+        assert_eq!(read_use(&[]), Ok(()));
+        assert_eq!(read_use(&[0]), Err(WireError::Trailing));
+        assert_ne!(to_host::USE, to_host::CREATE);
+        assert_ne!(to_client::USED, to_client::WARMED);
     }
 
     /// D253's pools: a warm run host's exemplar is its request with its members' stages, its
@@ -4215,6 +6250,10 @@ mod tests {
             }),
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
+            gpu_report: None,
         };
         let exemplar = full.exemplar();
         assert!(exemplar.members.is_empty() && exemplar.ready_by.is_none() && exemplar.control.is_none());
@@ -4259,6 +6298,84 @@ mod tests {
     /// why, the largest numbers a u64 holds. vCPUs out of index order, a part's unknown tag, a count
     /// past what the bytes left could hold, cut short or padded: refused, never read as a
     /// cost.
+    /// A run's end reads back with its final use (D260), each end's with every final use and
+    /// each reason for none, and a tag no version has, or bytes past it, refused.
+    #[test]
+    fn a_runs_end_reads_back_with_its_final_use() {
+        let read = FinalUse::Read(Microvm {
+            host: Ok(HostUse {
+                cpu_ns: 90,
+                resident_bytes: 4096,
+                footprint_bytes: 8192,
+                charged: Charged::ToThread,
+            }),
+            guest: Ok(GuestTimes {
+                vcpus: vec![
+                    VcpuTime {
+                        index: 0,
+                        guest_ns: 50,
+                        unread: None,
+                    },
+                    VcpuTime {
+                        index: 1,
+                        guest_ns: 30,
+                        unread: Some(shards_abi::guest_time::Unread::Gone),
+                    },
+                ],
+                departed_ns: 0,
+            }),
+        });
+        let words = FinalUse::Read(Microvm {
+            host: Err("its VM process: denied".into()),
+            guest: Err("the microVM has not started".into()),
+        });
+        let mut uses = vec![read, words];
+        uses.extend(
+            [Unused::NotStarted, Unused::Killed, Unused::Untold]
+                .into_iter()
+                .chain(
+                    [
+                        UseBroken::Long,
+                        UseBroken::Text,
+                        UseBroken::Word,
+                        UseBroken::Guest,
+                        UseBroken::Host,
+                    ]
+                    .map(Unused::Broken),
+                )
+                .map(FinalUse::Unread),
+        );
+        for end in [RunEnd::Exited(3), RunEnd::Stopped, RunEnd::Failed("x".into())] {
+            for final_use in &uses {
+                let ended = RunEnded {
+                    end: end.clone(),
+                    final_use: final_use.clone(),
+                    paused: std::time::Duration::from_nanos(u64::MAX),
+                };
+                let bytes = ended.encode().unwrap();
+                assert_eq!(RunEnded::decode(&bytes), Ok(ended));
+                assert_eq!(
+                    RunEnded::decode(&[&bytes[..], &[0]].concat()),
+                    Err(WireError::Trailing)
+                );
+                assert_eq!(RunEnded::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+            }
+        }
+        // An end alone, as a host of version 27 said it, is short of its final use.
+        assert_eq!(
+            RunEnded::decode(&RunEnd::Stopped.encode().unwrap()),
+            Err(WireError::Short)
+        );
+        let tagged = |tail: &[u8]| RunEnded::decode(&[&[1u8][..], tail].concat());
+        assert!(matches!(tagged(&[2]), Err(WireError::Tag { tag: 2, .. })));
+        assert!(matches!(tagged(&[1, 4]), Err(WireError::Tag { tag: 4, .. })));
+        assert!(matches!(tagged(&[1, 3, 5]), Err(WireError::Tag { tag: 5, .. })));
+        assert!(
+            matches!(tagged(&[0, 0]), Err(WireError::Tag { tag: 0, .. })),
+            "no cost read"
+        );
+    }
+
     #[test]
     fn a_runs_microvm_reads_back_as_its_host_said_it() {
         let times = GuestTimes {
@@ -4281,6 +6398,7 @@ mod tests {
             cpu_ns: 9_000,
             resident_bytes: 64 << 20,
             footprint_bytes: u64::MAX,
+            charged: Charged::ToThread,
         };
         let lines = b"cpu 10\nmemory 7\n";
         let gone = || Err::<HostUse, String>("its VM process: no such process".into());
@@ -4303,7 +6421,7 @@ mod tests {
                 guest: Ok(times.clone()),
             },
         ] {
-            let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm)))).unwrap();
+            let bytes = StatsAnswer::encode(3, Ok((lines, Some(&microvm), None))).unwrap();
             let stats = StatsAnswer::decode(&bytes).unwrap().result.unwrap();
             assert_eq!((stats.cpu_ns, stats.memory_bytes), (Some(10), Some(7)));
             assert_eq!(stats.microvm, Some(microvm));
@@ -4318,11 +6436,11 @@ mod tests {
             host: Ok(host),
             guest: Ok(times),
         };
-        let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both)))).unwrap();
+        let bytes = StatsAnswer::encode(3, Ok((lines, Some(&both), None))).unwrap();
         // The second vCPU's index, after the stats' id, tag, lines, the microVM's tag, its
-        // host's tag and three numbers, its guest's tag, departed time and count, and the
-        // first vCPU's index, time and flag: made the first's, out of order.
-        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 8 + 4 + 13;
+        // host's tag, three numbers and charge, its guest's tag, departed time and count, and
+        // the first vCPU's index, time and flag: made the first's, out of order.
+        let second = 4 + 1 + 4 + lines.len() + 1 + 1 + 24 + 1 + 1 + 8 + 4 + 13;
         let mut out_of_order = bytes.clone();
         out_of_order[second..second + 4].copy_from_slice(&0u32.to_be_bytes());
         assert_eq!(
@@ -4342,7 +6460,8 @@ mod tests {
         for (at, tag, what) in [
             (microvm_tag, 2, "a microVM's cost"),
             (microvm_tag + 1, 2, "a VM process's use"),
-            (microvm_tag + 1 + 1 + 24, 2, "a microVM's guest time"),
+            (microvm_tag + 1 + 1 + 24, 3, "a VM process's charge"),
+            (microvm_tag + 1 + 1 + 24 + 1, 2, "a microVM's guest time"),
             (second + 4 + 8, 2, "a vCPU's guest time"),
         ] {
             let mut bad = bytes.clone();
@@ -4353,7 +6472,7 @@ mod tests {
                 "{what}"
             );
         }
-        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 8].to_vec();
+        let mut hostile = bytes[..microvm_tag + 1 + 1 + 24 + 1 + 1 + 8].to_vec();
         hostile.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(StatsAnswer::decode(&hostile), Err(WireError::Short));
     }
@@ -4391,6 +6510,10 @@ mod tests {
             control,
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
+            upstream_roots: Vec::new(),
+            plug_roots: Vec::new(),
+            egress_ceiling: Vec::new(),
+            gpu_report: None,
         }
     }
 
@@ -4425,29 +6548,73 @@ mod tests {
     }
 
     /// Step 11 (b), D252: a started run tells where its endpoint is bound and the microVM's own
-    /// key, which the controller pins; a run asked for no endpoint tells none.
+    /// key, which the controller pins, and (version 30) its waker's and its wake's addresses,
+    /// each read back by its name; a run asked for no endpoint tells none.
     #[test]
     fn a_started_run_tells_where_its_endpoint_is_and_its_vms_key() {
+        const {
+            assert!(
+                VERSION >= 30,
+                "the channel's version 30 carries the waker and the wake"
+            )
+        };
         for control in [
             None,
             Some(ControlAt {
                 address: "127.0.0.1:40123".parse().unwrap(),
                 vm: [3u8; 32],
+                waker: "127.0.0.1:50001".parse().unwrap(),
+                wake: "127.0.0.1:50002".parse().unwrap(),
             }),
             Some(ControlAt {
                 address: "[::1]:40123".parse().unwrap(),
                 vm: [4u8; 32],
+                waker: "[::1]:50001".parse().unwrap(),
+                wake: "[::1]:50002".parse().unwrap(),
             }),
         ] {
             let started = Started {
                 members: Vec::new(),
                 published: Vec::new(),
                 control,
-                rate_period: std::time::Duration::from_millis(100),
                 from: StartedFrom::Restored,
+                egress: Narrowing::default(),
             };
-            assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+            let read = Started::decode(&started.encode().unwrap()).unwrap();
+            assert_eq!(read, started);
+            if let Some(at) = read.control {
+                assert_eq!(at.sockets(), [at.address, at.waker, at.wake]);
+                assert!(at.waker.port() == 50001 && at.wake.port() == 50002, "{at:?}");
+            }
         }
+        // Each of the two cut short, or its address's tag none, is refused, never defaulted.
+        let started = Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: Some(ControlAt {
+                address: "127.0.0.1:40123".parse().unwrap(),
+                vm: [3u8; 32],
+                waker: "127.0.0.1:50001".parse().unwrap(),
+                wake: "127.0.0.1:50002".parse().unwrap(),
+            }),
+            from: StartedFrom::Restored,
+            egress: Narrowing::default(),
+        };
+        let bytes = started.encode().unwrap();
+        // The wake's address (a tag, four octets and a port), then how it started (1) and its
+        // grants (version 36: All's three lists, the names' flag and the reach's, 5) last:
+        // since v31 the hold's period rides each rate's answer (`Rated`), not `Started`.
+        let wake = bytes.len() - 5 - 1 - (1 + 4 + 2);
+        let waker = wake - (1 + 4 + 2);
+        assert_eq!(bytes[waker], 4);
+        assert_eq!(bytes[waker + 1..waker + 5], [127, 0, 0, 1]);
+        assert_eq!(bytes[wake + 5..wake + 7], 50002u16.to_be_bytes());
+        for (at, what) in [(waker, "an endpoint's waker"), (wake, "an endpoint's wake")] {
+            let mut none = bytes.clone();
+            none[at] = 0;
+            assert_eq!(Started::decode(&none), Err(WireError::Tag { what, tag: 0 }));
+        }
+        assert!(Started::decode(&bytes[..wake + 3]).is_err());
     }
 
     /// D232 through D231 (D234's `gpus=`): the GPUs a run names cross the image channel in
@@ -4472,9 +6639,14 @@ mod tests {
         let bytes = named.encode().unwrap();
         assert_eq!(Request::decode(&bytes).unwrap().gpu_devices, gpus);
         // The last identity's text, "metal:00000001000002a1", before the one member's arguments'
-        // count (version 18) and the sign-ins' (version 24), made one D232's grammar refuses.
+        // count (version 18), the sign-ins' (version 24), its MCP bridge (version 25), the
+        // upstream roots' count (version 26), the GPU report's flag (version 29), the plug roots'
+        // count (version 35) and the share's members (version 37), made one D232's grammar
+        // refuses.
         let mut unnamed = bytes.clone();
-        let at = unnamed.len() - 1 - 4 - 4 - "metal:00000001000002a1".len();
+        // ... the members' ceilings' count (version 39) and the share's exec flag (version 41).
+        let at = unnamed.len() - 1 - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
+        assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
         let twice = Request {
@@ -4482,6 +6654,59 @@ mod tests {
             ..request()
         };
         assert_eq!(Request::decode(&twice.encode().unwrap()), Err(WireError::Gpu));
+    }
+
+    /// D233 through D231: a run's GPU report's scope (version 29). Expect: a scope read back
+    /// whole, none as none; a zero scope, or one of a run that names no GPU, refused as a
+    /// managed launch's is; a request cut in it refused; and no warm host's exemplar keeps it.
+    #[test]
+    fn a_runs_gpu_report_scope_crosses_the_channel_with_its_gpus_alone() {
+        let gpus = vec![shards_abi::gpu::PhysicalGpu::MetalRegistry(7)];
+        let scoped = Request {
+            gpu_devices: gpus.clone(),
+            gpu_report: Some([3; 16]),
+            ..request()
+        };
+        let bytes = scoped.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), scoped);
+        for cut in 1..=16 {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
+        let unscoped = Request {
+            gpu_devices: gpus.clone(),
+            ..request()
+        };
+        assert_eq!(
+            Request::decode(&unscoped.encode().unwrap()).unwrap().gpu_report,
+            None
+        );
+        let zero = Request {
+            gpu_report: Some([0; 16]),
+            ..scoped.clone()
+        };
+        assert_eq!(Request::decode(&zero.encode().unwrap()), Err(WireError::Gpu));
+        let gpuless = Request {
+            gpu_devices: Vec::new(),
+            ..scoped.clone()
+        };
+        assert_eq!(Request::decode(&gpuless.encode().unwrap()), Err(WireError::Gpu));
+        assert_eq!(scoped.exemplar().gpu_report, None);
+        assert_eq!(scoped.exemplar().gpu_devices, gpus);
+    }
+
+    /// A run's upstream roots (version 26, D242). Expect: each DER read back, in order; a request
+    /// cut anywhere in them refused.
+    #[test]
+    fn a_runs_upstream_roots_cross_the_channel() {
+        let rooted = Request {
+            upstream_roots: vec![vec![0x30, 0x01, 0x02], vec![0x30; 300]],
+            ..request()
+        };
+        let bytes = rooted.encode().unwrap();
+        assert_eq!(Request::decode(&bytes).unwrap(), rooted);
+        for cut in 1..=bytes.len() - request().encode().unwrap().len() {
+            assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
+        }
     }
 
     /// A run's sign-ins and their words (version 24, D242 step 8). Do: carry a sign-in captured
@@ -4531,9 +6756,13 @@ mod tests {
             assert!(Request::decode(&bytes[..bytes.len() - cut]).is_err(), "cut {cut}");
         }
         // The second sign-in's CLI, its code after its name, made one no version has; the one
-        // member's MCP bridge's flag (version 25) after it.
+        // member's MCP bridge's flag (version 25), the upstream roots' count (version 26), the
+        // GPU report's flag (version 29), the plug roots' count (version 35), the share's
+        // members (version 37), the members' ceilings' count (version 39) and the share's exec
+        // flag (version 41) after it.
         let mut cli = bytes.clone();
-        let at = cli.len() - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1);
+        let at = cli.len()
+            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));

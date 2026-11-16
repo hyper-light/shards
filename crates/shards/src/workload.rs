@@ -102,6 +102,9 @@ pub enum Lost {
     Closed,
     /// The guest sent on it what it never sends.
     Protocol,
+    /// The guest sent within its run's managed control scope what that scope never takes:
+    /// what came, named (`capture::Refusal`).
+    Refused(capture::Refusal),
     /// The host could not take it as a restored guest dialed it again (D176).
     Untaken,
     /// A send on it, a read of it, or a copy of it to read failed: the error's kind, and
@@ -123,6 +126,7 @@ impl std::fmt::Display for Lost {
         match *self {
             Self::Closed => f.write_str("the guest closed it before its end"),
             Self::Protocol => f.write_str("the guest sent on it what it never sends"),
+            Self::Refused(refusal) => write!(f, "its managed control refused {refusal}"),
             Self::Untaken => f.write_str("its restored guest's dial could not be taken"),
             Self::Failed { os: Some(code), .. } => write!(f, "{}", io::Error::from_raw_os_error(code)),
             Self::Failed { kind, os: None } => write!(f, "{}", io::Error::from(kind)),
@@ -276,6 +280,9 @@ pub struct Asked<'a> {
     /// Given each member's end, where the run asked to hear them (D231): its
     /// `MEMBER_ENDED` payload.
     pub members: Option<&'a Records<'a>>,
+    /// Given what came of each member's next generation its owner asked for (D270 slice 3b):
+    /// its `MEMBER_STARTED` payload.
+    pub restarted: Option<&'a Records<'a>>,
     /// Given each move of its command's readiness under the nesting grant (D234): its
     /// `READY` payload.
     pub readiness: Option<&'a Records<'a>>,
@@ -660,6 +667,42 @@ fn with_sink<T>(
     })
 }
 
+/// A guest whose init announced another contract than this build's, or none (`spoken`): a
+/// shards-init of another build, booted cold where a run names one (`SHARDS_INIT`, a guest
+/// `shards configure guest --init` recorded, D28), which could misread the run, so it is sent
+/// none (D176). A resumed guest's init was checked before its restore (`snapshot::resumable`,
+/// `ResumeRefused::OlderInit`), whose words these follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OtherInit {
+    pub spoken: Option<u64>,
+    pub ours: u64,
+}
+
+impl OtherInit {
+    /// Refused where `spoken`, the guest's init's announced contract, is not `ours`.
+    fn check(spoken: Option<u64>, ours: u64) -> Result<(), OtherInit> {
+        match spoken == Some(ours) {
+            true => Ok(()),
+            false => Err(OtherInit { spoken, ours }),
+        }
+    }
+}
+
+impl std::fmt::Display for OtherInit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this microVM's shards-init (")?;
+        match self.spoken {
+            Some(spoken) => write!(f, "contract {spoken:016x}")?,
+            None => f.write_str("no contract announced")?,
+        }
+        write!(
+            f,
+            ") cannot run in this shards (contract {:016x}): boot the shards-init this shards carries",
+            self.ours
+        )
+    }
+}
+
 /// Serves the guest: sends the command, relays stdio, and returns how the workload ended.
 /// Signals go through `to`, on the connection the guest makes to `signals`. The command
 /// goes only to a guest whose init announced this build's contract, `guest_abi`
@@ -698,6 +741,7 @@ pub fn serve(
         kept,
         processes,
         members,
+        restarted,
         readiness,
         host_net,
         resumed,
@@ -717,6 +761,7 @@ pub fn serve(
             kept: None,
             processes: None,
             members: None,
+            restarted: None,
             readiness: None,
             host_net: None,
             resumed: None,
@@ -740,15 +785,7 @@ pub fn serve(
     };
     let resuming = resumed_signals.is_some();
     let _ = timing.request_us.set(shards_vmm::log::uptime_us());
-    let abi = guest_abi();
-    if abi != Some(shards_abi::IDENTITY) {
-        let spoken = abi.map_or_else(|| "none".to_string(), |abi| format!("{abi:016x}"));
-        return Err(format!(
-            "the microVM's shards-init speaks another shards' protocol ({spoken}, where this \
-             shards speaks {:016x}): boot the shards-init built with this shards",
-            shards_abi::IDENTITY
-        ));
-    }
+    OtherInit::check(guest_abi(), shards_abi::IDENTITY).map_err(|e| e.to_string())?;
     let capture_control = match capture {
         Some(capture) => {
             if resuming {
@@ -817,17 +854,18 @@ pub fn serve(
     let records = RunRecords {
         processes,
         members,
+        restarted,
         readiness,
         host_net,
     };
     let status = relay(&mut reader, timing, log.as_mut(), started, records);
-    // A relay of its members' output that broke ended the run's connection here, which its
-    // relay failed for: why, in place of that end (capture.rs `relay_ending`).
-    let status = status.map_err(|e| {
-        capture::ended_run().map_or(e, |why| {
-            format!("its members' output could not be relayed: {why}")
-        })
-    });
+    // A relay of its members' output that broke, or its managed control refused or ended
+    // unannounced, ended the run's connection here, which its relay failed for: why, in
+    // place of that end (capture.rs `ENDED_RUN`).
+    let status = status.map_err(|e| capture::ended_run().unwrap_or(e));
+    if status.is_err() {
+        capture::guest_failed();
+    }
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -940,6 +978,7 @@ fn relay(
 struct RunRecords<'a> {
     processes: Option<&'a Records<'a>>,
     members: Option<&'a Records<'a>>,
+    restarted: Option<&'a Records<'a>>,
     readiness: Option<&'a Records<'a>>,
     host_net: Option<&'a Records<'a>>,
 }
@@ -1029,6 +1068,15 @@ fn relay_frames(
                 run::members::Ended::decode(payload).ok_or("the guest sent a malformed member end")?;
                 if let Some(members) = records.members {
                     members(payload);
+                }
+            }
+            // What came of a member's next generation its owner asked for (D270 slice 3b), well
+            // formed or the guest's protocol broken.
+            kind::MEMBER_STARTED => {
+                run::members::StartAnswer::decode(payload)
+                    .map_err(|e| format!("the guest sent a malformed member start's answer: {e}"))?;
+                if let Some(restarted) = records.restarted {
+                    restarted(payload);
                 }
             }
             // Its command's readiness under the nesting grant (D234), as init moves it:
@@ -2411,6 +2459,19 @@ pub fn signal_guest(to: &ToGuest, linux: u32) -> Result<(), Unsent> {
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
 }
 
+/// Holds a member for its next generation (D270 slice 3b), so that its current one's end keeps
+/// its server instance and its namespaces, or lets it go, as `hold` says, as [`signal_guest`]
+/// sends a signal.
+pub fn hold_member(to: &ToGuest, hold: run::members::Hold) -> Result<(), Unsent> {
+    to_guest(to, kind::MEMBER_HOLD, &hold.encode())
+}
+
+/// Gives the guest a member's next generation (D270 slice 3b), `start` as
+/// `run::members::Start` encodes it, as [`signal_guest`] sends a signal.
+pub fn start_member(to: &ToGuest, start: &[u8]) -> Result<(), Unsent> {
+    to_guest(to, kind::MEMBER_START, start)
+}
+
 /// Linux signal `linux` is one the guest delivers: `1..=NSIG`, as init checks it.
 fn is_signal(linux: u32) -> Result<(), Unsent> {
     if (1..=run::NSIG).contains(&linux) {
@@ -2479,7 +2540,8 @@ fn dialed(to: &ToGuest, conn: UnixStream) -> Option<(UnixStream, UnixStream)> {
 
 /// Takes the guest's signal connection as it comes, `conn`: its sender starts on a thread of
 /// its own ([`send_frames`]), what waited going first, a managed run's control boundary is
-/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]).
+/// held on it (`capture::Control`), and its end is watched from then on ([`watch`]); a relay
+/// that ends within that boundary has said its end there ([`ended`]).
 fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture::Control, UnixStream)>) {
     let sender = dialed(to, conn).map(|(sending, watched)| {
         let started = std::thread::Builder::new()
@@ -2495,11 +2557,13 @@ fn take_signals(to: &'static ToGuest, conn: UnixStream, managed: Option<(capture
         }
         None => return end_managed(managed),
     };
-    if let Some((control, boundary)) = managed
-        && let Err(e) = control.supervise(&watched, &boundary)
-    {
-        shards_vmm::debug!("managed control boundary ended: {e}");
-        return lose(to, Lost::of(&e));
+    if let Some((control, boundary)) = managed {
+        match control.supervise(&watched, &boundary) {
+            Ok(capture::Served::ControlEnded) => {}
+            Ok(capture::Served::RelayEnded) => return ended(to),
+            Err(capture::Unserved::Refused(refusal)) => return lose(to, Lost::Refused(refusal)),
+            Err(capture::Unserved::Failed(e)) => return lose(to, Lost::of(&e)),
+        }
     }
     watch(to, &watched);
 }
@@ -2624,6 +2688,33 @@ mod tests {
     use crate::log_writer::{log_head, write_parts};
     use crate::segments::{log_segment, new_segment};
     use crate::spec::{INDEX_LINE, INDEX_STDERR};
+
+    /// A guest's init of another contract, or one that announced none, is refused typed before
+    /// any command is sent to it; this build's is served.
+    #[test]
+    fn a_guest_init_of_another_contract_is_refused_typed() {
+        let ours = shards_abi::IDENTITY;
+        assert_eq!(OtherInit::check(Some(ours), ours), Ok(()));
+        let other = OtherInit::check(Some(ours ^ 1), ours).unwrap_err();
+        assert_eq!(
+            other,
+            OtherInit {
+                spoken: Some(ours ^ 1),
+                ours
+            }
+        );
+        assert_eq!(
+            other.to_string(),
+            format!(
+                "this microVM's shards-init (contract {:016x}) cannot run in this shards (contract \
+                 {ours:016x}): boot the shards-init this shards carries",
+                ours ^ 1
+            )
+        );
+        let none = OtherInit::check(None, ours).unwrap_err();
+        assert_eq!(none, OtherInit { spoken: None, ours });
+        assert!(none.to_string().contains("(no contract announced)"), "{none}");
+    }
 
     /// The exec port's tests one at a time, each with a port of its own.
     fn exec_port_test() -> (
@@ -3291,6 +3382,7 @@ mod tests {
             let records = RunRecords {
                 processes: None,
                 members: None,
+                restarted: None,
                 readiness: Some(&readiness),
                 host_net: None,
             };

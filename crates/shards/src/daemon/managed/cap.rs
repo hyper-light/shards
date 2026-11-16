@@ -16,12 +16,12 @@
 //!   they still pass the bound, the member whose newest is the oldest is closed and given a fresh
 //!   one by its keeper, which holds its writer, and the closed segment goes; the run's command's
 //!   newest is its VM's, never closed here. So the bound holds to within that one segment.
-//! - **Each loss is its owner's record** (`log.capped` beside its log): a line of the segment let
-//!   go and its bytes, which `logs` says ([`capped`]); a log lane's reader finds the segment gone
+//! - **Each loss is its owner's record** (`log.capped` beside its log): cumulative counts
+//!   of segments and bytes, which `logs` says ([`capped`]); a log lane's reader finds the segment gone
 //!   and says `Rotated` with the oldest place kept.
 
 use std::fs::File;
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -249,33 +249,61 @@ fn remove(dir: &Path, seq: u64) -> io::Result<bool> {
     Ok(removed)
 }
 
-/// Appends `segment`'s loss to its owner's record in `dir`: its number and its bytes, a line.
+/// The record's one line, "sum ", two decimal u64 values, their separator and its newline.
+const CAPPED_LINE_MOST: usize = b"sum ".len() + 2 * (u64::MAX.ilog10() as usize + 1) + 2;
+
+/// Updates this log's cumulative loss, serialized by its keeper. The filesystem's
+/// durable replacement keeps either the old whole totals or the new whole totals.
 fn record(dir: &Path, segment: &Segment) -> io::Result<()> {
-    let mut file = crate::os::owner_only(std::fs::OpenOptions::new().create(true).append(true))
-        .open(dir.join(CAPPED))?;
-    writeln!(file, "{} {}", segment.seq, segment.bytes)
+    let dir = platform::open_dir(dir)?;
+    let before = capped(&dir)?;
+    let totals = Capped {
+        segments: before.segments.checked_add(1).ok_or(io::ErrorKind::InvalidData)?,
+        bytes: before
+            .bytes
+            .checked_add(segment.bytes)
+            .ok_or(io::ErrorKind::InvalidData)?,
+    };
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(CAPPED_LINE_MOST)
+        .map_err(io::Error::other)?;
+    writeln!(bytes, "sum {} {}", totals.segments, totals.bytes)?;
+    platform::write_in(&dir, CAPPED, &bytes)
 }
 
-/// What the cap let go of the log in the directory `dir` holds open, its owner's record summed:
-/// none where it let none go.
+/// The cumulative loss: none where nothing was let go. The record is its one line,
+/// `sum SEGMENTS BYTES` and a newline, read to a byte past its longest; anything else is
+/// refused (InvalidData), never summed as lines of another form (D240: the per-loss
+/// `SEGMENT BYTES` lines control-05 replaced were on main for a day and in no release).
+/// Names may be versioned on Windows.
 pub(in crate::daemon) fn capped(dir: &File) -> io::Result<Capped> {
-    let mut text = String::new();
-    match platform::open_in(dir, CAPPED) {
-        Ok(mut file) => {
-            std::io::Read::read_to_string(&mut file, &mut text)?;
-        }
+    let file = match platform::open_newest_in(dir, CAPPED) {
+        Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Capped::default()),
         Err(e) => return Err(e),
-    }
-    text.lines().try_fold(Capped::default(), |sum, line| {
-        let lost = line
-            .split_once(' ')
-            .and_then(|(_, bytes)| bytes.parse::<u64>().ok())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a cap's record that does not read"))?;
-        Ok(Capped {
-            segments: sum.segments.saturating_add(1),
-            bytes: sum.bytes.saturating_add(lost),
-        })
+    };
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(CAPPED_LINE_MOST + 1)
+        .map_err(io::Error::other)?;
+    let most = u64::try_from(CAPPED_LINE_MOST + 1).map_err(|_| io::ErrorKind::InvalidData)?;
+    file.take(most).read_to_end(&mut bytes)?;
+    capped_of(&bytes).ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+/// The totals a record's `bytes` say: `sum SEGMENTS BYTES\n`, both decimal digits alone.
+fn capped_of(bytes: &[u8]) -> Option<Capped> {
+    let text = std::str::from_utf8(bytes.strip_suffix(b"\n")?).ok()?;
+    let (segments, bytes) = text.strip_prefix("sum ")?.split_once(' ')?;
+    let number = |word: &str| {
+        (!word.is_empty() && word.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| word.parse::<u64>().ok())
+            .flatten()
+    };
+    Some(Capped {
+        segments: number(segments)?,
+        bytes: number(bytes)?,
     })
 }
 
@@ -296,6 +324,78 @@ mod tests {
     use super::*;
     use crate::log_writer::Writer;
     use crate::spec::{LOG_STDOUT, LogRetention};
+
+    /// The record is its one `sum` line: the per-loss lines control-05 replaced, and any
+    /// other form or a longer record, are refused, never summed (D240).
+    #[test]
+    fn a_caps_loss_record_is_its_sum_line_or_refused() {
+        let dir = shards_testdir::TempDir::new("cap-form").unwrap();
+        let held = platform::open_dir(&dir).unwrap();
+        assert_eq!(capped(&held).unwrap(), Capped::default());
+        platform::write_in(&held, CAPPED, b"sum 3 60\n").unwrap();
+        assert_eq!(
+            capped(&held).unwrap(),
+            Capped {
+                segments: 3,
+                bytes: 60
+            }
+        );
+        let longest = format!("sum {} {}\n", u64::MAX, u64::MAX);
+        assert_eq!(longest.len(), CAPPED_LINE_MOST);
+        platform::write_in(&held, CAPPED, longest.as_bytes()).unwrap();
+        assert_eq!(capped(&held).unwrap().bytes, u64::MAX);
+        // One past a u64's most.
+        let past = "sum 18446744073709551616 1\n";
+        for record in [
+            "0 10\n1 20\n2 30\n",
+            "0 10\n",
+            "sum 3 60",
+            "sum 3 60\nsum 1 1\n",
+            "sum 3\n",
+            "sum +3 60\n",
+            "sum  3 60\n",
+            past,
+        ] {
+            platform::write_in(&held, CAPPED, record.as_bytes()).unwrap();
+            assert_eq!(
+                capped(&held).unwrap_err().kind(),
+                io::ErrorKind::InvalidData,
+                "{record:?}"
+            );
+        }
+        platform::write_in(&held, CAPPED, &[b'x'; CAPPED_LINE_MOST + 1]).unwrap();
+        assert_eq!(capped(&held).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_caps_loss_record_is_bounded_by_its_totals_not_its_history() {
+        let dir = shards_testdir::TempDir::new("cap-total").unwrap();
+        for seq in 0..128 {
+            record(
+                &dir,
+                &Segment {
+                    seq,
+                    bytes: 7,
+                    changed: SystemTime::UNIX_EPOCH,
+                },
+            )
+            .unwrap();
+        }
+        let held = platform::open_dir(&dir).unwrap();
+        assert_eq!(
+            capped(&held).unwrap(),
+            Capped {
+                segments: 128,
+                bytes: 128 * 7
+            }
+        );
+        let most = CAPPED_LINE_MOST;
+        let file = platform::open_newest_in(&held, CAPPED).unwrap();
+        assert!(
+            file.metadata().unwrap().len() <= most as u64,
+            "lifetime eviction history remained on disk"
+        );
+    }
 
     /// A writer of the log in `dir`, segments of `size` bytes, as many as `files`.
     fn writer(dir: &Path, size: u64, files: u64) -> Writer {

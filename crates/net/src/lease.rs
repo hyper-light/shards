@@ -117,14 +117,17 @@ pub fn refused(resumed: &[Resumed], waiter: Waiter) -> Vec<(String, Refusal)> {
 
 /// One credential's lease, where it stands (R04).
 enum Lease {
-    /// Asked of the run host by `id`; the flows waiting on its answer.
-    Asked { id: u32, waiting: Vec<Waiter> },
-    /// Held until `until` on this process's clock; none where its end is past what that
-    /// clock can name, which the run's end releases.
+    /// Asked at `at`, once; retries join the same ask and cannot reset its clock.
+    Asked {
+        id: u32,
+        at: Instant,
+        waiting: Vec<Waiter>,
+    },
+    /// Held until the conservative end on this process's clock.
     Held {
         id: u32,
         value: Zeroizing<Vec<u8>>,
-        until: Option<Instant>,
+        until: Instant,
     },
 }
 
@@ -136,7 +139,7 @@ impl Lease {
     }
 
     fn lapsed(&self, now: Instant) -> bool {
-        matches!(self, Lease::Held { until: Some(until), .. } if *until <= now)
+        matches!(self, Lease::Held { until, .. } if *until <= now)
     }
 }
 
@@ -144,7 +147,7 @@ impl Lease {
 impl std::fmt::Debug for Lease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Lease::Asked { id, waiting } => f
+            Lease::Asked { id, waiting, .. } => f
                 .debug_struct("Asked")
                 .field("id", id)
                 .field("waiting", &waiting.len())
@@ -209,6 +212,7 @@ impl Leases {
                 reference.to_string(),
                 Lease::Asked {
                     id,
+                    at: now,
                     waiting: Vec::new(),
                 },
             );
@@ -216,7 +220,9 @@ impl Leases {
         match self.each.get_mut(reference) {
             Some(Lease::Held { value, .. }) => Asked::Held(value.as_slice()),
             Some(Lease::Asked { waiting, .. }) => {
-                waiting.push(waiter);
+                if !waiting.contains(&waiter) {
+                    waiting.push(waiter);
+                }
                 Asked::Waiting
             }
             None => Asked::Refused(Refusal::Ended),
@@ -239,8 +245,9 @@ impl Leases {
         std::mem::take(&mut self.unsent)
     }
 
-    /// The run host's answer `payload` (`NET_LEASE`), taken at `now`: its lease held until
-    /// its end, or refused; either way its waiting flows resumed. False for a payload that is
+    /// The run host's answer `payload` (`NET_LEASE`), taken at `now`: its returned lifetime
+    /// bounded from the first ask, or refused as lapsed; either way its waiting flows resumed.
+    /// False for a payload that is
     /// no answer, or one to no ask of this process's, which breaks the run host's contract.
     /// After the run's end, an answer is let go of: nothing waits on it.
     pub fn answered(&mut self, payload: &[u8], now: Instant) -> bool {
@@ -258,21 +265,28 @@ impl Leases {
         else {
             return false;
         };
-        let Some(Lease::Asked { waiting, .. }) = self.each.remove(&reference) else {
+        let Some(Lease::Asked { at, waiting, .. }) = self.each.remove(&reference) else {
             return false;
         };
         let outcome = match answer {
             Ok((lives, value)) => {
-                let until = now.checked_add(Duration::from_nanos(lives.get()));
-                self.each.insert(
-                    reference.clone(),
-                    Lease::Held {
-                        id,
-                        value: Zeroizing::new(value.to_vec()),
-                        until,
-                    },
-                );
-                Ok(())
+                // The SDK computes `lives` after this ask began. Anchoring it at the ask
+                // debits all broker/relay/delivery time, so no hop can extend authority.
+                // An unrepresentable end is uncertainty, never an unbounded lease (D242).
+                match at.checked_add(Duration::from_nanos(lives.get())) {
+                    Some(until) if until > now => {
+                        self.each.insert(
+                            reference.clone(),
+                            Lease::Held {
+                                id,
+                                value: Zeroizing::new(value.to_vec()),
+                                until,
+                            },
+                        );
+                        Ok(())
+                    }
+                    _ => Err(Refusal::Lapsed),
+                }
             }
             Err(refusal) => Err(refusal),
         };
@@ -291,6 +305,17 @@ impl Leases {
     /// The flows whose lease was answered or ended since the last call.
     pub fn resumed(&mut self) -> Vec<Resumed> {
         std::mem::take(&mut self.resumed)
+    }
+
+    /// A flow ended: neither an outstanding ask nor an answer waits for its token again.
+    /// Keep the ask itself, so that a late broker answer still belongs to this run.
+    pub fn gone(&mut self, waiter: Waiter) {
+        for lease in self.each.values_mut() {
+            if let Lease::Asked { waiting, .. } = lease {
+                waiting.retain(|w| *w != waiter);
+            }
+        }
+        self.resumed.retain(|r| r.waiter != waiter);
     }
 
     /// Credential `reference`'s value, where its lease is held at `now`.
@@ -330,7 +355,7 @@ impl Leases {
         self.each
             .values()
             .filter_map(|l| match l {
-                Lease::Held { until, .. } => *until,
+                Lease::Held { until, .. } => Some(*until),
                 Lease::Asked { .. } => None,
             })
             .min()
@@ -480,6 +505,74 @@ mod tests {
         id
     }
 
+    #[test]
+    fn creds_05_a_delayed_answer_cannot_restart_the_lessors_lease() {
+        let mut l = leases();
+        let asked = Instant::now();
+        assert!(matches!(l.ask(CLAUDE, 1, asked), Asked::Waiting));
+        let id = the_ask(&l.asks(), CLAUDE);
+        let life = Duration::from_secs(1);
+        let answer = encode_answer(id, Ok((lives(life), VALUE))).unwrap();
+        let delivered = asked + life + life;
+        assert!(l.answered(&answer, delivered));
+        assert!(
+            l.held(CLAUDE, delivered).is_none(),
+            "a delayed answer extended the lease"
+        );
+        assert_eq!(l.resumed()[0].outcome, Err(Refusal::Lapsed));
+    }
+
+    #[test]
+    fn creds_05_retries_and_delivery_spend_the_original_ask_budget() {
+        let mut l = leases();
+        let at = Instant::now();
+        let second = Duration::from_secs(1);
+        assert!(matches!(l.ask(CLAUDE, 1, at), Asked::Waiting));
+        let id = the_ask(&l.asks(), CLAUDE);
+        assert!(matches!(l.ask(CLAUDE, 2, at + second), Asked::Waiting));
+        let answer = encode_answer(id, Ok((lives(second * 4), VALUE))).unwrap();
+        assert!(l.answered(&answer, at + second * 2));
+        assert_eq!(l.next_end(), Some(at + second * 4));
+        assert_eq!(l.held(CLAUDE, at + second * 3), Some(VALUE));
+        assert!(l.held(CLAUDE, at + second * 4).is_none());
+    }
+
+    #[test]
+    fn creds_06_a_pending_lease_resumes_each_flow_once() {
+        for outcome in [
+            Ok((NonZeroU64::MAX, VALUE)),
+            Err(Refusal::Denied("fixture".into())),
+        ] {
+            let mut l = leases();
+            let now = Instant::now();
+            for waiter in [1, 1, 2, 1, 2, 2] {
+                assert!(matches!(l.ask(CLAUDE, waiter, now), Asked::Waiting));
+            }
+            let id = the_ask(&l.asks(), CLAUDE);
+            let answer = encode_answer(id, outcome.as_ref().map(|(life, value)| (*life, *value))).unwrap();
+            assert!(l.answered(&answer, now));
+            let resumed = l.resumed();
+            assert_eq!(resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [1, 2]);
+        }
+    }
+
+    #[test]
+    fn creds_06_an_ended_flow_keeps_no_waiter_or_answer() {
+        let mut l = leases();
+        let now = Instant::now();
+        for waiter in [1, 2] {
+            assert!(matches!(l.ask(CLAUDE, waiter, now), Asked::Waiting));
+        }
+        l.gone(1);
+        let id = the_ask(&l.asks(), CLAUDE);
+        let answer = encode_answer(id, Ok((NonZeroU64::MAX, VALUE))).unwrap();
+        assert!(l.answered(&answer, now));
+        assert_eq!(l.resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [2]);
+        l.gone(2);
+        assert!(l.resumed().is_empty());
+        assert_eq!(l.held(CLAUDE, now), Some(VALUE));
+    }
+
     /// Do: ask a granted credential for two flows, answer it, then ask it again before and
     /// after its end. Expect: no value before its first use and nothing asked before it; one
     /// ask for both flows (one lease at a time); both resumed once it is answered, its value
@@ -593,7 +686,7 @@ mod tests {
         let life = NonZeroU64::new(60_000_000_000).unwrap();
         assert!(l.answered(&encode_answer(id("other"), Ok((life, b"v"))).unwrap(), now));
         let resumed = l.resumed();
-        assert_eq!(resumed.len(), 4);
+        assert_eq!(resumed.iter().map(|r| r.waiter).collect::<Vec<_>>(), [7, 8, 9]);
         for waiter in [7, 8] {
             assert_eq!(refused(&resumed, waiter), [(CLAUDE.to_string(), why.clone())]);
         }
@@ -650,10 +743,9 @@ mod tests {
         assert_eq!(l.held(CLAUDE, now), None);
     }
 
-    /// An end past what this clock can name is held until the run's end, never refused nor
-    /// wrapped.
+    /// The protocol's maximum lifetime does not wrap; ending the run releases it earlier.
     #[test]
-    fn a_lease_past_the_clocks_reach_lives_until_the_runs_end() {
+    fn the_protocols_maximum_lease_life_does_not_wrap() {
         let now = Instant::now();
         let mut l = leases();
         assert!(matches!(l.ask(CLAUDE, 1, now), Asked::Waiting));

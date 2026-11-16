@@ -1158,6 +1158,7 @@ dependencies = [
  "libc",
  "libm",
  "lzma-rust2",
+ "memchr",
  "rcgen",
  "regex",
  "rustls",
@@ -1231,6 +1232,9 @@ name = "shards-api"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rcgen",
+ "rustls-pki-types",
+ "rustls-webpki",
  "sha2",
  "shards-abi",
  "shards-afunix",
@@ -1337,6 +1341,9 @@ dependencies = [
 [[package]]
 name = "shards-gateway"
 version = "0.1.0"
+dependencies = [
+ "shards-http2",
+]
 
 [[package]]
 name = "shards-git"
@@ -1358,6 +1365,13 @@ dependencies = [
  "sha2",
  "sha3",
  "shards-agentfile",
+ "zeroize",
+]
+
+[[package]]
+name = "shards-http2"
+version = "0.1.0"
+dependencies = [
  "zeroize",
 ]
 
@@ -1412,9 +1426,11 @@ dependencies = [
  "libc",
  "rcgen",
  "rustls",
+ "ruzstd",
  "shards-abi",
  "shards-afunix",
  "shards-dns",
+ "shards-http2",
  "shards-ipc",
  "shards-netring",
  "shards-syscall-filter",
@@ -1566,6 +1582,7 @@ dependencies = [
  "rustls",
  "shards-abi",
  "shards-devcgroup",
+ "shards-http2",
  "shards-seccomp",
 ]
 
@@ -1593,8 +1610,10 @@ version = "0.1.0"
 name = "shards-verify"
 version = "0.1.0"
 dependencies = [
+ "openssl-probe",
  "rcgen",
  "rustls",
+ "rustls-native-certs",
  "rustls-platform-verifier",
  "shards-apple",
  "time",

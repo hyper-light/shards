@@ -27,9 +27,6 @@ const SPIN_MS: u64 = 2_000;
 const IDLE_MS: u64 = 1_000;
 /// How often its guest time is read: twenty times a second.
 const EVERY: Duration = Duration::from_millis(50);
-/// How long a machine may take, past which it is waited on while its guest says something
-/// new within `common::DAEMON_QUIET`.
-const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn each_vcpus_guest_time_only_grows_and_stays_within_its_processs_cpu_time() {
@@ -77,7 +74,7 @@ fn watch(vcpus: u32, step: u64) {
     cfg.vcpus = vcpus;
     cfg.memory_mib = 512;
     cfg.cmdline = format!(
-        "console=ttyS0 panic=-1 quiet shards_test=spin shards_spin_ms={SPIN_MS} shards_idle_ms={IDLE_MS}"
+        "console=hvc0 panic=-1 quiet shards_test=spin shards_spin_ms={SPIN_MS} shards_idle_ms={IDLE_MS}"
     );
     cfg.console = Console::Discard;
     // Its whole console kept: this test reads it as it goes (D12).
@@ -92,8 +89,9 @@ fn watch(vcpus: u32, step: u64) {
     // Each vCPU thread's guest time may be read up to a step ahead of what this process's
     // CPU time says of it, and that time is read a step behind at most.
     let slack = (u64::from(vcpus) + 1).saturating_mul(step);
-    let deadline = Instant::now() + TIMEOUT;
-    let mut heard = common::Heard::console();
+    // While its guest says something new or its machine's threads run (`common::Heard::console`,
+    // D209): its end awaited.
+    let mut heard = common::Heard::console("");
     let mut console = handle.console_said();
     let (mut last, mut spun, mut samples) = (None::<GuestTimes>, None::<GuestTimes>, 0u32);
     let ended = loop {
@@ -109,13 +107,18 @@ fn watch(vcpus: u32, step: u64) {
         }
         last = Some(t);
         match rx.recv_timeout(EVERY) {
-            Ok(reason) => break reason,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(
-                Instant::now() < deadline || heard.lately(true),
-                "{vcpus} vCPUs: no end in {TIMEOUT:?}, nor anything new said in {:?}: {}",
-                common::DAEMON_QUIET,
-                String::from_utf8_lossy(&console.lines)
-            ),
+            Ok(reason) => {
+                heard.answered();
+                break reason;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Err(refused) = heard.look(true) {
+                    panic!(
+                        "{vcpus} vCPUs: no end: {refused}\n{}",
+                        String::from_utf8_lossy(&console.lines)
+                    );
+                }
+            }
             Err(e) => panic!("{vcpus} vCPUs: {e}"),
         }
     };

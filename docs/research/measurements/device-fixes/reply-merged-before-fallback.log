@@ -1,0 +1,31 @@
+From https://github.com/hyper-light/shards
+ * branch              adea6b7e8d37b420297ccd44edfe021ee1590e7c -> FETCH_HEAD
+ * branch              b2c7e988ba9468532c6880dbe0d24f9df75f589a -> FETCH_HEAD
+HEAD is now at adea6b7e Merge origin/main before landing devices-03
+Auto-merging docs/bugs/2026-11-13/devices.md
+Auto-merging docs/design/architecture.md
+Auto-merging docs/research/platform-measurements.md
+Automatic merge went well; stopped before committing as requested
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (/Users/adalundhe/g121-tmp/fix-devices/target/debug/deps/shards_vmm-645a41c49a1f33e2)
+
+running 13 tests
+test devices::virtio::iommu::tests::the_longest_readable_part_is_probes ... ok
+test devices::virtio::iommu::tests::probe_gives_the_msi_doorbell ... ok
+test devices::virtio::iommu::tests::an_emulated_slots_msis_go_where_its_domain_maps_them ... ok
+test devices::virtio::iommu::tests::msis_land_untranslated_in_the_window_and_translated_elsewhere ... ok
+test devices::virtio::iommu::tests::domains_go_with_their_last_endpoint ... ok
+test devices::virtio::iommu::tests::full_span_mapping_translates_an_msi_without_overflow ... ok
+test devices::virtio::iommu::tests::dma_reaches_what_its_domain_maps ... ok
+[84924          0us WARN] virtio-iommu: endpoint 0x8's host mapping of 0x400000: out of memory
+test devices::virtio::iommu::tests::a_groups_endpoints_share_their_follower ... ok
+[84924         55us WARN] virtio-iommu: endpoint 0x8's host mappings: out of memory
+test devices::virtio::iommu::tests::mappings_are_whole_pages_and_go_whole ... ok
+test devices::virtio::iommu::tests::a_slots_endpoint_is_translated_while_a_function_is_plugged_there ... ok
+test devices::virtio::iommu::tests::a_followed_endpoint_maps_what_it_sees ... ok
+test devices::virtio::iommu::tests::invalid_response_is_rejected_before_applying_the_request ... ok
+test devices::virtio::iommu::tests::padded_probe_response_streams_across_descriptors ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s

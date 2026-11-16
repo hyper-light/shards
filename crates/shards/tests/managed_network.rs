@@ -99,6 +99,7 @@ impl Inputs {
         .unwrap();
         record
     }
+    #[track_caller]
     fn boot(&self, name: &str, probe: &[&str]) -> common::Run {
         let identity = self.identity(name);
         let _ = writeln!(std::io::stdout(), "NETWORK_GUEST_IDENTITY {identity}");
@@ -160,8 +161,7 @@ fn config_value<'a>(config: &'a str, symbol: &str) -> &'a str {
 fn command_line(probe: &[&str]) -> String {
     // Linux v6.18 init/main.c set_init_arg takes argv after --; next_arg in
     // lib/cmdline.c preserves double-quoted empty arguments. This invokes no shell.
-    let mut line =
-        String::from("console=ttyS0 quiet panic=-1 shards_test=managed-network -- managed-network");
+    let mut line = String::from("console=hvc0 quiet panic=-1 shards_test=managed-network -- managed-network");
     for word in probe {
         assert!(
             !word.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\0')),

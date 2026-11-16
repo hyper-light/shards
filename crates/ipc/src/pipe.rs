@@ -38,7 +38,7 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
-use windows_sys::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows_sys::Win32::Security::Cryptography::ProcessPrng;
 use windows_sys::Win32::Security::{
     GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
@@ -48,29 +48,24 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeInfo, NMPWAIT_WAIT_FOREVER,
-    PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE,
-    PIPE_WAIT, PeekNamedPipe, SetNamedPipeHandleState, WaitNamedPipeW,
+    ConnectNamedPipe, CreateNamedPipeW, CreatePipe, DisconnectNamedPipe, GetNamedPipeInfo,
+    NMPWAIT_WAIT_FOREVER, PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_WAIT, PeekNamedPipe, SetNamedPipeHandleState, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, ResetEvent, SetEvent,
     WaitForMultipleObjects, WaitForSingleObject,
 };
 
-use crate::{MAX_FDS, MAX_PAYLOAD};
+use crate::{Judge, MAX_FDS, MAX_PAYLOAD, Window};
 
 mod poll;
 pub use poll::{ExitWatch, Poller};
 
-/// What each direction of a pipe of shards' holds before a writer waits: M340's larger
-/// buffer, at which its throughput was the more even (64 KiB moved 3.3 to 13.4 GB/s, 1 MiB
-/// 4.1 to 15.1). The pipe takes these as quotas, not allocations (CreateNamedPipeW).
-pub(crate) const BUFFER: u32 = 1 << 20;
-
-/// What each direction of a slot's line holds (D185): a FIFO's capacity on Linux (pipe(7):
-/// 16 pages, 65,536 bytes), so that an answer its client does not take holds its daemon as
-/// it does there (PM M261). M340's 64 KiB moved 3.3 GB/s at least, past any answer's need.
-pub(crate) const LINE_BUFFER: u32 = 64 << 10;
+/// The longest message a [`Stream`] carries ([`send`]): its header, the most payload a
+/// message may carry, and a value for each of the most handles one gives. Its pairs' window
+/// ([`Window`], platform-11).
+const MESSAGE_FRAME: usize = HEADER + MAX_PAYLOAD + MAX_FDS * std::mem::size_of::<u64>();
 
 /// `code`, a Win32 error, as an `io::Error`.
 pub(crate) fn error(code: u32) -> io::Error {
@@ -160,6 +155,21 @@ pub(crate) fn call(
     deadline: Option<Instant>,
     start: impl FnOnce(*mut OVERLAPPED) -> i32,
 ) -> Called {
+    call_judged(handle, cancels, &mut { deadline }, None, start)
+}
+
+/// [`call`], its deadline `due` judged where `judge` is given (runs-11 `TAKE_TIMEOUT`): as
+/// `due` passes with the call under way, `judge` names the next, and the call stays under
+/// way meanwhile, its OVERLAPPED pending, where a cancel then would lose how much a write had
+/// moved. An error `judge` ends the wait with cancels the call: `Done` where it had finished
+/// first, else that error, nothing it moved told. `due` is left at the judge's last.
+fn call_judged(
+    handle: HANDLE,
+    cancels: &[&Event],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+    start: impl FnOnce(*mut OVERLAPPED) -> i32,
+) -> Called {
     let mut start = Some(start);
     let mut run = |event: &Event| {
         event.reset();
@@ -182,7 +192,7 @@ pub(crate) fn call(
             .collect();
         let count = u32::try_from(waited.len()).unwrap_or(1);
         loop {
-            let ms = deadline.map_or(INFINITE, |d| {
+            let ms = due.map_or(INFINITE, |d| {
                 // Rounded up: a wait of 0 ms would end at once, and spin.
                 let left = d.saturating_duration_since(Instant::now());
                 u32::try_from(left.as_micros().div_ceil(1000))
@@ -196,9 +206,18 @@ pub(crate) fn call(
                 w if w > WAIT_OBJECT_0 && w < WAIT_OBJECT_0 + count => {
                     return cancelled(handle, &ov, Called::Cancelled);
                 }
-                WAIT_TIMEOUT if deadline.is_some_and(|d| Instant::now() >= d) => {
-                    return cancelled(handle, &ov, Called::Late);
-                }
+                WAIT_TIMEOUT if due.is_some_and(|d| Instant::now() >= d) => match judge.as_deref_mut() {
+                    None => return cancelled(handle, &ov, Called::Late),
+                    Some(judge) => match judge() {
+                        Ok(next) => *due = next,
+                        Err(why) => {
+                            return match cancelled(handle, &ov, Called::Cancelled) {
+                                done @ Called::Done(Ok(_)) => done,
+                                _ => Called::Done(Err(why)),
+                            };
+                        }
+                    },
+                },
                 WAIT_TIMEOUT => {}
                 _ => {
                     let e = io::Error::last_os_error();
@@ -274,10 +293,21 @@ pub(crate) fn write_from(
     cancels: &[&Event],
     deadline: Option<Instant>,
 ) -> Called {
+    write_judged(handle, buf, cancels, &mut { deadline }, None)
+}
+
+/// Writes from `buf` to `handle` with [`call_judged`].
+fn write_judged(
+    handle: HANDLE,
+    buf: &[u8],
+    cancels: &[&Event],
+    due: &mut Option<Instant>,
+    judge: Option<&mut Judge<'_>>,
+) -> Called {
     let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
     let at = buf.as_ptr();
     // SAFETY: as `read_into`'s.
-    call(handle, cancels, deadline, |ov| unsafe {
+    call_judged(handle, cancels, due, judge, |ov| unsafe {
         WriteFile(handle, at, len, std::ptr::null_mut(), ov)
     })
 }
@@ -353,7 +383,8 @@ pub(crate) fn connected_now(handle: HANDLE) -> io::Result<bool> {
 
 /// What the pipe whose end is `handle` holds of that end's writes before one waits on its
 /// reader: its outbound quota, the buffer its instance was made with (GetNamedPipeInfo's out
-/// buffer size; `LINE_BUFFER` each way for a slot's line); none where it says none.
+/// buffer size: the system's default for a slot's line, `Window::System`); none where it says
+/// none.
 pub(crate) fn outbound_quota(handle: HANDLE) -> io::Result<u32> {
     let mut quota = 0u32;
     // SAFETY: a pipe's end this process holds, and one size for the call to fill; its flags,
@@ -543,22 +574,46 @@ fn user_sid() -> io::Result<String> {
     Ok(sid)
 }
 
-/// `n` random bytes from the system's generator, as hex.
+/// ProcessPrng said FALSE, which Microsoft documents it never does: no bytes are taken as
+/// random.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RandomFailed;
+
+impl std::fmt::Display for RandomFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProcessPrng failed")
+    }
+}
+
+impl std::error::Error for RandomFailed {}
+
+impl From<RandomFailed> for io::Error {
+    fn from(e: RandomFailed) -> Self {
+        io::Error::other(e)
+    }
+}
+
+/// `buf` filled from the system's generator, for every random byte shards' Windows code
+/// takes (D195): ProcessPrng, bcryptprimitives.dll's per-process generator, which Microsoft
+/// documents as always returning TRUE
+/// (https://learn.microsoft.com/en-us/windows/win32/seccng/processprng) and from which Rust's
+/// std fills its own (rust-lang/rust 1.98.1, library/std/src/sys/random/windows.rs, bound in
+/// sys/pal/windows/c.rs as raw-dylib of bcryptprimitives). Not BCryptGenRandom: that is
+/// bcrypt.dll's, which Windows Nano Server does not carry.
+pub fn fill_random(buf: &mut [u8]) -> Result<(), RandomFailed> {
+    // SAFETY: ProcessPrng writes `buf.len()` bytes into `buf`, a buffer of ours of that length.
+    let filled = unsafe { ProcessPrng(buf.as_mut_ptr(), buf.len()) };
+    if filled == 0 {
+        return Err(RandomFailed);
+    }
+    Ok(())
+}
+
+/// `n` random bytes from the system's generator ([`fill_random`]), as hex: a name nobody can
+/// guess and take first.
 pub(crate) fn random_hex(n: usize) -> io::Result<String> {
     let mut bytes = vec![0u8; n];
-    let len = u32::try_from(n).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: `len` bytes for the call to fill, with the system's preferred generator.
-    let status = unsafe {
-        BCryptGenRandom(
-            std::ptr::null_mut(),
-            bytes.as_mut_ptr(),
-            len,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status != 0 {
-        return Err(io::Error::other(format!("BCryptGenRandom: {status:#x}")));
-    }
+    fill_random(&mut bytes)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
@@ -569,7 +624,7 @@ pub(crate) fn wide(name: &str) -> Vec<u16> {
 
 /// A new instance of the pipe `name`, duplex and overlapped, refusing remote clients, of
 /// this user's alone ([`attributes`]); its name's first instance where `first`, its only
-/// where `only`; `buffer` bytes each way. In bytes; or with `messages` written in messages,
+/// where `only`; its quota each way its caller's `window` ([`Window`]). In bytes; or with `messages` written in messages,
 /// where a message of no bytes reaches its reader, which a writer says the end of its
 /// writes with: Docker's engine makes its pipe so, "so that CloseWrite() is supported"
 /// (moby `daemon/listeners/listeners_windows.go`), and go-winio, its clients', says a
@@ -581,9 +636,13 @@ pub(crate) fn instance(
     name: &[u16],
     first: bool,
     only: bool,
-    buffer: u32,
+    window: Window,
     messages: bool,
 ) -> io::Result<OwnedHandle> {
+    let quota = match window.frame_bytes() {
+        Some(bytes) => bytes,
+        None => system_quota()?,
+    };
     let attributes = attributes()?;
     let first = if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
     let mode = if messages {
@@ -602,8 +661,8 @@ pub(crate) fn instance(
             } else {
                 windows_sys::Win32::System::Pipes::PIPE_UNLIMITED_INSTANCES
             },
-            buffer,
-            buffer,
+            quota,
+            quota,
             0,
             &raw const attributes,
         )
@@ -613,6 +672,31 @@ pub(crate) fn instance(
     }
     // SAFETY: the instance just made, which nothing else owns.
     Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+}
+
+/// The quota the system gives a pipe asked for none ([`Window::System`]): what an anonymous
+/// pipe made with CreatePipe's `nSize` of zero says its write end holds (GetNamedPipeInfo),
+/// read once a process. Failing, what failed, each time it is asked.
+pub(crate) fn system_quota() -> io::Result<u32> {
+    static QUOTA: OnceLock<Result<u32, String>> = OnceLock::new();
+    QUOTA
+        .get_or_init(|| {
+            let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
+            // SAFETY: two handles for the call to fill, the default security, the system's size.
+            if unsafe { CreatePipe(&raw mut read, &raw mut write, std::ptr::null(), 0) } == 0 {
+                return Err(format!("CreatePipe: {}", io::Error::last_os_error()));
+            }
+            // SAFETY: the two handles just made, which nothing else owns.
+            let (_read, write) = unsafe {
+                (
+                    OwnedHandle::from_raw_handle(read),
+                    OwnedHandle::from_raw_handle(write),
+                )
+            };
+            outbound_quota(write.as_raw_handle()).map_err(|e| format!("GetNamedPipeInfo: {e}"))
+        })
+        .clone()
+        .map_err(|why| io::Error::other(format!("the system's pipe quota: {why}")))
 }
 
 /// Opens the pipe `name` as its client, read and write, `overlapped` or not: its server
@@ -688,8 +772,16 @@ fn more_data(e: &io::Error) -> bool {
 
 /// A connected pair of ends, each overlapped: a fresh name's only instance, and the client
 /// end opened at once, which no other process can then open (M340); written in `messages`
-/// where each end says the end of its writes ([`instance`]).
-pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
+/// where each end says the end of its writes ([`instance`]); its quota its caller's `window`.
+pub(crate) fn pair(window: Window, messages: bool) -> io::Result<(OwnedHandle, OwnedHandle)> {
+    pair_with_client(window, messages, true)
+}
+
+fn pair_with_client(
+    window: Window,
+    messages: bool,
+    overlapped: bool,
+) -> io::Result<(OwnedHandle, OwnedHandle)> {
     static MADE: AtomicU64 = AtomicU64::new(0);
     let name = wide(&format!(
         r"\\.\pipe\shards-{}-{}-{}",
@@ -697,8 +789,8 @@ pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, Owne
         MADE.fetch_add(1, Ordering::Relaxed),
         random_hex(8)?
     ));
-    let server = instance(&name, true, true, buffer, messages)?;
-    let client = open(&name, true)?;
+    let server = instance(&name, true, true, window, messages)?;
+    let client = open(&name, overlapped)?;
     if messages {
         read_in_messages(&client)?;
     }
@@ -708,12 +800,33 @@ pub(crate) fn pair(buffer: u32, messages: bool) -> io::Result<(OwnedHandle, Owne
     Ok((server, client))
 }
 
+/// The reader uses the stream's overlapped cancellation; the PipeWriter's client handle
+/// is synchronous, as std's Write implementation requires. Bytes have no message framing.
+pub fn input_pair(room: u32) -> io::Result<(Stream, io::PipeWriter)> {
+    let window = Window::frame(usize::try_from(room).unwrap_or(usize::MAX))?;
+    let (server, client) = pair_with_client(window, false, false)?;
+    Ok((
+        Stream::of(server, Way::Plain, false)?,
+        io::PipeWriter::from(client),
+    ))
+}
+
+/// A child's output: a pipe of bytes, its read end overlapped, this process's, for a read
+/// that a wake ends ([`Pipe::read_unless`]); its write end not, as a child's standard output
+/// is written (std's Write, synchronous). Made as a [`Stream`]'s are (this user's alone, no
+/// remote client's, its name random), neither end inheritable; its quota the system's, as an
+/// anonymous pipe's (CreatePipe) is. A run host's answers and diagnostics (D231).
+pub fn output_pair() -> io::Result<(Pipe, io::PipeWriter)> {
+    let (server, client) = pair_with_client(Window::System, false, false)?;
+    Ok((Pipe(server), io::PipeWriter::from(client)))
+}
+
 /// A connected pair of a pipe's ends, of bytes alone and overlapped, made as a [`Stream`]'s
 /// are (this user's alone, no remote client's, its name random): a share's stream on
 /// Windows (D197), its server end its share process's and its other its VM's, each a
-/// `platform::PipeStream` there.
-pub fn byte_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
-    pair(BUFFER, false)
+/// `platform::PipeStream` there; its quota its caller's `window`, a share's longest frame.
+pub fn byte_pair(window: Window) -> io::Result<(OwnedHandle, OwnedHandle)> {
+    pair(window, false)
 }
 
 /// One end of an overlapped pipe, read and written by several threads at once, each call
@@ -746,6 +859,21 @@ impl Pipe {
             Called::Done(Err(e)) if ended(&e) => Called::Done(Ok(0)),
             called => called,
         }
+    }
+
+    /// A read into `buf` that `wake` ends: what it read, `Some(0)` at the end of its
+    /// writers; `None` where `wake` was set first and it read nothing.
+    pub fn read_unless(&self, buf: &mut [u8], wake: &Event) -> io::Result<Option<usize>> {
+        match self.read_within(buf, &[wake], None) {
+            Called::Done(done) => done.map(Some),
+            Called::Cancelled | Called::Late => Ok(None),
+        }
+    }
+
+    /// The bytes it holds to read now, without taking them (PeekNamedPipe): 0 once its
+    /// writers have gone and it holds none.
+    pub fn held(&self) -> io::Result<usize> {
+        Ok(available(self.raw(), None)?.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)))
     }
 
     /// All of `buf` written, or the error that cut it short; waiting no longer than `cancels`
@@ -896,7 +1024,8 @@ impl Stream {
 
     /// A connected pair, both ends this process's ([`pair`]).
     pub fn pair() -> io::Result<(Stream, Stream)> {
-        let (server, client) = pair(BUFFER, false)?;
+        let window = Window::frame(MESSAGE_FRAME)?;
+        let (server, client) = pair(window, false)?;
         let queues = Arc::new(Queues::default());
         Ok((
             Stream::of(
@@ -930,7 +1059,8 @@ impl Stream {
     /// socket's half-close does: one end for this process, the other's handle
     /// ([`Stream::share`]) to give a child, which takes it as [`Stream::given`].
     pub fn plain_pair() -> io::Result<(Stream, Stream)> {
-        let (server, client) = pair(BUFFER, true)?;
+        // Bytes as its programs write them: no frame of its own.
+        let (server, client) = pair(Window::System, true)?;
         Ok((
             Stream::of(server, Way::Plain, true)?,
             Stream::of(client, Way::Plain, true)?,
@@ -1264,9 +1394,10 @@ impl Stream {
         }
     }
 
-    /// Writes all of `buf`, within its write timeout (`WouldBlock` past it); a shut writing
+    /// Writes all of `buf`, within its write timeout (`WouldBlock` past it), or where `judge`
+    /// is given for as long as it says ([`send_judged`]), never by the timeout; a shut writing
     /// end, or one whose peer has gone, is a broken pipe.
-    fn write_all_now(&self, buf: &[u8]) -> io::Result<()> {
+    fn write_all_now(&self, buf: &[u8], mut judge: Option<&mut Judge<'_>>) -> io::Result<()> {
         let end = &*self.0;
         if end.writes_shut.is_set() {
             return Err(io::ErrorKind::BrokenPipe.into());
@@ -1275,10 +1406,20 @@ impl Stream {
         let Some(handle) = &*guard else {
             return Err(io::ErrorKind::BrokenPipe.into());
         };
-        let deadline = lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t));
+        let mut due = match judge.as_deref_mut() {
+            Some(judge) => judge()?,
+            None => lock(&end.write_timeout).and_then(|t| Instant::now().checked_add(t)),
+        };
         let mut left = buf;
         while !left.is_empty() {
-            match write_from(handle.as_raw_handle(), left, &[&end.writes_shut], deadline) {
+            let cancels = [&end.writes_shut];
+            match write_judged(
+                handle.as_raw_handle(),
+                left,
+                &cancels,
+                &mut due,
+                judge.as_deref_mut(),
+            ) {
                 Called::Done(Ok(0)) => return Err(io::ErrorKind::WriteZero.into()),
                 Called::Done(Ok(n)) => left = left.get(n..).unwrap_or_default(),
                 Called::Done(Err(e)) if ended(&e) => return Err(io::ErrorKind::BrokenPipe.into()),
@@ -1341,7 +1482,8 @@ impl std::fmt::Debug for Waiting {
 
 impl Waiting {
     fn begin(name: &[u16], first: bool, event: &Event) -> io::Result<Waiting> {
-        let instance = instance(name, first, false, BUFFER, true)?;
+        // A Docker client's HTTP: bytes with no frame of shards'.
+        let instance = instance(name, first, false, Window::System, true)?;
         let mut overlapped = Box::new(OVERLAPPED::default());
         let connected = Waiting::connect(&instance, &mut overlapped, event)?;
         Ok(Waiting {
@@ -1612,7 +1754,7 @@ impl Read for Stream {
 
 impl Write for &Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.write_all_now(buf).map(|()| buf.len())
+        self.write_all_now(buf, None).map(|()| buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -1646,6 +1788,31 @@ pub struct Message {
 /// Sends one message on `sock` with `fds`, which go to its peer's process ([`Way`]); this
 /// process keeps its own. Blocks until all of it is written.
 pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>]) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, None)
+}
+
+/// [`send`], judged (runs-11 `TAKE_TIMEOUT`): one overlapped write of the message, waited for
+/// until the time `judge` names and then for as long as it says, the write pending meanwhile
+/// ([`call_judged`]), never by the stream's write timeout. An error `judge` ends it with
+/// cancels the write and leaves the message cut short: its peer never had all of it, and
+/// the handles it gave the peer's process are closed there.
+pub fn send_judged(
+    sock: &Stream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedHandle<'_>],
+    judge: &mut Judge<'_>,
+) -> io::Result<()> {
+    send_with(sock, kind, payload, fds, Some(judge))
+}
+
+fn send_with(
+    sock: &Stream,
+    kind: u8,
+    payload: &[u8],
+    fds: &[BorrowedHandle<'_>],
+    judge: Option<&mut Judge<'_>>,
+) -> io::Result<()> {
     if payload.len() > MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1678,7 +1845,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
                 lock(theirs).extend(copies);
             }
             drop(way);
-            sock.write_all_now(&bytes)
+            sock.write_all_now(&bytes, judge)
         }
         Way::Gives(process) => {
             // A handle of its own to the child: the way's lock is not held across a write,
@@ -1699,7 +1866,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
             for value in &given {
                 bytes.extend(value.to_le_bytes());
             }
-            let sent = sock.write_all_now(&bytes);
+            let sent = sock.write_all_now(&bytes, judge);
             // Not all of it read, it was not taken: what was given is closed there.
             if sent.is_err() {
                 take_back(process, &given);
@@ -1708,7 +1875,7 @@ pub fn send(sock: &Stream, kind: u8, payload: &[u8], fds: &[BorrowedHandle<'_>])
         }
         Way::Given | Way::Plain if fds.is_empty() => {
             drop(way);
-            sock.write_all_now(&bytes)
+            sock.write_all_now(&bytes, judge)
         }
         Way::Given | Way::Plain => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1766,21 +1933,37 @@ pub fn recv_by(sock: &Stream, deadline: Instant) -> io::Result<Option<Message>> 
     recv_until(sock, Some(deadline))
 }
 
+/// [`recv`], judged (runs-11 `TAKE_TIMEOUT`): each read waited for until the time `judge`
+/// names, where it is asked again, never by the stream's read timeout. A read cut at a due
+/// had moved nothing ([`Called::Late`]), so the next takes the message on where it was.
+pub fn recv_judged(sock: &Stream, judge: &mut Judge<'_>) -> io::Result<Option<Message>> {
+    let mut due = judge()?;
+    recv_with(sock, &mut due, Some(judge))
+}
+
 fn recv_until(sock: &Stream, deadline: Option<Instant>) -> io::Result<Option<Message>> {
+    recv_with(sock, &mut { deadline }, None)
+}
+
+fn recv_with(
+    sock: &Stream,
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<Option<Message>> {
     let mut header = [0u8; HEADER];
-    let got = loop {
-        match sock.read_by(&mut header, deadline) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            got => break got?,
-        }
-    };
+    let got = read_judged(sock, &mut header, due, judge.as_deref_mut())?;
     if got == 0 {
         return Ok(None);
     }
-    fill(sock, header.get_mut(got..).unwrap_or_default(), deadline)?;
+    fill(
+        sock,
+        header.get_mut(got..).unwrap_or_default(),
+        due,
+        judge.as_deref_mut(),
+    )?;
     let (len, values) = rest_of(sock, &header)?;
     let mut rest = vec![0u8; len + values];
-    fill(sock, &mut rest, deadline)?;
+    fill(sock, &mut rest, due, judge)?;
     message(sock, &header, rest).map(Some)
 }
 
@@ -1902,13 +2085,32 @@ impl Arriving {
     }
 }
 
+/// A read into `buf` by `due` ([`Stream::read_by`]), made again where a signal cut it; where
+/// `judge` is given, made again as long as it says at each due that passes.
+fn read_judged(
+    sock: &Stream,
+    buf: &mut [u8],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<usize> {
+    loop {
+        match (sock.read_by(buf, *due), judge.as_deref_mut()) {
+            (Err(e), _) if e.kind() == io::ErrorKind::Interrupted => {}
+            (Err(e), Some(judge)) if e.kind() == io::ErrorKind::TimedOut => *due = judge()?,
+            (read, _) => return read,
+        }
+    }
+}
+
 /// Reads exactly `buf.len()` more bytes of a message.
-fn fill(sock: &Stream, mut buf: &mut [u8], deadline: Option<Instant>) -> io::Result<()> {
+fn fill(
+    sock: &Stream,
+    mut buf: &mut [u8],
+    due: &mut Option<Instant>,
+    mut judge: Option<&mut Judge<'_>>,
+) -> io::Result<()> {
     while !buf.is_empty() {
-        let n = match sock.read_by(buf, deadline) {
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            n => n?,
-        };
+        let n = read_judged(sock, buf, due, judge.as_deref_mut())?;
         if n == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -2129,15 +2331,44 @@ mod tests {
         format!(r"\\.\pipe{}", String::from_utf16_lossy(name))
     }
 
+    /// A pipe's quota is its caller's window as made (platform-11): a [`Stream`] pair's holds
+    /// its longest message whole, a 16-byte frame's no such thing, and one of bytes alone is
+    /// the system's, none of shards'.
+    #[test]
+    fn a_pipes_quota_is_its_callers_window_as_made() {
+        let (stream, _peer) = Stream::pair().unwrap();
+        let held = stream
+            .0
+            .pipe
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|h| outbound_quota(h.as_raw_handle()));
+        let held = held.unwrap().unwrap() as usize;
+        assert!(held >= MESSAGE_FRAME, "{held} of a {MESSAGE_FRAME}-byte message");
+        let (small, _peer) = pair(Window::frame(16).unwrap(), false).unwrap();
+        let small = outbound_quota(small.as_raw_handle()).unwrap() as usize;
+        assert!((16..MESSAGE_FRAME).contains(&small), "{small}");
+        let (system, _peer) = pair(Window::System, false).unwrap();
+        assert_eq!(
+            outbound_quota(system.as_raw_handle()).unwrap(),
+            system_quota().unwrap()
+        );
+        assert!(
+            system_quota().unwrap() > 0,
+            "an anonymous pipe of the system's holds nothing"
+        );
+    }
+
     /// A pair's name is its one instance's: no other can be made under it, as a process that
     /// learned it might, to be opened in its place (M340).
     #[test]
     fn a_pairs_name_takes_no_second_instance() {
-        let (server, _client) = pair(BUFFER, false).unwrap();
+        let (server, _client) = pair(Window::System, false).unwrap();
         let name = pipe_name(&server);
         assert!(name.contains(r"\shards-"), "{name}");
         assert!(
-            instance(&wide(&name), false, false, BUFFER, false).is_err(),
+            instance(&wide(&name), false, false, Window::System, false).is_err(),
             "a second instance made of {name}"
         );
     }
@@ -2155,7 +2386,7 @@ mod tests {
         use windows_sys::Win32::Security::{
             ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, EqualSid, GetAce, PSECURITY_DESCRIPTOR, PSID,
         };
-        let (server, _client) = pair(BUFFER, false).unwrap();
+        let (server, _client) = pair(Window::System, false).unwrap();
         let mut dacl: *mut ACL = std::ptr::null_mut();
         let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         // SAFETY: a handle `server` holds, which may read its DACL, and pointers for the call
@@ -2418,7 +2649,7 @@ mod tests {
     #[test]
     fn an_instance_peeks_as_listening_until_opened() {
         let name = fresh("peek");
-        let server = instance(&name, true, false, BUFFER, false).unwrap();
+        let server = instance(&name, true, false, Window::System, false).unwrap();
         let e = available(server.as_raw_handle(), None).unwrap_err();
         assert_eq!(code(&e), ERROR_BAD_PIPE);
         let client = open(&name, true).unwrap();
@@ -2437,7 +2668,7 @@ mod tests {
         let waited = |ms| unsafe { WaitNamedPipeW(name.as_ptr(), ms) };
         assert_eq!(waited(1000), 0);
         assert_eq!(code(&io::Error::last_os_error()), ERROR_FILE_NOT_FOUND);
-        let first = instance(&name, true, false, BUFFER, false).unwrap();
+        let first = instance(&name, true, false, Window::System, false).unwrap();
         let _taken = open(&name, true).unwrap();
         let t0 = Instant::now();
         assert_eq!(waited(50), 0);
@@ -2449,7 +2680,7 @@ mod tests {
                 (waited(10_000), t0.elapsed())
             });
             std::thread::sleep(Duration::from_millis(100));
-            let _second = instance(&name, false, false, BUFFER, false).unwrap();
+            let _second = instance(&name, false, false, Window::System, false).unwrap();
             let (got, took) = waiting.join().unwrap();
             assert_ne!(got, 0);
             assert!(
@@ -2465,7 +2696,7 @@ mod tests {
     #[test]
     fn a_wait_ends_as_the_last_instance_closes() {
         let name = fresh("gone");
-        let server = instance(&name, true, false, BUFFER, false).unwrap();
+        let server = instance(&name, true, false, Window::System, false).unwrap();
         let _taken = open(&name, true).unwrap();
         std::thread::scope(|s| {
             let waiting = s.spawn(|| {
@@ -2548,5 +2779,112 @@ mod tests {
         });
         event.reset();
         assert!(!event.is_set());
+    }
+
+    /// Names from ProcessPrng are lowercase hex of twice their bytes, and none repeats: a
+    /// squatter cannot take one first by guessing it.
+    #[test]
+    fn random_names_are_distinct_hex_of_their_length() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..4096 {
+            let name = random_hex(16).unwrap();
+            assert_eq!(name.len(), 32, "{name}");
+            assert!(
+                name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "{name}"
+            );
+            assert!(seen.insert(name));
+        }
+        assert_eq!(random_hex(0).unwrap(), "");
+        let mut a = [0u8; 64];
+        let mut b = [0u8; 64];
+        fill_random(&mut a).unwrap();
+        fill_random(&mut b).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 64]);
+    }
+
+    /// A judge for a test's judged waits: due `every` from each ask, counting its asks in
+    /// `asked`, refusing from its `refuse`th ask on where that is given.
+    fn judge_every(
+        every: Duration,
+        asked: &AtomicU64,
+        refuse: Option<u64>,
+    ) -> impl FnMut() -> io::Result<Option<Instant>> + '_ {
+        move || {
+            let n = asked.fetch_add(1, Ordering::Relaxed) + 1;
+            if refuse.is_some_and(|at| n >= at) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "judged stalled"));
+            }
+            Ok(Instant::now().checked_add(every))
+        }
+    }
+
+    /// A judged send to a peer that reads late stays under way past its judge's dues, its
+    /// write pending, and its peer reads the message whole (runs-11 `TAKE_TIMEOUT`); its judge's
+    /// refusal cancels it, the message cut short. The pair's window holds one whole message
+    /// ([`MESSAGE_FRAME`]), so a first, unread, leaves the judged one's write to pend. Red
+    /// before, with a write timeout in its judge's place: the write was cancelled at its
+    /// deadline, `WouldBlock`, with no word of how much went.
+    #[test]
+    fn a_judged_send_stays_under_way_as_its_peer_reads() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let payload: Vec<u8> = (0..MAX_PAYLOAD).map(|i| (i % 251) as u8).collect();
+        send(&ours, 6, &payload, &[]).unwrap();
+        let asked = AtomicU64::new(0);
+        std::thread::scope(|s| {
+            let reader = s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                (recv(&theirs).unwrap().unwrap(), recv(&theirs).unwrap().unwrap())
+            });
+            let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+            let sent = send_judged(&ours, 7, &payload, &[], &mut judge);
+            if sent.is_err() {
+                // So that its reader, waiting for the message, ends.
+                end(&ours);
+            }
+            sent.unwrap();
+            let (first, judged) = reader.join().unwrap();
+            assert_eq!((first.kind, first.payload == payload), (6, true));
+            assert_eq!((judged.kind, judged.payload == payload), (7, true));
+        });
+        assert!(
+            asked.load(Ordering::Relaxed) > 2,
+            "its judge was not asked at its dues"
+        );
+        let (ours, _theirs) = Stream::pair().unwrap();
+        send(&ours, 6, &payload, &[]).unwrap();
+        let asked = AtomicU64::new(0);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, Some(3));
+        let e = send_judged(&ours, 7, &payload, &[], &mut judge).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut, "{e}");
+    }
+
+    /// A judged receive waits for its message past its judge's dues while its judge says go on,
+    /// takes it whole as it comes in parts, and ends with its judge's refusal or its peer's end.
+    #[test]
+    fn a_judged_receive_waits_while_its_judge_says_go_on() {
+        let (ours, theirs) = Stream::pair().unwrap();
+        let asked = AtomicU64::new(0);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(60));
+                // Its header first, then its payload.
+                (&theirs).write_all(&[9, 0, 0, 0, 3, 0]).unwrap();
+                std::thread::sleep(Duration::from_millis(60));
+                (&theirs).write_all(b"abc").unwrap();
+            });
+            let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+            let m = recv_judged(&ours, &mut judge).unwrap().unwrap();
+            assert_eq!((m.kind, m.payload.as_slice()), (9, &b"abc"[..]));
+        });
+        assert!(asked.load(Ordering::Relaxed) > 2);
+        let asked = AtomicU64::new(0);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, Some(3));
+        let e = recv_judged(&ours, &mut judge).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        drop(theirs);
+        let mut judge = judge_every(Duration::from_millis(10), &asked, None);
+        assert!(recv_judged(&ours, &mut judge).unwrap().is_none());
     }
 }

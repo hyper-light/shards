@@ -1,0 +1,42 @@
+From /Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/fix-runs-carrier-5fa18a445a/changes.bundle
+ * branch              HEAD       -> FETCH_HEAD
+HEAD is now at fc1bb479 Merge fresh main before runs fixes landing
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/build/aws-lc-sys-6025558a37dbaa42/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards-api v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/api)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/vmm)
+   Compiling shards-net v0.1.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/net)
+   Compiling shards v0.7.0 (/Users/adalundhe/g121-tmp/fix-runs-v1/source/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.10s
+     Running unittests src/main.rs (/Users/adalundhe/g121-tmp/fix-runs-v1/target/debug/deps/shards-1e7d28c4ebee2f50)
+
+running 1 test
+test daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima ... FAILED
+
+failures:
+
+---- daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima stdout ----
+
+thread 'daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima' (54265896) panicked at crates/shards/src/daemon/ends.rs:225:9:
+assertion `left == right` failed
+  left: None
+ right: Some(8s)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::ends::tests::concurrent_end_writers_keep_each_others_maxima
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 911 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`

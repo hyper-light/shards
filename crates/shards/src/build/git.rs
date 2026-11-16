@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use shards_git::checkout::{self, Item};
 use shards_git::object::{self, Kind as ObjectKind};
@@ -30,7 +31,8 @@ use shards_git::remote::{Limits, Remote, Resolved, Transport};
 use shards_git::repo::{self, KeptRef, Tracked};
 use shards_git::{Oid, config};
 use shards_image::erofs::{Dir, Kind, Meta, Node};
-use shards_registry::http::{Cancel, Client, Redirects, Request};
+use shards_registry::http::{Cancel, Client, Redirects, Request, Response};
+use shards_registry::registry::{Trouble, Verdict, retry_after};
 use shards_registry::url::Url;
 
 use super::exec::{Exec, Ref};
@@ -55,6 +57,15 @@ pub struct Source {
     pub auth_header: Option<String>,
     /// The SSH agent its fetches over SSH authenticate with (`git.mountsshsock`).
     pub ssh_agent: Option<String>,
+    /// An Agentfile directive's grant (D54): the origins beyond its own it may reach.
+    pub grant: Option<super::grant::Redirects>,
+}
+
+impl Source {
+    /// Its grant, with the URL it is the grant of.
+    fn granted(&self) -> Option<(&str, &super::grant::Redirects)> {
+        self.grant.as_ref().map(|g| (self.url.as_str(), g))
+    }
 }
 
 /// The source `identifier` (`git://HOST/PATH[#REF[:SUBDIR]]`) and `attrs` name.
@@ -94,6 +105,7 @@ pub fn source(identifier: &[u8], attrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<S
         auth_token: attr(b"git.authtokensecret")?,
         auth_header: attr(b"git.authheadersecret")?,
         ssh_agent: attr(b"git.mountsshsock")?,
+        grant: super::grant::of(attrs)?,
     })
 }
 
@@ -113,12 +125,150 @@ fn clean_subdir(s: &str) -> String {
     parts.join("/")
 }
 
+/// A remote's askings over HTTP(S), kept across its askings again (D276): its client, whose
+/// paths learn what each shows (D222), and what last dropped an asking, where one may pass.
+struct Asking {
+    client: Client,
+    dropped: RefCell<Option<(Url, Dropped)>>,
+}
+
+/// What ended an asking that may pass (D276).
+#[derive(Debug)]
+enum Dropped {
+    /// Its request failed before any answer: a name its resolver did not resolve, a
+    /// connection refused, reset or cut, a wait its own time ended.
+    Failed(shards_registry::Error),
+    /// Its server answered that it passes (408, 502, 503, 504), naming a wait or not.
+    Passing(Option<Duration>),
+    /// Its answer's body was cut short: its far end had answered.
+    Cut,
+}
+
+impl Asking {
+    /// A client for a build's fetches, as BuildKit's git reaches a remote: the platform's
+    /// roots, the proxies the environment names; its paths' records kept in `kept`, an
+    /// image store's directory, where there is one, which its waits are judged by.
+    fn new(cancel: &Cancel, kept: Option<&std::path::Path>) -> Result<Asking, String> {
+        let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
+        let client = Client::new(Box::new(move |_| Ok(config.clone())), &agent())
+            .asking_again()
+            .cancelled_by(cancel.clone())
+            .with_proxies(shards_registry::proxy::Proxies::from_env(&|k| {
+                std::env::var(k).ok()
+            }));
+        if let Some(root) = kept {
+            client.keep_in(root);
+        }
+        Ok(Asking {
+            client,
+            dropped: RefCell::new(None),
+        })
+    }
+
+    fn drop_of(&self, url: &Url, dropped: Dropped) {
+        *self.dropped.borrow_mut() = Some((url.clone(), dropped));
+    }
+}
+
+/// Runs `op`, askings of a remote, asking again what the network drops (D276): a name its
+/// resolver did not resolve, a connection refused, reset or cut, a wait its own time ended,
+/// a server's answer that it passes, an answer's body cut short. Each is a trouble of its
+/// path's, ridden out as a registry's is (D222, `Trouble`): asked again after a random share
+/// of how long the trouble has lasted, at least what its server names, each asking said
+/// through `say` in the build's words; with no count and no deadline, until it is answered,
+/// the build is cancelled, or a re-ask while the trouble follows its far end's liveness
+/// says the far end is gone (refused, unresolved or cut before any answer), which fails the
+/// asking naming it. Anything else fails at once, as before.
+fn ridden<R>(
+    asking: &Asking,
+    say: &dyn Fn(&str),
+    mut op: impl FnMut() -> Result<R, Failure>,
+) -> Result<R, Failure> {
+    let mut trouble = Trouble::default();
+    let mut troubled: Option<Url> = None;
+    loop {
+        let attempt = Instant::now();
+        let failed = match op() {
+            Ok(done) => {
+                if let Some(url) = &troubled {
+                    trouble.over(&asking.client, url);
+                }
+                return Ok(done);
+            }
+            Err(failed) => failed,
+        };
+        let Some((url, dropped)) = asking.dropped.borrow_mut().take() else {
+            return Err(failed);
+        };
+        let verdict = match &dropped {
+            Dropped::Failed(e) => trouble.failed(&asking.client, &url, attempt, e),
+            Dropped::Passing(after) => Verdict::Again(trouble.passing(&asking.client, &url, attempt, *after)),
+            Dropped::Cut => Verdict::Again(trouble.passing(&asking.client, &url, attempt, None)),
+        };
+        troubled = Some(url.clone());
+        match verdict {
+            Verdict::Again(wait) => {
+                say(&format!(
+                    "{}: asking {} again in {:.1} s",
+                    failed.text(),
+                    url.authority(),
+                    wait.as_secs_f64()
+                ));
+                asking
+                    .client
+                    .pause(wait)
+                    .map_err(|e| failed.and(&format!(": {e}")))?;
+            }
+            Verdict::Gone => {
+                let why = match &dropped {
+                    Dropped::Failed(e) if e.is_refused() => "it refused the connection",
+                    Dropped::Failed(e) if e.is_unresolved() => "its name did not resolve",
+                    _ => "it ended the asking before any answer",
+                };
+                return Err(failed.and(&format!(
+                    " ({} is gone: {why} again, after {:.1} s of trouble)",
+                    url.authority(),
+                    trouble.lasted().as_secs_f64()
+                )));
+            }
+            Verdict::Fails => return Err(failed),
+        }
+    }
+}
+
+/// An answer's body, its cut recorded where the network dropped it (D276).
+struct Heard<'a> {
+    body: Response<'a>,
+    asking: &'a Asking,
+    url: Url,
+}
+
+impl Read for Heard<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.body.read(buf);
+        if let Err(e) = &read
+            && matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        {
+            self.asking.drop_of(&self.url, Dropped::Cut);
+        }
+        read
+    }
+}
+
 /// Smart HTTP (gitprotocol-http.adoc): the advertisement, then each command `POST`ed to
 /// where the advertisement was found, as git follows a redirect of its first request
 /// alone (http.followRedirects=initial). Credentials of the URL go with the first
 /// request, and with later ones only to that origin.
-struct Http {
-    client: Client,
+struct Http<'a> {
+    asking: &'a Asking,
     /// The build's Authorization for this repository, from its secrets, sent with every
     /// request in place of the URL's own credentials.
     secret_auth: Option<String>,
@@ -127,28 +277,82 @@ struct Http {
     authorization: Option<String>,
     /// The URL as messages show it.
     shown: String,
+    /// Each hop held to the grant of an Agentfile directive's source (D54).
+    hops: Option<super::grant::Hops>,
 }
 
-impl Http {
-    fn new(url: &str, cancel: Cancel, auth: Option<&Auth>) -> Result<Http, String> {
+impl<'a> Http<'a> {
+    fn new(
+        url: &str,
+        asking: &'a Asking,
+        auth: Option<&Auth>,
+        grant: Option<(&str, &super::grant::Redirects)>,
+    ) -> Result<Http<'a>, String> {
         let (target, authorization) = super::http::userinfo(url)?;
-        let config = shards_registry::tls::client_config(Vec::new(), None).map_err(|e| e.to_string())?;
-        let client = Client::new(Box::new(move |_| Ok(config.clone())), &agent())
-            .cancelled_by(cancel)
-            .with_proxies(shards_registry::proxy::Proxies::from_env(&|k| {
-                std::env::var(k).ok()
-            }));
         let base = target.trim_end_matches('/').to_string();
         let secret_auth = auth
             .filter(|a| in_scope(&a.scope, &base))
             .map(|a| a.value.clone());
+        let hops = match grant {
+            None => None,
+            Some((source, redirects)) => {
+                let (first, _) = super::http::userinfo(source)?;
+                Some(super::grant::Hops::new(
+                    Url::parse(&first).map_err(|e| e.to_string())?,
+                    redirects.clone(),
+                ))
+            }
+        };
         Ok(Http {
-            client,
+            asking,
             secret_auth,
             shown: super::http::shown(url).trim_end_matches('/').to_string(),
             base: RefCell::new(base),
             authorization,
+            hops,
         })
+    }
+
+    /// Whether the hop to `to` is granted.
+    fn check(&self, to: &Url) -> Result<(), shards_registry::Error> {
+        match &self.hops {
+            Some(h) => h
+                .check(to)
+                .map_err(|r| std::io::Error::other(r.to_string()).into()),
+            None => Ok(()),
+        }
+    }
+
+    /// A request's failure: the grant's refusal where it refused a hop.
+    fn unreached(&self, e: &shards_registry::Error) -> String {
+        match self.hops.as_ref().and_then(super::grant::Hops::refused) {
+            Some(r) => format!("unable to access '{}/': {r}", self.shown),
+            None => format!("unable to access '{}/': {e}", self.shown),
+        }
+    }
+
+    /// `answered`, an asking of `url`: an answer that it passes, or a failure, recorded
+    /// where it may pass (D276); a hop its grant refused never is.
+    fn asked(
+        &self,
+        url: &Url,
+        answered: Result<Response<'a>, shards_registry::Error>,
+    ) -> Result<Response<'a>, String> {
+        match answered {
+            Ok(response) => {
+                if matches!(response.status, 408 | 502 | 503 | 504) {
+                    self.asking.drop_of(url, Dropped::Passing(retry_after(&response)));
+                }
+                Ok(response)
+            }
+            Err(e) => {
+                let said = self.unreached(&e);
+                if self.hops.as_ref().and_then(super::grant::Hops::refused).is_none() {
+                    self.asking.drop_of(url, Dropped::Failed(e));
+                }
+                Err(said)
+            }
+        }
     }
 
     fn failed(&self, status: u16) -> String {
@@ -163,12 +367,13 @@ impl Http {
     }
 }
 
-impl Transport for Http {
+impl Transport for Http<'_> {
     fn advertise(&self) -> Result<Box<dyn Read + '_>, String> {
         let at = format!("{}/info/refs?service=git-upload-pack", self.base.borrow());
         let url = Url::parse(&at).map_err(|e| e.to_string())?;
         let first = Cell::new(true);
-        let authorize = |_: &Url| {
+        let authorize = |to: &Url| {
+            self.check(to)?;
             Ok(match &self.secret_auth {
                 Some(a) => Some(a.clone()),
                 None if first.replace(false) => self.authorization.clone(),
@@ -182,10 +387,11 @@ impl Transport for Http {
             body: &[],
             file: None,
         };
-        let response = self
-            .client
-            .follow(&request, &authorize, Redirects::Anywhere)
-            .map_err(|e| format!("unable to access '{}/': {e}", self.shown))?;
+        let asking = self.asking;
+        let response = self.asked(
+            &url,
+            asking.client.follow(&request, &authorize, Redirects::Anywhere),
+        )?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
@@ -195,17 +401,24 @@ impl Transport for Http {
                 self.shown
             ));
         }
-        let landed = response.url().as_str();
-        if let Some((base, _)) = landed.split_once("/info/refs") {
+        let landed = response.url().clone();
+        if let Some((base, _)) = landed.as_str().split_once("/info/refs") {
             *self.base.borrow_mut() = base.to_string();
         }
-        Ok(Box::new(response))
+        Ok(Box::new(Heard {
+            body: response,
+            asking,
+            url: landed,
+        }))
     }
 
     fn command(&self, body: &[u8]) -> Result<Box<dyn Read + '_>, String> {
         let url =
             Url::parse(&format!("{}/git-upload-pack", self.base.borrow())).map_err(|e| e.to_string())?;
-        let authorize = |_: &Url| Ok(self.secret_auth.clone().or_else(|| self.authorization.clone()));
+        let authorize = |to: &Url| {
+            self.check(to)?;
+            Ok(self.secret_auth.clone().or_else(|| self.authorization.clone()))
+        };
         let request = Request {
             method: "POST",
             url: &url,
@@ -213,14 +426,20 @@ impl Transport for Http {
             body,
             file: None,
         };
-        let response = self
-            .client
-            .follow(&request, &authorize, Redirects::SameOrigin)
-            .map_err(|e| format!("unable to access '{}/': {e}", self.shown))?;
+        let asking = self.asking;
+        let response = self.asked(
+            &url,
+            asking.client.follow(&request, &authorize, Redirects::SameOrigin),
+        )?;
         if response.status != 200 {
             return Err(self.failed(response.status));
         }
-        Ok(Box::new(response))
+        let landed = response.url().clone();
+        Ok(Box::new(Heard {
+            body: response,
+            asking,
+            url: landed,
+        }))
     }
 }
 
@@ -236,18 +455,40 @@ pub enum Failure {
     Snapshot(String),
 }
 
+impl Failure {
+    fn text(&self) -> &str {
+        match self {
+            Failure::CacheKey(s) | Failure::Snapshot(s) => s,
+        }
+    }
+
+    /// The same failure, `more` after its words.
+    fn and(self, more: &str) -> Failure {
+        match self {
+            Failure::CacheKey(s) => Failure::CacheKey(s + more),
+            Failure::Snapshot(s) => Failure::Snapshot(s + more),
+        }
+    }
+
+    fn into_text(self) -> String {
+        match self {
+            Failure::CacheKey(s) | Failure::Snapshot(s) => s,
+        }
+    }
+}
+
 /// How long a git daemon's connection may take to open, and may go without a byte while
 /// it is read: past it, the server is gone, not slow.
 const DAEMON_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// A remote's transport, by its URL's scheme.
-enum Wire {
-    Http(Box<Http>),
+enum Wire<'a> {
+    Http(Box<Http<'a>>),
     Daemon(shards_git::daemon::Daemon),
     Ssh(Box<super::ssh::Ssh>),
 }
 
-impl Transport for Wire {
+impl Transport for Wire<'_> {
     fn advertise(&self) -> Result<Box<dyn Read + '_>, String> {
         match self {
             Wire::Http(h) => h.advertise(),
@@ -330,9 +571,20 @@ pub struct SshAgents<'a> {
 /// The transport `url` names: smart HTTP(S), git's own, or SSH with the agent `ssh`
 /// names, as BuildKit v0.28.1's git source mounts it (`no SSH key "ID" forwarded from the
 /// client` where the build has none of that ID).
-fn wire(url: &str, cancel: &Cancel, auth: Option<&Auth>, ssh: SshAgents<'_>) -> Result<Wire, String> {
+/// With `grant`, an Agentfile directive's source and its grant (D54), the remote is opened
+/// only at an origin it grants.
+fn wire<'a>(
+    url: &str,
+    asking: &'a Asking,
+    auth: Option<&Auth>,
+    ssh: SshAgents<'_>,
+    grant: Option<(&str, &super::grant::Redirects)>,
+) -> Result<Wire<'a>, String> {
+    if let Some((source, redirects)) = grant {
+        super::grant::remote(source, redirects, url).map_err(|r| r.to_string())?;
+    }
     if url.starts_with("https://") || url.starts_with("http://") {
-        return Ok(Wire::Http(Box::new(Http::new(url, cancel.clone(), auth)?)));
+        return Ok(Wire::Http(Box::new(Http::new(url, asking, auth, grant)?)));
     }
     if url.starts_with("git://") {
         return Ok(Wire::Daemon(shards_git::daemon::Daemon::of_url(
@@ -381,14 +633,26 @@ pub fn commit_time(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote =
-        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
-    let resolved = remote
-        .resolve(&src.reference)
-        .map_err(|e| format!("{wrap}: {e}"))?
-        .ok_or_else(|| format!("repository does not contain ref {}, output: \"\"", src.reference))?;
-    check(src.checksum.as_deref(), &resolved)?;
-    let (pack, _) = fetch_commits(&remote, &[resolved.commit], limits).map_err(|e| format!("{wrap}: {e}"))?;
+    let asking = Asking::new(cancel, None)?;
+    // Planned before any step runs: no step's log says its askings again.
+    let (resolved, pack) = ridden(&asking, &|_| {}, || {
+        let failed = |e: String| Failure::CacheKey(format!("{wrap}: {e}"));
+        let remote = Remote::open(
+            wire(&src.url, &asking, auth, ssh, src.granted()).map_err(Failure::CacheKey)?,
+            &agent(),
+        )
+        .map_err(failed)?;
+        let resolved = remote.resolve(&src.reference).map_err(failed)?.ok_or_else(|| {
+            Failure::CacheKey(format!(
+                "repository does not contain ref {}, output: \"\"",
+                src.reference
+            ))
+        })?;
+        check(src.checksum.as_deref(), &resolved).map_err(Failure::CacheKey)?;
+        let (pack, _) = fetch_commits(&remote, &[resolved.commit], limits).map_err(failed)?;
+        Ok((resolved, pack))
+    })
+    .map_err(Failure::into_text)?;
     match pack.get(&resolved.commit)? {
         // As the Dockerfile frontend reads the commit object BuildKit's git source gives
         // it: the committer's time, none where the line says none well formed.
@@ -418,12 +682,34 @@ pub fn metadata(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote =
-        Remote::open(wire(&src.url, cancel, auth, ssh)?, &agent()).map_err(|e| format!("{wrap}: {e}"))?;
-    let resolved = remote
-        .resolve(&src.reference)
-        .map_err(|e| format!("{wrap}: {e}"))?
-        .ok_or_else(|| format!("repository does not contain ref {}, output: \"\"", src.reference))?;
+    let asking = Asking::new(cancel, None)?;
+    // Planned before any step runs: no step's log says its askings again.
+    let (resolved, pack) = ridden(&asking, &|_| {}, || {
+        let failed = |e: String| Failure::CacheKey(format!("{wrap}: {e}"));
+        let remote = Remote::open(
+            wire(&src.url, &asking, auth, ssh, src.granted()).map_err(Failure::CacheKey)?,
+            &agent(),
+        )
+        .map_err(failed)?;
+        let resolved = remote.resolve(&src.reference).map_err(failed)?.ok_or_else(|| {
+            Failure::CacheKey(format!(
+                "repository does not contain ref {}, output: \"\"",
+                src.reference
+            ))
+        })?;
+        let pack = match objects {
+            true => {
+                let mut wants = vec![resolved.commit];
+                if let Some(tag) = resolved.tag {
+                    wants.push(tag);
+                }
+                Some(fetch_commits(&remote, &wants, limits).map_err(failed)?.0)
+            }
+            false => None,
+        };
+        Ok((resolved, pack))
+    })
+    .map_err(Failure::into_text)?;
     let reference = match &resolved.name {
         Some(n) => String::from_utf8_lossy(n).into_owned(),
         None => src.reference.clone(),
@@ -435,12 +721,7 @@ pub fn metadata(
         commit_object: None,
         tag_object: None,
     };
-    if objects {
-        let mut wants = vec![resolved.commit];
-        if let Some(tag) = resolved.tag {
-            wants.push(tag);
-        }
-        let (pack, _) = fetch_commits(&remote, &wants, limits).map_err(|e| format!("{wrap}: {e}"))?;
+    if let Some(pack) = pack {
         meta.commit_object = Some(pack.get(&resolved.commit)?.1);
         if let Some(tag) = resolved.tag {
             meta.tag_object = Some(pack.get(&tag)?.1);
@@ -478,27 +759,35 @@ pub fn snapshot(
     } else {
         format!("failed to fetch remote {}", src.url)
     };
-    let remote = Remote::open(wire(&src.url, cancel, auth, ssh).map_err(key)?, &agent())
-        .map_err(|e| key(format!("{wrap}: {e}")))?;
-    let resolved = remote
-        .resolve(&src.reference)
-        .map_err(|e| key(format!("{wrap}: {e}")))?
-        .ok_or_else(|| {
-            key(format!(
-                "repository does not contain ref {}, output: \"\"",
-                src.reference
-            ))
-        })?;
-    check(src.checksum.as_deref(), &resolved).map_err(key)?;
-    say(&resolved.commit.hex());
     // A kept repository keeps the annotated tag it was asked by, which the commit's pack
     // alone would not hold.
     let keep = src.keep_git_dir && src.subdir.is_empty();
-    let mut wants = vec![resolved.commit];
-    if keep && let Some(tag) = resolved.tag {
-        wants.push(tag);
-    }
-    let (pack, shallow) = fetch_commits(&remote, &wants, limits).map_err(|e| snap(format!("{wrap}: {e}")))?;
+    let asking = Asking::new(cancel, Some(exec.store.root())).map_err(key)?;
+    let (resolved, pack, shallow) = ridden(&asking, say, || {
+        let remote = Remote::open(
+            wire(&src.url, &asking, auth, ssh, src.granted()).map_err(key)?,
+            &agent(),
+        )
+        .map_err(|e| key(format!("{wrap}: {e}")))?;
+        let resolved = remote
+            .resolve(&src.reference)
+            .map_err(|e| key(format!("{wrap}: {e}")))?
+            .ok_or_else(|| {
+                key(format!(
+                    "repository does not contain ref {}, output: \"\"",
+                    src.reference
+                ))
+            })?;
+        check(src.checksum.as_deref(), &resolved).map_err(key)?;
+        let mut wants = vec![resolved.commit];
+        if keep && let Some(tag) = resolved.tag {
+            wants.push(tag);
+        }
+        let (pack, shallow) =
+            fetch_commits(&remote, &wants, limits).map_err(|e| snap(format!("{wrap}: {e}")))?;
+        Ok((resolved, pack, shallow))
+    })?;
+    say(&resolved.commit.hex());
     let commit = commit_of(&pack, &resolved.commit).map_err(snap)?;
     if keep {
         checked_out(&pack, &resolved.commit, src.advice, say).map_err(snap)?;
@@ -507,6 +796,7 @@ pub fn snapshot(
     let mut out = Checkout::new(
         stage.join(format!("git-{}", resolved.commit.hex())),
         auth.cloned(),
+        src.granted().map(|(u, g)| (u.to_string(), g.clone())),
     )
     .map_err(snap)?;
     let time = (commit.committed, 0);
@@ -521,7 +811,7 @@ pub fn snapshot(
             &commit.tree,
             &src.subdir,
             limits,
-            cancel,
+            &asking,
             ssh,
             say,
             keep,
@@ -741,10 +1031,16 @@ struct Checkout {
     dirs: std::collections::HashSet<Vec<u8>>,
     /// The build's Authorization, for submodules within its scope.
     auth: Option<Auth>,
+    /// The source's grant, which its submodules are held to (D54).
+    grant: Option<(String, super::grant::Redirects)>,
 }
 
 impl Checkout {
-    fn new(path: PathBuf, auth: Option<Auth>) -> Result<Checkout, String> {
+    fn new(
+        path: PathBuf,
+        auth: Option<Auth>,
+        grant: Option<(String, super::grant::Redirects)>,
+    ) -> Result<Checkout, String> {
         let file = File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Checkout {
             path,
@@ -753,6 +1049,7 @@ impl Checkout {
             entries: Vec::new(),
             dirs: std::collections::HashSet::new(),
             auth,
+            grant,
         })
     }
 
@@ -926,7 +1223,7 @@ impl Checkout {
         tree: &Oid,
         subdir: &str,
         limits: Limits,
-        cancel: &Cancel,
+        asking: &Asking,
         ssh: SshAgents<'_>,
         say: &dyn Fn(&str),
         keep: bool,
@@ -971,8 +1268,16 @@ impl Checkout {
                 "Submodule '{}' ({sub_url}) registered for path '{shown}'",
                 String::from_utf8_lossy(&name)
             ));
-            let remote = Remote::open(wire(&sub_url, cancel, self.auth.as_ref(), ssh)?, &agent())?;
-            let (sub_pack, sub_shallow) = fetch_commits(&remote, &[commit], limits)?;
+            let grant = self.grant.as_ref().map(|(u, g)| (u.as_str(), g));
+            let (sub_pack, sub_shallow) = ridden(asking, say, || {
+                let remote = Remote::open(
+                    wire(&sub_url, asking, self.auth.as_ref(), ssh, grant).map_err(Failure::Snapshot)?,
+                    &agent(),
+                )
+                .map_err(Failure::Snapshot)?;
+                fetch_commits(&remote, &[commit], limits).map_err(Failure::Snapshot)
+            })
+            .map_err(Failure::into_text)?;
             let sub_commit = commit_of(&sub_pack, &commit)?;
             let time = (sub_commit.committed, 0);
             let tracked = self.walk(&sub_pack, &sub_commit.tree, &local, time)?;
@@ -1021,7 +1326,7 @@ impl Checkout {
                 &sub_commit.tree,
                 "",
                 limits,
-                cancel,
+                asking,
                 ssh,
                 say,
                 keep,
@@ -1083,6 +1388,138 @@ fn blob_at(pack: &Pack, tree: &Oid, name: &[u8]) -> Result<Option<Vec<u8>>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A loopback server that answers its `n`-th connection (from 0) with `answer(n)` and
+    /// then closes it, until `count` connections.
+    fn serving(count: usize, answer: fn(usize) -> Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = std::thread::spawn(move || {
+            for n in 0..count {
+                let (mut tcp, _) = listener.accept().unwrap();
+                let mut request = [0u8; 4096];
+                let _ = tcp.read(&mut request).unwrap();
+                let _ = tcp.write_all(&answer(n));
+                let _ = tcp.shutdown(std::net::Shutdown::Write);
+            }
+        });
+        (port, served)
+    }
+
+    /// An advertisement's body the network cut short, 10 of its 32 bytes come, is fetched
+    /// again, the asking said in the step's log, and read whole (D276).
+    #[test]
+    fn a_fetch_cut_mid_body_is_asked_again_and_completes() {
+        const WHOLE: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+        let (port, served) = serving(2, |n| {
+            let mut answer = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {ADVERTISEMENT_TYPE}\r\nContent-Length: 32\r\n\r\n"
+            )
+            .into_bytes();
+            answer.extend_from_slice(if n == 0 { &WHOLE[..10] } else { &WHOLE[..] });
+            answer
+        });
+        let asking = Asking::new(&Cancel::new(), None).unwrap();
+        let said = RefCell::new(Vec::new());
+        let url = format!("http://127.0.0.1:{port}/repo.git");
+        let got = ridden(&asking, &|line| said.borrow_mut().push(line.to_string()), || {
+            let http = Http::new(&url, &asking, None, None).map_err(Failure::Snapshot)?;
+            let mut body = Vec::new();
+            http.advertise()
+                .map_err(Failure::Snapshot)?
+                .read_to_end(&mut body)
+                .map_err(|e| Failure::Snapshot(format!("the server's advertisement: {e}")))?;
+            Ok(body)
+        })
+        .unwrap();
+        assert_eq!(got, WHOLE);
+        let said = said.into_inner();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with("the server's advertisement: ")
+                && said[0].contains(&format!("asking 127.0.0.1:{port} again in ")),
+            "{said:?}"
+        );
+        served.join().unwrap();
+    }
+
+    /// A remote that is gone, nothing listening where it is, is asked again once, said, and
+    /// refused on the re-ask its far end refused while the trouble followed its liveness (a
+    /// path that has passed none): in words naming it (D276).
+    #[test]
+    fn a_remote_that_is_gone_is_refused_naming_it() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let asking = Asking::new(&Cancel::new(), None).unwrap();
+        let said = RefCell::new(Vec::new());
+        let url = format!("http://127.0.0.1:{port}/repo.git");
+        let asked = Cell::new(0);
+        let e = ridden(&asking, &|line| said.borrow_mut().push(line.to_string()), || {
+            asked.set(asked.get() + 1);
+            let http = Http::new(&url, &asking, None, None).map_err(Failure::CacheKey)?;
+            http.advertise().map(drop).map_err(Failure::CacheKey)
+        })
+        .unwrap_err();
+        assert_eq!(asked.get(), 2);
+        assert_eq!(said.into_inner().len(), 1);
+        let Failure::CacheKey(e) = e else { panic!("{e:?}") };
+        assert!(
+            e.starts_with(&format!("unable to access 'http://127.0.0.1:{port}/repo.git/': "))
+                && e.contains(&format!(
+                    "(127.0.0.1:{port} is gone: it refused the connection again, after "
+                )),
+            "{e}"
+        );
+    }
+
+    /// A Git source's fetch over smart HTTP is held to its directive's grant (D54, P4.3): its
+    /// advertisement redirected to another origin is refused before anything is sent there,
+    /// naming both origins, and followed once `--redirect` grants that origin.
+    #[test]
+    fn a_git_sources_redirect_elsewhere_is_refused_until_granted() {
+        let (elsewhere, seen_elsewhere) = super::super::http::serve(|_| {
+            (
+                format!("HTTP/1.1 200 OK\r\nContent-Type: {ADVERTISEMENT_TYPE}"),
+                b"0000".to_vec(),
+            )
+        });
+        let (first, _) = super::super::http::serve(move |_| {
+            (
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere}/repo.git/info/refs?service=git-upload-pack"
+                ),
+                Vec::new(),
+            )
+        });
+        let url = format!("http://127.0.0.1:{first}/repo.git");
+        let asking = Asking::new(&Cancel::new(), None).unwrap();
+        let advertised = |grant: &super::super::grant::Redirects| {
+            let http = Http::new(&url, &asking, None, Some((url.as_str(), grant)))?;
+            let mut body = Vec::new();
+            http.advertise()?
+                .read_to_end(&mut body)
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>(body)
+        };
+        assert_eq!(
+            advertised(&super::super::grant::Redirects::default()),
+            Err(format!(
+                "unable to access 'http://127.0.0.1:{first}/repo.git/': redirected from http://127.0.0.1:{first} to http://127.0.0.1:{elsewhere}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+            ))
+        );
+        assert!(
+            seen_elsewhere.lock().unwrap().is_empty(),
+            "nothing reached the origin refused"
+        );
+        let granted = super::super::grant::of(&BTreeMap::from([(
+            b"shards.grant".to_vec(),
+            format!("127.0.0.1:{elsewhere}").into_bytes(),
+        )]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(advertised(&granted), Ok(b"0000".to_vec()));
+    }
 
     #[test]
     fn sources_are_read_as_the_plan_writes_them() {

@@ -40,6 +40,10 @@ pub struct Error {
     /// registry named insecure without a port is then asked in plain HTTP on HTTP's
     /// (registry.rs, D194).
     refused: bool,
+    /// Whether the far end ended the connection before any answer: reset, aborted or
+    /// closed under a request. Past a trouble's run-out, a re-ask so ended is the far end's
+    /// end ([`ErrorKind::Gone`], D222).
+    cut: bool,
     /// Which of its path's waits cut it, where one did, past the slowest of its kind the
     /// path has shown (crate::patience): asked again at once.
     overdue: Option<Overdue>,
@@ -47,6 +51,9 @@ pub struct Error {
     /// was left of it, whatever time `Instant` says passed (a connect's or a handshake's,
     /// which its path then counts as timed out, crate::patience).
     timed_out: bool,
+    /// Whether the system's resolver failed its name's lookup, after its own retries: a
+    /// trouble's, which a re-ask that fails so while it follows liveness ends (D276).
+    unresolved: bool,
 }
 
 /// Which of a path's waits ran out on a request's answer, which is then asked again at once
@@ -89,6 +96,10 @@ pub enum ErrorKind {
     /// A token server refused the credentials (401 or 403): what a login is refused by.
     /// Every other caller takes it as [`Other`](ErrorKind::Other).
     Refused,
+    /// The far end is gone or refuses: nothing listens where it is (a connection refused),
+    /// or a re-ask made while its trouble follows liveness (past its run-out, or on a path
+    /// that bounds none) ended before any answer (D222).
+    Gone,
     Other,
 }
 
@@ -104,8 +115,10 @@ impl Error {
             said: None,
             not_tls: false,
             refused: false,
+            cut: false,
             overdue: None,
             timed_out: false,
+            unresolved: false,
         }
     }
 
@@ -129,8 +142,27 @@ impl Error {
         }
     }
 
-    pub(crate) fn is_refused(&self) -> bool {
+    /// Whether every address its server was dialled at refused the connection.
+    pub fn is_refused(&self) -> bool {
         self.refused
+    }
+
+    /// The same error, of a connection its far end ended before any answer.
+    pub(crate) fn cut(self) -> Error {
+        Error { cut: true, ..self }
+    }
+
+    pub(crate) fn is_cut(&self) -> bool {
+        self.cut
+    }
+
+    /// The same error, as the far end's end: refused or cut on a re-ask past a trouble's
+    /// run-out (D222).
+    pub(crate) fn gone(self) -> Error {
+        Error {
+            kind: ErrorKind::Gone,
+            ..self
+        }
     }
 
     /// The same error, of an answer its path's wait `which` cut.
@@ -139,10 +171,6 @@ impl Error {
             overdue: Some(which),
             ..self
         }
-    }
-
-    pub(crate) fn is_overdue(&self) -> bool {
-        self.overdue.is_some()
     }
 
     /// Which of its path's waits cut it, where one did.
@@ -160,6 +188,19 @@ impl Error {
 
     pub(crate) fn is_timed_out(&self) -> bool {
         self.timed_out
+    }
+
+    /// The same error, of a name the system's resolver did not resolve.
+    pub(crate) fn unresolved(self) -> Error {
+        Error {
+            unresolved: true,
+            ..self
+        }
+    }
+
+    /// Whether the system's resolver failed its name's lookup.
+    pub fn is_unresolved(&self) -> bool {
+        self.unresolved
     }
 
     /// The same error, with what dockerd says of it.
@@ -193,8 +234,10 @@ impl Error {
             said: self.said,
             not_tls: self.not_tls,
             refused: self.refused,
+            cut: self.cut,
             overdue: self.overdue,
             timed_out: self.timed_out,
+            unresolved: self.unresolved,
         }
     }
 }
@@ -235,7 +278,14 @@ impl From<io::Error> for Error {
             | io::ErrorKind::BrokenPipe => ErrorKind::Transient,
             _ => ErrorKind::Other,
         };
-        Error::of(kind, e.to_string())
+        let cut = matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe
+        );
+        Error {
+            cut,
+            ..Error::of(kind, e.to_string())
+        }
     }
 }
 

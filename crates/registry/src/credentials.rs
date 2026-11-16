@@ -478,8 +478,10 @@ fn run_helper(
 /// ends whole, a script's children with it, which hold its output open (D184); otherwise
 /// it stays in its caller's, where a terminal's Ctrl-C reaches it and its prompts reach the
 /// terminal. How it failed is said as Go's os.ProcessState says it, the words its scripts know: an exit
-/// status (128 and its number, for a signal that ended it).
-#[cfg(unix)]
+/// status (128 and its number, for a signal that ended it). On Windows a helper started for a
+/// cancel is made in a job of its own (`shards_ipc::spawn_grouped`), which the cancel ends
+/// whole, as a Unix process group is; and every helper, as every child shards starts, holds
+/// the three handles it is given and none else (D248).
 struct Talk {
     program: String,
     child: Option<std::sync::Arc<shards_ipc::Child>>,
@@ -489,7 +491,6 @@ struct Talk {
     group: bool,
 }
 
-#[cfg(unix)]
 impl Talk {
     fn start(
         program: &str,
@@ -498,33 +499,39 @@ impl Talk {
         env: Env<'_>,
         cancel: Option<&Cancel>,
     ) -> Result<Talk, Error> {
-        use std::os::fd::AsFd as _;
         let fail = |e: std::io::Error| Error::new(format!("running {program}: {e}"));
         let path = env("PATH");
-        let search = path
-            .clone()
-            .or_else(|| std::env::var("PATH").ok())
-            .unwrap_or_default();
-        let found = std::env::split_paths(&search)
-            .map(|dir| dir.join(program))
-            .find(|p| p.is_file())
-            .ok_or_else(|| fail(std::io::ErrorKind::NotFound.into()))?;
+        let found = shards_ipc::on_path(
+            std::path::Path::new(program),
+            path.as_deref().map(std::ffi::OsStr::new),
+        )
+        .map_err(fail)?;
         let (stdin, mut to_stdin) = std::io::pipe().map_err(fail)?;
         let (stdout, from_stdout) = std::io::pipe().map_err(fail)?;
         let set: Vec<(&str, &std::ffi::OsStr)> = path.iter().map(|p| ("PATH", p.as_ref())).collect();
         let group = cancel.is_some();
-        let child = shards_ipc::spawn_with(
-            &found,
-            &[action.as_ref()],
-            &[
-                (stdin.as_fd(), 0),
-                (from_stdout.as_fd(), 1),
-                (std::io::stderr().as_fd(), 2),
-            ],
-            group,
-            &set,
-        )
-        .map_err(fail)?;
+        let stderr = std::io::stderr();
+        #[cfg(unix)]
+        let child = {
+            use std::os::fd::AsFd as _;
+            let fds = [(stdin.as_fd(), 0), (from_stdout.as_fd(), 1), (stderr.as_fd(), 2)];
+            shards_ipc::spawn_with(&found, &[action.as_ref()], &fds, group, &set)
+        };
+        #[cfg(windows)]
+        let child = {
+            use std::os::windows::io::AsHandle as _;
+            let fds = [
+                (stdin.as_handle(), 0),
+                (from_stdout.as_handle(), 1),
+                (stderr.as_handle(), 2),
+            ];
+            if group {
+                shards_ipc::spawn_grouped(&found, &[action.as_ref()], &fds, &set)
+            } else {
+                shards_ipc::spawn_with(&found, &[action.as_ref()], &fds, false, &set)
+            }
+        };
+        let child = child.map_err(fail)?;
         drop((stdin, from_stdout));
         let child = std::sync::Arc::new(child);
         let mut talk = Talk {
@@ -575,9 +582,9 @@ impl Talk {
 
     fn kill(&self, child: &shards_ipc::Child) -> std::io::Result<()> {
         if self.group {
-            child.kill_group(libc::SIGKILL)
+            child.kill_group(shards_ipc::signal::SIGKILL)
         } else {
-            child.kill(libc::SIGKILL)
+            child.kill(shards_ipc::signal::SIGKILL)
         }
     }
 
@@ -585,116 +592,6 @@ impl Talk {
     fn end(&mut self) {
         if let Some(child) = self.child.take() {
             let _ = self.kill(&child);
-            let _ = child.wait();
-        }
-        if let Some((cancel, n)) = self.cancel.take() {
-            cancel.forget_helper(n);
-        }
-    }
-}
-
-/// [`Talk`] where shards has no daemon: by std's Command. A cancel ends it by a handle of
-/// its own.
-#[cfg(windows)]
-struct Talk {
-    program: String,
-    child: Option<std::process::Child>,
-    cancel: Option<(Cancel, u64)>,
-}
-
-#[cfg(windows)]
-impl Talk {
-    fn start(
-        program: &str,
-        action: &str,
-        input: &[u8],
-        env: Env<'_>,
-        cancel: Option<&Cancel>,
-    ) -> Result<Talk, Error> {
-        use std::process::{Command, Stdio};
-        let mut command = Command::new(program);
-        command
-            .arg(action)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        if let Some(path) = env("PATH") {
-            command.env("PATH", path);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::new(format!("running {program}: {e}")))?;
-        let watched = match cancel {
-            Some(cancel) => {
-                use std::os::windows::io::AsHandle as _;
-                match child.as_handle().try_clone_to_owned() {
-                    Ok(handle) => Some((cancel.clone(), cancel.watch_helper(handle))),
-                    Err(e) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(Error::new(format!("{program}: {e}")));
-                    }
-                }
-            }
-            None => None,
-        };
-        let stdin = child.stdin.take();
-        let mut talk = Talk {
-            program: program.to_string(),
-            child: Some(child),
-            cancel: watched,
-        };
-        if let Some(mut stdin) = stdin {
-            match stdin.write_all(input) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
-                Err(e) => {
-                    talk.end();
-                    return Err(Error::new(format!("{program}: {e}")));
-                }
-            }
-        }
-        Ok(talk)
-    }
-
-    fn ended(&self) -> bool {
-        use std::os::windows::io::AsRawHandle as _;
-        self.child.as_ref().is_some_and(|c| {
-            // SAFETY: a wait of no time on the process handle the Child holds open.
-            unsafe {
-                windows_sys::Win32::System::Threading::WaitForSingleObject(c.as_raw_handle(), 0)
-                    == windows_sys::Win32::Foundation::WAIT_OBJECT_0
-            }
-        })
-    }
-
-    fn finish(mut self) -> Result<(Option<String>, Vec<u8>), Error> {
-        let Some(mut child) = self.child.take() else {
-            return Err(Error::new(format!("{}: already finished", self.program)));
-        };
-        let mut out = Vec::new();
-        let read = match child.stdout.take() {
-            Some(stdout) => stdout.take(MAX_HELPER_OUTPUT).read_to_end(&mut out).map(drop),
-            None => Ok(()),
-        };
-        if read.is_err() {
-            let _ = child.kill();
-        }
-        let status = child.wait();
-        if let Some((cancel, n)) = self.cancel.take() {
-            cancel.forget_helper(n);
-            if cancel.is_cancelled() {
-                return Err(Error::of(crate::ErrorKind::Cancelled, "cancelled"));
-            }
-        }
-        let status = status.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
-        read.map_err(|e| Error::new(format!("{}: {e}", self.program)))?;
-        Ok(((!status.success()).then(|| status.to_string()), out))
-    }
-
-    fn end(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
             let _ = child.wait();
         }
         if let Some((cancel, n)) = self.cancel.take() {
@@ -1110,10 +1007,11 @@ mod tests {
     #[test]
     fn a_helper_that_does_not_read_its_input_is_heard() {
         let bin = temp("deaf-helper");
-        program(
+        shards_testdir::program(
             &bin.join("docker-credential-deaf"),
             "#!/bin/sh\nexec 0<&-\necho '{\"ServerURL\":\"x\",\"Username\":\"u\",\"Secret\":\"s\"}'\n",
-        );
+        )
+        .unwrap();
         let dirs = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", dirs.as_str())];
         let long = "k".repeat(1 << 20);
@@ -1139,25 +1037,7 @@ broken.example) echo 'the keychain is locked'; exit 1 ;;
 *) echo 'credentials not found in native keychain'; exit 1 ;;
 esac
 "#;
-        program(&dir.join(format!("docker-credential-{name}")), script);
-    }
-
-    /// The program `text` at `path`, written by a process of its own: a file this one held
-    /// open to write, a child another test's thread forked meanwhile holds until it execs,
-    /// and an exec of the file fails with ETXTBSY until then (Linux; CI's run 38905368380,
-    /// "Text file busy").
-    #[cfg(unix)]
-    fn program(path: &Path, text: &str) {
-        use std::io::Write as _;
-        let mut writer = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg(r#"cat > "$0" && chmod 755 "$0""#)
-            .arg(path)
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
-        assert!(writer.wait().unwrap().success(), "{} not written", path.display());
+        shards_testdir::program(&dir.join(format!("docker-credential-{name}")), script).unwrap();
     }
 
     /// What a context's client sends of its own reads back as it was: a password, an
@@ -1228,7 +1108,7 @@ esac
         helper(&bin, name);
         if !cfg!(target_os = "macos") {
             // `pass` itself must be installed for Docker to choose its helper.
-            program(&bin.join("pass"), "#!/bin/sh\nexit 0\n");
+            shards_testdir::program(&bin.join("pass"), "#!/bin/sh\nexit 0\n").unwrap();
         }
         let path = format!("{}:/bin:/usr/bin", bin.display());
         let env = [("PATH", path.as_str())];
@@ -1386,13 +1266,14 @@ esac
     fn logins_go_to_the_credential_helper() {
         let dir = temp("store-helper");
         let log = dir.join("helper.log");
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-shardstest"),
             &format!(
                 "#!/bin/sh\nIFS= read -r line || true\nprintf '%s %s\\n' \"$1\" \"$line\" >> '{}'\n",
                 log.display()
             ),
-        );
+        )
+        .unwrap();
         std::fs::write(dir.join("config.json"), r#"{"credsStore":"shardstest"}"#).unwrap();
         let mut vars: HashMap<String, String> = HashMap::new();
         vars.insert("DOCKER_CONFIG".into(), dir.to_string_lossy().into_owned());
@@ -1483,20 +1364,22 @@ esac
     /// whose own child holds its output open as it waits.
     #[cfg(unix)]
     fn stuck(dir: &Path, pids: &Path) {
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-stuck"),
             &format!(
                 "#!/bin/sh\necho $$ >> '{}'\nexec /bin/sleep 3613\n",
                 pids.display()
             ),
-        );
-        program(
+        )
+        .unwrap();
+        shards_testdir::program(
             &dir.join("docker-credential-parent"),
             &format!(
                 "#!/bin/sh\necho $$ >> '{0}'\n/bin/sleep 3613 &\necho $! >> '{0}'\nwait\n",
                 pids.display()
             ),
-        );
+        )
+        .unwrap();
     }
 
     /// A helper is started as it is found and never waited for unless its answer is read:
@@ -1555,10 +1438,11 @@ esac
     fn a_registry_token_asks_no_helper_and_a_missing_one_fails_only_its_answer() {
         let dir = temp("token-helper");
         let marks = dir.join("marks");
-        program(
+        shards_testdir::program(
             &dir.join("docker-credential-marking"),
             &format!("#!/bin/sh\necho asked >> '{}'\n", marks.display()),
-        );
+        )
+        .unwrap();
         std::fs::write(
             dir.join("config.json"),
             r#"{"credsStore":"marking","auths":{"t.example":{"registrytoken":"rt"}}}"#,

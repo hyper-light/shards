@@ -1,0 +1,9 @@
+    Checking shards-verify v0.1.0 (/Users/adalundhe/g121-tmp/network-fix-v1/source/crates/verify)
+    Checking rcgen v0.14.10
+    Checking flate2 v1.1.10
+    Checking shards-netring v0.1.0 (/Users/adalundhe/g121-tmp/network-fix-v1/source/crates/netring)
+    Checking httparse v1.10.1
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/g121-tmp/network-fix-v1/source/crates/testdir)
+    Checking shards-dns v0.1.0 (/Users/adalundhe/g121-tmp/network-fix-v1/source/crates/dns)
+    Checking shards-net v0.1.0 (/Users/adalundhe/g121-tmp/network-fix-v1/source/crates/net)
+    Finished `dev` profile [unoptimized] target(s) in 3.34s

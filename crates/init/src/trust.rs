@@ -205,6 +205,7 @@ mod tests {
             addresses: Vec::new(),
             addresses6: Vec::new(),
             hosts: Vec::new(),
+            wide: egress.clone(),
             egress,
             ingress: Vec::new(),
             dns: false,
@@ -212,6 +213,7 @@ mod tests {
             connects: true,
             accepts: false,
             unix: Vec::new(),
+            granted: crate::netplan::Granted::default(),
         }
     }
 

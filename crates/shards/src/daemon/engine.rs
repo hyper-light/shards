@@ -489,7 +489,7 @@ impl<D: Disk> Daemon<D> {
         threads: &'s Threads<'s, 'e>,
         conn: UnixStream,
         scope: Option<Scope>,
-        client: Option<String>,
+        client: Option<crate::context::Proved>,
     ) {
         // On Windows a host client comes through the Engine API's named pipe, whose DACL
         // admits this user's processes alone (shards_ipc::Listener), as Unix's comes
@@ -549,8 +549,9 @@ impl<D: Disk> Daemon<D> {
             .name("engine".into())
             .spawn_scoped(threads, move || {
                 // A client's of another machine's (D228): what its calls make is its.
-                CLIENT.with(|c| *c.borrow_mut() = client.unwrap_or_default());
-                self.engine_connection(threads, &conn, scope.as_ref());
+                CLIENT
+                    .with(|c| *c.borrow_mut() = client.as_ref().map(|p| p.name.clone()).unwrap_or_default());
+                self.engine_connection(threads, &conn, scope.as_ref(), client.as_ref());
                 done(&theirs);
             });
         if let Err(e) = spawned {
@@ -570,12 +571,15 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Serves the calls on `conn` one after another, as long as it is kept open.
+    /// Serves the calls on `conn` one after another, as long as it is kept open: a client's of
+    /// another machine's (`client`) each judged first by whether this home enrolls it still, as
+    /// its connection proved it (remote-03), and the connection ended where it does not.
     fn engine_connection<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         conn: &UnixStream,
         scope: Option<&Scope>,
+        client: Option<&crate::context::Proved>,
     ) {
         let mut reader = BufReader::new(shards_ipc::Polled(conn));
         let mut after_post = false;
@@ -590,6 +594,13 @@ impl<D: Disk> Daemon<D> {
                     return;
                 }
             };
+            if let Some(client) = client
+                && !client.enrolled(&self.home)
+            {
+                // Refused, RFC 9110 §15.5.4: who asks is known, and may not.
+                let _ = Answer::error(403, shards_remote::server::REVOKED_WORDS).write(conn, &head, false);
+                return;
+            }
             // A call is the daemon's work, as a run is.
             *lock(&self.last) = Instant::now();
             after_post = head.method == "POST";

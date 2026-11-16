@@ -1,0 +1,72 @@
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+Previous HEAD position was f270eb8b Merge origin/main (60245cefb) after confine-01/02 before the confine fixes land
+HEAD is now at c7237d62 confine: adapt the P0 cwd regression to deferred executable lookup and record ROOTs next finding
+   Compiling shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.54s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_init-c8e65a6b116a2bb8)
+
+running 6 tests
+test enter::tests::a_stdio_end_given_to_another_uid_says_whether_it_was ... ok
+test enter::tests::a_member_command_takes_nothing_its_member_has_not ... ok
+test enter::tests::an_execs_variables_lie_over_its_members ... ok
+test enter::tests::an_exec_cannot_set_what_init_sets_or_nothing ... ok
+test enter::tests::a_terminal_is_of_its_size_and_its_peer_the_members ... ok
+test enter::tests::rejected_environment_values_never_enter_diagnostics ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 277 filtered out; finished in 0.05s
+
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+HEAD is now at c7237d62 confine: adapt the P0 cwd regression to deferred executable lookup and record ROOTs next finding
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/main.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_init-c8e65a6b116a2bb8)
+
+running 14 tests
+test staged::tests::files_need_a_home ... ok
+test staged::tests::a_members_arguments_are_read_again_in_the_guest ... ok
+test staged::tests::a_working_directory_is_read_again_in_the_guest ... ok
+test staged::tests::staging_into_no_running_member_is_refused ... ok
+test staged::tests::the_domains_label_is_never_staged ... ok
+test staged::tests::staged_variables_replace_by_key ... ok
+test staged::tests::a_home_beneath_its_mount_is_made_and_holds_its_files ... ok
+test staged::tests::a_read_only_cover_refuses_staging_before_any_write ... ok
+test staged::tests::files_are_written_beneath_the_home ... ok
+test staged::tests::a_volume_home_is_opened_where_files_are_staged ... ok
+test staged::tests::a_file_from_before_is_replaced_and_one_staged_twice_refused ... ok
+test staged::tests::a_staged_file_uses_its_visible_nested_mount ... ok
+test staged::tests::image_aliases_are_resolved_only_before_entering_the_outer_mount ... ok
+test staged::tests::links_in_the_way_are_not_followed ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 269 filtered out; finished in 0.00s
+
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+HEAD is now at c7237d62 confine: adapt the P0 cwd regression to deferred executable lookup and record ROOTs next finding
+    Checking shards-init v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.42s
+From /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/confine-a611b634aa/source.bundle
+ * branch              p/fix-confine-v1 -> FETCH_HEAD
+HEAD is now at c7237d62 confine: adapt the P0 cwd regression to deferred executable lookup and record ROOTs next finding
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/g121-tmp/fix-confine-v1/source/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.17s
+     Running unittests src/lib.rs (/home/adalundhe/g121-tmp/fix-confine-v1/target/debug/deps/shards_vmm-e6b20389332fddb3)
+
+running 1 test
+
+thread 'devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup' (646989) panicked at crates/vmm/src/devices/virtio/fs/server.rs:4141:9:
+assertion `left == right` failed
+  left: 0
+ right: -13
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup ... FAILED
+
+failures:
+
+failures:
+    devices::virtio::fs::server::tests::a_failed_host_watch_admission_refuses_lookup
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 508 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vmm --lib`
+

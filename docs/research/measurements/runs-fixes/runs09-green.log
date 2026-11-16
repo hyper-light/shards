@@ -1,0 +1,11 @@
+# kiln r1765: bash run.sh green
+Host adas-mac-studio-3.local (Adas-Mac-Studio-4.local), Darwin 25.2.0 arm64, macOS 26.2 25C56, rustc 1.98.1. Source 22d03c1a (p/runs-tail-v1 merged with main 2e00a1043), CARGO_INCREMENTAL=0 SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/usr/bin/true SHARDS_SERVER_BINARY=/usr/bin/true, carrier /tmp/runs-tail-carrier (run.sh, mutate.py). aws-lc-sys build warnings removed.
+=== cargo test -j 4 -p shards --bin shards disk::tests
+running 3 tests
+test disk::tests::settings_read_back_and_come_to_their_amounts ... ok
+test disk::tests::settings_publication_leaves_another_writers_staging_file_alone ... ok
+test disk::tests::concurrent_settings_updates_keep_each_others_fields ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 923 filtered out; finished in 1.15s
+=== cargo clippy -j 4 -p shards --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 00s
+(exit 0)
