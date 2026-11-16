@@ -1830,7 +1830,8 @@ credential_process = echo no >&2 & exit /b 3
         } else {
             "exited 3"
         };
-        assert!(run("fails").err().unwrap().contains(exited));
+        let failed = run("fails").err().unwrap();
+        assert!(failed.contains(exited), "{failed}");
         if cfg!(windows) {
             let found = run("quoted").unwrap();
             assert_eq!(found.creds.access_key.as_str(), "listed");
