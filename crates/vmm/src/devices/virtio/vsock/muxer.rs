@@ -1464,7 +1464,6 @@ mod tests {
     /// The handshake's bounds are its own words': `CONNECT 0\n` the shortest line, and
     /// `CONNECT 4294967295\r\n` the longest, which is read whole, where a byte more is
     /// refused before its end.
-    #[cfg(unix)]
     #[test]
     fn handshake_lines_are_bounded_by_the_protocols_words() {
         assert_eq!(MIN_HANDSHAKE, b"CONNECT 0\n".len());
@@ -1472,14 +1471,14 @@ mod tests {
         assert_eq!(decimal_digits(9), 1);
         assert_eq!(decimal_digits(10), 2);
         let read = |line: &[u8]| {
-            let (mut client, server) = UnixStream::pair().unwrap();
-            server.set_nonblocking(true).unwrap();
+            let (mut client, stream) = host_stream();
             let mut h = Handshake {
-                stream: server,
+                stream,
                 line: Vec::new(),
                 heard: Instant::now(),
             };
             client.write_all(line).unwrap();
+            arrived(&mut h.stream);
             read_handshake(&mut h)
         };
         assert_eq!(
@@ -1579,7 +1578,6 @@ mod tests {
     /// connection closed, as Firecracker's muxer refuses one past its MAX_CONNECTIONS: not
     /// left in the listener's queue until a connection ends (D12; review: connections
     /// derived, refused typed past them).
-    #[cfg(unix)]
     #[test]
     fn past_its_slots_a_dial_is_refused_at_once() {
         let dir_guard = shards_testdir::TempDir::new("vsock-full").unwrap();
@@ -1597,7 +1595,7 @@ mod tests {
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
         m.on_guest_packet(&request(54, 49_152), &[], &mem);
         assert_eq!(m.conns.len(), 1);
-        let mut client = UnixStream::connect(&dir).unwrap();
+        let mut client = dialled(&mut m, &dir);
         // What the device polls is what the muxer asks for, and the listener is ready.
         let mut interests = Vec::new();
         m.interests(&mut interests);
@@ -1611,8 +1609,7 @@ mod tests {
             })
             .collect();
         m.on_events(&ready);
-        client.set_nonblocking(true).unwrap();
-        let end = client.read(&mut [0u8; 1]);
+        let end = read_now(&mut client, &mut [0u8; 1]);
         assert!(
             matches!(&end, Ok(0))
                 || end
@@ -1625,7 +1622,6 @@ mod tests {
 
     /// A pending handshake waits on no clock: it outlives any deadline, and gives its slot
     /// up only to a newcomer, the one silent longest first.
-    #[cfg(unix)]
     #[test]
     fn a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it() {
         let dir_guard = shards_testdir::TempDir::new("vsock-room").unwrap();
@@ -1633,7 +1629,7 @@ mod tests {
         let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         let mut clients = Vec::new();
         for _ in 0..3 {
-            clients.push(UnixStream::connect(&dir).unwrap());
+            clients.push(dialled(&mut m, &dir));
             m.on_events(&[Ready {
                 token: Some(Token::Listener),
                 read: true,
@@ -1645,6 +1641,7 @@ mod tests {
         // silent longest.
         for (client, h) in clients.iter_mut().zip(&mut m.handshakes).take(2) {
             client.write_all(b"CONN").unwrap();
+            arrived(&mut h.stream);
             assert_eq!(read_handshake(h).unwrap(), None);
         }
         m.make_room_within(4);
@@ -1661,9 +1658,8 @@ mod tests {
 
     /// A host's dial asking port `peer` of [`VsockHost::at`]'s muxer: its client, once the
     /// muxer has read its line and asked the guest (REQUEST), and the connection's key.
-    #[cfg(unix)]
-    fn dial(m: &mut Muxer, dir: &std::path::Path, peer: u32) -> (UnixStream, Key) {
-        let mut client = UnixStream::connect(dir).unwrap();
+    fn dial(m: &mut Muxer, dir: &std::path::Path, peer: u32) -> (Client, Key) {
+        let mut client = dialled(m, dir);
         m.on_events(&[Ready {
             token: Some(Token::Listener),
             read: true,
@@ -1671,6 +1667,7 @@ mod tests {
         }]);
         client.write_all(format!("CONNECT {peer}\n").as_bytes()).unwrap();
         let i = m.handshakes.len() - 1;
+        arrived(&mut m.handshakes[i].stream);
         m.on_events(&[Ready {
             token: Some(Token::Handshake(i)),
             read: true,
@@ -1689,7 +1686,6 @@ mod tests {
     /// A host's request waits for its guest on no clock (D266, in place of Firecracker's
     /// CONN_REQUEST_TIMEOUT_MS): a guest that answers three seconds late, as one held to a
     /// rate, paused or slow does, has its connection, its client reading its `OK`.
-    #[cfg(unix)]
     #[test]
     fn a_hosts_request_its_guest_answers_late_is_connected() {
         let dir_guard = shards_testdir::TempDir::new("vsock-late").unwrap();
@@ -1704,9 +1700,8 @@ mod tests {
             ..request(key.local_port, 1234)
         };
         m.on_guest_packet(&answered, &[], &mem);
-        client.set_nonblocking(true).unwrap();
         let mut line = [0u8; 64];
-        let n = client.read(&mut line).unwrap();
+        let n = read_now(&mut client, &mut line).unwrap();
         assert_eq!(
             &line[..n],
             format!("OK {}\n", key.local_port).as_bytes(),
@@ -1718,7 +1713,6 @@ mod tests {
     /// Where every slot is taken and no handshake is pending, the host's request its guest
     /// has left unanswered longest gives its slot up (D266): its client sees its socket close
     /// and its guest a reset; one its guest answered never does.
-    #[cfg(unix)]
     #[test]
     fn an_unanswered_request_gives_its_slot_up_longest_first() {
         let dir_guard = shards_testdir::TempDir::new("vsock-ask").unwrap();
@@ -1782,21 +1776,22 @@ mod tests {
         assert_eq!(m.stray_rsts.len(), 128);
     }
 
-    #[cfg(unix)]
     #[test]
     fn handshakes_arrive_in_pieces_and_leave_later_data_unread() {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        server.set_nonblocking(true).unwrap();
+        let (mut client, stream) = host_stream();
         let mut h = Handshake {
-            stream: server,
+            stream,
             line: Vec::new(),
             heard: Instant::now(),
         };
         client.write_all(b"CONN").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"ECT 77").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"\npayload").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), Some(Line::Connect(77)));
         let mut rest = [0u8; 7];
         h.stream.read_exact(&mut rest).unwrap();
@@ -2787,12 +2782,101 @@ mod tests {
         host.look() == Paired::Connected
     }
 
+    /// A host program's client of the device's socket: a socket; on Windows two pipes (D272).
+    #[cfg(unix)]
+    type Client = UnixStream;
+    #[cfg(windows)]
+    type Client = PipesClient;
+
+    /// A host program's dial of `m`'s socket at `dir`, once `m`'s listener has it to take: a
+    /// socket's connect, queued as it returns; on Windows its two pipes, its way down opened
+    /// first, once their pair is whole (D272).
+    #[cfg(unix)]
+    fn dialled(_m: &mut Muxer, dir: &std::path::Path) -> Client {
+        UnixStream::connect(dir).unwrap()
+    }
+
+    #[cfg(windows)]
+    fn dialled(m: &mut Muxer, dir: &std::path::Path) -> Client {
+        let client = PipesClient::open(dir);
+        until("its pair whole", || {
+            m.listener
+                .as_mut()
+                .and_then(|(_, l)| l.pair.as_mut())
+                .is_some_and(|p| p.look() == Paired::Connected)
+        });
+        client
+    }
+
+    /// A host program's client and the device's end of their connection, as a handshake holds
+    /// it: a socket pair; on Windows a listening pair's pipes ([`host_port`]), whole.
+    #[cfg(unix)]
+    fn host_stream() -> (Client, HostStream) {
+        let (client, ours) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        (client, ours)
+    }
+
+    #[cfg(windows)]
+    fn host_stream() -> (Client, HostStream) {
+        let dir_guard = shards_testdir::TempDir::new("vsock-stream").unwrap();
+        let path = dir_guard.join("v");
+        let mut pair = host_port(&path);
+        let client = PipesClient::open(&path);
+        until("its pair whole", || reached(&mut pair));
+        (client, pair.into_pipes().unwrap())
+    }
+
+    /// Waits until what a client wrote is `ours` to read: a socket's as the write returns; on
+    /// Windows once its read under way has finished, as a look takes it (`Pipes::look`), which
+    /// the device's handshake makes before it reads.
+    #[cfg(unix)]
+    fn arrived(_ours: &mut HostStream) {}
+
+    #[cfg(windows)]
+    fn arrived(ours: &mut HostStream) {
+        until("the client's bytes", || {
+            ours.look();
+            ours.readable()
+        });
+    }
+
+    /// What `client` reads without waiting, as a non-blocking socket reads: its bytes, `Ok(0)`
+    /// once the device's end has gone and every byte was read, `WouldBlock` where nothing is
+    /// there yet. On Windows its way down peeked first (`shards_ipc::Pipe::peek`, through a
+    /// copy of its handle).
+    #[cfg(unix)]
+    fn read_now(client: &mut Client, buf: &mut [u8]) -> io::Result<usize> {
+        client.set_nonblocking(true)?;
+        client.read(buf)
+    }
+
+    #[cfg(windows)]
+    fn read_now(client: &mut Client, buf: &mut [u8]) -> io::Result<usize> {
+        let down = shards_ipc::Pipe::from_handle(client.down.try_clone()?.into());
+        match down.peek()? {
+            None => Ok(0),
+            Some(0) => Err(io::ErrorKind::WouldBlock.into()),
+            Some(_) => client.down.read(buf),
+        }
+    }
+
+    /// Looks until `done` holds, failing after a while.
+    #[cfg(windows)]
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}: not after 10 s");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// A host program's client of a VM's socket on Windows, as D272's client opens one: its
     /// way down read, its way up written, each a file as `std` opens one.
     #[cfg(windows)]
     struct PipesClient {
         down: std::fs::File,
-        up: Option<std::fs::File>,
+        up: std::fs::File,
     }
 
     #[cfg(windows)]
@@ -2802,14 +2886,25 @@ mod tests {
             let names = shards_ipc::VsockNames::read(path).unwrap();
             let down = std::fs::OpenOptions::new().read(true).open(&names.down).unwrap();
             let up = std::fs::OpenOptions::new().write(true).open(&names.up).unwrap();
-            PipesClient { down, up: Some(up) }
+            PipesClient { down, up }
+        }
+    }
+
+    #[cfg(windows)]
+    impl io::Read for PipesClient {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.down.read(buf)
+        }
+    }
+
+    #[cfg(windows)]
+    impl io::Write for PipesClient {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.up.write(buf)
         }
 
-        fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
-            match self.up.as_mut() {
-                Some(up) => up.write_all(bytes),
-                None => Err(io::ErrorKind::NotConnected.into()),
-            }
+        fn flush(&mut self) -> io::Result<()> {
+            self.up.flush()
         }
     }
 
@@ -2855,7 +2950,7 @@ mod tests {
             let dir = dir.clone();
             move || PipesClient::open(&dir)
         });
-        client.write(b"CONNECT 1234\n").unwrap();
+        client.write_all(b"CONNECT 1234\n").unwrap();
         let mut asked = None;
         turn_until(&mut m, &mut poller, "the guest's REQUEST", |m| {
             asked = asked.or_else(|| std::iter::from_fn(|| m.next_rx(&[])).find(|h| h.op == op::REQUEST));
@@ -2899,7 +2994,7 @@ mod tests {
         let mut got = Vec::new();
         client.down.read_to_end(&mut got).unwrap();
         assert_eq!(got, bytes, "every byte, then the end");
-        let late = client.write(b"x");
+        let late = client.write_all(b"x");
         assert_eq!(late.map_err(|e| e.raw_os_error()), Err(Some(232)));
         turn_until(&mut m, &mut poller, "the next client's pair", |m| {
             m.handshakes.len() == 1
@@ -2923,7 +3018,7 @@ mod tests {
         let mut poller = super::super::poll::Poller::new().unwrap();
         m.attach_port(poller.port()).unwrap();
         let mut client = PipesClient::open(&dir);
-        client.write(b"RATE 250\n").unwrap();
+        client.write_all(b"RATE 250\n").unwrap();
         let mut handed = None;
         turn_until(&mut m, &mut poller, "the rate's dial", |_| {
             handed = handed.take().or_else(|| rated.try_recv().ok());

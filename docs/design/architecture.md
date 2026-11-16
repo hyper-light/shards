@@ -8583,11 +8583,19 @@ Decided by the user on 2026-10-14 ("so long as they apply appropriately to micro
     refusal of an exec of a round's word is that round's answer too, nothing given, queued
     with every answer (`Answered`, `refuse_word`): as a state alone, reset as the word's
     next exec began, a round whose groups' thread looked only after its give-back began
-    lost it, waited on that give-back, and the next member's pass opened no round (CI run
-    43876891053 at 1b8d1cddd, macOS and three Windows jobs: the member that joined was told
-    its room twice, `16 != 15`). A round its answers finished is judged before the pass that
-    follows, so that pass opens the next where its group is still short. An answer or
-    refusal wakes the existing groups condvar. No new bound, reader or cache.
+    lost it and waited on that give-back. A round its answers finished is judged before the
+    pass that follows, so that pass opens the next where its group is still short. A round
+    asks the members it began with: one joining while it runs is told its room at each
+    pass, and asked to give back by the round after. The test had its second member's join
+    open round 2, true while passes waited out a 2 s pressure window; on D215's pace
+    (2275e3829) the pass after round 1's verdict comes first and opens round 2 with the
+    first member alone, so the second was told its room twice, `16 != 15` (`ROOM` where
+    `RECLAIM` was due; CI run 43876891053 at 1b8d1cddd, macOS and three Windows jobs, and
+    adas-mac-studio.local-2 at 4999d113a, after the queued refusal, 3 of 3). A thread now
+    plays the second's guest whichever round asks it, and the first's give-back brings its
+    group within its max, so the round after, ended by the first's unanswered room, stops
+    nothing. An answer or refusal wakes the existing groups condvar. No new bound, reader
+    or cache.
     Past `memory.max` with nothing given back its largest is stopped. A group whose
     budget goes tells each member it told a room that it has none, its hold let go of.
     [Red/green and owed real-VM validation](../research/measurements/waits-fixes-v1/README.md).
@@ -34523,7 +34531,7 @@ ROOT's two decisions; lane lane-charge).
   - the next generation's streams are revoked (`abort_generation`), and what any of them held of
     the budget is given back at once, as their buffers go with them.
 
-  The image channel's version 46 appends the refusal (tag 7), so a side that reads none refuses
+  The image channel's version 47 appends the refusal (tag 7), so a side that reads none refuses
   the run as it is asked. shards-api surfaces it as
   `ImageRefusal::Restart(RestartRefusal::Capacity, _)`. A swap that restarts its member now
   (`SwapWhen::Now`) maps it to `SwapRefusal::Failed`, with its words, as it maps every restart
@@ -37090,7 +37098,7 @@ host starts its VM binary through its own descriptor (`/proc/PID/fd/N`), so the 
 
 **Owed** (ROOT, real VMs): that test on WHP and KVM arm64.
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed; a swap's kept run-time arguments built, their tests owed)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -37349,10 +37357,11 @@ with its generation.
 
 **Slice 4a: a component swapped in by digest, or its image's back, from the orchestrator** (shards-api
 and its run host, image channel version 40; built, its real-VM tests owed with slice 4b).
-- *The API* (shards-api, `ImageGuest`): `swap(at, digest, when, patience) -> Swapped`, the member
-  at path `at` (`/agents/NAME`, `/harness/NAME`) given the OSI artifact of manifest digest `digest`
-  of its run host's store as its component there; `restore(at, when, patience)`, its image's own
-  back; `components()`, every member's as its host last said them (`ComponentAt { at, desired,
+- *The API* (shards-api, `ImageGuest`): `swap(at, digest, when, args, patience) -> Swapped`, the
+  member at path `at` (`/agents/NAME`, `/harness/NAME`) given the OSI artifact of manifest digest
+  `digest` of its run host's store as its component there; `restore(at, when, args, patience)`, its
+  image's own back (`args`, its start's run-time arguments or none for its kept ones: amended
+  below); `components()`, every member's as its host last said them (`ComponentAt { at, desired,
   held }`: what its next start lays, what its current generation runs with). `when`: `NextStart`
   (laid at the member's next restart, by its orchestrator or `Now`'s), or `Now` (the member
   restarted at once, as `restart` does). `Swapped { components, started }`, `started` the member's
@@ -37395,6 +37404,46 @@ says what its directory holds at each generation's start).
 now: plugged, mounted, laid at its member's restart, wanted and held; a restore at its next start:
 held, nothing let go; the restart past it: nothing laid, then unmounted and unplugged; `Unknown`
 and `Artifact`, nothing asked).
+
+**Slice 4a amended: a swap's run-time arguments** (2026-11-16, image channel version 46; built,
+its tests written and not yet run).
+- *Found* by Hex ROOT bringing Hex to Shards: a `Now` swap restarted its member with no run-time
+  arguments (the run host's `RestartAsk` for it gave none). kiln starts a harness with flags of
+  its own (`--resume <id>`, `--model`, its permission mode), so a `Now` swap of `/harness/NAME`
+  brought it back without them, its conversation and settings lost.
+- *Decided* (ROOT): a `Now` swap restarts its member with its last start's run-time arguments by
+  default; `SwapAsk` carries an optional `args`, which, given, are that start's and its member's
+  kept ones after; the swap's typed refusals stay as they were (R04).
+- *Its run host* keeps each member's arguments (`Generations::args`): its first start's staged
+  ones (D256), read back from its setup's entries as its guest reads them
+  (`members::args_of`, `api_run::first_args`), then each later start's as it was given them,
+  kept once its guest has answered that start (a restart that fails keeps the last ones). A
+  restart (`restart(member, args, patience)`, internal) takes given arguments or, from a swap
+  that gives none, the kept ones, read under the lock that claims the member's restart, so that
+  no other start of it comes between the read and the start. A `NextStart` swap's given
+  arguments are kept at once, for the start that takes it (a later `Now` swap's; a restart from
+  its orchestrator gives its own, which win as they are given).
+- *The API*: `swap` and `restore` take `args: Option<&[Vec<u8>]>` before `patience`; `None` keeps
+  the last start's arguments, `Some(&[])` starts the member with none. *The image channel*:
+  `SwapAsk::args` after `when`, 0, or 1 then a count and each argument's length and bytes, as
+  `RestartAsk`'s are; version 46.
+- *Not taken*: arguments carried in `SwapWhen::Now` (no meaning left for a `NextStart` swap's,
+  and the field on `SwapAsk` was ROOT's call); shards-api remembering each member's arguments and
+  sending them with every swap (a second owner of what the run host alone starts members with,
+  R05, which a client that did not create the run would not have); a refusal of arguments given
+  at its next start (the refusals stay as they were).
+- *Literals*: none.
+
+**Tests** (amendment, light, written and not yet run: the lane ran no builds): the image channel's
+`a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused` (with no arguments, an empty
+list and its own, an empty one among them; an arguments' flag of 2 and a count past the payload
+refused); the run host's `a_swap_starts_its_member_with_its_kept_arguments_or_those_it_gives` (a
+`Now` swap with none starts its member with its first start's staged ones, then with a restart's;
+one with its own uses and keeps them; a `NextStart` swap keeps them, and one with its own keeps
+those at once, each used by the `Now` swap after) and
+`a_members_arguments_are_staged_after_its_own_in_order` (`first_args`). Owed (ROOT): those runs,
+`cargo clippy --workspace --all-targets` with the lint matrix, and a real-VM test of a harness
+that says its command line across a `Now` swap (the test guest has no such mode yet).
 
 **Real-VM runs (ROOT, HVF on this Mac, 2026-11-16), and what they found.** api_image.rs's slice
 3b and 4 tests found five faults the light tests could not reach, each fixed at its root:
@@ -37741,8 +37790,21 @@ finds nothing.
   then the end, then the host's write refused, 232), `a_rates_pipes_are_answered_by_its_owner`,
   `a_client_gone_with_its_way_down_alone_lets_the_next_in`; shards_ipc `pipe::vsock::tests`
   `a_pairs_file_says_its_two_names`, `a_pair_is_opened_by_its_file`,
-  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dial its AF_UNIX
-  listener run on Unix alone now; their Windows counterparts are the three above.
+  `a_busy_pair_is_waited_for_until_its_deadline`. The muxer's tests that dialled its AF_UNIX
+  listener or read a handshake off a socket pair run on both now, their assertions shared and
+  their dial each OS's (lane whp-tests; Windows forms written, not run): a dial taken once its
+  pair is whole (`dialled`), a handshake's stream a listening pair's pipes (`host_stream`), a
+  client's bytes looked at before a read (`arrived`), and a read that does not wait a peek of
+  the way down (`read_now`): `handshake_lines_are_bounded_by_the_protocols_words`,
+  `handshakes_arrive_in_pieces_and_leave_later_data_unread`,
+  `past_its_slots_a_dial_is_refused_at_once`,
+  `a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it`,
+  `an_unanswered_request_gives_its_slot_up_longest_first` and
+  `a_hosts_request_its_guest_answers_late_is_connected`. On Unix alone still: the two rate
+  tests, whose owner answers a socket by a blocking write (Windows' counterpart
+  `a_rates_pipes_are_answered_by_its_owner`, its answer a waited write), and
+  `past_its_descriptors_a_dial_is_refused_at_once` (EMFILE: Windows' listener takes a dial
+  by the handles its pair already holds).
 
 **S3, built** (the grants: `shards` grant_ask.rs, grant_answer.rs, vm_run.rs; Windows tests
 written, not run):
@@ -37793,12 +37855,17 @@ written, not run):
   `host_port_accept`. `vsock_connect` and `echo` ride them, `echo`'s writer sharing its stream
   (a pipe's end is one handle, whose close alone is its end for its peer). boot.rs's managed
   rate test dials by `vsock_dial`.
-- *Owed on Windows*: fixtures that stand in for a guest's socket with AF_UNIX listeners run on
-  Unix alone now, their Windows forms on pipes owed: `shards_api`'s `borrowed_tests`
-  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) and
-  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`. On pipes a dial to a pair
-  another client holds waits to its deadline (D272's order), never refused as a full backlog
-  is: that test's Windows form expects the dial's expiry.
+- *Fixtures that stand in for a guest's socket* run on both (lane whp-tests; Windows forms
+  written, not run): `shards_api`'s `borrowed_tests`
+  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) on
+  client.rs tests' stand-in listener (`stand_in_listener`, `next_dial`: a socket, or a
+  `VsockListener` and its `PipeDial`), a listener no dial reached one whose pair a dial that
+  waits for nothing opens (`undialed`), and a fixture's end each free way of its pair opened
+  (`redial`), as an attempt may hold its way down alone; and
+  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`, its full listener on Windows
+  a pair another client holds. On pipes such a dial waits to its deadline (D272's order), never
+  refused as a full backlog is, so its expiry there is the answer, asked again; on Unix an
+  expiry is a patience the dial did not fit in, asked again with more.
 - *Tests* (Windows, written, not run): shards_ipc `a_listener_lets_its_clients_in_one_after_another`;
   `shards_api`'s stream tests over pipes (`pair`), `a_streams_socket_is_handed_over` taking its
   pipes, the inheritability check on the way down's handle; client.rs's rate stand-in on a
