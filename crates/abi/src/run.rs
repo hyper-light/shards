@@ -238,6 +238,11 @@ pub mod kind {
     /// having failed, let go: its generation's end, or the end it had under the hold, is then
     /// its whole member's.
     pub const MEMBER_HOLD: u8 = 56;
+    /// Guest to host, on the workload's connection, before [`SYSTEM_ERR`]: a member whose
+    /// first generation could not enter its working directory as it started (D277), as
+    /// [`members::Unentered`](super::members::Unentered) encodes it. None of the run's members
+    /// runs: its `SYSTEM_ERR` and [`EXIT`] follow.
+    pub const WORKDIR_UNENTERED: u8 = 57;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

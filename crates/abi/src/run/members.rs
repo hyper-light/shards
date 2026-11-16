@@ -462,6 +462,39 @@ impl Ended {
     }
 }
 
+/// `[member, errno, workdir]`: a member whose first generation could not enter its working
+/// directory as it started (D277; init's `entering its working directory`): the member (a
+/// big-endian u32), chdir(2)'s errno there (a big-endian i32, Linux's numbering), then the
+/// directory, its staged one or its image's, to the payload's end: the payload of
+/// [`kind::WORKDIR_UNENTERED`](super::kind::WORKDIR_UNENTERED).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unentered {
+    pub member: u32,
+    pub errno: i32,
+    pub workdir: Vec<u8>,
+}
+
+impl Unentered {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(2 * size_of::<u32>() + self.workdir.len());
+        out.extend_from_slice(&self.member.to_be_bytes());
+        out.extend_from_slice(&self.errno.to_be_bytes());
+        out.extend_from_slice(&self.workdir);
+        out
+    }
+
+    /// What [`encode`](Self::encode) wrote; none for one with no directory, or cut short.
+    pub fn decode(bytes: &[u8]) -> Option<Unentered> {
+        let (member, rest) = bytes.split_first_chunk::<4>()?;
+        let (errno, workdir) = rest.split_first_chunk::<4>()?;
+        (!workdir.is_empty()).then(|| Unentered {
+            member: u32::from_be_bytes(*member),
+            errno: i32::from_be_bytes(*errno),
+            workdir: workdir.to_vec(),
+        })
+    }
+}
+
 /// `[member, held]`: the member (a big-endian u32), then 1 where its next generation is coming
 /// or 0 where its restart let it go: the payload of
 /// [`kind::MEMBER_HOLD`](super::kind::MEMBER_HOLD) (D270).
@@ -1545,5 +1578,21 @@ mod tests {
         assert_eq!(End::decode(&[1, 0, 0, 0, 65]), None);
         assert_eq!(End::decode(&[2, 0, 0, 0, 1]), None);
         assert_eq!(Ended::decode(&[0; Ended::LEN - 1]), None);
+    }
+
+    /// D277: a member's working directory its guest could not enter reads back as it was told,
+    /// its directory to the payload's end; one cut before its directory is none.
+    #[test]
+    fn a_working_directory_unentered_reads_back_as_told() {
+        let told = Unentered {
+            member: 1,
+            errno: 2,
+            workdir: b"/Users/ada/proj".to_vec(),
+        };
+        let bytes = told.encode();
+        assert_eq!(Unentered::decode(&bytes), Some(told));
+        for cut in 0..=8 {
+            assert_eq!(Unentered::decode(&bytes[..cut]), None, "cut at {cut}");
+        }
     }
 }

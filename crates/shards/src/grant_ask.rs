@@ -1,6 +1,6 @@
 //! A VM's half of its grants (`grant`): it asks its spawner for its paths and takes what
 //! it is answered with: on macOS descriptors and bookmarks, which it resolves; on Windows
-//! handles and sockets its spawner put in this process.
+//! handles its spawner put in this process, its vsock's pipes among them (D272).
 
 #[cfg(target_os = "macos")]
 use std::path::Path;
@@ -299,8 +299,9 @@ pub fn dial(
 }
 
 /// Asks the spawner on `link` for `wanted`, and takes what it answers: a file's handle and
-/// the path it was found at, from here on what opens of its path get; a socket bound for
-/// this VM; or, for a file it reads if it is there, word that it is not.
+/// the path it was found at, from here on what opens of its path get; its vsock listener's
+/// first pair of pipes, which its spawner named at the path (D272); or, for a file it reads
+/// if it is there, word that it is not.
 #[cfg(windows)]
 pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String> {
     use shards_ipc::kind;
@@ -323,9 +324,8 @@ pub fn obtain(link: &crate::grant::Link, wanted: &[Wanted]) -> Result<(), String
                 shards_vmm::platform::grant_input(path.clone(), None, false)
             }
             (kind::GRANTED, Access::Listen) => {
-                let listener = shards_vmm::platform::UnixListener::from_shared(&answer.payload)
-                    .map_err(|e| at(e.to_string()))?;
-                shards_vmm::platform::grant_listener(path.clone(), listener);
+                let pair = handed_pair(&answer.payload).map_err(at)?;
+                shards_vmm::platform::grant_listener(path.clone(), pair);
             }
             // Made, for the spawner to stage this VM's snapshots in ([`stage`]).
             (kind::GRANTED, Access::MakeDir) if answer.payload.is_empty() => {}
@@ -375,21 +375,55 @@ fn handed_file(payload: &[u8]) -> Result<(std::fs::File, PathBuf), String> {
     Ok((file, real))
 }
 
-/// A connection to vsock host port `port`, which the spawner on `link` dials for this VM
-/// beside the vsock path it granted it (`kind::DIAL`): an AppContainer dials nothing its
-/// user's (PM M201, M203).
+/// A pair of pipes' ends the spawner duplicated into this process for one answer alone, its
+/// way down's and its way up's: their values here, each a little-endian u64 (D272).
 #[cfg(windows)]
-pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm::platform::UnixStream> {
+fn handed_pair(
+    payload: &[u8],
+) -> Result<
+    (
+        std::os::windows::io::OwnedHandle,
+        std::os::windows::io::OwnedHandle,
+    ),
+    String,
+> {
+    use std::os::windows::io::FromRawHandle as _;
+    let (chunks, rest) = payload.as_chunks::<8>();
+    let ([down, up], []) = (chunks, rest) else {
+        return Err("a pair of pipes answered other than two handles".into());
+    };
+    let value = |bytes: &[u8; 8]| {
+        usize::try_from(u64::from_le_bytes(*bytes))
+            .ok()
+            .filter(|&v| v != 0)
+            .ok_or("a pair of pipes answered with no handle")
+    };
+    let (down, up) = (value(down)?, value(up)?);
+    // SAFETY: two handles the spawner duplicated into this process for this answer alone,
+    // owned from here on.
+    Ok(unsafe {
+        (
+            std::os::windows::io::OwnedHandle::from_raw_handle(down as std::os::windows::io::RawHandle),
+            std::os::windows::io::OwnedHandle::from_raw_handle(up as std::os::windows::io::RawHandle),
+        )
+    })
+}
+
+/// A connection to vsock host port `port`, which the spawner on `link` dials for this VM
+/// beside the vsock path it granted it (`kind::DIAL`): an AppContainer opens no pipe of its
+/// user's (PM M603). Its pipes' client ends, the host port's way down and way up, which the
+/// spawner opened and put in this process (D272); it holds no copy, so this VM's close is
+/// the end its host reads.
+#[cfg(windows)]
+pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm::platform::Pipes> {
     use shards_ipc::kind;
     shards_ipc::write_message(&link.to, kind::DIAL, &port.to_be_bytes())?;
     let answer = shards_ipc::read_message(&link.from)?
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
     match answer.kind {
         kind::GRANTED => {
-            let conn = shards_vmm::platform::UnixStream::from_shared(&answer.payload)?;
-            // Had: the spawner lets go of its copy, as on macOS (review 8.7).
-            let _ = shards_ipc::write_message(&link.to, kind::TAKEN, &[]);
-            Ok(conn)
+            let (down, up) = handed_pair(&answer.payload).map_err(std::io::Error::other)?;
+            shards_vmm::platform::Pipes::dialed(down, up)
         }
         kind::ERR => Err(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
@@ -398,6 +432,31 @@ pub fn dial(link: &crate::grant::Link, port: u32) -> std::io::Result<shards_vmm:
         _ => Err(std::io::Error::other(
             "the spawner answered a dial with something else",
         )),
+    }
+}
+
+/// The next pair of this VM's vsock listener, which the spawner on `link` makes under the
+/// names of the first it granted (`kind::VSOCK_PAIR`, D272): asked as a client has opened
+/// both ways of the last, its grants sealed long since.
+#[cfg(windows)]
+pub fn next_pair(
+    link: &crate::grant::Link,
+) -> std::io::Result<(
+    std::os::windows::io::OwnedHandle,
+    std::os::windows::io::OwnedHandle,
+)> {
+    use shards_ipc::kind;
+    shards_ipc::write_message(&link.to, kind::VSOCK_PAIR, &[])?;
+    let answer = shards_ipc::read_message(&link.from)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the spawner went"))?;
+    match answer.kind {
+        kind::GRANTED => handed_pair(&answer.payload).map_err(std::io::Error::other),
+        kind::ERR => Err(std::io::Error::other(
+            String::from_utf8_lossy(&answer.payload).into_owned(),
+        )),
+        other => Err(std::io::Error::other(format!(
+            "the spawner answered a pair with message kind {other}"
+        ))),
     }
 }
 

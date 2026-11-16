@@ -490,6 +490,10 @@ pub struct Ended {
     /// limit: what its cgroup was allowed and held, and how many (D193); none where none
     /// was.
     pub pids: Option<Vec<u8>>,
+    /// What its init said of a member that could not enter its working directory as it
+    /// started, which failed its run (D277): `run::members::Unentered`'s bytes; none where
+    /// none was.
+    pub unentered: Option<Vec<u8>>,
 }
 
 /// Keeps a microVM's output in its log ([`Writer`], log_writer.rs): each record at once,
@@ -999,6 +1003,7 @@ fn relay_frames(
     let mut not_run = None;
     let mut oom = None;
     let mut pids = None;
+    let mut unentered = None;
     // As much as the guest sends at once, in one read, whatever the frames it holds
     // (review 8.20): the caller's reader, whose next part reads what this one read past
     // its end.
@@ -1058,6 +1063,13 @@ fn relay_frames(
             }
             kind::OOM => oom = Some(payload.to_vec()),
             kind::PIDS => pids = Some(payload.to_vec()),
+            // A member that could not enter its working directory (D277), well formed or the
+            // guest's protocol broken: told its owner with the run's end.
+            kind::WORKDIR_UNENTERED => {
+                run::members::Unentered::decode(payload)
+                    .ok_or("the guest sent a malformed working directory's refusal")?;
+                unentered = Some(payload.to_vec());
+            }
             kind::PROCESS => {
                 if let Some(processes) = records.processes {
                     processes(payload);
@@ -1110,6 +1122,7 @@ fn relay_frames(
                     dropped: 0,
                     oom,
                     pids,
+                    unentered,
                 });
             }
             _ => return Err(format!("the guest sent an unknown frame kind {which}")),
@@ -2193,6 +2206,8 @@ pub fn join(
                         dropped: 0,
                         oom: oom.take(),
                         pids: pids.take(),
+                        // A joiner runs no member of its own (D119).
+                        unentered: None,
                     });
                 }
                 _ => return Err(format!("the guest sent an unknown frame kind {which}")),
@@ -3401,6 +3416,54 @@ mod tests {
         assert_eq!(
             broken.err().as_deref(),
             Some("the guest sent a malformed readiness")
+        );
+    }
+
+    /// D277: a member's working directory its guest could not enter is kept for the run's end,
+    /// its bytes as told, beside the words that failed the run; one malformed breaks the run's
+    /// protocol.
+    #[test]
+    fn a_working_directory_unentered_is_kept_for_the_runs_end() {
+        let frame = |which: u8, payload: &[u8]| {
+            let mut f = run::header(which, u32::try_from(payload.len()).unwrap()).to_vec();
+            f.extend_from_slice(payload);
+            f
+        };
+        let relayed = |frames: &[Vec<u8>]| {
+            let (mut guest, host) = UnixStream::pair().unwrap();
+            for f in frames {
+                guest.write_all(f).unwrap();
+            }
+            drop(guest);
+            let mut reader = io::BufReader::new(shards_ipc::Polled(&host));
+            let records = RunRecords {
+                processes: None,
+                members: None,
+                restarted: None,
+                readiness: None,
+                host_net: None,
+            };
+            relay(&mut reader, &Timing::new(), None, None, records)
+        };
+        let told = run::members::Unentered {
+            member: 1,
+            errno: 2,
+            workdir: b"/Users/ada/proj".to_vec(),
+        }
+        .encode();
+        let words: &[u8] = b"harness codex: its launch: Setup (entering its working directory): errno 2";
+        let ended = relayed(&[
+            frame(kind::WORKDIR_UNENTERED, &told),
+            frame(kind::SYSTEM_ERR, words),
+            frame(kind::EXIT, &125u32.to_be_bytes()),
+        ])
+        .unwrap();
+        assert_eq!(ended.unentered, Some(told));
+        assert!(ended.not_run.is_some());
+        let broken = relayed(&[frame(kind::WORKDIR_UNENTERED, &[0; 8])]);
+        assert_eq!(
+            broken.err().as_deref(),
+            Some("the guest sent a malformed working directory's refusal")
         );
     }
 

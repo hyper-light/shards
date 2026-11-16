@@ -10,19 +10,24 @@
 //! and a write of bytes taken from its caller, which finishes once they are all in the pipe
 //! (PM M603) and is never cancelled while the connection lives, as a cancelled write says
 //! nothing of what its reader took (M603). [`Pipes::look`] takes what finished, without
-//! waiting, whatever told of it.
+//! waiting, whatever told of it: the device's completion port, under the key each pair's
+//! handles were associated with ([`Pipes::attach`]), says only that something may have.
+//!
+//! A VM's listener holds one pair unconnected at a time ([`Listening`]), each instance's
+//! ConnectNamedPipe under way, and its way down watched for its client's going while its way
+//! up waits; its next pair comes once both ways of the last are open (D272).
 
 use std::cell::UnsafeCell;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_PIPE_NOT_CONNECTED,
-    GetLastError,
+    ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_MORE_DATA, ERROR_PIPE_CONNECTED,
+    ERROR_PIPE_NOT_CONNECTED, GetLastError, HANDLE,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
-use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+use windows_sys::Win32::System::IO::{CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, GetNamedPipeInfo, PIPE_SERVER_END};
 
 /// Where a connection's reads stand (R04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +68,9 @@ pub struct Pipes {
     /// This process's end of the way down, which it writes and its client reads. None once
     /// closed: the guest's writes ended ([`Pipes::shut_down`]).
     down: Option<OwnedHandle>,
-    /// This process's end of the way up, which its client writes and it reads.
-    up: OwnedHandle,
+    /// This process's end of the way up, which its client writes and it reads. None once
+    /// closed: the connection's reads ended ([`Pipes::end_reads`]).
+    up: Option<OwnedHandle>,
     /// Boxed, so that a call under way keeps its OVERLAPPED where it is as the connection moves.
     calls: Box<Calls>,
     /// Where reads land, as long as the way up's inbound quota: one read takes what the pipe holds.
@@ -73,6 +79,9 @@ pub struct Pipes {
     out: Vec<u8>,
     reading: Reading,
     writing: Writing,
+    /// What its handles tell a completion port of their calls' ends under, once associated
+    /// with one ([`Pipes::attach`]).
+    key: Option<usize>,
 }
 
 // SAFETY: the OVERLAPPEDs and buffers are the system's only while their calls are under way, and
@@ -132,30 +141,51 @@ fn settle(handle: &OwnedHandle, ov: *mut OVERLAPPED) {
     }
 }
 
-/// What the way up holds of its client's bytes, its inbound quota, as its maker gave it
-/// (CreateNamedPipeW's `nInBufferSize`, read back by GetNamedPipeInfo).
-fn inbound_quota(up: &OwnedHandle) -> io::Result<usize> {
-    let mut quota = 0u32;
-    // SAFETY: a pipe end of ours; the one count asked for is written to `quota`, the rest not asked.
+/// What the way this process reads holds of its writer's bytes, as its maker gave it (read
+/// back by GetNamedPipeInfo): a server end's inbound quota (CreateNamedPipeW's
+/// `nInBufferSize`), its client's bytes; a client end's outbound quota (`nOutBufferSize`),
+/// its server's, as a dial's way down is ([`Pipes::dialed`]). A pipe's two quotas are its
+/// maker's, whichever end asks.
+fn read_quota(up: &OwnedHandle) -> io::Result<usize> {
+    let (mut flags, mut outbound, mut inbound) = (0u32, 0u32, 0u32);
+    // SAFETY: a pipe end of ours; the flags and two quotas asked for are written to locals, its
+    // instances not asked.
     let read = unsafe {
         GetNamedPipeInfo(
             up.as_raw_handle(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &mut quota,
+            &mut flags,
+            &mut outbound,
+            &mut inbound,
             std::ptr::null_mut(),
         )
     };
     if read == 0 {
         return Err(io::Error::last_os_error());
     }
+    let quota = if flags & PIPE_SERVER_END != 0 {
+        inbound
+    } else {
+        outbound
+    };
     match usize::try_from(quota) {
         Ok(quota) if quota > 0 => Ok(quota),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "a way up with no inbound quota to read into",
+            "a way read with no quota to read into",
         )),
     }
+}
+
+/// Associates `handle`, opened for overlapped calls, with the completion port `port`, which
+/// is told of each call's end on it under `key` from here on, for the handle's life.
+fn associate(handle: &OwnedHandle, port: HANDLE, key: usize) -> io::Result<()> {
+    // SAFETY: a handle of ours and a port its caller holds open; the port's own handle comes
+    // back, no new one, its threads unasked as it exists.
+    let made = unsafe { CreateIoCompletionPort(handle.as_raw_handle(), port, key, 0) };
+    if made.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 impl Pipes {
@@ -163,14 +193,14 @@ impl Pipes {
     /// instances opened for overlapped calls, each connected to its client. Its first read
     /// starts at once.
     pub fn new(down: OwnedHandle, up: OwnedHandle) -> io::Result<Pipes> {
-        let quota = inbound_quota(&up)?;
+        let quota = read_quota(&up)?;
         let mut into = Vec::new();
         into.try_reserve_exact(quota)
             .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e.to_string()))?;
         into.resize(quota, 0);
         let mut pipes = Pipes {
             down: Some(down),
-            up,
+            up: Some(up),
             calls: Box::new(Calls {
                 read: UnsafeCell::new(OVERLAPPED::default()),
                 write: UnsafeCell::new(OVERLAPPED::default()),
@@ -179,14 +209,88 @@ impl Pipes {
             out: Vec::new(),
             reading: Reading::Holding { from: 0, to: 0 },
             writing: Writing::Idle,
+            key: None,
         };
         pipes.read_next();
         Ok(pipes)
     }
 
+    /// A dial's connection: the client ends of a listener's pair, its way `down` and way `up`
+    /// as its listener names them (the spawner opened them for its VM, `<path>_<port>`'s, D272).
+    /// This process reads the way down and writes the way up: its own ways are named as its
+    /// writes and reads go, its `down` the way it writes.
+    pub fn dialed(down: OwnedHandle, up: OwnedHandle) -> io::Result<Pipes> {
+        Pipes::new(up, down)
+    }
+
+    /// Associates its handles with the completion port `port`, which is told of each of its
+    /// calls' ends under `key` from here on. A call that ended before is the next
+    /// [`look`](Self::look)'s, which comes before any wait on the port.
+    pub fn attach(&mut self, port: HANDLE, key: usize) -> io::Result<()> {
+        for handle in [&self.down, &self.up].into_iter().flatten() {
+            associate(handle, port, key)?;
+        }
+        self.key = Some(key);
+        Ok(())
+    }
+
+    /// The key its handles tell their port under, once attached.
+    pub fn key(&self) -> Option<usize> {
+        self.key
+    }
+
+    /// Ends its reads: the read under way cancelled and waited for, and the way up closed, so
+    /// that its client's writes fail at once (ERROR_NO_DATA, D272); what it held unread goes.
+    /// Its way down is as it was: a connection whose guest has ended closes this way first, so
+    /// that its client, reading the way down's end after every byte, finds its writes refused.
+    pub fn end_reads(&mut self) {
+        if let (Reading::UnderWay, Some(up)) = (self.reading, &self.up) {
+            settle(up, self.calls.read.get());
+        }
+        self.up = None;
+        self.reading = Reading::Ended;
+    }
+
+    /// Writes `bytes` whole and waits until they are in the pipe, a write under way waited for
+    /// first: for a caller that writes and goes, its connection its own (a host ask's answer,
+    /// shards' `serve_rates`), never the device's, whose writes wait on nothing.
+    pub fn write_all_waiting(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.wait_written()?;
+        // SAFETY: `bytes` is readable for its length through the call.
+        let taken = unsafe { self.writev(&[(bytes.as_ptr(), bytes.len())]) }?;
+        if taken != bytes.len() {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        self.wait_written()
+    }
+
+    /// Waits until no write is under way: each that is, waited for to its end, then taken.
+    fn wait_written(&mut self) -> io::Result<()> {
+        loop {
+            let under_way = matches!(self.writing, Writing::UnderWay { .. } | Writing::Closing { .. });
+            let Some(down) = self.down.as_ref().filter(|_| under_way) else {
+                break;
+            };
+            let mut moved = 0u32;
+            // SAFETY: the OVERLAPPED of the one write under way on `down`, which carries no
+            // event: waited for (bWait 1) on its handle, so the system is done with it and its
+            // bytes once this returns. Its outcome is `look`'s to take.
+            unsafe { GetOverlappedResult(down.as_raw_handle(), self.calls.write.get(), &mut moved, 1) };
+            self.look();
+        }
+        match self.writing {
+            Writing::Failed(code) => Err(error(code)),
+            _ => Ok(()),
+        }
+    }
+
     /// Starts the next read into the buffer. One that finishes at once is taken by the next
     /// [`look`](Self::look), as one that finishes later is.
     fn read_next(&mut self) {
+        let Some(up) = &self.up else {
+            self.reading = Reading::Ended;
+            return;
+        };
         let ov = self.calls.read.get();
         let len = u32::try_from(self.into.len()).unwrap_or(u32::MAX);
         // SAFETY: no read is under way: its OVERLAPPED is ours to make fresh, and the buffer's
@@ -194,7 +298,7 @@ impl Pipes {
         let started = unsafe {
             ov.write(OVERLAPPED::default());
             ReadFile(
-                self.up.as_raw_handle(),
+                up.as_raw_handle(),
                 self.into.as_mut_ptr(),
                 len,
                 std::ptr::null_mut(),
@@ -246,20 +350,22 @@ impl Pipes {
     /// or its end, a write's end. The bytes of the write that finished, which are the pipe's
     /// from here on; none where none did.
     pub fn look(&mut self) -> usize {
-        if self.reading == Reading::UnderWay {
-            match outcome(&self.up, self.calls.read.get()) {
-                None => {}
-                // Nothing came, as a zero-byte write by its client is nothing to a byte-mode
-                // reader (PM M609 (d)): read on.
-                Some(Ok(0)) => self.read_next(),
-                Some(Ok(n)) => {
-                    self.reading = Reading::Holding {
-                        from: 0,
-                        to: n.min(self.into.len()),
-                    }
+        let read = match (self.reading, &self.up) {
+            (Reading::UnderWay, Some(up)) => outcome(up, self.calls.read.get()),
+            _ => None,
+        };
+        match read {
+            None => {}
+            // Nothing came, as a zero-byte write by its client is nothing to a byte-mode
+            // reader (PM M609 (d)): read on.
+            Some(Ok(0)) => self.read_next(),
+            Some(Ok(n)) => {
+                self.reading = Reading::Holding {
+                    from: 0,
+                    to: n.min(self.into.len()),
                 }
-                Some(Err(code)) => self.reading = read_ended(code),
             }
+            Some(Err(code)) => self.reading = read_ended(code),
         }
         let (at, closing) = match self.writing {
             Writing::UnderWay { at } => (at, false),
@@ -445,11 +551,256 @@ impl io::Write for Pipes {
 /// connection has ended, and waited for.
 impl Drop for Pipes {
     fn drop(&mut self) {
-        if self.reading == Reading::UnderWay {
-            settle(&self.up, self.calls.read.get());
+        if let (Reading::UnderWay, Some(up)) = (self.reading, &self.up) {
+            settle(up, self.calls.read.get());
         }
         if let (Writing::UnderWay { .. } | Writing::Closing { .. }, Some(down)) = (self.writing, &self.down) {
             settle(down, self.calls.write.get());
+        }
+    }
+}
+
+/// Where a listening pair's instance stands, its ConnectNamedPipe's (R04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Connect {
+    /// Its call under way: no client has it yet.
+    UnderWay,
+    /// A client opened it.
+    Connected,
+    /// Its call failed with this error, its client among them coming and going first
+    /// (ERROR_NO_DATA): no connection's.
+    Failed(u32),
+}
+
+/// What a listening pair's way down is watched by while its way up waits (R04): a read of no
+/// bytes, which pends until something comes or its client goes (PM M348).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Watch {
+    /// None started: the way down has no client yet, or the pair is whole.
+    Idle,
+    /// Under way.
+    UnderWay,
+    /// It ended: the way down's client went, or wrote on the way it reads, either no client's
+    /// that D272 knows.
+    Ended,
+}
+
+/// What a listening pair has come to ([`Listening::look`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Paired {
+    /// Its client has opened neither way yet, or the way down alone.
+    Waiting,
+    /// Both ways are open: [`Listening::into_pipes`] makes them a connection.
+    Connected,
+    /// No client's: its way down's client went before opening its way up, or a call failed.
+    /// Dropped and replaced, so that a client that dies there stops no other (D272).
+    Broken,
+}
+
+/// A listening pair's calls' OVERLAPPEDs, each the system's while its call is under way, and
+/// the byte its watch reads none of.
+struct ListenCalls {
+    down: UnsafeCell<OVERLAPPED>,
+    up: UnsafeCell<OVERLAPPED>,
+    watch: UnsafeCell<OVERLAPPED>,
+    byte: UnsafeCell<u8>,
+}
+
+/// A VM's listener's one unconnected pair (D272): two duplex instances, its way down and way
+/// up, each connected as its client opens it (overlapped ConnectNamedPipe). Its client opens
+/// the way down first; while its way up waits, the way down is watched for that client's
+/// going. Its listener asks for the next pair once this one is whole, so that a second client,
+/// waiting on the way down meanwhile (ERROR_PIPE_BUSY), can open no way of this one.
+pub struct Listening {
+    down: Option<OwnedHandle>,
+    up: Option<OwnedHandle>,
+    /// Boxed, so that its calls keep their OVERLAPPEDs where they are as the pair moves.
+    calls: Box<ListenCalls>,
+    down_at: Connect,
+    up_at: Connect,
+    watch: Watch,
+    /// What its handles tell a completion port under, once attached.
+    key: Option<usize>,
+}
+
+// SAFETY: as Pipes': its OVERLAPPEDs and byte are the system's only while their calls are under
+// way, and otherwise touched only through `&mut self`.
+unsafe impl Send for Listening {}
+
+impl std::fmt::Debug for Listening {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listening")
+            .field("down", &self.down_at)
+            .field("up", &self.up_at)
+            .field("watch", &self.watch)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Starts `instance`'s ConnectNamedPipe with `ov`: where it stands as the call returns. A
+/// client may open an instance as soon as it is made, before this call, which then says so
+/// at once (ERROR_PIPE_CONNECTED, ConnectNamedPipe), its OVERLAPPED never the system's.
+fn connect(instance: &OwnedHandle, ov: *mut OVERLAPPED) -> Connect {
+    // SAFETY: a fresh OVERLAPPED of ours, the system's until the call finishes (`look`, `drop`),
+    // on a server end of ours opened for overlapped calls.
+    let started = unsafe {
+        ov.write(OVERLAPPED::default());
+        ConnectNamedPipe(instance.as_raw_handle(), ov)
+    };
+    if started != 0 {
+        return Connect::Connected;
+    }
+    // SAFETY: no arguments.
+    match unsafe { GetLastError() } {
+        ERROR_IO_PENDING => Connect::UnderWay,
+        ERROR_PIPE_CONNECTED => Connect::Connected,
+        code => Connect::Failed(code),
+    }
+}
+
+/// Where a ConnectNamedPipe under way stands, from what it finished as (`outcome`).
+fn connected(finished: Option<Result<usize, u32>>) -> Connect {
+    match finished {
+        None => Connect::UnderWay,
+        Some(Ok(_)) => Connect::Connected,
+        Some(Err(ERROR_PIPE_CONNECTED)) => Connect::Connected,
+        Some(Err(code)) => Connect::Failed(code),
+    }
+}
+
+impl Listening {
+    /// The pair whose way down is `down` and way up `up`: server ends of byte-mode duplex
+    /// instances opened for overlapped calls, unconnected. Its connects start at once.
+    pub fn new(down: OwnedHandle, up: OwnedHandle) -> Listening {
+        let calls = Box::new(ListenCalls {
+            down: UnsafeCell::new(OVERLAPPED::default()),
+            up: UnsafeCell::new(OVERLAPPED::default()),
+            watch: UnsafeCell::new(OVERLAPPED::default()),
+            byte: UnsafeCell::new(0),
+        });
+        let down_at = connect(&down, calls.down.get());
+        let up_at = connect(&up, calls.up.get());
+        Listening {
+            down: Some(down),
+            up: Some(up),
+            calls,
+            down_at,
+            up_at,
+            watch: Watch::Idle,
+            key: None,
+        }
+    }
+
+    /// Associates its handles with the completion port `port`, which is told of its calls'
+    /// ends under `key` from here on, and of the connection's it makes ([`into_pipes`]).
+    ///
+    /// [`into_pipes`]: Listening::into_pipes
+    pub fn attach(&mut self, port: HANDLE, key: usize) -> io::Result<()> {
+        for handle in [&self.down, &self.up].into_iter().flatten() {
+            associate(handle, port, key)?;
+        }
+        self.key = Some(key);
+        Ok(())
+    }
+
+    /// The key its handles tell their port under, once attached.
+    pub fn key(&self) -> Option<usize> {
+        self.key
+    }
+
+    /// Takes what finished of its calls, without waiting, and what the pair has come to. Its
+    /// way down open and its way up not, the way down's watch starts.
+    pub fn look(&mut self) -> Paired {
+        if let (Connect::UnderWay, Some(down)) = (self.down_at, &self.down) {
+            self.down_at = connected(outcome(down, self.calls.down.get()));
+        }
+        if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
+            self.up_at = connected(outcome(up, self.calls.up.get()));
+        }
+        if let (Watch::UnderWay, Some(down)) = (self.watch, &self.down)
+            && outcome(down, self.calls.watch.get()).is_some()
+        {
+            self.watch = Watch::Ended;
+        }
+        match (self.down_at, self.up_at, self.watch) {
+            (Connect::Failed(_), _, _) | (_, Connect::Failed(_), _) | (_, _, Watch::Ended) => Paired::Broken,
+            (Connect::Connected, Connect::Connected, _) => Paired::Connected,
+            (Connect::Connected, Connect::UnderWay, Watch::Idle) => {
+                self.watch_down();
+                if self.watch == Watch::Ended {
+                    Paired::Broken
+                } else {
+                    Paired::Waiting
+                }
+            }
+            _ => Paired::Waiting,
+        }
+    }
+
+    /// Starts the way down's watch: a read of no bytes, which pends while its client is there
+    /// and writes nothing on the way it reads.
+    fn watch_down(&mut self) {
+        let Some(down) = &self.down else {
+            self.watch = Watch::Ended;
+            return;
+        };
+        let ov = self.calls.watch.get();
+        // SAFETY: no watch is under way: its OVERLAPPED is ours to make fresh; a read of none
+        // of the byte kept beside it, the system's until it finishes (`look`, `into_pipes`, `drop`).
+        let started = unsafe {
+            ov.write(OVERLAPPED::default());
+            ReadFile(
+                down.as_raw_handle(),
+                self.calls.byte.get(),
+                0,
+                std::ptr::null_mut(),
+                ov,
+            )
+        };
+        // SAFETY: no arguments.
+        let pending = started == 0 && unsafe { GetLastError() } == ERROR_IO_PENDING;
+        self.watch = if pending { Watch::UnderWay } else { Watch::Ended };
+    }
+
+    /// The pair as a connection's ([`Pipes`]), once both ways are open: its watch ended first,
+    /// and its key kept, as its handles tell their port under it still.
+    pub fn into_pipes(mut self) -> io::Result<Pipes> {
+        if (self.down_at, self.up_at) != (Connect::Connected, Connect::Connected) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "a pair not yet open both ways",
+            ));
+        }
+        if let (Watch::UnderWay, Some(down)) = (self.watch, &self.down) {
+            settle(down, self.calls.watch.get());
+        }
+        self.watch = Watch::Idle;
+        let (Some(down), Some(up)) = (self.down.take(), self.up.take()) else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "a pair taken already",
+            ));
+        };
+        let mut pipes = Pipes::new(down, up)?;
+        pipes.key = self.key;
+        Ok(pipes)
+    }
+}
+
+/// A pair ends its calls before their OVERLAPPEDs go: cancelled and waited for, its handles
+/// then closed, which its clients, if any, read as their end.
+impl Drop for Listening {
+    fn drop(&mut self) {
+        if let Some(down) = &self.down {
+            if self.down_at == Connect::UnderWay {
+                settle(down, self.calls.down.get());
+            }
+            if self.watch == Watch::UnderWay {
+                settle(down, self.calls.watch.get());
+            }
+        }
+        if let (Connect::UnderWay, Some(up)) = (self.up_at, &self.up) {
+            settle(up, self.calls.up.get());
         }
     }
 }
@@ -717,5 +1068,137 @@ mod tests {
             "{} bytes",
             got.len()
         );
+    }
+
+    /// A listening pair is a connection once its client has opened both ways, the way down
+    /// first, as D272's client does: waiting before, its way down watched meanwhile; whole
+    /// after, its connection carrying bytes both ways.
+    #[test]
+    fn a_listening_pair_is_a_connection_once_both_ways_are_open() {
+        let names = shards_ipc::VsockNames::fresh().unwrap();
+        let (down, up) = shards_ipc::vsock_pair(&names, true).unwrap();
+        let mut pair = Listening::new(down, up);
+        assert_eq!(pair.look(), Paired::Waiting);
+        let mut their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
+        assert_eq!(pair.look(), Paired::Waiting, "{pair:?}");
+        assert_eq!(pair.watch, Watch::UnderWay, "its way down unwatched");
+        let mut their_up = OpenOptions::new().write(true).open(&names.up).unwrap();
+        assert_eq!(pair.look(), Paired::Connected);
+        let mut p = pair.into_pipes().unwrap();
+        assert_eq!(p.write(b"hi").unwrap(), 2);
+        let mut got = [0u8; 2];
+        their_down.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"hi");
+        their_up.write_all(b"yo").unwrap();
+        until(&mut p, "its client's bytes", Pipes::readable);
+        let mut got = [0u8; 2];
+        assert_eq!(p.read(&mut got).unwrap(), 2);
+        assert_eq!(&got, b"yo");
+    }
+
+    /// A client that goes with its way down alone open breaks its pair (D272), which is then
+    /// no one's, so that its listener drops and replaces it.
+    #[test]
+    fn a_client_gone_before_its_way_up_breaks_its_pair() {
+        let names = shards_ipc::VsockNames::fresh().unwrap();
+        let (down, up) = shards_ipc::vsock_pair(&names, true).unwrap();
+        let mut pair = Listening::new(down, up);
+        let their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
+        assert_eq!(pair.look(), Paired::Waiting);
+        drop(their_down);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pair.look() != Paired::Broken {
+            assert!(Instant::now() < deadline, "a client's going unseen: {pair:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(pair.into_pipes().is_err(), "a broken pair made a connection");
+    }
+
+    /// A connection whose reads end first fails its client's writes at once, ERROR_NO_DATA
+    /// (232), while its client reads on every byte written down, then their end (D272).
+    #[test]
+    fn its_reads_ended_fail_its_clients_writes_at_once() {
+        let (mut p, Client { mut down, mut up }) = connected();
+        assert_eq!(p.write(b"last").unwrap(), 4);
+        p.end_reads();
+        let refused = up.write(b"late");
+        assert_eq!(
+            refused.map_err(|e| e.raw_os_error()),
+            Err(Some(ERROR_NO_DATA as i32))
+        );
+        p.shut_down();
+        until(&mut p, "the close", |p| p.writing == Writing::Shut);
+        let mut got = Vec::new();
+        down.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"last");
+    }
+
+    /// A dial's connection holds a listener's client ends: it reads the way down, which its
+    /// listener writes, and writes the way up, which its listener reads; each way's buffer is
+    /// that way's quota, the way down's outbound, as its client end reads it.
+    #[test]
+    fn a_dial_reads_its_way_down_and_writes_its_way_up() {
+        let dir = shards_testdir::TempDir::new("pipes-dial").unwrap();
+        let path = dir.join("v_5000");
+        let (_, down, up) = shards_ipc::vsock_listen(&path).unwrap();
+        let listener = (
+            shards_ipc::Pipe::from_handle(down),
+            shards_ipc::Pipe::from_handle(up),
+        );
+        let (their_down, their_up) = shards_ipc::vsock_open(&path, None).unwrap();
+        let mut p = Pipes::dialed(their_down, their_up).unwrap();
+        assert_eq!(p.into.len(), shards_ipc::VSOCK_QUOTA as usize);
+        (&listener.0).write_all(b"from the host").unwrap();
+        let mut got = Vec::new();
+        while got.len() < 13 {
+            until(&mut p, "the host's bytes", Pipes::readable);
+            let mut buf = [0u8; 16];
+            let n = p.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(got, b"from the host");
+        assert_eq!(p.write(b"from the guest").unwrap(), 14);
+        until(&mut p, "the guest's bytes", Pipes::writable);
+        let mut got = [0u8; 14];
+        (&listener.1).read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"from the guest");
+    }
+
+    /// A waited write is in the pipe as it returns: dropped at once after, its client reads
+    /// every byte, then the end.
+    #[test]
+    fn a_waited_write_is_in_the_pipe_as_it_returns() {
+        let (mut p, Client { mut down, up: _up }) = connected();
+        p.write_all_waiting(b"RATED 250 100000000\n").unwrap();
+        drop(p);
+        let mut got = Vec::new();
+        down.read_to_end(&mut got).unwrap();
+        assert_eq!(got, b"RATED 250 100000000\n");
+    }
+
+    /// Attached to a completion port, a connection's calls tell the port of their ends under
+    /// its key: its client's bytes come as a packet of that key, after which its look holds
+    /// them.
+    #[test]
+    fn its_calls_ends_come_to_its_port_under_its_key() {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+        use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus};
+        let (mut p, Client { down: _down, mut up }) = connected();
+        // SAFETY: a new port, of one thread.
+        let port = unsafe { CreateIoCompletionPort(INVALID_HANDLE_VALUE, std::ptr::null_mut(), 0, 1) };
+        assert!(!port.is_null(), "{}", io::Error::last_os_error());
+        // SAFETY: the port just made, owned from here on.
+        let port = unsafe { OwnedHandle::from_raw_handle(port) };
+        p.attach(port.as_raw_handle(), 7).unwrap();
+        assert_eq!(p.key(), Some(7));
+        up.write_all(b"x").unwrap();
+        let (mut moved, mut key, mut ov) = (0u32, 0usize, std::ptr::null_mut());
+        // SAFETY: our port; what a packet says written to locals; waited for at most 10 s.
+        let got =
+            unsafe { GetQueuedCompletionStatus(port.as_raw_handle(), &mut moved, &mut key, &mut ov, 10_000) };
+        assert_ne!(got, 0, "{}", io::Error::last_os_error());
+        assert_eq!(key, 7);
+        p.look();
+        assert!(p.readable());
     }
 }
