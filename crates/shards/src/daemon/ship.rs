@@ -182,6 +182,9 @@ pub(super) fn stops() -> io::Error {
 /// A driver as a shipper gives it messages: each until it is sent, and a count of them.
 struct Sender<'d> {
     id: &'d str,
+    /// Its run's directory, where the deadline of its next try is kept while it waits for
+    /// it ([`until_done`]).
+    dir: &'d Path,
     driver: &'d mut dyn Driver,
     wait: Wait<'d>,
     /// The messages sent.
@@ -193,7 +196,7 @@ impl Sender<'_> {
     /// up only as the daemon stops.
     fn send(&mut self, m: &Message<'_>) -> io::Result<()> {
         let (driver, wait) = (&mut *self.driver, &self.wait);
-        until_done(self.id, wait, || driver.send(m, wait))?;
+        until_done(self.id, self.dir, wait, || driver.send(m, wait))?;
         self.sent += 1;
         Ok(())
     }
@@ -204,7 +207,7 @@ impl Sender<'_> {
     fn fits(&mut self, m: &Message<'_>) -> io::Result<bool> {
         let (driver, wait) = (&mut *self.driver, &self.wait);
         let mut fits = false;
-        until_done(self.id, wait, || driver.fits(m).map(|f| fits = f))?;
+        until_done(self.id, self.dir, wait, || driver.fits(m).map(|f| fits = f))?;
         Ok(fits)
     }
 
@@ -214,7 +217,7 @@ impl Sender<'_> {
     fn written(&mut self, m: &Message<'_>) -> io::Result<Option<(usize, usize)>> {
         let (driver, wait) = (&mut *self.driver, &self.wait);
         let mut written = None;
-        until_done(self.id, wait, || driver.written(m).map(|w| written = w))?;
+        until_done(self.id, self.dir, wait, || driver.written(m).map(|w| written = w))?;
         Ok(written)
     }
 
@@ -222,7 +225,7 @@ impl Sender<'_> {
     /// sent; given up only as the daemon stops.
     fn flush(&mut self) -> io::Result<()> {
         let (driver, wait) = (&mut *self.driver, &self.wait);
-        until_done(self.id, wait, || driver.flush(wait))
+        until_done(self.id, self.dir, wait, || driver.flush(wait))
     }
 
     /// How many of the messages sent their receiver has.
@@ -235,15 +238,22 @@ impl Sender<'_> {
     /// does; given up only as the daemon stops.
     fn close(&mut self) -> io::Result<()> {
         let (driver, wait) = (&mut *self.driver, &self.wait);
-        until_done(self.id, wait, || driver.close(wait))
+        until_done(self.id, self.dir, wait, || driver.close(wait))
     }
 }
 
 /// Does `f` until it succeeds: again a second after it fails, half as long again after
 /// each failure, a minute at most ([`RETRY_FIRST`]); given up only as the daemon stops. A
 /// receiver that has not yet done what it was asked (WouldBlock: splunk's indexing) is
-/// waited for so too, without a word.
-fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+/// waited for so too, without a word. Each pause's end is the daemon's own deadline, kept
+/// in the run's directory `dir` while it waits (`shards_ipc::RETRY`), so that a wait on the
+/// daemon does not take the pause for a stall (D209).
+fn until_done(
+    id: &str,
+    dir: &Path,
+    wait: &Wait<'_>,
+    mut f: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
     let mut pause = RETRY_FIRST;
     loop {
         let Err(e) = f() else {
@@ -262,6 +272,7 @@ fn until_done(id: &str, wait: &Wait<'_>, mut f: impl FnMut() -> io::Result<()>) 
                 "container {id}: sending its log: {e}; again in {pause:?}"
             ));
         }
+        let _next = super::Deadline::begin(dir, shards_ipc::RETRY, pause);
         if wait.pause(pause) {
             return Err(stops());
         }
@@ -1066,6 +1077,7 @@ impl<D: Disk> Daemon<D> {
         let mut place = Place::default();
         let mut sender = Sender {
             id,
+            dir,
             driver,
             wait: Wait(stopped),
             sent: 0,
@@ -1808,6 +1820,57 @@ mod tests {
         assert_eq!(read_cursor(&dir), Some((at, true)));
         std::fs::write(dir.join(CURSOR), b"short").unwrap();
         assert_eq!(read_cursor(&dir), None);
+    }
+
+    /// A shipper's pause before it tries its driver again is its daemon's own deadline,
+    /// kept in its run's directory while it lasts (`shards_ipc::RETRY`), where a wait on the
+    /// daemon reads it (D209): containers.rs' syslog test, its server up only after its run,
+    /// was refused 763 ms into the shipper's first pause, "no progress for 399 ms" past a W*
+    /// of 241 ms (HVF, 6f5755ae1). Do: a send always refused, tried as a shipper tries it;
+    /// read the run's directory until its deadline shows; stop the daemon. Expect: the
+    /// pause's end, a first pause or more past the first refusal and no more than the
+    /// tries' pause past its read; none once the wait has ended.
+    #[test]
+    fn a_shippers_pause_before_its_next_try_is_its_daemons_deadline() {
+        let dir = shards_testdir::TempDir::new("ship-retry").unwrap();
+        let (stop, stopped) = UnixStream::pair().unwrap();
+        let refusals = std::sync::Mutex::new(Vec::new());
+        let (run, refused) = (&*dir, &refusals);
+        std::thread::scope(|s| {
+            let shipper = s.spawn(move || {
+                until_done("c", run, &Wait(&stopped), || {
+                    refused.lock().unwrap().push(std::time::SystemTime::now());
+                    Err(io::ErrorKind::ConnectionRefused.into())
+                })
+            });
+            let seen = loop {
+                if let Some(due) = shards_ipc::deadline_in(run, shards_ipc::RETRY) {
+                    break Some((due, std::time::SystemTime::now(), refused.lock().unwrap().len()));
+                }
+                // Two whole pauses gone by with none kept.
+                if refused.lock().unwrap().len() >= 3 {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            // Stopped before anything is asserted: the scope waits for its shipper.
+            shards_ipc::end(&stop);
+            let ended = shipper.join().unwrap();
+            let (due, read, tries) = seen.expect("no deadline kept through its pauses");
+            assert_eq!(ended.unwrap_err().kind(), io::ErrorKind::Interrupted);
+            let first = refused.lock().unwrap()[0];
+            let longest = (1..tries).fold(RETRY_FIRST, |p, _| p.mul_f64(1.5).min(RETRY_MOST));
+            assert!(due >= first + RETRY_FIRST, "{due:?}, first refused at {first:?}");
+            assert!(
+                due <= read + longest,
+                "{due:?}, read at {read:?} after {tries} tries"
+            );
+            assert_eq!(
+                shards_ipc::deadline_in(run, shards_ipc::RETRY),
+                None,
+                "kept past its wait"
+            );
+        });
     }
 
     /// A shipper keeps its place only as far as its receiver has the messages before it,
