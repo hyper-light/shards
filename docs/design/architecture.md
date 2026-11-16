@@ -32701,7 +32701,7 @@ step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or m
 (then bearer substitution cannot serve it, and it is fallback); a measured injector cost
 that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
 
-### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal building; real-VM runs owed)
+### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal built, D244; real-VM runs owed)
 
 **Why.** Plan step 6 (G24, D240): kiln runs a harness's sign-in in its member and shows its
 own screen, so a command run in a member must run as the member does, with a terminal that
@@ -32988,7 +32988,7 @@ ask. A member's own stdio is attached through step 5's streams (D240).
 
 **A member's own terminal** is D244's.
 
-### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs; real-VM runs owed)
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs, and a daemon's since goal 58's step 6; real-VM runs owed)
 
 **Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
 member must be able to run on a terminal of its own, its owner reading what it shows,
