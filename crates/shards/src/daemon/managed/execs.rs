@@ -22,6 +22,7 @@
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::mem::size_of;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
@@ -285,26 +286,28 @@ pub(super) fn pipe_bytes(pipe: &impl AsRawFd) -> io::Result<u64> {
 }
 
 /// The run's budget, charged for one exec while it runs and given back as it drops; or for a
-/// member's lane while it is open, a steer's delivery while it goes (members.rs), or a member's
-/// MCP connection while it is held and carried (mcp.rs).
-pub(super) struct Held<'a> {
-    charge: &'a Charge,
+/// member's lane while it is open, a steer's delivery while it goes (members.rs), a member's
+/// MCP connection while it is held and carried (mcp.rs), or an orchestrator's run's member
+/// stream while its run host holds it (api_run.rs, D252). `C` holds the budget: a borrow of
+/// it, or a share of it where it is kept beyond a borrow's scope.
+pub(crate) struct Held<C: Deref<Target = Charge>> {
+    charge: C,
     bytes: u64,
 }
 
-impl<'a> Held<'a> {
-    pub(super) fn new(charge: &'a Charge, bytes: u64) -> Result<Held<'a>, Admission> {
+impl<C: Deref<Target = Charge>> Held<C> {
+    pub(crate) fn new(charge: C, bytes: u64) -> Result<Held<C>, Admission> {
         charge.grow(bytes)?;
         Ok(Held { charge, bytes })
     }
 
     /// `bytes` charged to `charge` already, given back as it drops.
-    pub(super) fn of(charge: &'a Charge, bytes: u64) -> Held<'a> {
+    pub(super) fn of(charge: C, bytes: u64) -> Held<C> {
         Held { charge, bytes }
     }
 }
 
-impl Drop for Held<'_> {
+impl<C: Deref<Target = Charge>> Drop for Held<C> {
     fn drop(&mut self) {
         let _ = self.charge.release(self.bytes);
     }

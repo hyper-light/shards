@@ -13012,6 +13012,63 @@ fn volume_commands_keep_volumes() {
     assert!(host.join("h").exists(), "a bound directory outlives its volume");
 }
 
+/// D281: a volume a daemon's run holds, mounted as it starts (`-v NAME:/data`) or plugged into
+/// it as it runs (`plug volume`), is refused its clearing through shards-api (`clear_volume`,
+/// `InUse`) while the run runs, its files kept, and cleared once it has stopped. The plugged
+/// one, which no record of the daemon's mounts, is refused `remove volume` as in use and passed
+/// by `prune volumes --all` while it is held.
+#[test]
+fn a_volume_a_daemon_run_holds_is_cleared_only_once_it_stops() {
+    use shards_api::volumes::{ClearCause, VolumeRefusal, clear_volume};
+    let Some((home, image)) = home("containers-volume-held") else {
+        return;
+    };
+    let shards = |args: &[&str]| shards_in(&home, args);
+    let env = [(
+        std::ffi::OsString::from("SHARDS_HOME"),
+        home.as_os_str().to_os_string(),
+    )];
+    let clear = |name: &str| clear_volume(Some(common::shards()), &env, name);
+    let data = |name: &str| home.join("volumes").join(name).join("_data");
+    let made = shards(&["create", "volume", "plugged"]);
+    assert_eq!(made.status, Some(0), "{made}");
+    let mut run = start(
+        &home,
+        &image,
+        &["--name", "holder", "-v", "mounted:/data"],
+        &["trap", "TERM"],
+    );
+    let plugged = shards(&["plug", "volume", "holder", "plugged:/plugged"]);
+    assert_eq!(plugged.status, Some(0), "{plugged}");
+    for name in ["mounted", "plugged"] {
+        assert!(
+            matches!(clear(name), Err(VolumeRefusal::Clear(ClearCause::InUse, _))),
+            "{name}"
+        );
+        assert!(data(name).exists(), "{name}");
+    }
+    let refused = shards(&["remove", "volume", "plugged"]);
+    assert_eq!(
+        (refused.status, refused.stderr.as_str()),
+        (
+            Some(1),
+            "shards: cannot remove volume plugged: in use by a run that mounts or plugged it, or by another removal\n"
+        )
+    );
+    let pruned = shards(&["prune", "volumes", "-af"]);
+    assert_eq!(pruned.status, Some(0), "{pruned}");
+    assert!(!pruned.stdout.contains("plugged"), "{pruned}");
+    assert!(data("plugged").exists());
+    // Its holds are let go of as its run ends, before its client is told.
+    stop_run(&home, "holder");
+    exit(&mut run, &home);
+    for name in ["mounted", "plugged"] {
+        assert_eq!(clear(name), Ok(()), "{name}");
+        assert!(!data(name).exists(), "{name}");
+    }
+    assert_eq!(shards(&["remove", "vm", "holder"]).status, Some(0));
+}
+
 /// `--restart` (D39): `on-failure:N` restarts a failing
 /// command N times; `always` until stopped, a stop ending it for good; as the daemon
 /// starts again, `unless-stopped` and `always` start again what its stop ended, and not

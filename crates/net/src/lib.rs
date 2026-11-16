@@ -25,6 +25,7 @@ pub mod lease;
 pub mod pktinfo;
 mod poll;
 mod ring;
+pub mod shared;
 pub mod signin;
 mod siphash;
 pub mod sys;
@@ -100,7 +101,7 @@ impl Lifetime {
 const BACKLOG: usize = 1024;
 
 /// A transport protocol a grant names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Proto {
     Tcp,
     Udp,
@@ -978,11 +979,16 @@ struct Stack<'r> {
     inbound_ports: HashMap<(usize, std::net::SocketAddr), u16>,
     /// The gateway port the next published connection tries first.
     next_port: u16,
-    /// The other VMs on the guest's network (D46), by the slot their token names.
+    /// The other VMs on the guest's network (D46), and the links to other runs on the
+    /// networks shared by runs it is on (D285), by the slot their token names.
     peers: Vec<Option<Peer>>,
+    /// The generation the next shared network's link is given (review 2.14).
+    next_link: u32,
     /// The names its members answer to, which the gateway's resolver says: none off a
     /// network of its own.
     names: Option<dns::Names>,
+    /// The networks shared by runs that the guest is on (D285), beside its own.
+    joined: shared::Networks,
     /// Whether the process is held to an Agentfile's TCP ports already (D31, `NET_POLICY`).
     #[cfg(target_os = "linux")]
     ports_confined: bool,
@@ -1022,6 +1028,20 @@ struct Peer {
     unsent: Vec<u8>,
     /// What has come of the frames being received.
     received: Vec<u8>,
+    /// Its network shared by runs and its flows, where it is another run's link there
+    /// (D285): each frame crosses only as a flow both ends grant. None for a member of the
+    /// guest's own network (D46), which reaches it whole.
+    link: Option<shared::Link>,
+    /// Its token's generation: a link that replaced another in its slot is not taken for
+    /// it (review 2.14). D46's peers, never replaced, are at 0.
+    generation: u32,
+}
+
+impl Peer {
+    /// Its poller's token, at slot `i`.
+    fn token(&self, i: usize) -> u64 {
+        token::of(token::PEER, self.generation, u32::try_from(i).unwrap_or(u32::MAX))
+    }
 }
 
 /// Sends frames to the guest through the ring, into the backlog while it is full.
@@ -1073,9 +1093,15 @@ impl Out<'_, '_> {
     /// Sends the guest `payload` from `src`, to its port `port`: the datagram's headers
     /// made in the scratch, its bytes copied from where they lie.
     fn datagram(&mut self, src: (IpAddr, u16), port: u16, payload: &[u8]) -> bool {
-        let mut head = std::mem::take(self.scratch);
         let guest = self.guest_of(src.0);
-        self.frames.udp_headers(&mut head, src, (guest, port), payload);
+        self.datagram_to(src, (guest, port), payload)
+    }
+
+    /// [`Out::datagram`] to `dst`, one of the guest's addresses: its address on a network
+    /// shared by runs (D285) among them.
+    fn datagram_to(&mut self, src: (IpAddr, u16), dst: (IpAddr, u16), payload: &[u8]) -> bool {
+        let mut head = std::mem::take(self.scratch);
+        self.frames.udp_headers(&mut head, src, dst, payload);
         let sent = self.send(&[&head, payload]);
         *self.scratch = head;
         sent
@@ -1154,6 +1180,10 @@ impl Control {
                     | shards_ipc::kind::NET_SIGN_INS
                     | shards_ipc::kind::NET_SIGN_IN
                     | shards_ipc::kind::NET_GRANTS
+                    | shards_ipc::kind::NET_JOIN
+                    | shards_ipc::kind::NET_LEAVE
+                    | shards_ipc::kind::NET_LINK
+                    | shards_ipc::kind::NET_PEER_GRANT
             ),
             Control::Release => kind == shards_ipc::kind::UNPUBLISH,
         }
@@ -1226,7 +1256,9 @@ pub fn serve(
         inbound_ports: HashMap::new(),
         next_port: *EPHEMERAL.start(),
         peers: Vec::new(),
+        next_link: 1,
         names: None,
+        joined: shared::Networks::default(),
         #[cfg(target_os = "linux")]
         ports_confined: false,
         ceiling: None,
@@ -1505,6 +1537,9 @@ fn handed(
             stack.hosted.insert(u32::from_be_bytes(*id), at);
         }
         Ok(())
+    } else if kind == shards_ipc::kind::NET_LINK {
+        let taken = stack.link(payload, fds)?;
+        reply(sock, kind, &shared::encode_answer(taken))
     } else {
         stack.add_peer(payload, fds);
         answer(sock, shards_ipc::kind::NET_PEER)
@@ -1722,6 +1757,18 @@ fn answer_other(stack: &mut Stack<'_>, sock: &UnixStream, m: &shards_ipc::Messag
             };
             stack.cfg.guest_link_local = addresses;
             answer(sock, shards_ipc::kind::NET_LINK_LOCAL)
+        } else if m.kind == shards_ipc::kind::NET_JOIN {
+            let taken = stack.join(&m.payload, sock)?;
+            reply(sock, m.kind, &shared::encode_answer(taken))
+        } else if m.kind == shards_ipc::kind::NET_LEAVE {
+            let Some(id) = shared::NetworkId::of(&m.payload) else {
+                return Err(malformed());
+            };
+            let taken = stack.leave(&id);
+            reply(sock, m.kind, &shared::encode_answer(taken))
+        } else if m.kind == shards_ipc::kind::NET_PEER_GRANT {
+            let taken = stack.grant(&m.payload)?;
+            reply(sock, m.kind, &shared::encode_answer(taken))
         } else {
             // Flows left answer nobody: their sockets are forgotten, and closed. Each is
             // forgotten before it closes, as the poller has a socket closed: on Windows a
@@ -2049,8 +2096,8 @@ impl<'r> Stack<'r> {
         match e.kind {
             wire::ETHERTYPE_ARP => {
                 if let Some(req) = wire::arp_request(e.payload)
-                    && self.cfg.guests(IpAddr::V4(req.sender_ip))
-                    && !self.cfg.guests(IpAddr::V4(req.target_ip))
+                    && self.owns(req.sender_ip)
+                    && !self.owns(req.target_ip)
                 {
                     self.out().built(|frames, f| frames.arp_reply(f, &req));
                 }
@@ -2082,9 +2129,22 @@ impl<'r> Stack<'r> {
         }
     }
 
+    /// Whether IPv4 address `ip` is one of the guest's: on its own network, link-local, or
+    /// on a network shared by runs (D285).
+    fn owns(&self, ip: Ipv4Addr) -> bool {
+        self.cfg.guests(IpAddr::V4(ip)) || self.joined.holds(ip)
+    }
+
     /// The guest's IP packet `ip`, of either version, in frame `f`, from one of its own
     /// addresses: to a peer, or to the stack, only from its address of that version.
     fn on_guest_ip(&mut self, f: &[u8], ip: &wire::Ip<'_>) {
+        // From its address on a network shared by runs (D285): to that network alone.
+        if let IpAddr::V4(src) = ip.src
+            && self.joined.holds(src)
+        {
+            self.on_guest_shared(f, ip, src);
+            return;
+        }
         if !self.cfg.guests(ip.src) {
             return;
         }
@@ -2097,13 +2157,14 @@ impl<'r> Stack<'r> {
             IpAddr::V4(_) => self.cfg.guest_link_local.iter().any(IpAddr::is_ipv4),
             IpAddr::V6(_) => true,
         };
+        // A link of a shared network's is not one: its frames cross as flows its grants make.
         if let Some(i) = self.peers.iter().position(|p| {
             p.as_ref().is_some_and(|p| {
                 let address = match ip.dst {
                     IpAddr::V4(dst) => p.ip == dst,
                     IpAddr::V6(dst) => p.ip6 == Some(dst),
                 };
-                address || on_link && p.link_local.contains(&ip.dst)
+                p.link.is_none() && (address || on_link && p.link_local.contains(&ip.dst))
             })
         }) {
             self.forward_to_peer(i, f);
@@ -2212,6 +2273,8 @@ impl<'r> Stack<'r> {
             sock,
             unsent: Vec::new(),
             received: Vec::new(),
+            link: None,
+            generation: 0,
         };
         match self.peers.get_mut(i) {
             Some(slot) => *slot = Some(peer),
@@ -2243,7 +2306,7 @@ impl<'r> Stack<'r> {
             Ok(n) if n == framed.len() => {}
             Ok(n) => {
                 peer.unsent = framed.split_off(n);
-                let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+                let token = peer.token(i);
                 let both = poll::Interest {
                     read: true,
                     write: true,
@@ -2262,13 +2325,19 @@ impl<'r> Stack<'r> {
     /// routed one would.
     fn on_peer(&mut self, i: usize, e: &poll::Event) {
         use std::io::{Read as _, Write as _};
-        let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
         let mut gone = e.ended;
         let mut frames = Vec::new();
+        let linked;
         {
             let Some(Some(peer)) = self.peers.get_mut(i) else {
                 return;
             };
+            // Another link's, that held this slot before this one replaced it.
+            if token::generation(e.token) != peer.generation & 0xff_ffff {
+                return;
+            }
+            let token = peer.token(i);
+            linked = peer.link.is_some();
             if e.write && !peer.unsent.is_empty() {
                 match (&peer.sock).write(&peer.unsent) {
                     Ok(n) => {
@@ -2317,6 +2386,15 @@ impl<'r> Stack<'r> {
                 frames.push((peer.ip, peer.ip6, frame));
             }
         }
+        if linked {
+            for (_, _, frame) in frames {
+                self.frame_from_link(i, frame);
+            }
+            if gone {
+                self.drop_peer(i);
+            }
+            return;
+        }
         let theirs: Vec<IpAddr> = match self.peers.get(i) {
             Some(Some(peer)) => peer.link_local.clone(),
             _ => Vec::new(),
@@ -2359,7 +2437,7 @@ impl<'r> Stack<'r> {
         if let Some(slot) = self.peers.get_mut(i)
             && let Some(peer) = slot.take()
         {
-            let token = token::of(token::PEER, 0, u32::try_from(i).unwrap_or(u32::MAX));
+            let token = peer.token(i);
             let was = if peer.unsent.is_empty() {
                 poll::Interest::READ
             } else {
@@ -2370,6 +2448,254 @@ impl<'r> Stack<'r> {
             };
             self.forget(peer.sock.raw_sock(), token, was);
         }
+    }
+
+    /// The slot of the link to `peer` on shared network `id` (D285).
+    fn link_of(&self, id: &shared::NetworkId, peer: Ipv4Addr) -> Option<usize> {
+        self.peers.iter().position(|p| {
+            p.as_ref()
+                .is_some_and(|p| p.ip == peer && p.link.as_ref().is_some_and(|l| l.network == *id))
+        })
+    }
+
+    /// A run's place on a network shared by runs and its members, whole (`NET_JOIN`, D285):
+    /// taken where it keeps clear of the guest's other addresses and the process has a
+    /// descriptor for each link it still needs; then each link to an address no other run's
+    /// member is at dropped, and each flow its grants, their peers where the members now are,
+    /// no longer admit ended. An error for a malformed one.
+    fn join(&mut self, payload: &[u8], control: &UnixStream) -> io::Result<Result<(), shared::Refusal>> {
+        let Some(join) = shared::Join::decode(payload) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a join this process does not take",
+            ));
+        };
+        let own: Vec<Ipv4Addr> = [IpAddr::V4(self.cfg.guest_ip), IpAddr::V4(self.cfg.gateway_ip)]
+            .iter()
+            .chain(&self.cfg.guest_link_local)
+            .filter_map(|a| match a {
+                IpAddr::V4(v4) => Some(*v4),
+                IpAddr::V6(_) => None,
+            })
+            .collect();
+        if let Err(refused) = self.joined.check(&join, &own) {
+            return Ok(Err(refused));
+        }
+        // A link to come for each other run's address is a descriptor as its message comes:
+        // one its message lost for want of one would end this control (MSG_CTRUNC), so none
+        // is asked past them.
+        let runs: std::collections::HashSet<Ipv4Addr> = join
+            .members
+            .iter()
+            .map(|&(_, at)| at)
+            .filter(|&at| at != join.address)
+            .collect();
+        let to_come = runs
+            .into_iter()
+            .filter(|&at| self.link_of(&join.network, at).is_none())
+            .count();
+        if sys::descriptors_left(control, to_come) < to_come {
+            return Ok(Err(shared::Refusal::NoDescriptors));
+        }
+        let id = join.network;
+        self.joined.put(join);
+        self.relink(&id);
+        Ok(Ok(()))
+    }
+
+    /// One grant added or taken back on a shared network (`NET_PEER_GRANT`, D285), as the run's
+    /// grants change one at a time: each flow the grants no longer admit ended, and each
+    /// link's room what they now admit. An error for a malformed one.
+    fn grant(&mut self, payload: &[u8]) -> io::Result<Result<(), shared::Refusal>> {
+        let Some((id, change)) = shared::decode_grant(payload) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a grant this process does not take",
+            ));
+        };
+        if let Err(refused) = self.joined.change(&id, change) {
+            return Ok(Err(refused));
+        }
+        self.relink(&id);
+        Ok(Ok(()))
+    }
+
+    /// The run has left shared network `id` (`NET_LEAVE`, D285): its links go, their flows
+    /// with them, and its names.
+    fn leave(&mut self, id: &shared::NetworkId) -> Result<(), shared::Refusal> {
+        if !self.joined.remove(id) {
+            return Err(shared::Refusal::NotJoined);
+        }
+        self.relink(id);
+        Ok(())
+    }
+
+    /// Holds shared network `id`'s links to its members and grants: each to an address no
+    /// other run's member is at, or every one where it is left, dropped; each other's flows
+    /// held to its grants and room.
+    fn relink(&mut self, id: &shared::NetworkId) {
+        let network = self.joined.get(id);
+        let mut gone = Vec::new();
+        for (i, slot) in self.peers.iter_mut().enumerate() {
+            let Some(peer) = slot else { continue };
+            let ip = peer.ip;
+            let Some(link) = peer.link.as_mut().filter(|l| l.network == *id) else {
+                continue;
+            };
+            match network.filter(|n| n.names_peer(ip)) {
+                Some(n) => link.flows.regrant(n.room(ip), |by, key| n.admits(ip, by, key)),
+                None => gone.push(i),
+            }
+        }
+        for i in gone {
+            self.drop_peer(i);
+        }
+    }
+
+    /// A link to another run on a shared network (`NET_LINK`, D285): to an address one of its
+    /// members is at, in place of an older link there, whose flows go with it. An error for a
+    /// malformed one, or one whose socket cannot be waited on.
+    fn link(&mut self, payload: &[u8], fds: Vec<Handed>) -> io::Result<Result<(), shared::Refusal>> {
+        let mut fds = fds.into_iter();
+        let (Some((id, ip)), Some(fd), None) = (shared::decode_link(payload), fds.next(), fds.next()) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a link this process does not take",
+            ));
+        };
+        let Some(network) = self.joined.get(&id) else {
+            return Ok(Err(shared::Refusal::NotJoined));
+        };
+        if !network.names_peer(ip) {
+            return Ok(Err(shared::Refusal::NotAPeer));
+        }
+        let room = network.room(ip);
+        let sock = UnixStream::from(fd);
+        sock.set_nonblocking(true)?;
+        // A ring's worth each way, as a D46 peer's link (PM M182).
+        sys::set_buffers(sock.raw_sock(), shards_netring::RING);
+        if let Some(older) = self.link_of(&id, ip) {
+            self.drop_peer(older);
+        }
+        let i = self
+            .peers
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.peers.len());
+        let generation = self.next_link;
+        // 0 is D46's peers' alone.
+        self.next_link = match self.next_link.wrapping_add(1) & 0xff_ffff {
+            0 => 1,
+            next => next,
+        };
+        let peer = Peer {
+            ip,
+            ip6: None,
+            link_local: Vec::new(),
+            sock,
+            unsent: Vec::new(),
+            received: Vec::new(),
+            link: Some(shared::Link {
+                network: id,
+                flows: shared::Flows::new(room),
+            }),
+            generation,
+        };
+        self.poller.set(
+            peer.sock.raw_sock(),
+            peer.token(i),
+            poll::Interest::NONE,
+            poll::Interest::READ,
+        )?;
+        match self.peers.get_mut(i) {
+            Some(slot) => *slot = Some(peer),
+            None => self.peers.push(Some(peer)),
+        }
+        Ok(Ok(()))
+    }
+
+    /// The guest's packet `ip`, in frame `f`, from `src`, its address on a network shared by
+    /// runs (D285): to that network alone, never past the microVM. A question of its names to
+    /// the network's gateway is answered here, from that network's names; a packet to a run
+    /// linked there crosses as a flow both ends grant, its first only where the guest's egress
+    /// to that run takes it; anything else goes nowhere.
+    fn on_guest_shared(&mut self, f: &[u8], ip: &wire::Ip<'_>, src: Ipv4Addr) {
+        let Some(network) = self.joined.at(src) else {
+            return;
+        };
+        let IpAddr::V4(dst) = ip.dst else {
+            return;
+        };
+        if dst == network.gateway {
+            let Some(q) = (ip.proto == wire::PROTO_UDP)
+                .then(|| wire::udp(ip.payload))
+                .flatten()
+                .filter(|u| u.dst_port == 53)
+            else {
+                return;
+            };
+            let answer = if network.names.holds(q.payload) {
+                network.names.answer(q.payload)
+            } else {
+                dns::refused(q.payload)
+            };
+            let gateway = IpAddr::V4(network.gateway);
+            if let Some(answer) = answer {
+                self.out()
+                    .datagram_to((gateway, 53), (IpAddr::V4(src), q.src_port), &answer);
+            }
+            return;
+        }
+        let id = network.id;
+        let (Some(packet), Some(i)) = (shared::Packet::of(ip, shared::Side::Ours), self.link_of(&id, dst))
+        else {
+            return;
+        };
+        let crossed = match (self.peers.get_mut(i), self.joined.get(&id)) {
+            (Some(Some(peer)), Some(network)) => peer.link.as_mut().is_some_and(|link| {
+                let granted = |key: &shared::FlowKey| network.admits(dst, shared::Side::Ours, key);
+                link.flows
+                    .admit(shared::Side::Ours, &packet, granted, Instant::now())
+                    .is_ok()
+            }),
+            _ => false,
+        };
+        if crossed {
+            self.forward_to_peer(i, f);
+        }
+    }
+
+    /// A frame from link `i` of a network shared by runs (D285), to the guest only as a flow
+    /// both ends grant ([`shared::Packet::linked`]): its flow's, or the first of one the
+    /// guest's ingress takes; from the gateway's MAC, as a routed frame comes.
+    fn frame_from_link(&mut self, i: usize, mut frame: Vec<u8>) {
+        let crossed = match self.peers.get_mut(i) {
+            Some(Some(peer)) => {
+                let from = peer.ip;
+                match peer.link.as_mut() {
+                    Some(link) => self.joined.get(&link.network).is_some_and(|network| {
+                        let granted = |key: &shared::FlowKey| network.admits(from, shared::Side::Theirs, key);
+                        shared::Packet::linked(&frame, from, network.address).is_some_and(|packet| {
+                            link.flows
+                                .admit(shared::Side::Theirs, &packet, granted, Instant::now())
+                                .is_ok()
+                        })
+                    }),
+                    None => false,
+                }
+            }
+            _ => false,
+        };
+        if !crossed {
+            return;
+        }
+        if let Some(macs) = frame.get_mut(wire::VNET..wire::VNET + 12)
+            && let (dst, src) = macs.split_at_mut(6)
+        {
+            dst.copy_from_slice(&self.cfg.guest_mac);
+            src.copy_from_slice(&self.cfg.gateway_mac);
+        }
+        self.out().send(&[&frame]);
     }
 
     /// An echo request to the gateway, ICMP's or ICMPv6's, is answered here; others are not
@@ -3325,7 +3651,9 @@ mod tests {
             inbound_ports: HashMap::new(),
             next_port: *EPHEMERAL.start(),
             peers: Vec::new(),
+            next_link: 1,
             names: None,
+            joined: shared::Networks::default(),
             #[cfg(target_os = "linux")]
             ports_confined: false,
             ceiling: None,
@@ -3638,6 +3966,303 @@ mod tests {
             (ip.proto, ip.payload.first(), ip.payload.get(1)),
             (wire::PROTO_ICMP, Some(&3), Some(&13))
         );
+    }
+
+    /// D285 slice 3, a network shared by runs, with frames as D46's peers are tested. Do: on a
+    /// guest of the default bridge, join a shared network as `harness` at 10.89.0.2, beside
+    /// `db` at 10.89.0.3 and `web` at 10.89.0.4; grant harness 5432/tcp out to db and 8080/tcp
+    /// in from db, one grant at a time; link both runs; send SYNs from its shared address and
+    /// from its own, ask the network's gateway db's name, and have db answer, open flows of
+    /// its own, send a fragment and a packet from web's address, and web open one; take the
+    /// grant in back; link db anew, its first link's late hang-up coming after; join again
+    /// without db; leave. Expect: links to an address no other run's member is at, or on no
+    /// network joined, refused typed, as are a grant held twice and one taken back unheld; the
+    /// guest's ARP from its shared address answered; its SYN to 5432 on db's link, to 22
+    /// nowhere, and from its own address never on a link; db's name answered to its shared
+    /// address; db's answer of its flow and its SYN to 8080 to the guest, its SYN to 9999,
+    /// the fragment, web's address on db's link and web's own SYN to 8080 nowhere; db's
+    /// flow to 8080 ended with its grant; the newer link in the older's place, its flows gone
+    /// and the late hang-up taken for none of it; db's link dropped as db left the members,
+    /// web's kept; the network left once.
+    #[cfg(unix)]
+    #[test]
+    fn a_shared_network_carries_flows_both_ends_grant_and_nothing_else() {
+        use crate::shared::{Change, Grant, Refusal, Way};
+        use std::io::{Read as _, Write as _};
+        use std::os::unix::net::UnixStream;
+        let region = Region::map(shards_netring::memory().unwrap()).unwrap();
+        let (cw, pr) = shards_netring::doorbell().unwrap();
+        let (_, cr) = shards_netring::doorbell().unwrap();
+        let mut consumer = region.consumer(1, cr, cw);
+        let mut take = || {
+            consumer
+                .pop(|n, copy| {
+                    let mut f = vec![0u8; n];
+                    copy(0, f.as_mut_ptr(), n);
+                    f
+                })
+                .unwrap()
+        };
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let cfg = Config::on_bridge(Policy::DenyAll, [2, 0, 0, 0, 0, 1], &bridge);
+        let (guest_mac, gateway_mac, guest_ip) = (cfg.guest_mac, cfg.gateway_mac, cfg.guest_ip);
+        let mut stack = stack(cfg, region.producer(1, pr));
+        let mut id = [b'0'; shared::ID_LEN];
+        id[0] = b'a';
+        let id = shared::NetworkId(id);
+        let (ours, gateway) = (Ipv4Addr::new(10, 89, 0, 2), Ipv4Addr::new(10, 89, 0, 1));
+        let (db, web) = (Ipv4Addr::new(10, 89, 0, 3), Ipv4Addr::new(10, 89, 0, 4));
+        let join = |members: &[(&str, Ipv4Addr)]| {
+            let join = shared::Join {
+                network: id,
+                address: ours,
+                prefix: 24,
+                gateway,
+                name: "team".into(),
+                members: members.iter().map(|&(n, at)| (n.to_string(), at)).collect(),
+            };
+            join.encode().unwrap()
+        };
+        let (control, _held) = UnixStream::pair().unwrap();
+        let everyone = [("harness", ours), ("db", db), ("web", web)];
+        assert_eq!(stack.join(&join(&everyone), &control).unwrap(), Ok(()));
+        let grant = |change: Change| stack_grant(&id, change);
+        let to_db = Grant {
+            member: "harness".into(),
+            peer: "db".into(),
+            proto: Proto::Tcp,
+            first: 5432,
+            last: 5432,
+            way: Way::Out,
+        };
+        let from_db = Grant {
+            first: 8080,
+            last: 8080,
+            way: Way::In,
+            ..to_db.clone()
+        };
+        assert_eq!(stack.grant(&grant(Change::Add(to_db.clone()))).unwrap(), Ok(()));
+        assert_eq!(stack.grant(&grant(Change::Add(from_db.clone()))).unwrap(), Ok(()));
+        assert_eq!(
+            stack.grant(&grant(Change::Add(to_db.clone()))).unwrap(),
+            Err(Refusal::Granted)
+        );
+        let unheld = Grant {
+            peer: "web".into(),
+            ..to_db.clone()
+        };
+        assert_eq!(
+            stack.grant(&grant(Change::Remove(unheld))).unwrap(),
+            Err(Refusal::NotGranted)
+        );
+        let link = |to: Ipv4Addr| shared::encode_link(&id, to);
+        let (mut peer, end) = UnixStream::pair().unwrap();
+        assert_eq!(stack.link(&link(db), vec![end.into()]).unwrap(), Ok(()));
+        let (mut webs, end) = UnixStream::pair().unwrap();
+        assert_eq!(stack.link(&link(web), vec![end.into()]).unwrap(), Ok(()));
+        for nobody in [Ipv4Addr::new(10, 89, 0, 9), ours] {
+            let (_, end) = UnixStream::pair().unwrap();
+            assert_eq!(
+                stack.link(&link(nobody), vec![end.into()]).unwrap(),
+                Err(Refusal::NotAPeer)
+            );
+        }
+        let (_, end) = UnixStream::pair().unwrap();
+        let elsewhere = shared::encode_link(&shared::NetworkId([b'f'; shared::ID_LEN]), db);
+        assert_eq!(
+            stack.link(&elsewhere, vec![end.into()]).unwrap(),
+            Err(Refusal::NotJoined)
+        );
+        // An IPv4 frame of `proto` from `src` to `dst`, its bytes `l4`; a fragment's where
+        // `fragment`.
+        let frame =
+            |macs: ([u8; 6], [u8; 6]), src: Ipv4Addr, dst: Ipv4Addr, proto: u8, l4: &[u8], fragment: bool| {
+                let mut f = vec![0u8; wire::VNET];
+                f.extend_from_slice(&macs.1);
+                f.extend_from_slice(&macs.0);
+                f.extend_from_slice(&wire::ETHERTYPE_IPV4.to_be_bytes());
+                let total = u16::try_from(wire::IPV4 + l4.len()).unwrap();
+                f.extend_from_slice(&[0x45, 0]);
+                f.extend_from_slice(&total.to_be_bytes());
+                f.extend_from_slice(&[0, 0, if fragment { 0x20 } else { 0 }, 0, 64, proto, 0, 0]);
+                f.extend_from_slice(&src.octets());
+                f.extend_from_slice(&dst.octets());
+                f.extend_from_slice(l4);
+                f
+            };
+        let segment = |src: u16, dst: u16, flags: u8| {
+            let mut t = Vec::new();
+            t.extend_from_slice(&src.to_be_bytes());
+            t.extend_from_slice(&dst.to_be_bytes());
+            t.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 1, 0x50, flags, 0xff, 0xff, 0, 0, 0, 0]);
+            t
+        };
+        let from_guest = |src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8]| {
+            frame((guest_mac, gateway_mac), src, dst, wire::PROTO_TCP, l4, false)
+        };
+        // What reached a link's far end: its frame's destination port, as the guest's TCP
+        // sent it.
+        let reached = |peer: &mut UnixStream| -> Option<u16> {
+            peer.set_nonblocking(true).unwrap();
+            let mut len = [0u8; 4];
+            match peer.read(&mut len) {
+                Ok(4) => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return None,
+                other => panic!("the link said {other:?}"),
+            }
+            peer.set_nonblocking(false).unwrap();
+            let mut f = vec![0u8; u32::from_be_bytes(len) as usize];
+            peer.read_exact(&mut f).unwrap();
+            let ip = wire::ipv4(wire::eth(f.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+            Some(wire::tcp(ip.payload).unwrap().dst_port)
+        };
+        // Its ARP for db, asked from its shared address: answered.
+        let mut arp = vec![0u8; wire::VNET];
+        arp.extend_from_slice(&[0xff; 6]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&wire::ETHERTYPE_ARP.to_be_bytes());
+        arp.extend_from_slice(&[0, 1, 8, 0, 6, 4, 0, 1]);
+        arp.extend_from_slice(&guest_mac);
+        arp.extend_from_slice(&ours.octets());
+        arp.extend_from_slice(&[0; 6]);
+        arp.extend_from_slice(&db.octets());
+        stack.on_guest_frame(&arp);
+        let reply = take().unwrap();
+        assert_eq!(
+            wire::eth(reply.get(wire::VNET..).unwrap()).unwrap().kind,
+            wire::ETHERTYPE_ARP
+        );
+        // The guest's SYNs: to its grant's port on db's link; to another, and from its own
+        // address, never.
+        stack.on_guest_frame(&from_guest(ours, db, &segment(40000, 5432, wire::SYN)));
+        assert_eq!(reached(&mut peer), Some(5432));
+        stack.on_guest_frame(&from_guest(ours, db, &segment(40001, 22, wire::SYN)));
+        assert_eq!(reached(&mut peer), None, "a port its grant opens not");
+        stack.on_guest_frame(&from_guest(ours, web, &segment(40001, 5432, wire::SYN)));
+        assert_eq!(reached(&mut webs), None, "a peer its grant names not");
+        stack.on_guest_frame(&from_guest(guest_ip, db, &segment(40002, 5432, wire::SYN)));
+        assert_eq!(reached(&mut peer), None, "from its own network's address");
+        while take().is_some() {}
+        // db's name, asked of the network's gateway: answered to its address there.
+        let mut question = vec![
+            0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 2, b'd', b'b', 0, 0, 1, 0, 1,
+        ];
+        let mut asked = 53000u16.to_be_bytes().to_vec();
+        asked.extend_from_slice(&53u16.to_be_bytes());
+        asked.extend_from_slice(&u16::try_from(8 + question.len()).unwrap().to_be_bytes());
+        asked.extend_from_slice(&[0, 0]);
+        asked.append(&mut question);
+        stack.on_guest_frame(&frame(
+            (guest_mac, gateway_mac),
+            ours,
+            gateway,
+            wire::PROTO_UDP,
+            &asked,
+            false,
+        ));
+        let answered = take().unwrap();
+        let ip = wire::ipv4(wire::eth(answered.get(wire::VNET..).unwrap()).unwrap().payload).unwrap();
+        let u = wire::udp(ip.payload).unwrap();
+        assert_eq!(
+            (ip.src, ip.dst, u.src_port),
+            (IpAddr::V4(gateway), IpAddr::V4(ours), 53)
+        );
+        assert!(u.payload.ends_with(&db.octets()), "db's address");
+        // A linked run's frames, as its network process sends them.
+        let send = |peer: &mut UnixStream, src: Ipv4Addr, l4: &[u8], fragment: bool| {
+            let f = frame((gateway_mac, guest_mac), src, ours, wire::PROTO_TCP, l4, fragment);
+            peer.write_all(&u32::try_from(f.len()).unwrap().to_be_bytes())
+                .unwrap();
+            peer.write_all(&f).unwrap();
+        };
+        let ready = |generation: u32, slot: u32, ended: bool| poll::Event {
+            token: token::of(token::PEER, generation, slot),
+            read: true,
+            write: false,
+            ended,
+        };
+        // What of a link's frames reached the guest: its destination port, from the
+        // gateway's MAC to the guest's.
+        let delivered = |stack: &mut Stack<'_>,
+                         take: &mut dyn FnMut() -> Option<Vec<u8>>,
+                         (generation, slot): (u32, u32)| {
+            stack.on_peer(slot as usize, &ready(generation, slot, false));
+            take().map(|f| {
+                let e = wire::eth(f.get(wire::VNET..).unwrap()).unwrap();
+                assert_eq!((e.dst, e.src), (guest_mac, gateway_mac));
+                let ip = wire::ipv4(e.payload).unwrap();
+                wire::tcp(ip.payload).unwrap().dst_port
+            })
+        };
+        let (dbs_link, webs_link) = ((1, 0), (2, 1));
+        send(&mut peer, db, &segment(5432, 40000, wire::SYN | wire::ACK), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, dbs_link),
+            Some(40000),
+            "its flow's answer"
+        );
+        send(&mut peer, db, &segment(50000, 8080, wire::SYN), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, dbs_link),
+            Some(8080),
+            "a port it lets db in on"
+        );
+        send(&mut peer, db, &segment(50001, 9999, wire::SYN), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, dbs_link),
+            None,
+            "a port it lets in not"
+        );
+        send(&mut peer, db, &segment(50002, 8080, wire::SYN), true);
+        assert_eq!(delivered(&mut stack, &mut take, dbs_link), None, "a fragment");
+        send(&mut peer, web, &segment(50003, 8080, wire::SYN), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, dbs_link),
+            None,
+            "web's address on db's link"
+        );
+        send(&mut webs, web, &segment(50004, 8080, wire::SYN), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, webs_link),
+            None,
+            "web, whom no grant lets in"
+        );
+        // The grant in taken back: db's flow to 8080 ends with it.
+        assert_eq!(stack.grant(&grant(Change::Remove(from_db))).unwrap(), Ok(()));
+        send(&mut peer, db, &segment(50000, 8080, wire::ACK), false);
+        assert_eq!(
+            delivered(&mut stack, &mut take, dbs_link),
+            None,
+            "its flow, ended"
+        );
+        // A newer link in the older's place: its flows gone with it, the older's hang-up,
+        // come late, taken for none of the newer.
+        let (mut newer, end) = UnixStream::pair().unwrap();
+        assert_eq!(stack.link(&link(db), vec![end.into()]).unwrap(), Ok(()));
+        peer.set_nonblocking(false).unwrap();
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0, "the older link closed");
+        stack.on_peer(0, &ready(1, 0, true));
+        stack.on_guest_frame(&from_guest(ours, db, &segment(40000, 5432, wire::ACK)));
+        assert_eq!(reached(&mut newer), None, "the older link's flow");
+        stack.on_guest_frame(&from_guest(ours, db, &segment(40003, 5432, wire::SYN)));
+        assert_eq!(reached(&mut newer), Some(5432), "the newer link, kept");
+        // db gone from the members: its link dropped, web's kept. Then left, once.
+        let left = [("harness", ours), ("web", web)];
+        assert_eq!(stack.join(&join(&left), &control).unwrap(), Ok(()));
+        newer.set_nonblocking(false).unwrap();
+        assert_eq!(newer.read(&mut [0u8; 1]).unwrap(), 0, "db's link dropped");
+        assert!(stack.link_of(&id, web).is_some(), "web's kept");
+        assert_eq!(stack.leave(&id), Ok(()));
+        assert_eq!(stack.leave(&id), Err(Refusal::NotJoined));
+        webs.set_nonblocking(false).unwrap();
+        assert_eq!(webs.read(&mut [0u8; 1]).unwrap(), 0, "every link of it dropped");
+        stack.on_guest_frame(&from_guest(ours, gateway, &segment(40004, 53, wire::SYN)));
+        assert_eq!(take(), None, "its address there no longer the guest's");
+    }
+
+    /// `NET_PEER_GRANT`'s payload for `change` of network `id`'s grants.
+    fn stack_grant(id: &shared::NetworkId, change: shared::Change) -> Vec<u8> {
+        shared::encode_grant(id, &change).unwrap()
     }
 
     /// D273. Do: on a stack whose policy (its ceiling) grants 443/tcp, 8443/tcp and 5000/udp,

@@ -2597,8 +2597,10 @@ pub struct VsockHost {
     /// line on [`path`](VsockHost::path)'s socket comes here with its connection, for this
     /// process to hold the vCPUs to, or read their use, and answer on (`shards_abi::rate`).
     /// Only a dial on that socket says one: a guest's connections arrive as its packets.
-    /// None for every other machine, whose muxer closes such a dial unanswered.
-    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::UnixStream, shards_abi::rate::Asked)>>,
+    /// None for every other machine, whose muxer closes such a dial unanswered. Its
+    /// connection is a host program's dial ([`crate::platform::HostStream`]): on Windows its
+    /// pipes (D272).
+    pub rate: Option<std::sync::mpsc::Sender<(crate::platform::HostStream, shards_abi::rate::Asked)>>,
 }
 
 /// What a [`ServedPort::Admitted`] port's owner did with a guest's connection: took it, or

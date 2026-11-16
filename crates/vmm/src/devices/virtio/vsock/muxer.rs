@@ -13,6 +13,13 @@
 //! goes to the port's sender. Each takes one connection; later ones are refused. Without a path, the device takes no host clients and other
 //! host ports refuse.
 //!
+//! On Windows a host program's connection is two pipes, one each way (D272): the device's
+//! socket path is a file naming its listener's pair, which holds one pair unconnected at a
+//! time and asks for the next once both ways of the last are open; a host port's path names
+//! its listener's pair, which the guest's dial opens. Served ports stay AF_UNIX pairs there:
+//! both their ends are this process's, and their owners, shards' own code, take the end of a
+//! connection as Unix's do (D272's served ports).
+//!
 //! A snapshot keeps the streams the guest may still hold ([`Saved`]). The restored copy
 //! resets each with an RST, ahead of every other packet on the RX queue, which the
 //! Linux driver handles in order. A TRANSPORT_RESET event would come on the event queue
@@ -33,12 +40,16 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use super::Span;
-use super::conn::{Conn, Ended, WINDOW_LENT};
+use super::conn::{Conn, Ended, Host, WINDOW_LENT};
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op};
-use super::poll::{Interest, Ready};
+use super::poll::{Interest, Ready, Source};
 use crate::debug;
 use crate::memory::GuestMemory;
-use crate::platform::{AsRawSocket, UnixListener, UnixStream};
+#[cfg(unix)]
+use crate::platform::UnixListener;
+use crate::platform::{AsRawSocket, HostStream, UnixStream};
+#[cfg(windows)]
+use crate::platform::{Listening, PairMaker, Paired, Pipes};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::vm::VsockHost;
 
@@ -126,9 +137,13 @@ pub(super) const fn stray_rsts_bound(rx_ring: u16, tx_ring: u16) -> usize {
     }
 }
 
+/// The descriptors a connection holds at most: its host socket; on Windows a host program's
+/// two pipes, its way down's and its way up's (D272), a served port's one socket fewer.
+const HELD_PER_CONNECTION: u64 = if cfg!(windows) { 2 } else { 1 };
+
 /// A muxer's slots ([`Muxer::slots`]): what this process's descriptor limit, raised as far
 /// as it may go as a share process raises its own, leaves past the descriptors it holds,
-/// its listener's and spare's among them, one to a connection, its host socket
+/// its listener's and spare's among them, [`HELD_PER_CONNECTION`] to a connection
 /// (`shards_abi::bounds::connections`, D12). Where it cannot say what it holds, the limit
 /// alone; where it cannot say its limit, no number: its descriptors bound them then, as
 /// they bound a dial past what it held as the muxer was made ([`Muxer::refuse_one`]).
@@ -139,7 +154,7 @@ fn slots() -> usize {
     match limit {
         Some(limit) => {
             let held = crate::platform::open_descriptors().unwrap_or(0);
-            shards_abi::bounds::connections(limit, held, 1)
+            shards_abi::bounds::connections(limit, held, HELD_PER_CONNECTION)
         }
         None => usize::MAX,
     }
@@ -161,7 +176,7 @@ pub enum Token {
 }
 
 struct Handshake {
-    stream: UnixStream,
+    stream: HostStream,
     line: Vec<u8>,
     /// Its latest progress: its accept, then the latest bytes of its line. A pending
     /// handshake holds its slot against a newcomer on no clock: a client that is gone is seen
@@ -201,17 +216,44 @@ impl Saved {
     }
 }
 
+/// What host clients dial: a Unix socket; on Windows a pipe listener (D272).
+#[cfg(unix)]
+type Listener = UnixListener;
+#[cfg(windows)]
+type Listener = PipeListener;
+
+/// The device's pipe listener on Windows (D272): its one unconnected pair, and where its next
+/// comes from.
+#[cfg(windows)]
+#[derive(Debug)]
+struct PipeListener {
+    maker: PairMaker,
+    /// None while its next could not be made, made again at each round ([`Muxer::on_events`]).
+    pair: Option<Listening>,
+}
+
+/// The device's completion port (Windows): its waker's, which its connections' pipes tell of
+/// their calls' ends (poll.rs).
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy)]
+struct Port(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a completion port's handle, which any thread may associate a handle with and post
+// to; its owner, the device's waker, keeps it open as long as the device's muxer lives.
+#[cfg(windows)]
+unsafe impl Send for Port {}
+
 pub struct Muxer {
     guest_cid: u64,
     /// The device's socket, where host clients dial, if it has one.
-    listener: Option<(PathBuf, UnixListener)>,
+    listener: Option<(PathBuf, Listener)>,
     /// Host ports served in this process, each for its first connection.
     served: HashMap<u32, Sender<UnixStream>>,
     /// Host ports served in this process for every connection.
     every: HashMap<u32, crate::vm::ServedPort>,
     /// Where a host client's `RATE` or `USE` line goes with its connection, on a managed
     /// machine ([`VsockHost::rate`], D255, D260).
-    rate: Option<Sender<(UnixStream, shards_abi::rate::Asked)>>,
+    rate: Option<Sender<(HostStream, shards_abi::rate::Asked)>>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Ended connections still held ([`Conn::end`]): owing their hosts guest bytes, or on
@@ -233,7 +275,9 @@ pub struct Muxer {
     /// A descriptor held for a dial no other is left for ([`Muxer::refuse_one`]). None while
     /// it cannot be made again, as another took the one its refusal let go: the listener
     /// waits unpolled until a round makes it ([`Muxer::on_events`]), where a dial no
-    /// descriptor is left for would keep it ready for ever.
+    /// descriptor is left for would keep it ready for ever. Windows' listener accepts by
+    /// handles its pairs already hold, and needs none.
+    #[cfg(unix)]
     spare: Option<Spare>,
     local_ports: HashSet<u32>,
     last_local_port: u32,
@@ -243,6 +287,40 @@ pub struct Muxer {
     /// The guest's memory, once the device is activated: what a ring port's connections'
     /// rings are attached in (D230).
     memory: Option<Arc<GuestMemory>>,
+    /// The completion port its pipes are associated with ([`Muxer::attach_port`]), once given.
+    #[cfg(windows)]
+    port: Option<Port>,
+    /// The last key given a pair's handles to tell the port under: each pair its own, never
+    /// reused, so that a packet of one gone names none ([`super::poll::FIRST_KEY`]).
+    #[cfg(windows)]
+    keys: usize,
+}
+
+/// The next key after `last`: 2^64 of them outlast any device.
+#[cfg(windows)]
+fn next_key(last: &mut usize) -> usize {
+    *last = last.saturating_add(1).max(super::poll::FIRST_KEY);
+    *last
+}
+
+/// The device's listener at `path`: bound here, or by the spawner where this process may not
+/// (App Sandbox).
+#[cfg(unix)]
+fn listen(path: &Path) -> io::Result<Listener> {
+    let listener = crate::platform::listen_unix(path)?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+/// The device's pipe listener at `path` (D272): its first pair made here, or by the spawner
+/// where this process may make none its user can open (an AppContainer, PM M603).
+#[cfg(windows)]
+fn listen(path: &Path) -> io::Result<Listener> {
+    let ((down, up), maker) = crate::platform::listen_pipes(path)?;
+    Ok(PipeListener {
+        maker,
+        pair: Some(Listening::new(down, up)),
+    })
 }
 
 impl std::fmt::Debug for Muxer {
@@ -260,15 +338,14 @@ impl Muxer {
     pub fn new(host: VsockHost, guest_cid: u64) -> io::Result<Muxer> {
         let listener = match host.path {
             Some(path) => {
-                // Bound here, or by the spawner where this process may not (App Sandbox).
-                let listener = crate::platform::listen_unix(&path)
+                let listener = listen(&path)
                     .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-                listener.set_nonblocking(true)?;
                 Some((path, listener))
             }
             None => None,
         };
         // Made with the listener, so that the slots read below leave it its descriptor.
+        #[cfg(unix)]
         let spare = match &listener {
             Some((path, listener)) => Some(
                 spare(listener)
@@ -289,12 +366,67 @@ impl Muxer {
             stray_rsts: VecDeque::new(),
             max_stray_rsts: MAX_STRAY_RSTS,
             slots: slots(),
+            #[cfg(unix)]
             spare,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
             lent: 0,
             memory: None,
+            #[cfg(windows)]
+            port: None,
+            #[cfg(windows)]
+            keys: 0,
         })
+    }
+
+    /// Has its pipes tell `port`, the device's completion port, of their calls' ends: its
+    /// listener's pair now, and every pair it holds after as it comes (D272). Given before any
+    /// connection is made, as the device gives it as it is made.
+    #[cfg(windows)]
+    pub fn attach_port(&mut self, port: windows_sys::Win32::Foundation::HANDLE) -> io::Result<()> {
+        self.port = Some(Port(port));
+        if let Some((_, listener)) = &mut self.listener
+            && let Some(pair) = &mut listener.pair
+        {
+            pair.attach(port, next_key(&mut self.keys))?;
+        }
+        Ok(())
+    }
+
+    /// Has `host`'s pipes, if it is pipes, tell the device's port of their calls' ends under
+    /// a key of their own; nothing where no port was given (tests that make their events).
+    #[cfg(windows)]
+    fn attach_host(&mut self, host: &mut Host) -> io::Result<()> {
+        match (self.port, host) {
+            (Some(Port(port)), Host::Pipes(pipes)) => pipes.attach(port, next_key(&mut self.keys)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Makes its listener's next pair where it holds none, attached to the device's port.
+    /// One that cannot be made is tried again at the next round.
+    #[cfg(windows)]
+    fn next_pair(&mut self) {
+        let Some((path, listener)) = &mut self.listener else {
+            return;
+        };
+        if listener.pair.is_some() {
+            return;
+        }
+        let mut pair = match listener.maker.next() {
+            Ok((down, up)) => Listening::new(down, up),
+            Err(e) => {
+                debug!("vsock: {}: its next pair: {e}", path.display());
+                return;
+            }
+        };
+        if let Some(Port(port)) = self.port
+            && let Err(e) = pair.attach(port, next_key(&mut self.keys))
+        {
+            debug!("vsock: {}: its next pair's port: {e}", path.display());
+            return;
+        }
+        listener.pair = Some(pair);
     }
 
     /// Drops every connection and handshake; host clients see their sockets close.
@@ -498,8 +630,9 @@ impl Muxer {
                 } else {
                     crate::vm::Admission::Closed
                 }
-            }),
-            (None, Some(port)) => serve(|stream| port.accept_with(stream, ring.clone())),
+            })
+            .map(Host::from),
+            (None, Some(port)) => serve(|stream| port.accept_with(stream, ring.clone())).map(Host::from),
             (None, None) => match &self.listener {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
@@ -507,9 +640,10 @@ impl Muxer {
                     let target = Path::new(&target);
                     // Dialled here, or by the spawner where this process may not.
                     match crate::platform::dial_unix(target) {
-                        Some(dialled) => dialled.and_then(|s| s.set_nonblocking(true).map(|()| s)),
+                        Some(dialled) => dialled.and_then(nonblocking),
                         None => connect_nonblocking(target),
                     }
+                    .map(Host::from)
                     .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", target.display())))
                 }
                 None => Err(io::Error::new(
@@ -518,10 +652,12 @@ impl Muxer {
                 )),
             },
         };
+        #[cfg(windows)]
+        let connected = connected.and_then(|mut host| self.attach_host(&mut host).map(|()| host));
         match connected {
             Ok(stream) => {
-                if SIZES_SOCKETS {
-                    size_buffers(&stream);
+                if SIZES_SOCKETS && let Some(socket) = stream.socket() {
+                    size_buffers(socket);
                 }
                 self.make_room();
                 let mut conn = Conn::guest_initiated(stream, self.guest_cid, request);
@@ -579,9 +715,12 @@ impl Muxer {
         None
     }
 
-    /// Adds what the sockets wait for.
-    pub fn interests(&self, out: &mut Vec<Interest<Option<Token>>>) {
-        let mut add = |fd: crate::platform::RawSocket, read: bool, write: bool, token: Token| {
+    /// Adds what the sockets wait for. On Windows their pipes' calls are looked at first, so
+    /// that what finished before the wait, whose packet may have come before the last, is
+    /// ready now (poll.rs): what finished of a connection's writes is its credit's, counted
+    /// here as anywhere it is looked at ([`Conn::watched`]).
+    pub fn interests(&mut self, out: &mut Vec<Interest<Option<Token>>>) {
+        let mut add = |fd: Source, read: bool, write: bool, token: Token| {
             out.push(Interest {
                 fd,
                 read,
@@ -589,23 +728,39 @@ impl Muxer {
                 token: Some(token),
             });
         };
+        #[cfg(unix)]
         if let Some((_, listener)) = &self.listener
             && self.spare.is_some()
         {
             add(listener.raw_socket(), true, false, Token::Listener);
         }
-        for (i, h) in self.handshakes.iter().enumerate() {
-            add(h.stream.raw_socket(), true, false, Token::Handshake(i));
+        #[cfg(windows)]
+        if let Some((_, listener)) = &mut self.listener
+            && let Some(pair) = &mut listener.pair
+        {
+            let ready = pair.look() != Paired::Waiting;
+            let fd = Source::Pipes {
+                key: pair.key(),
+                ready,
+            };
+            add(fd, true, false, Token::Listener);
         }
-        for (key, c) in &self.conns {
-            let (read, write) = c.interest();
-            if read || write {
-                add(c.fd(), read, write, Token::Conn(*key));
+        for (i, h) in self.handshakes.iter_mut().enumerate() {
+            add(handshake_source(h), true, false, Token::Handshake(i));
+        }
+        for (key, c) in &mut self.conns {
+            let held = u64::from(c.lent());
+            let watched = c.watched();
+            self.lent = self.lent.saturating_sub(held).saturating_add(u64::from(c.lent()));
+            if let Some((fd, read, write)) = watched {
+                add(fd, read, write, Token::Conn(*key));
             }
         }
-        for (i, e) in self.ended.iter().enumerate() {
-            let (read, write) = e.interest();
-            add(e.fd(), read, write, Token::Ended(i));
+        for (i, e) in self.ended.iter_mut().enumerate() {
+            let held = u64::from(e.lent());
+            let (fd, read, write) = e.watched();
+            self.lent = self.lent.saturating_sub(held).saturating_add(u64::from(e.lent()));
+            add(fd, read, write, Token::Ended(i));
         }
     }
 
@@ -613,11 +768,15 @@ impl Muxer {
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
         // A spare its refusal let go, whose descriptor another took first, is made again as
         // soon as one is free: until then the listener is left unpolled.
+        #[cfg(unix)]
         if self.spare.is_none()
             && let Some((_, listener)) = &self.listener
         {
             self.spare = spare(listener).ok();
         }
+        // So is a pair that could not be made: until then no client is let in.
+        #[cfg(windows)]
+        self.next_pair();
         let mut ready_handshakes = Vec::new();
         let mut listener = false;
         let mut ready_ended = Vec::new();
@@ -632,6 +791,7 @@ impl Muxer {
                         continue;
                     };
                     let held = u64::from(c.lent());
+                    c.look();
                     if e.write {
                         c.on_writable();
                     }
@@ -673,6 +833,7 @@ impl Muxer {
     /// ([`Muxer::take`]), or refused, its connection closed, where every slot is a
     /// connection's or no descriptor is left for it ([`Muxer::refuse_one`]): none waits in
     /// the listener's queue for a connection to end, or keeps it ready for ever.
+    #[cfg(unix)]
     fn accept(&mut self) {
         for _ in 0..self.max_stray_rsts {
             let Some((_, listener)) = &self.listener else {
@@ -692,22 +853,57 @@ impl Muxer {
         }
     }
 
+    /// Takes the listener's pair once both its ways are open, a client's dial (D272): a
+    /// pending handshake, as a socket's is ([`Muxer::take`]), its next pair made first; or,
+    /// where its way down's client went before its way up opened, the pair dropped and
+    /// replaced, so that a client that dies there stops no other. One a round: a client's
+    /// next waits on its way down (ERROR_PIPE_BUSY) until the next pair is made, here.
+    #[cfg(windows)]
+    fn accept(&mut self) {
+        let taken = {
+            let Some((_, listener)) = &mut self.listener else {
+                return;
+            };
+            let Some(pair) = &mut listener.pair else {
+                return;
+            };
+            match pair.look() {
+                Paired::Waiting => return,
+                Paired::Broken => {
+                    debug!("vsock: a host client went before its pair was whole; the pair replaced");
+                    listener.pair = None;
+                    None
+                }
+                Paired::Connected => listener.pair.take().map(Listening::into_pipes),
+            }
+        };
+        self.next_pair();
+        match taken {
+            Some(Ok(pipes)) => self.take(pipes),
+            Some(Err(e)) => debug!("vsock: host connection: {e}"),
+            None => {}
+        }
+    }
+
     /// A host client's dial, accepted: a pending handshake, in the slot one silent longest
     /// gives up where every slot is taken ([`Muxer::make_room`]); or refused, its connection
     /// closed, where every slot is a connection's, as Firecracker's muxer refuses one past
     /// its MAX_CONNECTIONS.
-    fn take(&mut self, stream: UnixStream) {
+    fn take(&mut self, stream: HostStream) {
         self.make_room();
         if self.handshakes.len() + self.open() >= self.slots {
             debug!("vsock: every slot a connection's; a host connection refused");
             return;
         }
-        if let Err(e) = stream.set_nonblocking(true) {
-            debug!("vsock: host connection: {e}");
-            return;
-        }
-        if SIZES_SOCKETS {
-            size_buffers(&stream);
+        #[cfg(unix)]
+        {
+            if let Err(e) = stream.set_nonblocking(true) {
+                debug!("vsock: host connection: {e}");
+                return;
+            }
+            if SIZES_SOCKETS {
+                size_buffers(&stream);
+            }
         }
         self.handshakes.push(Handshake {
             stream,
@@ -722,6 +918,7 @@ impl Muxer {
     /// (libev's documentation, "the special problem of accept()ing when you can't"; libuv's
     /// `uv__emfile_trick`). Where another takes the descriptor first, a later round makes
     /// the spare again ([`Muxer::on_events`]).
+    #[cfg(unix)]
     fn refuse_one(&mut self) {
         let Some((_, listener)) = &self.listener else {
             return;
@@ -738,6 +935,8 @@ impl Muxer {
         let Some(h) = self.handshakes.get_mut(i) else {
             return;
         };
+        #[cfg(windows)]
+        h.stream.look();
         match read_handshake(h) {
             Ok(None) => {}
             // Its connection goes to its owner, who answers on it; with none, it closes
@@ -746,10 +945,10 @@ impl Muxer {
                 let h = self.handshakes.swap_remove(i);
                 match &self.rate {
                     Some(to) => {
-                        // Out of the muxer's waits, to be written blocking by its owner.
-                        if let Err(e) = super::poll::release(h.stream.raw_socket()) {
-                            debug!("vsock: a host ask's dial kept in the muxer's waits: {e}");
-                        }
+                        // Its owner writes its answer, blocking: neither poll(2) nor kqueue(2)
+                        // sets a mode of a descriptor's, and on Windows its pipes wait on
+                        // nothing of the muxer's, their owner's write waited for on its own
+                        // ([`Pipes::write_all_waiting`], D272).
                         if to.send((h.stream, asked)).is_err() {
                             debug!("vsock: a host ask no one takes any more; its dial closed");
                         }
@@ -766,7 +965,7 @@ impl Muxer {
                 };
                 self.conns.insert(
                     key,
-                    Conn::host_initiated(h.stream, self.guest_cid, local_port, peer_port),
+                    Conn::host_initiated(Host::from(h.stream), self.guest_cid, local_port, peer_port),
                 );
                 self.enqueue(key);
             }
@@ -922,6 +1121,22 @@ fn buffer_size(socket: crate::platform::RawSocket, option: i32) -> io::Result<us
     usize::try_from(got).map_err(io::Error::other)
 }
 
+/// What a pending handshake waits on: its socket.
+#[cfg(unix)]
+fn handshake_source(h: &mut Handshake) -> Source {
+    h.stream.raw_socket()
+}
+
+/// What a pending handshake waits on on Windows: its pipes, their read looked at first.
+#[cfg(windows)]
+fn handshake_source(h: &mut Handshake) -> Source {
+    h.stream.look();
+    Source::Pipes {
+        key: h.stream.key(),
+        ready: h.stream.readable(),
+    }
+}
+
 /// Reads a handshake line without consuming anything after it. `Some` once the line is
 /// complete and valid; `None` while more is to come.
 fn read_handshake(h: &mut Handshake) -> io::Result<Option<Line>> {
@@ -974,49 +1189,51 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
 }
 
 /// A descriptor held for a dial no other descriptor is left for ([`Muxer::refuse_one`]):
-/// let go, it is the one accept takes. On Unix a copy of the listener's (dup(2)), which
-/// asks nothing a confined VM process may be refused.
+/// let go, it is the one accept takes. A copy of the listener's (dup(2)), which asks nothing
+/// a confined VM process may be refused.
 #[cfg(unix)]
 type Spare = UnixListener;
-/// On Windows, whose sockets are kernel handles, counted with the rest of a process's
-/// (WSAEMFILE), an event's, which a VM process in its AppContainer makes as its waker's is
-/// (mod.rs), where a copy of a socket asks for the process by its id (WSADuplicateSocketW).
-#[cfg(windows)]
-type Spare = std::os::windows::io::OwnedHandle;
 
 #[cfg(unix)]
 fn spare(listener: &UnixListener) -> io::Result<Spare> {
     listener.try_clone()
 }
 
-#[cfg(windows)]
-fn spare(_listener: &UnixListener) -> io::Result<Spare> {
-    use std::os::windows::io::FromRawHandle as _;
-    use windows_sys::Win32::System::Threading::CreateEventW;
-    // SAFETY: an unnamed event, of default security, reset by a wait, and not set.
-    let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
-    if event.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: the handle CreateEventW just made, which nothing else owns.
-    Ok(unsafe { Spare::from_raw_handle(event) })
-}
-
 /// Whether an accept found no descriptor for its connection: the process's are all open
-/// (EMFILE; WSAEMFILE on Windows), or on Unix the system's (ENFILE).
+/// (EMFILE), or the system's (ENFILE).
+#[cfg(unix)]
 fn out_of_descriptors(e: &io::Error) -> bool {
-    #[cfg(unix)]
-    let out = [libc::EMFILE, libc::ENFILE];
-    #[cfg(windows)]
-    let out = [windows_sys::Win32::Networking::WinSock::WSAEMFILE];
-    e.raw_os_error().is_some_and(|code| out.contains(&code))
+    [libc::EMFILE, libc::ENFILE]
+        .iter()
+        .any(|&code| e.raw_os_error() == Some(code))
 }
 
-/// Connects without blocking: a host listener whose backlog is full refuses at once
-/// instead of stalling the device.
+/// A dial made non-blocking, as the device's waits take it.
+#[cfg(unix)]
+fn nonblocking(stream: UnixStream) -> io::Result<UnixStream> {
+    stream.set_nonblocking(true)?;
+    Ok(stream)
+}
+
+/// A dial's pipes, which never block: their calls are pended (D272).
 #[cfg(windows)]
-fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
-    UnixStream::connect_nonblocking(path)
+fn nonblocking(pipes: Pipes) -> io::Result<Pipes> {
+    Ok(pipes)
+}
+
+/// Opens the host port's pipes its file at `path` names, waiting for nothing: a listener whose
+/// pair is taken refuses at once instead of stalling the device (D272), as a socket's whose
+/// backlog is full does.
+#[cfg(windows)]
+fn connect_nonblocking(path: &Path) -> io::Result<Pipes> {
+    match shards_ipc::vsock_open(path, Some(Instant::now())) {
+        Ok((down, up)) => Pipes::dialed(down, up),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "its listener's pair is taken",
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 /// Connects without blocking: a host listener whose backlog is full refuses at once
@@ -1112,6 +1329,7 @@ mod tests {
     /// The guest's connections, to a port this process serves and to ports none serves, and
     /// what it sends on them (a `RATE` line among it) never do; the bytes go to the port's
     /// owner. A machine that takes no rate closes such a dial unanswered.
+    #[cfg(unix)]
     #[test]
     fn a_rate_comes_from_a_dial_on_the_socket_alone() {
         let dir_guard = shards_testdir::TempDir::new("vsock-rate").unwrap();
@@ -1204,6 +1422,7 @@ mod tests {
     /// never written, and its client read the dial closed unanswered (CI run 43435318858,
     /// boot.rs's a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket on
     /// windows-2022).
+    #[cfg(unix)]
     #[test]
     fn a_rates_dial_is_handed_out_able_to_block() {
         let dir_guard = shards_testdir::TempDir::new("vsock-rate-wait").unwrap();
@@ -1252,14 +1471,14 @@ mod tests {
         assert_eq!(decimal_digits(9), 1);
         assert_eq!(decimal_digits(10), 2);
         let read = |line: &[u8]| {
-            let (mut client, server) = UnixStream::pair().unwrap();
-            server.set_nonblocking(true).unwrap();
+            let (mut client, stream) = host_stream();
             let mut h = Handshake {
-                stream: server,
+                stream,
                 line: Vec::new(),
                 heard: Instant::now(),
             };
             client.write_all(line).unwrap();
+            arrived(&mut h.stream);
             read_handshake(&mut h)
         };
         assert_eq!(
@@ -1376,7 +1595,7 @@ mod tests {
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
         m.on_guest_packet(&request(54, 49_152), &[], &mem);
         assert_eq!(m.conns.len(), 1);
-        let mut client = UnixStream::connect(&dir).unwrap();
+        let mut client = dialled(&mut m, &dir);
         // What the device polls is what the muxer asks for, and the listener is ready.
         let mut interests = Vec::new();
         m.interests(&mut interests);
@@ -1390,8 +1609,7 @@ mod tests {
             })
             .collect();
         m.on_events(&ready);
-        client.set_nonblocking(true).unwrap();
-        let end = client.read(&mut [0u8; 1]);
+        let end = read_now(&mut client, &mut [0u8; 1]);
         assert!(
             matches!(&end, Ok(0))
                 || end
@@ -1411,7 +1629,7 @@ mod tests {
         let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         let mut clients = Vec::new();
         for _ in 0..3 {
-            clients.push(UnixStream::connect(&dir).unwrap());
+            clients.push(dialled(&mut m, &dir));
             m.on_events(&[Ready {
                 token: Some(Token::Listener),
                 read: true,
@@ -1423,6 +1641,7 @@ mod tests {
         // silent longest.
         for (client, h) in clients.iter_mut().zip(&mut m.handshakes).take(2) {
             client.write_all(b"CONN").unwrap();
+            arrived(&mut h.stream);
             assert_eq!(read_handshake(h).unwrap(), None);
         }
         m.make_room_within(4);
@@ -1439,8 +1658,8 @@ mod tests {
 
     /// A host's dial asking port `peer` of [`VsockHost::at`]'s muxer: its client, once the
     /// muxer has read its line and asked the guest (REQUEST), and the connection's key.
-    fn dial(m: &mut Muxer, dir: &std::path::Path, peer: u32) -> (UnixStream, Key) {
-        let mut client = UnixStream::connect(dir).unwrap();
+    fn dial(m: &mut Muxer, dir: &std::path::Path, peer: u32) -> (Client, Key) {
+        let mut client = dialled(m, dir);
         m.on_events(&[Ready {
             token: Some(Token::Listener),
             read: true,
@@ -1448,6 +1667,7 @@ mod tests {
         }]);
         client.write_all(format!("CONNECT {peer}\n").as_bytes()).unwrap();
         let i = m.handshakes.len() - 1;
+        arrived(&mut m.handshakes[i].stream);
         m.on_events(&[Ready {
             token: Some(Token::Handshake(i)),
             read: true,
@@ -1480,9 +1700,8 @@ mod tests {
             ..request(key.local_port, 1234)
         };
         m.on_guest_packet(&answered, &[], &mem);
-        client.set_nonblocking(true).unwrap();
         let mut line = [0u8; 64];
-        let n = client.read(&mut line).unwrap();
+        let n = read_now(&mut client, &mut line).unwrap();
         assert_eq!(
             &line[..n],
             format!("OK {}\n", key.local_port).as_bytes(),
@@ -1559,18 +1778,20 @@ mod tests {
 
     #[test]
     fn handshakes_arrive_in_pieces_and_leave_later_data_unread() {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        server.set_nonblocking(true).unwrap();
+        let (mut client, stream) = host_stream();
         let mut h = Handshake {
-            stream: server,
+            stream,
             line: Vec::new(),
             heard: Instant::now(),
         };
         client.write_all(b"CONN").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"ECT 77").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), None);
         client.write_all(b"\npayload").unwrap();
+        arrived(&mut h.stream);
         assert_eq!(read_handshake(&mut h).unwrap(), Some(Line::Connect(77)));
         let mut rest = [0u8; 7];
         h.stream.read_exact(&mut rest).unwrap();
@@ -1587,7 +1808,7 @@ mod tests {
         let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
         let mut target = dir.clone().into_os_string();
         target.push("_5000");
-        let host = UnixListener::bind(&target).unwrap();
+        let mut host = host_port(std::path::Path::new(&target));
         let held = [(5000, 49_152), (LOCAL_PORT_BASE + 7, 1234)];
         m.restore(Saved {
             ports: held.to_vec(),
@@ -1609,7 +1830,7 @@ mod tests {
             fwd_cnt: 0,
         };
         m.on_guest_packet(&request, &[], &mem);
-        assert!(host.accept().is_ok(), "the guest's connection reached the host");
+        assert!(reached(&mut host), "the guest's connection reached the host");
         let mut sent = Vec::new();
         while let Some(h) = m.next_rx(&[]) {
             sent.push((h.op, h.src_port, h.dst_port));
@@ -2524,7 +2745,8 @@ mod tests {
             local_port: 54,
             peer_port: 49_152,
         };
-        for made in [sizes(theirs.raw_socket()), sizes(m.conns[&key].fd())] {
+        let ours = m.conns[&key].host().socket().unwrap().raw_socket();
+        for made in [sizes(theirs.raw_socket()), sizes(ours)] {
             if cfg!(target_os = "linux") {
                 assert_eq!(made, before, "a Linux VM process sized a socket");
             } else {
@@ -2534,5 +2756,317 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A host port's listener at `path`, as a host program holds one: a socket; on Windows a
+    /// pair of pipes named at the path (D272).
+    #[cfg(unix)]
+    fn host_port(path: &std::path::Path) -> UnixListener {
+        UnixListener::bind(path).unwrap()
+    }
+
+    #[cfg(windows)]
+    fn host_port(path: &std::path::Path) -> Listening {
+        let (_, down, up) = shards_ipc::vsock_listen(path).unwrap();
+        Listening::new(down, up)
+    }
+
+    /// Whether a guest's dial reached `host`.
+    #[cfg(unix)]
+    fn reached(host: &mut UnixListener) -> bool {
+        host.accept().is_ok()
+    }
+
+    #[cfg(windows)]
+    fn reached(host: &mut Listening) -> bool {
+        host.look() == Paired::Connected
+    }
+
+    /// A host program's client of the device's socket: a socket; on Windows two pipes (D272).
+    #[cfg(unix)]
+    type Client = UnixStream;
+    #[cfg(windows)]
+    type Client = PipesClient;
+
+    /// A host program's dial of `m`'s socket at `dir`, once `m`'s listener has it to take: a
+    /// socket's connect, queued as it returns; on Windows its two pipes, its way down opened
+    /// first, once their pair is whole (D272).
+    #[cfg(unix)]
+    fn dialled(_m: &mut Muxer, dir: &std::path::Path) -> Client {
+        UnixStream::connect(dir).unwrap()
+    }
+
+    #[cfg(windows)]
+    fn dialled(m: &mut Muxer, dir: &std::path::Path) -> Client {
+        let client = PipesClient::open(dir);
+        until("its pair whole", || {
+            m.listener
+                .as_mut()
+                .and_then(|(_, l)| l.pair.as_mut())
+                .is_some_and(|p| p.look() == Paired::Connected)
+        });
+        client
+    }
+
+    /// A host program's client and the device's end of their connection, as a handshake holds
+    /// it: a socket pair; on Windows a listening pair's pipes ([`host_port`]), whole.
+    #[cfg(unix)]
+    fn host_stream() -> (Client, HostStream) {
+        let (client, ours) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        (client, ours)
+    }
+
+    #[cfg(windows)]
+    fn host_stream() -> (Client, HostStream) {
+        let dir_guard = shards_testdir::TempDir::new("vsock-stream").unwrap();
+        let path = dir_guard.join("v");
+        let mut pair = host_port(&path);
+        let client = PipesClient::open(&path);
+        until("its pair whole", || reached(&mut pair));
+        (client, pair.into_pipes().unwrap())
+    }
+
+    /// Waits until what a client wrote is `ours` to read: a socket's as the write returns; on
+    /// Windows once its read under way has finished, as a look takes it (`Pipes::look`), which
+    /// the device's handshake makes before it reads.
+    #[cfg(unix)]
+    fn arrived(_ours: &mut HostStream) {}
+
+    #[cfg(windows)]
+    fn arrived(ours: &mut HostStream) {
+        until("the client's bytes", || {
+            ours.look();
+            ours.readable()
+        });
+    }
+
+    /// What `client` reads without waiting, as a non-blocking socket reads: its bytes, `Ok(0)`
+    /// once the device's end has gone and every byte was read, `WouldBlock` where nothing is
+    /// there yet. On Windows its way down peeked first (`shards_ipc::Pipe::peek`, through a
+    /// copy of its handle).
+    #[cfg(unix)]
+    fn read_now(client: &mut Client, buf: &mut [u8]) -> io::Result<usize> {
+        client.set_nonblocking(true)?;
+        client.read(buf)
+    }
+
+    #[cfg(windows)]
+    fn read_now(client: &mut Client, buf: &mut [u8]) -> io::Result<usize> {
+        let down = shards_ipc::Pipe::from_handle(client.down.try_clone()?.into());
+        match down.peek()? {
+            None => Ok(0),
+            Some(0) => Err(io::ErrorKind::WouldBlock.into()),
+            Some(_) => client.down.read(buf),
+        }
+    }
+
+    /// Looks until `done` holds, failing after a while.
+    #[cfg(windows)]
+    fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}: not after 10 s");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// A host program's client of a VM's socket on Windows, as D272's client opens one: its
+    /// way down read, its way up written, each a file as `std` opens one.
+    #[cfg(windows)]
+    struct PipesClient {
+        down: std::fs::File,
+        up: std::fs::File,
+    }
+
+    #[cfg(windows)]
+    impl PipesClient {
+        /// Opens the pair the file at `path` names, its way down first.
+        fn open(path: &std::path::Path) -> PipesClient {
+            let names = shards_ipc::VsockNames::read(path).unwrap();
+            let down = std::fs::OpenOptions::new().read(true).open(&names.down).unwrap();
+            let up = std::fs::OpenOptions::new().write(true).open(&names.up).unwrap();
+            PipesClient { down, up }
+        }
+    }
+
+    #[cfg(windows)]
+    impl io::Read for PipesClient {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.down.read(buf)
+        }
+    }
+
+    #[cfg(windows)]
+    impl io::Write for PipesClient {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.up.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.up.flush()
+        }
+    }
+
+    /// Turns the device's loop, `m`'s interests waited on by `poller` and what came handed to
+    /// `m`, until `done` holds of it, failing after a while.
+    #[cfg(windows)]
+    fn turn_until(
+        m: &mut Muxer,
+        poller: &mut super::super::poll::Poller,
+        what: &str,
+        mut done: impl FnMut(&mut Muxer) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(m) {
+            assert!(Instant::now() < deadline, "{what}: not after 10 s");
+            let mut interests = Vec::new();
+            m.interests(&mut interests);
+            let mut ready = Vec::new();
+            poller
+                .wait(&interests, Some(Duration::from_millis(100)), &mut ready)
+                .unwrap();
+            m.on_events(&ready);
+        }
+    }
+
+    /// A host program's dial on Windows is two pipes, its way down opened first (D272): its
+    /// pair taken as a handshake once both ways are open, the next pair made for the next
+    /// client, its `CONNECT` the guest's REQUEST, the guest's RESPONSE its `OK`, the guest's
+    /// bytes its way down's; and the guest's whole end its end after every byte, its write
+    /// after refused at once (ERROR_NO_DATA, 232).
+    #[cfg(windows)]
+    #[test]
+    fn a_host_programs_pipes_reach_its_guest_and_end_with_it() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-pipes").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        m.attach_port(poller.port()).unwrap();
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        let mut client = PipesClient::open(&dir);
+        turn_until(&mut m, &mut poller, "the handshake", |m| m.handshakes.len() == 1);
+        let next = std::thread::spawn({
+            let dir = dir.clone();
+            move || PipesClient::open(&dir)
+        });
+        client.write_all(b"CONNECT 1234\n").unwrap();
+        let mut asked = None;
+        turn_until(&mut m, &mut poller, "the guest's REQUEST", |m| {
+            asked = asked.or_else(|| std::iter::from_fn(|| m.next_rx(&[])).find(|h| h.op == op::REQUEST));
+            asked.is_some()
+        });
+        let local_port = asked.unwrap().src_port;
+        m.on_guest_packet(
+            &Header {
+                op: op::RESPONSE,
+                ..request(local_port, 1234)
+            },
+            &[],
+            &mem,
+        );
+        let mut line = [0u8; 14];
+        client.down.read_exact(&mut line).unwrap();
+        assert_eq!(&line, format!("OK {local_port}\n").as_bytes());
+        let bytes = b"from the guest";
+        mem.access().unwrap().write(0x8000_0000, bytes).unwrap();
+        let span = Span {
+            gpa: 0x8000_0000,
+            ptr: mem.host_ptr(0x8000_0000, bytes.len()).unwrap(),
+            len: bytes.len(),
+        };
+        let rw = Header {
+            op: op::RW,
+            len: bytes.len() as u32,
+            ..request(local_port, 1234)
+        };
+        m.on_guest_packet(&rw, &[span], &mem);
+        let bye = Header {
+            op: op::SHUTDOWN,
+            flags: super::super::packet::shutdown::RCV | super::super::packet::shutdown::SEND,
+            ..request(local_port, 1234)
+        };
+        m.on_guest_packet(&bye, &[], &mem);
+        turn_until(&mut m, &mut poller, "the guest's end", |m| {
+            while m.next_rx(&[]).is_some() {}
+            m.conns.is_empty() && m.ended.is_empty()
+        });
+        let mut got = Vec::new();
+        client.down.read_to_end(&mut got).unwrap();
+        assert_eq!(got, bytes, "every byte, then the end");
+        let late = client.write_all(b"x");
+        assert_eq!(late.map_err(|e| e.raw_os_error()), Err(Some(232)));
+        turn_until(&mut m, &mut poller, "the next client's pair", |m| {
+            m.handshakes.len() == 1
+        });
+        drop(next.join().unwrap());
+    }
+
+    /// A `RATE` line's pipes go to the machine's rate on Windows, whose owner answers on them
+    /// with a write it waits for, then goes: its client reads the answer, then its end.
+    #[cfg(windows)]
+    #[test]
+    fn a_rates_pipes_are_answered_by_its_owner() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-rate-pipes").unwrap();
+        let dir = dir_guard.join("v");
+        let (rates, rated) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            rate: Some(rates),
+            ..VsockHost::at(dir.clone())
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        m.attach_port(poller.port()).unwrap();
+        let mut client = PipesClient::open(&dir);
+        client.write_all(b"RATE 250\n").unwrap();
+        let mut handed = None;
+        turn_until(&mut m, &mut poller, "the rate's dial", |_| {
+            handed = handed.take().or_else(|| rated.try_recv().ok());
+            handed.is_some()
+        });
+        let (mut asked, milli) = handed.unwrap();
+        assert_eq!(milli, Asked::Rate(250));
+        asked.write_all_waiting(b"RATED 250 100000000\n").unwrap();
+        drop(asked);
+        let mut answer = String::new();
+        client.down.read_to_string(&mut answer).unwrap();
+        assert_eq!(answer, "RATED 250 100000000\n");
+    }
+
+    /// A client that goes with its way down alone open on Windows breaks its pair, which the
+    /// muxer replaces (D272): the next client is let in.
+    #[cfg(windows)]
+    #[test]
+    fn a_client_gone_with_its_way_down_alone_lets_the_next_in() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-half").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mut poller = super::super::poll::Poller::new().unwrap();
+        m.attach_port(poller.port()).unwrap();
+        let names = shards_ipc::VsockNames::read(&dir).unwrap();
+        let half = std::fs::OpenOptions::new().read(true).open(&names.down).unwrap();
+        let first = m
+            .listener
+            .as_ref()
+            .and_then(|(_, l)| l.pair.as_ref())
+            .and_then(Listening::key);
+        turn_until(&mut m, &mut poller, "its way down's watch", |m| {
+            m.listener
+                .as_mut()
+                .and_then(|(_, l)| l.pair.as_mut())
+                .is_some_and(|p| p.look() == Paired::Waiting && format!("{p:?}").contains("watch: UnderWay"))
+        });
+        drop(half);
+        turn_until(&mut m, &mut poller, "its pair replaced", |m| {
+            m.listener
+                .as_ref()
+                .and_then(|(_, l)| l.pair.as_ref())
+                .and_then(Listening::key)
+                != first
+        });
+        let _client = PipesClient::open(&dir);
+        turn_until(&mut m, &mut poller, "the next client", |m| {
+            m.handshakes.len() == 1
+        });
     }
 }

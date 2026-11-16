@@ -19,8 +19,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, PoisonError};
 
+use super::bound::Taken;
 use super::host::{self, AsRaw as _, Stat, linux};
 pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX_WRITE};
 use super::proto::{OUT_HEADER_BYTES, op};
@@ -249,6 +251,13 @@ struct State {
     /// its share process tells (D235): none where it tells none.
     #[cfg(target_os = "linux")]
     watching: Option<Watching>,
+    /// What its files may take and take now (D281, [`Server::bound`]): none for a share
+    /// without a bound.
+    bound: Option<super::bound::Bound>,
+    /// What each file the guest removed the last name of while it held it open still takes,
+    /// by its node: its host keeps its blocks until the last descriptor goes, so its charge
+    /// is given back with its last handle ([`release`]), not with its name.
+    removed_open: HashMap<u64, u64>,
 }
 
 /// On Linux, the inotify watch of each directory node the guest holds, made as the guest
@@ -349,6 +358,7 @@ const EIO: Errno = 5;
 const EEXIST: Errno = 17;
 const EXDEV: Errno = 18;
 const EMFILE: Errno = 24;
+const ENOSPC: Errno = 28;
 #[cfg(target_os = "linux")]
 const ENAMETOOLONG: Errno = 36;
 const ELOOP: Errno = 40;
@@ -775,8 +785,28 @@ impl Server {
                 windowless: false,
                 #[cfg(target_os = "linux")]
                 watching: None,
+                bound: None,
+                removed_open: HashMap::new(),
             }),
         })
+    }
+
+    /// Holds the files of the directory the share serves to `limit` bytes by D281's
+    /// measure ([`super::bound`]), charged in `charge`, the count every server of its volume
+    /// shares, which its first holder walked ([`charge_of_dir`]): its host file system's
+    /// allocation unit read, and from then on each request that would take more than is left
+    /// refused (ENOSPC). Asked before the share is served. A join share's volumes and a file
+    /// bound alone take none.
+    pub fn bound(&self, limit: u64, charge: &'static AtomicU64) -> Result<(), String> {
+        let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if s.joined || self.only.is_some() {
+            return Err("a join share or a file bound alone takes no bound".into());
+        }
+        let host = fs_stats(s.root.raw()).map_err(|e| format!("its file system: errno {e}"))?;
+        let bound = super::bound::Bound::new(limit, u64::from(host.fragment_size), charge)
+            .ok_or("its file system says no allocation unit")?;
+        s.bound = Some(bound);
+        Ok(())
     }
 
     /// A join share's server (D119): its root the empty directory `root` holds, nothing
@@ -1619,8 +1649,16 @@ impl Server {
                 let name = a.name()?;
                 let target = a.cstr()?;
                 let dir = dir_fd(s, nodeid)?;
+                // Its length is its target's (D281).
+                let len = s.bound.map_or(0, |b| {
+                    b.whole(u64::try_from(target.to_bytes().len()).unwrap_or(u64::MAX))
+                });
+                let taken = reserve_name(s, len)?;
                 symlink_at(&target, dir, &name)?;
-                self.made(s, nodeid, &name, caller, Kept::default(), r)?;
+                keep_taken(taken);
+                let made = self.made(s, nodeid, &name, caller, Kept::default(), r);
+                unmade(s, dir, &name, len, made.is_err());
+                made?;
             }
             op::MKNOD => {
                 self.writable(s, nodeid)?;
@@ -1630,6 +1668,7 @@ impl Server {
                 let _ = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
+                let taken = reserve_name(s, 0)?;
                 let kind = mode & S_IFMT;
                 let perm = mode & 0o7777;
                 let empty = |perm: u32| {
@@ -1672,7 +1711,10 @@ impl Server {
                         Err(e) => return Err(e),
                     }
                 };
-                self.made(s, nodeid, &name, caller, kept, r)?;
+                keep_taken(taken);
+                let made = self.made(s, nodeid, &name, caller, kept, r);
+                unmade(s, dir, &name, 0, made.is_err());
+                made?;
             }
             op::MKDIR => {
                 self.writable(s, nodeid)?;
@@ -1680,19 +1722,26 @@ impl Server {
                 let _umask = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
+                let taken = reserve_name(s, 0)?;
                 mkdir_at(dir, &name, host_perm(mode, true))?;
-                self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?;
+                keep_taken(taken);
+                let made = self.made(s, nodeid, &name, caller, Kept::mode(mode), r);
+                unmade(s, dir, &name, 0, made.is_err());
+                made?;
             }
             op::UNLINK | op::RMDIR => {
                 self.writable(s, nodeid)?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                let removal = pin_before_removal(s, volume_of(s, nodeid), dir, &name);
+                let volume = volume_of(s, nodeid);
+                let freed = freed_by(s, volume, dir, &name);
+                let removal = pin_before_removal(s, volume, dir, &name);
                 let failed = unlink_at(dir, &name, opcode == op::RMDIR).err();
                 removed(s, removal, failed.is_none());
                 if let Some(e) = failed {
                     return Err(e);
                 }
+                free(s, freed);
             }
             op::RENAME | op::RENAME2 => {
                 self.writable(s, nodeid)?;
@@ -1727,7 +1776,9 @@ impl Server {
                 let name = a.name()?;
                 let (odir, oname) = at(s, old)?;
                 let dir = dir_fd(s, nodeid)?;
+                let taken = reserve_name(s, 0)?;
                 link_at(odir, &oname, dir, &name)?;
+                keep_taken(taken);
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
                 r.entry(id, &st, owner, dax);
@@ -1741,6 +1792,12 @@ impl Server {
                     return Err(EISDIR);
                 }
                 room_for_handle(s)?;
+                // What an O_TRUNC gives back of the share's bound (D281), from its length now.
+                let truncated_from = if s.bound.is_some() && flags & linux::O_TRUNC != 0 {
+                    node_stat(s, nodeid).ok().map(|st| st.size)
+                } else {
+                    None
+                };
                 let flags = host::open_flags(flags & !linux::O_CREAT);
                 let want = s.nodes.get(&nodeid).ok_or(ENOENT)?.key;
                 // Along its path, checked to be the node: replaced on the host since the guest
@@ -1750,6 +1807,11 @@ impl Server {
                     Ok(_) => Err(ESTALE),
                     Err(e) => Err(stale(e)),
                 };
+                if opened.is_ok()
+                    && let Some(len) = truncated_from
+                {
+                    resized(s, nodeid, len, 0);
+                }
                 let held = match opened {
                     Ok(fd) => Some(Held::Fd(fd)),
                     // Unlinked or renamed over, open still: another handle on its pin, where
@@ -1773,24 +1835,53 @@ impl Server {
                 room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
                 let flags = host::open_flags(flags) | host::O_CREAT;
-                // Made here, or found there: a file O_CREAT finds keeps its owner and mode.
-                let (fd, st, created) =
+                // A name made takes a unit of the share's bound (D281), taken first: with none
+                // left, a file there already is opened still, as a full disk opens one.
+                let taken = match reserve_name(s, 0) {
+                    Ok(taken) => taken,
+                    Err(e) if stat_at(dir, &name).is_err() => return Err(e),
+                    Err(_) => None,
+                };
+                let bounded = s.bound.is_some();
+                // Made here, or found there: a file O_CREAT finds keeps its owner and mode; one
+                // it truncates gives back its length (D281).
+                let (fd, st, created, truncated_from) =
                     match open_regular(dir, &name, flags | host::O_EXCL, host_perm(mode, false)) {
-                        Ok((fd, st)) => (fd, st, true),
+                        Ok((fd, st)) => (fd, st, true, None),
                         Err(EEXIST) if flags & host::O_EXCL == 0 => {
+                            let truncated_from = match bounded && flags & host::O_TRUNC != 0 {
+                                true => stat_at(dir, &name).ok().map(|st| st.size),
+                                false => None,
+                            };
                             let (fd, st) = open_regular(dir, &name, flags & !host::O_CREAT, 0)?;
-                            (fd, st, false)
+                            (fd, st, false, truncated_from)
                         }
                         Err(e) => return Err(e),
                     };
                 let made = if created {
-                    self.made(s, nodeid, &name, caller, Kept::mode(mode), r)?
+                    match taken {
+                        Some(taken) => taken.keep(),
+                        // Gone as it was opened, its name made with no room taken for it.
+                        None if bounded => {
+                            let _ = unlink_at(dir, &name, false);
+                            return Err(ENOSPC);
+                        }
+                        None => {}
+                    }
+                    let made = self.made(s, nodeid, &name, caller, Kept::mode(mode), r);
+                    unmade(s, dir, &name, 0, made.is_err());
+                    made?
                 } else {
+                    // Found: no name made, what was taken for one given back.
+                    drop(taken);
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
                     let dax = self.dax_of(s, id, &found);
                     r.entry_for(id, &found, owner, dax, name_valid(s, nodeid, &name)?);
                     id
                 };
+                if let Some(len) = truncated_from {
+                    resized(s, made, len, 0);
+                }
                 // Made with a mode that refuses its own handle (a read-only file opened to be
                 // filled, as tar, cp and git make one): none could be opened for it again, so
                 // this descriptor is its pin.
@@ -1841,7 +1932,32 @@ impl Server {
                     .get(&fh)
                     .and_then(|h| h.flags)
                     .is_some_and(|f| f & host::O_APPEND != 0);
+                // Held to the share's bound (D281): what would take the file past the end its
+                // room lets it reach is not written, as a nearly full disk writes what fits;
+                // a write none of which fits is refused. Its room is taken first, and what
+                // it did not write given back once it has.
+                let mut grows = None;
+                let data = match s.bound {
+                    Some(b) => {
+                        let len = stat_fd(fd)?.size;
+                        let at = if appends { len } else { offset };
+                        let asked = u64::try_from(data.len()).unwrap_or(u64::MAX);
+                        let (fits, taken) = b.reserve_write(len, at, asked);
+                        if fits == 0 && asked > 0 {
+                            return Err(ENOSPC);
+                        }
+                        grows = Some((b, len, at, taken));
+                        data.get(..usize::try_from(fits).unwrap_or(usize::MAX))
+                            .unwrap_or(data)
+                    }
+                    None => data,
+                };
                 let n = pwrite(fd, data, (!appends).then_some(offset))?;
+                if let Some((b, len, at, taken)) = grows {
+                    let node = s.handles.get(&fh).map_or(nodeid, |h| h.node);
+                    let end = at.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+                    grown(s, node, taken, b.growth(len, len.max(end)));
+                }
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
             op::STATFS => {
@@ -1853,6 +1969,12 @@ impl Server {
                     ROOT
                 };
                 let v = fs_stats(dir_fd(s, top)?)?;
+                // A bounded share's (D281): its bound, and what is left of it where its host
+                // has as much room.
+                let v = match s.bound {
+                    Some(b) => bounded_stats(&b, v),
+                    None => v,
+                };
                 r.u64(v.blocks)
                     .u64(v.free)
                     .u64(v.available)
@@ -2011,7 +2133,27 @@ impl Server {
                 }
                 let host_name = host_xattr(&name)?;
                 let fd = node_fd_to_change(s, nodeid)?;
+                // What the file's attributes grow by, in whole units, takes the share's bound
+                // first (D281): its others' bytes, and this one's as it is set.
+                let grows = match s.bound {
+                    Some(b) => {
+                        let had = attrs_len(fd.raw())?;
+                        let old = fget_xattr(fd.raw(), &host_name)?.map(|v| v.len());
+                        let has = had
+                            .saturating_sub(attr_len(&name, old))
+                            .saturating_add(attr_len(&name, Some(value.len())));
+                        let taken = b.reserve(b.growth(had, has)).ok_or(ENOSPC)?;
+                        Some((had, has, taken))
+                    }
+                    None => None,
+                };
                 fset_xattr(fd.raw(), &host_name, value, flags)?;
+                if let Some((had, has, taken)) = grows {
+                    let grew = taken.bytes();
+                    grown(s, nodeid, taken, grew);
+                    // A smaller value gives back its whole units.
+                    resized(s, nodeid, had, has.min(had));
+                }
             }
             op::REMOVEXATTR => {
                 self.writable(s, nodeid)?;
@@ -2021,7 +2163,17 @@ impl Server {
                 }
                 let host_name = host_xattr(&name).map_err(|_| ENODATA)?;
                 let fd = node_fd_to_change(s, nodeid)?;
+                // What it gives back of the share's bound (D281), where its bytes can be read:
+                // else none, which errs high.
+                let shrinks = s.bound.and_then(|_| {
+                    let had = attrs_len(fd.raw()).ok()?;
+                    let old = fget_xattr(fd.raw(), &host_name).ok().flatten()?;
+                    Some((had, had.saturating_sub(attr_len(&name, Some(old.len())))))
+                });
                 fremove_xattr(fd.raw(), &host_name)?;
+                if let Some((had, has)) = shrinks {
+                    resized(s, nodeid, had, has);
+                }
             }
             op::LSEEK => {
                 let fh = a.u64()?;
@@ -2037,7 +2189,24 @@ impl Server {
                 let length = a.u64()?;
                 let mode = a.u32()?;
                 let fd = file_fd(s, fh)?;
+                // In a bounded share (D281) blocks past a file's length, which no length
+                // shows, are not given (fallocate(2): a mode its file system takes not), and
+                // a growth takes its room first, all of it or none.
+                let grows = match s.bound {
+                    Some(_) if mode & linux::FALLOC_FL_KEEP_SIZE != 0 => return Err(EOPNOTSUPP),
+                    Some(b) => {
+                        let len = stat_fd(fd)?.size;
+                        let to = offset.checked_add(length).ok_or(EINVAL)?.max(len);
+                        Some(b.reserve(b.growth(len, to)).ok_or(ENOSPC)?)
+                    }
+                    None => None,
+                };
                 fallocate(fd, mode, offset, length)?;
+                if let Some(taken) = grows {
+                    let node = s.handles.get(&fh).map_or(nodeid, |h| h.node);
+                    let grew = taken.bytes();
+                    grown(s, node, taken, grew);
+                }
             }
             _ => return Err(ENOSYS),
         }
@@ -2149,6 +2318,22 @@ impl Server {
         if searched_only(s, nodeid) {
             return Err(EACCES);
         }
+        // A size the share's bound has no room for is refused before anything changes
+        // (D281), from the length the truncation will find: its room taken first, given
+        // back where the truncation is not made.
+        let bound = s.bound;
+        let resizing = match bound {
+            Some(b) if valid & fattr::SIZE != 0 => {
+                let len = if valid & fattr::FH != 0 && is_file(s, fh) {
+                    stat_fd(file_fd(s, fh)?)?.size
+                } else {
+                    stat_at(dir, &name)?.size
+                };
+                let taken = b.reserve(b.growth(len, size)).ok_or(ENOSPC)?;
+                Some((len, taken))
+            }
+            _ => None,
+        };
         // A directory's own descriptor, which `at` gave: its attributes are changed through it.
         let own = s.nodes.get(&nodeid).is_some_and(|n| n.dir).then_some(dir);
         let mut owner = node_owner(s, nodeid, None)?;
@@ -2186,6 +2371,12 @@ impl Server {
                     )?;
                     truncate_fd(fd.raw(), size)?;
                 }
+            }
+            if let Some((len, taken)) = resizing {
+                let grew = taken.bytes();
+                grown(s, nodeid, taken, grew);
+                // A shrink gives back its whole units; none where it grew.
+                resized(s, nodeid, len, size.min(len));
             }
         }
         if valid & (fattr::ATIME | fattr::MTIME) != 0 {
@@ -2233,6 +2424,8 @@ impl Server {
         if flags & linux::RENAME_EXCHANGE != 0 {
             return Err(EINVAL);
         }
+        // The whiteout is a name the share's bound needs room for (D281), taken first.
+        let taken = reserve_name(s, 0)?;
         rename(s, olddir, old, newdir, new, flags & !linux::RENAME_WHITEOUT)?;
         let dir = dir_fd(s, olddir)?;
         let whiteout = Kept {
@@ -2247,6 +2440,7 @@ impl Server {
             let _ = rename(s, newdir, new, olddir, old, linux::RENAME_NOREPLACE);
             return Err(e);
         }
+        keep_taken(taken);
         Ok(())
     }
 
@@ -2809,6 +3003,9 @@ fn reset(s: &mut State) {
     s.fds = Fds::default();
     s.pins.clear();
     s.unreached.clear();
+    // Every descriptor gone, the removed files the guest held go, and their charge (D281).
+    let held = s.removed_open.drain().fold(0u64, |n, (_, b)| n.saturating_add(b));
+    gave(s, held);
 }
 
 fn forget(s: &mut State, nodeid: u64, n: u64) {
@@ -2966,6 +3163,10 @@ fn release(s: &mut State, fh: u64) {
         s.opened.remove(&h.node);
         s.pins.remove(&h.node);
         s.unreached.remove(&h.node);
+        // A removed file's blocks go with its last descriptor, and its charge with them (D281).
+        if let Some(held) = s.removed_open.remove(&h.node) {
+            gave(s, held);
+        }
     }
 }
 
@@ -3160,6 +3361,245 @@ fn room_for_pin(s: &State) -> bool {
     u64::try_from(s.pins.len()).unwrap_or(u64::MAX) < s.budget
 }
 
+/// A name and `bytes` more taken of the share's bound (D281) before it is made: refused
+/// (ENOSPC) where its count leaves no room for them, taken in one step with every other
+/// server's of its volume ([`super::bound::Bound::reserve`]). Given back as what is
+/// returned drops, unless the name was made ([`keep_taken`]). None without a bound.
+fn reserve_name(s: &State, bytes: u64) -> Result<Option<Taken>, Errno> {
+    match s.bound {
+        Some(b) => b
+            .reserve(b.unit().get().saturating_add(bytes))
+            .map(Some)
+            .ok_or(ENOSPC),
+        None => Ok(None),
+    }
+}
+
+/// What a change took of the share's bound (D281) before it was made, kept: it was made.
+fn keep_taken(taken: Option<Taken>) {
+    if let Some(taken) = taken {
+        taken.keep();
+    }
+}
+
+/// Node `node` grown, `grew` of what `taken` took first used (D281): that kept, the rest
+/// given back, and held back with a removed file the guest holds open until its last
+/// handle goes.
+fn grown(s: &mut State, node: u64, taken: Taken, grew: u64) {
+    if let Some(held) = s.removed_open.get_mut(&node) {
+        *held = held.saturating_add(grew);
+    }
+    taken.keep_only(grew);
+}
+
+/// What [`reserve_name`] took given back where making the name `failed` and left it gone,
+/// as a record that cannot be kept removes what it made ([`Server::record`]).
+fn unmade(s: &mut State, dir: host::Raw, name: &CStr, bytes: u64, failed: bool) {
+    if failed && stat_at(dir, name).is_err() {
+        let took = s.bound.map_or(0, |b| b.unit().get().saturating_add(bytes));
+        gave(s, took);
+    }
+}
+
+/// `bytes` given back to the share's bound (D281), where it has one.
+fn gave(s: &mut State, bytes: u64) {
+    if let Some(b) = s.bound.as_mut() {
+        b.give(bytes);
+    }
+}
+
+/// Node `node`'s length, or its attributes' bytes, gone from `from` to `to` (D281): the
+/// share's bound's charge changed by their whole units, and a removed file's held one too.
+fn resized(s: &mut State, node: u64, from: u64, to: u64) {
+    if let Some(b) = s.bound.as_mut() {
+        b.resize(from, to, s.removed_open.get_mut(&node));
+    }
+}
+
+/// What a removal frees of the share's bound (D281), looked at before it: at once, and by
+/// its node what a file the guest holds open keeps until its last handle goes.
+#[derive(Debug, Default)]
+struct Freed {
+    now: u64,
+    held: Option<(u64, u64)>,
+}
+
+/// What removing `name` from `dir`, in volume `volume`, frees of the share's bound (D281):
+/// its name's unit, and with its file's last name its data and attributes, held back where
+/// the guest holds it open, as its host keeps its blocks while a descriptor does. None
+/// without a bound, or where nothing is there; attributes that cannot be read free none,
+/// which errs high.
+fn freed_by(s: &State, volume: u64, dir: host::Raw, name: &CStr) -> Freed {
+    let Some(b) = s.bound else {
+        return Freed::default();
+    };
+    let Ok(st) = stat_at(dir, name) else {
+        return Freed::default();
+    };
+    let unit = b.unit().get();
+    if !is_dir(&st) && st.nlink > 1 {
+        return Freed {
+            now: unit,
+            held: None,
+        };
+    }
+    let data = if is_dir(&st) { 0 } else { b.whole(st.size) };
+    let file = data.saturating_add(attrs_at(dir, name, &st).map_or(0, |n| b.whole(n)));
+    let open = s
+        .by_key
+        .get(&(volume, st.dev, st.ino))
+        .copied()
+        .filter(|node| !is_dir(&st) && s.opened.contains_key(node));
+    match open {
+        Some(node) => Freed {
+            now: unit,
+            held: Some((node, file)),
+        },
+        None => Freed {
+            now: unit.saturating_add(file),
+            held: None,
+        },
+    }
+}
+
+/// After a removal [`freed_by`] looked at was done: what it frees given back, and what an
+/// open file keeps held for its last handle ([`release`]).
+fn free(s: &mut State, freed: Freed) {
+    gave(s, freed.now);
+    if let Some((node, bytes)) = freed.held {
+        let held = s.removed_open.entry(node).or_insert(0);
+        *held = held.saturating_add(bytes);
+    }
+}
+
+/// The bytes of the guest's extended attributes of the file `fd` holds, before D281's
+/// whole units: each one's name's and value's.
+fn attrs_len(fd: host::Raw) -> Result<u64, Errno> {
+    let mut total = 0u64;
+    for name in list_xattr(fd)?.split(|&b| b == 0).filter(|n| !n.is_empty()) {
+        let name = CString::new(name).map_err(|_| EINVAL)?;
+        let value = fget_xattr(fd, &host_xattr(&name)?)?;
+        total = total.saturating_add(attr_len(&name, value.map(|v| v.len())));
+    }
+    Ok(total)
+}
+
+/// What attribute `name` takes with a value of `len` bytes, before D281's whole units: its
+/// name's bytes and its value's; none where it has no value.
+fn attr_len(name: &CStr, len: Option<usize>) -> u64 {
+    len.map_or(0, |len| {
+        u64::try_from(name.to_bytes().len().saturating_add(len)).unwrap_or(u64::MAX)
+    })
+}
+
+/// [`attrs_len`] of `name` in `dir`, whose stat is `st`: none for a file the server opens
+/// none of for its attributes (a device node, a symlink), on which the guest sets none.
+fn attrs_at(dir: host::Raw, name: &CStr, st: &Stat) -> Result<u64, Errno> {
+    match open_meta(dir, name, Some(mode_of(st) & S_IFMT)) {
+        Ok(fd) => attrs_len(fd.raw()),
+        Err(EMFILE) => Err(EMFILE),
+        Err(_) => Ok(0),
+    }
+}
+
+/// What the files beneath directory `dir` take by D281's measure ([`super::bound`]), in its
+/// host file system's allocation units ([`charge_of`]): walked as a volume's first holder
+/// counts it, before any server serves it.
+pub fn charge_of_dir(dir: std::fs::File) -> Result<u64, String> {
+    let root: host::Owned = dir.into();
+    let host = fs_stats(root.raw()).map_err(|e| format!("its file system: errno {e}"))?;
+    let unit = std::num::NonZeroU64::new(u64::from(host.fragment_size))
+        .ok_or("its file system says no allocation unit")?;
+    charge_of(root.raw(), unit).map_err(|e| format!("what its files take: errno {e}"))
+}
+
+/// What the files beneath directory `root` take by D281's measure ([`super::bound`]), in
+/// units of `unit` bytes: each name a unit, each other file's length in whole units once
+/// however many names it has, and each file's guest's attributes in whole units. Read a
+/// directory at a time, a descriptor held for each above the one read, never recursed: a
+/// tree deeper than the process may hold descriptors for is refused (EMFILE).
+fn charge_of(root: host::Raw, unit: std::num::NonZeroU64) -> Result<u64, Errno> {
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0u64;
+    // Each directory being read, by its descriptor (none for the root, its caller's), with
+    // its own directories still to be read.
+    let mut open: Vec<(Option<host::Owned>, Vec<CString>)> =
+        vec![(None, charge_in(root, unit, &mut seen, &mut total)?)];
+    while let Some((fd, left)) = open.last_mut() {
+        let parent = fd.as_ref().map_or(root, |fd| fd.raw());
+        let Some(name) = left.pop() else {
+            open.pop();
+            continue;
+        };
+        let dir = open_at(
+            parent,
+            &name,
+            host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
+            0,
+        )?;
+        let below = charge_in(dir.raw(), unit, &mut seen, &mut total)?;
+        open.push((Some(dir), below));
+    }
+    Ok(total)
+}
+
+/// Adds to `total` what the entries of directory `dir` take ([`charge_of`]), a file of
+/// several names counted at the first of them, `seen`: the names of its directories, to be
+/// read next.
+fn charge_in(
+    dir: host::Raw,
+    unit: std::num::NonZeroU64,
+    seen: &mut std::collections::HashSet<(u64, u64)>,
+    total: &mut u64,
+) -> Result<Vec<CString>, Errno> {
+    let mut names = Vec::new();
+    DirStream::open(dir)?.read(0, MAX_WRITE as usize, |entry, _| {
+        if !matches!(entry.name.to_bytes(), b"." | b"..") {
+            names.push(entry.name.clone());
+        }
+        true
+    })?;
+    let mut dirs = Vec::new();
+    for name in names {
+        let st = match stat_at(dir, &name) {
+            Ok(st) => st,
+            // Gone since it was listed.
+            Err(ENOENT) => continue,
+            Err(e) => return Err(e),
+        };
+        let whole = |bytes: u64| super::bound::whole(bytes, unit);
+        let mut takes = unit.get();
+        if is_dir(&st) || st.nlink < 2 || seen.insert(key(&st)) {
+            if !is_dir(&st) {
+                takes = takes.saturating_add(whole(st.size));
+            }
+            takes = takes.saturating_add(whole(attrs_at(dir, &name, &st)?));
+        }
+        *total = total.saturating_add(takes);
+        if is_dir(&st) {
+            dirs.push(name);
+        }
+    }
+    Ok(dirs)
+}
+
+/// The guest's statfs of a share bounded by `b` (D281) on a host file system that says
+/// `host`: [`super::bound::Bound::stats`], in the bound's units, its host's fragments
+/// ([`Server::bound`]); a host that counts no files (NTFS) bounds none of them.
+fn bounded_stats(b: &super::bound::Bound, host: FsStats) -> FsStats {
+    let free = host.available.saturating_mul(u64::from(host.fragment_size)) / b.unit();
+    let v = b.stats(free, (host.files != 0).then_some(host.files_free));
+    FsStats {
+        blocks: v.blocks,
+        free: v.free,
+        available: v.free,
+        files: v.files,
+        files_free: v.files_free,
+        block_size: host.block_size,
+        fragment_size: u32::try_from(b.unit().get()).unwrap_or(host.fragment_size),
+    }
+}
+
 /// Whether a file of `mode`, its owner's, refuses an open with `flags`' access to its owner,
 /// the share process: once its handle's descriptor were let go, none could be opened for it
 /// again by its path.
@@ -3186,10 +3626,14 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     // What the rename replaces, unless it is the file renamed (a link of it) or an
     // exchange, which removes nothing.
     let same = matches!((stat_at(od, old), stat_at(nd, new)), (Ok(a), Ok(b)) if key(&a) == key(&b));
-    let removal = if flags & linux::RENAME_EXCHANGE == 0 && !same {
-        pin_before_removal(s, volume_of(s, newdir), nd, new)
+    let (removal, freed) = if flags & linux::RENAME_EXCHANGE == 0 && !same {
+        let volume = volume_of(s, newdir);
+        (
+            pin_before_removal(s, volume, nd, new),
+            freed_by(s, volume, nd, new),
+        )
     } else {
-        Removal::Nothing
+        (Removal::Nothing, Freed::default())
     };
     let exchange = flags & linux::RENAME_EXCHANGE != 0;
     if RENAME_NEEDS_NONE_BENEATH {
@@ -3211,6 +3655,7 @@ fn rename(s: &mut State, olddir: u64, old: &CStr, newdir: u64, new: &CStr, flags
     let rc = renamed(od, old, nd, new, flags);
     removed(s, removal, rc.is_ok());
     rc?;
+    free(s, freed);
     // The names nodes are known by follow, directories' as files': a directory let go is
     // found again by its path.
     for node in s.nodes.values_mut() {
@@ -6224,6 +6669,180 @@ mod tests {
         assert_eq!(size(), 4104);
         assert_eq!(std::fs::read(path.join("f")).unwrap()[..10], *b"0123456789");
         assert_eq!(allocate(0, 10, 0x02 /* PUNCH_HOLE */), -EOPNOTSUPP);
+    }
+
+    /// A SETATTR of `fh`'s file's size to `size` (struct fuse_setattr_in).
+    fn resize(fh: u64, size: u64) -> Vec<u8> {
+        let mut b = (fattr::SIZE | fattr::FH).to_le_bytes().to_vec();
+        b.extend([0u8; 4]);
+        b.extend(fh.to_le_bytes());
+        b.extend(size.to_le_bytes());
+        b.extend([0u8; 4 * 8 + 8 * 4]);
+        b
+    }
+
+    /// `s`, serving `path`, bounded to `limit` (D281), its files walked first as its volume's
+    /// first holder walks them: what they take, and the count its servers share.
+    fn bounded(s: &Server, path: &std::path::Path, limit: u64) -> (u64, &'static AtomicU64) {
+        let walked = charge_of_dir(crate::platform::open_dir(path).unwrap()).unwrap();
+        let count: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(walked)));
+        s.bound(limit, count).unwrap();
+        (walked, count)
+    }
+
+    /// D281: a share bounded as it is served charges each name a unit of its host's and each
+    /// file its length in whole units, walked as it is bounded; a write past its room is cut
+    /// where the room lets its file end and the next is refused (ENOSPC), as a name, a size
+    /// and an allocation it has no room for are, and blocks past a file's length
+    /// (EOPNOTSUPP); an overwrite is answered; a truncation and a removal give back; its
+    /// statfs says its bound and what is left of it.
+    #[test]
+    fn a_bounded_share_refuses_what_its_bound_has_no_room_for() {
+        let (path, s) = dir();
+        std::fs::write(path.join("old"), vec![1u8; 5000]).unwrap();
+        std::fs::create_dir(path.join("d")).unwrap();
+        let (first, _) = bounded(&s, &path, u64::MAX);
+        let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
+        let whole = |n: u64| n.div_ceil(unit) * unit;
+        assert_eq!(first, 2 * unit + whole(5000), "two names, and old's length");
+        let limit = first + 4 * unit;
+        assert_eq!(bounded(&s, &path, limit).0, first, "walked again alike");
+        let charged = || s.state.lock().unwrap().bound.unwrap().charged();
+        let (f, fh) = create(&s, ROOT, "f", 2, 0o644);
+        assert_eq!(charged(), first + unit, "a name made");
+        // A write past the room: cut where the room lets the file end, the next refused.
+        let room = limit - charged();
+        let mut b = fh.to_le_bytes().to_vec();
+        b.extend(0u64.to_le_bytes());
+        b.extend(u32::try_from(room + unit).unwrap().to_le_bytes());
+        b.extend([0u8; 20]);
+        b.extend(vec![7u8; usize::try_from(room + unit).unwrap()]);
+        let (e, out) = answer(&s, &req(op::WRITE, f, 0, &b));
+        assert_eq!(e, 0);
+        assert_eq!(u64::from(u32::from_le_bytes(out[0..4].try_into().unwrap())), room);
+        assert_eq!(charged(), limit);
+        assert_eq!(write(&s, f, fh, room, b"x"), -ENOSPC);
+        assert_eq!(
+            write(&s, f, fh, 0, b"overwritten"),
+            0,
+            "an overwrite takes nothing"
+        );
+        // Nothing else that takes more: a name, a size, an allocation; nor blocks past a
+        // length, which no length shows.
+        let mut mkdir = 0o755u32.to_le_bytes().to_vec();
+        mkdir.extend([0u8; 4]);
+        mkdir.extend(name("e"));
+        assert_eq!(answer(&s, &req(op::MKDIR, ROOT, 0, &mkdir)).0, -ENOSPC);
+        assert_eq!(
+            answer(&s, &req(op::SETATTR, f, 0, &resize(fh, room + 1))).0,
+            -ENOSPC
+        );
+        let allocate = |length: u64, mode: u32| {
+            let mut b = fh.to_le_bytes().to_vec();
+            b.extend(0u64.to_le_bytes());
+            b.extend(length.to_le_bytes());
+            b.extend(mode.to_le_bytes());
+            b.extend([0u8; 4]);
+            answer(&s, &req(op::FALLOCATE, f, 0, &b)).0
+        };
+        assert_eq!(allocate(room + 1, 0), -ENOSPC);
+        assert_eq!(allocate(1, linux::FALLOC_FL_KEEP_SIZE), -EOPNOTSUPP);
+        assert_eq!(std::fs::metadata(path.join("f")).unwrap().len(), room);
+        assert!(!path.join("e").exists());
+        let statfs = || {
+            let (e, out) = answer(&s, &req(op::STATFS, ROOT, 0, &[]));
+            assert_eq!(e, 0);
+            let word = |at: usize| u64::from_le_bytes(out[at..at + 8].try_into().unwrap());
+            (word(0), word(8), word(16))
+        };
+        assert_eq!(statfs(), (limit / unit, 0, 0), "its bound's blocks, none free");
+        // A truncation gives back its whole units; a removal its name and its length.
+        assert_eq!(answer(&s, &req(op::SETATTR, f, 0, &resize(fh, 0))).0, 0);
+        assert_eq!(charged(), limit - room);
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("old"))).0, 0);
+        let left = room + unit + whole(5000);
+        assert_eq!(charged(), limit - left);
+        assert_eq!(statfs(), (limit / unit, left / unit, left / unit));
+        release(&s, f, fh);
+    }
+
+    /// D281: a file the guest removes while it holds it open keeps its charge, as its host
+    /// keeps its blocks, until its last handle goes, what it is written meanwhile with it; a
+    /// name of a file with another gives back its unit alone.
+    #[test]
+    fn a_removed_open_files_charge_goes_with_its_last_handle() {
+        let (path, s) = dir();
+        assert_eq!(bounded(&s, &path, u64::MAX).0, 0, "an empty share takes nothing");
+        let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
+        let charged = || s.state.lock().unwrap().bound.unwrap().charged();
+        let (f, fh) = create(&s, ROOT, "f", 2, 0o644);
+        let data = vec![1u8; usize::try_from(unit + 1).unwrap()];
+        assert_eq!(write(&s, f, fh, 0, &data), 0);
+        assert_eq!(charged(), 3 * unit, "its name and two units of length");
+        let mut link = f.to_le_bytes().to_vec();
+        link.extend(name("g"));
+        assert_eq!(answer(&s, &req(op::LINK, ROOT, 0, &link)).0, 0);
+        assert_eq!(charged(), 4 * unit, "a second name");
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("g"))).0, 0);
+        assert_eq!(charged(), 3 * unit, "a name of a file with another");
+        assert_eq!(answer(&s, &req(op::UNLINK, ROOT, 0, &name("f"))).0, 0);
+        assert!(!path.join("f").exists());
+        assert_eq!(charged(), 2 * unit, "its name given back, its length held");
+        assert_eq!(write(&s, f, fh, 2 * unit, b"more"), 0);
+        assert_eq!(charged(), 3 * unit, "written while removed");
+        release(&s, f, fh);
+        assert_eq!(charged(), 0, "its last handle let go");
+    }
+
+    /// D281: what a bound finds as it is set: a unit each name, a file of two names its
+    /// length once, a symlink its target's length, and the guest's attributes in whole units.
+    #[cfg(unix)]
+    #[test]
+    fn a_bound_walks_names_lengths_once_and_attributes() {
+        let (path, s) = dir();
+        std::fs::create_dir_all(path.join("a/b")).unwrap();
+        std::fs::write(path.join("a/b/f"), [0u8; 10]).unwrap();
+        std::fs::hard_link(path.join("a/b/f"), path.join("a/g")).unwrap();
+        std::os::unix::fs::symlink("a/b/f", path.join("l")).unwrap();
+        let f = found(&s, found(&s, found(&s, ROOT, "a"), "b"), "f");
+        let mut set = 3u32.to_le_bytes().to_vec();
+        set.extend(0u32.to_le_bytes());
+        set.extend(name("user.k"));
+        set.extend(b"abc");
+        assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &set)).0, 0);
+        let (charged, _) = bounded(&s, &path, u64::MAX);
+        let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
+        let whole = |n: u64| n.div_ceil(unit) * unit;
+        // a, a/b, a/b/f, a/g and l; f's length once; l's target's; f's attribute.
+        assert_eq!(charged, 5 * unit + whole(10) + whole(5) + whole(6 + 3));
+    }
+
+    /// D281: the servers of one volume, as two members' share processes are, charge one
+    /// count: what one makes and writes takes the room the other then has not, and what one
+    /// gives back is room the other then has.
+    #[test]
+    fn the_servers_of_one_volume_charge_one_count() {
+        let (path, a) = dir();
+        let b = Server::new(root_of(&path), false, None).unwrap();
+        let (walked, count) = bounded(&a, &path, 0);
+        assert_eq!(walked, 0, "an empty share takes nothing");
+        let unit = a.state.lock().unwrap().bound.unwrap().unit().get();
+        a.bound(4 * unit, count).unwrap();
+        b.bound(4 * unit, count).unwrap();
+        let charged = || count.load(std::sync::atomic::Ordering::Relaxed);
+        let (f, f_fh) = create(&a, ROOT, "f", 2, 0o644);
+        let (g, g_fh) = create(&b, ROOT, "g", 2, 0o644);
+        assert_eq!(charged(), 2 * unit, "a name each");
+        let data = vec![1u8; usize::try_from(2 * unit).unwrap()];
+        assert_eq!(write(&a, f, f_fh, 0, &data), 0);
+        assert_eq!(charged(), 4 * unit, "the bound reached through one");
+        assert_eq!(write(&b, g, g_fh, 0, b"x"), -ENOSPC, "no room through the other");
+        release(&a, f, f_fh);
+        assert_eq!(answer(&a, &req(op::UNLINK, ROOT, 0, &name("f"))).0, 0);
+        assert_eq!(charged(), unit, "given back through one");
+        assert_eq!(write(&b, g, g_fh, 0, b"x"), 0, "room through the other");
+        assert_eq!(charged(), 2 * unit);
+        release(&b, g, g_fh);
     }
 
     /// Names Windows holds none of keep their characters to the guest, escaped on NTFS as

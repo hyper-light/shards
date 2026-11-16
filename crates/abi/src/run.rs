@@ -17,6 +17,7 @@ pub mod notice;
 pub mod plug;
 pub mod quiesce;
 pub mod setup;
+pub mod shared;
 pub mod socket;
 pub mod trust;
 
@@ -238,6 +239,11 @@ pub mod kind {
     /// having failed, let go: its generation's end, or the end it had under the hold, is then
     /// its whole member's.
     pub const MEMBER_HOLD: u8 = 56;
+    /// Guest to host, on the workload's connection, before [`SYSTEM_ERR`]: a member whose
+    /// first generation could not enter its working directory as it started (D277), as
+    /// [`members::Unentered`](super::members::Unentered) encodes it. None of the run's members
+    /// runs: its `SYSTEM_ERR` and [`EXIT`] follow.
+    pub const WORKDIR_UNENTERED: u8 = 57;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
@@ -816,6 +822,25 @@ pub mod builtin {
     /// [`EGRESS`]'s exit status where no member of that index runs linked past the microVM:
     /// ENOENT's number (errno-base.h), as [`SIGNAL_UNKNOWN`] says it of one.
     pub const EGRESS_UNKNOWN: u8 = 2;
+    /// The run's place on a network shared by runs and its members' grants there, whole, as
+    /// they are to stand (D285 slice 5; shards-init egress/shared.rs), its arguments
+    /// [`shared::args`](super::shared::args)', or [`shared::args_off`](super::shared::args_off)'s
+    /// once its last member leaves it: eth0's second address on it, each member's flows to and
+    /// from its peers there held by its gate, the switch and init's tables as D278 holds its
+    /// reach, and its peers' names answered it by the agents' resolver; answered with nothing.
+    pub const SHARED: u8 = 26;
+    /// [`SHARED`]'s exit status where a grant passes what its member's image and its ceiling let
+    /// it, as [`EGRESS_PAST`]'s: EACCES's number.
+    pub const SHARED_PAST: u8 = 13;
+    /// [`SHARED`]'s exit status where no member of an index runs linked in this run, as
+    /// [`EGRESS_UNKNOWN`]'s: ENOENT's number.
+    pub const SHARED_UNKNOWN: u8 = 2;
+    /// [`SHARED`]'s exit status where the run is on the network at another address, prefix or
+    /// gateway, which hold while it is on it: EEXIST's number (errno-base.h).
+    pub const SHARED_READDRESSED: u8 = 17;
+    /// [`SHARED`]'s exit status where the network's subnet shares an address with another of the
+    /// microVM's networks or links: EADDRINUSE's number (include/uapi/asm-generic/errno.h).
+    pub const SHARED_OVERLAPS: u8 = 98;
 
     /// [`STATS`]'s one argument, whose cgroup it reads (D231): none for the workload's, as
     /// `stats` reads it; [`RUN`](stats::RUN) for the run's, its command's and every

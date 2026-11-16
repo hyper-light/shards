@@ -137,8 +137,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
         // mounted where they mount them, and its root read-only where theirs is, so that
         // a file copied in is where its command will find it, and none goes where its runs
         // could not write. A tmpfs is a run's own, and no stopped microVM's; a
-        // directory only its agents mount is none of its root's.
-        let link = if copies {
+        // directory only its agents mount is none of its root's. Its named volumes held until
+        // it ends, as a run's are (D281).
+        let (link, volumes) = if copies {
             let (points, first) = lock(&self.containers)
                 .made(id)
                 .map(|c| (c.mounts.clone(), c.started.is_none()))
@@ -147,11 +148,19 @@ impl<D: crate::containers::Disk> Daemon<D> {
             let opened = crate::volumes::open(&points, first, &crate::volumes::Store::new(&self.home))?;
             prepared.spec.setup = crate::setup::setup(&stored, &opened.mounts, None, None)?;
             crate::spec::fits(&prepared.spec)?;
-            let link = self.start_shares(threads, id, &opened.dirs, &prepared.parent, false, false)?;
+            let link = self.start_shares(
+                threads,
+                id,
+                &opened.dirs,
+                &opened.bounds,
+                &prepared.parent,
+                false,
+                false,
+            )?;
             prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
-            link
+            (link, opened.held)
         } else {
-            None
+            (None, crate::volumes::Holds::default())
         };
         let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a visit's connection: {e}"))?;
         let handed = shards_ipc::handed(&theirs).map_err(|e| format!("a visit's connection: {e}"))?;
@@ -239,6 +248,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes,
             },
             || self.warm_for(threads, &prepared, &start, &|_| {}, &|_| {}),
         );

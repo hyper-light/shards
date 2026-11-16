@@ -485,6 +485,28 @@ pub mod kind {
     /// the grants before, every flow of its guest's they no longer reach ended. Answered with
     /// the same kind: 0 once taken; or 1 and why not, nothing of it taken.
     pub const NET_GRANTS: u8 = 107;
+    /// Run host → network process: the run's place on a network shared with other runs
+    /// (D285) and its members, whole (shards_net::shared::Join): the network's ID, the guest's
+    /// address on it, its prefix and gateway, the network's name, and each member's name
+    /// there with its run's address; taken in place of the last of that network as members
+    /// come and go, its grants kept, every link to an address no other run's member is at
+    /// dropped and every flow its grants no longer admit ended. Answered with the same kind: 0
+    /// once taken, else the refusal's code (shards_net::shared::Refusal), nothing of it taken.
+    pub const NET_JOIN: u8 = 113;
+    /// Run host → network process: the run has left the shared network whose ID it is
+    /// (D285): its links, their flows, its grants and its names gone. Answered as `NET_JOIN` is.
+    pub const NET_LEAVE: u8 = 114;
+    /// Run host → network process: a link to another run's network process on a shared
+    /// network (D285), the network's ID and that run's address, with a stream socket as
+    /// `NET_PEER` hands one; a newer link to that address replaces the older. Answered as
+    /// `NET_JOIN` is, as its sender holds its copy of the socket until then (M24).
+    pub const NET_LINK: u8 = 115;
+    /// Run host → network process: one grant of a member's on a shared network added or taken
+    /// back (D285, shards_net::shared::encode_grant), as kiln's `Change::Connect` and
+    /// `Disconnect` give them one at a time: the member and its peer by their names there,
+    /// a range of one protocol's ports, and the way a flow opens. Taken back, every flow it
+    /// let open that no other grant admits ends. Answered as `NET_JOIN` is.
+    pub const NET_PEER_GRANT: u8 = 116;
     /// Daemon → a running microVM's VM process: a run joins its network (D119). Its number
     /// (a big-endian u64, which `EXEC_TAKEN` answers), with the VM's end of the joiner's
     /// own connection to the daemon, on which the joiner's run goes as a warm VM's does
@@ -787,13 +809,24 @@ pub mod kind {
     /// `MEMBER_STARTED` says it (`shards_abi::run::members::StartAnswer`), or the VM's own
     /// refusal in that shape where it could not give the guest the start.
     pub const MEMBER_STARTED: u8 = 110;
+    /// VM → its spawner, on its grants link (Windows), empty: its vsock listener's next pair
+    /// of pipes (D272), asked as a client has opened both ways of the last; answered after
+    /// its grants are sealed (`SEALED`), as its dials are, and only to a VM granted a vsock
+    /// path, whose first pair's names the next is made under. Answered with a `GRANTED` of
+    /// the handles in the VM of the pair's way down and way up, each a little-endian u64; or
+    /// an `ERR`.
+    pub const VSOCK_PAIR: u8 = 111;
+    /// A VM → its owner, before its run's [`DONE`]: a member that could not enter its working
+    /// directory as it started, which failed the run (D277), as its guest's
+    /// `WORKDIR_UNENTERED` says it (`shards_abi::run::members::Unentered`).
+    pub const WORKDIR_UNENTERED: u8 = 112;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
-    /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
-    /// message on Unix; on Windows, where a socket is shared with a process by its protocol
-    /// info, before its payload, however many (`with_sockets`).
+    /// ports' (`PUBLISH`, `NET_PUBLISHED`), a peer's link (`NET_PEER`) and a shared network's
+    /// (`NET_LINK`). Beside the message on Unix; on Windows, where a socket is shared with a
+    /// process by its protocol info, before its payload, however many (`with_sockets`).
     pub fn hands_sockets(kind: u8) -> bool {
-        matches!(kind, PUBLISH | NET_PUBLISHED | NET_PEER)
+        matches!(kind, PUBLISH | NET_PUBLISHED | NET_PEER | NET_LINK)
     }
 }
 
@@ -2486,9 +2519,10 @@ pub use unix::*;
 mod pipe;
 #[cfg(windows)]
 pub use pipe::{
-    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, await_any,
-    await_streams, byte_pair, end, fill_random, hung_up, input_pair, output_pair, readable_raw, recv,
-    recv_by, recv_judged, send, send_judged,
+    Arriving, Event, ExitWatch, Listener, Message, Pipe, Poller, RandomFailed, Stream, VSOCK_QUOTA,
+    VsockConn, VsockListener, VsockNames, await_any, await_streams, byte_pair, end, fill_random, hung_up,
+    input_pair, output_pair, readable_raw, recv, recv_by, recv_judged, send, send_judged, vsock_instance,
+    vsock_listen, vsock_open, vsock_pair,
 };
 
 /// When a judged wait (`send_judged`, `recv_judged`) next asks its judge, and whether it goes

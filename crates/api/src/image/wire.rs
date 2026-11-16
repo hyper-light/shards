@@ -109,10 +109,31 @@ pub use shards_abi::run::nesting::Ready;
 /// 41, whether a share's or a plug's files may be run from it (D279: [`ShareAt::exec`],
 /// [`PlugAsk::exec`]), so that a side that mounts none `noexec` refuses the run as it is asked,
 /// rather than running what its orchestrator said may not be run; 42, a member's working
-/// directory that no mount given it as it starts holds, refused as the run is asked
-/// ([`Cause::Workdir`], D277), so that its orchestrator is told so typed, rather than the
-/// member's start failing in its guest.
-pub const VERSION: u8 = 42;
+/// directory refused typed ([`Cause::Workdir`], D277); 43, that refusal its guest's own, told
+/// as the run's members start, after [`to_client::STARTED`] and before [`to_client::ENDED`],
+/// where 42's run host refused one no share held before its VM was handed the run, a
+/// directory its image holds among them; 44, whether the run's agent-control endpoint serves
+/// its members' stdio as its lanes ([`ControlAsk::stdio`], D252), where it asks for an
+/// endpoint, so that a side that serves none refuses the run as it is asked, rather than its
+/// orchestrator dialing lanes no endpoint serves while its members' output waits on a channel
+/// none reads; 45, a restart's next generation that could not enter its working directory
+/// refused typed ([`RestartRefusal::Workdir`], D277), as 43 refuses a first generation's, so
+/// that a side that reads no such refusal refuses the run as it is asked, rather than its
+/// restart's answer breaking the channel; 46, a swap's run-time arguments for the start that
+/// takes it ([`SwapAsk::args`], D270 slice 4), none its member's kept ones, so that a side that
+/// reads none refuses the run as it is asked, rather than starting its member again without the
+/// arguments its orchestrator started it with; 47, the bound a plug of a volume asks
+/// ([`PlugFrom::Volume`]'s `bound`, D281), Hex's admitted `disk_bytes`, so that a side that
+/// holds none refuses the run as it is asked, rather than serving its volume unbounded; 48, a
+/// restart whose next generation's stdio lanes its run host's budget has no room for refused
+/// typed before that generation starts ([`RestartRefusal::Capacity`], D252), so that a side that
+/// reads no such refusal refuses the run as it is asked, as 45 does; 49, a swap refused typed
+/// as its member's restart now was refused ([`SwapRefusal::Workdir`], D277;
+/// [`SwapRefusal::Capacity`], D252), and a plug of a volume refused typed where it is asked
+/// another bound than its holders serve it with ([`PlugRefusal::Bound`]) or a clearing holds
+/// it ([`PlugRefusal::Clearing`], D281), so that a side that reads none of these refusals
+/// refuses the run as it is asked, rather than its answer breaking the channel.
+pub const VERSION: u8 = 49;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -174,9 +195,12 @@ pub mod to_host {
 
 /// What the run host sends.
 pub mod to_client {
-    /// [`Started`](super::Started): the run runs, its members started.
+    /// [`Started`](super::Started): the run runs, its VM having taken it; its members start in
+    /// its guest, and a [`REFUSED`] after this says they did not (D277).
     pub const STARTED: u8 = 16;
-    /// [`Refused`](super::Refused): the run will not be, and the host ends.
+    /// [`Refused`](super::Refused): the run will not be, and the host ends; or, after
+    /// [`STARTED`], its members will not run ([`Cause::Workdir`](super::Cause::Workdir), D277),
+    /// told before its [`ENDED`].
     pub const REFUSED: u8 = 17;
     /// [`Output`](super::Output): a member's bytes, within its credit.
     pub const OUTPUT: u8 = 18;
@@ -680,6 +704,12 @@ pub struct ControlAsk {
     pub controller: [u8; 32],
     /// The run's socket directory and what it admits of lanes to it; none, and none.
     pub sockets: Option<SocketGrant>,
+    /// Its members' stdio served as lanes of the endpoint (D252, D238), each generation's
+    /// (D270), in place of this channel: every running member's stdout and stderr, and each
+    /// stdin its spec asks for, as `shards_api::control::member_output` and `member_input`
+    /// name them. This channel then carries none of their bytes: its orchestrator gives them
+    /// no room, and its run host says only each output's end on it. Appended in version 44.
+    pub stdio: bool,
 }
 
 /// The one directory of the run's own command's sockets its controller may reach (D251), and
@@ -835,8 +865,9 @@ pub enum Cause {
     /// A warm run host's microVM is another request's than the run's (D253's pools): the run
     /// is its orchestrator's to start on a host of its own.
     Unfit = 5,
-    /// A member's working directory that no mount given it as it starts holds (D277): it
-    /// could not start there. Appended in version 42.
+    /// A member's working directory its guest could not enter as it started (D277; init's
+    /// `entering its working directory`): none of the run's members runs. Told after
+    /// [`to_client::STARTED`], before [`to_client::ENDED`]. Appended in version 42.
     Workdir = 6,
 }
 
@@ -1103,8 +1134,9 @@ pub enum PlugFrom {
     /// A host directory: absolute, UTF-8.
     Host(String),
     /// A volume of the run's home's store, by its name, made where it is not there as a
-    /// run's `-v NAME:PATH` makes one.
-    Volume(String),
+    /// run's `-v NAME:PATH` makes one. Its bound (version 47, D281): the bytes its files may
+    /// take, which it is made with, or set to where no run holds it; none for its own.
+    Volume { name: String, bound: Option<NonZeroU64> },
 }
 
 /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
@@ -1138,6 +1170,14 @@ pub enum PlugRefusal {
     /// another microVM's engine's, or one an image's Agentfile gives its members elsewhere
     /// (D109).
     Volume = 8,
+    /// A volume asked with another bound than the one its holders serve it with (D281): its
+    /// bound changes only while no run holds it. Its words name the volume, its bound and the
+    /// one asked.
+    Bound = 9,
+    /// A volume a clearing holds alone (D281: shards-api's `clear_volume`, the daemon's
+    /// `volume rm` or `volume prune`), refused at once, never waited for: plugged again once
+    /// that has answered, it is made anew, empty.
+    Clearing = 10,
 }
 
 fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
@@ -1151,6 +1191,8 @@ fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
         6 => PlugRefusal::Unknown,
         7 => PlugRefusal::Busy,
         8 => PlugRefusal::Volume,
+        9 => PlugRefusal::Bound,
+        10 => PlugRefusal::Clearing,
         tag => {
             return Err(WireError::Tag {
                 what: "a plug's refusal",
@@ -1353,6 +1395,14 @@ pub enum RestartRefusal {
     Unsupported = 4,
     /// Its start failed, in its init's or its run host's words.
     Failed = 5,
+    /// Its next generation could not enter its working directory as it started (D277), as
+    /// [`Cause::Workdir`] refuses a first generation that could not: its run host's words name
+    /// the member, the directory and the errno.
+    Workdir = 6,
+    /// Its run host's budget had no room for its next generation's stdio lanes (D252), which
+    /// its endpoint serves where its run's control asked for them: that generation was not
+    /// started, its member let go as any refused restart's is. Appended in version 48.
+    Capacity = 7,
 }
 
 /// A restart's outcome, by its ask's id: the generation started, or why not.
@@ -1386,6 +1436,10 @@ pub struct SwapAsk {
     pub id: u32,
     pub change: SwapChange,
     pub when: SwapWhen,
+    /// The run-time arguments of the start that takes it, after its image's command, as a
+    /// [`RestartAsk`]'s are, and its member's kept ones from then; none, the ones its run host
+    /// keeps: its member's first start's staged ones, then each later start's (D270 slice 4).
+    pub args: Option<Vec<Vec<u8>>>,
     pub patience: std::time::Duration,
 }
 
@@ -1418,6 +1472,14 @@ pub enum SwapRefusal {
     Running = 7,
     /// Its swap failed, in its guest's or its host's words.
     Failed = 8,
+    /// Its member, restarted now, could not enter its working directory as its next generation
+    /// started (D277), as [`RestartRefusal::Workdir`] refuses a restart: its run host's words
+    /// name the member, the directory and the errno. Its member then ended whole.
+    Workdir = 9,
+    /// Its member, restarted now, was not started again: its run host's budget had no room for
+    /// its next generation's stdio lanes (D252), as [`RestartRefusal::Capacity`] refuses a
+    /// restart. Its member then ended whole.
+    Capacity = 10,
 }
 
 /// What a swap did (D270 slice 4): every member's component after it, and, where its member was
@@ -2372,6 +2434,11 @@ impl Request {
         for share in &self.shares {
             w.u8(u8::from(share.exec));
         }
+        // Whether its endpoint serves its members' stdio, where it asks for one, appended in
+        // version 44 (D252).
+        if let Some(control) = &self.control {
+            w.u8(u8::from(control.stdio));
+        }
         w.done()
     }
 
@@ -2492,7 +2559,7 @@ impl Request {
         // Each member's reach of the names kept, appended in version 12 (D246).
         egress.members = r.reach()?;
         // The run's agent-control endpoint, appended in version 15 (D252).
-        let control = if r.flag()? {
+        let mut control = if r.flag()? {
             let controller = r.array::<32>()?;
             let sockets = if r.flag()? {
                 Some(SocketGrant {
@@ -2503,7 +2570,11 @@ impl Request {
             } else {
                 None
             };
-            Some(ControlAsk { controller, sockets })
+            Some(ControlAsk {
+                controller,
+                sockets,
+                stdio: false,
+            })
         } else {
             None
         };
@@ -2632,6 +2703,10 @@ impl Request {
         // Whether each share's files may be run from it, appended in version 41 (D279).
         for share in &mut shares {
             share.exec = r.flag()?;
+        }
+        // Whether its endpoint serves its members' stdio, appended in version 44 (D252).
+        if let Some(control) = control.as_mut() {
+            control.stdio = r.flag()?;
         }
         r.end()?;
         Ok(Request {
@@ -2920,9 +2995,11 @@ impl PlugAsk {
                 w.u8(0);
                 w.text(host)?;
             }
-            PlugFrom::Volume(name) => {
+            PlugFrom::Volume { name, bound } => {
                 w.u8(1);
                 w.text(name)?;
+                // Appended in version 47 (D281): 0 for none.
+                w.u64(bound.map_or(0, NonZeroU64::get));
             }
         }
         w.text(&self.at)?;
@@ -2950,7 +3027,10 @@ impl PlugAsk {
         }
         let from = match r.u8()? {
             0 => PlugFrom::Host(r.text()?),
-            1 => PlugFrom::Volume(r.text()?),
+            1 => PlugFrom::Volume {
+                name: r.text()?,
+                bound: NonZeroU64::new(r.u64()?),
+            },
             tag => {
                 return Err(WireError::Tag {
                     what: "a plug's source",
@@ -3310,7 +3390,8 @@ impl RestartAsk {
 
 impl SwapAsk {
     /// Its id, then its change: 0, the path and the digest; or 1 and the path; then when (0 its
-    /// next start, 1 now) and its patience.
+    /// next start, 1 now), its arguments (0; or 1, a count, then each's length and bytes) and its
+    /// patience.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let mut w = Writer(Vec::new());
         w.u32(self.id);
@@ -3326,6 +3407,16 @@ impl SwapAsk {
             }
         }
         w.u8(self.when as u8);
+        match &self.args {
+            None => w.u8(0),
+            Some(args) => {
+                w.u8(1);
+                w.count(args.len())?;
+                for a in args {
+                    w.bytes(a)?;
+                }
+            }
+        }
         w.duration(self.patience);
         w.done()
     }
@@ -3351,12 +3442,23 @@ impl SwapAsk {
                 });
             }
         };
+        let args = if r.flag()? {
+            let n = r.count(size_of::<u32>())?;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(r.bytes()?.to_vec());
+            }
+            Some(args)
+        } else {
+            None
+        };
         let patience = r.duration()?;
         r.end()?;
         Ok(SwapAsk {
             id,
             change,
             when,
+            args,
             patience,
         })
     }
@@ -3434,6 +3536,8 @@ impl SwapAnswer {
                     6 => SwapRefusal::Device,
                     7 => SwapRefusal::Running,
                     8 => SwapRefusal::Failed,
+                    9 => SwapRefusal::Workdir,
+                    10 => SwapRefusal::Capacity,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a swap's refusal",
@@ -3486,6 +3590,8 @@ impl RestartAnswer {
                     3 => RestartRefusal::Generation,
                     4 => RestartRefusal::Unsupported,
                     5 => RestartRefusal::Failed,
+                    6 => RestartRefusal::Workdir,
+                    7 => RestartRefusal::Capacity,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a restart's refusal",
@@ -4332,7 +4438,20 @@ mod tests {
     fn plugs_round_trip_and_bad_ones_are_refused() {
         for (members, from) in [
             (vec![2], PlugFrom::Host("/Users/u/proj".into())),
-            (vec![1, 2], PlugFrom::Volume("kiln-session".into())),
+            (
+                vec![1, 2],
+                PlugFrom::Volume {
+                    name: "kiln-session".into(),
+                    bound: None,
+                },
+            ),
+            (
+                vec![2],
+                PlugFrom::Volume {
+                    name: "kiln-session".into(),
+                    bound: NonZeroU64::new(10 << 30),
+                },
+            ),
         ] {
             let ask = PlugAsk {
                 id: 7,
@@ -4391,13 +4510,28 @@ mod tests {
             Err((PlugRefusal::Unknown, String::new())),
             Err((PlugRefusal::Busy, String::new())),
             Err((PlugRefusal::Volume, "kiln-session: another microVM's".into())),
+            Err((
+                PlugRefusal::Bound,
+                "volume a is served with a bound of 1048576 bytes, not the bound of 2097152 bytes asked"
+                    .into(),
+            )),
+            Err((PlugRefusal::Clearing, "volume a is being cleared".into())),
         ] {
             let answer = PlugAnswer { id: 9, result };
             assert_eq!(PlugAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
+        const {
+            assert!(
+                VERSION >= 49,
+                "the channel's version 49 carries a plug's Bound and Clearing"
+            )
+        };
         assert!(matches!(
-            PlugAnswer::decode(&[0, 0, 0, 9, 1, 9, 0, 0, 0, 0]),
-            Err(WireError::Tag { .. })
+            PlugAnswer::decode(&[0, 0, 0, 9, 1, 11, 0, 0, 0, 0]),
+            Err(WireError::Tag {
+                what: "a plug's refusal",
+                tag: 11,
+            })
         ));
         assert!(matches!(
             PlugAnswer::decode(&[0, 0, 0, 9, 2]),
@@ -5077,7 +5211,7 @@ mod tests {
             (Cause::Widening, "egress 22/tcp: the image grants none"),
             (
                 Cause::Workdir,
-                "Harness codex: /Users/ada/proj: no share given it there",
+                "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started",
             ),
         ] {
             let refused = Refused {
@@ -5169,11 +5303,18 @@ mod tests {
     }
 
     /// A swap (D270 slice 4) round-trips, of a digest and of its image's back, at its next start
-    /// and now; its answer too, every member's component or why not; a cut one, one of another
-    /// change, when or refusal, and one trailing a byte, refused.
+    /// and now, with its member's kept arguments, with none and with its own, an empty one among
+    /// them; its answer too, every member's component or why not; a cut one, one of another
+    /// change, when, arguments' flag or refusal, one counting more arguments than it holds, and
+    /// one trailing a byte, refused.
     #[test]
     fn a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused() {
-        const { assert!(VERSION >= 40, "the channel's version 40 carries swaps") };
+        const {
+            assert!(
+                VERSION >= 46,
+                "the channel's version 46 carries a swap's arguments"
+            )
+        };
         let digest = format!("sha256:{}", "ab".repeat(32));
         for ask in [
             SwapAsk {
@@ -5183,6 +5324,7 @@ mod tests {
                     digest: digest.clone(),
                 },
                 when: SwapWhen::Now,
+                args: None,
                 patience: std::time::Duration::from_secs(30),
             },
             SwapAsk {
@@ -5191,7 +5333,18 @@ mod tests {
                     at: "/agents/helper".into(),
                 },
                 when: SwapWhen::NextStart,
+                args: Some(Vec::new()),
                 patience: std::time::Duration::ZERO,
+            },
+            SwapAsk {
+                id: 9,
+                change: SwapChange::Swap {
+                    at: "/harness/codex".into(),
+                    digest: digest.clone(),
+                },
+                when: SwapWhen::Now,
+                args: Some(vec![b"--resume".to_vec(), b"s-1".to_vec(), Vec::new()]),
+                patience: std::time::Duration::from_secs(30),
             },
         ] {
             let bytes = ask.encode().unwrap();
@@ -5212,6 +5365,7 @@ mod tests {
             id: 1,
             change: SwapChange::Restore { at: "/mcp/x".into() },
             when: SwapWhen::Now,
+            args: Some(Vec::new()),
             patience: std::time::Duration::ZERO,
         };
         let mut when = restore.encode().unwrap();
@@ -5224,6 +5378,15 @@ mod tests {
                 ..
             })
         ));
+        let mut flag = restore.encode().unwrap();
+        flag[at + 1] = 2;
+        assert!(matches!(
+            SwapAsk::decode(&flag),
+            Err(WireError::Tag { what: "a flag", .. })
+        ));
+        let mut counted = restore.encode().unwrap();
+        counted[at + 2..at + 6].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(SwapAsk::decode(&counted), Err(WireError::Short));
         for answer in [
             SwapAnswer {
                 id: 7,
@@ -5270,6 +5433,8 @@ mod tests {
             SwapRefusal::Device,
             SwapRefusal::Running,
             SwapRefusal::Failed,
+            SwapRefusal::Workdir,
+            SwapRefusal::Capacity,
         ] {
             let answer = SwapAnswer {
                 id: 1,
@@ -5277,11 +5442,17 @@ mod tests {
             };
             assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
         }
+        const {
+            assert!(
+                VERSION >= 49,
+                "the channel's version 49 carries a swap's Workdir and Capacity"
+            )
+        };
         assert!(matches!(
-            SwapAnswer::decode(&[0, 0, 0, 1, 1, 9, 0, 0, 0, 0]),
+            SwapAnswer::decode(&[0, 0, 0, 1, 1, 11, 0, 0, 0, 0]),
             Err(WireError::Tag {
                 what: "a swap's refusal",
-                ..
+                tag: 11,
             })
         ));
     }
@@ -5305,13 +5476,21 @@ mod tests {
             Err((RestartRefusal::Generation, "4 asked".to_owned())),
             Err((RestartRefusal::Unsupported, "it starts once".to_owned())),
             Err((RestartRefusal::Failed, "its exec: ENOENT".to_owned())),
+            Err((
+                RestartRefusal::Workdir,
+                "Harness codex: /Users/ada/proj: errno 2".to_owned(),
+            )),
+            Err((
+                RestartRefusal::Capacity,
+                "no room for its generation 1's stdio lanes".to_owned(),
+            )),
         ] {
             let answer = RestartAnswer { id: 9, result };
             assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
         assert!(matches!(
-            RestartAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
-            Err(WireError::Tag { tag: 6, .. })
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 8, .. })
         ));
         assert!(matches!(
             RestartAnswer::decode(&[0, 0, 0, 9, 2]),
@@ -6247,6 +6426,7 @@ mod tests {
             control: Some(ControlAsk {
                 controller: [1; 32],
                 sockets: None,
+                stdio: false,
             }),
             gpu_devices: Vec::new(),
             sign_ins: Vec::new(),
@@ -6529,6 +6709,7 @@ mod tests {
             Some(ControlAsk {
                 controller: [9u8; 32],
                 sockets: None,
+                stdio: false,
             }),
             Some(ControlAsk {
                 controller: [9u8; 32],
@@ -6537,11 +6718,36 @@ mod tests {
                     lanes: 8,
                     window: 65_536,
                 }),
+                stdio: false,
+            }),
+            Some(ControlAsk {
+                controller: [9u8; 32],
+                sockets: None,
+                stdio: true,
             }),
         ] {
             let request = asked(control);
             assert_eq!(Request::decode(&request.encode().unwrap()).unwrap(), request);
         }
+        // Its members' stdio asked (version 44): the request's last byte, read as a flag, and
+        // one of another value refused by type, never read as a default.
+        let stdio = asked(Some(ControlAsk {
+            controller: [9u8; 32],
+            sockets: None,
+            stdio: true,
+        }))
+        .encode()
+        .unwrap();
+        assert_eq!(stdio.last(), Some(&1));
+        let mut bad = stdio.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert!(matches!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
+            })
+        ));
         // None asked: one byte past v13's encoding, its absence.
         let none = asked(None).encode().unwrap();
         assert_eq!(none.last(), Some(&0));

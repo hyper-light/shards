@@ -1009,6 +1009,8 @@ struct Keep<'a> {
     link_local: Vec<std::net::IpAddr>,
     /// Its microVM's own engine (D181), where its run has one.
     engine: Option<OwnEngine>,
+    /// The named volumes it mounts, held since they were opened (D281): its [`Inbox`]'s.
+    volumes: crate::volumes::Holds,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1183,6 +1185,9 @@ struct Inbox {
     /// The streams its guest's NOTICE built-ins are told on, one for each share process
     /// that tells what its host changes (D235): held while it runs.
     notices: Vec<shards_ipc::Stream>,
+    /// The named volumes it mounts and those plugged into it (D281), held until it ends, so
+    /// that no clearing of them through shards-api removes their files under it.
+    volumes: crate::volumes::Holds,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1507,8 +1512,13 @@ struct Daemon<D: Disk = Real> {
     /// ends.
     joiner_links: Mutex<HashMap<String, (String, UnixStream)>>,
     /// Each user network's members, by its ID: the endpoints of its running microVMs
-    /// (D46).
-    members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
+    /// (D46), their addresses' leases and the network's pairing (D285).
+    members: Mutex<std::collections::BTreeMap<String, networks::Joined>>,
+    /// Its runs' links and names told one member's at a time (D46), so that each network
+    /// process has its tables in the order members came and went: held across their
+    /// answers, and so never with the home's networks lock, which no process holds across
+    /// another's answer (D285).
+    telling: Mutex<()>,
     /// A microVM's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
@@ -2410,6 +2420,7 @@ impl<D: Disk> Daemon<D> {
             noticing: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
+            telling: Mutex::default(),
             events,
             settling: Mutex::default(),
             settled: Condvar::new(),
@@ -3984,6 +3995,8 @@ impl<D: Disk> Daemon<D> {
             (Some((_, name)), true) if !run.engine_nets.is_empty() => Some(name.clone()),
             _ => None,
         };
+        // Its named volumes, held from before their files are opened until it ends (D281).
+        let mut volumes = crate::volumes::Holds::default();
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
@@ -3998,7 +4011,8 @@ impl<D: Disk> Daemon<D> {
                 };
                 crate::volumes::open_for(&points, first, &crate::volumes::Store::new(&self.home), &access)
             })
-            .and_then(|opened| {
+            .and_then(|mut opened| {
+                volumes = std::mem::take(&mut opened.held);
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
                     crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
@@ -4208,6 +4222,12 @@ impl<D: Disk> Daemon<D> {
                     );
                 }
                 if joining {
+                    // A join share holds no bound (D281): its volumes are its servers' alone.
+                    if !opened.bounds.is_empty() {
+                        return Err(
+                            "a bounded volume is served to no run joining another's network (--network container:NAME): its microVM's join share holds no bound".into(),
+                        );
+                    }
                     let names = opened
                         .dirs
                         .iter()
@@ -4221,7 +4241,15 @@ impl<D: Disk> Daemon<D> {
                 crate::spec::fits(&prepared.spec)?;
                 // Copies of the volumes a microVM moved here was saved with (D176 part 6).
                 let moved = lock(&self.containers).made(&id).is_some_and(|c| c.moved);
-                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved, true)?;
+                let link = self.start_shares(
+                    threads,
+                    &id,
+                    &opened.dirs,
+                    &opened.bounds,
+                    &prepared.parent,
+                    moved,
+                    true,
+                )?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -4596,6 +4624,7 @@ impl<D: Disk> Daemon<D> {
                     token,
                     registry_env: run.registry_env.clone(),
                 }),
+                volumes,
             },
             || match &start {
                 // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
@@ -5108,12 +5137,15 @@ impl<D: Disk> Daemon<D> {
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
     /// for none. It is reaped on the followers' loop, and ends as its VM's connections
     /// close. A run's (`noticed`) tells its guest what its host changes beneath them once
-    /// it starts (D235); a visit's, which runs nothing, tells nothing.
+    /// it starts (D235); a visit's, which runs nothing, tells nothing. Each of `bounds` holds
+    /// a bounded volume's share to its bound (D281).
+    #[allow(clippy::too_many_arguments)]
     fn start_shares<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         id: &str,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         noticed: bool,
@@ -5124,7 +5156,7 @@ impl<D: Disk> Daemon<D> {
         // Each share's tag, as the VM's devices are named (vm::Config, `shards{i}`).
         let tags: Vec<String> = (0..dirs.len()).map(|i| format!("shards{i}")).collect();
         let tags = noticed.then_some(tags.as_slice());
-        let (ends, child, notices) = self.started_shares(threads, dirs, parent, moved, tags)?;
+        let (ends, child, notices) = self.started_shares(threads, dirs, bounds, parent, moved, tags)?;
         if let Some(notices) = notices {
             lock(&self.noticing).insert(id.to_string(), vec![notices]);
         }
@@ -5166,6 +5198,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
@@ -5176,6 +5209,8 @@ impl<D: Disk> Daemon<D> {
         let mut served = Vec::new();
         // The tags of those served here, whose notices it tells (D235).
         let mut served_tags: Vec<&str> = Vec::new();
+        // Each served share's place in `dirs`, by which a bound names it (D281).
+        let mut places: Vec<usize> = Vec::new();
         for (i, (dir, read_only, only)) in dirs.iter().enumerate() {
             if is_pipe(dir) {
                 ends.push(Some(
@@ -5184,6 +5219,7 @@ impl<D: Disk> Daemon<D> {
             } else {
                 ends.push(None);
                 served.push((dir, *read_only, only));
+                places.push(i);
                 if let Some(tag) = tags.and_then(|t| t.get(i)) {
                     served_tags.push(tag);
                 }
@@ -5216,6 +5252,14 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
+        // Each bounded volume's share held to its bound (D281), by its place among those
+        // served here.
+        let bounded = crate::share::bound_args(
+            bounds
+                .iter()
+                .filter_map(|b| Some((places.iter().position(|p| *p == b.share)?, b))),
+        );
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in &served {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -5258,6 +5302,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
@@ -5279,6 +5324,9 @@ impl<D: Disk> Daemon<D> {
             }
             _ => None,
         };
+        // Each bounded volume's share held to its bound (D281), by its place in `dirs`.
+        let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -6070,6 +6118,7 @@ impl<D: Disk> Daemon<D> {
             mac: _,
             link_local: _,
             engine,
+            volumes,
         } = keep;
         // A pool's run keeps its pool in use until it ends (`shards_api::demand`).
         if let Some(key) = &ready.pool
@@ -6161,6 +6210,7 @@ impl<D: Disk> Daemon<D> {
             saved_as: None,
             engine,
             notices: Vec::new(),
+            volumes,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -7146,6 +7196,8 @@ impl<D: Disk> Daemon<D> {
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
+        // Its named volumes let go of (D281): their clearing is refused no more for its sake.
+        inbox.volumes = crate::volumes::Holds::default();
         // On the host's network (D124): the host's ports of its guest's binds let go, but
         // its joiners', which go as each of them ends (D119).
         if inbox.joiners == 0 {
@@ -10276,18 +10328,42 @@ mod tests {
     }
 
     /// A process that does nothing for `secs` seconds and ends, standing in for a VM or a
-    /// network process: `sleep` on Unix; on Windows cmd's pings of the loopback, a second
-    /// apart (`ping -n`'s first answers at once).
+    /// network process: `sleep` on Unix; on Windows this test binary running `asleep` alone.
+    /// cmd's pings of the loopback stood in there before, and ping wakes its thread pool
+    /// between its echoes: a judge's looks a W* of 100 ms apart found its cycles grown, and
+    /// its pool's threads switched, in every other window, so a handoff or a join share
+    /// waiting on it went unrefused for 10 s and a network process of it unended (CI runs
+    /// 43748291795 and 43876891053, x86_64 Windows, `SHARDS_JUDGE_TRACE`).
     fn sleeper(secs: u64) -> shards_ipc::Child {
+        let secs = secs.to_string();
         #[cfg(unix)]
-        let (program, args) = (PathBuf::from("/bin/sleep"), vec![secs.to_string()]);
+        let started = shards_ipc::spawn(Path::new("/bin/sleep"), &[OsStr::new(&secs)], &[], false);
         #[cfg(windows)]
-        let (program, args) = (
-            Path::new(&std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe"),
-            vec!["/c".to_string(), format!("ping -n {} 127.0.0.1 >nul", secs + 1)],
+        let started = shards_ipc::spawn_with(
+            &std::env::current_exe().unwrap(),
+            &[
+                "daemon::tests::asleep",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ]
+            .map(OsStr::new),
+            &[],
+            false,
+            &[("SHARDS_ASLEEP", OsStr::new(&secs))],
         );
-        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        shards_ipc::spawn(&program, &args, &[], false).unwrap()
+        started.unwrap()
+    }
+
+    /// [`sleeper`]'s process on Windows: asleep for the seconds its `SHARDS_ASLEEP` says.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a process of its own for sleeper, which runs it"]
+    fn asleep() {
+        let Some(secs) = std::env::var("SHARDS_ASLEEP").ok().and_then(|s| s.parse().ok()) else {
+            return;
+        };
+        std::thread::sleep(Duration::from_secs(secs));
     }
 
     /// A starting VM progresses by more CPU than an idle microVM takes in as long (PM M357):
@@ -11391,6 +11467,7 @@ mod tests {
                         mac: None,
                         link_local: Vec::new(),
                         engine: None,
+                        volumes: Default::default(),
                     },
                     acquire,
                 )?;
@@ -11433,8 +11510,8 @@ mod tests {
             daemon.recording.end();
             daemon.followers.end();
             // What its VMs said as the test ended, which the followers' loop may have ended
-            // before it took (a loaded host's): taken, so that each run that ended lets go of
-            // the exec connections it held for its VM (M24), whose askers wait on them.
+            // before it took (a loaded host's): taken, and each run it left lets go of the
+            // exec connections it held for its VM (M24), whose askers wait on them.
             daemon.take_left();
             // A run's thread waiting for its end, which no follower takes now, returns.
             drop(lock(&daemon.runs));
@@ -11844,6 +11921,7 @@ mod tests {
                             mac: None,
                             link_local: Vec::new(),
                             engine: None,
+                            volumes: Default::default(),
                         },
                         || received(&offered).map_err(|e| format!("no warm VM: {e:?}")),
                     )
@@ -14273,10 +14351,14 @@ mod tests {
     /// its kill acknowledged, and whose give-back then follows its VM's liveness (the
     /// give-back's kind cold) is still asked by the round opened next, not counted as one
     /// that gave nothing. Here `a` (600 MiB, under a high of 500 and a max of 1000) has its
-    /// room refused in round 1 and its give-back held; `b` (500 MiB) joins, opening round 2,
-    /// and gives nothing; `a` then gives 1 MiB back in round 2. Red with the room's refusal
-    /// left standing through the give-back: round 2 counted `a` as nothing given, its group
-    /// past its max, and OOM-killed `a` before its round-2 word came.
+    /// room refused in round 1 and its give-back held, and the pass after round 1's verdict
+    /// opens round 2; `b` (500 MiB) joins, its group past its max, and gives nothing
+    /// whenever asked (a round asks the members it began with: one joining it is told its
+    /// room at each pass until the round after asks it); `a` then gives 100 MiB back in
+    /// round 2, its group within its max again, so the round after, its room to `a`
+    /// unanswered, stops nothing. Red with the room's refusal left standing through the
+    /// give-back: round 2 counted `a` as nothing given, its group past its max, and
+    /// OOM-killed `a` before its round-2 word came.
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     fn a_refused_room_is_not_the_next_rounds_verdict() {
@@ -14299,7 +14381,7 @@ mod tests {
                     .unwrap()
                     .builtin
             };
-            let (a, _a_run, a_vm, _) = running_under(t, "first", "g", mib(600));
+            let (a, _a_run, a_vm, a_pid) = running_under(t, "first", "g", mib(600));
             // Round 1: its room never answered, refused by its own judge, the kill answered.
             let room = heard_whole(&a_vm);
             assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
@@ -14311,37 +14393,40 @@ mod tests {
             // Its give-back of round 1, held: its kind cold, it follows liveness alone.
             let give = heard_whole(&a_vm);
             assert_eq!(builtin(&give), shards_abi::run::builtin::RECLAIM);
-            let (b, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
+            let (_, _b_run, b_vm, _) = running_under(t, "second", "g", mib(500));
             let _ends = Ends {
                 held: None,
                 vms: vec![(&a_vm, 0), (&b_vm, 0)],
             };
-            // Round 2: b gives nothing.
-            for (said, what) in [
-                (&b"0"[..], shards_abi::run::builtin::ROOM),
-                (b"0 0\n", shards_abi::run::builtin::RECLAIM),
-            ] {
-                let m = heard_whole(&b_vm);
-                assert_eq!(builtin(&m), what);
-                answer_exec(&m, said, 0);
-            }
-            t.until("b's give-back taken", |d| !d.watching.giving(&b));
-            // a's give-back of round 1 answered, then its words of round 2: 1 MiB given back.
-            answer_exec(&give, b"0 0\n", 0);
-            drop(give);
-            for (said, what) in [
-                (&b"0"[..], shards_abi::run::builtin::ROOM),
-                (b"1048576 0\n", shards_abi::run::builtin::RECLAIM),
-            ] {
-                let m = heard_whole(&a_vm);
-                assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
-                answer_exec(&m, said, 0);
-            }
-            t.until("a's give-back taken", |d| !d.watching.giving(&a));
-            assert!(
-                !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
-                "a, asked in round 2 and giving back, was OOM-killed"
-            );
+            // b's room, told at the pass that took it in: its group past its max before a's
+            // give-back is answered. Its words from there on a thread that plays its guest.
+            let room = heard_whole(&b_vm);
+            assert_eq!(builtin(&room), shards_abi::run::builtin::ROOM);
+            answer_exec(&room, b"0", 0);
+            drop(room);
+            let done = AtomicBool::new(false);
+            std::thread::scope(|s| {
+                let _done = Done(&done);
+                s.spawn(|| answering(&b_vm, &done));
+                // a's give-back of round 1 answered, then its words of round 2: 100 MiB given
+                // back, which its VM process holds no more.
+                t.daemon.groups.play(a_pid, mib(500));
+                answer_exec(&give, b"0 0\n", 0);
+                drop(give);
+                for (said, what) in [
+                    (&b"0"[..], shards_abi::run::builtin::ROOM),
+                    (b"104857600 0\n", shards_abi::run::builtin::RECLAIM),
+                ] {
+                    let m = heard_whole(&a_vm);
+                    assert_eq!(builtin(&m), what, "a was not asked its round-2 word");
+                    answer_exec(&m, said, 0);
+                }
+                t.until("a's give-back taken", |d| !d.watching.giving(&a));
+                assert!(
+                    !lock(&t.daemon.containers).get(&a).is_some_and(|c| c.oom_killed),
+                    "a, asked in round 2 and giving back, was OOM-killed"
+                );
+            });
         });
     }
 
@@ -14493,17 +14578,19 @@ mod tests {
         });
     }
 
-    /// A run whose end its followers' loop had not taken as it ended, with its test, ends
-    /// then as the loop would have ended it: the daemon lets go of the exec connection it
-    /// handed its VM and held until taken (M24), and the thread waiting on the exec returns.
-    /// Red with a test's end that left the run followed by none: the daemon's copy held the
-    /// exec's connection open, its asker waited on, and the tests' watchdog aborted them, as
-    /// a group's word to a member whose played VM answered no more did under load
-    /// (a_joiner_and_its_provider_in_one_group_count_their_vm_process_once, CI 43496145972).
+    /// A run whose end its followers' loop had not taken as it ended lets go, with its test,
+    /// of the exec connection the daemon handed its VM and held until taken (M24), and the
+    /// thread waiting on the exec returns, whether its VM's end has come or not: here its
+    /// VM's socket outlives the test, as a copy of it does in a child another test's thread
+    /// spawns, until that child's exec (PM M134). Red with a test's end that left the run
+    /// followed by none: the daemon's copy held the exec's connection open, its asker waited
+    /// on, and the tests' watchdog aborted them, as a group's word to a member whose played
+    /// VM answered no more did under load (CI 43496145972); and again where its end was looked
+    /// for once, as the test ended, and such a copy hid it (the whole suite, b240f4322).
     #[test]
     fn a_run_its_followers_left_lets_go_of_the_execs_handed_its_vm() {
         let t = Test::new("left-run");
-        t.run(|t| {
+        let _held = t.run(|t| {
             let id = t.create("left");
             let starting = t.start(&id);
             let (ready, vm) = t.warm_vm(None);
@@ -14530,7 +14617,7 @@ mod tests {
             // Its followers' loop ends before its VM's end comes.
             t.daemon.followers.end();
             t.until("its followers' loop woke to end", |d| d.followers.ended_awake());
-            drop(vm);
+            vm
         });
     }
 
@@ -15370,6 +15457,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: None,
+                    volumes: Default::default(),
                 },
                 || ready.take().ok_or_else(|| "no warm VM".to_string()),
             )?;
@@ -15492,6 +15580,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -15544,6 +15633,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -15559,6 +15649,92 @@ mod tests {
             );
             say(&vm, kind::DONE, &[0]);
             assert_eq!(ask(), Ok(()));
+        });
+    }
+
+    /// The daemon's runs on a network have their addresses leased from the home's records,
+    /// held while each runs, and the network paired by the daemon from its first run's join
+    /// to its last's leaving (D285): a network another process pairs refuses them by that
+    /// cause, and the daemon's pairing refuses that process.
+    #[test]
+    fn a_networks_runs_are_leased_and_paired_by_one_process() {
+        use crate::networks::leases::{Leases, Refused, hold};
+        let t = Test::new("net-leases");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.4.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            // Another process's pairing, the home's lock let go before the daemon asks.
+            let held = hold(&t.daemon.home).unwrap();
+            let elsewhere = leases.pair(&held).unwrap();
+            drop(held);
+            let id = t.create("member");
+            assert_eq!(
+                t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap_err(),
+                "failed to set up container networking: network n: another process links its members"
+            );
+            drop(elsewhere);
+            let (_, member) = t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap();
+            assert_eq!(member.ip, std::net::Ipv4Addr::new(10, 78, 4, 2));
+            let held = hold(&t.daemon.home).unwrap();
+            assert_eq!(
+                leases.addresses(&held).unwrap(),
+                vec![(member.ip, Some(id.clone()))]
+            );
+            assert_eq!(leases.pair(&held).unwrap_err(), Refused::PairedElsewhere);
+            drop(held);
+            t.daemon.leave_network(&id);
+            let held = hold(&t.daemon.home).unwrap();
+            assert!(
+                leases.addresses(&held).unwrap().is_empty(),
+                "its address was kept"
+            );
+            assert!(leases.pair(&held).is_ok(), "the daemon kept the network paired");
+        });
+    }
+
+    /// A network another process's run holds an address of (D285) is in use, as one of the
+    /// daemon's runs keeps it: `network rm` refuses it by that cause and inspect lists that
+    /// run by its ID and address; its lease let go, the network and its leases go.
+    #[test]
+    fn a_network_with_another_processs_run_on_it_stays() {
+        use crate::networks::leases::{Leases, hold};
+        let t = Test::new("net-elsewhere");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.5.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            let other = "c".repeat(64);
+            let held = hold(&t.daemon.home).unwrap();
+            let lease = leases
+                .take(&held, network.pools.first().unwrap(), None, &other)
+                .unwrap();
+            drop(held);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 1, "{removed:?}");
+            assert!(
+                removed
+                    .2
+                    .contains("shards: cannot remove network n: another process's runs are on it"),
+                "{removed:?}"
+            );
+            let inspected = t.ask(&["network", "inspect", "n"]);
+            assert!(
+                inspected.1.contains(&other) && inspected.1.contains("10.78.5.2/24"),
+                "{inspected:?}"
+            );
+            drop(lease);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 0, "{removed:?}");
+            assert!(
+                !t.daemon
+                    .home
+                    .join("networks")
+                    .join(format!("{}.leases", network.id))
+                    .exists()
+            );
         });
     }
 
@@ -16268,6 +16444,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: engine.clone(),
+                    volumes: Default::default(),
                 };
                 let _inbox = t.daemon.register(ready, &id, keep);
                 say(&vm, kind::STARTED, &[]);
@@ -16343,6 +16520,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

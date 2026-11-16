@@ -1,0 +1,7 @@
+KINGAGENT_PERMISSION_PRESET_AUTOAGENT_PERMISSION_PRESET_NONEfailed to call tokeninfo: %wtokeninfo returned status %dAGY_BROWSER_ACTIVE_PORT_FILE
+at tool choice option: %vinvalid or truncated WebM containerhttps://oauth2.googleapis.com/tokenoauth2/google: no credentials foundmissing 'type' field in c
+el %q is not offered for model %qhttps://www.googleapis.com/oauth2/v2/userinfoerror getting token source from auth providerfailed to creat
+https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=%sWarning: Failed to stat shell profile target
+roto.ChatMessagePrompts..ClientSecret.json:"client_secret"..RefreshToken.json:"refresh_token"..TokenURLExternal.json:"token_url"..RedirectURIs.json:"redi
+equired"..OfParamClientSecretBasic.json:",omitzero,inline"..RefreshToken#json:"refresh_token" api:"required".0*openai.CredentialAuthRotateParamMcpOAuthRe
+# archive sha256 5000036342e1269ff91624a9eb49890613e8b88ab24de22081546f5ec625c654: the pin's

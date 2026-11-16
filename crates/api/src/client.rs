@@ -1258,26 +1258,14 @@ impl HandshakeError {
             Self::Io {
                 phase: HandshakePhase::Dial,
                 kind,
-                code,
-            } => {
-                matches!(
-                    kind,
-                    io::ErrorKind::NotFound
-                        | io::ErrorKind::ConnectionRefused
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                ) || {
-                    #[cfg(windows)]
-                    {
-                        *code == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS)
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        let _ = code;
-                        false
-                    }
-                }
-            }
+                ..
+            } => matches!(
+                kind,
+                io::ErrorKind::NotFound
+                    | io::ErrorKind::ConnectionRefused
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::TimedOut
+            ),
             Self::Io {
                 phase: HandshakePhase::Write | HandshakePhase::Read,
                 ..
@@ -3614,15 +3602,55 @@ mod tests {
         }
     }
 
-    /// A listener at `path` for a stand-in of a managed guest's VM process, as each OS binds
-    /// one.
+    /// A stand-in's listener for a guest's VM process (a managed guest's, a borrowed connect's
+    /// fixture), as each OS listens: a socket; on Windows a pair of pipes named at its path
+    /// (D272).
     #[cfg(unix)]
-    fn rate_listener(path: &Path) -> std::os::unix::net::UnixListener {
-        std::os::unix::net::UnixListener::bind(path).unwrap()
+    pub(super) type StandIn = std::os::unix::net::UnixListener;
+    #[cfg(windows)]
+    pub(super) type StandIn = shards_ipc::VsockListener;
+
+    /// A stand-in's side of a dial: its socket; on Windows its client's two pipes.
+    #[cfg(unix)]
+    pub(super) type Dial = std::os::unix::net::UnixStream;
+    #[cfg(windows)]
+    pub(super) type Dial = PipeDial;
+
+    /// A stand-in's listener at `path`.
+    pub(super) fn stand_in_listener(path: &Path) -> StandIn {
+        StandIn::bind(path).unwrap()
+    }
+
+    /// A stand-in's next dial.
+    #[cfg(unix)]
+    pub(super) fn next_dial(listener: &mut StandIn) -> Dial {
+        listener.accept().unwrap().0
     }
     #[cfg(windows)]
-    fn rate_listener(path: &Path) -> shards_afunix::UnixListener {
-        shards_afunix::UnixListener::bind(path).unwrap()
+    pub(super) fn next_dial(listener: &mut StandIn) -> Dial {
+        PipeDial(listener.accept().unwrap())
+    }
+
+    /// A stand-in's dial on Windows: its client's way up read, its way down written.
+    #[cfg(windows)]
+    pub(super) struct PipeDial(shards_ipc::VsockConn);
+
+    #[cfg(windows)]
+    impl io::Read for PipeDial {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            io::Read::read(&mut &self.0.up, buf)
+        }
+    }
+
+    #[cfg(windows)]
+    impl io::Write for PipeDial {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            io::Write::write(&mut &self.0.down, buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// A stand-in VM process at `path` (D255): for each of `answers` in turn, takes one dial,
@@ -3633,11 +3661,11 @@ mod tests {
         answers: Vec<Option<&'static [u8]>>,
     ) -> std::thread::JoinHandle<Vec<Vec<u8>>> {
         use std::io::{Read as _, Write as _};
-        let listener = rate_listener(path);
+        let mut listener = stand_in_listener(path);
         std::thread::spawn(move || {
             let mut asks = Vec::new();
             for answer in answers {
-                let (mut dial, _) = listener.accept().unwrap();
+                let mut dial = next_dial(&mut listener);
                 let mut line = Vec::new();
                 let mut byte = [0u8; 1];
                 while line.last() != Some(&b'\n') {
@@ -3710,7 +3738,7 @@ mod tests {
     fn a_managed_rate_unanswered_within_its_patience_is_refused() {
         let dir = shards_testdir::TempDir::new("api-rate-late").unwrap();
         let socket = dir.join("v");
-        let listener = rate_listener(&socket);
+        let listener = stand_in_listener(&socket);
         let (guest, _native) = managed_model_at(false, socket);
         let asked = guest.rate(std::num::NonZeroU64::new(250), Duration::ZERO);
         assert!(
@@ -3883,7 +3911,7 @@ mod tests {
     fn a_managed_use_unanswered_or_of_an_ended_guest_is_refused() {
         let dir = shards_testdir::TempDir::new("api-use-late").unwrap();
         let socket = dir.join("v");
-        let listener = rate_listener(&socket);
+        let listener = stand_in_listener(&socket);
         let (guest, native) = managed_model_at(false, socket);
         let asked = guest.host_use(Duration::ZERO);
         assert!(
@@ -5228,9 +5256,9 @@ mod tests {
     }
 
     /// A listener at `path` whose queue is full and which accepts none, with what holds it so:
-    /// on Unix its backlog cut to none (listen(2) again) and one connection queued, which
-    /// Linux and macOS each take past a backlog of none; on Windows a backlog of one and
-    /// connections until afunix.sys refuses one (WSAENOBUFS, after five: PM M205).
+    /// its backlog cut to none (listen(2) again) and one connection queued, which Linux and
+    /// macOS each take past a backlog of none. On Windows a guest's vsock is two pipes (D272):
+    /// its listener's one pair, which another client has opened.
     #[cfg(unix)]
     fn a_full_listener(path: &Path) -> Vec<Box<dyn std::any::Any + Send>> {
         use std::os::fd::AsRawFd as _;
@@ -5243,21 +5271,17 @@ mod tests {
 
     #[cfg(windows)]
     fn a_full_listener(path: &Path) -> Vec<Box<dyn std::any::Any + Send>> {
-        let listener = shards_afunix::UnixListener::bound(path).unwrap();
-        // SAFETY: listen of the bound socket `listener` holds, its backlog one.
-        let listening = unsafe { windows_sys::Win32::Networking::WinSock::listen(listener.raw(), 1) };
-        assert_eq!(listening, 0);
-        let mut held: Vec<Box<dyn std::any::Any + Send>> = vec![Box::new(listener)];
-        while let Ok(queued) = shards_afunix::UnixStream::connect(path) {
-            held.push(Box::new(queued));
-        }
-        held
+        let listener = stand_in_listener(path);
+        let holder = shards_ipc::vsock_open(path, None).unwrap();
+        vec![Box::new(listener), Box::new(holder)]
     }
 
     /// A dial to a socket whose listener's queue is full waits no longer than its patience
     /// and is asked again within it, refused `Again`, as a guest whose vsock takes no
     /// connection yet is: Linux's blocking connect(2) waited for room for ever, and Windows'
-    /// WSAENOBUFS (PM M205) was taken for a refusal (D215).
+    /// WSAENOBUFS (PM M205) was taken for a refusal (D215). A full socket refuses its dial at
+    /// once, so a dial expired there had a patience it did not fit in; a pair another client
+    /// holds is waited for to the dial's deadline (D272), so its expiry is the answer there.
     #[test]
     fn a_dial_to_a_full_listener_is_asked_again_within_its_patience() {
         use crate::while_runs::Reached;
@@ -5271,6 +5295,7 @@ mod tests {
             let mut cost = Duration::ZERO;
             Reached::Done(
                 match handshake_until(&path, 5, HandshakeWait::Until(at), &mut cost) {
+                    #[cfg(unix)]
                     Err(HandshakeError::Expired {
                         phase: HandshakePhase::Dial,
                     }) => return Reached::Sooner,

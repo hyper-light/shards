@@ -1,0 +1,11 @@
+file	source (fetched 2026-11-16 with gh api contents?ref=<commit>, or curl -L)	sha256
+pi/anthropic.ts	https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/ai/src/auth/oauth/anthropic.ts	f72cd3bdb5d4fc8cc647487a69ed38464548c397062fbc2acfcef6431c9c0b0c
+pi/openai-codex.ts	https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/ai/src/auth/oauth/openai-codex.ts	2b73b65d0a65b770708a4aead7d89c11f3656c4c2a1b055acd98a4186bab0865
+pi/auth-storage.ts	https://github.com/earendil-works/pi/blob/b4afdddf44e059c67ccf5097e5317d913521b470/packages/coding-agent/src/core/auth-storage.ts	31d78283dc5c2a1ce456d9940c34fca1f4f8050c481f3da645aeb8309df6cd45
+opencode/chatgpt.ts	https://github.com/anomalyco/opencode/blob/fedc6f208aa2bd54c1019227214568083f6380ad/packages/core/src/plugin/provider/chatgpt.ts	1448985473a9d5ae23cb5cf9ec6dc4583ad810d77279401a17d26a9f6246f0eb
+goose/chatgpt_codex.rs	https://github.com/aaif-goose/goose/blob/5d03ef6ed07ba59826328f1aff18d9a754ff8ad2/crates/goose/src/providers/chatgpt_codex.rs	44be5dbaa90f494c7f5d7c81b0a3d797ba7f3543190f58670ebac9d298c5d90f
+goose/gemini_oauth.rs	https://github.com/aaif-goose/goose/blob/5d03ef6ed07ba59826328f1aff18d9a754ff8ad2/crates/goose/src/providers/gemini_oauth.rs	ea94554d9ab64014ffb0c1100a3254b4293574fbec22ac4158c72d9638b1e8ca
+goose/paths.rs	https://github.com/aaif-goose/goose/blob/5d03ef6ed07ba59826328f1aff18d9a754ff8ad2/crates/goose/src/config/paths.rs	5df20511b6b564b58fc38a7d5ce842aedb5922d68905d6d0db64f7acf4ebe4b8
+docs/amp-cli.md	https://ampcode.com/docs/markdown/cli	2aac3c76c5f4f8c9b985ae2ec37832202cb8bd7b64ffed646c3007876a14e597
+docs/amp-cli-execute-mode.md	https://ampcode.com/docs/markdown/cli/execute-mode	6e1f2a2e2b9f99d3f794a13f7cf2e757ccfacdd6a08f7cdf235c08c8e9c78784
+pi/anthropic-messages.ts	https://raw.githubusercontent.com/earendil-works/pi/b4afdddf44e059c67ccf5097e5317d913521b470/packages/ai/src/api/anthropic-messages.ts	08b89ee278cffe772319886b62636987c1dd3b96fe847ec651aa511f6a83fdb8

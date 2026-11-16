@@ -289,6 +289,7 @@ pub fn main(device: &str, template: bool) -> ! {
             crate::setup::filter_named(&spec.setup, b"domains-seccomp-none="),
         ];
         let declared = declared.map_or_else(|| crate::domains::read(&spec.setup), Ok);
+        let mut unentered = None;
         match declared.and_then(|(all, domains, pairs)| {
             workload.capture = crate::capture::Capture::prepare(
                 &spec.setup,
@@ -311,7 +312,7 @@ pub fn main(device: &str, template: bool) -> ! {
             {
                 return Err("a member's input is asked for where no managed output is".into());
             }
-            crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
+            crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup, &mut unentered)
         }) {
             Ok(domains) if domains.is_empty() => {}
             Ok(domains) => match crate::domains::Memory::watch() {
@@ -328,6 +329,11 @@ pub fn main(device: &str, template: bool) -> ! {
             Err(e) => {
                 // SAFETY: kill(2) of the workload, our own child: the run fails whole.
                 unsafe { libc::kill(workload.pid, libc::SIGKILL) };
+                // A member that could not enter its working directory, told typed before the
+                // words that fail the run (D277).
+                if let Some(told) = unentered {
+                    let _ = send(&conn, kind::WORKDIR_UNENTERED, &told.encode());
+                }
                 return Err(setup_failed(e));
             }
         }
@@ -3842,6 +3848,15 @@ fn builtin(
                 .map_err(|e| (e.to_string(), failed_status(kind, &e)))
         })
     });
+    // The run's place on a network shared by runs and its members' grants there, as its host
+    // says (D285): init's own state, as D278's, done here likewise.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::SHARED).then(|| {
+            crate::egress::shared::change(args)
+                .map(|()| String::new())
+                .map_err(|e| (e.to_string(), failed_status(kind, &e)))
+        })
+    });
     // What reads the host's stdin: unpacking an archive, and the host's notices (D235).
     let input = if matches!(kind, run::builtin::EXTRACT | run::builtin::NOTICE) {
         Some(pipe()?)
@@ -3860,7 +3875,7 @@ fn builtin(
                 Ok(text) => (File::from(stdout_w), text, 0),
                 Err((why, code)) => (File::from(stderr_w), why, code),
             };
-            if !(text.is_empty() && kind == run::builtin::EGRESS) {
+            if !(text.is_empty() && matches!(kind, run::builtin::EGRESS | run::builtin::SHARED)) {
                 let _ = writeln!(to, "{text}");
             }
             // SAFETY: _exit(2) ends the child without running init's exit paths.
@@ -6580,12 +6595,25 @@ fn resize(fd: RawFd, size: Size) {
 
 /// A built-in's exit status for its failure `e`: 1, but where its host tells the cause apart by
 /// its kind: a device in use (`DEVICE_BUSY`, D235); a member whose command has ended or that
-/// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`).
+/// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`); a member's grants refused (`EGRESS_*`,
+/// D278; `SHARED_*`, D285).
 fn failed_status(kind: u8, e: &io::Error) -> i32 {
     let unsignalled = e.get_ref().and_then(|inner| inner.downcast_ref::<Unsignalled>());
     let refused = e
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<crate::egress::Refused>());
+    let unshared = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::egress::shared::Refused>());
+    if let (run::builtin::SHARED, Some(why)) = (kind, unshared) {
+        use crate::egress::shared::Refused;
+        return i32::from(match why {
+            Refused::Unknown(_) => run::builtin::SHARED_UNKNOWN,
+            Refused::Past(_) => run::builtin::SHARED_PAST,
+            Refused::Readdressed(_) => run::builtin::SHARED_READDRESSED,
+            Refused::Overlaps(_) => run::builtin::SHARED_OVERLAPS,
+        });
+    }
     match (kind, unsignalled, refused) {
         (run::builtin::DEVICE, _, _) if e.kind() == io::ErrorKind::ResourceBusy => {
             i32::from(run::builtin::DEVICE_BUSY)
@@ -6744,8 +6772,17 @@ fn next_generation(
             format!("member {} did not start in this run", start.member),
         )));
     };
-    if let Err(refused) = crate::domains::next_generation(d, &start) {
-        return answer(Some(refused));
+    // One that could not enter its working directory is answered so, typed, as its first
+    // generation's is told (D277); its words, which say more of its launch, on init's stderr.
+    let mut unentered = None;
+    if let Err(refused) = crate::domains::next_generation(d, &start, &mut unentered) {
+        return match unentered {
+            Some(told) => {
+                let _ = writeln!(io::stderr(), "shards-init: {}", refused.1);
+                StartAnswer::unentered(start.generation, &told)
+            }
+            None => answer(Some(refused)),
+        };
     }
     let reopened = match capture {
         Some(capture) => capture.reopen(start.member).map_err(|e| e.to_string()),

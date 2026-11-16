@@ -441,6 +441,58 @@ impl Drop for Charge {
     }
 }
 
+/// What a run's host is charged for one member output its endpoint serves, by D180's ledger
+/// (docs/research/measurements/managed-output/admission.md): its record twice, its VM process's
+/// capture worker's and its host's; what the endpoint sends of it unacknowledged; its control
+/// frame, each as `admitted` admits it; and `host`, its host's own record of it. Its own buffers
+/// alone: the connection it rides is charged once, as its endpoint binds ([`link_bytes`]). A
+/// daemon's run's owned output and an orchestrator's run's member output (api_run.rs, D252)
+/// alike. None where it overflows.
+pub(crate) fn output_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
+    [
+        admitted.record_bytes,
+        admitted.record_bytes,
+        shards_remote::managed::CONTROL_BYTES,
+        host,
+    ]
+    .into_iter()
+    .try_fold(admitted.transport_bytes, |sum, n| {
+        sum.checked_add(u64::try_from(n).ok()?)
+    })
+}
+
+/// What a run's host is charged for one member stdin its endpoint serves, as [`output_bytes`]
+/// counts an output: its one record; what the endpoint sends unacknowledged (its taken frames);
+/// what it holds of its owner's stream, a record's head, the record and an end; and `host`, its
+/// host's own record of it. Its own buffers alone, as an output's. None where it overflows.
+pub(crate) fn input_bytes(admitted: &Admitted, host: usize) -> Option<u64> {
+    let owners = input::RECORD_HEAD
+        .checked_add(admitted.record_bytes)?
+        .checked_add(input::END_BYTES)?;
+    [admitted.record_bytes, owners, host]
+        .into_iter()
+        .try_fold(admitted.transport_bytes, |sum, n| {
+            sum.checked_add(u64::try_from(n).ok()?)
+        })
+}
+
+/// What a run's host is charged for an endpoint's link, whatever lanes it carries, as it binds
+/// the endpoint (D252): a TLS handshake's crypto for each of the `connections` it holds at once
+/// (D180's ceiling, RFC 8446 §4's largest handshake message), and a datagram each way, its
+/// driver's, as `admitted` admits them. None where it overflows.
+pub(crate) fn link_bytes(admitted: &Admitted, connections: usize) -> Option<u64> {
+    let handshakes = admitted.handshake_bytes.checked_mul(connections)?;
+    [handshakes, admitted.datagram_bytes, admitted.datagram_bytes]
+        .into_iter()
+        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
+}
+
+/// What output `producer`'s record holds past the `record` bytes it was admitted, its
+/// allocation's own, charged beside [`output_bytes`] once its stream is made.
+pub(crate) fn storage_excess(producer: &Producer, record: usize) -> io::Result<u64> {
+    u64::try_from(producer.storage_capacity().saturating_sub(record)).map_err(io::Error::other)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Terminal {
     End,
@@ -715,13 +767,15 @@ struct Agent {
 /// The run's agent-control endpoint (D238, plan step 11): a key of the microVM's own, made for
 /// this run as its scope begins, which no template carries and only the endpoint holds; serving
 /// `outputs` and `inputs` as lanes of one connection to the run's owner `key` alone, and the
-/// execs its owner asks for in its members with `execs`' streams, bound on loopback as step 5's
+/// execs its owner asks for in its members with `execs`' streams, and naming in its report the
+/// members its run gave an MCP bridge (`bridges`, D254), bound on loopback as step 5's
 /// endpoints are.
 fn bind_agent(
     key: Fingerprint,
     outputs: &[(Scope, Admitted)],
     inputs: &[(input::Scope, Admitted)],
     execs: control::exec::Admissions,
+    bridges: &[u32],
 ) -> Result<(control::Endpoint, control::Served), Failure> {
     let vm = identity::Identity::generate().map_err(|e| Failure::Endpoint(e.into()))?;
     control::Endpoint::bind(
@@ -733,6 +787,7 @@ fn bind_agent(
             inputs,
             execs: Some(execs),
             sockets: None,
+            bridges,
         },
     )
     .map_err(Failure::Endpoint)
@@ -927,20 +982,23 @@ impl Input {
 /// `STDIN` frame, and its end as an empty one, which init writes to the member's stdin
 /// exactly; told each is in the connection, the endpoint takes the next. A record the
 /// connection refuses is not delivered: the member's init tells its input's end, which
-/// [`Outputs::input_ended`] gives the endpoint.
-fn relay_input(input: &Input, relay: &input::Relay) {
+/// [`Outputs::input_ended`] gives the endpoint. `wait` gives the member's input connection
+/// once it has come, none where it will not, and `close` ends it, so that a record held for a
+/// member that does not read lets its relay go: a daemon's run's ([`Input`]) and an
+/// orchestrator's run host's (api_run.rs, D252) alike.
+pub(crate) fn relay_input(relay: &input::Relay, wait: &dyn Fn() -> Option<Stream>, close: &dyn Fn()) {
     let mut guest: Option<Stream> = None;
     loop {
         match relay.next() {
             input::Next::Record { bytes, .. } => {
                 if guest.is_none() {
-                    guest = input.wait();
+                    guest = wait();
                 }
                 let Some(conn) = guest.as_ref() else {
                     continue;
                 };
                 let Ok(len) = u32::try_from(bytes.len()) else {
-                    input.close();
+                    close();
                     continue;
                 };
                 let header = run::header(run::kind::STDIN, len);
@@ -954,15 +1012,15 @@ fn relay_input(input: &Input, relay: &input::Relay) {
             }
             input::Next::End => {
                 if guest.is_none() {
-                    guest = input.wait();
+                    guest = wait();
                 }
                 if let Some(conn) = guest.as_ref() {
                     let _ = (&*conn).write_all(&run::header(run::kind::STDIN, 0));
                 }
             }
-            input::Next::Abort(_) => input.close(),
+            input::Next::Abort(_) => close(),
             input::Next::Gone => {
-                input.close();
+                close();
                 return;
             }
         }
@@ -1570,19 +1628,20 @@ impl<D: Disk> Daemon<D> {
         let transport = capacity
             .checked_add(shards_remote::managed::DATA_HEAD)
             .ok_or_else(|| io::Error::other("capture window overflow"))?;
-        let per_channel = [
-            capacity,
-            capacity,
-            transport,
-            HANDSHAKE_BYTES,
-            shards_remote::managed::CONTROL_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            size_of::<Output>(),
-        ]
-        .into_iter()
-        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
-        .ok_or_else(|| io::Error::other("capture reservation overflow"))?;
+        let admitted = Admitted {
+            record_bytes: capacity,
+            transport_bytes: u64::try_from(transport).map_err(io::Error::other)?,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+        };
+        let input_admitted = Admitted {
+            record_bytes: INPUT_ROOM,
+            transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
+            handshake_bytes: HANDSHAKE_BYTES,
+            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
+        };
+        let per_channel = output_bytes(&admitted, size_of::<Output>())
+            .ok_or_else(|| io::Error::other("capture reservation overflow"))?;
         let structural = count
             .checked_mul(
                 size_of::<CreditSlot>()
@@ -1597,19 +1656,10 @@ impl<D: Disk> Daemon<D> {
             })
             .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(|| io::Error::other("capture structure overflow"))?;
-        // Each input: its one record, what its endpoint sends and holds of its owner's stream,
-        // its handshake and datagrams, and its state.
-        let per_input = [
-            INPUT_ROOM,
-            input::TAKEN_BYTES,
-            input::RECORD_HEAD + INPUT_ROOM + input::END_BYTES,
-            HANDSHAKE_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
-            shards_remote::managed::DATAGRAM_BYTES,
+        let per_input = input_bytes(
+            &input_admitted,
             size_of::<Input>() + size_of::<Option<Arc<Input>>>(),
-        ]
-        .into_iter()
-        .try_fold(0u64, |sum, n| sum.checked_add(u64::try_from(n).ok()?))
+        )
         .ok_or_else(|| io::Error::other("input reservation overflow"))?;
         let reservation = per_channel
             .checked_mul(u64::try_from(active_count).map_err(io::Error::other)?)
@@ -1622,18 +1672,6 @@ impl<D: Disk> Daemon<D> {
         let dir = lock(&self.containers).dir(id);
         let generation = generation(&dir)?;
         let run = RunId(Sha256::digest(id.as_bytes()).into());
-        let admitted = Admitted {
-            record_bytes: capacity,
-            transport_bytes: u64::try_from(transport).map_err(io::Error::other)?,
-            handshake_bytes: HANDSHAKE_BYTES,
-            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-        };
-        let input_admitted = Admitted {
-            record_bytes: INPUT_ROOM,
-            transport_bytes: u64::try_from(input::TAKEN_BYTES).map_err(io::Error::other)?,
-            handshake_bytes: HANDSHAKE_BYTES,
-            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
-        };
         // Each stream with where it is served, and its own endpoint where it has one; the run's
         // agent-control endpoint serves them all where the run asked for it. An owner's are its
         // members' named for it alone (`owned`, as `inputs` are): the rest the daemon drains.
@@ -1671,15 +1709,19 @@ impl<D: Disk> Daemon<D> {
                 input_lanes.push((scope, input_admitted));
             }
             let exec_admitted = exec_admissions();
-            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted)?;
-            // One driver's socket, and the waker every stream's control shares.
+            let (endpoint, served) = bind_agent(key, &lanes, &input_lanes, exec_admitted, mcps)?;
+            // One driver's socket, and the waker every stream's control shares; and its link,
+            // each connection's handshake once, whatever lanes it carries (D252).
             let mut kernel = endpoint.kernel_buffer_bytes().map_err(Failure::Endpoint)?;
             if let Some((_, control)) = served.outputs.first() {
                 kernel = kernel
                     .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
                     .ok_or_else(|| io::Error::other("agent control kernel queue overflow"))?;
             }
-            charge.grow(kernel)?;
+            let held = link_bytes(&endpoint.link(), control::CONNECTIONS)
+                .and_then(|link| link.checked_add(kernel))
+                .ok_or_else(|| io::Error::other("agent control link overflow"))?;
+            charge.grow(held)?;
             let control::Served {
                 outputs: served_outputs,
                 inputs: served_inputs,
@@ -1688,10 +1730,12 @@ impl<D: Disk> Daemon<D> {
                 members: member_lanes,
                 // A daemon's run asks no socket lane (D251): its endpoint refuses each.
                 sockets: _,
+                // A daemon's run starts again whole, under an endpoint of its own: none of its
+                // members' streams has a next generation on this one.
+                generations: _,
             } = served;
             for ((scope, _), (producer, control)) in lanes.into_iter().zip(served_outputs) {
-                let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
-                    .map_err(io::Error::other)?;
+                let excess = storage_excess(&producer, capacity)?;
                 if excess > 0 {
                     charge.grow(excess)?;
                 }
@@ -1707,6 +1751,11 @@ impl<D: Disk> Daemon<D> {
                 member_lanes,
             ));
         } else {
+            // Each stream's endpoint is a connection of its own, its handshake its own (D252).
+            let output_link = link_bytes(&admitted, shards_remote::managed::CONNECTIONS)
+                .ok_or_else(|| io::Error::other("capture link overflow"))?;
+            let input_link = link_bytes(&input_admitted, shards_remote::managed::CONNECTIONS)
+                .ok_or_else(|| io::Error::other("input link overflow"))?;
             for &member in owned {
                 for channel in [Channel::Stdout, Channel::Stderr] {
                     let scope = Scope {
@@ -1717,14 +1766,14 @@ impl<D: Disk> Daemon<D> {
                     };
                     let (endpoint, producer, control) =
                         Endpoint::bind(&identity, key, scope, admitted).map_err(Failure::Endpoint)?;
-                    let kernel = endpoint
+                    let held = endpoint
                         .kernel_buffer_bytes()
                         .map_err(io::Error::other)?
                         .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                        .and_then(|kernel| kernel.checked_add(output_link))
                         .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
-                    charge.grow(kernel)?;
-                    let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
-                        .map_err(io::Error::other)?;
+                    charge.grow(held)?;
+                    let excess = storage_excess(&producer, capacity)?;
                     if excess > 0 {
                         charge.grow(excess)?;
                     }
@@ -1739,12 +1788,13 @@ impl<D: Disk> Daemon<D> {
                 };
                 let (endpoint, relay, control) = input::Endpoint::bind(&identity, key, scope, input_admitted)
                     .map_err(Failure::Endpoint)?;
-                let kernel = endpoint
+                let held = endpoint
                     .kernel_buffer_bytes()
                     .map_err(io::Error::other)?
                     .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
+                    .and_then(|kernel| kernel.checked_add(input_link))
                     .ok_or_else(|| io::Error::other("input kernel queue overflow"))?;
-                charge.grow(kernel)?;
+                charge.grow(held)?;
                 staged_inputs.push((scope, endpoint.address, Some(endpoint), relay, control));
             }
         }
@@ -1992,7 +2042,9 @@ impl<D: Disk> Daemon<D> {
             let relaying = Arc::clone(&input);
             std::thread::Builder::new()
                 .name("managed-stdin".into())
-                .spawn_scoped(threads, move || relay_input(&relaying, &relay))?;
+                .spawn_scoped(threads, move || {
+                    relay_input(&relay, &|| relaying.wait(), &|| relaying.close())
+                })?;
             let Some(endpoint) = endpoint else {
                 continue;
             };
@@ -2967,6 +3019,55 @@ mod terminal_tests {
         assert_eq!(*lock(&budget), Some(0));
     }
 
+    /// D252: one account of a member stream an endpoint serves, a daemon's run's and an
+    /// orchestrator's run host's alike, its own buffers alone: an output's record twice, its
+    /// window, its control frame and its host's record of it; a stdin's record, its taken
+    /// frames, what it holds of its owner's stream and its host's record of it. Its endpoint's
+    /// link apart, once whatever lanes it carries: a handshake's crypto for each connection it
+    /// holds, and a datagram each way. None where they overflow.
+    #[test]
+    fn a_streams_charge_is_what_its_admission_holds_and_its_hosts_record() {
+        let admitted = Admitted {
+            record_bytes: 100,
+            transport_bytes: 113,
+            handshake_bytes: 1000,
+            datagram_bytes: 7,
+        };
+        let frame = shards_remote::managed::CONTROL_BYTES as u64;
+        assert_eq!(output_bytes(&admitted, 50), Some(113 + 2 * 100 + frame + 50));
+        let owners = (input::RECORD_HEAD + 100 + input::END_BYTES) as u64;
+        assert_eq!(input_bytes(&admitted, 50), Some(113 + 100 + owners + 50));
+        assert_eq!(
+            link_bytes(&admitted, shards_remote::managed::CONNECTIONS),
+            Some(1000 + 2 * 7)
+        );
+        assert_eq!(
+            link_bytes(&admitted, control::CONNECTIONS),
+            Some(2 * 1000 + 2 * 7)
+        );
+        // A lane holds none of its link: a larger handshake or datagram charges it no more.
+        let larger = Admitted {
+            handshake_bytes: 2000,
+            datagram_bytes: 9,
+            ..admitted
+        };
+        assert_eq!(output_bytes(&larger, 50), output_bytes(&admitted, 50));
+        assert_eq!(input_bytes(&larger, 50), input_bytes(&admitted, 50));
+        let past = Admitted {
+            transport_bytes: u64::MAX,
+            ..admitted
+        };
+        assert_eq!(output_bytes(&past, 0), None);
+        assert_eq!(input_bytes(&past, 0), None);
+        let unbounded = Admitted {
+            record_bytes: usize::MAX,
+            handshake_bytes: usize::MAX,
+            ..admitted
+        };
+        assert_eq!(input_bytes(&unbounded, 0), None);
+        assert_eq!(link_bytes(&unbounded, 2), None);
+    }
+
     #[test]
     fn known_normal_completion_survives_stop_before_the_worker_publishes() {
         for wire in [99, 102] {
@@ -3341,9 +3442,9 @@ mod tests {
         };
         let out = admitted(64);
         let (endpoint, served) =
-            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted(), &[]).unwrap();
         let (other, _other_served) =
-            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted()).unwrap();
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], exec_admitted(), &[]).unwrap();
         assert_ne!(endpoint.fingerprint, other.fingerprint, "two runs share a key");
         assert_ne!(endpoint.fingerprint, owner.fingerprint());
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -3423,7 +3524,8 @@ mod tests {
         };
         let out = admitted(64);
         let admissions = exec_admitted();
-        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (endpoint, served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
         let serving = std::thread::spawn(move || endpoint.run());
@@ -3644,7 +3746,8 @@ mod tests {
         };
         let out = admitted(64);
         let admissions = exec_admitted();
-        let (endpoint, served) = bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions).unwrap();
+        let (endpoint, served) =
+            bind_agent(owner.fingerprint(), &[(scope, out)], &[], admissions, &[]).unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
         let starts = served.execs.unwrap();
         let serving = std::thread::spawn(move || endpoint.run());
@@ -3771,7 +3874,7 @@ mod tests {
     #[test]
     fn a_runs_mcp_connections_are_held_and_paired_with_its_controllers_asks() {
         use shards_remote::control::exec::Unstarted;
-        use shards_remote::control::{Controller, Fault, Got, McpConnection, Subscriptions};
+        use shards_remote::control::{Controller, Fault, Got, Granted, McpConnection, Subscriptions};
         use std::io::{Read as _, Write as _};
         let owner = identity::Identity::generate().unwrap();
         let scope = |member| Scope {
@@ -3787,6 +3890,7 @@ mod tests {
             &[(scope(0), out), (scope(1), out)],
             &[],
             admissions,
+            &[0],
         )
         .unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -3834,7 +3938,7 @@ mod tests {
             let mut harness = held(first + 1);
             harness.write_all(request).unwrap();
             s.spawn(move || bridges.watch(first + 1));
-            let (controller, dialed) = Controller::dial(
+            let (controller, mut dialed) = Controller::dial(
                 &owner,
                 vm,
                 address,
@@ -3847,6 +3951,18 @@ mod tests {
             )
             .unwrap();
             let driver = s.spawn(move || controller.run());
+            // Its endpoint's report names member 0's bridge among its lanes (D254).
+            let report = dialed.link.report().unwrap();
+            let lanes: Vec<String> = report.lanes.iter().map(Granted::name).collect();
+            assert_eq!(
+                lanes,
+                ["control", "stdout:0", "exec", "log:run", "log:0", "mcp:0"]
+            );
+            assert_eq!(
+                report.link.controller.suite_name(),
+                Some("TLS13_AES_256_GCM_SHA384")
+            );
+            assert_eq!(report.link.endpoint, report.link.controller);
             let execs = dialed.execs.as_ref().unwrap();
             let McpConnection {
                 mut from,
@@ -3942,6 +4058,7 @@ mod tests {
             &[(scope(0), out), (scope(1), out)],
             &[],
             admissions,
+            &[],
         )
         .unwrap();
         let (vm, address) = (endpoint.fingerprint, endpoint.address);
@@ -4151,7 +4268,7 @@ mod tests {
         assert_eq!(second.read(&mut byte).unwrap(), 0);
         assert!(input.wait().is_some());
         std::thread::scope(|threads| {
-            let relaying = threads.spawn(|| relay_input(&input, &relay));
+            let relaying = threads.spawn(|| relay_input(&relay, &|| input.wait(), &|| input.close()));
             input.control.abort();
             relaying.join().unwrap();
         });

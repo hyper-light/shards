@@ -1,8 +1,9 @@
 //! `shards api-volumes`: a home's volumes as shards-api reads and clears them
 //! (docs/design/architecture.md D281; `shards_api::volumes`): `list`, each volume of the home's
-//! store and the bytes its files take, as `system df` counts them; `clear NAME`, the volume
-//! removed with its files, as `volume rm` removes one. Each answered in one frame on stdout.
-//! Not for people to run.
+//! store and the bytes its files take, as `system df` counts them, with its bound and what its
+//! files take by its bound's measure; `clear NAME`, the volume
+//! removed with its files, as `volume rm` removes one, once no run holds it. Each answered in
+//! one frame on stdout. Not for people to run.
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -37,13 +38,16 @@ pub(crate) fn command(args: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 /// Every volume of `store`, by name, each with the bytes its files take: none where they could
-/// not all be read (`Store::size`'s -1).
+/// not all be read (`Store::size`'s -1); its bound; and what its files take by that bound's
+/// measure (`Store::charge`, D281), none where they could not all be read.
 fn every(store: &Store) -> Vec<HomeVolume> {
     store
         .list()
         .into_iter()
         .map(|v| HomeVolume {
             bytes: u64::try_from(store.size(&v.name)).ok(),
+            bound: v.bound().ok().flatten(),
+            charge: store.charge(&v).ok(),
             created_ns: u64::try_from(v.created).unwrap_or(u64::MAX),
             anonymous: v.is_anonymous(),
             name: v.name,
@@ -51,15 +55,13 @@ fn every(store: &Store) -> Vec<HomeVolume> {
         .collect()
 }
 
-/// Volume `name` removed from `store` with its files, under the store's lock, as `volume rm`
-/// removes one; refused by why.
+/// Volume `name` removed from `store` with its files, as `volume rm` removes one, under the
+/// store's lock: refused `InUse` at once where a run that mounts or plugged it holds it (D281),
+/// a daemon's or an orchestrator's (`Store::remove_unheld`); refused by why.
 fn clear(store: &Store, name: &str) -> Result<(), (ClearCause, String)> {
     Store::valid(name).map_err(|e| (ClearCause::Name, format!("{name}: {e}")))?;
     let _held = crate::volumes::lock();
-    if store.get(name).is_none() {
-        return Err((ClearCause::Unknown, format!("get {name}: no such volume")));
-    }
-    store.remove(name).map_err(|e| (ClearCause::Store, e))
+    store.remove_unheld(name)
 }
 
 #[cfg(test)]
@@ -102,6 +104,77 @@ mod tests {
         }
         let left: Vec<String> = every(&store).into_iter().map(|v| v.name).collect();
         assert_eq!(left, ["agent-b"]);
+    }
+
+    /// D281: a volume is listed with its bound and what its files take by its measure: walked
+    /// where no run holds it, a name a unit and a length its whole units; and while a run holds
+    /// it bounded, the count its servers share as they left it, walked again by none.
+    #[test]
+    fn a_volume_is_listed_with_its_bound_and_its_count() {
+        use std::sync::atomic::Ordering;
+        let dir = shards_testdir::TempDir::new("api-volumes").unwrap();
+        let store = Store::new(dir.path());
+        let none = std::collections::BTreeMap::new();
+        let sized = std::collections::BTreeMap::from([("size".to_string(), "1M".to_string())]);
+        {
+            let _held = crate::volumes::lock();
+            store.create("plain", &none, &none, "").unwrap();
+            store.create("sized", &none, &sized, "").unwrap();
+        }
+        std::fs::write(store.data("sized").join("f"), [7u8; 10]).unwrap();
+        let listed = every(&store);
+        let (plain, sized) = (&listed[0], &listed[1]);
+        assert_eq!((plain.bound, plain.charge), (None, Some(0)));
+        let walked = sized.charge.unwrap();
+        assert_eq!(sized.bound, Some(1 << 20));
+        assert!(walked > 10, "a unit and f's whole units: {walked}");
+        let mut run = crate::volumes::Holds::default();
+        run.take(&store, "sized").unwrap();
+        let (_, count) = run
+            .count(&store, "sized", &store.data("sized"), None)
+            .unwrap()
+            .unwrap();
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open(&count)
+            .unwrap();
+        let server = shards_vmm::devices::virtio::fs::bound::mapped(&file).unwrap();
+        server.fetch_add(4096, Ordering::Relaxed);
+        assert_eq!(every(&store)[1].charge, Some(walked + 4096), "its servers' count");
+        drop(run);
+        assert_eq!(
+            every(&store)[1].charge,
+            Some(walked),
+            "walked again once none holds it"
+        );
+    }
+
+    /// D281: a volume a run holds (its mount's or plug's hold, `Store::hold`), by one run or two,
+    /// is refused its clearing `InUse` at once, its files kept; once every hold is let go of, it
+    /// is cleared. A hold asked while a clearing holds it is refused at once.
+    #[test]
+    fn a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go() {
+        let dir = shards_testdir::TempDir::new("api-volumes").unwrap();
+        let store = Store::new(dir.path());
+        let none = std::collections::BTreeMap::new();
+        {
+            let _held = crate::volumes::lock();
+            store.create("agent-a", &none, &none, "").unwrap();
+        }
+        let run = store.hold("agent-a").unwrap().unwrap();
+        let other = store.hold("agent-a").unwrap().unwrap();
+        assert!(matches!(clear(&store, "agent-a"), Err((ClearCause::InUse, _))));
+        assert!(store.data("agent-a").exists());
+        drop(run);
+        assert!(matches!(clear(&store, "agent-a"), Err((ClearCause::InUse, _))));
+        drop(other);
+        let clearing = store.alone("agent-a").unwrap().unwrap();
+        assert!(store.hold("agent-a").unwrap().is_none());
+        drop(clearing);
+        assert_eq!(clear(&store, "agent-a"), Ok(()));
+        assert!(!store.data("agent-a").exists());
+        assert!(every(&store).is_empty(), "a hold's file is no volume");
     }
 
     /// A home with no volume yet lists none.

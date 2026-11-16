@@ -122,6 +122,39 @@ impl Locked {
         file.lock()?;
         Ok(Locked(file))
     }
+
+    /// `file` held alone, as [`Locked::exclusive`] holds one, where no other open of it, in
+    /// any process, holds it now: none where one does, found at once (`LOCK_NB`,
+    /// `LOCKFILE_FAIL_IMMEDIATELY`), never waited for.
+    pub fn try_hold(file: File) -> std::io::Result<Option<Locked>> {
+        let tried = file.try_lock();
+        tried_on(tried, file)
+    }
+
+    /// `file` held shared (flock(2)'s `LOCK_SH`, `LockFileEx`'s shared lock), which keeps
+    /// [`Locked::try_hold`] from it in any process while what it says can still be read,
+    /// where Windows keeps every other handle from reading a range held exclusively: none
+    /// where an exclusive hold has it now.
+    pub fn try_share(file: File) -> std::io::Result<Option<Locked>> {
+        let tried = file.try_lock_shared();
+        tried_on(tried, file)
+    }
+
+    /// `file` held shared, as [`Locked::try_share`] holds one, once no exclusive hold has it:
+    /// waited for while one does, as a kernel's lock wakes its waiters, never polled.
+    pub fn shared(file: File) -> std::io::Result<Locked> {
+        file.lock_shared()?;
+        Ok(Locked(file))
+    }
+}
+
+/// `file` as [`Locked`] where its try took the lock, none where another holds it.
+fn tried_on(tried: Result<(), fs::TryLockError>, file: File) -> std::io::Result<Option<Locked>> {
+    match tried {
+        Ok(()) => Ok(Some(Locked(file))),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
 }
 
 impl Drop for Locked {

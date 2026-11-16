@@ -48,8 +48,8 @@ use super::exec::{
 };
 use super::unix;
 use super::{
-    By, CONTROL_ASK, Ended, NEGOTIATED_BYTES, Negotiated, REFUSED_BYTES, controller, ended, read_negotiated,
-    read_refused,
+    By, CONTROL_ASK, Ended, NEGOTIATED_BYTES, Negotiated, REFUSED_BYTES, REPORT_MOST, controller, ended,
+    read_refused, read_report,
 };
 use crate::frame::{self, Tag};
 use crate::identity::{self, Fingerprint, Identity};
@@ -144,8 +144,8 @@ enum Heard {
     Running(u64),
     /// A member's lane: its last steer taken, or why not.
     Steered(Result<(), Unsteered>),
-    /// The control lane's report, beside this side's own.
-    Linked(Link),
+    /// The control lane's report, beside this side's own, and the lanes it names.
+    Linked(LinkReport),
     /// A socket lane connected: its number for its handle's asks (D251).
     Connected(u64),
     /// A socket lane's bytes, as they came.
@@ -1658,12 +1658,24 @@ pub struct Link {
     pub endpoint: Negotiated,
 }
 
-/// Where a controller hears its connection's [`Link`], once its handshake is done and its
+/// A controller's connection as its endpoint's report has it (a session's report of its link,
+/// goal 60's): both ends' word on its TLS ([`Link`]), and every lane it was granted, by Shards'
+/// names ([`Granted::name`]): its control lane, each member stream its subscriptions named, where
+/// execs are admitted their lane and the logs they read, where socket lanes are admitted theirs,
+/// then, where execs are admitted, the MCP bridge (D254) of each member its endpoint serves one
+/// of, ascending.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkReport {
+    pub link: Link,
+    pub lanes: Vec<Granted>,
+}
+
+/// Where a controller hears its connection's [`LinkReport`], once its handshake is done and its
 /// endpoint has reported.
 #[derive(Debug)]
 pub struct Linked {
     heard: mpsc::Receiver<Heard>,
-    over: Option<Result<Link, Fault>>,
+    over: Option<Result<LinkReport, Fault>>,
 }
 
 impl Linked {
@@ -1671,16 +1683,25 @@ impl Linked {
     /// is none (the endpoint's refusal of the control lane, its reset, or the connection's end),
     /// then again.
     pub fn wait(&mut self) -> Result<Link, Fault> {
-        if let Some(over) = self.over {
-            return over;
+        self.report().map(|report| report.link)
+    }
+
+    /// Waits for its endpoint's report as [`Linked::wait`] does: both ends' word on its TLS and
+    /// every lane it was granted ([`LinkReport`]), then again; or why there is none, then again.
+    pub fn report(&mut self) -> Result<&LinkReport, Fault> {
+        if self.over.is_none() {
+            let over = match self.heard.recv() {
+                Ok(Heard::Linked(report)) => Ok(report),
+                Ok(Heard::Fault(fault)) => Err(fault),
+                Ok(_) | Err(_) => Err(gone()),
+            };
+            self.over = Some(over);
         }
-        let over = match self.heard.recv() {
-            Ok(Heard::Linked(link)) => Ok(link),
-            Ok(Heard::Fault(fault)) => Err(fault),
-            Ok(_) | Err(_) => Err(gone()),
-        };
-        self.over = Some(over);
-        over
+        match &self.over {
+            Some(Ok(report)) => Ok(report),
+            Some(Err(fault)) => Err(*fault),
+            None => Err(gone()),
+        }
     }
 }
 
@@ -1704,8 +1725,8 @@ impl Drop for Hangup {
 }
 
 /// The handles of what a controller dialed, in the order its [`Subscriptions`] named them,
-/// where it asks for execs, where its subscriptions admit them, and where it hears both ends'
-/// TLS ([`Link`]).
+/// where it asks for execs, where its subscriptions admit them, and where it hears its
+/// endpoint's report: both ends' TLS and every lane it was granted ([`Linked`]).
 #[derive(Debug)]
 pub struct Dialed {
     pub outputs: Vec<Output>,
@@ -1718,20 +1739,9 @@ pub struct Dialed {
     /// Rung whenever any of its lanes is told anything: where one thread drives them all
     /// without waiting on any ([`Wake`]).
     pub wake: Wake,
-    /// The lanes it was granted, in the order it dialed them ([`Dialed::lanes`]).
-    granted: Vec<Granted>,
 }
 
-impl Dialed {
-    /// The lanes the controller was granted as it dialed, by Shards' names ([`Granted::name`]):
-    /// its control lane, each member stream its subscriptions named, where execs and socket
-    /// lanes are admitted. What a session's report of its link says (goal 60's `lanes`).
-    pub fn lanes(&self) -> Vec<Granted> {
-        self.granted.clone()
-    }
-}
-
-/// A lane a controller was granted as it dialed ([`Dialed::lanes`]).
+/// A lane a controller was granted ([`LinkReport::lanes`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Granted {
     /// Each end's TLS report (D238's control lane), on every connection.
@@ -1744,7 +1754,8 @@ pub enum Granted {
     Execs,
     /// Socket lanes to the run's own command may be opened (D251).
     Sockets,
-    /// Member N's MCP bridge (D254), granted where its run asked for one.
+    /// Member N's MCP bridge (D254), granted where its run asked for one, as its endpoint's
+    /// report names it.
     Mcp(u32),
     /// The log the run keeps of its command or of member N (D238's log lane), read as execs
     /// are asked for ([`Execs::log`]).
@@ -1769,10 +1780,11 @@ impl Granted {
     }
 }
 
-/// What `subscriptions` grant, in the order the controller dials their lanes. Where execs are
-/// granted, logs are read as they are asked: the run's command's, and each member's whose
-/// stream the subscriptions name, once each in their order. Another member's is read the same
-/// way, and not named: the controller knows no more of the run's members.
+/// What `subscriptions` grant, in the order the controller dials their lanes, before its
+/// endpoint's report names its bridges ([`linked`]). Where execs are granted, logs are read as
+/// they are asked: the run's command's, and each member's whose stream the subscriptions name,
+/// once each in their order. Another member's is read the same way, and not named: the
+/// controller knows no more of the run's members.
 fn granted(subscriptions: Subscriptions<'_>) -> Vec<Granted> {
     let outputs = subscriptions
         .outputs
@@ -1888,6 +1900,7 @@ impl Controller {
             next_id: id,
             run,
             admissions: subscriptions.execs,
+            granted: granted(subscriptions),
             base: Limits {
                 // The endpoint opens no lane (D238).
                 streams: 0,
@@ -1982,7 +1995,6 @@ impl Controller {
                 },
                 hangup: Hangup { sender },
                 wake,
-                granted: granted(subscriptions),
             },
         ))
     }
@@ -2009,7 +2021,9 @@ fn control_lane(id: u64, tell: mpsc::Sender<Heard>) -> Result<Lane, managed::Err
     )
 }
 
-/// The largest frame the endpoint sends on the control lane: its report, or a refusal.
+/// What the control lane reads at first, and its share of the windows: the endpoint's report
+/// naming no bridge, or a refusal. A report naming bridges grows its buffer as it comes, to
+/// [`REPORT_MOST`] ([`Lane::inbound_most`]).
 fn control_receives() -> usize {
     NEGOTIATED_BYTES.max(REFUSED_BYTES)
 }
@@ -2522,16 +2536,19 @@ impl Lane {
     }
 
     /// The most its frames coming may hold: an output's, the largest record frame its stream
-    /// may grow to; any other's, what was reserved for it.
+    /// may grow to; the control lane's, the largest report ([`REPORT_MOST`]); any other's, what
+    /// was reserved for it.
     fn inbound_most(&self) -> usize {
         match self.carries {
             Carries::Output { most, .. } => most,
+            Carries::Control { .. } => REPORT_MOST,
             _ => self.inbound.capacity(),
         }
     }
 
     /// Adds bytes read to the frame coming, within its largest: an output's buffer grows to
-    /// hold a record its endpoint grew; past the largest, the endpoint broke the protocol.
+    /// hold a record its endpoint grew, and the control lane's a report naming bridges; past
+    /// the largest, the endpoint broke the protocol.
     fn queue_inbound(&mut self, bytes: &[u8]) -> Result<(), Broken> {
         let n = self
             .inbound
@@ -2557,13 +2574,13 @@ enum Broken {
 
 /// What a lane's frame says: something for its handle; on an exec's lane, that the exec
 /// started under this number; on a member's, that it runs; or, on the control lane, the
-/// endpoint's report.
+/// endpoint's report: what its TLS negotiated, and the members whose MCP bridge it serves.
 #[derive(Debug)]
 enum Came {
     Heard(Heard),
     Started(u32),
     Running,
-    Negotiated(Negotiated),
+    Report { endpoint: Negotiated, bridges: Vec<u32> },
 }
 
 /// What began on a lane as it was read, for its driver to act on before it reads on.
@@ -2690,20 +2707,51 @@ fn frame_of(bytes: &[u8], carries: Carries, heard: bool) -> Result<Option<(Came,
             Err(unix::NotAnAnswer) => Err(Broken::Protocol),
         },
         Carries::Socket(_) => Err(Broken::Protocol),
-        // The endpoint's report, once: nothing else is said on the control lane yet.
-        Carries::Control { told } => match read_negotiated(bytes) {
+        // The endpoint's report, once: nothing else is said on the control lane.
+        Carries::Control { told } => match read_report(bytes) {
             Ok(None) => Ok(None),
-            Ok(Some(endpoint)) if !told => Ok(Some((Came::Negotiated(endpoint), NEGOTIATED_BYTES))),
+            Ok(Some((endpoint, named, whole))) if !told => {
+                let (members, _) = named.as_chunks::<{ size_of::<u32>() }>();
+                let mut bridges = Vec::new();
+                bridges
+                    .try_reserve_exact(members.len())
+                    .map_err(|_| Broken::Local)?;
+                bridges.extend(members.iter().map(|member| u32::from_be_bytes(*member)));
+                // Each member's once, ascending, as its endpoint was bound with them.
+                if bridges.windows(2).any(|w| w.first() >= w.get(1)) {
+                    return Err(Broken::Protocol);
+                }
+                Ok(Some((Came::Report { endpoint, bridges }, whole)))
+            }
             Ok(Some(_)) | Err(_) => Err(Broken::Protocol),
         },
     }
 }
 
 /// The control lane's report beside this side's own negotiation, which every lane follows
-/// ([`Drive::connected`](Handler::connected) holds it).
-fn linked(own: Option<Negotiated>, endpoint: Negotiated) -> Result<Heard, Broken> {
+/// ([`Drive::connected`](Handler::connected) holds it), and the lanes the connection was
+/// granted: those its subscriptions grant (`dialed`), then, where it may ask for execs, which
+/// carry their connections, the MCP bridge of each member its endpoint serves one of
+/// (`bridges`, D254).
+fn linked(
+    own: Option<Negotiated>,
+    endpoint: Negotiated,
+    dialed: &[Granted],
+    bridges: &[u32],
+    execs: bool,
+) -> Result<Heard, Broken> {
     let controller = own.ok_or(Broken::Local)?;
-    Ok(Heard::Linked(Link { controller, endpoint }))
+    let bridges: &[u32] = if execs { bridges } else { &[] };
+    let mut lanes = Vec::new();
+    lanes
+        .try_reserve_exact(dialed.len().saturating_add(bridges.len()))
+        .map_err(|_| Broken::Local)?;
+    lanes.extend_from_slice(dialed);
+    lanes.extend(bridges.iter().map(|member| Granted::Mcp(*member)));
+    Ok(Heard::Linked(LinkReport {
+        link: Link { controller, endpoint },
+        lanes,
+    }))
 }
 
 /// The controller's handler: its one connection, and its lanes.
@@ -2730,6 +2778,9 @@ struct Drive {
     /// run's.
     run: (RunId, u64),
     admissions: Option<exec::Admissions>,
+    /// The lanes its subscriptions grant ([`granted`]), which its endpoint's report adds its
+    /// bridges to ([`linked`]).
+    granted: Vec<Granted>,
     /// The connection's windows with no exec running.
     base: Limits,
     /// Its controller's [`Wake`], rung once a turn in which a lane, or a lane's ask, was told
@@ -2866,6 +2917,8 @@ impl Drive {
     /// windows are raised first ([`Drive::member_running`]).
     fn read(&mut self, io: &mut Io<'_>, conn: ConnKey, at: usize) -> Result<Option<Began>, Broken> {
         let own = self.own;
+        let execs = self.admissions.is_some();
+        let dialed = &self.granted;
         let Some(lane) = self.lanes.get_mut(at) else {
             return Ok(None);
         };
@@ -2887,7 +2940,7 @@ impl Drive {
                     Came::Started(exec) => return Ok(Some(Began::Exec(exec))),
                     Came::Running => return Ok(Some(Began::Member)),
                     Came::Heard(said) => said,
-                    Came::Negotiated(endpoint) => linked(own, endpoint)?,
+                    Came::Report { endpoint, bridges } => linked(own, endpoint, dialed, &bridges, execs)?,
                 };
                 match (&said, &mut lane.carries) {
                     (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) => {
@@ -2947,7 +3000,7 @@ impl Drive {
                         Came::Started(exec) => return Ok(Some(Began::Exec(exec))),
                         Came::Running => return Ok(Some(Began::Member)),
                         Came::Heard(said) => said,
-                        Came::Negotiated(endpoint) => linked(own, endpoint)?,
+                        Came::Report { endpoint, bridges } => linked(own, endpoint, dialed, &bridges, execs)?,
                     };
                     match (&said, &mut lane.carries) {
                         (Heard::Record { at, bytes }, Carries::Output { next, held, .. }) => {

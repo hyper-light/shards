@@ -8,6 +8,12 @@
 //! socket's half-close once its bytes are the host's; a SHUTDOWN of RCV alone while the
 //! host's way is open, its SEND not ended first, is its going, the socket closed with no
 //! half-close first on Unix ([`HostWrites::Cut`], D251).
+//!
+//! On Windows a host program's connection is two pipes (D272, [`Host::Pipes`]): a write's
+//! bytes are the connection's until it finishes, and count as forwarded, in the guest's
+//! credit, only then; a connection that ends closes its way up first, so that its host's
+//! writes fail at once, and its way down once its last write is in the pipe, so that its host
+//! reads every byte, then the end.
 
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
@@ -16,10 +22,11 @@ use std::num::Wrapping;
 use std::time::Instant;
 
 use super::packet::{HOST_CID, Header, TYPE_STREAM, op, shutdown};
+use super::poll::Source;
 use super::{Span, readv, writev};
 use crate::debug;
 use crate::memory::GuestMemory;
-use crate::platform::{AsRawSocket, RawSocket, UnixStream};
+use crate::platform::{AsRawSocket, UnixStream};
 
 mod ringed;
 use ringed::Ringing;
@@ -78,8 +85,164 @@ enum HostWrites {
     Cut,
 }
 
+/// A connection's host end (R04): a Unix stream socket; on Windows a served port's socket (an
+/// AF_UNIX pair's end, both ends this process's), or a host program's two pipes (D272).
+pub enum Host {
+    Socket(UnixStream),
+    #[cfg(windows)]
+    Pipes(crate::platform::Pipes),
+}
+
+impl From<UnixStream> for Host {
+    fn from(stream: UnixStream) -> Host {
+        Host::Socket(stream)
+    }
+}
+
+#[cfg(windows)]
+impl From<crate::platform::Pipes> for Host {
+    fn from(pipes: crate::platform::Pipes) -> Host {
+        Host::Pipes(pipes)
+    }
+}
+
+impl Host {
+    /// Reads at most `max` bytes into `spans`: WouldBlock where nothing is there yet.
+    fn readv(&mut self, spans: &[Span], max: usize) -> io::Result<usize> {
+        match self {
+            Host::Socket(s) => readv(s, spans, max),
+            #[cfg(windows)]
+            Host::Pipes(p) => {
+                let runs = super::runs(spans, max);
+                if runs.is_empty() {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                // SAFETY: every run lies in guest memory, checked by io_ptr when its span was
+                // made; bytes are copied into it without Rust aliasing it.
+                unsafe { p.readv(&runs) }
+            }
+        }
+    }
+
+    /// Writes at most `max` bytes of `spans`: what it took.
+    fn writev(&mut self, spans: &[Span], max: usize) -> io::Result<usize> {
+        match self {
+            Host::Socket(s) => writev(s, spans, max),
+            #[cfg(windows)]
+            Host::Pipes(p) => {
+                let runs: Vec<(*const u8, usize)> = super::runs(spans, max)
+                    .into_iter()
+                    .map(|(at, len)| (at.cast_const(), len))
+                    .collect();
+                if runs.is_empty() {
+                    return Ok(0);
+                }
+                // SAFETY: as in `readv`; guest memory is only read here, copied out.
+                unsafe { p.writev(&runs) }
+            }
+        }
+    }
+
+    /// Of `taken`, bytes a write just took, those its host has now: a socket's, all of them;
+    /// pipes', none until their write finishes ([`Host::look`]).
+    fn forwarded_at_once(&self, taken: usize) -> usize {
+        match self {
+            Host::Socket(_) => taken,
+            #[cfg(windows)]
+            Host::Pipes(_) => 0,
+        }
+    }
+
+    /// Bytes taken for a write that has not finished: still the connection's.
+    fn in_flight(&self) -> usize {
+        match self {
+            Host::Socket(_) => 0,
+            #[cfg(windows)]
+            Host::Pipes(p) => p.in_flight(),
+        }
+    }
+
+    /// Takes what finished of its pipes' calls: the bytes of the write that finished.
+    fn look(&mut self) -> usize {
+        match self {
+            Host::Socket(_) => 0,
+            #[cfg(windows)]
+            Host::Pipes(p) => p.look(),
+        }
+    }
+
+    /// Ends its writes once what it took is its host's: its host reads them, then their end.
+    fn shut_writes(&mut self) {
+        match self {
+            Host::Socket(s) => {
+                // Its host may already be gone, which the next read shows.
+                let _ = s.shutdown(Shutdown::Write);
+            }
+            #[cfg(windows)]
+            Host::Pipes(p) => p.shut_down(),
+        }
+    }
+
+    /// Ends its reads: on Windows its pipes' way up closed, so that its host's writes fail at
+    /// once (D272). A socket's are its close's.
+    fn end_reads(&mut self) {
+        match self {
+            Host::Socket(_) => {}
+            #[cfg(windows)]
+            Host::Pipes(p) => p.end_reads(),
+        }
+    }
+
+    /// Its socket, where it is one.
+    pub fn socket(&self) -> Option<&UnixStream> {
+        match self {
+            Host::Socket(s) => Some(s),
+            #[cfg(windows)]
+            Host::Pipes(_) => None,
+        }
+    }
+
+    /// What a wait on it waits on: its socket; or its pipes, ready where a change was taken,
+    /// or a call it waits for (`read`, `write`) has finished.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    fn source(&self, read: bool, write: bool, changed: bool) -> Source {
+        match self {
+            Host::Socket(s) => super::poll::socket(s.raw_socket()),
+            #[cfg(windows)]
+            Host::Pipes(p) => Source::Pipes {
+                key: p.key(),
+                ready: changed || (read && p.readable()) || (write && p.writable()),
+            },
+        }
+    }
+}
+
+impl io::Read for Host {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Host::Socket(s) => io::Read::read(s, buf),
+            #[cfg(windows)]
+            Host::Pipes(p) => io::Read::read(p, buf),
+        }
+    }
+}
+
+impl io::Write for Host {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Host::Socket(s) => io::Write::write(s, buf),
+            #[cfg(windows)]
+            Host::Pipes(p) => io::Write::write(p, buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub struct Conn {
-    stream: UnixStream,
+    stream: Host,
     guest_cid: u64,
     local_port: u32,
     peer_port: u32,
@@ -107,6 +270,9 @@ pub struct Conn {
     granted_until: Wrapping<u32>,
     /// Guest→host bytes the host socket has not taken yet: within what was granted.
     tx_buf: TxBuf,
+    /// Bytes of this connection's own in its pipes' write under way, ahead of the guest's:
+    /// its `OK <port>` line, which its write's finish counts out of what was forwarded.
+    line_in_flight: usize,
     /// When its REQUEST went to the guest, while the guest has not answered a host's
     /// request: which of those waited longest ([`Conn::asked`]), never a deadline (D266).
     asked: Option<Instant>,
@@ -148,16 +314,16 @@ impl Ended {
         }
     }
 
-    pub fn fd(&self) -> RawSocket {
-        self.conn().fd()
-    }
-
-    /// What its socket waits for: room for what it owes, or (lingering) its host's end.
-    pub fn interest(&self) -> (bool, bool) {
+    /// What its host end waits for, `(source, readable, writable)`: room for what it owes,
+    /// its pipes' writes looked at first; or (lingering) its host's end.
+    pub fn watched(&mut self) -> (Source, bool, bool) {
         match self {
-            Ended::Owing(_) => (false, true),
+            Ended::Owing(c) => {
+                let changed = c.look();
+                (c.stream.source(false, true, changed), false, true)
+            }
             #[cfg(windows)]
-            Ended::Lingering(_) => (true, false),
+            Ended::Lingering(c) => (c.stream.source(true, false, false), true, false),
         }
     }
 
@@ -183,9 +349,10 @@ impl Ended {
 impl Conn {
     /// An owing ended connection's turn at its writable socket ([`Ended::on_ready`]).
     fn hand_over(mut self) -> Option<Ended> {
+        self.look();
         match self.tx_buf.flush_to(&mut self.stream) {
             Ok(n) => {
-                self.fwd_cnt += n as u32;
+                self.fwd_cnt += self.stream.forwarded_at_once(n) as u32;
                 self.tx_buf.fit(self.exposure() as usize);
             }
             Err(e) => {
@@ -193,7 +360,7 @@ impl Conn {
                 return None;
             }
         }
-        if self.tx_buf.is_empty() {
+        if self.tx_buf.is_empty() && self.stream.in_flight() == 0 {
             self.settled()
         } else {
             Some(Ended::Owing(self))
@@ -209,13 +376,13 @@ impl Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         if self.host_writes != HostWrites::Shut {
-            let _ = self.stream.shutdown(Shutdown::Write);
+            self.stream.shut_writes();
         }
     }
 }
 
 impl Conn {
-    fn new(stream: UnixStream, guest_cid: u64, local_port: u32, peer_port: u32, phase: Phase) -> Conn {
+    fn new(stream: Host, guest_cid: u64, local_port: u32, peer_port: u32, phase: Phase) -> Conn {
         Conn {
             stream,
             guest_cid,
@@ -236,6 +403,7 @@ impl Conn {
             guest_fwd_cnt: Wrapping(0),
             rx_cnt: Wrapping(0),
             tx_buf: TxBuf::default(),
+            line_in_flight: 0,
             asked: None,
             queued: false,
             allocated_port: false,
@@ -244,7 +412,7 @@ impl Conn {
     }
 
     /// A host client asked (`CONNECT <peer_port>`) to reach a guest port.
-    pub fn host_initiated(stream: UnixStream, guest_cid: u64, local_port: u32, peer_port: u32) -> Conn {
+    pub fn host_initiated(stream: Host, guest_cid: u64, local_port: u32, peer_port: u32) -> Conn {
         let mut c = Conn::new(stream, guest_cid, local_port, peer_port, Phase::LocalInit);
         c.pending.request = true;
         c.allocated_port = true;
@@ -252,7 +420,7 @@ impl Conn {
     }
 
     /// The guest's REQUEST for host port `request.dst_port` reached a listening socket.
-    pub fn guest_initiated(stream: UnixStream, guest_cid: u64, request: &Header) -> Conn {
+    pub fn guest_initiated(stream: Host, guest_cid: u64, request: &Header) -> Conn {
         let mut c = Conn::new(
             stream,
             guest_cid,
@@ -266,8 +434,53 @@ impl Conn {
         c
     }
 
-    pub fn fd(&self) -> RawSocket {
-        self.stream.raw_socket()
+    /// What its host end waits for, `(source, readable, writable)`, where it waits for
+    /// anything: on Windows its pipes' calls looked at first ([`Conn::look`]), and always
+    /// said, a change they took ready.
+    pub fn watched(&mut self) -> Option<(Source, bool, bool)> {
+        let changed = self.look();
+        let (read, write) = self.interest();
+        let pipes = self.stream.socket().is_none();
+        (read || write || pipes).then(|| (self.stream.source(read, write, changed), read, write))
+    }
+
+    /// Takes what finished of its pipes' calls: whether a write finished, its bytes then
+    /// counted as forwarded ([`Conn::forwarded`]).
+    pub fn look(&mut self) -> bool {
+        let n = self.stream.look();
+        self.forwarded(n);
+        n > 0
+    }
+
+    /// `n` bytes of a pipes' write finished, now its host's: the guest's past this
+    /// connection's own line ahead of them count as forwarded, an update owed the guest once
+    /// they make half its window.
+    fn forwarded(&mut self, n: usize) {
+        let ours = n.min(self.line_in_flight);
+        self.line_in_flight -= ours;
+        let theirs = n - ours;
+        if theirs == 0 {
+            return;
+        }
+        self.fwd_cnt += u32::try_from(theirs).unwrap_or(u32::MAX);
+        self.tx_buf.fit(self.exposure() as usize);
+        if !self.killed && !self.guest_send_closed && self.guest_needs_credit() {
+            self.pending.credit_update = true;
+        }
+    }
+
+    /// The guest's bytes it holds, none its host's yet: buffered, and taken for a pipes'
+    /// write that has not finished.
+    fn held(&self) -> usize {
+        self.tx_buf
+            .len()
+            .saturating_add(self.stream.in_flight().saturating_sub(self.line_in_flight))
+    }
+
+    /// Its host end, for the muxer's tests.
+    #[cfg(test)]
+    pub fn host(&self) -> &Host {
+        &self.stream
     }
 
     pub fn has_pending_rx(&self) -> bool {
@@ -306,8 +519,12 @@ impl Conn {
         if self.killed {
             self.tx_buf = TxBuf::default();
         }
-        self.granted_until = self.fwd_cnt + Wrapping(u32::try_from(self.tx_buf.len()).unwrap_or(u32::MAX));
-        if self.tx_buf.is_empty() {
+        // Its reads first: on Windows its host's writes fail at once from here on, before its
+        // way down's end can say the guest has gone (D272).
+        self.stream.end_reads();
+        self.look();
+        self.granted_until = self.fwd_cnt + Wrapping(u32::try_from(self.held()).unwrap_or(u32::MAX));
+        if self.tx_buf.is_empty() && (self.killed || self.stream.in_flight() == 0) {
             self.settled()
         } else {
             Some(Ended::Owing(self))
@@ -321,10 +538,14 @@ impl Conn {
     fn settled(mut self) -> Option<Ended> {
         if !self.killed && self.guest_send_closed && self.host_writes == HostWrites::Open {
             self.host_writes = HostWrites::Shut;
-            let _ = self.stream.shutdown(Shutdown::Write);
+            self.stream.shut_writes();
         }
+        // Pipes end as the connection drops (none held): their way down closed after every
+        // byte, which their host reads, then the end; their way up closed already
+        // ([`Conn::end`]). A socket is held as `linger` says.
         #[cfg(windows)]
         {
+            self.stream.socket()?;
             self.linger().map(Ended::Lingering)
         }
         #[cfg(not(windows))]
@@ -350,7 +571,7 @@ impl Conn {
     fn linger(mut self) -> Option<Conn> {
         if self.host_writes != HostWrites::Shut {
             self.host_writes = HostWrites::Shut;
-            let _ = self.stream.shutdown(Shutdown::Write);
+            self.stream.shut_writes();
         }
         (!self.host_eof && !self.drained()).then_some(self)
     }
@@ -361,7 +582,7 @@ impl Conn {
     fn drained(&mut self) -> bool {
         let mut sink = [0u8; 4096];
         loop {
-            match io::Read::read(&mut &self.stream, &mut sink) {
+            match io::Read::read(&mut self.stream, &mut sink) {
                 Ok(0) => return true,
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -445,7 +666,7 @@ impl Conn {
     #[cfg(test)]
     pub fn check(&self) -> Result<(), String> {
         let exposure = self.exposure();
-        let (held, room) = (self.tx_buf.len(), self.tx_buf.data.capacity());
+        let (held, room) = (self.held(), self.tx_buf.data.capacity());
         let holds = (WINDOW_LEAST..=WINDOW_MOST).contains(&self.window)
             && exposure <= WINDOW_MOST
             && held <= exposure as usize
@@ -568,7 +789,7 @@ impl Conn {
             self.pending.rw = false;
             return Some(self.header(op::CREDIT_REQUEST, spare));
         }
-        match readv(&self.stream, space, credit as usize) {
+        match self.stream.readv(space, credit as usize) {
             Ok(0) => {
                 // A half-close: the host may still read what the guest sends.
                 self.pending.rw = false;
@@ -618,10 +839,14 @@ impl Conn {
             (op::RESPONSE, Phase::LocalInit) => {
                 self.phase = Phase::Established;
                 self.asked = None;
-                // A fresh socket's buffer takes this line whole.
+                // A fresh socket's buffer takes this line whole, and a fresh pipes' write: its
+                // bytes are this connection's own, counted out of what its write's finish
+                // forwards ([`Conn::forwarded`]).
                 let line = format!("OK {}\n", self.local_port);
                 if self.stream.write(line.as_bytes()).ok() != Some(line.len()) {
                     self.kill();
+                } else {
+                    self.line_in_flight = self.stream.in_flight();
                 }
             }
             (op::SHUTDOWN, Phase::Established) => {
@@ -665,17 +890,17 @@ impl Conn {
     /// Writes guest data to the host socket; what it does not take now is buffered.
     fn send_host(&mut self, payload: &[Span], mem: &GuestMemory) -> io::Result<()> {
         let total: usize = payload.iter().map(|s| s.len).sum();
-        if self.tx_buf.len() + total > self.exposure() as usize {
+        if self.held().saturating_add(total) > self.exposure() as usize {
             return Err(io::Error::other("guest exceeded its credit"));
         }
         let mut written = 0;
         if self.tx_buf.is_empty() {
-            written = match writev(&self.stream, payload, total) {
+            written = match self.stream.writev(payload, total) {
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => 0,
                 Err(e) => return Err(e),
             };
-            self.fwd_cnt += written as u32;
+            self.fwd_cnt += self.stream.forwarded_at_once(written) as u32;
         }
         let limit = self.exposure() as usize;
         let mut skip = written;
@@ -699,7 +924,8 @@ impl Conn {
     /// once, its reset owed: what its host has not taken yet is held past its end
     /// ([`Conn::end`]). A ring is the guest's memory, drained while its connection lasts.
     fn flush(&mut self) -> io::Result<()> {
-        let n = self.tx_buf.flush_to(&mut self.stream)?;
+        let flushed = self.tx_buf.flush_to(&mut self.stream)?;
+        let n = self.stream.forwarded_at_once(flushed);
         self.fwd_cnt += n as u32;
         self.tx_buf.fit(self.exposure() as usize);
         if !self.tx_buf.is_empty() || !self.ring_drained()? {
@@ -711,10 +937,15 @@ impl Conn {
             }
             return Ok(());
         }
+        // Both ways over: on Windows its pipes' way up closes first, so that its host's writes
+        // fail at once before its way down's end can say the guest has gone (D272).
+        if self.guest_rcv_closed && self.guest_send_closed {
+            self.stream.end_reads();
+        }
         if self.guest_send_closed && self.host_writes == HostWrites::Open {
             self.host_writes = HostWrites::Shut;
-            // The host reads EOF. It may already be gone, which the next read shows.
-            let _ = self.stream.shutdown(Shutdown::Write);
+            // The host reads EOF, on Windows once its pipes' write under way has finished.
+            self.stream.shut_writes();
         }
         if self.guest_rcv_closed && self.guest_send_closed {
             // Both directions are over; RST ends the connection (virtio 1.3 §5.10.6.6).
@@ -901,7 +1132,7 @@ mod tests {
         ours.set_nonblocking(true).unwrap();
         host.set_nonblocking(true).unwrap();
         let req = Guest::guest_header(op::REQUEST, 0, buf_alloc, 0);
-        let mut c = Conn::guest_initiated(ours, GUEST_CID, &req);
+        let mut c = Conn::guest_initiated(ours.into(), GUEST_CID, &req);
         let space = [g.span(BASE, 4096)];
         assert_eq!(c.next_rx(&space, 0).unwrap().op, op::RESPONSE);
         assert!(!c.has_pending_rx());
@@ -1067,7 +1298,7 @@ mod tests {
         ours.set_nonblocking(true).unwrap();
         host.set_nonblocking(true).unwrap();
         let req = Guest::guest_header(op::REQUEST, 0, WINDOW_MOST, 0);
-        let mut c = Conn::guest_initiated(ours, GUEST_CID, &req);
+        let mut c = Conn::guest_initiated(ours.into(), GUEST_CID, &req);
         let space = [g.span(BASE, 4096)];
         let resp = c.next_rx(&space, WINDOW_LENT).unwrap();
         assert_eq!(
@@ -1353,7 +1584,7 @@ mod tests {
     fn host_initiated_connections_answer_ok_or_wait_for_their_guest() {
         let g = Guest::new();
         let (ours, mut host) = UnixStream::pair().unwrap();
-        let mut c = Conn::host_initiated(ours, GUEST_CID, 1 << 30, 1234);
+        let mut c = Conn::host_initiated(ours.into(), GUEST_CID, 1 << 30, 1234);
         let req = c.next_rx(&[g.span(BASE, 4096)], 0).unwrap();
         assert_eq!((req.op, req.src_port, req.dst_port), (op::REQUEST, 1 << 30, 1234));
         let resp = Header {
@@ -1369,7 +1600,7 @@ mod tests {
         // Unanswered, it waits for its guest, its REQUEST's time kept to rank it, never to
         // end it (D266); once answered, it is asked no longer.
         let (ours, _host) = UnixStream::pair().unwrap();
-        let mut c = Conn::host_initiated(ours, GUEST_CID, (1 << 30) + 1, 1234);
+        let mut c = Conn::host_initiated(ours.into(), GUEST_CID, (1 << 30) + 1, 1234);
         assert_eq!(c.asked(), None, "its REQUEST not yet sent");
         c.next_rx(&[g.span(BASE, 4096)], 0).unwrap();
         assert!(c.asked().is_some());

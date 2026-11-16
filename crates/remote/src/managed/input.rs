@@ -229,6 +229,10 @@ enum Slot {
     Ended { written: u64, end: InputEnd },
     /// Its control let it go: the run's management scope ended.
     Revoked,
+    /// Its host's budget had no room for it (D252, [`Control::no_room`]): let go as a
+    /// revocation lets it go, observed as one ([`State::Revoked`]), and each lane to it refused
+    /// `Capacity` until it is revoked.
+    NoRoom,
 }
 
 impl Slot {
@@ -241,7 +245,7 @@ impl Slot {
             | Self::Closing { at, .. } => Some(*at),
             Self::Whole { at, bytes } => at.checked_add(bytes.len() as u64),
             Self::Relaying { at, len } => at.checked_add(*len as u64),
-            Self::Ended { .. } | Self::Revoked => None,
+            Self::Ended { .. } | Self::Revoked | Self::NoRoom => None,
         }
     }
 }
@@ -334,7 +338,7 @@ impl Relay {
                     *slot = Slot::Closing { at, errno };
                     return if errno == 0 { Next::End } else { Next::Abort(errno) };
                 }
-                old @ (Slot::Ended { .. } | Slot::Revoked) => {
+                old @ (Slot::Ended { .. } | Slot::Revoked | Slot::NoRoom) => {
                     *slot = old;
                     return Next::Gone;
                 }
@@ -415,7 +419,7 @@ impl Control {
                 written: *written,
                 end: *end,
             },
-            Slot::Revoked => State::Revoked,
+            Slot::Revoked | Slot::NoRoom => State::Revoked,
         }
     }
 
@@ -429,7 +433,7 @@ impl Control {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(close));
         let aborted = matches!(
             *lock(&self.shared),
-            Slot::Revoked | Slot::Ending { errno: 1.., .. } | Slot::Closing { errno: 1.., .. }
+            Slot::Revoked | Slot::NoRoom | Slot::Ending { errno: 1.., .. } | Slot::Closing { errno: 1.., .. }
         );
         if aborted {
             self.shared.close();
@@ -441,7 +445,7 @@ impl Control {
     pub fn ended(&self, written: u64, end: InputEnd) {
         {
             let mut slot = lock(&self.shared);
-            if matches!(*slot, Slot::Revoked | Slot::Ended { .. }) {
+            if matches!(*slot, Slot::Revoked | Slot::NoRoom | Slot::Ended { .. }) {
                 return;
             }
             *slot = Slot::Ended { written, end };
@@ -454,10 +458,21 @@ impl Control {
     /// stopped, or its lane alone where its endpoint serves others ([`Stop`]). A member's
     /// stdin then reads its end.
     pub fn abort(&self) {
+        self.let_go(Slot::Revoked);
+    }
+
+    /// Its host's budget has no room for it (D252): let go as [`Control::abort`] lets it go,
+    /// and each lane to it refused `Capacity`, never queued, as a lane past what its run admits
+    /// is (D251), until it is revoked.
+    pub fn no_room(&self) {
+        self.let_go(Slot::NoRoom);
+    }
+
+    fn let_go(&self, to: Slot) {
         {
             let mut slot = lock(&self.shared);
             if !matches!(*slot, Slot::Ended { .. }) {
-                *slot = Slot::Revoked;
+                *slot = to;
             }
         }
         self.shared.changed.notify_all();
@@ -564,7 +579,7 @@ impl Endpoint {
             Some(config),
             service,
             DriverLimits {
-                connections: 1,
+                connections: super::CONNECTIONS,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
             },
@@ -698,7 +713,17 @@ impl Service {
 
     /// Its input was let go: no stream subscribes to it again.
     pub(crate) fn revoked(&self) -> bool {
-        matches!(*lock(&self.shared), Slot::Revoked)
+        matches!(*lock(&self.shared), Slot::Revoked | Slot::NoRoom)
+    }
+
+    /// Why a lane to it is refused once it was let go: `Capacity` where its host had no room
+    /// for it ([`Control::no_room`]), `Closed` where it was revoked; none while it serves.
+    fn refusal(&self) -> Option<Reason> {
+        match *lock(&self.shared) {
+            Slot::NoRoom => Some(Reason::Capacity),
+            Slot::Revoked => Some(Reason::Closed),
+            _ => None,
+        }
     }
 
     /// Its input has ended, as the member's init told it: nothing a subscriber sends is the
@@ -725,8 +750,8 @@ impl Service {
         if !matches!(self.state, Subscription::Listening) {
             return Err(Reason::Scope);
         }
-        if self.revoked() {
-            return Err(Reason::Closed);
+        if let Some(refusal) = self.refusal() {
+            return Err(refusal);
         }
         self.subscribed(conn, stream, scope, CHANNEL, offset)
     }
@@ -939,7 +964,11 @@ impl Service {
                 let mut slot = lock(&self.shared);
                 let at = match &*slot {
                     // Its input already ending or ended: nothing more to abort.
-                    Slot::Ending { .. } | Slot::Closing { .. } | Slot::Ended { .. } | Slot::Revoked => {
+                    Slot::Ending { .. }
+                    | Slot::Closing { .. }
+                    | Slot::Ended { .. }
+                    | Slot::Revoked
+                    | Slot::NoRoom => {
                         return Ok(());
                     }
                     Slot::Free { at, .. }
