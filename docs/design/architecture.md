@@ -38054,8 +38054,8 @@ guest's own step.**
     after it, so it returns as before; each member's `wait_member` is then refused
     `ImageRefusal::Workdir`, where no end of its own came first. The image channel's version
     is 43: `REFUSED` may follow `STARTED`.
-- *Not typed:* a restart's next generation (D270) that cannot enter its working directory is
-  refused `StartRefusal::Failed` in init's words, as before.
+- *Not typed then:* a restart's next generation (D270) that cannot enter its working directory
+  was refused `StartRefusal::Failed` in init's words; typed since (amended below, P6-fix-2).
 - No literal (each kind is its protocol's next); no wait or cache touched.
 - **Tests** (written, not run: the person's rule of 2026-11-16 leaves every run to ROOT after
   the merge). abi `a_working_directory_unentered_reads_back_as_told`; init
@@ -38069,6 +38069,42 @@ guest's own step.**
   member, given at another path, and not shared: each refused `Workdir` at `wait_member`, errno 2.
   `/etc`, its image's, with no share: it exits 0. Its shared control stays
   `a_project_given_its_harness_is_where_it_works`.
+
+**Amended (P6-fix-2, 2026-11-16): a restart's next generation that cannot enter its working
+directory is refused typed too.**
+- *Before.* A restart (D270 slice 3b) whose next generation failed `entering its working
+  directory` was refused `RestartRefusal::Failed`, so `ImageRefusal::Restart(Failed, …)`, in
+  init's words alone: its orchestrator read words to learn the member, the directory and the
+  errno.
+- *Decided: as the first generation's is, carried by the restart's own answer.*
+  - abi: `StartRefusal::Workdir` (6, appended). Its `MEMBER_STARTED` answer's bytes are the
+    generation's `members::Unentered` (member, errno, directory), not words
+    (`StartAnswer::unentered`). An answer whose bytes are no `Unentered` of the member answered
+    is malformed (`Error::Shape`), which breaks the guest's protocol where the VM process relays
+    it, as any malformed answer does.
+  - init (domains.rs `next_generation`, run.rs `next_generation`): a next generation's launch that
+    failed at `Step::Setup` doing `Setting::WorkingDirectory` (its handover's chdir(2)), read by
+    `unentered_of` as a first launch's is, is answered `Workdir`. Its words, which also give its
+    cgroup's counts, go to init's stderr.
+  - The VM process relays the answer as it is (warm.rs `member_started`).
+  - The run host (api_run `start_refused`): `RestartRefusal::Workdir` (6, appended) in the
+    restart's answer (`RESTARTED`), worded by `workdir_refused`: the member as the image declares
+    it, the directory and the errno. Its member is let go (`Hold`, 0) and ends whole, as after
+    any restart that failed past its hold. One told malformed is `Failed`.
+  - The image channel's version is 45: a side of 44 reads no restart refusal 6.
+  - shards-api (session `restart_refused`): `restart` is refused `ImageRefusal::Workdir`, the
+    first generation's refusal, rather than `ImageRefusal::Restart`.
+  - Unchanged: a swap now (D270 slice 4) whose restart is so refused stays `SwapRefusal::Failed`,
+    its words naming `Workdir`.
+- No literal: 6 is each enum's next value; no wait or cache touched.
+- **Tests** (written, not run: the person's rule of 2026-11-16). abi
+  `a_next_generation_that_could_not_enter_its_workdir_is_answered_typed`; the run host's
+  `a_restart_that_could_not_enter_its_workdir_is_refused_typed`; shards-api's
+  `a_restart_whose_workdir_could_not_be_entered_is_refused_as_one` and the channel's
+  `a_restart_round_trips_and_its_malformed_answers_are_refused` (`Workdir` round-trips; tag 7
+  refused). Owed (ROOT): init's Linux suite and musl clippy (domains.rs, run.rs); a real-VM run
+  (HVF, KVM, WHP) of a member that removes its own working directory and is restarted, refused
+  `ImageRefusal::Workdir` with errno 2, which no test yet makes.
 
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 
@@ -38461,6 +38497,47 @@ plugged it used them.
   `a_clearings_answer_reads_back_typed` (`InUse` among the causes). Real VM, owed (ROOT):
   api_image.rs `an_agents_volume_outlives_its_session_and_is_listed_and_cleared`, now also
   refused `InUse` while its second session runs, its files kept; cleared once both have ended.
+
+**Amended (P6-fix-2, 2026-11-16): every run that mounts or plugs a named volume holds it, a
+daemon's run as an orchestrator's.**
+- *Before.* Only an orchestrator's plug held its volume (api_run `source_dir`). A volume mounted
+  as a run starts held nothing, in a daemon's run or an orchestrator's: `-v NAME:PATH`,
+  `--mount`, `--volumes-from`, or an image's named `VOLUME`. Nor did one that `shards plug volume`
+  plugs into a daemon's run. `clear_volume` removed their files under them.
+- *Decided: one hold, taken where every run's volumes pass* (R12).
+  - `volumes::Holds` is a run's holds, each named volume once, by name. `take` holds a name
+    (`Store::hold`, try_share). `found` reads the volume as the store has it, holds it where it is
+    named, then looks again: refused where a clearing took it meanwhile; none where it is not there,
+    and then no lock file is made. `extend` takes in another's holds.
+  - `volumes::open_for` opens every run's mount points for its start: a daemon's run, its visit,
+    an orchestrator's boot or warm host. It holds each named volume before its files are opened
+    (`Opened::held`). A start while a clearing holds one is refused ("volume NAME is being
+    cleared"), as a plug is.
+  - The daemon carries a start's holds in the run's `Keep`, then its `Inbox`, and lets go of them
+    as the run ends (`run_ended`, a visit's too). A start that fails before a VM takes the run
+    drops them. `shards plug volume MICROVM NAME:PATH` (devices.rs `plug_share`) holds its volume
+    (`found`) before its files are opened, in the run's `Inbox`, until the run ends.
+  - The run host keeps its boot's holds in its plan, then in its live state (`Live::volumes_held`,
+    now `Holds`), where its plugs' join them (`source_dir`'s `take`, kept once the store took the
+    plug). Its own map and its own hold-and-refuse, the duplicate path, are removed.
+  - Not held: an anonymous volume, its run's own and gone with it, whose name is never asked again
+    and whose lock file would outlive it; a bind of a host directory. A named volume of a host
+    directory (`o=bind`) is held.
+  - A run keeps a plug's hold past its unplug, until it ends, a daemon's as an orchestrator's.
+- No literal; no wait: each hold is taken or refused at once.
+- *Still open* (ROOT's call): the daemon's `volume rm` and `volume prune` judge a volume's use by
+  the daemon's own records (`volume_refs`), not by the holds, so they remove a volume an
+  orchestrator's run holds.
+- **Tests** (written, not run: the person's rule of 2026-11-16): the binary's `volumes`
+  `a_starts_named_volumes_are_held_until_its_run_lets_go`: a named volume mounted twice is held
+  once, and its clearing refused until what was opened drops; an anonymous one is not held and
+  gets no lock file; a start while a clearing holds one is refused. The run host's
+  `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` and
+  `api_volumes`' `a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go` are unchanged.
+  Owed (ROOT): the binary's daemon tests (the `Keep` and `Inbox` fields) and Windows clippy. Real
+  VM (HVF, KVM, WHP), not yet written: a daemon run with `-v NAME:/data`, its volume refused
+  `InUse` by `clear_volume` while it runs and cleared once it stops; the same for a volume
+  `shards plug volume` plugged into it.
 
 ### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 

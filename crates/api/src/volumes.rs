@@ -45,8 +45,8 @@ pub enum ClearCause {
     Unknown = 2,
     /// Its files were not all removed.
     Store = 3,
-    /// A run that plugged it holds it (D281): each holds every volume it plugs for its life.
-    /// Its files are kept.
+    /// A run holds it (D281): each run, a daemon's or an orchestrator's, holds every named
+    /// volume it mounts or plugs for its life. Its files are kept.
     InUse = 4,
 }
 
@@ -119,8 +119,9 @@ pub fn volumes(
 }
 
 /// Removes volume `name` of the home `env` names, and its files, as `volume rm` does: gone at
-/// once, deleted after. Refused [`ClearCause::InUse`] at once where a run that plugged it
-/// holds it (D281), never waiting for that run to end.
+/// once, deleted after. Refused [`ClearCause::InUse`] at once where a run that mounts or
+/// plugged it holds it (D281), a daemon's or an orchestrator's, never waiting for that run to
+/// end.
 pub fn clear_volume(
     binary: Option<&Path>,
     env: &[(OsString, OsString)],

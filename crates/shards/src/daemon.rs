@@ -1009,6 +1009,8 @@ struct Keep<'a> {
     link_local: Vec<std::net::IpAddr>,
     /// Its microVM's own engine (D181), where its run has one.
     engine: Option<OwnEngine>,
+    /// The named volumes it mounts, held since they were opened (D281): its [`Inbox`]'s.
+    volumes: crate::volumes::Holds,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1183,6 +1185,9 @@ struct Inbox {
     /// The streams its guest's NOTICE built-ins are told on, one for each share process
     /// that tells what its host changes (D235): held while it runs.
     notices: Vec<shards_ipc::Stream>,
+    /// The named volumes it mounts and those plugged into it (D281), held until it ends, so
+    /// that no clearing of them through shards-api removes their files under it.
+    volumes: crate::volumes::Holds,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -3990,6 +3995,8 @@ impl<D: Disk> Daemon<D> {
             (Some((_, name)), true) if !run.engine_nets.is_empty() => Some(name.clone()),
             _ => None,
         };
+        // Its named volumes, held from before their files are opened until it ends (D281).
+        let mut volumes = crate::volumes::Holds::default();
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
@@ -4004,7 +4011,8 @@ impl<D: Disk> Daemon<D> {
                 };
                 crate::volumes::open_for(&points, first, &crate::volumes::Store::new(&self.home), &access)
             })
-            .and_then(|opened| {
+            .and_then(|mut opened| {
+                volumes = std::mem::take(&mut opened.held);
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
                     crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
@@ -4602,6 +4610,7 @@ impl<D: Disk> Daemon<D> {
                     token,
                     registry_env: run.registry_env.clone(),
                 }),
+                volumes,
             },
             || match &start {
                 // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
@@ -6076,6 +6085,7 @@ impl<D: Disk> Daemon<D> {
             mac: _,
             link_local: _,
             engine,
+            volumes,
         } = keep;
         // A pool's run keeps its pool in use until it ends (`shards_api::demand`).
         if let Some(key) = &ready.pool
@@ -6167,6 +6177,7 @@ impl<D: Disk> Daemon<D> {
             saved_as: None,
             engine,
             notices: Vec::new(),
+            volumes,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -7152,6 +7163,8 @@ impl<D: Disk> Daemon<D> {
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
+        // Its named volumes let go of (D281): their clearing is refused no more for its sake.
+        inbox.volumes = crate::volumes::Holds::default();
         // On the host's network (D124): the host's ports of its guest's binds let go, but
         // its joiners', which go as each of them ends (D119).
         if inbox.joiners == 0 {
@@ -11421,6 +11434,7 @@ mod tests {
                         mac: None,
                         link_local: Vec::new(),
                         engine: None,
+                        volumes: Default::default(),
                     },
                     acquire,
                 )?;
@@ -11874,6 +11888,7 @@ mod tests {
                             mac: None,
                             link_local: Vec::new(),
                             engine: None,
+                            volumes: Default::default(),
                         },
                         || received(&offered).map_err(|e| format!("no warm VM: {e:?}")),
                     )
@@ -15400,6 +15415,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: None,
+                    volumes: Default::default(),
                 },
                 || ready.take().ok_or_else(|| "no warm VM".to_string()),
             )?;
@@ -15522,6 +15538,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -15574,6 +15591,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -16384,6 +16402,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: engine.clone(),
+                    volumes: Default::default(),
                 };
                 let _inbox = t.daemon.register(ready, &id, keep);
                 say(&vm, kind::STARTED, &[]);
@@ -16459,6 +16478,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
