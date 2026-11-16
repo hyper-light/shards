@@ -1,46 +1,22 @@
 //! An HTTP/2 client (RFC 9113) of one connection over a byte pipe, with prior knowledge
 //! (§3.3), as grpc-go dials a frontend's stdio. Its streams open one at a time, each a
 //! request and its response; SETTINGS, PING, WINDOW_UPDATE and GOAWAY are answered as
-//! they come; flow control is kept both ways (§5.2, §6.9). Every frame is bounded by this
-//! side's MAX_FRAME_SIZE (the default, 16384), every header block by its
-//! MAX_HEADER_LIST_SIZE, every body by what the caller allows.
+//! they come. Its frames, settings, flow control both ways (§5.2, §6.9) and field
+//! compression are shards-http2's, the credential injector's own (D242, R12): every frame
+//! is bounded by this side's SETTINGS_MAX_FRAME_SIZE (the protocol's, never raised), every
+//! header list by [`MAX_HEADER_LIST`], every body by what the caller allows.
 
 use std::io::{Read, Write};
 
-use crate::hpack::{self, Field};
+use shards_http2::hpack::{Decoded, Field, Indexing};
+use shards_http2::{self as http2, Block, End, Head, Holds, Hop, Settings};
 
-/// The client connection preface (§3.4).
-const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-/// The frame size this side takes: the default, which it never raises (§6.5.2).
-const MAX_FRAME: usize = 16_384;
 /// The window this side gives each stream and the connection: a gRPC message's most,
 /// 16 MiB (grpcclient's MaxCallRecvMsgSize), with its prefix, fits one stream's.
 pub const WINDOW: u32 = 1 << 25;
-/// The header lists this side takes (MAX_HEADER_LIST_SIZE): BuildKit's errors carry
-/// their stacks in `grpc-status-details-bin`.
+/// The header lists this side takes: BuildKit's errors carry their stacks in
+/// `grpc-status-details-bin`.
 const MAX_HEADER_LIST: usize = 1 << 20;
-/// A window may not pass 2^31-1 (§6.9.1).
-const MAX_WINDOW: i64 = (1 << 31) - 1;
-
-mod kind {
-    pub const DATA: u8 = 0;
-    pub const HEADERS: u8 = 1;
-    pub const RST_STREAM: u8 = 3;
-    pub const SETTINGS: u8 = 4;
-    pub const PUSH_PROMISE: u8 = 5;
-    pub const PING: u8 = 6;
-    pub const GOAWAY: u8 = 7;
-    pub const WINDOW_UPDATE: u8 = 8;
-    pub const CONTINUATION: u8 = 9;
-}
-
-mod flag {
-    pub const END_STREAM: u8 = 0x1;
-    pub const ACK: u8 = 0x1;
-    pub const END_HEADERS: u8 = 0x4;
-    pub const PADDED: u8 = 0x8;
-    pub const PRIORITY: u8 = 0x20;
-}
 
 /// What a connection or a stream ended with instead of its response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +25,12 @@ pub struct Error(pub String);
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "http2: {}", self.0)
+    }
+}
+
+impl From<http2::Error> for Error {
+    fn from(e: http2::Error) -> Error {
+        Error(e.why.to_string())
     }
 }
 
@@ -69,15 +51,6 @@ pub struct Response {
     pub trailers: Vec<Field>,
 }
 
-/// A frame: its type, flags, stream and payload.
-#[derive(Debug)]
-struct Frame {
-    kind: u8,
-    flags: u8,
-    stream: u32,
-    payload: Vec<u8>,
-}
-
 /// Where a response is read up to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -93,10 +66,6 @@ struct Pending {
     phase: Phase,
     response: Response,
     most: usize,
-    /// What this side may still send on it.
-    send_window: i64,
-    /// What the peer sent on it that this side has not yet given back.
-    taken: u64,
 }
 
 /// One client connection.
@@ -104,48 +73,34 @@ struct Pending {
 pub struct Conn<R, W> {
     r: R,
     w: W,
-    decoder: hpack::Decoder,
+    /// This side's end of the connection: the peer's settings, each way's windows and
+    /// field compression.
+    hop: Hop,
     next_stream: u32,
-    /// The peer's MAX_FRAME_SIZE and INITIAL_WINDOW_SIZE.
-    peer_frame: usize,
-    peer_window: i64,
-    /// What this side may send on the connection.
-    send_window: i64,
-    /// What the peer sent on the connection that this side has not yet given back.
-    taken: u64,
     /// The last stream the peer will answer, once it has said GOAWAY.
     last_stream: Option<u32>,
 }
 
 impl<R: Read, W: Write> Conn<R, W> {
     /// A connection over `r` and `w`: the preface, this side's settings (no push, its
-    /// windows, its header lists), and the connection's own window raised to [`WINDOW`].
+    /// streams' windows), and the connection's own window raised to [`WINDOW`].
     pub fn new(r: R, mut w: W) -> Result<Conn<R, W>, Error> {
-        let mut settings = Vec::new();
-        for (id, value) in [(0x2u16, 0u32), (0x4, WINDOW), (0x6, MAX_HEADER_LIST as u32)] {
-            settings.extend_from_slice(&id.to_be_bytes());
-            settings.extend_from_slice(&value.to_be_bytes());
-        }
-        let mut out = PREFACE.to_vec();
-        frame_into(&mut out, kind::SETTINGS, 0, 0, &settings);
-        frame_into(
-            &mut out,
-            kind::WINDOW_UPDATE,
-            0,
-            0,
-            &(WINDOW - 65_535).to_be_bytes(),
+        let hop = Hop::new(
+            Holds {
+                stream: WINDOW,
+                connection: WINDOW,
+            },
+            Settings::INITIAL.header_table_size as usize,
         );
+        let mut out = Vec::new();
+        hop.preface(End::Client, &mut out);
         w.write_all(&out).map_err(io)?;
         w.flush().map_err(io)?;
         Ok(Conn {
             r,
             w,
-            decoder: hpack::Decoder::new(4096, MAX_HEADER_LIST),
+            hop,
             next_stream: 1,
-            peer_frame: MAX_FRAME,
-            peer_window: 65_535,
-            send_window: 65_535,
-            taken: 0,
             last_stream: None,
         })
     }
@@ -159,252 +114,93 @@ impl<R: Read, W: Write> Conn<R, W> {
         let id = self.next_stream;
         self.next_stream = id
             .checked_add(2)
-            .filter(|s| *s < 1 << 31)
+            .filter(|s| *s <= http2::MOST_STREAM)
             .ok_or_else(|| Error("no stream identifiers left".into()))?;
         let mut p = Pending {
             id,
             phase: Phase::Headers,
             response: Response::default(),
             most,
-            send_window: self.peer_window,
-            taken: 0,
         };
-        // Its headers, in as many frames as the peer's frame size takes (§6.10).
-        let block = hpack::encode(headers);
-        let ends = if body.is_empty() { flag::END_STREAM } else { 0 };
+        let exchanged = self.exchange(&mut p, headers, body);
+        // The stream's windows and credit let go of, however it ended.
+        self.hop.close(id);
+        exchanged.map(|()| p.response)
+    }
+
+    /// `headers`, then `body` as the peer's windows let it go, on `p`'s stream, and its
+    /// response read to its end.
+    fn exchange(&mut self, p: &mut Pending, headers: &[(&str, &str)], body: &[u8]) -> Result<(), Error> {
+        // Literals without indexing (RFC 7541 §6.2.2), which change no table.
+        let fields: Vec<Field> = headers
+            .iter()
+            .map(|(name, value)| Field::new(name.as_bytes(), value.as_bytes(), Indexing::Without))
+            .collect();
+        let mut block = Vec::new();
+        self.hop.encoder.encode(&fields, &mut block);
         let mut out = Vec::new();
-        let mut chunks = block.chunks(self.peer_frame.max(1)).peekable();
-        let mut first = true;
-        loop {
-            let chunk = chunks.next().unwrap_or_default();
-            let end = if chunks.peek().is_none() {
-                flag::END_HEADERS
-            } else {
-                0
-            };
-            if first {
-                frame_into(&mut out, kind::HEADERS, end | ends, id, chunk);
-                first = false;
-            } else {
-                frame_into(&mut out, kind::CONTINUATION, end, id, chunk);
-            }
-            if end != 0 {
-                break;
-            }
-        }
+        http2::headers(
+            p.id,
+            &block,
+            body.is_empty(),
+            self.hop.peer.max_frame_size,
+            &mut out,
+        );
         self.w.write_all(&out).map_err(io)?;
-        // Its body, as the windows let it go.
-        let mut sent = 0usize;
-        while sent < body.len() {
-            let room = self.send_window.min(p.send_window);
-            if room <= 0 {
+        let mut sent = 0;
+        while let Some(rest) = body.get(sent..).filter(|rest| !rest.is_empty()) {
+            out.clear();
+            sent += self.hop.send_data(p.id, rest, true, &mut out);
+            self.w.write_all(&out).map_err(io)?;
+            if sent < body.len() {
+                // The windows spent: what the peer says next may give them room.
                 self.w.flush().map_err(io)?;
-                self.next(&mut p)?;
+                self.next(p)?;
                 if p.phase == Phase::Done {
-                    return Ok(p.response);
+                    return Ok(());
                 }
-                continue;
             }
-            let n = usize::try_from(room)
-                .unwrap_or(usize::MAX)
-                .min(self.peer_frame)
-                .min(body.len() - sent);
-            let end = if sent + n == body.len() {
-                flag::END_STREAM
-            } else {
-                0
-            };
-            let mut f = Vec::with_capacity(9 + n);
-            frame_into(
-                &mut f,
-                kind::DATA,
-                end,
-                id,
-                body.get(sent..sent + n).unwrap_or_default(),
-            );
-            self.w.write_all(&f).map_err(io)?;
-            sent += n;
-            let n = i64::try_from(n).unwrap_or(i64::MAX);
-            self.send_window -= n;
-            p.send_window -= n;
         }
         self.w.flush().map_err(io)?;
-        // Its response.
         while p.phase != Phase::Done {
-            self.next(&mut p)?;
+            self.next(p)?;
         }
-        Ok(p.response)
+        Ok(())
     }
 
     /// The next frame, applied: the connection's own, or the stream's, or another's,
-    /// whose headers still change the table (§4.3) and whose data still takes the
+    /// whose header block still changes the table (§4.3) and whose data still takes the
     /// connection's window.
     fn next(&mut self, p: &mut Pending) -> Result<(), Error> {
-        let f = self.read_frame()?;
-        match f.kind {
-            kind::SETTINGS => self.settings(&f, p),
-            kind::PING => self.ping(&f),
-            kind::WINDOW_UPDATE => self.window_update(&f, p),
-            kind::GOAWAY => {
-                let last = f
-                    .payload
-                    .get(..4)
-                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                    .map(|b| u32::from_be_bytes(b) & 0x7fff_ffff)
+        let (head, payload) = self.read_frame()?;
+        let mut out = Vec::new();
+        match head.kind {
+            http2::SETTINGS => self.hop.settings(head, &payload, &mut out)?,
+            http2::PING => http2::ping(head, &payload, &mut out)?,
+            http2::WINDOW_UPDATE if head.stream == 0 || head.stream == p.id => {
+                self.hop.window_update(head, &payload)?;
+            }
+            http2::GOAWAY => {
+                let last = http2::word(&payload, 0)
+                    .map(|last| last & http2::MOST_STREAM)
                     .ok_or_else(|| Error("a GOAWAY shorter than its fields".into()))?;
                 self.last_stream = Some(last);
                 if p.id > last {
                     return bad("the peer said GOAWAY before this stream");
                 }
-                Ok(())
             }
-            kind::PUSH_PROMISE => bad("a PUSH_PROMISE, which this side did not allow"),
-            kind::CONTINUATION => bad("a CONTINUATION after a complete header block"),
-            kind::HEADERS if f.stream == p.id => {
-                let ends = f.flags & flag::END_STREAM != 0;
-                let fields = self.header_block(f)?;
-                match p.phase {
-                    Phase::Headers => p.response.headers = fields,
-                    Phase::Body if ends => p.response.trailers = fields,
-                    _ => return bad("headers after the trailers"),
-                }
-                p.phase = if ends { Phase::Done } else { Phase::Body };
-                Ok(())
+            http2::PUSH_PROMISE => return bad("a PUSH_PROMISE, which this side did not allow"),
+            http2::CONTINUATION => return bad("a CONTINUATION after a complete header block"),
+            http2::HEADERS => self.headers(p, head, &payload)?,
+            http2::DATA => self.data(p, head, &payload, &mut out)?,
+            http2::RST_STREAM if head.stream == 0 => return bad("a RST_STREAM on the connection"),
+            http2::RST_STREAM if head.stream == p.id => {
+                let code = http2::word(&payload, 0).unwrap_or(0);
+                return bad(format!("the stream was reset ({})", error_code(code)));
             }
-            kind::HEADERS if f.stream != 0 => self.header_block(f).map(|_| ()),
-            kind::DATA if f.stream == p.id => {
-                if p.phase != Phase::Body {
-                    return bad("data before the response's headers");
-                }
-                let ends = f.flags & flag::END_STREAM != 0;
-                let data = unpad(&f)?;
-                if p.response.body.len().saturating_add(data.len()) > p.most {
-                    return bad(format!("a response larger than {} bytes", p.most));
-                }
-                p.response.body.extend_from_slice(data);
-                self.give_back(p, f.payload.len(), !ends)?;
-                if ends {
-                    p.phase = Phase::Done;
-                }
-                Ok(())
-            }
-            kind::DATA if f.stream != 0 => self.give_back(p, f.payload.len(), false),
-            kind::RST_STREAM if f.stream == p.id => {
-                let code = f
-                    .payload
-                    .get(..4)
-                    .and_then(|b| <[u8; 4]>::try_from(b).ok())
-                    .map_or(0, u32::from_be_bytes);
-                bad(format!("the stream was reset ({})", error_code(code)))
-            }
-            kind::DATA | kind::HEADERS | kind::RST_STREAM if f.stream == 0 => {
-                bad("a stream's frame on the connection")
-            }
-            // PRIORITY, a closed stream's RST_STREAM, and types this side does not know
-            // are passed over (§4.1, §5.5).
-            _ => Ok(()),
-        }
-    }
-
-    fn settings(&mut self, f: &Frame, p: &mut Pending) -> Result<(), Error> {
-        if f.stream != 0 {
-            return bad("SETTINGS on a stream");
-        }
-        if f.flags & flag::ACK != 0 {
-            if !f.payload.is_empty() {
-                return bad("a SETTINGS acknowledgement with settings");
-            }
-            return Ok(());
-        }
-        let (settings, rest) = f.payload.as_chunks::<6>();
-        if !rest.is_empty() {
-            return bad("SETTINGS of a length not a multiple of six");
-        }
-        for &[a, b, c, d, e, g] in settings {
-            let value = u32::from_be_bytes([c, d, e, g]);
-            match u16::from_be_bytes([a, b]) {
-                // §6.9.2: a change of the initial window changes the open stream's too.
-                0x4 => {
-                    if i64::from(value) > MAX_WINDOW {
-                        return bad("an initial window past 2^31-1");
-                    }
-                    let delta = i64::from(value) - self.peer_window;
-                    self.peer_window = i64::from(value);
-                    p.send_window = p.send_window.saturating_add(delta);
-                    if p.send_window > MAX_WINDOW {
-                        return bad("a stream window past 2^31-1");
-                    }
-                }
-                0x5 => {
-                    if !(16_384..=16_777_215).contains(&value) {
-                        return bad("a maximum frame size out of range");
-                    }
-                    self.peer_frame = usize::try_from(value).unwrap_or(MAX_FRAME);
-                }
-                _ => {}
-            }
-        }
-        let mut ack = Vec::new();
-        frame_into(&mut ack, kind::SETTINGS, flag::ACK, 0, &[]);
-        self.send(&ack)
-    }
-
-    fn ping(&mut self, f: &Frame) -> Result<(), Error> {
-        if f.payload.len() != 8 || f.stream != 0 {
-            return bad("a PING not of eight bytes on the connection");
-        }
-        if f.flags & flag::ACK != 0 {
-            return Ok(());
-        }
-        let mut ack = Vec::new();
-        frame_into(&mut ack, kind::PING, flag::ACK, 0, &f.payload);
-        self.send(&ack)
-    }
-
-    fn window_update(&mut self, f: &Frame, p: &mut Pending) -> Result<(), Error> {
-        let inc = f
-            .payload
-            .as_slice()
-            .try_into()
-            .map(|b: [u8; 4]| i64::from(u32::from_be_bytes(b) & 0x7fff_ffff))
-            .map_err(|_| Error("a WINDOW_UPDATE not of four bytes".into()))?;
-        if inc == 0 {
-            return bad("a WINDOW_UPDATE of nothing");
-        }
-        let window = match f.stream {
-            0 => &mut self.send_window,
-            s if s == p.id => &mut p.send_window,
-            _ => return Ok(()),
-        };
-        *window = window.saturating_add(inc);
-        if *window > MAX_WINDOW {
-            return bad("a window past 2^31-1");
-        }
-        Ok(())
-    }
-
-    /// Credits `len` bytes the peer sent back to its windows, each once half of it is
-    /// taken: the connection's always, the stream's while it goes on.
-    fn give_back(&mut self, p: &mut Pending, len: usize, stream: bool) -> Result<(), Error> {
-        let len = u64::try_from(len).unwrap_or(u64::MAX);
-        if len == 0 {
-            return Ok(());
-        }
-        let half = u64::from(WINDOW / 2);
-        let mut out = Vec::new();
-        self.taken = self.taken.saturating_add(len);
-        if self.taken >= half {
-            let inc = u32::try_from(self.taken).unwrap_or(WINDOW).min(WINDOW);
-            frame_into(&mut out, kind::WINDOW_UPDATE, 0, 0, &inc.to_be_bytes());
-            self.taken = 0;
-        }
-        if stream {
-            p.taken = p.taken.saturating_add(len);
-            if p.taken >= half {
-                let inc = u32::try_from(p.taken).unwrap_or(WINDOW).min(WINDOW);
-                frame_into(&mut out, kind::WINDOW_UPDATE, 0, p.id, &inc.to_be_bytes());
-                p.taken = 0;
-            }
+            // PRIORITY, another stream's WINDOW_UPDATE or RST_STREAM, and types this side
+            // does not know are passed over (§4.1, §5.5, §6.9).
+            _ => {}
         }
         if out.is_empty() {
             return Ok(());
@@ -412,73 +208,76 @@ impl<R: Read, W: Write> Conn<R, W> {
         self.send(&out)
     }
 
+    /// A header block: `head`'s fragment and its CONTINUATIONs (§6.10), decoded whole; on
+    /// the stream, its response's headers or trailers.
+    fn headers(&mut self, p: &mut Pending, head: Head, payload: &[u8]) -> Result<(), Error> {
+        let (mut block, mut whole) = Block::headers(head, payload)?;
+        while !whole {
+            let (next, payload) = self.read_frame()?;
+            whole = block.continued(next, &payload, MAX_HEADER_LIST)?;
+        }
+        let fields = match block.decode(&mut self.hop.decoder, MAX_HEADER_LIST)? {
+            Decoded::Fields(fields) => fields,
+            Decoded::TooLarge => return bad("a header list larger than allowed"),
+        };
+        if head.stream != p.id {
+            return Ok(());
+        }
+        let ends = head.flags & http2::END_STREAM != 0;
+        match p.phase {
+            Phase::Headers => p.response.headers = fields,
+            Phase::Body if ends => p.response.trailers = fields,
+            _ => return bad("headers after the trailers"),
+        }
+        p.phase = if ends { Phase::Done } else { Phase::Body };
+        Ok(())
+    }
+
+    /// A DATA frame, its octets given back to the peer's windows as they are taken (§6.9):
+    /// on the stream, its response's body, the stream's own window while it goes on; any
+    /// other stream's, closed here, the connection's alone.
+    fn data(&mut self, p: &mut Pending, head: Head, payload: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+        if head.stream == 0 {
+            return bad("DATA on the connection");
+        }
+        self.hop.received(head)?;
+        let data = http2::data(head, payload)?;
+        let taken = head.length as usize;
+        if head.stream != p.id {
+            self.hop.released_on_connection(taken, out);
+            self.hop.close(head.stream);
+            return Ok(());
+        }
+        if p.phase != Phase::Body {
+            return bad("data before the response's headers");
+        }
+        if p.response.body.len().saturating_add(data.len()) > p.most {
+            return bad(format!("a response larger than {} bytes", p.most));
+        }
+        p.response.body.extend_from_slice(data);
+        if head.flags & http2::END_STREAM == 0 {
+            self.hop.released(head.stream, taken, out);
+        } else {
+            self.hop.released_on_connection(taken, out);
+            p.phase = Phase::Done;
+        }
+        Ok(())
+    }
+
     fn send(&mut self, bytes: &[u8]) -> Result<(), Error> {
         self.w.write_all(bytes).map_err(io)?;
         self.w.flush().map_err(io)
     }
 
-    /// A header block: `f`'s fragment and its CONTINUATIONs (§6.10), decoded.
-    fn header_block(&mut self, f: Frame) -> Result<Vec<Field>, Error> {
-        let mut fragment = unpad(&f)?;
-        if f.flags & flag::PRIORITY != 0 {
-            fragment = fragment
-                .get(5..)
-                .ok_or_else(|| Error("a priority past its frame".into()))?;
-        }
-        let mut block = fragment.to_vec();
-        let mut ended = f.flags & flag::END_HEADERS != 0;
-        while !ended {
-            let c = self.read_frame()?;
-            if c.kind != kind::CONTINUATION || c.stream != f.stream {
-                return bad("a header block not continued");
-            }
-            if block.len().saturating_add(c.payload.len()) > MAX_HEADER_LIST {
-                return bad("a header block larger than allowed");
-            }
-            block.extend_from_slice(&c.payload);
-            ended = c.flags & flag::END_HEADERS != 0;
-        }
-        self.decoder.decode(&block).map_err(|e| Error(e.to_string()))
-    }
-
-    fn read_frame(&mut self) -> Result<Frame, Error> {
-        let mut head = [0u8; 9];
-        self.r.read_exact(&mut head).map_err(io)?;
-        let [l0, l1, l2, kind, flags, s0, s1, s2, s3] = head;
-        let len = (usize::from(l0) << 16) | (usize::from(l1) << 8) | usize::from(l2);
-        if len > MAX_FRAME {
-            return bad(format!("a frame of {len} bytes, past {MAX_FRAME}"));
-        }
-        let mut payload = vec![0u8; len];
+    fn read_frame(&mut self) -> Result<(Head, Vec<u8>), Error> {
+        let mut bytes = [0u8; http2::HEAD];
+        self.r.read_exact(&mut bytes).map_err(io)?;
+        let head = Head::read(&bytes, Settings::INITIAL.max_frame_size)?
+            .ok_or_else(|| Error("a frame's header cut short".into()))?;
+        let mut payload = vec![0u8; head.length as usize];
         self.r.read_exact(&mut payload).map_err(io)?;
-        Ok(Frame {
-            kind,
-            flags,
-            stream: u32::from_be_bytes([s0, s1, s2, s3]) & 0x7fff_ffff,
-            payload,
-        })
+        Ok((head, payload))
     }
-}
-
-/// A frame's payload less its padding (§6.1, §6.2).
-fn unpad(f: &Frame) -> Result<&[u8], Error> {
-    if f.flags & flag::PADDED == 0 {
-        return Ok(&f.payload);
-    }
-    let Some((&pad, rest)) = f.payload.split_first() else {
-        return bad("a padded frame without its pad length");
-    };
-    rest.len()
-        .checked_sub(usize::from(pad))
-        .and_then(|n| rest.get(..n))
-        .ok_or_else(|| Error("padding past its frame".into()))
-}
-
-fn frame_into(out: &mut Vec<u8>, kind: u8, flags: u8, stream: u32, payload: &[u8]) {
-    let [_, l0, l1, l2] = u32::try_from(payload.len()).unwrap_or(0).to_be_bytes();
-    out.extend_from_slice(&[l0, l1, l2, kind, flags]);
-    out.extend_from_slice(&(stream & 0x7fff_ffff).to_be_bytes());
-    out.extend_from_slice(payload);
 }
 
 /// An error code's name (§7).
@@ -501,4 +300,91 @@ fn error_code(code: u32) -> String {
         _ => return format!("error code {code:#x}"),
     };
     name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shards_http2::hpack::Encoder;
+    use shards_http2::{ACK, END_HEADERS, END_STREAM};
+
+    fn put(out: &mut Vec<u8>, kind: u8, flags: u8, stream: u32, payload: &[u8]) {
+        out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes()[1..]);
+        out.extend_from_slice(&[kind, flags]);
+        out.extend_from_slice(&stream.to_be_bytes());
+        out.extend_from_slice(payload);
+    }
+
+    /// Each frame's type, flags, stream and payload, after the client's preface.
+    fn frames(wire: &[u8]) -> Vec<(u8, u8, u32, Vec<u8>)> {
+        let mut wire = wire.strip_prefix(http2::PREFACE).unwrap();
+        let mut all = Vec::new();
+        while let Some((h, payload)) = http2::frame(wire, u32::MAX).unwrap() {
+            all.push((h.kind, h.flags, h.stream, payload.to_vec()));
+            wire = &wire[http2::HEAD + payload.len()..];
+        }
+        assert!(wire.is_empty(), "whole frames");
+        all
+    }
+
+    /// Do: a request whose body is past the peer's first windows, the peer granting more
+    /// after its SETTINGS, and the response's last DATA a whole frame. Expect the body held
+    /// at the initial 65,535 octets until the peer grants more, then sent whole, its
+    /// END_STREAM with its last octet; the response read whole; and the credit of its last
+    /// frame given back to the connection alone, as the stream is closed by it (§5.1).
+    #[test]
+    fn a_body_waits_for_its_windows_and_a_closed_streams_credit_goes_to_the_connection() {
+        let body = vec![7u8; 70_000];
+        let mut server = Vec::new();
+        put(&mut server, http2::SETTINGS, 0, 0, &[]);
+        put(&mut server, http2::WINDOW_UPDATE, 0, 0, &10_000u32.to_be_bytes());
+        put(&mut server, http2::WINDOW_UPDATE, 0, 1, &10_000u32.to_be_bytes());
+        let mut status = Vec::new();
+        Encoder::new(4096, 4096).encode(&[Field::new(b":status", b"200", Indexing::Without)], &mut status);
+        put(&mut server, http2::HEADERS, END_HEADERS, 1, &status);
+        put(&mut server, http2::DATA, 0, 1, &[1; 16_384]);
+        put(&mut server, http2::DATA, END_STREAM, 1, &[2; 16_384]);
+        let mut conn = Conn::new(std::io::Cursor::new(server), Vec::new()).unwrap();
+        let headers = [
+            (":method", "POST"),
+            (":scheme", "http"),
+            (":path", "/a.B/C"),
+            (":authority", "localhost"),
+        ];
+        let response = conn.request(&headers, &body, 1 << 20).unwrap();
+        let status: Vec<_> = response
+            .headers
+            .iter()
+            .map(|f| (f.name.as_slice(), f.value.as_slice()))
+            .collect();
+        assert_eq!(status, [(&b":status"[..], &b"200"[..])]);
+        assert_eq!(response.body.len(), 32_768);
+        assert!(response.trailers.is_empty());
+        let sent = frames(&conn.w);
+        let data: Vec<_> = sent.iter().filter(|f| f.0 == http2::DATA).collect();
+        assert_eq!(data.iter().map(|f| f.3.len()).sum::<usize>(), body.len());
+        assert!(data.iter().all(|f| f.3.len() <= 16_384 && f.2 == 1));
+        assert!(data.iter().rev().skip(1).all(|f| f.1 == 0));
+        assert_eq!(data.last().unwrap().1, END_STREAM);
+        let before_ack: usize = sent
+            .iter()
+            .take_while(|f| !(f.0 == http2::SETTINGS && f.1 & ACK != 0))
+            .filter(|f| f.0 == http2::DATA)
+            .map(|f| f.3.len())
+            .sum();
+        assert_eq!(
+            before_ack, 65_535,
+            "held at the initial windows until the peer spoke"
+        );
+        let credit: Vec<(u32, u32)> = sent
+            .iter()
+            .filter(|f| f.0 == http2::WINDOW_UPDATE)
+            .map(|f| (f.2, http2::word(&f.3, 0).unwrap()))
+            .collect();
+        assert_eq!(
+            credit,
+            [(0, WINDOW - 65_535), (1, 16_384), (0, 16_384), (0, 16_384)],
+            "the preface's, then the first DATA's to the stream and the connection, the last's to the connection alone"
+        );
+    }
 }

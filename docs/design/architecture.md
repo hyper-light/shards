@@ -23429,7 +23429,8 @@ and BuildKit build an Agentfile, no shards installed. The frontend is `shards` i
   written. Tests build the image in `shards-dind` and push it only to a registry
   container there.
 - **The gateway client** (`crates/gateway`): HPACK, HTTP/2, gRPC's unary call and
-  protobuf, written here rather than taken from h2, tonic and prost. shards links no async
+  protobuf, written here rather than taken from h2, tonic and prost (its HPACK and HTTP/2
+  shards-http2's since D242's step 7, the credential injector's own: R12). shards links no async
   runtime, and the gateway needs one peer's unary calls over one pipe. Frames are bounded
   by 16 KiB, header lists by 1 MiB and messages by grpcclient's 16 MiB. The client is held
   to BuildKit's own traffic, captured by a spy relaying docker/dockerfile:1's stdio in
@@ -29871,7 +29872,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint building, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint built, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap; its real-VM runs and its measurement against arm g owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -29983,7 +29984,8 @@ So, for step 11:
   as the managed endpoints' `server` fingerprint does (the microVM's identity, point 2, below).
 - Step 11 serves each microVM from an endpoint of its own, bound where its caller says ("The
   stdio lanes' service", below). A controller dials that microVM's endpoint and meets its key
-  there. Where the daemon binds each endpoint is step 11's to build.
+  there. The daemon binds each on loopback ("Where the daemon binds it", below), as an
+  orchestrator's run host does (D252).
 - Each lane reaches its microVM over vsock, as a host reaches a guest's service in Firecracker:
   an AF_UNIX connection to the VMM, then `CONNECT PORT` (Firecracker edb60617, `docs/vsock.md`,
   "Host-Initiated Connections"). Inside the microVM, shards-init's relay carries it on. The
@@ -30012,12 +30014,12 @@ callers of it:
 
 Until step 10 decided, only what both arms share was built (ROOT, 2026-11-12): the connection,
 the microVM's identity, who is refused, and what a lane says. The control lane (exec, signal,
-inspect) and the terminal lane (attach, TTY) wait on step 6's member exec, attach and TTY. Step
-10 has decided for the host (above). The endpoint runs in the daemon and holds each microVM's
-own key, and the key's SHA-256 reaches the controller in the run's managed metadata. Exec lanes,
-members' own lanes (signal, inspect, a terminal's size) and the log lane, which also waited on
-step 10, are built now, below; a log lane of an owned member waits on the daemon keeping that
-member's output (D240).
+inspect) and the terminal lane (attach, TTY) waited on step 6's member exec, attach and TTY
+(D243, D244). Step 10 has decided for the host (above). The endpoint runs in the daemon and
+holds each microVM's own key, and the key's SHA-256 reaches the controller in the run's managed
+metadata. Exec lanes, members' own lanes (signal, inspect, a terminal's size) and the log lane,
+which also waited on step 10, are built now, below, an owned member's log lane among them, as
+the daemon keeps every member's output (D240, "Every member's log").
 
 *The connection.* QUIC over D180's driver and TLS (`net.rs`, `tls.rs`): TLS 1.3 alone, D239's
 provider (TLS13_AES_256_GCM_SHA384 alone, the hybrid ML-KEM groups), early data off, on an
@@ -31193,7 +31195,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; kiln's broker answering sign-ins and the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, kiln's half on kiln main and Hex's with the Hex lead; the leak scan's harness built, step 10's first part, D259; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins and the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32489,6 +32491,57 @@ lease answered 503").
       fd61d46da and on the tree merged with main 3b3c6e019 (b6e6f4b9c); fmt clean.
 - *Owed.* ROOT runs the three api_image injector tests on KVM, HVF and WHP (the first runs on HVF and WHP), and CI's
   matrix on main.
+
+**Built: one HTTP/2 in the tree, the injector's and the gateway's client's (R12)** (`crates/http2`, shards-http2:
+`lib.rs`, `hpack.rs`; `crates/net/src/http2.rs`; `crates/gateway/src/h2.rs`, `grpc.rs`; `crates/testguest/src/tls_ask.rs`;
+lane inject-h2 of kiln plan 01a1d2b88be57304b972761e2a5c6781 step 7).
+- *Before.* Step 7's first slice wrote the injector's frame codec and HPACK in crates/net; its survey (above) weighed
+  crates.io's crates alone. The tree held a second already: BuildKit's gateway client (D113: `crates/gateway`'s `h2.rs`,
+  `hpack.rs`, and `hpack_tables.rs` generated from golang.org/x/net's sources by `scripts/gateway/gen-tables`), with
+  its own frame reader and writer, SETTINGS checks and windows, for one blocking client of one stream at a time. It
+  could not serve the injector: its decoder reads a never-indexed literal as one without indexing (both its
+  `(4, false)`), so a forwarding hop loses how the field came (RFC 7541 §7.1.3, f42), and its encoder writes literals
+  without indexing alone. The injector's serves both: a superset. testguest's `tls-ask` compiled the injector's
+  `hpack.rs` by `#[path]`.
+- *Decision.* One implementation (R12, R13): the injector's, moved unchanged into `crates/http2`, with no I/O and one
+  dependency (zeroize, the injector's already): frames (`frame`, `Head`, `headers`, `data`, `rst_stream`, `goaway`),
+  settings and flow control (`Settings`, `Hop`), field blocks (`Block`) and HPACK (`hpack`). crates/net keeps the
+  injector's request rewrite (`request`, `Go`, `Filled`) and re-exports the rest (`http2::*`, `hpack`), so inject.rs'
+  paths and api_image's `shards_net::hpack` stand; the network process links the same code. The gateway's client is
+  a blocking driver over `Hop`; its codec, its tables and their generator are deleted. testguest depends on the
+  crate. Not chosen: crates/net depending on crates/gateway (the confined network process linking BuildKit's frontend
+  client), the gateway on crates/net (a frontend linking the network stack, rustls and AWS-LC with it), and keeping
+  both.
+- *Added for the gateway's client.* `Head::read`: a frame's header, checked against this side's
+  SETTINGS_MAX_FRAME_SIZE before its payload is read (`frame` is it and the payload). `ping`: inject.rs' PING check,
+  moved. `Hop::released_on_connection`: the credit of octets on a stream this side closes with them goes to the
+  connection's window alone, as nothing but PRIORITY goes on a closed stream (RFC 9113 §5.1), as the gateway's client
+  gave it before. `released` is the stream's credit and then that, unchanged.
+- *What changes for the gateway's client (D113).* Its frames, settings and windows are the injector's. DATA past the
+  window it grants (`WINDOW`, 32 MiB) is a FLOW_CONTROL_ERROR, where it was taken. Credit goes back once a frame's
+  worth or half the window is owed (RFC 9113 §6.9.1's advice, above), not at 16 MiB. Its request fields are still
+  literals without indexing, now Huffman-coded where shorter, and a peer's changed SETTINGS_HEADER_TABLE_SIZE is said at
+  its next block's start (RFC 7541 §4.2). It no longer advertises SETTINGS_MAX_HEADER_LIST_SIZE, which is advisory (RFC
+  9113 §6.5.2). A header list past its 1 MiB is still refused, now once the block is decoded whole (§10.5.1); a grpc-go
+  server told the limit would have reset the stream instead of sending it. Where the codec refuses, the error's text is
+  its `why`.
+- *Literals.* None new. `Head::read`'s bound is its caller's; the gateway's `WINDOW` and `MAX_HEADER_LIST` are D113's.
+- *Tests.* shards-http2: the tests that moved with the code (hpack's, and the two of flow control), every Huffman
+  symbol decoded (the gateway's test), a closed stream's credit to the connection alone, a PING answered on the
+  connection alone, and a header read before its payload and refused past the frame size. shards-gateway: the client
+  replaying BuildKit v0.28.1's recorded half (`recorded_gateway_answers_are_read`), and a body held at the peer's first
+  65,535 octets until it grants more, its last DATA's credit to the connection alone. shards: the frontend's and
+  spiffe's fakes, each encoding with its own connection's encoder. shards-net: its http2 and inject tests, unchanged.
+  - *Not run.* By the person's rule of 2026-11-16 this lane built and ran nothing (`cargo fmt --all` alone); every
+    check is ROOT's, after the merge (*Owed*).
+- *Owed.* ROOT: `cargo test -p shards-http2 -p shards-gateway`; `cargo test -p shards-net --lib -- hpack:: http2::
+  inject::`; `SHARDS_HELPERS=skip cargo test -p shards --lib -- frontend:: spiffe::`; `cargo test -p shards --profile
+  test-release --test api_image --no-run` (it names `shards_net::hpack`); `scripts/lint` on every target, testguest's
+  musl ones included; CI's matrix on main. The guard mutation of `released_on_connection`: the gateway's `data()` calling
+  `released` for its stream's last DATA fails `a_body_waits_for_its_windows_and_a_closed_streams_credit_goes_to_the_connection`.
+  The gateway's client against a live BuildKit: shards' frontend image from this revision driven by `docker buildx
+  build` in `shards-dind` (D113), and the SPIFFE Workload API's against a live SPIRE agent. The injector's real-VM
+  HTTP/2 runs, as before.
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
