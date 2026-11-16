@@ -581,7 +581,9 @@ fn a_share_given_no_member_is_the_runs_alone() {
 /// shared and given no member, given at another path, or not shared at all. A working
 /// directory its image holds (`/etc`) starts as it did before P6.1, no share given it. Its
 /// shared control, the project given its harness, starts in it:
-/// `a_project_given_its_harness_is_where_it_works`.
+/// `a_project_given_its_harness_is_where_it_works`. The project is shared where a guest may
+/// have it ([`guest_at`]): a share given a member at Linux's `/tmp`, where its tests keep it,
+/// is refused before any member starts (CI run 43950458285).
 #[test]
 fn a_members_workdir_its_guest_cannot_enter_is_refused_typed() {
     if cannot_run_vms() {
@@ -590,7 +592,7 @@ fn a_members_workdir_its_guest_cannot_enter_is_refused_typed() {
     let home = TempDir::new("api-unheld-home");
     let proj = TempDir::new("api-unheld-proj");
     let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
-    let at = real.to_str().unwrap().to_owned();
+    let at = guest_at(&real);
     build(&home, "api-unheld:1", &["files", "hello.txt"], "");
     let started_in = |shares: Vec<ImageShare>, workdir: &str| {
         let mut s = spec(&home, "api-unheld:1");
