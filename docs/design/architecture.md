@@ -37499,7 +37499,12 @@ plugin. `a_share_given_no_member_is_the_runs_alone` (its default deny),
 narrowed to its own member, taken; widened to another, refused); the image channel's
 `each_shares_members_ride_the_request_last`; shards-api's spec refusals; init's
 `a_share_given_members_is_theirs_alone` (Linux; owed here). Mutation: the run host's
-`give_members` not called, and the first test fails as kiln's launch did.
+`give_members` not called, and the first test fails as kiln's launch did. Where a test's
+directory is no guest path as it is, the first two tests share it beneath `/work` by its name,
+as kiln shares a Windows project (its `isolated::guest_path`), and take its plug roots as kiln
+does (`plug_root_of`): Linux keeps them in `/tmp`, each domain's scratch, which no share may be
+at or under (D139) and no plug root may be (`plug::root_name`), and Windows' are `C:\` paths
+(CI run 43876891053 refused the Linux runs' `/tmp` plug root).
 
 **Amended (P6.1, kiln plan 01a1dd2e959772a1b17bc49026448e8a item 1, 2026-11-16): a working
 directory no share given its member holds is refused at boot, typed.** Before, such a member's
