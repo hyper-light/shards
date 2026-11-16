@@ -403,6 +403,7 @@ fn relayed(which: u8, payload: &[u8]) -> Option<(u8, Vec<u8>)> {
             let e = shards_abi::run::members::Ended::decode(payload)?;
             let ended = wire::MemberEnded {
                 member: e.member,
+                generation: 0,
                 end: e.end,
             };
             Some((wire::to_client::MEMBER_ENDED, ended.encode()))
@@ -4553,11 +4554,12 @@ mod hosted {
             if !rest.is_empty() {
                 self.answers.send(
                     wire::to_client::OUTPUT,
-                    &[&wire::Output::head(key.0, key.1), &rest],
+                    &[&wire::Output::head(key.0, 0, key.1), &rest],
                 )?;
             }
             let end = wire::OutputEnd {
                 member: key.0,
+                generation: 0,
                 channel: key.1,
                 end,
             };
@@ -4597,7 +4599,7 @@ mod hosted {
                 *room = room.saturating_sub(n as u64);
                 self.answers.send(
                     wire::to_client::OUTPUT,
-                    &[&wire::Output::head(key.0, key.1), &part],
+                    &[&wire::Output::head(key.0, 0, key.1), &part],
                 )?;
             }
             Ok(())
@@ -6133,7 +6135,11 @@ mod hosted {
             feed.room = feed.room.saturating_add(room);
         }
         live.fed.notify_all();
-        let given = wire::InputRoom { member, bytes: room };
+        let given = wire::InputRoom {
+            member,
+            generation: 0,
+            bytes: room,
+        };
         let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&given.encode()]);
     }
 
@@ -6150,6 +6156,7 @@ mod hosted {
         end_input(live, ended.member);
         let told = wire::InputEnded {
             member: ended.member,
+            generation: 0,
             written: ended.written,
             end: match ended.end {
                 managed::InputEnd::Closed => wire::StreamEnd::Closed,
@@ -6279,6 +6286,7 @@ mod hosted {
                     }
                     let room = wire::InputRoom {
                         member,
+                        generation: 0,
                         bytes: u64::from(len),
                     };
                     let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&room.encode()]);
@@ -7518,6 +7526,7 @@ mod hosted {
             let vm = shards_ipc::spawn_in(Path::new("/bin/sh"), &args, &[], false, &[]).unwrap();
             let credit = wire::Credit {
                 member: 0,
+                generation: 0,
                 channel: Channel::Stdout,
                 bytes: 4096,
             };
@@ -7654,6 +7663,7 @@ mod hosted {
             ends.sort_by_key(|e| e.channel as u8);
             let cut = |channel| wire::OutputEnd {
                 member: 1,
+                generation: 0,
                 channel,
                 end: wire::StreamEnd::Aborted(104),
             };
@@ -9527,7 +9537,11 @@ mod tests {
             assert_eq!(answer, wire::to_client::MEMBER_ENDED);
             assert_eq!(
                 wire::MemberEnded::decode(&payload),
-                Ok(wire::MemberEnded { member: 1, end })
+                Ok(wire::MemberEnded {
+                    member: 1,
+                    generation: 0,
+                    end
+                })
             );
         }
         for other in [kind::READY, kind::PROCESS, kind::DONE] {

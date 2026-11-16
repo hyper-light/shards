@@ -60,14 +60,14 @@ fn gives_back_typed(f: impl FnOnce()) -> bool {
 /// typed; `Debug` saying how many there are, never what; and no block given back holding them.
 #[test]
 fn an_input_frames_typed_bytes_are_wiped_as_it_drops() {
-    let mut payload = zeroize::Zeroizing::new(Input::head(3).to_vec());
+    let mut payload = zeroize::Zeroizing::new(Input::head(3, 0).to_vec());
     payload.extend_from_slice(TYPED);
     let kept = gives_back_typed(|| {
         let input = Input::decode(&payload).unwrap();
         assert_eq!((input.member, input.bytes.0.as_slice()), (3, TYPED));
         assert_eq!(
             format!("{input:?}"),
-            format!("Input {{ member: 3, bytes: Secret({} bytes) }}", TYPED.len())
+            format!("Input {{ member: 3, generation: 0, bytes: Secret({} bytes) }}", TYPED.len())
         );
         drop(input);
     });

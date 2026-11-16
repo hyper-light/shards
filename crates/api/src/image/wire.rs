@@ -96,8 +96,11 @@ pub use shards_abi::run::nesting::Ready;
 /// changes none refuses the run as it is asked, before any change is; 37, the members each share
 /// is given to as they start ([`ShareAt::members`], D277), so that a side that gives none
 /// refuses the run as it is asked, rather than starting a member without the directory its
-/// orchestrator gave it.
-pub const VERSION: u8 = 37;
+/// orchestrator gave it; 38, a member's generations (D270 slice 3b): a member started again in
+/// its microVM ([`to_host::RESTART`], [`RestartAsk`], [`RestartAnswer`]), each of its output,
+/// input and end frames saying the generation it is of, so that a side that knows none refuses
+/// the run as it is asked, rather than reading one generation's bytes as another's.
+pub const VERSION: u8 = 38;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -151,6 +154,8 @@ pub mod to_host {
     pub const PAUSE: u8 = 42;
     /// A [`NetAsk`](super::NetAsk): the running run's network changed in place (D269).
     pub const NET: u8 = 45;
+    /// A member started again in its microVM (D270 slice 3b): [`RestartAsk`].
+    pub const RESTART: u8 = 47;
 }
 
 /// What the run host sends.
@@ -222,6 +227,8 @@ pub mod to_client {
     pub const ASK_PAUSED: u8 = 44;
     /// [`NetAnswer`](super::NetAnswer): a network change's outcome, by its ask's id (D269).
     pub const NET_CHANGED: u8 = 46;
+    /// What came of a [`to_host::RESTART`](super::to_host::RESTART): [`RestartAnswer`].
+    pub const RESTARTED: u8 = 48;
 }
 
 /// Why a payload could not be read or written.
@@ -669,6 +676,9 @@ impl ControlAt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Credit {
     pub member: u32,
+    /// The generation whose channel the room is for (D270): a late one's for a generation past
+    /// is no room for the next.
+    pub generation: u32,
     pub channel: Channel,
     pub bytes: u64,
 }
@@ -788,6 +798,8 @@ pub enum Cause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub member: u32,
+    /// The member's generation the bytes are of (D270): 0 its first, each restart's one more.
+    pub generation: u32,
     pub channel: Channel,
     pub bytes: Vec<u8>,
 }
@@ -798,6 +810,7 @@ pub struct Output {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
     pub member: u32,
+    pub generation: u32,
     pub bytes: Secret,
 }
 
@@ -806,6 +819,7 @@ pub struct Input {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputEnd {
     pub member: u32,
+    pub generation: u32,
     pub end: StreamEnd,
 }
 
@@ -814,6 +828,7 @@ pub struct InputEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputRoom {
     pub member: u32,
+    pub generation: u32,
     pub bytes: u64,
 }
 
@@ -821,6 +836,7 @@ pub struct InputRoom {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputEnded {
     pub member: u32,
+    pub generation: u32,
     pub written: u64,
     pub end: StreamEnd,
 }
@@ -837,6 +853,7 @@ pub enum StreamEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputEnd {
     pub member: u32,
+    pub generation: u32,
     pub channel: Channel,
     pub end: StreamEnd,
 }
@@ -844,6 +861,8 @@ pub struct OutputEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemberEnded {
     pub member: u32,
+    /// The generation that ended (D270).
+    pub generation: u32,
     /// How its command ended: exited with its code, or killed by a signal (version 27), as
     /// its init's reaper saw it.
     pub end: shards_abi::run::members::End,
@@ -1246,6 +1265,41 @@ pub struct NetChanged {
 pub struct NetAnswer {
     pub id: u32,
     pub result: Result<NetChanged, (NetRefusal, String)>,
+}
+
+/// A member started again in its microVM (D270 slice 3b), by an ask's id: its current
+/// generation asked to end (SIGTERM to its command), ended at once where its graceful end
+/// stalls or outlasts `patience`, then its next started with `args` after its image's command,
+/// in the namespaces, server instance and volumes its generations keep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartAsk {
+    pub id: u32,
+    pub member: u32,
+    pub args: Vec<Vec<u8>>,
+    pub patience: std::time::Duration,
+}
+
+/// Why a member was not started again (D270), as its init's
+/// [`StartRefusal`](shards_abi::run::members::StartRefusal) codes them, and its run host's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartRefusal {
+    /// No such member runs in this run.
+    Unknown = 1,
+    /// A restart of it is under way, or its last generation has not ended.
+    Running = 2,
+    /// The generation asked of its init is not the one past its last.
+    Generation = 3,
+    /// It starts once, as said: one given a port among others (D122).
+    Unsupported = 4,
+    /// Its start failed, in its init's or its run host's words.
+    Failed = 5,
+}
+
+/// A restart's outcome, by its ask's id: the generation started, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestartAnswer {
+    pub id: u32,
+    pub result: Result<u32, (RestartRefusal, String)>,
 }
 
 /// How the run ended.
@@ -2631,6 +2685,7 @@ impl Credit {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u8(self.channel as u8);
         w.u64(self.bytes);
         w.0
@@ -2640,6 +2695,7 @@ impl Credit {
         let mut r = Reader(payload);
         let c = Credit {
             member: r.u32()?,
+            generation: r.u32()?,
             channel: channel(r.u8()?)?,
             bytes: r.u64()?,
         };
@@ -2998,6 +3054,92 @@ impl NetAnswer {
     }
 }
 
+impl RestartAsk {
+    /// Its id, member, its arguments (a count, then each's length and bytes) and its patience.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u32(self.member);
+        w.count(self.args.len())?;
+        for a in &self.args {
+            w.bytes(a)?;
+        }
+        w.duration(self.patience);
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RestartAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let member = r.u32()?;
+        let n = r.count(size_of::<u32>())?;
+        let mut args = Vec::with_capacity(n);
+        for _ in 0..n {
+            args.push(r.bytes()?.to_vec());
+        }
+        let patience = r.duration()?;
+        r.end()?;
+        Ok(RestartAsk {
+            id,
+            member,
+            args,
+            patience,
+        })
+    }
+}
+
+impl RestartAnswer {
+    /// Its id, then 0 and the generation started; or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(generation) => {
+                w.u8(0);
+                w.u32(*generation);
+            }
+            Err((why, words)) => {
+                w.u8(1);
+                w.u8(*why as u8);
+                w.text(words)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<RestartAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(r.u32()?),
+            1 => {
+                let why = match r.u8()? {
+                    1 => RestartRefusal::Unknown,
+                    2 => RestartRefusal::Running,
+                    3 => RestartRefusal::Generation,
+                    4 => RestartRefusal::Unsupported,
+                    5 => RestartRefusal::Failed,
+                    tag => {
+                        return Err(WireError::Tag {
+                            what: "a restart's refusal",
+                            tag,
+                        });
+                    }
+                };
+                Err((why, r.text()?))
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a restart's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(RestartAnswer { id, result })
+    }
+}
+
 impl StatsAsk {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
@@ -3226,16 +3368,18 @@ impl Refused {
 impl Output {
     /// Its head, before its bytes: a payload is the head then the bytes, unframed, so that
     /// the run host writes a member's bytes as they came, with no copy into another buffer.
-    pub fn head(member: u32, channel: Channel) -> [u8; 5] {
+    pub fn head(member: u32, generation: u32, channel: Channel) -> [u8; 9] {
         let [a, b, c, d] = member.to_be_bytes();
-        [a, b, c, d, channel as u8]
+        let [e, f, g, h] = generation.to_be_bytes();
+        [a, b, c, d, e, f, g, h, channel as u8]
     }
 
     pub fn decode(payload: &[u8]) -> Result<Output, WireError> {
-        let (head, bytes) = payload.split_first_chunk::<5>().ok_or(WireError::Short)?;
-        let [a, b, c, d, ch] = *head;
+        let (head, bytes) = payload.split_first_chunk::<9>().ok_or(WireError::Short)?;
+        let [a, b, c, d, e, f, g, h, ch] = *head;
         Ok(Output {
             member: u32::from_be_bytes([a, b, c, d]),
+            generation: u32::from_be_bytes([e, f, g, h]),
             channel: channel(ch)?,
             bytes: bytes.to_vec(),
         })
@@ -3244,14 +3388,18 @@ impl Output {
 
 impl Input {
     /// Its head, before its bytes, as [`Output::head`] is an output's.
-    pub fn head(member: u32) -> [u8; 4] {
-        member.to_be_bytes()
+    pub fn head(member: u32, generation: u32) -> [u8; 8] {
+        let [a, b, c, d] = member.to_be_bytes();
+        let [e, f, g, h] = generation.to_be_bytes();
+        [a, b, c, d, e, f, g, h]
     }
 
     pub fn decode(payload: &[u8]) -> Result<Input, WireError> {
-        let (head, bytes) = payload.split_first_chunk::<4>().ok_or(WireError::Short)?;
+        let (head, bytes) = payload.split_first_chunk::<8>().ok_or(WireError::Short)?;
+        let [a, b, c, d, e, f, g, h] = *head;
         Ok(Input {
-            member: u32::from_be_bytes(*head),
+            member: u32::from_be_bytes([a, b, c, d]),
+            generation: u32::from_be_bytes([e, f, g, h]),
             bytes: Secret(bytes.to_vec()),
         })
     }
@@ -3261,6 +3409,7 @@ impl InputEnd {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.stream_end(self.end);
         w.0
     }
@@ -3268,9 +3417,10 @@ impl InputEnd {
     pub fn decode(payload: &[u8]) -> Result<InputEnd, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnd { member, end })
+        Ok(InputEnd { member, generation, end })
     }
 }
 
@@ -3278,6 +3428,7 @@ impl InputRoom {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u64(self.bytes);
         w.0
     }
@@ -3286,6 +3437,7 @@ impl InputRoom {
         let mut r = Reader(payload);
         let room = InputRoom {
             member: r.u32()?,
+            generation: r.u32()?,
             bytes: r.u64()?,
         };
         r.end()?;
@@ -3297,6 +3449,7 @@ impl InputEnded {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u64(self.written);
         w.stream_end(self.end);
         w.0
@@ -3305,10 +3458,11 @@ impl InputEnded {
     pub fn decode(payload: &[u8]) -> Result<InputEnded, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let written = r.u64()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnded { member, written, end })
+        Ok(InputEnded { member, generation, written, end })
     }
 }
 
@@ -3316,6 +3470,7 @@ impl OutputEnd {
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.u8(self.channel as u8);
         match self.end {
             StreamEnd::Closed => w.u8(0),
@@ -3330,6 +3485,7 @@ impl OutputEnd {
     pub fn decode(payload: &[u8]) -> Result<OutputEnd, WireError> {
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let channel = channel(r.u8()?)?;
         let end = match r.u8()? {
             0 => StreamEnd::Closed,
@@ -3342,16 +3498,22 @@ impl OutputEnd {
             }
         };
         r.end()?;
-        Ok(OutputEnd { member, channel, end })
+        Ok(OutputEnd {
+            member,
+            generation,
+            channel,
+            end,
+        })
     }
 }
 
 impl MemberEnded {
-    /// Its member, then its end as the guest's `MEMBER_ENDED` carries it
+    /// Its member and generation, then its end as the guest's `MEMBER_ENDED` carries it
     /// (`run::members::End`: a tag, exited 0 or signaled 1, and its code or signal).
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
+        w.u32(self.generation);
         w.0.extend_from_slice(&self.end.encode());
         w.0
     }
@@ -3360,6 +3522,7 @@ impl MemberEnded {
         use shards_abi::run::members::End;
         let mut r = Reader(payload);
         let member = r.u32()?;
+        let generation = r.u32()?;
         let tag = r.u8()?;
         let word = r.u32()?;
         r.end()?;
@@ -3374,7 +3537,7 @@ impl MemberEnded {
                 });
             }
         };
-        Ok(MemberEnded { member, end })
+        Ok(MemberEnded { member, generation, end })
     }
 }
 
@@ -4416,11 +4579,13 @@ mod tests {
         for c in [
             Credit {
                 member: 0,
+                generation: 0,
                 channel: Channel::Stdout,
                 bytes: 0,
             },
             Credit {
                 member: u32::MAX,
+                generation: u32::MAX,
                 channel: Channel::Stderr,
                 bytes: u64::MAX,
             },
@@ -4493,12 +4658,13 @@ mod tests {
             why: "egress 22/tcp: the image grants none".into(),
         };
         assert_eq!(Refused::decode(&refused.encode().unwrap()).unwrap(), refused);
-        let mut out = Output::head(3, Channel::Stderr).to_vec();
+        let mut out = Output::head(3, 2, Channel::Stderr).to_vec();
         out.extend_from_slice(b"\xff\x00no newline");
         assert_eq!(
             Output::decode(&out).unwrap(),
             Output {
                 member: 3,
+                generation: 2,
                 channel: Channel::Stderr,
                 bytes: b"\xff\x00no newline".to_vec()
             }
@@ -4506,6 +4672,7 @@ mod tests {
         for end in [StreamEnd::Closed, StreamEnd::Aborted(libc_eio())] {
             let e = OutputEnd {
                 member: 1,
+                generation: 7,
                 channel: Channel::Stdout,
                 end,
             };
@@ -4516,23 +4683,27 @@ mod tests {
             shards_abi::run::members::End::Exited(143),
             shards_abi::run::members::End::Signaled(15),
         ] {
-            let ended = MemberEnded { member: 2, end };
+            let ended = MemberEnded {
+                member: 2,
+                generation: 1,
+                end,
+            };
             assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
         }
         // A tag of neither end, or a signal no Linux has, is no end.
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 2, 0, 0, 0, 1]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 1]),
             Err(WireError::Tag {
                 what: "a member's end",
                 tag: 2
             })
         );
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 1, 0, 0, 0, 0]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
             Err(WireError::Signal(0))
         );
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 1]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]),
             Err(WireError::Short)
         );
         for end in [RunEnd::Exited(0), RunEnd::Stopped, RunEnd::Failed("x".into())] {
@@ -4555,25 +4726,64 @@ mod tests {
         5
     }
 
+    /// A restart's ask and answer round-trip (D270 slice 3b): its arguments as they are, empty
+    /// ones among them, its patience to the nanosecond, its answer's generation or its refusal
+    /// typed; a tag no version has is refused.
+    #[test]
+    fn a_restart_round_trips_and_its_malformed_answers_are_refused() {
+        let ask = RestartAsk {
+            id: 9,
+            member: 2,
+            args: vec![b"--resume".to_vec(), Vec::new(), b"\xff\x00".to_vec()],
+            patience: std::time::Duration::from_nanos(1_500_000_001),
+        };
+        assert_eq!(RestartAsk::decode(&ask.encode().unwrap()).unwrap(), ask);
+        for result in [
+            Ok(3),
+            Err((RestartRefusal::Unknown, "no member 9".to_owned())),
+            Err((RestartRefusal::Running, "its restart is under way".to_owned())),
+            Err((RestartRefusal::Generation, "4 asked".to_owned())),
+            Err((RestartRefusal::Unsupported, "it starts once".to_owned())),
+            Err((RestartRefusal::Failed, "its exec: ENOENT".to_owned())),
+        ] {
+            let answer = RestartAnswer { id: 9, result };
+            assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 6, .. })
+        ));
+        assert!(matches!(
+            RestartAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { tag: 2, .. })
+        ));
+    }
+
     /// A member's input both ways round-trips: its bytes as they are, its ends typed, a flag
     /// or tag no version has refused.
     #[test]
     fn a_members_input_round_trips_and_its_malformed_frames_are_refused() {
-        let mut bytes = Input::head(7).to_vec();
+        let mut bytes = Input::head(7, 3).to_vec();
         bytes.extend_from_slice(b"\0\xff\x80{\"id\":1}\nno-newline");
         assert_eq!(
             Input::decode(&bytes).unwrap(),
             Input {
                 member: 7,
+                generation: 3,
                 bytes: Secret(b"\0\xff\x80{\"id\":1}\nno-newline".to_vec())
             }
         );
-        assert_eq!(Input::decode(&[0, 0, 1]), Err(WireError::Short));
+        assert_eq!(Input::decode(&[0, 0, 0, 7, 0, 0, 1]), Err(WireError::Short));
         for end in [StreamEnd::Closed, StreamEnd::Aborted(libc_eio())] {
-            let e = InputEnd { member: 2, end };
+            let e = InputEnd {
+                member: 2,
+                generation: 1,
+                end,
+            };
             assert_eq!(InputEnd::decode(&e.encode()).unwrap(), e);
             let ended = InputEnded {
                 member: 2,
+                generation: 1,
                 written: u64::MAX,
                 end,
             };
@@ -4581,6 +4791,7 @@ mod tests {
         }
         let room = InputRoom {
             member: 4,
+            generation: 0,
             bytes: 65536,
         };
         assert_eq!(InputRoom::decode(&room.encode()).unwrap(), room);
@@ -4588,7 +4799,7 @@ mod tests {
         long.push(0);
         assert_eq!(InputRoom::decode(&long), Err(WireError::Trailing));
         assert!(matches!(
-            InputEnd::decode(&[0, 0, 0, 1, 2]),
+            InputEnd::decode(&[0, 0, 0, 1, 0, 0, 0, 0, 2]),
             Err(WireError::Tag { tag: 2, .. })
         ));
         // A member's input flag, before the credential grants' count (version 8), its
@@ -4986,7 +5197,7 @@ mod tests {
             })
         );
         assert!(matches!(
-            Credit::decode(&[0, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 1]),
+            Credit::decode(&[0, 0, 0, 1, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1]),
             Err(WireError::Tag {
                 what: "a channel",
                 tag: 3

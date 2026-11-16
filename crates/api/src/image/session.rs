@@ -473,6 +473,7 @@ impl Shared {
     fn credit(&self, member: u32, channel: Channel, bytes: u64) -> io::Result<()> {
         let credit = wire::Credit {
             member,
+            generation: 0,
             channel,
             bytes,
         };
@@ -1660,6 +1661,7 @@ fn feed(shared: &Shared, member: u32, mut reader: impl io::Read) {
         if n == 0 {
             let end = wire::InputEnd {
                 member,
+                generation: 0,
                 end: wire::StreamEnd::Closed,
             };
             let _ = shared.send(wire::to_host::INPUT_END, &end.encode());
@@ -1700,8 +1702,9 @@ fn input_pipe(shared: &Shared, member: u32) -> io::Result<(impl io::Read + Send 
 /// copied whole into one (`send_parts`), then wipes them where they were read; the frame's
 /// own copy is wiped as it drops (D242).
 fn send_input(shared: &Shared, member: u32, typed: &mut [u8]) -> io::Result<()> {
-    let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(4 + typed.len()));
-    payload.extend_from_slice(&wire::Input::head(member));
+    let head = wire::Input::head(member, 0);
+    let mut payload = zeroize::Zeroizing::new(Vec::with_capacity(head.len() + typed.len()));
+    payload.extend_from_slice(&head);
     payload.extend_from_slice(typed);
     zeroize::Zeroize::zeroize(typed);
     shared.send_parts(wire::to_host::INPUT, &payload)
@@ -2894,6 +2897,7 @@ mod tests {
         let s = shared();
         let told = |channel, end| wire::OutputEnd {
             member: 1,
+            generation: 0,
             channel,
             end,
         };
@@ -3305,7 +3309,14 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(take(&s, wire::to_client::STARTED, &started), Ok(false));
-        let room = |member, bytes| wire::InputRoom { member, bytes }.encode();
+        let room = |member, bytes| {
+            wire::InputRoom {
+                member,
+                generation: 0,
+                bytes,
+            }
+            .encode()
+        };
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(1, 5)), Ok(false));
         assert_eq!(lock(&s.state).inputs[&1].room, 5);
         assert!(take(&s, wire::to_client::INPUT_ROOM, &room(0, 5)).is_err());
@@ -3317,7 +3328,14 @@ mod tests {
     fn a_stdins_room_and_end_are_its_hosts_and_come_for_asked_members_alone() {
         let s = shared();
         lock(&s.state).inputs.insert(2, InputFlow::default());
-        let room = |member, bytes| wire::InputRoom { member, bytes }.encode();
+        let room = |member, bytes| {
+            wire::InputRoom {
+                member,
+                generation: 0,
+                bytes,
+            }
+            .encode()
+        };
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(2, 5)), Ok(false));
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(2, 3)), Ok(false));
         assert_eq!(lock(&s.state).inputs[&2].room, 8);
@@ -3325,6 +3343,7 @@ mod tests {
         assert!(take(&s, wire::to_client::INPUT_ROOM, &room(2, u64::MAX)).is_err());
         let ended = wire::InputEnded {
             member: 2,
+            generation: 0,
             written: 4,
             end: wire::StreamEnd::Aborted(32),
         }
@@ -3366,7 +3385,14 @@ mod tests {
         writer.write_all(payload).unwrap();
         drop(writer);
         // Room for 7 bytes, then the rest: no frame carries more than it was given.
-        let room = |bytes| wire::InputRoom { member: 1, bytes }.encode();
+        let room = |bytes| {
+            wire::InputRoom {
+                member: 1,
+                generation: 0,
+                bytes,
+            }
+            .encode()
+        };
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(7)), Ok(false));
         let (kind, first) = wire::read_frame(&mut from_host).unwrap().unwrap();
         assert_eq!(kind, wire::to_host::INPUT);
@@ -3381,6 +3407,7 @@ mod tests {
                     wire::InputEnd::decode(&frame).unwrap(),
                     wire::InputEnd {
                         member: 1,
+                        generation: 0,
                         end: wire::StreamEnd::Closed
                     }
                 );
@@ -3439,6 +3466,7 @@ mod tests {
         entering.recv_timeout(Duration::from_secs(1)).unwrap();
         let end = wire::InputEnded {
             member: 1,
+            generation: 0,
             written: 0,
             end: wire::StreamEnd::Aborted(32),
         }
@@ -4661,7 +4689,7 @@ mod tests {
     }
 
     fn says_output(host: &mut io::PipeWriter, bytes: &[u8]) {
-        let payload = [&wire::Output::head(1, Channel::Stdout)[..], bytes].concat();
+        let payload = [&wire::Output::head(1, 0, Channel::Stdout)[..], bytes].concat();
         says(host, wire::to_client::OUTPUT, &payload);
     }
 
@@ -4692,6 +4720,7 @@ mod tests {
         says_output(&mut h.host, b"second record\n");
         let end = wire::OutputEnd {
             member: 1,
+            generation: 0,
             channel: Channel::Stdout,
             end: wire::StreamEnd::Closed,
         };
