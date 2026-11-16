@@ -15059,14 +15059,15 @@ fn a_networks_options_are_what_its_microvms_do() {
         &["serve", "7000", "1"],
     );
     // Nothing reaches it, and so its name answers no other member (default deny, D46):
-    // refused at once, as a name past the network is; a member's own name answers it.
+    // none, for it, at once (NXDOMAIN, which musl's stub takes where it drops REFUSED), as a
+    // name past the network is; a member's own name answers it.
     let r = run_in(
         &home,
         &image,
         &["--rm", "--network", "apart"],
         &["dnsttl", "lone"],
     );
-    assert_eq!(r.stdout, "dnsttl rcode 5\n", "{r}");
+    assert_eq!(r.stdout, "dnsttl rcode 3\n", "{r}");
     let r = run_in(
         &home,
         &image,
@@ -15195,11 +15196,11 @@ fn microvms_on_a_network_reach_one_another_by_name() {
         assert!(!r.stdout.contains("10.77.0.50\n"), "{to}: {r}");
     }
     // Kept by no cache; the name an address gives back resolving forward; and a name past
-    // the network, which no grant reaches, refused at once.
+    // the network, which no grant reaches, none at once (NXDOMAIN, D46).
     for (name, said) in [
         ("web", "dnsttl 0 10.77.0.50\n"),
         ("srv.lan", "dnsttl 0 10.77.0.50\n"),
-        ("example.com", "dnsttl rcode 5\n"),
+        ("example.com", "dnsttl rcode 3\n"),
     ] {
         let r = run_in(&home, &image, &["--rm", "--network", "lan"], &["dnsttl", name]);
         assert_eq!(r.stdout, said, "{name}: {r}");

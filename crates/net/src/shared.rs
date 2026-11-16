@@ -341,6 +341,12 @@ pub(crate) struct Network {
     /// Each name there at its run's address, as its join gives them ([`Join::members`]): a
     /// member's at one, an alias at each that holds it.
     members: Vec<(String, Ipv4Addr)>,
+    /// Each other run's address whose link ended at its far end (D285 slice 6: that run
+    /// ended, or left the network): its names and aliases answered no more from then on, the
+    /// closed link the evidence, until a link there comes again; a join told before that
+    /// run's leases went, which names them still, answers none of them meanwhile. At most one
+    /// for each address its members are at.
+    ended: Vec<Ipv4Addr>,
     grants: Vec<Grant>,
     /// The names its guest is answered there (D46's rule, a name only where a flow is): its
     /// run's members' own and those its grants name. Made again whole from `members` and
@@ -357,6 +363,7 @@ impl Network {
             gateway: join.gateway,
             name: join.name,
             members: join.members,
+            ended: Vec::new(),
             grants: Vec::new(),
             names: dns::Names::default(),
         };
@@ -366,10 +373,13 @@ impl Network {
 
     /// The names its guest is answered, made again from its members and its grants, in its
     /// join's order, names before aliases, so that an address's first name, its PTR's, is a
-    /// member's.
+    /// member's; none at an address whose link has ended.
     fn rename(&mut self) {
         let mut names = dns::Names::new(&self.name);
         for (name, at) in &self.members {
+            if self.ended.contains(at) {
+                continue;
+            }
             if *at == self.address || self.grants.iter().any(|g| g.peer == *name) {
                 names.add(name, IpAddr::V4(*at));
             }
@@ -518,15 +528,42 @@ impl Networks {
     }
 
     /// Takes `join`, checked: its members and name in place of the network's last, its
-    /// grants kept; or the network beside the others, granting nothing yet.
+    /// grants kept, and each ended link's address kept so while a member is there; or the
+    /// network beside the others, granting nothing yet.
     pub(crate) fn put(&mut self, join: Join) {
         match self.0.iter_mut().find(|n| n.id == join.network) {
             Some(n) => {
                 n.name = join.name;
                 n.members = join.members;
+                let members = &n.members;
+                n.ended.retain(|e| members.iter().any(|(_, at)| at == e));
                 n.rename();
             }
             None => self.0.push(Network::new(join)),
+        }
+    }
+
+    /// The link to the run at `peer` on network `id` ended at its far end (D285 slice 6): that
+    /// run's names and aliases there answered no more, at once, until a link there comes
+    /// again ([`Networks::linked`]).
+    pub(crate) fn unlinked(&mut self, id: &NetworkId, peer: Ipv4Addr) {
+        if let Some(n) = self.0.iter_mut().find(|n| n.id == *id)
+            && n.names_peer(peer)
+            && !n.ended.contains(&peer)
+        {
+            n.ended.push(peer);
+            n.rename();
+        }
+    }
+
+    /// A link to the run at `peer` on network `id` taken: its names and aliases there
+    /// answered again, as the network's join gives them.
+    pub(crate) fn linked(&mut self, id: &NetworkId, peer: Ipv4Addr) {
+        if let Some(n) = self.0.iter_mut().find(|n| n.id == *id)
+            && let Some(at) = n.ended.iter().position(|e| *e == peer)
+        {
+            n.ended.swap_remove(at);
+            n.rename();
         }
     }
 
@@ -1008,6 +1045,81 @@ mod tests {
         assert!(Refusal::ALL.iter().all(|r| r.code() != 0));
         assert_eq!(decode_answer(&[8]), None);
         assert_eq!(decode_answer(&[]), None);
+    }
+
+    /// A query of `name`'s records of `qtype` (A 1, PTR 12), as a guest's resolver asks one.
+    fn question(name: &str, qtype: u16) -> Vec<u8> {
+        let mut q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in name.split('.') {
+            q.push(u8::try_from(label.len()).unwrap());
+            q.extend_from_slice(label.as_bytes());
+        }
+        q.push(0);
+        q.extend_from_slice(&qtype.to_be_bytes());
+        q.extend_from_slice(&1u16.to_be_bytes());
+        q
+    }
+
+    /// D285 slice 6. Do: join db (with cache) at .3 and web at .4, `svc` an alias of both,
+    /// harness granted out to each; end db's link at its far end; join again naming db still,
+    /// as a join told before db's leases went does; link db again; end it again and join
+    /// without db, then with it. Expect: each name its grants name answered at first; db's
+    /// link ended, every name and alias at .3 answered no more at once, the rest kept (`svc` at
+    /// .4 alone, web's address back to `web`, its member's name, never the alias); the join
+    /// naming db answering it no more; a link there again answering it again; the join without
+    /// db forgetting its mark, so that a run at .3 later is answered as it joins; an end on
+    /// another network, or of an address no member is at, changing nothing.
+    #[test]
+    fn a_runs_names_go_with_its_link() {
+        let (db, web) = (Ipv4Addr::new(10, 89, 0, 3), Ipv4Addr::new(10, 89, 0, 4));
+        let mut j = join();
+        j.members.push(("svc".into(), db));
+        j.members.push(("svc".into(), web));
+        let mut networks = Networks::default();
+        networks.put(j.clone());
+        for peer in ["db", "cache", "web", "svc"] {
+            let to = grant("harness", peer, Proto::Tcp, (80, 80), Way::Out);
+            assert_eq!(networks.change(&id(1), Change::Add(to)), Ok(()));
+        }
+        let answer = |networks: &Networks, name: &str, qtype: u16| -> Option<Vec<u8>> {
+            let n = networks.get(&id(1)).unwrap();
+            let q = question(name, qtype);
+            n.names.holds(&q).then(|| n.names.answer(&q).unwrap())
+        };
+        let holds = |a: &[u8], at: Ipv4Addr| a.windows(4).any(|w| w == at.octets().as_slice());
+        let svc = answer(&networks, "svc", 1).unwrap();
+        assert!(holds(&svc, db) && holds(&svc, web));
+        assert!(answer(&networks, "db", 1).is_some() && answer(&networks, "cache", 1).is_some());
+        networks.unlinked(&id(2), db);
+        networks.unlinked(&id(1), Ipv4Addr::new(10, 89, 0, 9));
+        assert!(
+            answer(&networks, "db", 1).is_some(),
+            "another network's, or no member's"
+        );
+        networks.unlinked(&id(1), db);
+        assert_eq!(answer(&networks, "db", 1), None, "db's name withdrawn");
+        assert_eq!(answer(&networks, "cache", 1), None, "every name at its address");
+        let svc = answer(&networks, "svc", 1).unwrap();
+        assert!(holds(&svc, web) && !holds(&svc, db), "the alias at web's alone");
+        assert_eq!(answer(&networks, "3.0.89.10.in-addr.arpa", 12), None);
+        let back = answer(&networks, "4.0.89.10.in-addr.arpa", 12).unwrap();
+        assert!(
+            back.windows(4).any(|w| w == b"\x03web".as_slice()),
+            "web's address back to its member's name"
+        );
+        networks.put(j.clone());
+        assert_eq!(answer(&networks, "db", 1), None, "a join that names it still");
+        networks.linked(&id(1), db);
+        assert!(answer(&networks, "db", 1).is_some(), "a link there again");
+        networks.unlinked(&id(1), db);
+        let mut without = j.clone();
+        without.members.retain(|(_, at)| *at != db);
+        networks.put(without);
+        networks.put(j);
+        assert!(
+            answer(&networks, "db", 1).is_some(),
+            "a run at its address later, as it joins"
+        );
     }
 
     /// A network is joined at one place: its join again at the same place is taken, at
