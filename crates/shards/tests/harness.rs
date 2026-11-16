@@ -622,11 +622,31 @@ fn serving() {
 /// `stop daemon` refused 259 ms into its wait, "no progress for 45.3 ms" past a W* of 36.0
 /// ms, as its daemon waited out the 10 s grace of a `sleep` that ignores SIGTERM as its PID
 /// namespace's init, its log's next line 10.02 s after "stepping aside", the run `Exited
-/// (137)`. Do: teach a kind its W* by a quick stand-in's end; name a sleeping stand-in its
-/// home's daemon, a run of that home in its grace for 20 W*, and wait on a sleeping client.
-/// Expect: no refusal within the grace; a refusal once it is past.
+/// (137)`. Do and expect as [`held_until_its_daemons_deadline`] says, the deadline a run's
+/// grace.
 #[test]
 fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
+    held_until_its_daemons_deadline(shards_ipc::GRACE);
+}
+
+/// A run's log's next try, which its home's daemon keeps while its shipper sleeps before it
+/// (`shards_ipc::RETRY`), is the daemon's own deadline, as a run's stop grace is (D209). HVF
+/// at 6f5755ae1 (adas-mac-studio.local-2, the shards-green lane): containers.rs'
+/// `a_runs_log_is_sent_to_syslog_as_its_options_say` refused 763 ms into its wait for a
+/// server that comes up only after its run, "no progress for 399 ms" past a W* of 241 ms,
+/// its daemon asleep in its shipper's first pause (ship.rs `RETRY_FIRST`). Do and expect as
+/// [`held_until_its_daemons_deadline`] says, the deadline a log's next try.
+#[test]
+fn a_logs_next_try_is_its_daemons_and_not_refused() {
+    held_until_its_daemons_deadline(shards_ipc::RETRY);
+}
+
+/// Do: teach a kind of its caller's its W* by a quick stand-in's end; name a sleeping
+/// stand-in its home's daemon, a run of that home holding the deadline `name` 20 W* away,
+/// and wait on a sleeping client. Expect: no refusal before the deadline; a refusal once it
+/// is past.
+#[track_caller]
+fn held_until_its_daemons_deadline(name: &str) {
     let kind = cold_kind();
     let mut quick = stand_in_doing("exit")
         .stdout(std::process::Stdio::null())
@@ -654,17 +674,13 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
     std::fs::create_dir_all(&run).unwrap();
     let grace = slowest.saturating_mul(20);
     let until = std::time::SystemTime::now() + grace;
-    std::fs::write(
-        run.join(shards_ipc::GRACE),
-        shards_ipc::grace_text(until).unwrap(),
-    )
-    .unwrap();
-    let mut wait = common::Wait::begin(kind, client.id(), Some(&home), "a stop in its grace");
+    std::fs::write(run.join(name), shards_ipc::deadline_text(until).unwrap()).unwrap();
+    let mut wait = common::Wait::begin(kind, client.id(), Some(&home), "a wait on its daemon's deadline");
     let refused = loop {
         if let Err(stall) = wait.look(false) {
             break Some((std::time::SystemTime::now(), wait.refused(&stall)));
         }
-        // Past its grace, a whole W* still is refused well within this.
+        // Past its deadline, a whole W* still is refused well within this.
         if std::time::SystemTime::now() > until + slowest.saturating_mul(100).max(Duration::from_secs(10)) {
             break None;
         }
@@ -675,11 +691,11 @@ fn a_runs_stop_grace_is_its_daemons_and_not_refused() {
         let _ = party.wait();
     }
     let Some((at, said)) = refused else {
-        panic!("never refused past its grace: {}", wait.account());
+        panic!("never refused past its {name}: {}", wait.account());
     };
     assert!(
         at >= until,
-        "refused within its grace, {grace:?} from its start: {said}"
+        "refused before its {name}, {grace:?} from its start: {said}"
     );
 }
 

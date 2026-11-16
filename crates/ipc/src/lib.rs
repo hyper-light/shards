@@ -82,26 +82,33 @@ pub fn exiting(home: &Path) -> bool {
 
 /// What a daemon keeps in a run's directory from the stop signal it sends that run's command
 /// until its grace is up (`stop -t`, the run's `--stop-timeout`, or the daemon's default):
-/// when the command's SIGKILL is due, as [`grace_text`] writes it. Removed at that SIGKILL,
-/// or at the run's end before it. A wait on the daemon reads it as the daemon's own
+/// when the command's SIGKILL is due, as [`deadline_text`] writes it. Removed at that
+/// SIGKILL, or at the run's end before it. A wait on the daemon reads it as the daemon's own
 /// deadline, before which it and its run may run nothing at all and are not stalled (D209):
 /// a `sleep` that ignores SIGTERM as its PID namespace's init keeps its daemon's stop quiet
 /// for its whole grace.
 pub const GRACE: &str = "stop.grace";
 
-/// [`GRACE`]'s contents for a SIGKILL due at `until`: its nanoseconds since the Unix epoch,
-/// in decimal. The system clock, the one clock std reads alike in two processes on every
-/// OS: a step of it moves the deadline as read by that step. None before the epoch or past
-/// u64's nanoseconds.
-pub fn grace_text(until: std::time::SystemTime) -> Option<String> {
+/// What a daemon keeps in a run's directory while the shipper of that run's log waits to
+/// try its driver again, its receiver having failed it (D163's retries): when it tries
+/// again, as [`deadline_text`] writes it. Removed as that wait ends. A wait on the daemon
+/// reads it as it reads [`GRACE`], the daemon's own deadline (D209): a server that comes up
+/// only after a run finds its daemon asleep until its shipper's next try.
+pub const RETRY: &str = "ship.retry";
+
+/// [`GRACE`]'s or [`RETRY`]'s contents for a deadline at `until`: its nanoseconds since the
+/// Unix epoch, in decimal. The system clock, the one clock std reads alike in two processes
+/// on every OS: a step of it moves the deadline as read by that step. None before the epoch
+/// or past u64's nanoseconds.
+pub fn deadline_text(until: std::time::SystemTime) -> Option<String> {
     let ns = until.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
     u64::try_from(ns).ok().map(|ns| ns.to_string())
 }
 
-/// When the SIGKILL of the run whose directory is `dir` is due, as its [`GRACE`] says: none
-/// where it keeps none, or none that reads whole.
-pub fn grace_until(dir: &Path) -> Option<std::time::SystemTime> {
-    let text = std::fs::read_to_string(dir.join(GRACE)).ok()?;
+/// When the deadline that `name` ([`GRACE`], [`RETRY`]) keeps in the run directory `dir` is
+/// due: none where it keeps none, or none that reads whole.
+pub fn deadline_in(dir: &Path, name: &str) -> Option<std::time::SystemTime> {
+    let text = std::fs::read_to_string(dir.join(name)).ok()?;
     let ns: u64 = text.trim().parse().ok()?;
     std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(ns))
 }

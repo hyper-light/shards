@@ -1823,7 +1823,10 @@ removes it; `--rm` removes it once it ends.
     written again, and `rm` says why. It is then synced before its name is let go and
     `rm` answers: an answered `rm` never comes back, and no power loss brings back a
     record beside one that took its name. The sync, 4.3 ms at the median on macOS
-    (PM M46), is out of the registry's lock.
+    (PM M46), is out of the registry's lock. A `--rm` run's removal is not synced, its
+    record saying `--rm`: one a power loss brings back goes as the next start opens, before
+    it sees any name (D215's amendment of 2026-11-16, where btrfs made that sync a whole
+    transaction's commit on every stop's path).
   - **Records are written and renamed, not synced.** Syncing one costs 8.5 ms at the
     median on macOS (PM M46), 2.5 times a pooled run. A power loss ends every run
     anyway; what it leaves of their records, the next start reconciles: a record missing
@@ -13060,7 +13063,8 @@ children, the first reading of the failure.
   removed by its guard's drop at the SIGKILL, the run's end or the stop's own end). A
   look (`Party::look`) that finds a process of its party live and nothing else (`Still`)
   while a run of its home is within its grace finds it `Held`: the daemon's own deadline.
-  Past the grace it is judged as before, a whole W* without progress refused.
+  Past the grace it is judged as before, a whole W* without progress refused. Part 10 keeps
+  a run's log's next try so too (`ship.retry`).
 - *R03.* No literal: the grace is the run's own or the daemon's default, the deadline the
   daemon itself acts at. The clock is the system clock, the one std reads alike in two
   processes on every OS; a step of it moves the hold by the step. A grace that cannot be
@@ -13307,6 +13311,69 @@ batch 26 brief)
   none of its threads' CPU moving over another 10 s, each thread parked in poll(2) or a
   condition wait (`sample`, adas-mac-studio-3.local, f749bf9fb's build). So no housekeeping
   of the daemon's is counted as a wait's progress.
+
+**Part 10: a log's next try is its daemon's own deadline too** (#77, 2026-11-16; goal
+fb3528f9, the syslog-wait lane, on the shards-green lane's root cause). HVF at 6f5755ae1
+(adas-mac-studio.local-2, macOS 26.4 arm64): containers.rs
+`a_runs_log_is_sent_to_syslog_as_its_options_say` failed 2 of 2, once with `--nocapture`, at
+its step "a server that comes up only after the run". Its wait for the server's first
+connection (`accept_within`, a `Patience` on the run's home) was refused: "a state its party
+comes to made no progress for 399 ms, past the slowest answer of its kind seen on this host
+(241 ms), 763 ms into its wait".
+- *The cause.* The run ends before its server listens, so its shipper's first send is
+  refused, and `until_done` (daemon/ship.rs) sleeps `RETRY_FIRST`, a second, before it tries
+  again (D163's retries). That pause is a deadline of the daemon's own, as a stop grace is:
+  nothing of the party need run before it. The E2E judge was told only of stop graces (Part
+  6). The daemon's registry of its threads' timed waits (`Waiting`, ecc4810a9) exists under
+  `cfg(test)` alone, for its unit tests' in-process waits, and reaches no E2E wait.
+- *The rule.* Through each pause before its next try, a shipper keeps `ship.retry` in its
+  run's directory (`shards_ipc::RETRY`): the try's time, written and removed as
+  `stop.grace` is (nanoseconds since the Unix epoch, written whole, removed by its guard's
+  drop as the pause ends or as the daemon stops). It reuses Part 6's mechanism (R12): one
+  guard keeps both files (daemon.rs `Deadline`, which was `Grace`), and one writer and one
+  reader serve both (`shards_ipc::deadline_text` and `deadline_in`, which were `grace_text`
+  and `grace_until`). Each deadline has a file of its own: a run in its stop grace may
+  have a shipper paused too, and one guard's drop must not end the other's hold. The
+  judge's look (`Party::look`, through `Party::graced`) takes the deadline of its home's
+  runs that has longest to go, of either kind, and its account says which ("its daemon in
+  run …'s log's pause before its next try, … more"). Past the deadline it is judged as
+  before. Its last `Held` look restarts the window, so a whole W* without progress past the
+  deadline is refused; the shipper wakes at the deadline and connects.
+- *R03.* No literal: the deadline is the pause the shipper takes (`RETRY_FIRST`, growing by
+  half to `RETRY_MOST`, D163's sources), read on the system clock as Part 6's is. A deadline
+  that cannot be kept (its run's directory gone, a write that fails) is said in the daemon's
+  log and keeps no hold: that wait is judged as before. A daemon killed in a pause leaves
+  its file, which holds a wait only until the deadline it names (`RETRY_MOST` at most), as
+  a stop grace's file does. Its cost, a write, a rename and a remove a pause, is unmeasured
+  (R14, ROOT's).
+- *What it leaves.* A shipper whose receiver never comes back keeps a deadline at every
+  pause, and each try between pauses is its progress. So a wait on its home's daemon is
+  never refused while that shipper retries, whatever else of the daemon stalls: ROOT's rule
+  of ecc4810a9 (a party asleep on a deadline of its own has not stalled before it) taken
+  whole. Before, such a wait was judged within each pause longer than W*, where a stall
+  elsewhere in the daemon was refused. The drivers' own pauses within a send are deadlines
+  of their own too, and are not kept: fluentd's `fluentd-retry-wait`, gelf's reconnect
+  delay, and a stream's wait for its receiver's delivery window (stream.rs
+  `await_delivery`). None was seen refused, and none is changed (R09). On Windows the
+  shipper's `Wait::pause` does not go through `timed`, so the in-process registry misses it
+  in the daemon's own unit tests. That was read in the code alone, not reproduced, and is
+  not changed.
+- *Held by* (written, not run: the person's rule of 2026-11-16 leaves every test to ROOT):
+  daemon/ship.rs `a_shippers_pause_before_its_next_try_is_its_daemons_deadline`, a send
+  always refused, tried as a shipper tries it. Its run's directory keeps the pause's end: a
+  first pause or more past the first refusal, and no more than the tries' pause past its
+  read. None is kept once the daemon stops. Its reds, expected and unrun: the guard removed
+  (no deadline through two pauses), or its drop (the deadline kept past the wait). Also
+  tests/harness.rs `a_logs_next_try_is_its_daemons_and_not_refused`, Part 6's test with its
+  deadline `ship.retry` (its red, expected and unrun: `graced`'s `RETRY` arm removed,
+  refused before the deadline).
+  Owed (ROOT): those two, `SHARDS_HELPERS=skip cargo test -p shards --profile test-release
+  --bin shards -- daemon::ship::tests::a_shippers_pause_before_its_next_try_is_its_daemons_deadline`
+  and `cargo test -p shards --profile test-release --test harness --
+  a_logs_next_try_is_its_daemons_and_not_refused a_runs_stop_grace_is_its_daemons_and_not_refused`,
+  each red with its guard removed; and `cargo test -p shards --profile test-release --test
+  containers -- --exact a_runs_log_is_sent_to_syslog_as_its_options_say` on HVF, KVM and
+  WHP.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -17821,7 +17888,8 @@ and the way every later one sends.
   - the VM, its guest and its run reach no network for their log;
   - a server that is slow or down holds up nothing but its own sending, retried after
     1 s, half as long again each time, at most 60 s (fluent-logger-golang's waits, through
-    which moby's fluentd driver sends);
+    which moby's fluentd driver sends), each pause's end kept in the run's directory as the
+    daemon's own deadline (`ship.retry`, D209 Part 10);
   - a run starts whether or not its server is up, where Docker's would not start;
   - what is not yet sent waits in the store, bounded as the store is, and survives the
     daemon's restarts: the shipper keeps its place beside the log (`ship`), and the next
@@ -28353,8 +28421,9 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
       that finds a thread of its party waiting uninterruptibly in its kernel (macOS
       `TH_STATE_UNINTERRUPTIBLE`, Linux `D`: `Hold::uninterruptible`) vouches for no window
       (`progress::vouches`): its time leaves the rate's wall and its work stays in, a doubt
-      that raises the rate. Stillness is judged as before: a look that ran nothing finds
-      macOS's uninterruptible wait `Held` (since 2026-11-13) and Linux's `D` still. A ticker
+      that raises the rate. Stillness: a look that ran nothing found macOS's uninterruptible
+      wait `Held` (2026-11-13) and Linux's `D` still; since 2026-11-16 it finds either `Held`
+      only where its host's disks completed I/O meanwhile (*A wait in a kernel*, below). A ticker
       asleep on an event waits interruptibly (`TH_STATE_WAITING`, `S`) and is refused as
       before. Windows reads no wait reason of a flush here: unverified there. Held by
       progress.rs `a_party_waiting_on_its_hosts_disk_vouches_for_no_window_of_its_rate` (the
@@ -28399,6 +28468,92 @@ that socket (`CONNECT <port>` / `OK <host port>`, firecracker `docs/vsock.md`, m
         reads shows its host's disk, and one read of the system's records took 13 ms on
         jupiter. Held by progress.rs `a_rate_wait_samples_a_blocked_process_between_its_looks`
         and, on Windows, `a_process_flushing_to_its_disk_shows_its_storages_work`.
+      - *A wait in a kernel is its host's only while its disks complete I/O* (ROOT's ruling,
+        2026-11-16, kiln goal 683bc085, the member-share stall). ROOT's red on adacachy2
+        (KVM; its btrfs wholly allocated): two `stop daemon`s refused at one moment, 28.9 ms
+        into their waits, past W* 8.96 ms (4124d8c70's message: 34.75 ms past 19.24 ms). The
+        cause, read from code by lane linux-kvm (Linux 7.2-rc4): a stop's `finish()` waits for
+        its `--rm` runs' removals (`await_removals`), each renamed to `.ID.removing`, then its
+        directory fsynced (`Removal::sync`). On btrfs that fsync is a whole transaction's
+        commit (fs/btrfs/tree-log.c: the rename records the directory's `last_unlink_trans`,
+        `btrfs_record_unlink_dir`, and `btrfs_log_inode` then returns
+        `BTRFS_LOG_FORCE_COMMIT`). Two daemons stopping share one commit, which one task runs
+        while the other sleeps in `D` (transaction.c `wait_for_commit`), doing no I/O of its
+        own and counted none of the committer's: Linux's look read it still, where macOS's
+        would have held it whatever its disks did. Two changes:
+        - *The rule* (`Hold::disks`, `Hold::held_since`). A look that ran nothing and finds a
+          thread of its party in its kernel (Linux `D`, macOS `TH_STATE_UNINTERRUPTIBLE`) is
+          `Held` only where its host's block devices completed I/O between the look before
+          and this one. Linux: `/proc/diskstats`' reads, writes, discards (4.18) and flushes
+          (5.5) completed, every line summed (Documentation/admin-guide/iostats.rst, its
+          fields 1, 5, 12 and 16; `os::disks_completed`). macOS: each IOKit
+          `IOBlockStorageDriver`'s `Statistics`, `Operations (Read)` and `Operations
+          (Write)`, summed (IOKit/storage/IOBlockStorageDriver.h, what iostat(8) reads;
+          `shards_apple::storage`, IOKit bound when first read, as shards-apple binds every
+          framework, PM M113).
+          ROOT named reads and writes; discards and flushes are their devices' completions
+          too, and a window in which only a cache flush completes, an fsync's last step,
+          shows in field 16 alone.
+          - The window is the judge's own; no constant. The count is read only by a look that
+            finds a thread in its kernel: a party that ran nothing over a window and waits in
+            its kernel at its end waited there at its start too, as it runs to enter a wait,
+            so its look before read the count. A look whose look before read none, cold
+            start among them, holds nothing by it.
+          - Host-wide by design: the waiter on a shared commit does no I/O of its own.
+            Partitions count with their disks and mapped devices with theirs, as only growth
+            is read; a sum that fell (a device gone, a 32-bit kernel's counter wrapped) is no
+            growth, saturated sums the same.
+          - What it refuses: a wait in a kernel that no device serves across a window, a dead
+            NFS mount's, is still, and refused past W*. What it cannot: one stuck for good on
+            a host whose disks are busy with others' I/O is held while they are, and refused
+            at the first window in which none completes any. It gives a party no authority:
+            its own I/O held it already (`Io`).
+          - Rate windows unchanged: a look that finds a thread in its kernel vouches for no
+            window, its host's disks idle or not (`progress::vouches`, `Follow::sampled`).
+            Leaving a window out of the rate refuses nothing, and a party stuck so that runs
+            nothing is refused by stillness.
+          - Windows unchanged, as the rule has nothing to qualify there: its judge reads no
+            thread as waiting on its host's storage (a flush's wait reason, `Executive`, is a
+            pipe reader's too, PM M606), and its storage shows only by its own processes' I/O
+            counts (`Io::done`). Its memory waits (`FreePage`, `PageIn`, `PoolAllocation`)
+            stay its host's hold unqualified, as Linux's memory pressure does; `PageIn` is a
+            storage wait, and qualifying it would need its disks' counts
+            (IOCTL_DISK_PERFORMANCE on each physical disk), unmeasured: owed.
+          - Held by progress.rs
+            `a_party_in_its_kernel_is_held_only_while_its_hosts_disks_complete_io` (the rule
+            through `found`), `a_hosts_completed_io_is_summed_from_every_diskstats_line`
+            (each kernel's field count), `a_process_flushing_to_its_disk_is_seen_waiting_in_
+            its_kernel` (a flusher in its kernel reads the host's disks, and a later look
+            finds them grown and holds it), and apple storage.rs
+            `a_hosts_completed_io_is_read_and_grows_with_a_flush`.
+        - *A `--rm` run's removal is not synced* (`Removal::needs_sync`, `Removal::sync_all`;
+          D27 amended). The sync before a removal's name goes keeps a power loss from bringing
+          a microVM back beside one that took its name. A `--rm` one brought back goes as the
+          next start opens its registry, before it sees any name (`Registry::open_on`'s
+          `auto_remove` arm), whatever of its directory the power loss kept. So its removal
+          needs no sync, its name goes once it is set aside, and a stop's `finish()` waits on
+          no commit for its runs that ended with `--rm`, nor does any `--rm` run's end. Every
+          other removal syncs as before, and so does a `--rm` one whose record may not say so:
+          one taken out of its reservation, its record maybe unwritten, and one whose `--rm`
+          was set after its record was written (D181: an engine's microVM going with its
+          provider; `Registry::rm_unrecorded`, cleared once a record saying it is written).
+          Crash semantics: a daemon's crash after set-aside brings nothing back, as before; a
+          power loss may bring back a `--rm` run's directory, which the next start removes
+          before any name is seen, as it removes every `--rm` record (dockerd's restore
+          removes its AutoRemove containers too, moby daemon/daemon.go). Held by containers.rs
+          `a_power_loss_after_an_unsynced_rm_removal_shares_no_name` (every state the
+          power-loss model allows, the name taken by the next microVM: none shared, the `--rm`
+          one never seen, nothing set aside left) and
+          `a_rm_removal_needs_no_sync_unless_its_record_may_lack_its_rm`.
+        - *Owed to ROOT* (the person's rule of 2026-11-16: ROOT runs every test). None of the
+          tests above has run. The live red and green (R09), on a Linux btrfs host (adacachy;
+          a btrfs image loop-mounted under ~/.cache otherwise): in a directory on it,
+          `cc -O2 -o dirsync-linux docs/research/measurements/judge-blocked/dirsync-linux.c &&
+          ./dirsync-linux 300`, two removers in the daemon's removal pattern sampled each
+          100 µs. Red: `D` stretches no count of the party's own showed, past the stops' W*.
+          Green: none of those without the host's disks' completed I/O within them. Then
+          nesting.rs on KVM, its stops not refused; and the stop's daemon.log stage lines
+          (`daemon finishing` to `its removals done`) before and after.
     - *Rated answers alone teach R* and C*.* Many kept records held R* 0 ns: answers reaped
       before any look read their CPU (`run_ending`'s `try_wait` reaped a quick client between
       paced looks), a floor that refuses nothing. `Seen::Learned` is now `{ slowest, rated:
