@@ -11,6 +11,7 @@
 //! for now, and the FUSE wire the device needs is `proto`'s. Its DAX window there maps the
 //! sections its server duplicates into this process (`window_whp.rs`, PM M341, M343).
 
+pub mod bound;
 mod crossover;
 pub mod headroom;
 pub mod host;

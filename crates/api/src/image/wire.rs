@@ -116,8 +116,11 @@ pub use shards_abi::run::nesting::Ready;
 /// its members' stdio as its lanes ([`ControlAsk::stdio`], D252), where it asks for an
 /// endpoint, so that a side that serves none refuses the run as it is asked, rather than its
 /// orchestrator dialing lanes no endpoint serves while its members' output waits on a channel
-/// none reads.
-pub const VERSION: u8 = 44;
+/// none reads; 45, a restart's next generation that could not enter its working directory
+/// refused typed ([`RestartRefusal::Workdir`], D277), as 43 refuses a first generation's, so
+/// that a side that reads no such refusal refuses the run as it is asked, rather than its
+/// restart's answer breaking the channel.
+pub const VERSION: u8 = 45;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1368,6 +1371,10 @@ pub enum RestartRefusal {
     Unsupported = 4,
     /// Its start failed, in its init's or its run host's words.
     Failed = 5,
+    /// Its next generation could not enter its working directory as it started (D277), as
+    /// [`Cause::Workdir`] refuses a first generation that could not: its run host's words name
+    /// the member, the directory and the errno.
+    Workdir = 6,
 }
 
 /// A restart's outcome, by its ask's id: the generation started, or why not.
@@ -3514,6 +3521,7 @@ impl RestartAnswer {
                     3 => RestartRefusal::Generation,
                     4 => RestartRefusal::Unsupported,
                     5 => RestartRefusal::Failed,
+                    6 => RestartRefusal::Workdir,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a restart's refusal",
@@ -5333,13 +5341,17 @@ mod tests {
             Err((RestartRefusal::Generation, "4 asked".to_owned())),
             Err((RestartRefusal::Unsupported, "it starts once".to_owned())),
             Err((RestartRefusal::Failed, "its exec: ENOENT".to_owned())),
+            Err((
+                RestartRefusal::Workdir,
+                "Harness codex: /Users/ada/proj: errno 2".to_owned(),
+            )),
         ] {
             let answer = RestartAnswer { id: 9, result };
             assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
         assert!(matches!(
-            RestartAnswer::decode(&[0, 0, 0, 9, 1, 6, 0, 0, 0, 0]),
-            Err(WireError::Tag { tag: 6, .. })
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 7, .. })
         ));
         assert!(matches!(
             RestartAnswer::decode(&[0, 0, 0, 9, 2]),

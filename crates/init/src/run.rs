@@ -6750,8 +6750,17 @@ fn next_generation(
             format!("member {} did not start in this run", start.member),
         )));
     };
-    if let Err(refused) = crate::domains::next_generation(d, &start) {
-        return answer(Some(refused));
+    // One that could not enter its working directory is answered so, typed, as its first
+    // generation's is told (D277); its words, which say more of its launch, on init's stderr.
+    let mut unentered = None;
+    if let Err(refused) = crate::domains::next_generation(d, &start, &mut unentered) {
+        return match unentered {
+            Some(told) => {
+                let _ = writeln!(io::stderr(), "shards-init: {}", refused.1);
+                StartAnswer::unentered(start.generation, &told)
+            }
+            None => answer(Some(refused)),
+        };
     }
     let reopened = match capture {
         Some(capture) => capture.reopen(start.member).map_err(|e| e.to_string()),

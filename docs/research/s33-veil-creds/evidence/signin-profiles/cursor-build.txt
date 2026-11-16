@@ -1,0 +1,7 @@
+nv.APPDATA||(0,i.join)((0,n.homedir)(),"AppData","Roaming"),r=this.toWindowsTitleCase(t);return(0,i.join)(e,r,"auth.json")}case"darwin":return(0,i.join)((0,n.homedir)(),`.${t}`,"auth.json");default:{const e=process.env.XDG_CONFIG_HOME||(0,i.join
+=null,this.cachedRefreshToken=null,this.cachedApiKey=null,void(this.cachedBedrockCredentials=null)}await this.writeAuthData({accessToken:e.accessToken,refreshToken:e.refreshToken,apiKey:e.apiKey}),this.cachedBedrockCredentials=null}async getAcces
+sync function({uuid:t,verifier:e,apiBaseUrl:r=E(),signal:n,onGiveUp:s,fetch:i=C,parseResult:o}){const a=`${r}/auth/poll`,c=1e3,u=1e4,d=await _();let m,p,f=0,h=0;const g=Date.now(),y=e=>{try{s?.({uuid:t,elapsedMs:Math.max(0,Date.no
+on({uuid:t,verifier:e,apiBaseUrl:r=E(),signal:n,fetch:s=C,parseResult:i}){const o=await _(),a=await R(s,`${r}/auth/poll`,{uuid:t,verifier:e},o,n);return a.ok?await O(a,i):null}({uuid:t.uuid,verifier:t.verifier,apiBaseUrl:this.apiU
+y{const e=(0,s.XX)({"Content-Type":"application/json",Authorization:`Bearer ${t}`,...n}),a=await i(`${r}/auth/exchange_user_api_key`,{method:"POST",headers:e,body:JSON.stringify({})});if(403===a.status){if(I(await a.json().catch((()=>{}))))th
+(t){const e=t.split(".")[1],r=Buffer.from(e,"base64"),n=JSON.parse(r.toString());if(null===n)throw new Error("JWT payload is null");return"object"==typeof n&&"exp"in n&&"number"==typeof n.exp?n.exp:void 0}(t);return void 0!==e&&e-Math.floo
+# archive sha256 be01f42ad334f81d05a9992fcf060a52cc746f52cc451e849eb652146a6e3c91: the pin's

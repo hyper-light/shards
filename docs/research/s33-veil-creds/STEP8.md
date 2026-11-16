@@ -504,6 +504,39 @@ no bound, and the threaded host waited on a body that would never come).
   (`set_read_timeout`s at 1907/1935, deadline loops at 1405, 1963, 2004), `poll.rs`'s wait tests, `pktinfo.rs`'s read
   timeouts. Listed for ROOT to rule on.
 
+## The other eight harnesses' sign-ins (the sign-in profiles lane, plan step 33)
+
+Role: implementer for ROOT (g121), kiln goal 0c23237b06c885048109e6d0fd3fd3ad. Policy read at origin/main fc58ff405:
+docs/development-rules.md df2acf47…, AGENTS.md and docs/development-evidence.md read in full; kiln's AGENTS.md at kiln
+main c5f3d5b3. Branches `p/signin-profiles` (Shards) and `p/signin-profiles-kiln` (kiln). The decisions and each
+harness's row are D242's "Built: the other eight harnesses' sign-ins surveyed".
+
+- **Method.** Each harness as kiln pins it (`.kiln/images/harness-<name>/pin.json` at kiln main). Open source (pi
+  1.5.2, opencode 2.2.7, goose 1.59.0) read at the pin's commit, each file's sha256 in
+  `evidence/signin-profiles/SOURCES.tsv`, quoted by line in `EXCERPTS.txt`; Gemini CLI 0.68.0 and google-auth-library
+  10.9.0 from kiln's pinned copies (kiln docs/research/s18-host-in-vm/evidence/). Closed builds (Antigravity 1.5.7,
+  Devin 3000.12.43, Cursor 2026.11.11) streamed from their pins' URLs through tar and ripgrep, each held to its pin's
+  sha256 and nothing written to disk but the matches (`scripts/signin-profiles-builds.sh`, rerunnable from the
+  repository root; this Mac was under its disk floor). Amp's own docs (fetched 2026-11-16, `SOURCES.tsv`) and its pinned
+  build streamed the same way. No CLI was run and no sign-in made.
+- **Built.** kiln: `Provider::Goose` (goose's ChatGPT sign-in as Codex's OAuth client, `goose/<person>`),
+  `Provider::file_in`, `home::Layout::dir_named`, and two tests,
+  `s33_gooses_chatgpt_sign_in_is_codexs_client_under_its_own_name` and
+  `s33_a_clis_sign_in_file_is_where_its_run_environment_puts_it`, written and not run. Shards: documentation of a
+  profile as its OAuth client's (`signin.rs`, `credential.rs`); no code.
+- **Checks run.** None (the person's rule of 2026-11-16: no builds or tests in lanes). `rustfmt --edition 2024
+  --config-path rustfmt.toml --check` on the two changed Shards sources: clean. kiln's files keep kiln's style (no
+  whole-file rustfmt: kiln's AGENTS.md).
+- **Owed (ROOT).** `cargo test -p kiln --lib -- secrets::signin harness::isolated::home` and `cargo clippy -p kiln
+  --all-targets -- -D warnings` at kiln main; a real goose ChatGPT sign-in in a microVM through the injector,
+  surviving a refresh answered outside; Devin's and Amp's keys filled at egress (where their requests carry them).
+- **R01-R16.** R01: no unwrap, indexing or arithmetic added (`?` on options). R02: each row rests on the harness's
+  own pinned source or build, cited by line or string. R03: no literal added. R04: the provider is an enum, matched
+  exhaustively. R05/R12/R13: no new profile, seam or layer: goose rides Codex's client end to end (Shards' profile,
+  Hex's `SignInCli`, kiln's refresh); one accessor reused by `kept_in`. R06/R07: small arms; comments cite sources.
+  R08/R14: no performance claim. R09/R10: no defect claimed; the evidence and its scripts are committed. R11: no
+  platform code. R15: implementer scope, tests owed to ROOT. R16: nothing written to this Mac's disk by the scans.
+
 ## Owed
 
 - Slice 3 (kiln), built on kiln main bd2565641 (D242's "step 8's third slice"): `RunLessor` answering capture,

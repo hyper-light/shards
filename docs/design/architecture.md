@@ -31244,7 +31244,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32711,6 +32711,93 @@ lane inject-h2 of kiln plan 01a1d2b88be57304b972761e2a5c6781 step 7).
   The gateway's client against a live BuildKit: shards' frontend image from this revision driven by `docker buildx
   build` in `shards-dind` (D113), and the SPIFFE Workload API's against a live SPIRE agent. The injector's real-VM
   HTTP/2 runs, as before.
+
+**Built: the other eight harnesses' sign-ins surveyed, and goose's ChatGPT sign-in granted as Codex's client**
+(plan step 33's sign-in profiles lane, kiln goal 0c23237b06c885048109e6d0fd3fd3ad; evidence
+docs/research/s33-veil-creds/evidence/signin-profiles/: each open source file read at its kiln pin's commit, its sha256 in
+`SOURCES.tsv` and its words quoted by line in `EXCERPTS.txt`; each closed build streamed from its kiln pin's URL, held
+to the pin's sha256 and searched, nothing written but the matches, by `scripts/signin-profiles-builds.sh`, into
+`<harness>-build.txt`; Gemini CLI's own files are kiln's pinned copies, kiln docs/research/s18-host-in-vm/evidence/; no
+CLI run, no sign-in made, 2026-11-16). A profile is its OAuth client's token endpoint (`signin::Profile`), so a CLI that
+signs in as another CLI's client is granted as that CLI (`Cli`) and needs no profile of its own. What decides each
+harness: whether the injector can read its sign-in's answer (an OAuth token response, RFC 6749 §5.1), whether its CLI
+takes a placeholder where its token was (no check of the token's form, signature or claims, no check at a host or in
+a place the injector doesn't fill: `inject::token_in` fills `Authorization: Bearer` and `x-api-key` alone, and nothing
+at a sign-in's token host), and whether its token host is apart from the hosts its token goes to. Step 9's table
+(docs/research/s33-veil-creds/harness-survey.md) decided each harness's trust; these decide its sign-in.
+- *Gemini CLI 0.68.0: fallback until the injector fills one check.* It signs in to a Google account as its own
+  installed-app OAuth client through google-auth-library 10.9.0: its code exchanged and its refresh made in form
+  encoding at `oauth2.googleapis.com/token` (oauth2client.js:87-90, 180-213, 238-276), their answer JSON, kept in
+  `Storage.getOAuthCredsPath()`'s file (oauth2.ts:147, 740); it revokes nothing (its sign-out removes the file,
+  771-777), its sign-in verifies no ID token (oauth2.ts), and its build has no `at_hash` (step 9). Its token goes to `cloudcode-pa.googleapis.com` and to
+  `www.googleapis.com`'s userinfo (788-796). But each start with a kept sign-in POSTs its access token, `Authorization:
+  Bearer`, to its token host's `/tokeninfo` "to see if it hasn't been revoked" (oauth2.ts:199-202; oauth2client.js:551)
+  and signs in anew where that fails (224): with nothing filled at the token host, a placeholder fails it at every
+  start. Possible once the injector fills its access token toward that one path, whose answer holds no token, with
+  Google's token endpoint as a profile and a `SignInCli` of Hex's (owed).
+- *Antigravity 1.5.7: fallback.* It signs in to a Google account through Go's `x/oauth2/google` at
+  `oauth2.googleapis.com/token` (besides a Gemini API key, GCP's enterprise sign-in and ADC, kiln's s26 record), and
+  checks its token at `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=%s` ("failed to call tokeninfo",
+  "tokeninfo returned status %d"): the token in the request's query (RFC 6750 §2.3), a place the injector never fills.
+  Nor does its build name a file of its tokens among those searched (`token.json`, `credentials.json`, `oauth_creds`,
+  its settings folder's files; its tokens are protobuf and x/oauth2 fields), so kiln could not give a later run an
+  earlier capture's placeholders.
+- *opencode 2.2.7: fallback.* It signs in per provider in its own screen (kiln signs it in to none, kiln's
+  `accounts.rs`). Its ChatGPT sign-in verifies its ID token's signature against the issuer's JWKS, with its nonce
+  (`jwtVerify`, chatgpt.ts:184-187, 461-478), which the inert ID token fails by design. Its Claude provider drives
+  Claude Code (`claude-agent`), whose sign-in is Claude Code's profile where Claude Code runs. Its other providers'
+  sign-ins weren't read here.
+- *goose 1.59.0: Codex's profile, for its ChatGPT sign-in.* It signs in per provider (kiln signs it in to none). Its
+  `chatgpt_codex` sign-in is Codex's OAuth client (chatgpt_codex.rs:38-39) at `auth.openai.com/oauth/token`, its code
+  and its refresh as forms (500-514), reading `access_token`, `refresh_token` and, where they come, `id_token` and
+  `expires_in` (461-466, 774-781); it takes its account from its ID token's claims, unverified (412-422), which the
+  inert ID token keeps; it sends its token to `chatgpt.com/backend-api/codex` as `Authorization: Bearer` (40, 872); and
+  it keeps its tokens in `chatgpt_codex/tokens.json` in its configuration folder (331-333), `config` beneath the
+  `GOOSE_PATH_ROOT` kiln's image sets (paths.rs:8-16). It revokes nothing. Its `gemini_oauth` sign-in is Gemini CLI's
+  installed-app client at `oauth2.googleapis.com/token` in forms, with no tokeninfo (gemini_oauth.rs:50-88, 272-288):
+  possible with Google's token endpoint as a profile, a `SignInCli` of Hex's, and a second sign-in name for one
+  harness, as one sign-in of a CLI a run is granted (owed).
+- *pi 1.5.2: fallback.* kiln signs it in to Anthropic or ChatGPT (`pi auth login anthropic` or `openai-codex`). Its
+  Anthropic sign-in is Claude Code's OAuth client (anthropic.ts:13-16) at `platform.claude.com/v1/oauth/token` in JSON
+  (76-84, 104-113, 240-249), kept in `$PI_CODING_AGENT_DIR/auth.json` (auth-storage.ts:64, 243-251), but pi tells an
+  OAuth token by its form, `apiKey.includes("sk-ant-oat")` (anthropic-messages.ts:1256-1258): a placeholder of the
+  broker's form (`kiln-placeholder-`, then hex) goes as an API key, in `x-api-key`, without the OAuth identity
+  Anthropic asks of an OAuth token. Its ChatGPT sign-in reads its access token as a JWT for its account and throws
+  without one (openai-codex.ts:99-109, 310-321). Its Anthropic sign-in is Claude Code's profile once a sign-in's
+  placeholder may carry the form its CLI reads (a placeholder form per provider: the broker's to decide, owed).
+- *Cursor CLI 2026.11.11: fallback.* `agent login` polls `${apiBaseUrl}/auth/poll` on `api2.cursor.sh` for its tokens
+  and keeps them camelCase (`accessToken`, `refreshToken`, `apiKey`) in `$XDG_CONFIG_HOME/cursor/auth.json`; it reads
+  its access token's JWT `exp` to decide a refresh; and its API key is exchanged at
+  `${apiBaseUrl}/auth/exchange_user_api_key` for tokens. Its token host would be the host its requests go to, where a
+  token host gets nothing filled; its answer's names are no OAuth token response's; a placeholder has no `exp`; and a
+  key filled toward that exchange would mint tokens into the microVM.
+- *Devin 3000.12.43: fallback.* `devin auth login` runs PKCE at `/auth/cli/continue`, and the code pasted back is
+  exchanged by Connect RPC at `/exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCode`, answered
+  an `api_key` and its servers (`ExchangePkceAuthorizationCodeResponse`; kept as `WindsurfCredentials`, its
+  `chisel-api/src/auth/credentials.rs`): no OAuth token response, so no profile reads it. Its key, given instead (ACP `authenticate`'s `meta.api_key`, `DEVIN_API_KEY`), could be a
+  Secrets-backed key filled at egress (`CredentialGrant`) where its requests carry it in a field the injector fills;
+  its build doesn't show where its Connect requests carry it (owed: ROOT's run with a placeholder key, its requests
+  read at the injector).
+- *Amp 0.0.1794456033: not applicable, a Secrets-backed key.* Its access token (`AMP_API_KEY`, `sgamp_…`) is a
+  long-lived key (its docs, cli/execute-mode), so it is a credential grant: a placeholder in its environment, the key
+  filled at egress toward `ampcode.com`. Its `amp login` keeps a session token that "expires within an hour" and that
+  Amp refreshes itself ("Session expired and could not be refreshed"), from the host its requests go to, as Cursor's.
+  Its build's own curl hint names `Authorization: Bearer`; that its requests carry the key there is owed (ROOT, as
+  Devin's).
+- *Built, kiln* (`crates/kiln/src/secrets/signin.rs`, `sandbox/isolated.rs`, `harness/isolated/home.rs`):
+  `Provider::Goose`, named `goose/<person>`, whose token endpoint, refresh body, hosts and Hex CLI (`SignInCli::Codex`)
+  are Codex's and whose file is its own (`Provider::file`, `held` at its top level); `Provider::file_in` finds a CLI's
+  file by its run environment (Claude Code's and Codex's folder as before, goose's under `GOOSE_PATH_ROOT`), through
+  `home::Layout::dir_named`. The broker refreshes it in Codex's JSON, of the same client, where goose posts a form:
+  the provider takes either from that client (Codex's own refresh is JSON, client.rs:15). Shards changes no code: a
+  goose sign-in's grant carries `Cli::Codex`, and `signin.rs` and `credential.rs` say a profile is its OAuth client's.
+  Hex changes nothing. Its tests are written and not run (the person's rule of 2026-11-16: no builds or tests in
+  lanes): ROOT's `cargo test -p kiln --lib -- secrets::signin` and clippy of `kiln`.
+- *Owed.* ROOT: a real goose ChatGPT sign-in in a microVM through the injector, surviving a refresh answered outside
+  (whether its loopback sign-in completes in a microVM is part of it); the key-at-egress checks of Devin and Amp. The
+  owner of each decision: the injector's fill toward a token host's check path (Gemini CLI); Google's token endpoint
+  as a profile and its `SignInCli` (Gemini CLI, goose's Google sign-in; Hex's lead for Hex); a placeholder form per
+  provider (pi); a second sign-in name per harness (goose).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
@@ -38037,8 +38124,8 @@ guest's own step.**
     after it, so it returns as before; each member's `wait_member` is then refused
     `ImageRefusal::Workdir`, where no end of its own came first. The image channel's version
     is 43: `REFUSED` may follow `STARTED`.
-- *Not typed:* a restart's next generation (D270) that cannot enter its working directory is
-  refused `StartRefusal::Failed` in init's words, as before.
+- *Not typed then:* a restart's next generation (D270) that cannot enter its working directory
+  was refused `StartRefusal::Failed` in init's words; typed since (amended below, P6-fix-2).
 - No literal (each kind is its protocol's next); no wait or cache touched.
 - **Tests** (written, not run: the person's rule of 2026-11-16 leaves every run to ROOT after
   the merge). abi `a_working_directory_unentered_reads_back_as_told`; init
@@ -38052,6 +38139,42 @@ guest's own step.**
   member, given at another path, and not shared: each refused `Workdir` at `wait_member`, errno 2.
   `/etc`, its image's, with no share: it exits 0. Its shared control stays
   `a_project_given_its_harness_is_where_it_works`.
+
+**Amended (P6-fix-2, 2026-11-16): a restart's next generation that cannot enter its working
+directory is refused typed too.**
+- *Before.* A restart (D270 slice 3b) whose next generation failed `entering its working
+  directory` was refused `RestartRefusal::Failed`, so `ImageRefusal::Restart(Failed, …)`, in
+  init's words alone: its orchestrator read words to learn the member, the directory and the
+  errno.
+- *Decided: as the first generation's is, carried by the restart's own answer.*
+  - abi: `StartRefusal::Workdir` (6, appended). Its `MEMBER_STARTED` answer's bytes are the
+    generation's `members::Unentered` (member, errno, directory), not words
+    (`StartAnswer::unentered`). An answer whose bytes are no `Unentered` of the member answered
+    is malformed (`Error::Shape`), which breaks the guest's protocol where the VM process relays
+    it, as any malformed answer does.
+  - init (domains.rs `next_generation`, run.rs `next_generation`): a next generation's launch that
+    failed at `Step::Setup` doing `Setting::WorkingDirectory` (its handover's chdir(2)), read by
+    `unentered_of` as a first launch's is, is answered `Workdir`. Its words, which also give its
+    cgroup's counts, go to init's stderr.
+  - The VM process relays the answer as it is (warm.rs `member_started`).
+  - The run host (api_run `start_refused`): `RestartRefusal::Workdir` (6, appended) in the
+    restart's answer (`RESTARTED`), worded by `workdir_refused`: the member as the image declares
+    it, the directory and the errno. Its member is let go (`Hold`, 0) and ends whole, as after
+    any restart that failed past its hold. One told malformed is `Failed`.
+  - The image channel's version is 45: a side of 44 reads no restart refusal 6.
+  - shards-api (session `restart_refused`): `restart` is refused `ImageRefusal::Workdir`, the
+    first generation's refusal, rather than `ImageRefusal::Restart`.
+  - Unchanged: a swap now (D270 slice 4) whose restart is so refused stays `SwapRefusal::Failed`,
+    its words naming `Workdir`.
+- No literal: 6 is each enum's next value; no wait or cache touched.
+- **Tests** (written, not run: the person's rule of 2026-11-16). abi
+  `a_next_generation_that_could_not_enter_its_workdir_is_answered_typed`; the run host's
+  `a_restart_that_could_not_enter_its_workdir_is_refused_typed`; shards-api's
+  `a_restart_whose_workdir_could_not_be_entered_is_refused_as_one` and the channel's
+  `a_restart_round_trips_and_its_malformed_answers_are_refused` (`Workdir` round-trips; tag 7
+  refused). Owed (ROOT): init's Linux suite and musl clippy (domains.rs, run.rs); a real-VM run
+  (HVF, KVM, WHP) of a member that removes its own working directory and is restarted, refused
+  `ImageRefusal::Workdir` with errno 2, which no test yet makes.
 
 ### D278. A member's own grants past its microVM, changed as the run goes: per-member live egress (b1, the guest, and b2, its host and API: built; b3, its real-VM tests: passing on HVF, KVM and WHP owed)
 
@@ -38269,20 +38392,133 @@ each volume's bytes, and its person's page needs them listed and one cleared.
 - No other literal; no wait or cache: each call walks every volume's files as it is asked, which
   is an admission's and a page's cost, never a start's.
 
-**Not built: a volume's bound held as it is written.** Its size admitted to its node's room means
-a bound its writes cannot pass. The store refuses `size` today ("quota size requested but no quota
-support", the local driver's own words where its filesystem has no quotas), and nothing bounds a
-directory a share serves. Until one is decided, an orchestrator admits a volume's measured bytes
-and refuses its next session where they pass its bound, which a session may still pass while it
-runs. The ways to hold it, each owed its R02 research and ROOT's decision: (1) the share server
-holds a byte budget per volume across every share process serving it (a count kept beside the
-volume and taken by each), refusing a write, an extension or an allocation past it (ENOSPC),
-counted by lengths as `Store::size` counts (a DAX write within a file's length changes none);
-(2) a fixed-size disk instead of a directory, as `shards plug disk FILE:PATH --size` makes one
-(D214, an ext4 of D190's mke2fs: its own bound, exact, its host use at most its size), which needs image runs' disk
-plugs, each member's mount of it and its owners mapped to a member's ids; (3) the host's quotas
-(XFS project quotas, root's to set; APFS has none per directory), which R12 and "no host root"
-refuse.
+**Decided (lane vol-bound, 2026-11-16): a volume's bound held as it is written, by the server of
+its share (slice 1 built; 2 to 5 owed).** Its size admitted to its node's room means a bound its
+writes cannot pass. Before, the store refused `size` ("quota size requested but no quota support",
+the local driver's words where its filesystem has no quotas), nothing bounded a directory a share
+serves, and an orchestrator admitted a volume's measured bytes and refused its next session where
+they passed its bound, which a session could still pass while it ran.
+- *Alternatives* (R02; each source read 2026-11-16):
+  - *The host's quotas.* Docker's local driver takes `size` only where it has a quota backend
+    (moby main, `daemon/volume/local/local_unix.go`: `quotaCtl.SetQuota`, else that refusal);
+    `--storage-opt size` is "only available for the btrfs, overlay2, windowsfilter, and zfs
+    storage drivers", overlay2's "only ... if the backing filesystem is xfs and mounted with the
+    pquota mount option" (docs.docker.com, `docker container run`); Podman's `size` only "on the
+    tmpfs and xfs file systems", XFS mounted `prjquota` (podman-volume-create(1)). Root's to set
+    up, and neither APFS nor NTFS has one per directory: refused, as R12 refuses host root.
+  - *A fixed-size disk.* An ext4 of `size` bytes made by shards-ext4 (D190), plugged as D214's
+    disk, as Firecracker's guests have and Fly.io's volumes are ("a volume can be attached to only
+    one Machine", "a slice of an NVMe drive on the same physical server", never shrunk:
+    docs.fly.io/volumes/overview). Exact: its host's use is at most its size, metadata included,
+    and the guest's own ext4 answers df and ENOSPC. Against it here: the volume stops being a
+    directory (D271's plugs, this entry's listing and clearing, `volume inspect`'s mountpoint, a
+    person reading its files on the host); one microVM at a time mounts it, where each member's
+    plug is a share process of its own; image runs plug no disks, mount none in a member and map
+    no owners of one (D214's are a daemon run's, through the CLI, with `pci_slots` asked at boot:
+    a rescan 2.4 ms and a first read 3.1 ms at p50 on HVF, 6.6 and 7.6 on KVM, PM M430); its data
+    sits in the guest's page cache (virtio-blk), where a share's stays its host's, and what that
+    cache holds unwritten is lost with a killed microVM, where a share's request is its host's
+    once answered; blocks freed in the guest stay the host's without discard; and growing it is a
+    resize2fs of a file system made with no blocks kept to grow (D190).
+  - *After the fact.* Kubernetes' kubelet measures a pod's ephemeral storage, and past its limit
+    "sets an eviction signal that triggers Pod eviction" (kubernetes.io, ephemeral storage): this
+    entry's interim, which a session passes while it runs.
+  - *The share's server* (chosen). Every byte a guest writes to a volume reaches its host through
+    it: the server takes no FUSE_WRITEBACK_CACHE at INIT, so a write(2) is a FUSE_WRITE answered
+    before it returns; a DAX write extends no file (fs/fuse/dax.c: "Do not use dax for file
+    extending writes", sent as FUSE_WRITEs), and a plugged share has no window (D214);
+    COPY_FILE_RANGE is ENOSYS. FUSE file systems hold quotas so: CephFS's clients ("cooperative
+    and non-adversarial", "imprecise": "writers will be stopped within tens of seconds of crossing
+    the configured limit"; df "based on quota limit": docs.ceph.com cephfs/quota), JuiceFS's
+    ("regular files are accounted by their file length, aligned to 4 KiB, and each consumes one
+    inode", other files 4 KiB; EDQUOT; df shows the quota; usage synced each second, which
+    "cannot guarantee that the usage data is counted accurately": juicefs.com, guide/quota),
+    GlusterFS's (`quota-deem-statfs`: "the total disk space of the directory is taken as the quota
+    hard limit"; cached sizes let writes past it within a timeout: docs.gluster.org,
+    Directory-Quota). virtiofsd has no such option (README, main) and answers statfs with its
+    host's. Their imprecision is many machines' clients each counting apart; a volume's servers
+    here are all on its host, and one count they share is exact (slice 2).
+- *The measure* (`fs::bound`, the same for a walk and for each request): a name takes one unit,
+  its host file system's allocation unit (statvfs's `f_frsize`; NTFS's cluster), read as the
+  share is bounded; a file but a directory its length in whole units, once however many names it
+  has; each file its guest's extended attributes, their names' and values' bytes, in whole units
+  (the server's own owner attribute, none). A length is what the server sees change; a name and an
+  attribute cost the host what no length shows: a guest's millions of empty files, or attributes
+  of up to 64 KiB each (XATTR_SIZE_MAX, include/uapi/linux/limits.h) and as many as its host file
+  system keeps (ext4 keeps them in its inode and one block, "not possible for this block to
+  contain a pointer to a second", unless made with `ea_inode`: docs.kernel.org ext4 attributes).
+  JuiceFS's, with its host's unit for its 4 KiB. It errs high for a sparse file (a 10 GiB
+  `ftruncate` takes 10 GiB) and for clones; it bounds neither the inode records and entries past
+  a name's unit nor a host's own transients (XFS's speculative preallocation, Btrfs's copies on
+  write), as a host's own quota bounds neither. Its distance from `du` on each host's file
+  system: unmeasured, owed.
+- *Refused past it:* ENOSPC, as a full file system answers (write(2): "no room for the data"),
+  which its statfs then says it is; not EDQUOT, as the guest's mount is the volume, whose own room
+  is gone. A write's bytes past the end the room lets its file reach are not written, a short
+  write as a nearly full disk's, and the next is refused; so are a size grown by SETATTR, a
+  growth by FALLOCATE (all or none), a name (CREATE, MKNOD, MKDIR, SYMLINK with its target's
+  length, LINK, a whiteout) and an attribute grown. FALLOC_FL_KEEP_SIZE is
+  refused EOPNOTSUPP in a bounded share: blocks past a file's length no length shows (fallocate(2):
+  a mode its file system does not take). A file there already is opened still with no room left,
+  O_EXCL refused EEXIST first, as Linux orders them. Never refused: what takes nothing (an
+  overwrite within a file's length, a read, a rename) and what gives back.
+- *Given back:* a name's unit as it is removed; a file's length and attributes with its last
+  name, or, where the guest holds it open, with its last handle (`removed_open`), as its host keeps
+  its blocks until its last descriptor goes: a guest cannot write past its bound by removing what
+  it holds open, and what it writes there meanwhile goes with it; a truncation's whole units, an
+  O_TRUNC's among them; and every file a session held, as its INIT resets it.
+- *Statfs:* blocks and files the bound's units; free and available what is left of it in units,
+  where its host has as much (the host's where it has less); free files the same, a name taking a
+  unit (NTFS counts none: the bound's); its fragment the unit. The guest's df shows the volume's
+  bound and use, as tmpfs's `size=` ("the limit of allocated bytes", docs.kernel.org tmpfs),
+  CephFS's quota df and GlusterFS's deem-statfs show theirs; its `du`, its host's allocation.
+- *The bound* (R03): the caller's request alone: Docker's `--opt size` of a volume (the local
+  driver's option, refused until slice 3) and shards-api's for an agent's volume, Hex's admitted
+  `disk_bytes`. None asked, none of its own: its host's room bounds it, as before. Not held
+  against the host's room, which is Hex's admission's (P6.2); both hold, and statfs says the
+  tighter. No literal: the unit is the host's, ENOSPC and EOPNOTSUPP Linux's.
+- *States* (R04) of a bounded volume: within (a request's whole units fit); near (a write cut
+  short); at (each growth refused; overwrites, reads and what gives back answered); past (its
+  charge over its bound: a bound lowered, or a walk finding more than was asked, such as files
+  written on its host: each growth refused until it gives back below). Across restarts (slice
+  2), its charge kept beside it: clean (its last server's count, written as it ended), held
+  (servers serving it), orphaned (held, none serving: a crash), walked again as it is next served.
+- *Gaps, stated:* until slice 2 each server's charge is its own, and a volume plugged into several
+  members (a share process each, D271) takes its bound in each. A file one server removes that
+  another's guest holds open is given back as it is removed, its server holding nothing of it,
+  and its blocks are its host's until the other lets go. A removed file's pages the guest's DAX
+  window maps stay mapped until its FORGET (D189), at most its window. Changes made on the host
+  directly count from the next walk. A save (D176) keeps no charge: its restore is bounded again
+  (slice 3). A bounded removal reads its file's attributes (an open and a listxattr) and a
+  bounded write stats its file: their costs unmeasured, owed.
+- *Slices:*
+  1. Built here (vmm `devices/virtio/fs/bound.rs`, `server.rs`): the measure's arithmetic and
+     statfs numbers (`Bound`); `Server::bound(limit)`, its host's unit read and its files walked
+     (`charge_of`: a directory at a time, never recursed, a descriptor held for each above the
+     one read); and each request above held to it. Light tests, written, not run (the person's
+     rule of 2026-11-16 leaves every run to ROOT): bound.rs `a_length_takes_its_whole_units`,
+     `a_write_is_cut_where_the_room_ends`, `a_resize_takes_and_gives_whole_units`,
+     `statfs_says_the_bound_and_its_room`; server.rs
+     `a_bounded_share_refuses_what_its_bound_has_no_room_for`,
+     `a_removed_open_files_charge_goes_with_its_last_handle`,
+     `a_bound_walks_names_lengths_once_and_attributes` (Unix).
+  2. One count per volume, beside it in the store, shared by every server serving it, in the
+     states above, on lane p6-fix's holder lock: one lock, each server's shared hold, the first's
+     exclusive try walking an orphaned count and the last's writing it clean, so that no second
+     record of holders is kept. A shared mapping's atomic count against a lock per change:
+     measured first.
+  3. Wiring: the store takes `size` (`validate_options`' refusal goes; opts.json keeps it; changed
+     while none holds it); the share process takes a bound with its share; the daemon's
+     `-v NAME`, api_run's starts and plugs, shards-api's `PlugFrom::Volume` and its volumes'
+     making pass it, an agent's Hex's `disk_bytes`.
+  4. The listing: `HomeVolume` gains its bound and its charge by this measure, which an admission
+     reads; `system df -v` keeps moby's lengths.
+  5. Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
+     `an_agents_volume_refuses_writes_past_its_bound` (a session filling its volume: a write cut
+     short, the next ENOSPC; df's numbers; a removal giving back; the next session's charge
+     kept); and the measure against `du` on APFS, ext4, XFS, Btrfs and NTFS.
+- No wait or cache is added: the charge is the server's state, changed under its lock by the
+  request that changes the files.
 
 **Tests** (light): shards-api's `a_homes_volumes_read_back_as_they_were_answered` (none and some,
 every cut, a trailing byte, another version, a flag that is neither, a hostile count),
@@ -38332,7 +38568,48 @@ plugged it used them.
   api_image.rs `an_agents_volume_outlives_its_session_and_is_listed_and_cleared`, now also
   refused `InUse` while its second session runs, its files kept; cleared once both have ended.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
+**Amended (P6-fix-2, 2026-11-16): every run that mounts or plugs a named volume holds it, a
+daemon's run as an orchestrator's.**
+- *Before.* Only an orchestrator's plug held its volume (api_run `source_dir`). A volume mounted
+  as a run starts held nothing, in a daemon's run or an orchestrator's: `-v NAME:PATH`,
+  `--mount`, `--volumes-from`, or an image's named `VOLUME`. Nor did one that `shards plug volume`
+  plugs into a daemon's run. `clear_volume` removed their files under them.
+- *Decided: one hold, taken where every run's volumes pass* (R12).
+  - `volumes::Holds` is a run's holds, each named volume once, by name. `take` holds a name
+    (`Store::hold`, try_share). `found` reads the volume as the store has it, holds it where it is
+    named, then looks again: refused where a clearing took it meanwhile; none where it is not there,
+    and then no lock file is made. `extend` takes in another's holds.
+  - `volumes::open_for` opens every run's mount points for its start: a daemon's run, its visit,
+    an orchestrator's boot or warm host. It holds each named volume before its files are opened
+    (`Opened::held`). A start while a clearing holds one is refused ("volume NAME is being
+    cleared"), as a plug is.
+  - The daemon carries a start's holds in the run's `Keep`, then its `Inbox`, and lets go of them
+    as the run ends (`run_ended`, a visit's too). A start that fails before a VM takes the run
+    drops them. `shards plug volume MICROVM NAME:PATH` (devices.rs `plug_share`) holds its volume
+    (`found`) before its files are opened, in the run's `Inbox`, until the run ends.
+  - The run host keeps its boot's holds in its plan, then in its live state (`Live::volumes_held`,
+    now `Holds`), where its plugs' join them (`source_dir`'s `take`, kept once the store took the
+    plug). Its own map and its own hold-and-refuse, the duplicate path, are removed.
+  - Not held: an anonymous volume, its run's own and gone with it, whose name is never asked again
+    and whose lock file would outlive it; a bind of a host directory. A named volume of a host
+    directory (`o=bind`) is held.
+  - A run keeps a plug's hold past its unplug, until it ends, a daemon's as an orchestrator's.
+- No literal; no wait: each hold is taken or refused at once.
+- *Still open* (ROOT's call): the daemon's `volume rm` and `volume prune` judge a volume's use by
+  the daemon's own records (`volume_refs`), not by the holds, so they remove a volume an
+  orchestrator's run holds.
+- **Tests** (written, not run: the person's rule of 2026-11-16): the binary's `volumes`
+  `a_starts_named_volumes_are_held_until_its_run_lets_go`: a named volume mounted twice is held
+  once, and its clearing refused until what was opened drops; an anonymous one is not held and
+  gets no lock file; a start while a clearing holds one is refused. The run host's
+  `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` and
+  `api_volumes`' `a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go` are unchanged.
+  Owed (ROOT): the binary's daemon tests (the `Keep` and `Inbox` fields) and Windows clippy. Real
+  VM (HVF, KVM, WHP), not yet written: a daemon run with `-v NAME:/data`, its volume refused
+  `InUse` by `clear_volume` while it runs and cleared once it stops; the same for a volume
+  `shards plug volume` plugged into it.
+
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 and 2, a network's leases held across processes and the daemon's runs on them, built; slices 3 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -38440,7 +38717,9 @@ reach past its microVM (b, D278).
    member of a network to every other, and netavark isolates networks from one another and nothing
    within one (src/firewall/nft.rs:266-330). A member joins with its name on the network (one
    member's, whatever its case), the ports it receives (TCP and UDP ranges; each port of its run's
-   address one member's, D122), and the flows it may open (a peer's name and its ports). A flow
+   address one member's, D122), and the flows it may open (a peer's name and its ports), each
+   within its image's grants and its ceiling, as D278 bounds a member's reach past its microVM
+   (ROOT's decision, 2026-11-16): a join asking past both is refused `Widening`, D278's. A flow
    exists where its sender's grant names its receiver and port and its receiver's grant takes that
    port: each network process holds its own guest's side, neither guest trusted with the other's.
    A reply is let by its flow's state, made as its first packet was admitted: dockerd's links let
@@ -38459,10 +38738,28 @@ join until 4 and 5 have landed):
    lowercased; `NameTaken`, `NotAName`); the stale removed at each look (`addresses`, `names`); the
    pairing (`Leases::pair`, `PairedElsewhere`); a network's leases removed with it (`Leases::clear`,
    `InUse`); on `shards_image::store::Locked`, given `try_hold` and `try_share`.
-2. *The daemon's members as leases*: D46's join takes its run's address and names from them (their
-   holder the daemon); `networks::lock` becomes the home's (`hold`); `network inspect` lists every
-   live lease's member; `network rm` refuses a network in use (`InUse`, in dockerd's words: "has
-   active endpoints"); the daemon pairs its runs' networks.
+2. *The daemon's members as leases* (built: `daemon::networks`): D46's join takes its run's
+   addresses from them, IPv4's and, on a network with IPv6 (D99), IPv6's (`Leases::take6`), held by
+   the daemon while the run lasts, each saying the run's ID; an asked one anywhere in the subnet,
+   the range bounding only those given unasked, as libnetwork gives them (moby f78c987a,
+   ipams/defaultipam/address_space.go:350-353, allocator.go:315-319; slice 1 had refused one outside
+   the range, `--ip` beside `--ip-range`), each refusal by its cause in dockerd's words where it has
+   them ("Address already in use", "requested address is out of range": ipamapi/contract.go:35-36).
+   The daemon pairs a network from its first run's join to its last's leaving, under its members'
+   lock, its entry there while, and only while, it pairs; a join where another process pairs it is
+   refused ("network N: another process links its members"). `networks::lock`, a process's `static
+   Mutex`, is gone: its address work is the home's lock's (`hold`), held for file operations alone,
+   and its other, the order in which the daemon tells its network processes their links and names
+   (D46), the daemon's own turn (`telling`), held across their answers and never with the home's
+   lock. `network inspect` lists each live lease of another process's run as a member, its holder's
+   ID and address; `ls`' `dangling` counts them; `network rm` refuses a network in use (`InUse`:
+   "another process's runs are on it") and `prune` keeps it; a network removed, its leases go with
+   it. Names are not leased by the daemon, where this said they would be: a daemon's run answers to
+   its name, aliases, short ID and host name (D46), names Docker's grammar gives `_` and `.`
+   (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`) and that Compose's scaled services share (one alias, each
+   replica's address), which a name lease, one member's host name, cannot hold; and a network the
+   daemon pairs has no other process's run on it, so its names meet none of another's. Name leases
+   are slice 4's members'.
 3. *The network process's networks* (the net crate): `NET_JOIN` (a network's slot, the guest's
    address, prefix and gateway, the ports it receives) and `NET_LEAVE`; `NET_PEER` with its
    network's slot and the ports its guest may open to that peer; each network's names; a table of
@@ -38471,11 +38768,11 @@ join until 4 and 5 have landed):
 4. *The wire, the API and the run host*: `ImageGuest::join(member, &Join, patience)` and
    `leave(member, network, patience)`, `Join { network, name, ingress, egress }`; `NetAsk::Join` and
    `Leave`, refused typed (`NoSuchNetwork`, `AddressTaken`, `NameTaken`, `Exhausted`,
-   `PairedElsewhere`, `Ipv6`); the run host's leases (their holder the run host, its run's ID a
-   microVM ID's form), its network process's and its guest's asks; shards-api's pairings and each
-   run host's links socket; a network made beforehand, with `network create`'s pool and words
-   (`Networks::create`), never by a join. The image channel's version one past main's at landing
-   (43 over today's 42).
+   `PairedElsewhere`, `Ipv6`, `Widening`); the run host's leases (their holder the run host, its
+   run's ID a microVM ID's form), its network process's and its guest's asks; shards-api's pairings
+   and each run host's links socket; a network made beforehand, with `network create`'s pool and
+   words (`Networks::create`), never by a join. The image channel's version one past main's at
+   landing (43 over today's 42).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -38526,6 +38823,10 @@ join until 4 and 5 have landed):
   address in dotted decimal; an address lease says its holder's ID, 64. A lease's record is read no
   further than its kind's longest, so that no file of another's making has a look allocate past
   it.
+- An IPv6 address lease's file is the address's 128 bits as 32 lowercase hex digits, 2 ×
+  `size_of::<u128>()`, four bits a digit: Windows takes no `:` in a file's name (Microsoft,
+  "Naming Files, Paths, and Namespaces"), and one spelling of an address names one file, where
+  IPv6's text forms are many (RFC 5952 §2).
 - A name is a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1, `shards_dns::host_name`: labels of 63
   bytes, 253 in all), lowercased (RFC 4343), so that its file's name fits each supported
   filesystem's 255 bytes. Its file is `@` and the name: Windows takes a base name of `CON`, `PRN`,
@@ -38550,10 +38851,9 @@ may run, never given twice. Two pairers: refused. A home on a network filesystem
 assured, unsupported as for each of the home's other locks (the image store's, the daemon's).
 
 **Questions for ROOT.** kiln's `Change::Connect` carries no ports, which this asks for both ways:
-its shape is kiln's and Hex's, a seam change to route. Whether a member's grants on a shared network
-are bounded by its image or a ceiling, as D278's past the microVM are: as designed, the
-orchestrator's join says them whole, nothing of a shared network leaving the machine's network
-processes.
+its shape is kiln's and Hex's, a seam change to route. Answered (ROOT, 2026-11-16): a member's
+grants on a shared network are bounded by its image's grants and its ceiling, as D278's past its
+microVM are (*What a member reaches*, above).
 
 **Tests** (slice 1, light; written, not run, by the person's word of 2026-11-16: ROOT runs them).
 networks::leases: `addresses_are_the_lowest_free_and_one_let_go_is_the_next_given`,
@@ -38564,6 +38864,17 @@ held by none), `an_address_in_use_or_out_of_range_is_refused_by_its_cause`,
 `the_homes_networks_are_held_against_every_other_open`. Owed (ROOT): `cargo test -p shards
 --profile test-release networks::leases` on macOS, Linux (glibc and musl) and Windows, as flock(2)
 and LockFileEx each hold them; `scripts/lint` on the seven targets.
+
+**Tests** (slice 2, light; written, not run, by the same word). networks::leases:
+`an_asked_address_is_given_anywhere_in_its_subnet`, `ipv6_addresses_are_leased_as_ipv4_ones_are`;
+daemon: `a_networks_runs_are_leased_and_paired_by_one_process`,
+`a_network_with_another_processs_run_on_it_stays`, and D46's
+`an_asked_address_is_free_once_its_holder_has_said_its_end` on the leases. Owed (ROOT): `cargo test
+-p shards --bin shards --profile test-release -- networks:: daemon::tests::a_network
+daemon::tests::an_asked_address daemon::networks::` on macOS, Linux (glibc and musl) and Windows;
+`scripts/lint` on the seven targets; on real VMs (HVF, KVM, WHP), D46's and D99's network E2E on
+the leases: containers.rs `microvms_on_a_network_reach_one_another_by_name` and its `--ip`,
+`--ip6` and `network rm` cases.
 
 ## 4. Start path (≤ 5 ms budget)
 

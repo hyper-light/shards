@@ -480,8 +480,9 @@ pub enum ImageRefusal {
     Swap(SwapRefusal, String),
     /// A member's working directory ([`MemberSpec::workdir`], else its image's) its guest
     /// could not enter as it started (D277), so none of its run's members runs: told as they
-    /// start, after the boot, to [`ImageGuest::wait_member`]; its run host's words name the
-    /// member, the directory and the errno.
+    /// start, after the boot, to [`ImageGuest::wait_member`]; or as its next generation started
+    /// (D270), which its [`ImageGuest::restart`] is refused with, its member ended whole. Its
+    /// run host's words name the member, the directory and the errno.
     Workdir(String),
 }
 
@@ -742,7 +743,9 @@ pub trait ImageGuest: Send + Sync {
     /// namespaces, server instance and volumes its generations keep, its input its own where it
     /// has one: the generation started, whose output, input and end are taken by it. Refused
     /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
-    /// way, one that starts once (a member given a port among others, D122).
+    /// way, one that starts once (a member given a port among others, D122); and as
+    /// [`ImageRefusal::Workdir`] where its next generation could not enter its working directory
+    /// (D277), its member then ended whole.
     fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)
     -> Result<u32, ImageRefusal>;
     /// The member at path `at` (`/agents/NAME`, `/harness/NAME`, `/mcp/NAME`) given the OSI

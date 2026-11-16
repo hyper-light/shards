@@ -52,8 +52,8 @@ fn every(store: &Store) -> Vec<HomeVolume> {
 }
 
 /// Volume `name` removed from `store` with its files, as `volume rm` removes one: held alone
-/// (`Store::alone`), refused `InUse` at once where a run that plugged it holds it (D281), then
-/// under the store's lock; refused by why.
+/// (`Store::alone`), refused `InUse` at once where a run that mounts or plugged it holds it
+/// (D281), a daemon's or an orchestrator's, then under the store's lock; refused by why.
 fn clear(store: &Store, name: &str) -> Result<(), (ClearCause, String)> {
     Store::valid(name).map_err(|e| (ClearCause::Name, format!("{name}: {e}")))?;
     let unknown = || (ClearCause::Unknown, format!("get {name}: no such volume"));
@@ -68,7 +68,7 @@ fn clear(store: &Store, name: &str) -> Result<(), (ClearCause, String)> {
             (
                 ClearCause::InUse,
                 format!(
-                    "remove {name}: volume is in use: a run that plugged it holds it, or another clearing"
+                    "remove {name}: volume is in use: a run that mounts or plugged it holds it, or another clearing"
                 ),
             )
         })?;
@@ -122,9 +122,9 @@ mod tests {
         assert_eq!(left, ["agent-b"]);
     }
 
-    /// D281: a volume a run holds (its plug's hold, `Store::hold`), by one run or two, is refused
-    /// its clearing `InUse` at once, its files kept; once every hold is let go of, it is cleared.
-    /// A hold asked while a clearing holds it is refused at once.
+    /// D281: a volume a run holds (its mount's or plug's hold, `Store::hold`), by one run or two,
+    /// is refused its clearing `InUse` at once, its files kept; once every hold is let go of, it
+    /// is cleared. A hold asked while a clearing holds it is refused at once.
     #[test]
     fn a_volume_a_run_holds_is_refused_its_clearing_until_it_lets_go() {
         let dir = shards_testdir::TempDir::new("api-volumes").unwrap();
