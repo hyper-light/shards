@@ -31184,11 +31184,17 @@ held within the least and short of it, no budget answered none) and
 guest time; a member's, none). Record:
 [orchestrator-room-v1](../research/measurements/orchestrator-room-v1/README.md).
 
-**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). Hex's adoption: Hex builds against
-version 6's shards-api, so its re-vendor of Shards, then its learner telling each Shards guest
-its C5 budget's room each window and reading each vCPU's guest time from the run's stats. D188's
-give-back at the host's pressure (`RECLAIM`) for an orchestrator's runs: no run host watches its
-host's pressure; an orchestrator gives one back by telling it a room short of what it holds.
+**Owed.** The real-VM tests on KVM, HVF and WHP (ROOT). D188's give-back at the host's pressure
+(`RECLAIM`) for an orchestrator's runs: no run host watches its host's pressure; an orchestrator
+gives one back by telling it a room short of what it holds.
+
+**Landed** (s37). This entry at `3ce473b31` to `c9430828c`, via `9bf25f367`. Hex's adoption, on
+Hex main: its re-vendor of Shards past it (Shards `1389dc0b6` at Hex `025aae6d`; `9975d1f55` at
+Hex `1969a423`); a Shards image VM told its room and read for its host cost, each vCPU's guest
+time among it, through its runtime, and learned by its charge learner (Hex `2e482c5b`,
+`2a399d82`); a node VM's guest under shards-init told its room as an image VM's (Hex
+`6a8c6da8`). A managed microVM is told none (D255), so Hex's Shards guest class still awaits
+`GuestRoom`. `docs/research/s37-decision-inventory.md` lists each landing (rows A7 and 14).
 
 **What would falsify it.** A run told its room through its host whose host still takes back
 memory its guest holds before its guest drops its page cache (D188's measure, PM M309, on an
@@ -33256,10 +33262,15 @@ period, checks it is its build's hold's, and holds the run to two periods past a
 where it took 100 ms as known.
 
 **Owed.** The real-VM test on KVM, HVF and WHP (ROOT); the seven guard-removal mutants above,
-these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). Hex's
-adoption: its re-vendor of Shards past D241 and this, then its learner telling each Shards
-image VM its rate each window (kiln plan step 14). How far past its rate a VM runs at each rate
-and vCPU count, measured, as D191 owes for its marks.
+these light tests on Linux and Windows, and `scripts/lint` on the 7 targets (ROOT). How far past
+its rate a VM runs at each rate and vCPU count, measured, as D191 owes for its marks.
+
+**Landed** (s37). This entry at `81049eaf6`, `bc395685f`, `e34176b54` and `2d3da286c`, via
+`4c5341a3d`; its period at `b8fe24750`, told with each `RATED` answer since `f54dbfe34`. Hex's
+adoption, on Hex main: each Shards image VM capped through its rate by its charge learner (Hex
+`2e482c5b`, `2a399d82`), over a window the longest of its platform's and each held image VM's
+rate period (Hex `48cafffc7`), at Shards `9975d1f55` (Hex `1969a423`).
+`docs/research/s37-decision-inventory.md` lists each landing (rows P3 and 14).
 
 **What would falsify it.** A run held to a rate whose guest time over a window passes the rate
 by more than a period's share and its vCPUs' overrun; a daemon run, its whole CPUs held in
