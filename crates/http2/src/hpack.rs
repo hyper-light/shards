@@ -1,9 +1,10 @@
-//! HPACK (RFC 7541), HTTP/2's field compression, for the credential injector's HTTP/2 (D242,
-//! step 7). Compression is stateful and each endpoint has a decoder and an encoder of its own
-//! (RFC 9113 §4.3.1), so an intermediary decodes what one hop's peer sent with that hop's
-//! decoder and encodes what it sends on the other hop with that hop's encoder: an index into one
-//! table never stands for anything in the other. A field keeps how its sender sent it, and one
-//! sent never indexed is never indexed by any hop after (§7.1.3).
+//! HPACK (RFC 7541), HTTP/2's field compression, for every HTTP/2 shards speaks: the credential
+//! injector's (D242, step 7) and the gateway's client's (D113). Compression is stateful and each
+//! endpoint has a decoder and an encoder of its own (RFC 9113 §4.3.1), so an intermediary decodes
+//! what one hop's peer sent with that hop's decoder and encodes what it sends on the other hop
+//! with that hop's encoder: an index into one table never stands for anything in the other. A
+//! field keeps how its sender sent it, and one sent never indexed is never indexed by any hop
+//! after (§7.1.3).
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -918,6 +919,19 @@ mod tests {
         assert_eq!(codes.len(), 257);
         for (symbol, code, len) in codes {
             assert_eq!(HUFFMAN[symbol], (code, len), "symbol {symbol}");
+        }
+    }
+
+    #[test]
+    fn every_symbol_reads_back() {
+        // Each byte, coded by Appendix B and padded with ones, decodes to itself.
+        for symbol in 0..=255u8 {
+            let (code, len) = HUFFMAN[usize::from(symbol)];
+            let total = u32::from(len).div_ceil(8) * 8;
+            let pad = total - u32::from(len);
+            let padded = (u64::from(code) << pad) | ((1u64 << pad) - 1);
+            let bytes: Vec<u8> = (0..total / 8).rev().map(|i| (padded >> (i * 8)) as u8).collect();
+            assert_eq!(*unhuffman(&bytes).unwrap(), [symbol], "{symbol}");
         }
     }
 

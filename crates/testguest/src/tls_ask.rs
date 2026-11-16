@@ -14,11 +14,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::TcpStream;
 use std::sync::Arc;
 
-#[allow(dead_code)]
-#[path = "../../net/src/hpack.rs"]
-mod hpack;
-
-use hpack::{Decoded, Decoder, Encoder, Field, Indexing};
+use shards_http2::hpack::{Decoded, Decoder, Encoder, Field, Indexing};
 
 type Tls = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 

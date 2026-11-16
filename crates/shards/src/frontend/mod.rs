@@ -2909,7 +2909,18 @@ mod tests {
     /// of a connection, HTTP/2 and gRPC as grpc-go writes them, each answer a message or a
     /// status (trailers-only).
     fn fake_server(answers: &[Result<Vec<u8>, (u32, &str)>]) -> Vec<u8> {
-        use shards_gateway::hpack;
+        use shards_gateway::hpack::{Encoder, Field, Indexing};
+        // The server's encoder, one for its connection (RFC 9113 §4.3.1).
+        let mut encoder = Encoder::new(4096, 4096);
+        let mut encode = |fields: &[(&str, &str)]| {
+            let fields: Vec<Field> = fields
+                .iter()
+                .map(|(n, v)| Field::new(n.as_bytes(), v.as_bytes(), Indexing::Without))
+                .collect();
+            let mut block = Vec::new();
+            encoder.encode(&fields, &mut block);
+            block
+        };
         let frame = |out: &mut Vec<u8>, kind: u8, flags: u8, stream: u32, payload: &[u8]| {
             let n = payload.len() as u32;
             out.extend_from_slice(&n.to_be_bytes()[1..]);
@@ -2924,17 +2935,17 @@ mod tests {
             let stream = 2 * i as u32 + 1;
             match a {
                 Ok(message) => {
-                    let head = hpack::encode(&[(":status", "200"), ("content-type", "application/grpc")]);
+                    let head = encode(&[(":status", "200"), ("content-type", "application/grpc")]);
                     frame(&mut out, 1, 0x4, stream, &head);
                     let mut data = vec![0u8];
                     data.extend_from_slice(&(message.len() as u32).to_be_bytes());
                     data.extend_from_slice(message);
                     frame(&mut out, 0, 0, stream, &data);
-                    frame(&mut out, 1, 0x5, stream, &hpack::encode(&[("grpc-status", "0")]));
+                    frame(&mut out, 1, 0x5, stream, &encode(&[("grpc-status", "0")]));
                 }
                 Err((code, message)) => {
                     let code = code.to_string();
-                    let head = hpack::encode(&[
+                    let head = encode(&[
                         (":status", "200"),
                         ("content-type", "application/grpc"),
                         ("grpc-status", &code),
