@@ -3215,7 +3215,7 @@ mod hosted {
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
     use crate::daemon::managed::{
-        Charge, execs, input_bytes, link_bytes, mcp, members, output_bytes, storage_excess,
+        Charge, endpoint_bytes, execs, input_bytes, mcp, members, output_bytes, storage_excess,
     };
     use crate::daemon::publish;
 
@@ -6597,30 +6597,51 @@ mod hosted {
         }
     }
 
+    /// Output `key`, made as `producer`, charged to `charge` as the daemon charges its runs'
+    /// owned outputs (D252): `output_bytes` of what its endpoint admits it, its host's record of
+    /// it its entry in [`Stdio`], and `storage_excess`; none where its budget has no room.
+    fn output_charge(
+        charge: &std::sync::Arc<Charge>,
+        key: Key,
+        producer: &shards_remote::managed::Producer,
+    ) -> Charged {
+        let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
+        let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
+            .zip(storage_excess(producer, admitted.record_bytes).ok())
+            .and_then(|(lane, excess)| lane.checked_add(excess));
+        charge_stream(
+            charge,
+            bytes,
+            format_args!("member {}'s generation {} output lane", key.0, key.1),
+        )
+    }
+
+    /// Member `key.0`'s generation `key.1`'s stdin charged to `charge` as the daemon charges its
+    /// runs' inputs (D252): `input_bytes`, its host's record of it its entry in [`Stdio`]; none
+    /// where its budget has no room.
+    fn input_charge(charge: &std::sync::Arc<Charge>, key: (u32, u32)) -> Charged {
+        let (_, admitted) = shards_api::control::member_input(key.0, key.1);
+        charge_stream(
+            charge,
+            input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
+            format_args!("member {}'s generation {} stdin lane", key.0, key.1),
+        )
+    }
+
     impl Stdio {
-        /// Serves output `key` from now on: charged to its budget as the daemon charges its
-        /// runs' owned outputs (`output_bytes` of what its endpoint admits it, its host's record
-        /// of it its entry here, and `storage_excess`), its control held, its thread started.
-        /// One its budget has no room for is let go (`no_room`), each lane to it refused
-        /// `Capacity`; one that has no thread is revoked, which its lane is told. Whether its
-        /// budget had room for it.
+        /// Serves output `key` from now on, holding `charged`, what it holds of its budget
+        /// ([`output_charge`]): its control held, its thread started. One its budget had no room
+        /// for is let go (`no_room`), each lane to it refused `Capacity`; one that has no thread
+        /// is revoked, which its lane is told. Whether its budget had room for it.
         fn output<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
             key: Key,
             producer: shards_remote::managed::Producer,
             control: shards_remote::managed::Control,
+            charged: Charged,
             scope: &'scope std::thread::Scope<'scope, 'env>,
         ) -> bool {
-            let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
-            let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
-                .zip(storage_excess(&producer, admitted.record_bytes).ok())
-                .and_then(|(lane, excess)| lane.checked_add(excess));
-            let charged = charge_stream(
-                &self.charge,
-                bytes,
-                format_args!("member {}'s generation {} output lane", key.0, key.1),
-            );
             if charged.is_none() {
                 control.no_room();
                 lock(&self.outputs).insert(
@@ -6652,26 +6673,21 @@ mod hosted {
             true
         }
 
-        /// Serves member `key.0`'s generation `key.1`'s stdin from now on: charged to its budget
-        /// as the daemon charges its runs' inputs (`input_bytes`, its host's record of it its
-        /// entry here), its control held, its relay's thread started ([`lane_input`]). One its
-        /// budget has no room for is let go (`no_room`), each lane to it refused `Capacity` and
-        /// its member's input connection ended by its relay, which finds it gone; one that has
-        /// no thread is revoked. Whether its budget had room for it.
+        /// Serves member `key.0`'s generation `key.1`'s stdin from now on, holding `charged`,
+        /// what it holds of its budget ([`input_charge`]): its control held, its relay's thread
+        /// started ([`lane_input`]). One its budget had no room for is let go (`no_room`), each
+        /// lane to it refused `Capacity` and its member's input connection ended by its relay,
+        /// which finds it gone; one that has no thread is revoked. Whether its budget had room
+        /// for it.
         fn input<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
             key: (u32, u32),
             relay: shards_remote::managed::input::Relay,
             control: shards_remote::managed::input::Control,
+            charged: Charged,
             scope: &'scope std::thread::Scope<'scope, 'env>,
         ) -> bool {
-            let (_, admitted) = shards_api::control::member_input(key.0, key.1);
-            let charged = charge_stream(
-                &self.charge,
-                input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
-                format_args!("member {}'s generation {} stdin lane", key.0, key.1),
-            );
             let room = charged.is_some();
             if !room {
                 control.no_room();
@@ -6739,12 +6755,14 @@ mod hosted {
             self.give_back(member, generation);
             let mut room = true;
             for channel in [Channel::Stdout, Channel::Stderr] {
+                let key = (member, generation, channel);
                 let (named, _) = shards_api::control::member_output(member, generation, channel);
                 let (producer, control) = self
                     .generations
                     .output(named)
                     .map_err(|e| failed(format!("its generation {generation}'s output lane: {e}")))?;
-                room &= self.output(live, (member, generation, channel), producer, control, scope);
+                let charged = output_charge(&self.charge, key, &producer);
+                room &= self.output(live, key, producer, control, charged, scope);
             }
             if stdin {
                 let (named, _) = shards_api::control::member_input(member, generation);
@@ -6752,7 +6770,8 @@ mod hosted {
                     .generations
                     .input(named)
                     .map_err(|e| failed(format!("its generation {generation}'s stdin lane: {e}")))?;
-                room &= self.input(live, (member, generation), relay, control, scope);
+                let charged = input_charge(&self.charge, (member, generation));
+                room &= self.input(live, (member, generation), relay, control, charged, scope);
             }
             if !room {
                 return Err((
@@ -6916,12 +6935,60 @@ mod hosted {
         live.fed.notify_all();
     }
 
+    /// Its members' first generation's stdio streams (D252), each by its key in the order its
+    /// endpoint was bound with them ([`first_streams`]), with what it holds of its run host's
+    /// budget ([`charge_first`]).
+    struct First {
+        outputs: Vec<(Key, Charged)>,
+        inputs: Vec<(u32, Charged)>,
+    }
+
+    /// Its members' first generation's stdio streams, `outputs` and `inputs` ([`first_streams`]),
+    /// as its endpoint `served` them, charged to `agent`'s budget as a restart charges its next
+    /// generation's ([`Stdio::join`]): before its members start, so that none starts whose
+    /// output no lane would credit. Refused where its budget has no room for one of them, what
+    /// the others held given back.
+    fn charge_first(
+        agent: &Agent,
+        outputs: &[Key],
+        inputs: &[u32],
+        served: &shards_remote::control::Served,
+    ) -> Result<First, String> {
+        let room = |e: std::collections::TryReserveError| format!("its members' lanes: {e}");
+        let mut first = First {
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+        };
+        first.outputs.try_reserve_exact(outputs.len()).map_err(room)?;
+        for (&key, (producer, _)) in outputs.iter().zip(&served.outputs) {
+            let charged = output_charge(&agent.charge, key, producer);
+            if charged.is_none() {
+                return Err(format!(
+                    "its run host's budget has no room for member {}'s first {:?} lane",
+                    key.0, key.2
+                ));
+            }
+            first.outputs.push((key, charged));
+        }
+        first.inputs.try_reserve_exact(inputs.len()).map_err(room)?;
+        for &member in inputs {
+            let charged = input_charge(&agent.charge, (member, 0));
+            if charged.is_none() {
+                return Err(format!(
+                    "its run host's budget has no room for member {member}'s first stdin lane"
+                ));
+            }
+            first.inputs.push((member, charged));
+        }
+        Ok(first)
+    }
+
     /// Serves its members' stdio on its endpoint's lanes from now on (D252), where its
     /// orchestrator asked for it: `outputs` and `inputs`, the streams its endpoint was bound
-    /// with ([`first_streams`]' order), held in [`Live::stdio`] with `generations`, where each
-    /// next generation's join it, each one charged to `agent`'s budget, or let go where it has
-    /// no room, and each one's thread started. Called before its endpoint's driver serves a
-    /// lane, so that no lane finds a stream its budget has no room for before it is let go.
+    /// with, each with its key and what it holds of `agent`'s budget in `first`, held in
+    /// [`Live::stdio`] with `generations`, where each next generation's join it, and each one's
+    /// thread started. Called before its endpoint's driver serves a lane, so that no lane finds
+    /// a stream its budget has no room for before it is let go.
     fn serve_stdio<'scope, 'env>(
         live: &'env Live<'env>,
         agent: &Agent,
@@ -6931,16 +6998,10 @@ mod hosted {
             shards_remote::managed::input::Relay,
             shards_remote::managed::input::Control,
         )>,
+        first: First,
         scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
-        let (keys, members) = match first_streams(agent) {
-            Ok(streams) => streams,
-            Err(why) => {
-                super::say(format_args!("its members' stdio is served none: {why}"));
-                return;
-            }
-        };
-        if keys.is_empty() && members.is_empty() {
+        if first.outputs.is_empty() && first.inputs.is_empty() {
             return;
         }
         let stdio = Stdio {
@@ -6955,11 +7016,11 @@ mod hosted {
         let Some(stdio) = live.stdio.get() else {
             return;
         };
-        for (key, (producer, control)) in keys.into_iter().zip(outputs) {
-            stdio.output(live, key, producer, control, scope);
+        for ((key, charged), (producer, control)) in first.outputs.into_iter().zip(outputs) {
+            stdio.output(live, key, producer, control, charged, scope);
         }
-        for (member, (relay, control)) in members.into_iter().zip(inputs) {
-            stdio.input(live, (member, 0), relay, control, scope);
+        for ((member, charged), (relay, control)) in first.inputs.into_iter().zip(inputs) {
+            stdio.input(live, (member, 0), relay, control, charged, scope);
         }
     }
 
@@ -7576,6 +7637,35 @@ mod hosted {
                     trust = super::trust(der, grants, &plan.signing).map_err(boot)?;
                 }
             }
+            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
+            // held by the endpoint alone once bound: no template, and no other run, has it; and
+            // what its own lanes are served with. Bound before its members start, its link, its
+            // sockets' queues and its members' first stdio streams charged to its budget, as a
+            // restart charges its next generation's ([`Stdio::join`]): a run its budget has no
+            // room for is refused, typed, with none of its members started.
+            let agent = plan
+                .control
+                .as_ref()
+                .map(|_| Agent::of(&plan))
+                .transpose()
+                .map_err(boot)?;
+            let control = match (plan.control.as_ref(), agent.as_ref()) {
+                (Some(ask), Some(agent)) => {
+                    let key = control_key(premade.take()).map_err(boot)?;
+                    let (outputs, inputs) = first_streams(agent).map_err(boot)?;
+                    let (endpoint, served) =
+                        bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
+                            .map_err(boot)?;
+                    let charged = charge_link(agent, &endpoint)?;
+                    let first =
+                        charge_first(agent, &outputs, &inputs, &served).map_err(no(Cause::Capacity))?;
+                    super::step(format_args!("its agent-control endpoint bound"));
+                    Some(((endpoint, served, first), charged))
+                }
+                _ => None,
+            };
+            // Its link's charge, held while the run is served.
+            let (control, _link_charge) = control.unzip();
             let (client, client_theirs) =
                 handed_pair().map_err(|e| boot(format!("the run's client: {e}")))?;
             let capture = match plan.capture {
@@ -7592,33 +7682,10 @@ mod hosted {
                 capture.as_ref().map(|(_, theirs)| theirs),
             )
             .map_err(boot)?;
-            // Its agent-control endpoint (D252), its key made past its VM's start (`ControlKey`),
-            // held by the endpoint alone once bound: no template, and no other run, has it; and
-            // what its own lanes are served with.
-            let agent = plan
-                .control
-                .as_ref()
-                .map(|_| Agent::of(&plan))
-                .transpose()
-                .map_err(boot)?;
-            let control = match (plan.control.as_ref(), agent.as_ref()) {
-                (Some(ask), Some(agent)) => {
-                    let key = control_key(premade.take()).map_err(boot)?;
-                    let (outputs, inputs) = first_streams(agent).map_err(boot)?;
-                    let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
-                        .map_err(boot)?;
-                    let charged = charge_link(agent, &bound.0).map_err(boot)?;
-                    super::step(format_args!("its agent-control endpoint bound"));
-                    Some((bound, charged))
-                }
-                _ => None,
-            };
-            // Its link's charge, held while the run is served.
-            let (control, _link_charge) = control.unzip();
             let started = wire::Started {
                 members: plan.members.clone(),
                 published: ports.published(),
-                control: control.as_ref().map(|(endpoint, _)| control_at(endpoint)),
+                control: control.as_ref().map(|(endpoint, ..)| control_at(endpoint)),
                 from: launched.from,
                 egress: plan.narrowing.clone(),
             }
@@ -7735,7 +7802,11 @@ mod hosted {
         input: super::Input,
         launched: &Launched,
         client: Stream,
-        control: Option<(shards_remote::control::Endpoint, shards_remote::control::Served)>,
+        control: Option<(
+            shards_remote::control::Endpoint,
+            shards_remote::control::Served,
+            First,
+        )>,
     ) {
         if super::timed() {
             timing_line(&client);
@@ -7743,9 +7814,9 @@ mod hosted {
         std::thread::scope(|scope| {
             // Its agent-control endpoint's driver, and its socket lanes, each opened through the
             // VM (D251, D252); revoked as the run's asks end, which ends both.
-            let revoke = control.map(|(endpoint, served)| {
+            let revoke = control.map(|(endpoint, served, first)| {
                 // Its members' stdio, where its orchestrator asked for it (D252): each stream
-                // charged to its budget, or let go, before the driver serves a lane of it.
+                // held with its charge before the driver serves a lane of it.
                 if let Some(agent) = &live.agent {
                     serve_stdio(
                         live,
@@ -7753,6 +7824,7 @@ mod hosted {
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        first,
                         scope,
                     );
                 }
@@ -7993,18 +8065,32 @@ mod hosted {
         .map_err(|e| format!("its agent-control endpoint: {e}"))
     }
 
-    /// `endpoint`'s link charged to `agent`'s budget once, whatever lanes it carries, as the
-    /// daemon charges its runs' (`link_bytes`, D252): a handshake's crypto for each connection
-    /// it holds at once, and a datagram each way; before its driver makes any connection. Its
-    /// endpoint could not be made where its budget has no room for it.
+    /// `endpoint` charged to `agent`'s budget once, whatever lanes it carries, as the daemon
+    /// charges its runs' (`endpoint_bytes`, D252): a handshake's crypto for each connection it
+    /// holds at once, a datagram each way, and the kernel's queues of each socket it holds, as
+    /// its OS reports them; before its driver makes any connection and before its members start.
+    /// Refused `Capacity` where its budget has no room for it; `Boot` where its sockets' queues
+    /// could not be read, or its charge overflows.
     fn charge_link(
         agent: &Agent,
         endpoint: &shards_remote::control::Endpoint,
-    ) -> Result<execs::Held<std::sync::Arc<Charge>>, String> {
-        let bytes = link_bytes(&endpoint.link(), shards_remote::control::CONNECTIONS)
-            .ok_or_else(|| "its agent-control link: its charge overflows".to_owned())?;
-        execs::Held::new(std::sync::Arc::clone(&agent.charge), bytes)
-            .map_err(|e| format!("its agent-control link: its budget has no room for {bytes} bytes: {e:?}"))
+    ) -> Result<execs::Held<std::sync::Arc<Charge>>, No> {
+        let bytes = endpoint_bytes(endpoint)
+            .map_err(|e| No(Cause::Boot, format!("its agent-control endpoint's queues: {e}")))?
+            .ok_or_else(|| {
+                No(
+                    Cause::Boot,
+                    "its agent-control link: its charge overflows".to_owned(),
+                )
+            })?;
+        execs::Held::new(std::sync::Arc::clone(&agent.charge), bytes).map_err(|e| {
+            No(
+                Cause::Capacity,
+                format!(
+                    "its run host's budget has no room for its agent-control link and its sockets' queues, {bytes} bytes: {e:?}"
+                ),
+            )
+        })
     }
 
     /// The member streams a run's endpoint serves where its orchestrator asked for its members'
@@ -12120,6 +12206,8 @@ mod hosted {
                 &[],
             )
             .unwrap();
+            // Charged before its members start, as its run host charges them (D252).
+            let charged = charge_first(agent, &outputs, &inputs, &served).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let (stdout0, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
             let (files_alone, _) = shards_api::control::member_output(0, 0, Channel::Stdout);
@@ -12144,6 +12232,7 @@ mod hosted {
                     served.generations,
                     served.outputs,
                     served.inputs,
+                    charged,
                     scope,
                 );
                 let capturing = scope.spawn(move || {
@@ -12279,12 +12368,14 @@ mod hosted {
         /// D252: each member stream an orchestrator's run's endpoint serves is charged to its run
         /// host's budget as the daemon charges its runs' streams (daemon/managed.rs
         /// `output_bytes`, `input_bytes`, `storage_excess`), and one its budget has no room for
-        /// is let go and refused typed. Do: serve member 1's first generation (its stdout,
-        /// stderr and stdin) with its budget full; dial its stdout and its stdin; have its VM
-        /// hand over its input connection; give the budget room and join its next generation's
-        /// outputs; read that one's stdout to its end and let its stderr go, as a restart seals
-        /// a channel no credit went to; join the generation after; end the run. Expect: the
-        /// first generation's lanes refused `Capacity` and nothing charged for them, its stdin's
+        /// is let go and refused typed. Do: charge member 1's first generation (its stdout,
+        /// stderr and stdin) with its budget full; serve those streams as ones its budget has no
+        /// room for, as a next generation's may be (`Stdio::join`); dial its stdout and its
+        /// stdin; have its VM hand over its input connection; give the budget room and join its
+        /// next generation's outputs; read that one's stdout to its end and let its stderr go, as
+        /// a restart seals a channel no credit went to; join the generation after; end the run.
+        /// Expect: the first generation's charge refused, as its run is before its members start,
+        /// and nothing charged; the lanes of streams with no room refused `Capacity`, its stdin's
         /// relay ending its member's input connection, which reads its end; each next
         /// generation's two outputs charged exactly the daemon's bytes for them while served;
         /// the generation past given back as the next joins, its streams over; and the budget
@@ -12348,20 +12439,35 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                // Its budget full as its first generation is charged: refused, nothing held.
+                *lock(&budget) = Some(u64::MAX);
+                let refused = charge_first(agent, &outputs, &inputs, &served)
+                    .map(|_| ())
+                    .unwrap_err();
+                assert!(refused.contains("has no room for member 1's first"), "{refused}");
+                assert_eq!(
+                    *lock(&budget),
+                    Some(u64::MAX),
+                    "a refused generation held its charge"
+                );
+                *lock(&budget) = Some(0);
                 let (key, address) = (endpoint.fingerprint, endpoint.address);
                 let revoke = served.revoke;
                 std::thread::scope(|scope| {
-                    // Its budget full as its first generation is served: no stream has room.
-                    *lock(&budget) = Some(u64::MAX);
+                    // Its streams served with no room, as a next generation's may be: each let go.
+                    let none = First {
+                        outputs: outputs.iter().map(|&key| (key, None)).collect(),
+                        inputs: inputs.iter().map(|&member| (member, None)).collect(),
+                    };
                     serve_stdio(
                         live,
                         agent,
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        none,
                         scope,
                     );
-                    *lock(&budget) = Some(0);
                     let serving = scope.spawn(move || endpoint.run());
                     let capturing = scope.spawn(move || {
                         let read = read_records(live, reading);
@@ -12459,13 +12565,14 @@ mod hosted {
             assert_eq!(*lock(&budget), Some(0), "its streams' charge outlived its run");
         }
 
-        /// D252: an orchestrator's run host charges its endpoint's link once, as it binds it, as
-        /// the daemon charges its runs' (`link_bytes`): TLS 1.3's largest handshake message for
-        /// each connection it holds at once (`control::CONNECTIONS`) and a datagram each way,
-        /// whatever lanes it carries; each lane is charged its own buffers alone. Do: bind an
-        /// endpoint serving member 1's stdout, stderr and stdin, and one serving no member
-        /// stream; charge each its link, then let it go. Expect: the same charge for both, given
-        /// back whole.
+        /// D252: an orchestrator's run host charges its endpoint once, as it binds it, as the
+        /// daemon charges its runs' (`endpoint_bytes`): TLS 1.3's largest handshake message for
+        /// each connection it holds at once (`control::CONNECTIONS`), a datagram each way, and
+        /// its sockets' kernel queues as its OS reports them, whatever lanes it carries; each lane
+        /// is charged its own buffers alone. Do: bind an endpoint serving member 1's stdout,
+        /// stderr and stdin, and one serving no member stream; charge each, then let it go.
+        /// Expect: each charged its link and its own sockets' queues, the link the same for
+        /// both and the queues more than none; given back whole.
         #[test]
         fn an_orchestrators_endpoint_is_charged_its_link_once_whatever_lanes_it_carries() {
             let admissions = shards_api::control::exec_admissions();
@@ -12502,10 +12609,12 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                let queues = endpoint.kernel_buffer_bytes().unwrap();
+                assert!(queues > 0);
                 let charged = charge_link(&agent, &endpoint).unwrap();
                 assert_eq!(
                     *lock(&budget),
-                    Some(link),
+                    Some(link + queues),
                     "{} member streams",
                     outputs.len() + inputs.len()
                 );
@@ -12575,6 +12684,7 @@ mod hosted {
                     &[],
                 )
                 .unwrap();
+                let charged = charge_first(agent, &outputs, &inputs, &served).unwrap();
                 let revoke = served.revoke;
                 std::thread::scope(|scope| {
                     let serving = scope.spawn(move || endpoint.run());
@@ -12584,6 +12694,7 @@ mod hosted {
                         served.generations,
                         served.outputs,
                         served.inputs,
+                        charged,
                         scope,
                     );
                     assert_eq!(*lock(&budget), Some(2 * output), "its first generation's charge");

@@ -637,8 +637,11 @@ impl Store {
 
     /// Where volume `name`'s holders hold it (D281): a lock file beside it, `.NAME.lock`, a
     /// name no volume takes (each begins with a letter or a digit) and no removal's
-    /// (`.NAME.removing`). Never removed, so that every hold and every clearing of the name
-    /// lock one file.
+    /// (`.NAME.removing`). Unlinked only by one that holds it alone once its volume is gone: an
+    /// anonymous volume's as it is removed, any as the last that held it lets go ([`Held`]); a
+    /// named one's else kept for the next volume of that name. A hold taken of one unlinked as
+    /// it was taken holds nothing ([`locking`](Self::locking)), so that every hold and every
+    /// removal of the name lock one file.
     fn holders(&self, name: &str) -> PathBuf {
         self.root.join(format!(".{name}.lock"))
     }
@@ -785,7 +788,8 @@ impl Store {
     }
 
     /// Volume `name`'s lock file ([`holders`](Self::holders)), made where missing, as `take`
-    /// takes it.
+    /// takes it: none where another holds it, or where a removal unlinked it as it was taken,
+    /// which holds nothing of the name.
     fn locking(
         &self,
         name: &str,
@@ -799,7 +803,9 @@ impl Store {
             .write(true)
             .open(&path)
             .map_err(said)?;
-        take(file).map_err(said)
+        Ok(take(file)
+            .map_err(said)?
+            .filter(|held| !crate::os::unlinked(held)))
     }
 
     /// The local driver's validateName.
@@ -958,13 +964,28 @@ impl Store {
 
     /// Removes volume `name` and its files: gone at once, renamed aside, then deleted,
     /// whatever modes its guests gave its directories. What a crash leaves aside, the next
-    /// removal of anything here deletes.
+    /// removal of anything here deletes. An anonymous volume's lock file goes with it where
+    /// none holds it now ([`unlink_alone`]); else as the last that held it lets go ([`Held`]).
     pub fn remove(&self, name: &str) -> Result<(), String> {
-        if self.get(name).is_none() {
-            return Err(format!("get {name}: no such volume"));
+        if self.set_aside(name)? {
+            unlink_alone(&self.holders(name));
         }
+        self.sweep(name)
+    }
+
+    /// Volume `name` renamed aside (`.NAME.removing`), gone from its name at once: whether it
+    /// was anonymous.
+    fn set_aside(&self, name: &str) -> Result<bool, String> {
+        let v = self
+            .get(name)
+            .ok_or_else(|| format!("get {name}: no such volume"))?;
         let aside = self.root.join(format!(".{name}.removing"));
         std::fs::rename(self.root.join(name), &aside).map_err(|e| format!("remove {name}: {e}"))?;
+        Ok(v.is_anonymous())
+    }
+
+    /// Deletes what removals set aside here, removing `name`.
+    fn sweep(&self, name: &str) -> Result<(), String> {
         if let Ok(entries) = std::fs::read_dir(&self.root) {
             for e in entries.flatten() {
                 let n = e.file_name();
@@ -981,54 +1002,79 @@ impl Store {
     /// (D281), as a clearing, `volume rm` and `volume prune` remove one: held alone at once,
     /// never waiting, through its removal, so that no run's start or plug takes it meanwhile;
     /// refused `InUse` where a run that mounts or plugged it holds it, or another removal does,
-    /// its files kept. An anonymous volume is held alone only where a plug of it by its name made
-    /// its lock file: no start holds one ([`Holds::found`]), and a lock file made here would
-    /// outlive it. Callers hold [`lock`].
+    /// its files kept. An anonymous volume, which its run holds as a named one ([`Holds::found`]),
+    /// takes its lock file with it, unlinked while held alone. Callers hold [`lock`].
     pub fn remove_unheld(&self, name: &str) -> Result<(), (ClearCause, String)> {
         let unknown = || (ClearCause::Unknown, format!("get {name}: no such volume"));
         // Looked for first, so that no lock file is made for a volume that is not there.
-        let v = self.get(name).ok_or_else(unknown)?;
+        let first = self.get(name).ok_or_else(unknown)?;
         let holders = self.holders(name);
-        let takes_lock = !v.is_anonymous()
-            || holders
-                .try_exists()
-                .map_err(|e| (ClearCause::Store, format!("{}: {e}", holders.display())))?;
-        let _alone = if takes_lock {
-            let alone = self.alone(name).map_err(|e| (ClearCause::Store, e))?;
-            Some(alone.ok_or_else(|| {
-                (
-                    ClearCause::InUse,
-                    format!(
-                        "remove {name}: volume is in use: a run that mounts or plugged it holds it, or another removal"
-                    ),
-                )
-            })?)
-        } else {
-            None
-        };
-        // Another removal may have taken it while this one waited for none.
+        let alone = self.alone(name).map_err(|e| (ClearCause::Store, e))?.ok_or_else(|| {
+            (
+                ClearCause::InUse,
+                format!(
+                    "remove {name}: volume is in use: a run that mounts or plugged it holds it, or another removal"
+                ),
+            )
+        })?;
+        // Another removal may have taken it while this one waited for none: an anonymous
+        // volume's lock file, made again here, goes too.
         if self.get(name).is_none() {
+            if first.is_anonymous() {
+                let _ = std::fs::remove_file(&holders);
+            }
             return Err(unknown());
         }
-        self.remove(name).map_err(|e| (ClearCause::Store, e))
+        if self.set_aside(name).map_err(|e| (ClearCause::Store, e))? {
+            let _ = std::fs::remove_file(&holders);
+        }
+        drop(alone);
+        self.sweep(name).map_err(|e| (ClearCause::Store, e))
     }
 }
 
-/// The named volumes of the store a run holds for its life (D281), each once, by its name: those
-/// it mounts as it starts ([`open_for`]) and those plugged into it as it runs, a daemon's run's
-/// and an orchestrator's alike. A removal of one ([`Store::remove_unheld`]: a clearing, `volume
-/// rm`, `volume prune`) is refused while it is held; each is let go of as this drops, or as its
-/// process ends, however it ends.
+/// The volumes of the store a run holds for its life (D281), named and anonymous, each once, by
+/// its name: those it mounts as it starts ([`open_for`]) and those plugged into it as it runs, a
+/// daemon's run's and an orchestrator's alike. A removal of one ([`Store::remove_unheld`]: a
+/// clearing, `volume rm`, `volume prune`) is refused while it is held; each is let go of as this
+/// drops, or as its process ends, however it ends.
 #[derive(Debug, Default)]
 pub struct Holds(BTreeMap<String, Held>);
 
 /// A run's hold of one volume (D281): its lock file shared, so that no clearing removes it;
-/// and once its run serves it, its count file shared, with the bound it is served with
-/// ([`Store::count`]).
+/// once its run serves it, its count file shared, with the bound it is served with
+/// ([`Store::count`]); and where its lock file and its volume are, so that the last to let go
+/// of a volume removed under it takes its lock file with it ([`unlink_alone`]).
 #[derive(Debug)]
 struct Held {
-    _volume: Locked,
+    volume: Option<Locked>,
     count: Option<(Locked, Option<u64>)>,
+    lock: PathBuf,
+    dir: PathBuf,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        drop(self.volume.take());
+        if !self.dir.try_exists().unwrap_or(true) {
+            unlink_alone(&self.lock);
+        }
+    }
+}
+
+/// Lock file `path` unlinked where none holds it now (D281): taken alone at once, as a removal
+/// takes it, never made where it is missing, and unlinked while so held, so that a hold that
+/// opened it before finds it unlinked as it takes it, and holds nothing ([`Store::locking`]).
+/// Left where another holds it, for the last of them to let go of ([`Held`]).
+fn unlink_alone(path: &Path) {
+    let Ok(file) = std::fs::File::options().write(true).open(path) else {
+        return;
+    };
+    if let Ok(Some(alone)) = Locked::try_hold(file)
+        && !crate::os::unlinked(&alone)
+    {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// What a share of a bounded volume is served with (D281): its place among the shares its
@@ -1091,8 +1137,10 @@ impl Holds {
             self.0.insert(
                 name.to_string(),
                 Held {
-                    _volume: held,
+                    volume: Some(held),
                     count: None,
+                    lock: store.holders(name),
+                    dir: store.root.join(name),
                 },
             );
         }
@@ -1134,35 +1182,33 @@ impl Holds {
         Ok(limit.map(|l| (l, store.counts(name))))
     }
 
-    /// Volume `name` of `store` as it is there, held as [`take`](Self::take) holds it where it
-    /// is a named one, then found again: refused where a clearing took it meanwhile. None where
-    /// it is not there, for which no hold's file is made. An anonymous one, its run's own and
-    /// gone with it, is held by none: its name is never asked again, and its lock file would
-    /// outlive it.
+    /// Volume `name` of `store` as it is there, held as [`take`](Self::take) holds it, named
+    /// or anonymous, then found again: refused where a clearing took it meanwhile. None where it
+    /// is not there, for which no hold's file is made. An anonymous one, its run's own, is held
+    /// as a named one is, so that no clearing, `volume rm` or `volume prune` takes it while its
+    /// run runs; its lock file goes with it ([`Store::remove`]).
     pub fn found(&mut self, store: &Store, name: &str) -> Result<Option<Volume>, String> {
-        match store.get(name) {
-            Some(v) if !v.is_anonymous() => {
-                self.take(store, name).map_err(|e| e.to_string())?;
-                store
-                    .get(name)
-                    .map(Some)
-                    .ok_or_else(|| format!("volume {name} was cleared as it was held"))
-            }
-            other => Ok(other),
+        if store.get(name).is_none() {
+            return Ok(None);
         }
+        self.take(store, name).map_err(|e| e.to_string())?;
+        store
+            .get(name)
+            .map(Some)
+            .ok_or_else(|| format!("volume {name} was cleared as it was held"))
     }
 
     /// `other`'s holds, this run's from now: a count of one it holds already, kept where it
     /// has none.
     pub fn extend(&mut self, other: Holds) {
-        for (name, held) in other.0 {
+        for (name, mut held) in other.0 {
             match self.0.entry(name) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(held);
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
                     if e.get().count.is_none() {
-                        e.get_mut().count = held.count;
+                        e.get_mut().count = held.count.take();
                     }
                 }
             }
@@ -1568,9 +1614,9 @@ fn register_into(
 
 /// A microVM's mount points, opened for a start: each shared directory, read-only or not,
 /// and its one name where a file is bound alone; the guest's setup entry for each mount
-/// point, by its destination; the named volumes among them, held from before they were
-/// opened (D281), which its starter keeps with its run until the run ends; and the bound
-/// each bounded one's share is served with, by its place in `dirs`.
+/// point, by its destination; the volumes of the store among them, named and anonymous, held
+/// from before they were opened (D281), which its starter keeps with its run until the run
+/// ends; and the bound each bounded one's share is served with, by its place in `dirs`.
 #[derive(Debug, Default)]
 pub struct Opened {
     pub dirs: Vec<(shards_ipc::fd::OwnedFd, bool, std::ffi::OsString)>,
@@ -1645,8 +1691,9 @@ pub fn open_for(
             ));
             continue;
         }
-        // A named volume of the store, held for its run's life before its files are opened
-        // (D281): no clearing removes them under the run, and one under way refuses its start.
+        // A volume of the store, named or anonymous, held for its run's life before its files
+        // are opened (D281): no clearing removes them under the run, and one under way refuses
+        // its start.
         let volume = match p.kind.as_str() {
             "volume" => opened
                 .held
@@ -2242,12 +2289,14 @@ mod tests {
         assert_eq!(parse_raw_within("/host:/ctr").unwrap().source, "/host");
     }
 
-    /// D281: a start holds each named volume it mounts, once however often, from before its
-    /// files are opened until what it opened drops with its run: a clearing is refused
-    /// meanwhile, and a start while a clearing holds one is refused. An anonymous one, its run's
-    /// own, is held by none, and no hold's file is made for it.
+    /// D281: a start holds each volume of the store it mounts, named or anonymous, once however
+    /// often, from before its files are opened until what it opened drops with its run: a
+    /// clearing, `volume rm` and `volume prune` are refused meanwhile, and a start while a
+    /// clearing holds one is refused. An anonymous one removed under its run by a removal that
+    /// asks no hold (the daemon's own, of a microVM removed with its volumes) leaves its lock
+    /// file to its last holder, which takes it with it as it lets go.
     #[test]
-    fn a_starts_named_volumes_are_held_until_its_run_lets_go() {
+    fn a_starts_volumes_are_held_until_its_run_lets_go() {
         let dir = shards_testdir::TempDir::new("vol-holds").unwrap();
         let store = Store::new(dir.path());
         let none = BTreeMap::new();
@@ -2269,27 +2318,43 @@ mod tests {
             point(&anonymous, "/b"),
             point("agent-a", "/c"),
         ];
+        let lock_file = dir.path().join(ROOT).join(format!(".{anonymous}.lock"));
         let opened = open(&points, true, &store).unwrap();
         assert_eq!(opened.dirs.len(), 3);
-        assert!(opened.held.holds("agent-a"));
-        assert!(!opened.held.holds(&anonymous));
-        assert!(!dir.path().join(ROOT).join(format!(".{anonymous}.lock")).exists());
-        assert!(
-            store.alone("agent-a").unwrap().is_none(),
-            "its clearing is refused"
-        );
+        for name in ["agent-a", anonymous.as_str()] {
+            assert!(opened.held.holds(name), "{name}");
+            assert!(
+                store.alone(name).unwrap().is_none(),
+                "{name}'s clearing is refused"
+            );
+            assert!(
+                matches!(store.remove_unheld(name), Err((ClearCause::InUse, _))),
+                "{name}"
+            );
+            assert!(store.data(name).exists(), "{name}");
+        }
         drop(opened);
         let clearing = store.alone("agent-a").unwrap().unwrap();
         let refused = open(&points, true, &store).unwrap_err();
         assert!(refused.contains("volume agent-a is being cleared"), "{refused}");
         drop(clearing);
         assert!(open(&points, true, &store).unwrap().held.holds("agent-a"));
+        let mut held = Holds::default();
+        assert!(held.found(&store, &anonymous).unwrap().is_some());
+        {
+            let _held = lock();
+            store.remove(&anonymous).unwrap();
+        }
+        assert!(lock_file.exists(), "unlinked under its holder");
+        drop(held);
+        assert!(!lock_file.exists(), "its lock file outlived it");
     }
 
     /// D281: a volume is removed where no run holds it. One a run holds is refused `InUse` at
     /// once, its files kept, and removed once let go of; asked again, `Unknown`. An anonymous one
-    /// is removed with no lock file made for it; one a plug held by its name is refused while it
-    /// holds it, as a named one is. A start while a removal holds one alone is refused.
+    /// is removed with its lock file, none left; one a plug held by its name is refused while it
+    /// holds it, as a named one is. A named one's lock file stays for the next of its name. A
+    /// start while a removal holds one alone is refused.
     #[test]
     fn a_volume_is_removed_only_where_no_run_holds_it() {
         let dir = shards_testdir::TempDir::new("vol-unheld").unwrap();
@@ -2328,11 +2393,44 @@ mod tests {
             assert_eq!(store.remove_unheld(name), Ok(()), "{name}");
             assert!(!store.data(name).exists(), "{name}");
         }
+        assert!(!lock_file(&plugged).exists(), "no lock file outlives it");
+        assert!(lock_file("agent-a").exists());
         assert!(store.list().is_empty());
         assert!(matches!(
             store.remove_unheld("agent-a"),
             Err((ClearCause::Unknown, _))
         ));
+    }
+
+    /// D281: a lock file an anonymous volume's removal unlinked holds nothing. Do: open the lock
+    /// file of an anonymous volume, as a hold opens it before a removal takes it alone; remove the
+    /// volume; take the lock of what was opened; hold the name again. Expect: the volume's lock
+    /// file gone with it; the lock taken of a file no name holds, which `Store::locking` refuses
+    /// as none; the name's next hold of a new file, linked.
+    #[test]
+    fn a_lock_its_removal_unlinked_holds_nothing() {
+        let dir = shards_testdir::TempDir::new("vol-unlinked").unwrap();
+        let store = Store::new(dir.path());
+        let none = BTreeMap::new();
+        let anonymous = {
+            let _held = lock();
+            store.create("", &none, &none, "").unwrap().0.name
+        };
+        drop(store.hold(&anonymous).unwrap().unwrap());
+        let opened = std::fs::File::options()
+            .write(true)
+            .open(store.holders(&anonymous))
+            .unwrap();
+        {
+            let _held = lock();
+            assert_eq!(store.remove_unheld(&anonymous), Ok(()));
+        }
+        assert!(!store.holders(&anonymous).exists(), "its lock file outlived it");
+        let late = Locked::try_share(opened).unwrap().unwrap();
+        assert!(crate::os::unlinked(&late));
+        drop(late);
+        let next = store.hold(&anonymous).unwrap().unwrap();
+        assert!(!crate::os::unlinked(&next));
     }
 
     /// D281: a volume's `size` is its bound, read as the local driver reads it; none where it

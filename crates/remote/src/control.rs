@@ -484,6 +484,9 @@ pub struct Endpoint {
     pub fingerprint: Fingerprint,
     /// What each of its connections is admitted ([`Endpoint::link`]).
     link: Admitted,
+    /// Its waker's kernel queues, as its OS reported them as it was bound
+    /// ([`Endpoint::kernel_buffer_bytes`]).
+    waker_queues: u64,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -599,6 +602,7 @@ impl Endpoint {
         let address = driver.local()?;
         let waker = sender.waker_addr()?;
         let wake = driver.wake_addr()?;
+        let waker_queues = sender.kernel_buffer_bytes()?;
         let lanes = driver.handler_mut();
         lanes.execs.wake = Some(sender.try_clone()?);
         lanes.sockets.wake = Some(sender.try_clone()?);
@@ -642,6 +646,7 @@ impl Endpoint {
                 wake,
                 fingerprint: vm.fingerprint(),
                 link,
+                waker_queues,
             },
             Served {
                 outputs,
@@ -655,12 +660,19 @@ impl Endpoint {
         ))
     }
 
-    /// The kernel's buffers of its socket, which its caller's budget holds, as for step 5's
-    /// endpoints (`managed::Endpoint::kernel_buffer_bytes`).
+    /// The kernel's queues of every socket it holds, which its caller's budget holds once, as
+    /// it binds it, whatever lanes it carries (D252): each one's send and receive buffers as its
+    /// OS reports them, its driver's and its wake's, as for step 5's endpoints
+    /// (`managed::Endpoint::kernel_buffer_bytes`), and its waker's, which its [`Revoke`] and
+    /// every stream's control share, an endpoint of no stream's too.
     pub fn kernel_buffer_bytes(&self) -> Result<u64, managed::Error> {
         self.driver
             .kernel_buffer_bytes()
-            .map_err(managed::Error::Transport)
+            .map_err(managed::Error::Transport)?
+            .checked_add(self.waker_queues)
+            .ok_or_else(|| {
+                managed::Error::Transport(crate::Error::new("its kernel queues: UDP queue size overflow"))
+            })
     }
 
     /// What each of its [`CONNECTIONS`] is admitted, whatever lanes it carries: its handshake's
@@ -2525,7 +2537,7 @@ mod tests {
                 handshake_bytes: 1000,
                 ..out
             };
-            let (streams_endpoint, _streams) = Endpoint::bind(
+            let (streams_endpoint, streams_served) = Endpoint::bind(
                 &Identity::generate().unwrap(),
                 [0; 32],
                 loopback(),
@@ -2539,6 +2551,19 @@ mod tests {
             )
             .unwrap();
             assert_eq!(streams_endpoint.link().handshake_bytes, out.handshake_bytes);
+            // Its sockets' kernel queues, which its host's budget holds once (D252): its driver's
+            // and its wake's, and its waker's, which every stream's control shares and an endpoint
+            // of no stream holds too.
+            let (_, control) = streams_served.outputs.first().unwrap();
+            assert_eq!(
+                streams_endpoint.kernel_buffer_bytes().unwrap(),
+                streams_endpoint.driver.kernel_buffer_bytes().unwrap()
+                    + control.kernel_buffer_bytes().unwrap()
+            );
+            assert!(
+                bare_endpoint.kernel_buffer_bytes().unwrap()
+                    > bare_endpoint.driver.kernel_buffer_bytes().unwrap()
+            );
             let none = Admitted {
                 record_bytes: 0,
                 ..out
