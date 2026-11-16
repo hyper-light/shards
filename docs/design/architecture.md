@@ -37856,7 +37856,7 @@ clearing's files gone, `Unknown` again, `Name` for names the store refuses) and
 session and written there, read by the next session's member; listed with its files' bytes;
 cleared, gone from the list and the home, `Unknown` again).
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, and slice 3, the network process's switch, built; slices 2 and 4 to 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -37987,19 +37987,20 @@ join until 4 and 5 have landed):
    holder the daemon); `networks::lock` becomes the home's (`hold`); `network inspect` lists every
    live lease's member; `network rm` refuses a network in use (`InUse`, in dockerd's words: "has
    active endpoints"); the daemon pairs its runs' networks.
-3. *The network process's networks* (the net crate): `NET_JOIN` (a network's slot, the guest's
-   address, prefix and gateway, the ports it receives) and `NET_LEAVE`; `NET_PEER` with its
-   network's slot and the ports its guest may open to that peer; each network's names; a table of
-   flows for each link (below); a fragment refused, as no port admits it; a newer link to a peer's
-   address replacing an older. Unit-tested with frames, as D46's peers are.
-4. *The wire, the API and the run host*: `ImageGuest::join(member, &Join, patience)` and
-   `leave(member, network, patience)`, `Join { network, name, ingress, egress }`; `NetAsk::Join` and
-   `Leave`, refused typed (`NoSuchNetwork`, `AddressTaken`, `NameTaken`, `Exhausted`,
-   `PairedElsewhere`, `Ipv6`); the run host's leases (their holder the run host, its run's ID a
-   microVM ID's form), its network process's and its guest's asks; shards-api's pairings and each
-   run host's links socket; a network made beforehand, with `network create`'s pool and words
-   (`Networks::create`), never by a join. The image channel's version one past main's at landing
-   (43 over today's 42).
+3. *The network process's networks* (the net crate; built, *Slice 3, built* below): `NET_JOIN`
+   (a network's ID, the guest's address, prefix and gateway, and the network's members) and
+   `NET_LEAVE`; `NET_LINK`, a link to another run on it; `NET_PEER_GRANT`, one grant added or taken
+   back; each network's names; a table of flows for each link (below); a fragment refused, as no
+   port admits it; a newer link to a peer's address replacing an older. Unit-tested with frames, as
+   D46's peers are.
+4. *The wire, the API and the run host* (per-grant since ROOT's word of 2026-11-16, *Slice 4 for its
+   lane* below): `ImageGuest::connect` and `disconnect` of one grant each, a member on the network
+   from its first grant and off it with its last; `NetAsk`'s, refused typed (`NoSuchNetwork`,
+   `AddressTaken`, `NameTaken`, `Exhausted`, `PairedElsewhere`, `Ipv6`, `Widening`); the run host's
+   leases (their holder the run host, its run's ID a microVM ID's form), its network process's and
+   its guest's asks; shards-api's pairings and each run host's links socket; a network made
+   beforehand, with `network create`'s pool and words (`Networks::create`), never by a join. The
+   image channel's version one past main's at landing (43 over today's 42).
 5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
@@ -38073,11 +38074,10 @@ channel), and with them their leases and links. A run host that hangs: its lease
 may run, never given twice. Two pairers: refused. A home on a network filesystem: flock there is not
 assured, unsupported as for each of the home's other locks (the image store's, the daemon's).
 
-**Questions for ROOT.** kiln's `Change::Connect` carries no ports, which this asks for both ways:
-its shape is kiln's and Hex's, a seam change to route. Whether a member's grants on a shared network
-are bounded by its image or a ceiling, as D278's past the microVM are: as designed, the
-orchestrator's join says them whole, nothing of a shared network leaving the machine's network
-processes.
+**Questions for ROOT** (answered 2026-11-16, *Grants as they come* below). kiln's `Change::Connect`
+carries no ports, which this asks for both ways: now one typed grant each (kiln bb9ffcea1). Whether a
+member's grants on a shared network are bounded by its image or a ceiling, as D278's past the
+microVM are: they are, by both.
 
 **Tests** (slice 1, light; written, not run, by the person's word of 2026-11-16: ROOT runs them).
 networks::leases: `addresses_are_the_lowest_free_and_one_let_go_is_the_next_given`,
@@ -38088,6 +38088,102 @@ held by none), `an_address_in_use_or_out_of_range_is_refused_by_its_cause`,
 `the_homes_networks_are_held_against_every_other_open`. Owed (ROOT): `cargo test -p shards
 --profile test-release networks::leases` on macOS, Linux (glibc and musl) and Windows, as flock(2)
 and LockFileEx each hold them; `scripts/lint` on the seven targets.
+
+**Grants as they come** (ROOT, 2026-11-16, for kiln main bb9ffcea1, crates/kiln-seams/src/sandbox.rs
+lines 474-523: its `Change::Connect` and `Disconnect` each carry one `NetworkGrant { name, peer,
+ports { udp, first, last }, way: In | Out }`, its member leaving the network with its last grant
+there). A grant coming in names its peer too, who may reach the member on which of its ports; and
+grants are added and taken back one at a time as the run goes, never a member's whole set again.
+So the network process's table is of grants, each its member's and its peer's names on the
+network, a range of one protocol's ports, and its way: a flow out is granted by a grant `Out` whose
+peer is a member at the link's address, at that peer's port; a flow in by a grant `In` from such a
+peer, at the guest's port. Slice 4's API takes these per-grant changes, each bounded by the
+member's image's grants and its ceiling as D278's are, refused typed past them with nothing told;
+the network process holds the run's grants as told, D278's division, its guest holding each member
+to its own (slice 5).
+
+**Slice 3, built** (lane xnet-s3, 2026-11-16; written, neither built nor run, by the person's word
+of that day: ROOT builds and runs it). `crates/net/src/shared.rs`, with its seams in
+`crates/net/src/lib.rs` and `sys.rs`, and `crates/ipc`'s kinds 111 to 114.
+- *The wire*, run host to network process on its control, each answered with its own kind, `0`
+  taken or its refusal's byte (`shared::{encode_answer, decode_answer}`):
+  - `NET_JOIN` (111, `shared::Join`): the network's ID, its 64 hex digits as the home names it
+    (slice 1), in the designed slot's place, so that a run host names a network to its network
+    process as every process does and no slot's width bounds a run's networks; the guest's
+    address, prefix and gateway; the network's name; and every member on it, its name (a host's,
+    lowercased, RFC 4343) and its run's address: whole, taken in place of the last as members come
+    and go, the grants kept.
+  - `NET_LEAVE` (112): the ID; its links, their flows, its grants and its names go.
+  - `NET_LINK` (113): the ID and another run's address, with its socket as `NET_PEER` hands one
+    (`hands_sockets`). `NET_PEER` stays D46's, a daemon network's member, membership being reach
+    there, as its payload carries no network.
+  - `NET_PEER_GRANT` (114, `shared::{encode_grant, decode_grant}`): one grant added (1) or taken
+    back (2): its way, its protocol, its first and last port, its member's name and its peer's,
+    malformed where kiln's `NetworkGrant::check` refuses one.
+  - Refusals (`shared::Refusal`, R04): `NotJoined` (1), `Readdressed` (2: joined at another
+    address, prefix or gateway), `Overlaps` (3: its subnet shares an address with another network
+    of the run's, or holds the guest's own address or its gateway), `NotAPeer` (4: a link to an
+    address no other run's member is at), `NoDescriptors` (5), `Granted` (6: an add held already),
+    `NotGranted` (7: a take-back of none held). A malformed payload ends the control, as any other
+    control message's does.
+- *The switch*: a frame from the guest's address on a shared network goes to that network alone: a
+  question to its gateway's port 53 is answered from its names, the run's members' own and those its
+  grants name (D46's rule), made again whole from the members and the grants as either changes; a
+  TCP segment or UDP datagram to a linked run crosses where its link's flow carries it or a grant
+  opens one; nothing else (no ICMP, no fragment, which `wire::ipv4` reads as none, nothing past the
+  microVM). A frame from a link reaches the guest only as whole IPv4 TCP or UDP from that run's
+  address to the guest's there, its flow's or the first of one a grant in opens, then from the
+  gateway's MAC. The guest's ARP from a shared address is answered as from eth0's. D46's peers
+  never reach a shared address, nor a link the guest's own.
+- *A link*: a newer one to an address replaces the older, its flows gone with it; each link's token
+  carries a generation (D46's peers stay at 0), so that the older's events in the same pass reach
+  none of the newer. A link to an address no member is at any more goes as the join says so, and
+  every link of a network as it is left.
+- *Flows* (`shared::Flows`), per link at each of its ends, as **States** has them, refined: a TCP
+  flow ends with an RST, or once a FIN each way is acknowledged, its last ACK still crossing, not at
+  the second FIN; a SYN alone on a closing flow's ports opens a new flow, granted anew. A change of
+  grants or members ends each flow its opener's grant no longer admits.
+- *Room*: a link's table holds every key its grants admit, its `Out` and its `In` (protocol, port)
+  pairs, each once, times 2^16, the free end's port values (RFC 9293 §3.1, RFC 768): this entry's
+  cold start, and a bound no table passes, as none holds a key twice. Full, a new flow first lets go
+  of every flow idle past its floor at once (RFC 5382 REQ-5's 2 h 4 min open and 4 min opening or
+  closing, RFC 4787 REQ-5's two minutes for UDP; none before, `due` sparing the scan until one may
+  be), else it is dropped, as it is where the allocator cannot hold it (`try_reserve`), never the
+  process. The learned bound this entry asks, its memory over its measured cost per flow, is owed
+  with that measurement (R14): until then a peer a grant lets in on n ports can fill a link's table
+  to n × 2^16 flows.
+- *Descriptors*: a join is refused `NoDescriptors` where the process cannot open a descriptor for
+  each link it still needs (each other run's address without one), read on Unix by duplicating a
+  held one until the kernel refuses (EMFILE), each closed again, as a confined process opens no file
+  to count its own and `F_DUPFD_CLOEXEC` is among its seccomp filter's calls; on Windows from the
+  2^24 handles a process may hold (Microsoft, "Kernel Objects") past those it holds. A check, not a
+  reservation: a flow past the microVM may take a descriptor first, and the link's message then
+  ends the control (MSG_CTRUNC).
+- *Unmeasured* (R14, ROOT's): the cost per flow and per link; a join's relinking, links times
+  members; the descriptor probe's, a duplicate and a close for each link to come.
+
+**Slice 4 for its lane** (its wire is past slice 3's): `ImageGuest::connect(member, network, &grant,
+patience)` and `disconnect(…)`, kiln's grant whole, one per change, refused typed past the member's
+image's grants and its ceiling as D278's `member_egress` is (`Widening`: `Out` within the image's
+or the ceiling's port grants, or a destination either names; `In` within the ports its `EXPOSE`
+gives agents or harnesses, D122, or the ceiling's); the member on the network from its first grant
+and off it with its last. Its run host keeps each member's grants and turns each change into a
+`NET_PEER_GRANT`, sends `NET_JOIN` with the members whole as they change (slice 1's names), a
+`NET_LINK` for each other run as shards-api pairs them, and `NET_LEAVE` with its run's last member
+there; its guest's built-in (slice 5) takes each grant as D278's `EGRESS` takes a member's own, the
+guest first where a grant is taken back.
+
+**Tests** (slice 3, light; written, not run). shared.rs: `joins_grants_links_and_answers_read_back_as_written`,
+`a_network_is_joined_at_one_place_and_no_two_share_an_address`,
+`grants_are_held_one_at_a_time_by_member_peer_ports_and_way`, `a_links_room_is_every_key_its_grants_admit`,
+`a_tcp_flow_opens_on_a_granted_syn_and_ends_with_its_fins_acknowledged`,
+`a_closing_flows_ports_taken_again_are_granted_anew`,
+`a_full_table_makes_room_of_flows_idle_past_their_floors_alone`,
+`grants_changed_end_the_flows_they_no_longer_admit`; lib.rs (Unix):
+`a_shared_network_carries_flows_both_ends_grant_and_nothing_else`. Owed (ROOT): `cargo test -p
+shards-net --profile test-release shared` on macOS, Linux (glibc and musl) and Windows (shared.rs's
+there), and `cargo test -p shards-ipc --profile test-release every_message_kind_has_its_own_number`;
+`scripts/lint` on the seven targets (sys.rs's Windows arm by cargo-xwin); slice 6's real VMs.
 
 ## 4. Start path (≤ 5 ms budget)
 
