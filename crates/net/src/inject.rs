@@ -6881,6 +6881,49 @@ pub(crate) mod tests {
         assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 
+    /// Do: on one HTTP/2 connection to the granted host, stream 1 with the placeholder of a
+    /// credential granted toward another host alone, the run's broker answering nothing. Expect:
+    /// it arrives with its placeholder as it came, never indexed as every credential field goes
+    /// (RFC 7541 §7.1.3), and is answered by the host; no lease asked and nothing filled in or
+    /// audited (f32, f33), as over HTTP/1.1.
+    #[test]
+    fn an_h2_stream_with_a_placeholder_granted_elsewhere_carries_no_credential() {
+        let root = root("shards test root");
+        let mut credentials = credentials(&root);
+        let host = H2Host::new(&root, &[GRANTED, OTHER]);
+        let (mut bench, mut peer) = h2_bench(&credentials, GRANTED, host);
+        let mut seen = Vec::new();
+        let bearer = format!("Bearer {ELSEWHERE_PLACEHOLDER}");
+        peer.send_headers(1, &h2_request("GET", GRANTED, "/v1/models", Some(&bearer)), true);
+        h2_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut unanswered,
+            |p, _| p.response(1).ended,
+        );
+        assert_eq!(bench.guest.alpn_protocol(), Some(&b"h2"[..]));
+        let arrived = bench.host().at("/v1/models");
+        let auth = arrived
+            .fields
+            .iter()
+            .find(|f| f.name == b"authorization")
+            .unwrap();
+        assert_eq!(
+            (&auth.value[..], auth.indexing),
+            (bearer.as_bytes(), Indexing::Never),
+            "the stream did not arrive with its placeholder, never indexed"
+        );
+        assert_eq!(value_of(&peer.response(1).fields, ":status"), Some(&b"200"[..]));
+        assert!(
+            credentials.leases.asks().is_empty(),
+            "a lease asked for no grant's stream"
+        );
+        assert!(bench.audit.is_empty(), "{:?}", bench.audit);
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
     /// Do: a guest offering `h2` and `http/1.1` sends a granted host that speaks HTTP/1.1 alone
     /// (no ALPN) a request with the placeholder. Expect: the guest served HTTP/1.1, its request
     /// arriving filled as any HTTP/1.1 request's.
