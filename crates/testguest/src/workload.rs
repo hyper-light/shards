@@ -476,6 +476,7 @@ pub fn main() -> ! {
             arg(3) == "escape",
         ),
         "trap" => trap(arg(1)),
+        "say-trap" => say_trap(arg(1), arg(2)),
         "ignore" => ignore(arg(1)),
         "tty" => tty(arg(1)),
         "vsock" => vsock(args.get(1..).unwrap_or_default()),
@@ -4411,6 +4412,15 @@ fn ignore(name: &str) -> i32 {
         // SAFETY: blocks until a signal arrives.
         unsafe { libc::pause() };
     }
+}
+
+/// `say-trap PATH SIG`: says file `PATH`'s text, trimmed, or `none` where it cannot be read,
+/// then waits for `SIG` as [`trap`] does: what a member's generation finds at its path, a
+/// component swapped in or its image's own (D270 slice 4).
+fn say_trap(path: &str, name: &str) -> i32 {
+    let said = std::fs::read_to_string(path).map_or_else(|_| "none".to_string(), |t| t.trim().to_string());
+    let _ = writeln!(io::stdout(), "{said}");
+    trap(name)
 }
 
 fn trap(name: &str) -> i32 {

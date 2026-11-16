@@ -28,12 +28,12 @@ use common::{
     Party, Patience, TempDir, ask, booted, cannot_run_vms, guest_init, kernel, run_shards_env, served,
 };
 use shards_api::image::{
-    BootStop, Captured, Channel, Cli, CredentialGrant, EgressGrant, FinalUse, ImageGuest, ImagePools,
-    ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased, Lessor,
-    MemberCeiling, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing,
+    BootStop, Captured, Channel, Cli, ComponentAt, CredentialGrant, EgressGrant, FinalUse, ImageGuest,
+    ImagePools, ImageRefusal, ImageShards, ImageShare, ImageSpec, Images as _, Keep, LeaseRefusal, Leased,
+    Lessor, MemberCeiling, MemberEnd, MemberFile, MemberKind, MemberName, MemberReach, MemberSpec, Narrowing,
     NetRefusal, Plug, PlugFor, PlugRefusal, PlugSource, Proto, Publish, Reach, RunEnd, RunEnded, RunLessor,
-    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, Unused,
-    UpstreamRoot,
+    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, StartedFrom, StatsScope, SwapRefusal,
+    SwapWhen, Unused, UpstreamRoot,
 };
 
 /// The variables a test's run host is given: its home, this build's guest, and the tests'
@@ -4376,5 +4376,203 @@ fn a_members_open_connection_is_reset_as_its_reach_is_taken_back() {
     assert_eq!(guest.started_from(), from);
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// An OSI artifact of `kind` (`agent`, `harness`) built of the test guest (`bin/codex`), a
+/// `marker.txt` saying `marker` and its config (`<kind>.json`, its asks `asks`, JSON), tagged
+/// `tag` in `home`'s store as `shards build harness` makes one: its manifest's digest (D270
+/// slice 4).
+#[track_caller]
+fn component(home: &TempDir, kind: &str, tag: &str, marker: &str, asks: &str) -> String {
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let dir = TempDir::new("api-component");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(
+        dir.join("bin/codex"),
+        std::fs::read(common::test_guest()).unwrap(),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        dir.join("bin/codex"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(dir.join("marker.txt"), format!("{marker}\n")).unwrap();
+    std::fs::write(
+        dir.join(format!("{kind}.json")),
+        format!(r#"{{"name":"codex","run":{{"command":["bin/codex"]}},"asks":{asks}}}"#),
+    )
+    .unwrap();
+    let built = run_shards_env(&["build", kind], &[dir.to_str().unwrap(), "-t", tag], &env);
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    let shown = run_shards_env(&["inspect", kind], &[tag], &env);
+    assert_eq!(shown.status, Some(0), "{}", shown.stderr);
+    let said: serde_json::Value = serde_json::from_str(&shown.stdout).unwrap();
+    said[0]["Digest"].as_str().unwrap().to_string()
+}
+
+/// The image of the swap tests (D270 slice 4): its harness the test guest saying what its
+/// directory's `marker.txt` says, `none` in the image's own, then trapping SIGTERM; booted with
+/// its harness alone.
+#[track_caller]
+fn swap_run(home: &TempDir, tag: &str) -> Box<dyn ImageGuest> {
+    build(home, tag, &["say-trap", "/harness/codex/marker.txt", "TERM"], "");
+    let mut s = spec(home, tag);
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: None,
+        stdin: false,
+        terminal: false,
+        args: Vec::new(),
+        mcp: false,
+    }];
+    boot(home, &s)
+}
+
+/// D270 slice 4: a harness swapped now, in its running microVM, runs its component: its
+/// generation before ends on its SIGTERM, its next finds the component's files at its path;
+/// restored now, its image's own come back. Its components said as its host holds them; its
+/// VM processes, how it started and its templates as they were: no microVM made or remade.
+#[test]
+fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-swap-home");
+    let digest = component(&home, "harness", "local/codex-v2:1", "v2", "{}");
+    let guest = swap_run(&home, "api-swap:1");
+    let (from, vms, templates) = (guest.started_from(), vm_processes(&home), templates_of(&home));
+    let stdout =
+        |generation| BufReader::new(guest.take_output(&codex(), generation, Channel::Stdout).unwrap());
+    let (first, line) = line_within(&*guest, stdout(0));
+    assert_eq!(line, "none\n", "its image's own: no marker");
+    let patience = Duration::from_secs(60);
+    let swapped = ask(&*guest, |g| {
+        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+    })
+    .unwrap();
+    assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
+    let at = |desired: Option<&str>, held: Option<&str>| ComponentAt {
+        at: "/harness/codex".into(),
+        desired: desired.map(str::to_string),
+        held: held.map(str::to_string),
+    };
+    assert_eq!(swapped.components, vec![at(Some(&digest), Some(&digest))]);
+    assert_eq!(guest.components(), swapped.components);
+    assert_eq!(rest_within(&*guest, first), "got 15\n");
+    let (next, line) = line_within(&*guest, stdout(1));
+    assert_eq!(line, "v2\n", "its component, laid at its path");
+    let restored = ask(&*guest, |g| g.restore("/harness/codex", SwapWhen::Now, patience)).unwrap();
+    assert_eq!(restored.started.map(|(_, g)| g), Some(2));
+    assert_eq!(
+        restored.components,
+        Vec::new(),
+        "nothing wanted or held, its component let go"
+    );
+    assert_eq!(rest_within(&*guest, next), "got 15\n");
+    let (_, line) = line_within(&*guest, stdout(2));
+    assert_eq!(line, "none\n", "its image's own again");
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// D270 slice 4: a harness swapped at its next start keeps running its image's own until it
+/// starts again; its restart lays the component; its components say it wanted, then held.
+#[test]
+fn a_harness_swapped_at_its_next_start_runs_its_component_once_restarted() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-swap-next-home");
+    let digest = component(&home, "harness", "local/codex-v3:1", "v3", "{}");
+    let guest = swap_run(&home, "api-swap-next:1");
+    let stdout =
+        |generation| BufReader::new(guest.take_output(&codex(), generation, Channel::Stdout).unwrap());
+    let (first, line) = line_within(&*guest, stdout(0));
+    assert_eq!(line, "none\n");
+    let patience = Duration::from_secs(60);
+    let swapped = ask(&*guest, |g| {
+        g.swap("/harness/codex", &digest, SwapWhen::NextStart, patience)
+    })
+    .unwrap();
+    assert_eq!(swapped.started, None, "nothing restarted");
+    assert_eq!(
+        swapped.components,
+        vec![ComponentAt {
+            at: "/harness/codex".into(),
+            desired: Some(digest.clone()),
+            held: None,
+        }]
+    );
+    assert_eq!(
+        guest.wait_member(&codex(), 0, Duration::ZERO),
+        Ok(None),
+        "its generation runs on"
+    );
+    assert_eq!(ask(&*guest, |g| g.restart(&codex(), &[], patience)), Ok(1));
+    assert_eq!(rest_within(&*guest, first), "got 15\n");
+    let (_, line) = line_within(&*guest, stdout(1));
+    assert_eq!(line, "v3\n", "laid at its next start");
+    assert_eq!(
+        guest.components(),
+        swapped.components,
+        "its components told as the swap answered them: a restart tells none"
+    );
+    guest.stop().unwrap();
+}
+
+/// D270 slice 4: what cannot be swapped is refused typed, its member running on: a digest
+/// this host's store has not got (`Artifact`), an agent's artifact at a harness's path
+/// (`Kind`), a path no member runs at (`Unknown`), and a component asking a port its member
+/// is granted not (`Asks`).
+#[test]
+fn a_swap_that_cannot_be_made_is_refused_typed_and_its_member_runs_on() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-swap-refused-home");
+    let agent = component(&home, "agent", "local/an-agent:1", "agent", "{}");
+    let asking = component(
+        &home,
+        "harness",
+        "local/codex-asks:1",
+        "asks",
+        r#"{"network":["22/tcp"]}"#,
+    );
+    let guest = swap_run(&home, "api-swap-refused:1");
+    let (_, line) = line_within(
+        &*guest,
+        BufReader::new(guest.take_output(&codex(), 0, Channel::Stdout).unwrap()),
+    );
+    assert_eq!(line, "none\n");
+    let patience = Duration::from_secs(60);
+    let refused = |at: &str, digest: &str| ask(&*guest, |g| g.swap(at, digest, SwapWhen::Now, patience));
+    let absent = format!("sha256:{}", "0".repeat(64));
+    for (at, digest, why) in [
+        ("/harness/codex", absent.as_str(), SwapRefusal::Artifact),
+        ("/harness/codex", agent.as_str(), SwapRefusal::Kind),
+        ("/harness/nobody", agent.as_str(), SwapRefusal::Unknown),
+        ("/harness/codex", asking.as_str(), SwapRefusal::Asks),
+    ] {
+        match refused(at, digest) {
+            Err(ImageRefusal::Swap(cause, words)) => assert_eq!(cause, why, "{at} {digest}: {words}"),
+            other => panic!("{at} {digest}: {other:?}"),
+        }
+    }
+    assert_eq!(guest.components(), Vec::new());
+    assert_eq!(
+        guest.wait_member(&codex(), 0, Duration::ZERO),
+        Ok(None),
+        "its member runs on"
+    );
     guest.stop().unwrap();
 }

@@ -935,6 +935,9 @@ fn past_run(
 /// kind (`Kind`).
 fn component_image(
     home: &std::path::Path,
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    ceilings: &[(u32, shards_abi::run::egress::Grants)],
+    members: &[wire::MemberInfo],
     at: &str,
     digest: &str,
 ) -> Result<std::fs::File, (wire::SwapRefusal, String)> {
@@ -960,7 +963,7 @@ fn component_image(
         platform: None,
         annotations: std::collections::BTreeMap::new(),
     };
-    let (manifest, _config, kind) =
+    let (manifest, config, kind) =
         crate::agent::checked(&store, digest, &desc, None).map_err(|e| (R::Artifact, e))?;
     if kind != want {
         return Err((
@@ -968,6 +971,8 @@ fn component_image(
             format!("{digest} is {}, where {at} takes {}", kind.word(), want.word()),
         ));
     }
+    component_fits(&config, agentfile, ceilings, members, at)
+        .map_err(|(cause, why)| (cause, format!("{digest}: {why}")))?;
     let diff_ids = crate::agent::diff_ids(&store, kind, &manifest).map_err(|e| (R::Artifact, e))?;
     let mut layers = Vec::with_capacity(manifest.layers.len());
     for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
@@ -984,7 +989,102 @@ fn component_image(
     let rootfs = store
         .rootfs(&layers, &limits)
         .map_err(|e| (R::Failed, format!("{digest}'s image: {e}")))?;
+    step(format_args!("swap at {at}: {digest}'s image ready"));
     std::fs::File::open(&rootfs).map_err(|e| (R::Failed, format!("{}: {e}", rootfs.display())))
+}
+
+/// Whether a component of config `config` fits the member at path `at` (D270 slice 4): its
+/// platform one its microVM runs (none, any), and its asks within what that member is granted:
+/// each network ask a port range or a destination the image's grants and its ceiling cover
+/// (`past_run`, D278's reading), each volume one the image gives it (`VOLUME ... FOR`). Refused
+/// typed (`Platform`, `Asks`), saying which.
+fn component_fits(
+    config: &shards_image::osi::Config,
+    agentfile: Option<&crate::agentfile::Agentfile>,
+    ceilings: &[(u32, shards_abi::run::egress::Grants)],
+    members: &[wire::MemberInfo],
+    at: &str,
+) -> Result<(), (wire::SwapRefusal, String)> {
+    use wire::SwapRefusal as R;
+    if let Some(p) = &config.platform {
+        let platform = shards_image::oci::Platform {
+            architecture: p.architecture.clone(),
+            os: p.os.clone(),
+            variant: p.variant.clone(),
+            os_features: Vec::new(),
+        };
+        if !shards_image::platform::runs(&platform, &shards_image::platform::guest()) {
+            return Err((
+                R::Platform,
+                format!("{}/{} runs on no microVM of this host", p.os, p.architecture),
+            ));
+        }
+    }
+    let (kind, name) = match at.strip_prefix("/agents/") {
+        Some(name) => (wire::MemberKind::Agent, name),
+        None => (
+            wire::MemberKind::Harness,
+            at.strip_prefix("/harness/").unwrap_or(at),
+        ),
+    };
+    let member = members
+        .iter()
+        .find(|m| m.kind == kind && m.name == name)
+        .map(|m| m.index);
+    let ceiling = member
+        .and_then(|m| ceilings.iter().find(|(c, _)| *c == m))
+        .map(|(_, g)| g);
+    let (ports, destinations): (Vec<String>, Vec<String>) = config
+        .asks
+        .network
+        .iter()
+        .cloned()
+        .partition(|a| port_range(a).is_some());
+    let asked = reach_grants(&wire::Reach {
+        ports,
+        mcp: Vec::new(),
+        destinations,
+        dns: false,
+    })
+    .map_err(|why| (R::Asks, format!("its network asks: {why}")))?;
+    if let Some(item) = past_run(&asked, agentfile.map(|a| &a.grants), ceiling) {
+        return Err((
+            R::Asks,
+            format!("it asks {item}, past what its member is granted"),
+        ));
+    }
+    let target = match kind {
+        wire::MemberKind::Agent => shards_agentfile::agentfile::TargetKind::Agent,
+        wire::MemberKind::Harness => shards_agentfile::agentfile::TargetKind::Harness,
+    };
+    let volumes = agentfile.map(|a| a.volumes.as_slice()).unwrap_or_default();
+    for path in &config.asks.volumes {
+        let given = volumes.iter().any(|v| {
+            v.paths.iter().any(|p| p == path)
+                && v.scope.kind.is_none_or(|k| k == target)
+                && (v.scope.names.is_empty() || v.scope.names.iter().any(|n| n.as_slice() == name.as_bytes()))
+        });
+        if !given {
+            return Err((
+                R::Asks,
+                format!("it asks the volume at {path}, which its image gives its member not"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The PCI slots an image run's microVM has (D214, D270 slice 4): one for a swap's old and one
+/// for its new component of each agent and harness its image declares, then one for each plug
+/// root, which a plug lies beneath; never fewer than any run's (`SHARDS_PCI_SLOTS`, D214's
+/// four).
+fn image_slots<T>(agentfile: Option<&crate::agentfile::Agentfile>, roots: &[T]) -> u8 {
+    let derived = agentfile
+        .map_or(0u32, |a| a.domains.saturating_mul(2))
+        .saturating_add(u32::try_from(roots.len()).unwrap_or(u32::MAX));
+    u8::try_from(derived)
+        .unwrap_or(u8::MAX)
+        .max(crate::daemon::pci_slots())
 }
 
 /// `a`'s reach and `b`'s together, each item once (D278).
@@ -3268,7 +3368,7 @@ mod hosted {
                 shares,
                 share_window_mib,
                 max_map_count: crate::daemon::max_map_count(),
-                pci_slots: crate::daemon::pci_slots(),
+                pci_slots: super::image_slots(agentfile.as_ref(), &request.plug_roots),
                 bridge: bridge.as_ref(),
             };
             let microvm = super::microvm(
@@ -4730,6 +4830,11 @@ mod hosted {
         let member = member_at(live, at)
             .ok_or_else(|| (R::Unknown, format!("no member of the image runs at {at}")))?;
         let key = digest.map(|d| plug_component(live, at, d)).transpose()?;
+        if key.is_some() {
+            super::step(format_args!(
+                "swap at {at}: its component's image plugged and mounted"
+            ));
+        }
         {
             let mut c = lock(&live.components);
             match key {
@@ -4750,6 +4855,9 @@ mod hosted {
                     wire::RestartRefusal::Running => (R::Running, why),
                     _ => (R::Failed, format!("its member's restart, {cause:?}: {why}")),
                 })?;
+                super::step(format_args!(
+                    "swap at {at}: its member's generation {generation} started"
+                ));
                 Some((member, generation))
             }
         };
@@ -5977,7 +6085,16 @@ mod hosted {
                 given: Mutex::new(HashMap::new()),
                 ceilings: plan.member_ceilings.clone(),
                 components: Mutex::new(Components::default()),
-                component_image: &|at, digest| super::component_image(home, at, digest),
+                component_image: &|at, digest| {
+                    super::component_image(
+                        home,
+                        plan.prepared.agentfile.as_ref(),
+                        &plan.member_ceilings,
+                        &plan.members,
+                        at,
+                        digest,
+                    )
+                },
                 ceiled: plan.ceiling.is_some(),
                 agentfile: plan.prepared.agentfile.as_ref(),
                 command: plan.command,
@@ -9431,6 +9548,133 @@ mod hosted {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// D270 slice 4: a component fits the member at its path where its platform is one its
+    /// microVM runs (or none) and its asks are within what that member is granted: a network ask
+    /// the image's grants or the member's ceiling cover, a volume the image gives it. Another
+    /// platform, a port or a destination past them, a volume of none and one the image gives
+    /// another member, each refused typed.
+    #[test]
+    fn a_component_fits_its_member_within_its_platform_and_grants() {
+        use wire::SwapRefusal as R;
+        let agentfile = crate::agentfile::Agentfile {
+            grants: shards_agentfile::agentfile::Grants {
+                egress: vec![b"443/tcp".to_vec()],
+                ..Default::default()
+            },
+            volumes: vec![crate::agentfile::AgentVolume {
+                name: None,
+                paths: vec!["/data".into()],
+                scoped: true,
+                scope: shards_agentfile::agentfile::Scope {
+                    kind: Some(shards_agentfile::agentfile::TargetKind::Harness),
+                    names: vec![b"codex".to_vec()],
+                },
+            }],
+            ..Default::default()
+        };
+        let members = members_of(&["agent helper".into(), "harness codex".into()], &[0, 1]);
+        let ceilings = vec![(
+            1,
+            shards_abi::run::egress::Grants {
+                ports: vec![(6, 8000, 8100)],
+                named: Vec::new(),
+                dns: false,
+            },
+        )];
+        let here = shards_image::platform::guest()
+            .first()
+            .unwrap()
+            .architecture
+            .clone();
+        let config = |arch: &str, network: &[&str], volumes: &[&str]| shards_image::osi::Config {
+            schema_version: 1,
+            name: "codex".into(),
+            version: String::new(),
+            description: String::new(),
+            platform: Some(shards_image::osi::Platform {
+                os: "linux".into(),
+                architecture: arch.into(),
+                variant: None,
+            }),
+            run: None,
+            skills: Vec::new(),
+            mcp: Vec::new(),
+            asks: shards_image::osi::Asks {
+                network: network.iter().map(|n| n.to_string()).collect(),
+                volumes: volumes.iter().map(|v| v.to_string()).collect(),
+                processes: None,
+                memory: None,
+            },
+        };
+        let fits = |c: &shards_image::osi::Config, at: &str| {
+            component_fits(c, Some(&agentfile), &ceilings, &members, at)
+        };
+        assert_eq!(
+            fits(
+                &config(&here, &["443/tcp", "8080/tcp"], &["/data"]),
+                "/harness/codex"
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            fits(&config(&here, &["api.example.com:443"], &[]), "/harness/codex"),
+            Ok(())
+        );
+        let unbound = shards_image::osi::Config {
+            platform: None,
+            ..config(&here, &[], &[])
+        };
+        assert_eq!(
+            fits(&unbound, "/harness/codex"),
+            Ok(()),
+            "no platform runs anywhere"
+        );
+        assert!(matches!(
+            fits(&config("riscv64", &[], &[]), "/harness/codex"),
+            Err((R::Platform, _))
+        ));
+        for past in [&["22/tcp"][..], &["evil.example:9443"]] {
+            assert!(
+                matches!(
+                    fits(&config(&here, past, &[]), "/harness/codex"),
+                    Err((R::Asks, _))
+                ),
+                "{past:?}"
+            );
+        }
+        assert!(matches!(
+            fits(&config(&here, &[], &["/other"]), "/harness/codex"),
+            Err((R::Asks, _))
+        ));
+        // The ceiling's ports are codex's alone; the volume too.
+        assert!(matches!(
+            fits(&config(&here, &["8080/tcp"], &[]), "/agents/helper"),
+            Err((R::Asks, _))
+        ));
+        assert!(matches!(
+            fits(&config(&here, &[], &["/data"]), "/agents/helper"),
+            Err((R::Asks, _))
+        ));
+    }
+
+    /// D270 slice 4: an image run's microVM has a slot for a swap's old and new component of each
+    /// agent and harness its image declares, and one for each plug root; never fewer than a run's.
+    #[test]
+    fn an_image_runs_slots_hold_a_swaps_old_and_new_and_its_plugs() {
+        let agentfile = crate::agentfile::Agentfile {
+            domains: 2,
+            ..Default::default()
+        };
+        let floor = crate::daemon::pci_slots();
+        assert_eq!(image_slots(Some(&agentfile), &[0; 3]), 7u8.max(floor));
+        assert_eq!(image_slots::<u8>(None, &[]), floor);
+        let many = crate::agentfile::Agentfile {
+            domains: 1000,
+            ..Default::default()
+        };
+        assert_eq!(image_slots::<u8>(Some(&many), &[]), u8::MAX);
+    }
 
     fn members() -> Vec<wire::MemberInfo> {
         members_of(&["agent helper".into(), "harness codex".into()], &[1])

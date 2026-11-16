@@ -36543,10 +36543,24 @@ and its run host, image channel version 40; built, its real-VM tests owed with s
   slice 3a), and once its generation has started, each component no generation runs with nor any
   start wants is let go of: unmounted by its guest (`DEVICE unpmem`), then its function unplugged.
   One its guest still holds stays, said.
-- *Not yet* (slice 4b): the artifact's platform and its asks checked against its member's grants,
-  its provenance against the run's policy (D126); image runs' slots derived (2 × the image's
-  agents, harnesses and stdio MCP servers, for a swap's old and new, with its plug roots); the
-  steps' timing lines; MCP servers' paths.
+- *Slice 4b*: the artifact fits its member (`component_fits`): its platform one the microVM runs
+  (`platform::runs` of the guest's targets; none, any), each network ask a port range or a
+  destination the image's grants and the member's ceiling cover (D278's reading), each volume
+  one the image gives that member (`VOLUME … FOR`): refused `Platform` or `Asks`, saying which.
+  An image run's microVM has a slot for a swap's old and new component of each agent and harness
+  its image declares, and one for each plug root its orchestrator grants, never fewer than any
+  run's (`SHARDS_PCI_SLOTS`, D214's four). The steps' timing lines, under `SHARDS_TIMING`: its
+  image ready, plugged and mounted, its member's generation started.
+- *Not yet*: its provenance against the run's policy (D126); MCP servers' paths; a restart's
+  changes of who holds what told the orchestrator (`components()` is as the last swap answered).
+
+**Tests** (slice 4b, light, Linux in a container): `a_component_fits_its_member_within_its_platform_and_grants`
+(another platform, a port or destination past the image's and the ceiling's, a volume of none and
+one given another member: refused typed) and `an_image_runs_slots_hold_a_swaps_old_and_new_and_its_plugs`.
+Real-VM, owed to ROOT (api_image.rs): `a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own`,
+`a_harness_swapped_at_its_next_start_runs_its_component_once_restarted` and
+`a_swap_that_cannot_be_made_is_refused_typed_and_its_member_runs_on` (the test guest's `say-trap`
+says what its directory holds at each generation's start).
 
 **Tests** (slice 4a, light, Linux in a container): the image channel's
 `a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused`; the run host's
