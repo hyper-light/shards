@@ -40020,22 +40020,27 @@ after; rewritten by lane xnet-v, *Amended* below). Owed (ROOT), at this slice's 
   test grants one member at a time: as written it granted both in from a on the port, which
   the run's one address on the network does not tell apart (`shared-in` has a translation for
   each member's grant, init's `outside_batch`, the first that matches taking each new flow, so
-  a's datagrams to c would reach b and c's wait never end; read in the code, its live run owed,
-  *Open* below). ROOT's second assertion, that a grant to the member not holding the port gets no
-  flow, is not this design's: the chooser chooses for eth0's own address alone (D122's amendment
-  of this day, ROOT's decision on slice 5's open item: "a network shared by runs, eth0's second
-  address, is its members' grants'", chooser.rs), so a flow to the run's address on a shared
-  network goes to the member its grant names, holder or not. "No flow" would take the chooser's
-  choice at that address too: `shared-in` leaving a contested port to the chooser's chains, which
-  would match the shared addresses again, zoning the holder's answers there both ways, and the
-  forward chain telling a peer's flow from eth0's, whose ingress rule takes any source: slice 5
-  and D122's amendment redesigned, ROOT's to decide. The test holds the design as recorded: the
+  a's datagrams to c would reach b and c's wait never end; read in the code, its live run in
+  the lane's report, and refused from now on, below). ROOT's second assertion, that a grant to
+  the member not holding the port gets no flow, is not this design's: the chooser chooses for
+  eth0's own address alone (D122's amendment of this day, ROOT's decision on slice 5's open
+  item: "a network shared by runs, eth0's second address, is its members' grants'",
+  chooser.rs), so a flow to the run's address on a shared network goes to the member its grant
+  names, holder or not. "No flow" would take the chooser's choice at that address too:
+  `shared-in` leaving a contested port to the chooser's chains, which would match the shared
+  addresses again, zoning the holder's answers there both ways, and the forward chain telling
+  a peer's flow from eth0's, whose ingress rule takes any source: slice 5 and D122's amendment
+  redesigned, ROOT's to decide. The test holds the design as recorded: the
   holder granted alone is reached, the other not; the other granted alone is reached, the
   holder not; the holder answers eth0's own clients throughout.
-- *Open* (ROOT's): two members of a run granted in on one port of its address on a shared
-  network are both told, and the first translation takes every flow, where item 5 has each port
-  of the run's address one member's. Proposed: the run host refuses the second `Unheld`
-  (D278's: members "the microVM cannot hold apart"), nothing told, no wire change.
+- *Two members granted in on one port of the run's address* (item 5's "each port of its run's
+  address one member's", which the run host did not hold): both were told, and the first
+  translation took every flow. The run host now refuses the second `Unheld` before anything is
+  told (`port_taken`: another member's grant in of that protocol meeting its ports, whatever its
+  peer, as a host's port is one socket's whatever sends to it), D278's refusal of members "the
+  microVM cannot hold apart", with no wire change. Tests: light,
+  `api_run::hosted::tests::a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members`;
+  real VMs, the contested test's holder granted in beside the other, refused `Unheld`.
 
 ## 4. Start path (≤ 5 ms budget)
 

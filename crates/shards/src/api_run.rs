@@ -5996,6 +5996,16 @@ mod hosted {
             on.push(place);
             return Ok(());
         };
+        if let Some(other) = port_taken(&place.members, member, &grant) {
+            return Err((
+                R::Unheld,
+                format!(
+                    "{other} is granted those ports coming in on network {} already: the run's \
+                     address there has one member for each port",
+                    place.network.name
+                ),
+            ));
+        }
         let held = place
             .members
             .iter()
@@ -6013,6 +6023,23 @@ mod hosted {
             Some((_, false)) => grant_more(live, net, place, member, &grant),
             None => member_joins(live, net, place, member, &grant),
         }
+    }
+
+    /// The name of another of `members` granted in on a port grant `grant` of member `member`
+    /// would be granted in on too, where it is a grant in: the run's address on a shared network
+    /// has one member for each port (D285 item 5), and the guest's `shared-in` translates each
+    /// new flow by the first grant that takes it, so a second would take none of them.
+    fn port_taken<'m>(members: &'m [OnMember], member: u32, grant: &wire::NetworkGrant) -> Option<&'m str> {
+        let takes = |g: &wire::NetworkGrant| {
+            g.way == wire::Way::In && g.proto == grant.proto && g.first <= grant.last && grant.first <= g.last
+        };
+        if grant.way != wire::Way::In {
+            return None;
+        }
+        members
+            .iter()
+            .find(|m| m.index != member && m.grants.iter().any(takes))
+            .map(|m| m.name.as_str())
     }
 
     /// Member `member`, on shared network `on` already, given `grant` more: its network process
@@ -10597,6 +10624,37 @@ mod hosted {
             let ledger = crate::networks::leases::Leases::of(dir.path(), &network.id).unwrap();
             assert!(ledger.addresses(&held).unwrap().is_empty());
             assert!(ledger.names(&held).unwrap().is_empty());
+        }
+
+        /// Do ask, of a run whose member 1 (`web`) is granted in on UDP 7600 to 7610 on a shared
+        /// network and out on TCP 5432, whether a grant of member 2 (`api`) takes a port another
+        /// member is granted in on: in on UDP 7610 alone, on 7590 to 7600, on 7611, on TCP 7600;
+        /// out on UDP 7600; member 1's own in on 7605. Expect (D285 item 5): `web` for the first
+        /// two, which meet member 1's ports coming in; none for the rest: past its range, another
+        /// protocol, a grant out, or the member's own.
+        #[test]
+        fn a_port_coming_in_to_a_runs_address_on_a_shared_network_is_one_members() {
+            let grant = |proto, first, last, way| wire::NetworkGrant {
+                name: "api".into(),
+                peer: "a".into(),
+                proto,
+                first,
+                last,
+                way,
+            };
+            let (udp, tcp, inward, out) = (wire::Proto::Udp, wire::Proto::Tcp, wire::Way::In, wire::Way::Out);
+            let members = [OnMember {
+                index: 1,
+                name: "web".into(),
+                grants: vec![grant(udp, 7600, 7610, inward), grant(tcp, 5432, 5432, out)],
+            }];
+            let taken = |member, g: &wire::NetworkGrant| port_taken(&members, member, g);
+            assert_eq!(taken(2, &grant(udp, 7610, 7610, inward)), Some("web"));
+            assert_eq!(taken(2, &grant(udp, 7590, 7600, inward)), Some("web"));
+            assert_eq!(taken(2, &grant(udp, 7611, 7611, inward)), None);
+            assert_eq!(taken(2, &grant(tcp, 7600, 7600, inward)), None);
+            assert_eq!(taken(2, &grant(udp, 7600, 7600, out)), None);
+            assert_eq!(taken(1, &grant(udp, 7605, 7605, inward)), None);
         }
 
         /// Do, on a run whose member 1 is on network `shared` as `web` (its name's lease, its

@@ -1383,7 +1383,8 @@ pub enum NetRefusal {
     /// The image's own declaration of it: a port it gives a member that is none of the run's.
     Image = 5,
     /// Members whose reach, so changed, the microVM cannot hold apart (D278, D236's `held`):
-    /// on a TCP port one reaches by name, another by other names or a port grant.
+    /// on a TCP port one reaches by name, another by other names or a port grant; or two
+    /// granted in on one port of the run's address on a network shared by runs (D285).
     Unheld = 6,
     /// No network of that name or ID in the run's home (version 50, D285): one is made
     /// beforehand, never by a join.

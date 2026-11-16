@@ -5269,6 +5269,12 @@ fn a_contested_udp_port_granted_in_on_a_shared_network_is_answered_held_or_not()
     })
     .unwrap();
     reached(other_name, "??", &other_said);
+    // The holder granted in on that port too, while the other is: refused, the run's address
+    // there having one member for each port, nothing told.
+    assert!(matches!(
+        ask(&*run_b, |g| g.connect(&holder, "team", &holder_in, Duration::MAX)),
+        Err(ImageRefusal::Net(NetRefusal::Unheld, _))
+    ));
     // The holder answers eth0's own clients still.
     assert!(held("after").ends_with(" who"));
     run_a.stop().unwrap();
