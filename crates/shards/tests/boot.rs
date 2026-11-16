@@ -1062,7 +1062,7 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
     // take them, whose MSIs its GICv2m frame does not isolate (D154; iommufd/device.c,
     // iommufd_device_bind, refused a node's bind with EPERM without it).
     let pci_tests = std::env::var("SHARDS_L1_PCI_TESTS").ok();
-    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str| {
+    let outer = |initrd: &std::path::Path, cpus: &str, memory: &str, cmdline: &str, more: &[&str]| {
         let unsafe_msis = match &pci_tests {
             Some(_) => " vfio_iommu_type1.allow_unsafe_interrupts=1 iommufd.allow_unsafe_interrupts=1",
             None => "",
@@ -1084,12 +1084,13 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         if let Some(places) = &pci_tests {
             args.extend(["--pci-tests", places.as_str()]);
         }
+        args.extend_from_slice(more);
         vm_run(&args)
     };
     // Whether this host gives a guest EL2, before the tests are built for one.
     let probe = dir.join("probe.cpio");
     std::fs::write(&probe, shards_vmm::initramfs::with_init(&read(test_guest()))).unwrap();
-    let probed = outer(&probe, "1", "256", "shards_test=kmsg");
+    let probed = outer(&probe, "1", "256", "shards_test=kmsg", &[]);
     if probed.stderr.contains("gives a guest no EL2") {
         eprintln!("SKIP: this host gives a guest no EL2");
         return;
@@ -1206,8 +1207,10 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         run.push_str(&format!("/{name} --test-threads=1 {args}\n"));
         names.push(name);
     }
+    // SHARDS_L1_OUT is where the guest mounts this host's share (`--share`, the test guest's
+    // e2e mode): what a test leaves there, this host reads once the guest is gone.
     let mut env = String::from(
-        "HOME=/tmp\nPATH=/e2e/bin\nTMPDIR=/tmp\nXDG_CACHE_HOME=/tmp/cache\nRUST_BACKTRACE=1\nSHARDS_REQUIRE_VMS=1\nSHARDS_TEST_GUESTS=/e2e/guests\n",
+        "HOME=/tmp\nPATH=/e2e/bin\nTMPDIR=/tmp\nXDG_CACHE_HOME=/tmp/cache\nRUST_BACKTRACE=1\nSHARDS_REQUIRE_VMS=1\nSHARDS_TEST_GUESTS=/e2e/guests\nSHARDS_L1_OUT=/e2e/out\n",
     );
     if let Ok(level) = std::env::var("SHARDS_L1_LOG") {
         env.push_str(&format!("SHARDS_LOG={level}\n"));
@@ -1228,7 +1231,15 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         .file("e2e/env", 0o644, env.as_bytes());
     let initrd = dir.join("l1.cpio");
     std::fs::write(&initrd, cpio.finish()).unwrap();
-    let ran = outer(&initrd, "8", "24576", "shards_test=e2e");
+    let out = dir.join("out");
+    std::fs::create_dir(&out).unwrap();
+    let ran = outer(
+        &initrd,
+        "8",
+        "24576",
+        "shards_test=e2e",
+        &["--share", out.to_str().unwrap()],
+    );
     // SHARDS_L1_CONSOLE names a file its console is written to, passing or failing, for
     // what the tests in it say of themselves.
     if let Some(console) = std::env::var_os("SHARDS_L1_CONSOLE") {
@@ -1248,6 +1259,9 @@ fn snapshot_tests_pass_on_a_kvm_host_of_this_architecture() {
         "{ran}"
     );
     assert_eq!(ran.status, Some(0), "{ran}");
+    // A run's save a test left to scan (api_image's, D259), judged here as that test judges
+    // one in place: the guest has no Python.
+    common::judge_left_leak_scan(&out);
 }
 
 /// A snapshot of a guest with memory to plug, none of it plugged (D148): the VM that

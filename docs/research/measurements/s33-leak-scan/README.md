@@ -120,9 +120,8 @@ Each command runs from a checkout at or after this harness's landing.
   - HVF: adalundhe-macbook-pro or adas-mac-studio.local.
   - KVM x86_64: a Linux x86_64 runner with /dev/kvm (kiln: `linux/amd64`), adacachy.
   - WHP: jupiter.
-  - KVM arm64: through L1, `SHARDS_L1_TESTS=api_image:a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`
-    with boot.rs's `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`, run through
-    `launchd-run.sh` (CLAUDE.md).
+  - KVM arm64: through L1 on an M3 or later Mac, the save scanned on the outer host (below,
+    "KVM arm64 through L1").
 - **Evidence.** The test's output. Its home and diagnostics show if it fails (`common::TempDir`).
 
 **2. Step 33's acceptance: real sessions** (after step 8 lands, the sign-in profiles, and Hex's
@@ -358,6 +357,40 @@ built in the shared target `~/.cache/whp-pipes/target`.
 **On KVM x86-64:** owed (below). The scan's Unix path changed only in joining ranges that meet
 and keeping a run's last byte; macOS's tests above hold both.
 
+## KVM arm64 through L1 (step 33.10)
+
+No arm64 Linux host here has KVM. So on KVM arm64 the harness's own check runs in L1: boot.rs's
+`snapshot_tests_pass_on_a_kvm_host_of_this_architecture` boots a nested guest on an M3 or later
+Mac and runs the test binary in it (D154). That guest has no Python and no checkout for scan.py
+and credentials.py, so the test cannot scan there. The outer host scans instead (ROOT,
+2026-11-16; D259):
+- **In L1.** The test saves as on every host. `SHARDS_L1_OUT` in its environment names the
+  outer host's share, so it leaves the save and what the scan is given there (`given.json`,
+  `never.json`, `env/`), and scans nothing (`common::leave_leak_scan`). The copy keeps only what
+  holds data (`platform::copy_used`), so the sparse layer takes no more of the outer host's disk
+  than it holds.
+- **The share.** boot.rs gives the outer run `--share` on a directory of its own (D38). The
+  test guest's e2e mode mounts it (`shards0`) at `/e2e/out`, where /e2e/env's `SHARDS_L1_OUT`
+  says.
+- **On the outer host.** Once the guest is gone, boot.rs judges what was left with the
+  function the test judges with in place (`common::leak_scan_judged`): this scan.py, the same
+  assertions, the same bytes.
+- **Elsewhere.** HVF, WHP and KVM x86_64 scan in place, as before.
+
+**The command** (ROOT's), from the checkout's root, on an M3 or later Mac with `python3` on
+`PATH`, through `launchd-run.sh`, as the session's QoS clamp starves the nested guests:
+
+    docs/research/measurements/macos-sched/launchd-run.sh <OUT> env SHARDS_REQUIRE_VMS=1 SHARDS_L1_TESTS=api_image:a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it SHARDS_L1_CONSOLE=<OUT>-console.txt cargo test --locked --profile test-release -p shards --test boot -- snapshot_tests_pass_on_a_kvm_host_of_this_architecture --nocapture
+
+- **It passes when:**
+  - `<OUT>.exit` holds 0;
+  - `<OUT>.log` says the test is ok, with no `SKIP: this host gives a guest no EL2`;
+  - the console file holds `E2E: test a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it ... ok`
+    and `E2E STATUS /e2e/tests/api_image exit status: 0`.
+- **Not yet built or run.** Lane l1-scan landed it under the person's rule of 2026-11-16 (no
+  builds or tests in lanes). This run is its first; `scripts/lint` is owed with it, the test
+  guest's musl targets among them.
+
 ## Owed
 
 - **Run 1, the harness's own check.** Passed on WHP x86_64 (step 33.10, above), and on HVF
@@ -374,7 +407,7 @@ and keeping a run's last byte; macOS's tests above hold both.
         python3 -I docs/research/measurements/s33-leak-scan/scan_test.py -v
         python3 -I docs/research/measurements/s33-leak-scan/guards.py docs/research/measurements whole-always no-join first-data cut-unit
 
-  - KVM arm64, through L1 (above).
+  - KVM arm64, through L1: the command under "KVM arm64 through L1" (above).
 - **Run 2, the real sessions.** It waits on step 8, on Hex's half of step 6, and on a save hook
   in Hex.
 - **Step 10's second part,** the injector's A/B latency harness, is built:

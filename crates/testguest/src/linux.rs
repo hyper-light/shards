@@ -118,20 +118,23 @@ fn setup() -> Result<(), String> {
     Ok(())
 }
 
+/// Mounts virtio-fs tag `tag` at `at`, made first, with no options.
+fn virtiofs(tag: &str, at: &str) -> Result<(), String> {
+    std::fs::create_dir_all(at).map_err(|e| format!("mkdir {at}: {e}"))?;
+    let (src, target, fs) = (cstr(tag)?, cstr(at)?, cstr("virtiofs")?);
+    // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
+    // pseudo-filesystems.
+    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
+        return Err(format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
 /// Mounts the share a slates daemon serves (tag `shards0`, `run --kernel … --slates-fs-fd N`,
 /// D38), reads `/hello` from it, then writes `/from-guest`, syncs it and reads it back: a
 /// microVM reaching a slates volume through virtio-fs with no host mount and no DAX window.
 fn slates_fs() -> Result<(), String> {
-    std::fs::create_dir_all("/mnt").map_err(|e| format!("mkdir /mnt: {e}"))?;
-    let (src, target, fs) = (cstr("shards0")?, cstr("/mnt")?, cstr("virtiofs")?);
-    // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
-    // pseudo-filesystems.
-    if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
-        return Err(format!(
-            "mount shards0 (virtiofs): {}",
-            io::Error::last_os_error()
-        ));
-    }
+    virtiofs("shards0", "/mnt")?;
     let got = std::fs::read_to_string("/mnt/hello").map_err(|e| format!("read /mnt/hello: {e}"))?;
     let want = "hello from slates over shards virtio-fs\n";
     if got != want {
@@ -163,13 +166,7 @@ fn slates_fs() -> Result<(), String> {
 fn share() -> Result<(), String> {
     let want = "hello through --share\n";
     for (tag, at) in [("shards0", "/mnt0"), ("shards1", "/mnt1")] {
-        std::fs::create_dir_all(at).map_err(|e| format!("mkdir {at}: {e}"))?;
-        let (src, target, fs) = (cstr(tag)?, cstr(at)?, cstr("virtiofs")?);
-        // SAFETY: NUL-terminated strings and no data argument, as setup() mounts the
-        // pseudo-filesystems.
-        if unsafe { libc::mount(src.as_ptr(), target.as_ptr(), fs.as_ptr(), 0, std::ptr::null()) } != 0 {
-            return Err(format!("mount {tag} (virtiofs): {}", io::Error::last_os_error()));
-        }
+        virtiofs(tag, at)?;
         let got =
             std::fs::read_to_string(format!("{at}/hello")).map_err(|e| format!("read {at}/hello: {e}"))?;
         if got != want {
@@ -2695,7 +2692,9 @@ fn daemon() -> Result<(), String> {
 /// of /e2e/run names a binary and its arguments, run in turn with /e2e/env's variables
 /// (`KEY=VALUE` lines) and no others. Each line a binary writes is printed as it comes,
 /// after `E2E: ` (its stderr's after `E2E stderr: `), then its status, `E2E STATUS
-/// <binary> <status>`; the test passes where every binary ended well.
+/// <binary> <status>`; the test passes where every binary ended well. Where /e2e/env's
+/// SHARDS_L1_OUT says, the outer host's share (`shards0`, boot.rs' `--share`) is mounted:
+/// what a binary leaves there that host reads once this guest is gone.
 fn e2e() -> Result<(), String> {
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm: this guest's kernel is no KVM host".into());
@@ -2754,6 +2753,9 @@ fn e2e() -> Result<(), String> {
         .filter_map(|l| l.split_once('='))
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+    if let Some((_, out)) = env.iter().find(|(key, _)| key == "SHARDS_L1_OUT") {
+        virtiofs("shards0", out)?;
+    }
     let mut failed = Vec::new();
     for line in read("/e2e/run")?.lines() {
         let mut words = line.split_whitespace();

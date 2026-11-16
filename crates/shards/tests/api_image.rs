@@ -2926,38 +2926,19 @@ fn canary(label: &str) -> String {
         .collect()
 }
 
-/// Plan step 33's leak scan (docs/research/measurements/s33-leak-scan), on what it scans:
-/// what `ImageGuest::save` writes, which is its owner's alone (D259).
-/// Python 3 runs it: `python3`, on Windows `python`.
-fn leak_scan(secrets: &std::path::Path, paths: &[&std::path::Path]) -> (Option<i32>, String) {
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/research/measurements/s33-leak-scan/scan.py");
-    let python = if cfg!(windows) { "python" } else { "python3" };
-    let out = std::process::Command::new(python)
-        .arg("-I")
-        .arg(script)
-        .arg("--secrets")
-        .arg(secrets)
-        .args(paths)
-        .output()
-        .unwrap();
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.code(), said)
-}
-
 /// D259, and plan step 33's leak scan checked on a real microVM: a run's memory saved by its
 /// owner holds what the run's harness was given, and the scan finds it there, while a value
 /// never given is found nowhere. Do: give the harness (the test guest echoing its stdin, so that
 /// it runs on) a value in its environment and one in a staged file; ask a save outside the run's
 /// home, then one in it; echo a line after; scan the save, and the harness's environment as
-/// given, first for the values given, then for one never given. Expect: the first save refused
-/// `Destination` and nothing made; the second a snapshot directory, its generation's memory
-/// written; the harness still echoing; both values found in the save's memory, each by its name,
-/// and the environment's in its file (exit 3); the value never given found nowhere.
+/// given, first for the values given, then for one never given (`common::leak_scan_judged`).
+/// Expect: the first save refused `Destination` and nothing made; the second a snapshot
+/// directory, its generation's memory written; the harness still echoing; both values found in
+/// the save's memory, each by its name, and the environment's in its file (exit 3); the value
+/// never given found nowhere. Under L1 (KVM arm64), whose guest has no Python, the save and what
+/// the scan is given are left on the outer host's share (SHARDS_L1_OUT), and that host scans
+/// and judges them as here once the guest is gone (boot.rs'
+/// `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`).
 #[test]
 fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() {
     if cannot_run_vms() {
@@ -3008,14 +2989,12 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
     assert!(std::fs::metadata(&memory).unwrap().len() > 0);
     echo(b"after\n");
     let keys = TempDir::new("api-save-keys");
-    let given = keys.join("given.json");
     std::fs::write(
-        &given,
+        keys.join("given.json"),
         format!(r#"{{"env_token":"{in_env}","file_token":"{in_file}"}}"#),
     )
     .unwrap();
-    let not_given = keys.join("never.json");
-    std::fs::write(&not_given, format!(r#"{{"never_token":"{never}"}}"#)).unwrap();
+    std::fs::write(keys.join("never.json"), format!(r#"{{"never_token":"{never}"}}"#)).unwrap();
     let env = keys.join("env");
     std::fs::create_dir(&env).unwrap();
     std::fs::write(
@@ -3023,25 +3002,10 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
         format!("SHARDS_LEAK_CANARY={in_env}\0"),
     )
     .unwrap();
-    let (code, said) = leak_scan(&given, &[&saved, &env]);
-    assert_eq!(code, Some(3), "{said}");
-    let memory = memory.display().to_string();
-    for name in ["given.json:env_token", "given.json:file_token"] {
-        assert!(
-            said.lines()
-                .any(|l| l.starts_with(&format!("FOUND {memory} offset ")) && l.ends_with(name)),
-            "{name} in the save's memory: {said}"
-        );
+    match std::env::var_os("SHARDS_L1_OUT") {
+        Some(out) => common::leave_leak_scan(std::path::Path::new(&out), &saved, &keys),
+        None => common::leak_scan_judged(&saved, &keys),
     }
-    assert!(
-        said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"),
-        "{said}"
-    );
-    // Never given, never found: what else credential-shaped its memory holds is listed (exit 4)
-    // and is no secret's.
-    let (code, said) = leak_scan(&not_given, &[&saved, &env]);
-    assert!(matches!(code, Some(0 | 4)), "{said}");
-    assert!(said.contains(" 0 secret runs found"), "{said}");
     guest.stop().unwrap();
 }
 

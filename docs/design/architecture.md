@@ -36203,7 +36203,7 @@ ended by an orchestrator's broken channel, or by a VM that could not serve it, w
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
 
-### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605, and on WHP once the scan left Windows' holes unread, step 33.10; again on KVM x86-64 with that scan, on KVM arm64, and step 33's real sessions, owed)
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605, and on WHP once the scan left Windows' holes unread, step 33.10; again on KVM x86-64 with that scan, on KVM arm64 through L1 with its save scanned on the outer host, and step 33's real sessions, owed)
 
 **Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
 harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
@@ -36301,6 +36301,37 @@ on disk is the most sensitive thing a run has:
   - the run's placeholders, given as public, whose windows are no leak;
   - the bring-up's credential shapes, those no value explains listed by where they lie;
   - exit 3 for a leak and 4 for unexplained shapes alone, never printing a value.
+- *Under L1, the outer host scans* (KVM arm64, step 33.10; ROOT's decision, 2026-11-16).
+  - *Why.* No arm64 Linux host here has KVM, so KVM arm64's run is boot.rs's
+    `snapshot_tests_pass_on_a_kvm_host_of_this_architecture`: the test binary runs in a nested
+    guest (L1) on an M3 or later Mac (D154). L1's initramfs holds the test binaries and shards'
+    own (`common::linux_tests`), no Python and no checkout, so the test could not start
+    scan.py there (lane s33-scan-2, read from the code, not reproduced).
+  - *The test* saves as on every host. Where its environment's `SHARDS_L1_OUT` names the
+    outer host's share, it leaves there the save and what the scan is given (`given.json`,
+    `never.json`, `env/`) and scans nothing itself (`common::leave_leak_scan`). The copy keeps
+    only the ranges that hold data and are not all zeros: `platform::copy_used`, the copy a
+    restore makes of a snapshot's swap (D176) and writable layer (D190). So the sparse
+    layer takes no more of the outer host's disk than it holds. Each file is synced before
+    the test goes on.
+  - *The share* is the outer run's `--share` (D38), a directory of boot.rs's own. The test
+    guest's e2e mode mounts it (`shards0`) where /e2e/env's `SHARDS_L1_OUT` says, `/e2e/out`,
+    with the mount its `share` mode makes (`virtiofs`). The `kvm` kernel has virtio-fs
+    (shards.config's `CONFIG_VIRTIO_FS`, under kvm.config).
+  - *The judge.* Once the guest is gone, boot.rs judges what was left
+    (`common::judge_left_leak_scan`) with the function the test judges with in place
+    (`common::leak_scan_judged`): the same scan.py, the same assertions, the same bytes at
+    the same offsets. Holes read as the zeros they replace, and scan.py widens each range by
+    the zeros a finding can take (its README, "Holes not read"), so a finding in the save
+    should be one in its copy. Unverified: ROOT's run (Owed) is the first to check it.
+  - *Alternatives.*
+    - L1's console, its only way out until now (`E2E:` lines, `SHARDS_L1_CONSOLE`). It
+      carries lines, not a 536870912-byte memory and a sparse layer (WHP's save's sizes,
+      step 33.10).
+    - A static Python and the scan carried into L1's initramfs: an interpreter built and kept
+      for one test. Refused by ROOT.
+  - HVF, WHP and KVM x86_64 scan in place. There is one scanner (R05).
+  - No literal: the names (`SHARDS_L1_OUT`, `/e2e/out`, `leak-scan`) are names.
 
 **Literals** (R03).
 - The channel's version 23, kinds 15 and 33, and refusal tags 0 to 3 are sequence numbers, each
@@ -36367,6 +36398,14 @@ carrier: a bundle over origin/main in a blobless clone):
   6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70). On WHP it passed in 22.49 s
   with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, lane whp-verify's D272 commit
   over main 3d91d54f1, on main since fe83503c2; the scan's README).
+- KVM arm64 through L1, its save scanned on the outer host: on an M3 or later Mac with
+  `python3`, from the checkout's root (the scan's README, "KVM arm64 through L1"):
+
+      docs/research/measurements/macos-sched/launchd-run.sh <OUT> env SHARDS_REQUIRE_VMS=1 SHARDS_L1_TESTS=api_image:a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it SHARDS_L1_CONSOLE=<OUT>-console.txt cargo test --locked --profile test-release -p shards --test boot -- snapshot_tests_pass_on_a_kvm_host_of_this_architecture --nocapture
+
+  The L1 path (lane l1-scan) was neither built nor run as it landed (the person's rule,
+  2026-11-16: no builds or tests in lanes). This run is its first, and its lint is owed with
+  it: `scripts/lint`, the test guest's musl targets among them.
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
 - These light tests on Linux (`scan_test.py`, `guards.py`), and `scripts/lint` on every target.

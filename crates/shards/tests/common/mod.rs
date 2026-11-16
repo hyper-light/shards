@@ -294,6 +294,102 @@ pub fn snapshot_file(dir: &Path, name: &str) -> PathBuf {
     generation.join(newest)
 }
 
+/// Plan step 33's leak scan (docs/research/measurements/s33-leak-scan), on what it scans:
+/// what `ImageGuest::save` writes, which is its owner's alone (D259).
+/// Python 3 runs it: `python3`, on Windows `python`.
+fn leak_scan(secrets: &Path, paths: &[&Path]) -> (Option<i32>, String) {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/research/measurements/s33-leak-scan/scan.py");
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let out = Command::new(python)
+        .arg("-I")
+        .arg(script)
+        .arg("--secrets")
+        .arg(secrets)
+        .args(paths)
+        .output()
+        .unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.code(), said)
+}
+
+/// api_image's leak-scan test judged (D259): `saved`, a run's save, scanned with its harness's
+/// environment as given (`keys/env`), first for the values the harness was given
+/// (`keys/given.json`), then for one never given (`keys/never.json`). Both values given are
+/// found in the save's memory, each by its name, and the environment's in its file (exit 3);
+/// the one never given nowhere. Where the test runs, or on L1's outer host
+/// ([`leave_leak_scan`]).
+pub fn leak_scan_judged(saved: &Path, keys: &Path) {
+    let memory = snapshot_file(saved, "memory").display().to_string();
+    let env = keys.join("env");
+    let (code, said) = leak_scan(&keys.join("given.json"), &[saved, &env]);
+    assert_eq!(code, Some(3), "{said}");
+    for name in ["given.json:env_token", "given.json:file_token"] {
+        assert!(
+            said.lines()
+                .any(|l| l.starts_with(&format!("FOUND {memory} offset ")) && l.ends_with(name)),
+            "{name} in the save's memory: {said}"
+        );
+    }
+    assert!(
+        said.contains("harness-codex offset 19 length 64: a run of given.json:env_token"),
+        "{said}"
+    );
+    // Never given, never found: what else credential-shaped its memory holds is listed (exit 4)
+    // and is no secret's.
+    let (code, said) = leak_scan(&keys.join("never.json"), &[saved, &env]);
+    assert!(matches!(code, Some(0 | 4)), "{said}");
+    assert!(said.contains(" 0 secret runs found"), "{said}");
+}
+
+/// Where in the outer host's share a test under L1 leaves a run's save to scan.
+const LEAK_SCAN_LEFT: &str = "leak-scan";
+
+/// `saved`, a run's save, and `keys`, what its scan is given ([`leak_scan_judged`]), left in
+/// `out`, the outer host's share under L1 (SHARDS_L1_OUT, boot.rs), for that host to scan
+/// once the guest is gone ([`judge_left_leak_scan`]): an L1 guest has no Python.
+pub fn leave_leak_scan(out: &Path, saved: &Path, keys: &Path) {
+    let left = out.join(LEAK_SCAN_LEFT);
+    copy_used_tree(saved, &left.join("saved"));
+    copy_used_tree(keys, &left.join("keys"));
+}
+
+/// The save a test under L1 left in `out`, this host's side of its share
+/// ([`leave_leak_scan`]), judged as the test judges one in place; nothing where none was left.
+pub fn judge_left_leak_scan(out: &Path) {
+    let left = out.join(LEAK_SCAN_LEFT);
+    if left.exists() {
+        leak_scan_judged(&left.join("saved"), &left.join("keys"));
+    }
+}
+
+/// Directory `from` copied to `to`: its directories, and its regular files, each with only
+/// what its file system says holds data and is not all zeros (`platform::copy_used`), so that a
+/// save's sparse files take no more of `to`'s disk than they did of `from`'s, and synced, as `to`
+/// may be a share whose host reads it once this guest is gone. No link is copied: the scan
+/// follows none.
+fn copy_used_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let (path, copy) = (entry.path(), to.join(entry.file_name()));
+        let kind = entry.file_type().unwrap();
+        if kind.is_dir() {
+            copy_used_tree(&path, &copy);
+        } else if kind.is_file() {
+            let source = std::fs::File::open(&path).unwrap();
+            let len = source.metadata().unwrap().len();
+            let made = std::fs::File::create(&copy).unwrap();
+            shards_vmm::platform::copy_used(&source, &made, len).unwrap();
+            made.sync_all().unwrap();
+        }
+    }
+}
+
 /// shards' guest kernel for the host architecture: Linux 6.18.48 with Firecracker's
 /// microVM config and ours (resources/kernel), built reproducibly by CI.
 pub fn kernel_artifact() -> Artifact {
