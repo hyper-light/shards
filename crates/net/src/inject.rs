@@ -6868,6 +6868,57 @@ pub(crate) mod tests {
         assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
     }
 
+    /// The HTTP/2 test host's answer to any request: `:status` 200 and DATA of one octet more than
+    /// the injector's windows toward the host let it hold (tcp.rs' `TO_GUEST`).
+    fn h2_past_what_is_held(_: &[hpack::Field], _: &[u8]) -> (Vec<hpack::Field>, Vec<u8>) {
+        let body = (0..crate::tcp::TO_GUEST + 1).map(|i| (i % 251) as u8).collect();
+        (vec![field(":status", b"200")], body)
+    }
+
+    /// Do: over HTTP/2, a GET answered with DATA one octet past what the injector's windows toward
+    /// the host hold, the guest's windows small. Expect: it reaches the guest whole and as it was
+    /// sent, no stream reset: the injector sends the host's DATA on as the guest's windows take it
+    /// and gives the host credit back as it goes, where holding the body until its END_STREAM
+    /// would leave the host no window to end it (RFC 9113 §6.9).
+    #[test]
+    fn an_h2_response_past_what_the_injector_holds_streams_through() {
+        let root = root("shards test root");
+        let mut credentials = credentials(&root);
+        let host = H2Host::serving(&root, &[GRANTED], h2_past_what_is_held);
+        let (mut bench, mut peer) = h2_bench(&credentials, GRANTED, host);
+        let mut seen = Vec::new();
+        peer.send_headers(1, &h2_request("GET", GRANTED, "/large", None), true);
+        h2_until(
+            &mut bench,
+            &mut peer,
+            &mut seen,
+            &mut credentials,
+            &mut unanswered,
+            |p, _| {
+                p.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        Event::Data {
+                            stream: 1,
+                            end: true,
+                            ..
+                        }
+                    )
+                })
+            },
+        );
+        let (_, sent) = h2_past_what_is_held(&[], &[]);
+        let Got { fields, data, .. } = peer.response(1);
+        assert_eq!(value_of(&fields, ":status"), Some(&b"200"[..]));
+        assert!(
+            data == sent,
+            "the response came changed: {} octets of {}",
+            data.len(),
+            sent.len()
+        );
+        assert_eq!(peer.ends(), [], "a stream reset or the connection ended");
+    }
+
     /// Do: a guest offering `h2` and `http/1.1` sends a granted host that speaks HTTP/1.1 alone
     /// (no ALPN) a request with the placeholder. Expect: the guest served HTTP/1.1, its request
     /// arriving filled as any HTTP/1.1 request's.
