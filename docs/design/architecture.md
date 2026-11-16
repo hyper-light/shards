@@ -29883,7 +29883,7 @@ Shards carried and without (kiln's `docs/research/s16-vendor/`).
 `shards` runs from; a macOS that refuses a carrier's own identity the entitlements it allows ad
 hoc (then ad hoc, as shards signs them).
 
-### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint built, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap; its real-VM runs and its measurement against arm g owed)
+### D238. Agent control over hyper-transport (its transport, suite, lanes and identity decided; where its TLS ends decided at the host from HVF's and KVM's runs, plan step 10, WHP owed; its endpoint built, step 11: its connection, refusals, stdio lanes, their controller, the daemon's endpoint per run, exec lanes at the endpoint, the controller and the daemon, each end's word on its TLS, and members' own lanes (a member's state, its end, its signals and its own terminal's size, goal 58's steps 5 and 6) built, the daemon's runs' and an orchestrator's (api-run); an orchestrator's run's members' stdio lanes, by generation, built (D252); log lanes built, goal 58's step 7: the lane, its controller, the daemon's log host, and the keeper of every member's log within the run's one log cap; its real-VM runs and its measurement against arm g owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d runs every kiln harness in a microVM of
 its own, booted for Hex under shards-init (D231). The person decided how such a harness is
@@ -30585,6 +30585,31 @@ of it, with no terminal, refused `Terminal`, its end as its init told it read fr
 member 0, files alone, refused `Refused`, its MCP connection carried both ways, a lane and an
 MCP ask after the run's end refused `Failed`, its budget given back whole). Real-VM runs owed to
 ROOT.
+
+*An orchestrator's run's stdio lanes* (D252, amended 2026-11-16). Where its control asks for its
+members' stdio (`ControlAsk::stdio`), api-run's endpoint serves them as the daemon's endpoint
+serves a run's owned streams: the same lanes, services, credits and ends, its streams named in
+the zero run by each member's generation (D270), each next generation's joined as its member
+starts again (`control::Generations`), and each past one's let go once its end was told. Its
+stdio lanes, against the daemon's:
+
+| A stdio lane | A daemon's run (`shards.control=true`) | An orchestrator's run (`ControlAsk::stdio`) |
+|---|---|---|
+| Stdout, stderr | its owned members' (`shards.output`) | every running member's |
+| Stdin | its `shards.stdin` members' | each member its spec gives stdin (`MemberSpec::stdin`) |
+| Run, generation | the run's id hashed, its generation | the zero run, the member's generation (D270) |
+| Admitted | its capture's record (`record_capacity`), grown as learned | an exec's stream's (`exec_admissions`) |
+| Its guest credited | as its lane has room (`send_credits`) | as its lane has room (`lane_output`) |
+| A member it serves no stream of | refused `Scope` | refused `Scope` |
+| A generation not its stream's | refused `Stale` | refused `Stale`: one past, let go, or one not started |
+| A stream revoked | refused `Closed` | refused `Closed`: cut before its end, sealed with no credit, a failed restart's |
+| Its member ended | its end: an output's `Finished`, a stdin's `InputEnded` | the same |
+
+An ask (exec, member, MCP, log, socket) names the endpoint's run and its generation, or any
+generation whose streams it serves (`Lanes::in_scope`), as a controller names its first
+output's (drive.rs). Tested (written, not run):
+`api_run::hosted::tests::an_orchestrators_run_serves_its_members_stdio_on_its_endpoint_by_generation`.
+Real-VM runs owed to ROOT.
 
 *The signal's alternatives* (R02). (a) A run-protocol kind of its own, a member's signal on the
 signal connection answered on the workload connection, through an IPC kind its VM process
@@ -34024,7 +34049,7 @@ function"), no time chosen.
 - A lane held past its window.
 - A socket cut short read as `Ok(0)` at the controller, or a half-close read as a cut.
 
-### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built; real-VM runs owed)
+### D252. An orchestrator's run binds its own agent-control endpoint, and shards-api carries Shards' controller (built, its members' stdio lanes too; real-VM runs owed)
 
 **Why.** D238 built the endpoint for a daemon's run that asks for it (`shards.control=true`,
 `bind_agent`), but D231's run host (`shards api-run`) bound none. Hex's node runs on such a run
@@ -34076,7 +34101,8 @@ be Shards' own code. Hex's acceptance (step11-b-run-host-endpoint) is held to he
 (`shards_api::control::exec_admissions`), so that it hosts its members' MCP connections (D254) through the
 daemon's exec host, and hosts its execs and its members' own lanes (D238) through the daemon's
 hosts too. Its asks name the zero run and generation 0, as its socket lanes do, its
-endpoint serving no member stream (D238).
+endpoint serving no member stream (D238); where its control asks for its members' stdio, its
+streams are the zero run's too (amended 2026-11-16, below).
 
 **Amended** (Hex's ask, 2026-11-14): every socket the endpoint holds, named; image channel
 version 30.
@@ -34140,6 +34166,78 @@ run host's own runs (not warm) make theirs as their endpoint binds, as before. T
 the pre-made key's; two hosts' keys differ; a run with none makes its own). Timed:
 `its agent-control key made` as the warm host waits, `its agent-control endpoint bound` on the
 run's way. *Owed* (ROOT): a warm run asking for control in the A/B, which the rig's runs do not.
+
+**Amended: its endpoint serves its members' stdio** (2026-11-16, kiln plan step 17's Duplex,
+lane s17's finding).
+- *Why.* kiln drove an isolated session's signals and MCP over the run's endpoint (D238, D254)
+  but its stdio over this channel (`take_input`, `take_output`): the run host's endpoint served
+  no member stream, where a daemon's run's serves its owned ones (D238, `bind_agent`). kiln's
+  Duplex is a member's stdio over hyper-transport, so the run host serves it there.
+- *The ask.* `ControlAsk::stdio`, a flag, asks it: the image channel's version 44 carries it
+  after the request's last field, where the request asks for an endpoint, so a host of version
+  43 refuses the run by its version as it is asked. Explicit, as every grant is: a run that asks
+  none is served as before, and an orchestrator that takes its members' stdio from this
+  channel is never raced by a lane for the same bytes. With it, this channel carries none of
+  their bytes: shards-api pumps no pipe (`take_output` and `take_input` refused, typed
+  `ImageRefusal::Spec`), its orchestrator gives no room, and a `CREDIT`, `INPUT` or `INPUT_END`
+  for them breaks the channel's contract; each output's end is still told (`OUTPUT_END`), so
+  `wait_channel` reads it typed.
+- *What it serves.* Every running member's stdout and stderr and each stdin its spec asks for
+  (`MemberSpec::stdin`), as lanes of the run's one connection, step 5's subscriptions and
+  frames, with the same services the daemon's runs' lanes have (`managed::Service`,
+  `managed::input::Service`): one record in flight each way, cursors resumed, ends and aborts
+  typed. Each is named in the zero run, as the endpoint's asks are, by its member's generation
+  (D270: 0 its first, each restart's one more), and admitted as an exec's stream of its kind
+  (`exec_admissions`): `shards_api::control::member_output` and `member_input` name them, the
+  run host binds them by the same functions, and a controller's `Subscriptions` names them with
+  its cursors.
+- *Its credits.* A member's output is credited to its guest one record at a time, of the room
+  its lane's subscriber has (`Producer::wait_capacity`, at most the run protocol's
+  `MAX_PAYLOAD`), as the daemon's credit worker credits an owned output (`send_credits`); its
+  record goes whole into its lane's own buffer, the guest's capture record, which its
+  controller decodes, as a daemon's run's owner does. A record that comes as its subscriber
+  leaves waits for the next at the same place; one past its credit revokes the output. Its end
+  or abort is the output's last record, its end told as its controller consumes it. A member's
+  stdin is relayed by the daemon's relay (`managed::relay_input`, now shared: a connection to
+  wait for and one to close) onto the input connection its VM hands over; its init's word on
+  its end is its lane's (`input::Control::ended`).
+- *Its generations* (D270). The endpoint is bound with each stream's first generation; a
+  restart joins its member's next generation's streams before it asks its start
+  (`control::Generations`), admitted as the streams they follow, so the connection's windows,
+  each its streams' own, hold them (R03), and a restart that fails past joining them revokes
+  them. A generation past is let go once its end was told and no lane holds it; a lane to it,
+  or to one not started, is refused `Stale`. A controller dialing a next generation's streams
+  names that generation in its asks (drive.rs): an ask is in scope at its endpoint's run and at
+  any generation whose streams it serves (`Lanes::in_scope`). A channel of a generation past
+  that no credit went to is revoked as its restart seals it.
+- *Refusals, typed* (R04): a member the run has not, one of files alone, or a stdin its spec
+  asks none of, `Scope`; another generation, `Stale`; a stream revoked (its capture cut before
+  its end, a sealed channel, a failed restart's), `Closed`. A member that has ended has its
+  streams' ends: an output's last records then `Got::Finished`, a stdin's `Fault::InputEnded`.
+  Where its control asks for stdio, an exec, member or MCP ask naming a member the endpoint
+  serves no stream of is refused `Scope` by the endpoint, as a daemon's run's is, rather than
+  `Unstarted::Refused` by its host.
+- *What kiln and Hex change to use it.* Hex: ask `ControlAsk { stdio: true, .. }`; dial
+  `shards_api::control::Controller` with the member's `member_output` (stdout, stderr) and
+  `member_input` scopes at cursor 0, its records decoded as `shards_abi::run::managed::Record`
+  (`Event::Data` its bytes); after `restart`, dial its returned generation's anew (the newer
+  connection supersedes the older, D238); `take_output` and `take_input` are then refused.
+  kiln: re-vendor Shards and Hex; its `HexRun` is unchanged (lane s17).
+- *Literals.* None new: the zero run, the run protocol's `MAX_PAYLOAD`, `exec_admissions`'
+  bounds, step 5's frames. The channel's version 44 is the next.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16, no builds or tests on
+  this lane). `api_run::hosted::tests::an_orchestrators_run_serves_its_members_stdio_on_its_endpoint_by_generation`
+  (credits as its lane has room, each record whole, its end; its orchestrator told each
+  output's end and none of its bytes; its stdin's record one `STDIN` frame and its end an empty
+  one, its init's word its lane's end; member 0 refused `Scope`; a next generation joined and
+  served, one not started refused `Stale`); `image::wire`'s round trip of the flag, and one of
+  another value refused; `control::tests::an_orchestrated_members_streams_are_named_in_the_zero_run_by_generation`.
+- *Owed* (ROOT). The suites of shards-remote (`control::`), shards-api (`image::`, `control::`)
+  and `shards` (`api_run::`, `daemon::managed::`), clippy on the seven targets, and a real-VM
+  run of a harness's stdio over its lanes, a restart among it, on HVF, KVM and WHP; the stdio
+  lanes' cost, its threads and buffers, against the channel's (R14); the run host's budget
+  holding its stdio lanes, as the daemon's managed budget holds a run's owned streams (not
+  charged here).
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; real-VM runs owed)
 
