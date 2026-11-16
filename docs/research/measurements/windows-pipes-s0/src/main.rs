@@ -17,7 +17,13 @@
 //! - (e) vsock's pattern: bytes, then a zero-byte message, and nothing more that way, read by
 //!   `std::fs::File` in byte mode on a thread of its own (each read's result waited for two
 //!   seconds at most, a read still waiting said so): whether it reads the bytes, then
-//!   `Ok(0)`, and then writes on.
+//!   `Ok(0)`, and then writes on;
+//! - (f) (d) and (e) again, read by `std::fs::File` once its end is put in message read mode
+//!   (SetNamedPipeHandleState, PIPE_READMODE_MESSAGE), as a client could set it at its open:
+//!   whether "abc", a zero-byte message and "def" read as `Ok(3)`, `Ok(0)`, `Ok(3)`, and the
+//!   vsock pattern's zero-byte message as `Ok(0)` with the client writing on after;
+//! - (g) in that mode, what a read of a message larger than its buffer gives through std
+//!   (ReadFile's ERROR_MORE_DATA), and what of the message is left to read after it.
 //!
 //! Run as `windows-pipes-s0` (the parent); it starts itself as `windows-pipes-s0 child …`.
 
@@ -48,8 +54,8 @@ mod win {
     use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_IO_INCOMPLETE, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError,
-        HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        CloseHandle, ERROR_IO_INCOMPLETE, ERROR_MORE_DATA, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+        GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -65,7 +71,7 @@ mod win {
     use windows_sys::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE,
         PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-        PeekNamedPipe,
+        PeekNamedPipe, SetNamedPipeHandleState,
     };
     use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, OpenProcessToken};
 
@@ -387,7 +393,9 @@ mod win {
         println!("S0 parent: its child exited {code}");
         pended(&tag)?;
         half_close(&tag)?;
-        half_close_last(&tag)?;
+        half_close_last(&tag, false)?;
+        message_mode(&tag)?;
+        half_close_last(&tag, true)?;
         drop(container);
         let _ = std::fs::remove_dir_all(&records);
         Ok(())
@@ -566,19 +574,27 @@ mod win {
         Ok(())
     }
 
-    /// (e) Bytes, then a zero-byte message, and nothing more that way.
-    fn half_close_last(tag: &str) -> Result<(), String> {
+    /// (e) Bytes, then a zero-byte message, and nothing more that way; read in byte mode, or
+    /// (f) with the client's end in message read mode.
+    fn half_close_last(tag: &str, message: bool) -> Result<(), String> {
         use std::io::{Read as _, Write as _};
-        let name = format!(r"\\.\pipe\s0-last-{tag}");
+        let label = if message { "S0 msg last" } else { "S0 last" };
+        let name = format!(r"\\.\pipe\s0-last-{}-{tag}", u8::from(message));
         let server = message_server(&name)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&name)
             .map_err(|e| format!("std's open: {e}"))?;
+        if message {
+            println!(
+                "{label}: the client's end in message read mode: {:?}",
+                read_mode_message(&file)
+            );
+        }
         let mut writer = file.try_clone().map_err(|e| format!("its clone: {e}"))?;
         println!(
-            "S0 last: server writes \"abc\" {:?}, then a zero-byte message {:?}, then nothing",
+            "{label}: server writes \"abc\" {:?}, then a zero-byte message {:?}, then nothing",
             write(&server, b"abc"),
             write(&server, b"")
         );
@@ -596,26 +612,102 @@ mod win {
         });
         for i in 0..3 {
             match rx.recv_timeout(Duration::from_secs(2)) {
-                Ok(r) => println!("S0 last: File::read {i}: {r}"),
+                Ok(r) => println!("{label}: File::read {i}: {r}"),
                 Err(_) => {
-                    println!("S0 last: File::read {i}: still waiting after 2 s");
+                    println!("{label}: File::read {i}: still waiting after 2 s");
                     break;
                 }
             }
         }
         println!(
-            "S0 last: the client writes on: {:?}",
+            "{label}: the client writes on: {:?}",
             writer.write(b"up").map_err(|e| e.kind())
         );
         let mut buf = [0u8; 16];
         let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
-        println!("S0 last: the server reads it: {got:?}");
+        println!("{label}: the server reads it: {got:?}");
         // A read still waiting ends with the server's close.
         drop(server);
         while let Ok(r) = rx.recv_timeout(Duration::from_secs(2)) {
-            println!("S0 last: once the server has closed: File::read {r}");
+            println!("{label}: once the server has closed: File::read {r}");
         }
         let _ = reading.join();
+        Ok(())
+    }
+
+    /// Puts a client's end of a pipe in message read mode, as a client could at its open.
+    fn read_mode_message(file: &std::fs::File) -> Result<(), u32> {
+        let mode = PIPE_READMODE_MESSAGE;
+        // SAFETY: a pipe handle the File owns; the mode read from a local, the other two left as they are.
+        if unsafe { SetNamedPipeHandleState(file.as_raw_handle(), &raw const mode, null(), null()) } == 0 {
+            Err(last())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// (f) (d)'s messages read by `std::fs::File` in message read mode, and (g) a message larger
+    /// than its buffer among them.
+    fn message_mode(tag: &str) -> Result<(), String> {
+        use std::io::{Read as _, Write as _};
+        let long = [b'x'; 100];
+        let name = format!(r"\\.\pipe\s0-msg-{tag}");
+        let server = message_server(&name)?;
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&name)
+            .map_err(|e| format!("std's open: {e}"))?;
+        println!(
+            "S0 msg: the client's end in message read mode: {:?}",
+            read_mode_message(&file)
+        );
+        let wrote = (
+            write(&server, b"abc"),
+            write(&server, b""),
+            write(&server, b"def"),
+            write(&server, &long),
+        );
+        println!("S0 msg: server writes {wrote:?}");
+        let mut buf = [0u8; 16];
+        for i in 0..6 {
+            let r = file.read(&mut buf);
+            println!("S0 msg: File::read {i}: {}", said(r, &buf));
+        }
+        let mut rest = Vec::new();
+        let mut more = 0u32;
+        let mut refused = None;
+        while available_client(&file) > 0 {
+            match file.read(&mut buf) {
+                Ok(n) => rest.extend_from_slice(&buf[..n]),
+                Err(e) if e.raw_os_error() == Some(ERROR_MORE_DATA as i32) => more += 1,
+                Err(e) => {
+                    refused = Some((e.kind(), e.raw_os_error()));
+                    break;
+                }
+            }
+        }
+        println!(
+            "S0 msg: {} more bytes after them as Ok, {more} reads answered ERROR_MORE_DATA, {} left unread{}",
+            rest.len(),
+            available_client(&file),
+            refused
+                .map(|r| format!(", a read refused {r:?}"))
+                .unwrap_or_default()
+        );
+        println!(
+            "S0 msg: File writes on: {:?}",
+            file.write(b"up").map_err(|e| e.kind())
+        );
+        let got = read(&server, &mut buf).map(|n| String::from_utf8_lossy(&buf[..n as usize]).into_owned());
+        println!("S0 msg: the server reads it: {got:?}");
+        drop(server);
+        let r = file.read(&mut buf);
+        println!(
+            "S0 msg: once the server has closed, File::read {} and File::write {:?}",
+            said(r, &buf),
+            file.write(b"late").map_err(|e| (e.kind(), e.raw_os_error()))
+        );
         Ok(())
     }
 
