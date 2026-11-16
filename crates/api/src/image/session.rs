@@ -3042,7 +3042,7 @@ impl ImageGuest for Session {
             ),
             super::PlugSource::Volume(name) => wire::PlugFrom::Volume(name.clone()),
         };
-        let (at, read_only) = (plug.at.clone(), plug.read_only);
+        let (at, read_only, exec) = (plug.at.clone(), plug.read_only, plug.exec);
         self.plug_ask(wire::to_host::PLUG, patience, move |id| {
             wire::PlugAsk {
                 id,
@@ -3050,6 +3050,7 @@ impl ImageGuest for Session {
                 from,
                 at,
                 read_only,
+                exec,
             }
             .encode()
         })

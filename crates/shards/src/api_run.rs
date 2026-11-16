@@ -3126,10 +3126,22 @@ mod hosted {
     /// (`super::deadline`).
     pub(super) fn as_run(request: &wire::Request, ready_by: Option<u64>) -> shards_ipc::Run {
         let publish = request.publish.iter().map(binding).collect();
+        // Each as `-v HOST:AT[:MODE]`, its mode `ro` where read-only and `noexec` where its files
+        // may not be run (D279).
         let binds = request
             .shares
             .iter()
-            .map(|s| format!("{}:{}{}", s.host, s.at, if s.read_only { ":ro" } else { "" }))
+            .map(|s| {
+                let mode: Vec<&str> = [s.read_only.then_some("ro"), (!s.exec).then_some("noexec")]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if mode.is_empty() {
+                    format!("{}:{}", s.host, s.at)
+                } else {
+                    format!("{}:{}:{}", s.host, s.at, mode.join(","))
+                }
+            })
             .collect();
         // With none of its own, an empty entrypoint and a command the run never sends, as
         // `ATTEND` takes its place: the image's command is not composed in.
@@ -7887,7 +7899,7 @@ mod hosted {
         let host = source_dir(live, &ask.from, &ask.at)?;
         let mut given: Vec<Plugged> = Vec::with_capacity(ask.members.len());
         for &member in &ask.members {
-            match plug_one(live, member, &host, &ask.at, ask.read_only) {
+            match plug_one(live, member, &host, &ask.at, ask.read_only, ask.exec) {
                 Ok(plugged) => given.push(plugged),
                 Err(refused) => {
                     // Those given it first let go of it: none of theirs has used it yet, and
@@ -7944,13 +7956,15 @@ mod hosted {
     }
 
     /// Host directory `host` plugged into member `member` at `at` (D235): its own share
-    /// process, its own device on the microVM's bus, mounted in the member by init.
+    /// process, its own device on the microVM's bus, mounted in the member by init, `noexec`
+    /// where its files may not be run (`exec` false, D279).
     fn plug_one(
         live: &Live<'_>,
         member: u32,
         host: &Path,
         at: &str,
         read_only: bool,
+        exec: bool,
     ) -> Result<Plugged, (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
         let dir = shards_vmm::platform::open_dir(host)
@@ -8009,7 +8023,11 @@ mod hosted {
         };
         let flag = if read_only { "ro" } else { "rw" };
         let index = member.to_string();
-        if let Err((_, e)) = guest_device(live, &["share", &address, &tag, at, flag, "member", &index]) {
+        let mut asked: Vec<&str> = vec!["share", &address, &tag, at, flag, "member", &index];
+        if !exec {
+            asked.push("noexec");
+        }
+        if let Err((_, e)) = guest_device(live, &asked) {
             // Taken off again, its guest having found it or not.
             let _ = guest_device(live, &["unmount", &address, at, "member", &index]);
             let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
@@ -8974,6 +8992,7 @@ mod hosted {
                     from: wire::PlugFrom::Host("/tmp".into()),
                     at: "/work".into(),
                     read_only: true,
+                    exec: false,
                 }),
                 super::super::Ask::Unplug(wire::UnplugAsk {
                     id: 5,
@@ -10426,6 +10445,30 @@ mod tests {
         assert_eq!(
             (m[1].index, m[1].kind, m[1].name.as_str(), m[1].runs),
             (1, wire::MemberKind::Harness, "codex", true)
+        );
+    }
+
+    /// Each share as the run's `-v` asks it (D279): its mode `ro` where read-only and `noexec`
+    /// where its files may not be run, both, or neither.
+    #[test]
+    fn a_shares_bind_says_read_only_and_noexec() {
+        let mut r = request(Vec::new());
+        let share = |read_only, exec| wire::ShareAt {
+            host: "/h".into(),
+            at: "/w".into(),
+            read_only,
+            members: None,
+            exec,
+        };
+        r.shares = vec![
+            share(false, true),
+            share(true, true),
+            share(false, false),
+            share(true, false),
+        ];
+        assert_eq!(
+            hosted::as_run(&r, None).binds,
+            ["/h:/w", "/h:/w:ro", "/h:/w:noexec", "/h:/w:ro,noexec"]
         );
     }
 

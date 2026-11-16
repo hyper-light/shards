@@ -37268,6 +37268,61 @@ in place), and `a_members_open_connection_is_reset_as_its_reach_is_taken_back` (
 connection of a member narrowed reset, not stalled: a mode of the test guest that holds one open and
 says how it ended).
 
+### D279. A share's or a plug's files may be refused execution: `exec` per volume, allowed by default (built; real-VM run on HVF below)
+
+**Asked.** kiln's sandbox page gives each volume `{read, write, exec}` (Hex ROOT's item 4,
+2026-11-16). Shards mounted a member's volumes, those its image gives it at start (D109), those
+its orchestrator gives it as it starts (D277) and those plugged in live (D235, D271), `nosuid` and
+`nodev`, their files runnable.
+
+**Evidence** (R02):
+- Linux 7.2-rc4 (1590cf032971): include/uapi/linux/mount.h:16 `#define MS_NOEXEC 8 /* Disallow
+  program execution */` and :121 `#define MOUNT_ATTR_NOEXEC 0x00000008`; fs/exec.c:116-122
+  `path_noexec` is the mount's `MNT_NOEXEC` (or its superblock's `SB_I_NOEXEC`): per mount, so one
+  member's mount of a share can refuse what another's allows; fs/exec.c:789, an execve(2) of a file
+  there fails EACCES; mm/mmap.c:471-474, a private mapping of one asking `PROT_EXEC` fails EPERM and
+  loses `VM_MAYEXEC`. An interpreter elsewhere still reads a script there as data: `noexec` refuses
+  binaries and their libraries, not `python script.py`.
+- Podman (containers/podman a6a942f2ae0f, docs/source/markdown/options/volume.md): `[no]exec` per
+  volume, "no executables on the volume can be executed within the container"; its volumes `nosuid`
+  and `nodev` by default, exec allowed.
+- Docker (docker/docs f081e781d06d, engine/storage/bind-mounts.md and tmpfs.md): a bind mount takes
+  `readonly` and `bind-propagation`, no exec choice (its daemon refuses `-v …:noexec` as an invalid
+  mode, moby's `linuxValidMountMode`); a tmpfs takes `exec`/`noexec`.
+
+**Decided.** Each share and plug says whether its files may be run (`exec`, true by default:
+today's mounts, Podman's default); false makes every mount of it `noexec`: the run's own
+(`MS_NOEXEC`, as a CDI mount's already was, D146) and each member's copy (`MOUNT_ATTR_NOEXEC`
+beside `nosuid` and `nodev`, init's domains.rs), and a plug's in each member it is given
+(hotplug.rs). `read` is every mount's: a mount cannot be write-only, so kiln refuses `read` off,
+typed, before it asks. Considered and refused: `noexec` by default (default deny's spirit), which
+breaks every project volume's own tools (`./gradlew`, `node_modules/.bin`) that agents run today,
+unasked; a seccomp or LSM execve filter, which would stop interpreters' execs elsewhere too and
+needs a policy language.
+- *The API*: `ImageShare::exec` and `Plug::exec`; the image channel, version 41, appends each
+  share's flag to the request and the plug ask's to its ask (`ShareAt::exec`, `PlugAsk::exec`).
+- *The command line*: `-v HOST:AT:noexec` (and `exec`), Podman's word, once at most beside a
+  bind's other modes, past Docker's daemon, which refuses it: kept in the run's mode, so a run
+  started again keeps it, and said in its inspect as any mode is. `--mount` takes none, as
+  Docker's has none.
+- *The run host*: a share's bind says `noexec` in its mode; a plug's guest step names `noexec`.
+- *Init*: the volume's setup entry's flags name `noexec`; each member's copy takes it, as does a
+  plug's mount.
+
+**Tests** (light): the `-v` parser's modes (`ro,noexec` kept in the mode, `exec,noexec` refused);
+the run host's `a_shares_bind_says_read_only_and_noexec`; init's
+`a_share_refusing_execution_is_read_so`; the image channel's `each_shares_exec_rides_the_request_last`
+and the plug round trip with `exec` false. Real-VM (api_image.rs):
+`a_share_or_plug_whose_files_may_not_be_run_refuses_its_programs` (a share at `/proj` given the
+harness as it starts and a plug at `/plugs/p` once it runs, each holding the test guest: refused
+EACCES not runnable, run runnable, the same mounts without `noexec` its control).
+
+**Run on HVF** (ROOT, this Mac, 2026-11-16, branch p/volume-exec at 84ef5769b): that test passes,
+as do the share and plug tests before it (`a_project_given_its_harness_is_where_it_works`,
+`a_project_is_plugged_into_the_running_harness`, `a_share_at_a_granted_volume_reaches_the_harness`);
+shards-api's lib 277, the run host's and volumes' 78; clippy on macOS, Linux (x86_64 glibc; init and
+the test guest on aarch64 musl) and Windows x86_64. KVM and WHP are owed.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

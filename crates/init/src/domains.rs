@@ -141,6 +141,8 @@ struct Share {
     main: bool,
     /// The store's own volume, which `--chown` and `--chmod` set: never a host directory.
     own: bool,
+    /// Its files refused execution (`noexec`, D279): each domain's mount of it is `noexec`.
+    noexec: bool,
     /// The members its orchestrator gave it as they start (D277, `member=N` each, by declared
     /// index): those alone are given it, whatever a `VOLUME` would say; none, as a `VOLUME`
     /// says (D109).
@@ -181,6 +183,7 @@ fn shares_of(setup: &[Vec<u8>]) -> Vec<Share> {
             copy: flags.contains(&&b"copy"[..]),
             main,
             own: flags.contains(&&b"own"[..]),
+            noexec: flags.contains(&&b"noexec"[..]),
             members: (!members.is_empty()).then_some(members),
         });
     }
@@ -2367,7 +2370,8 @@ pub fn start(
         for (sh, at, real) in staged.iter().filter(|(sh, _, _)| given_share(d, sh)) {
             let attr = libc::MOUNT_ATTR_NOSUID
                 | libc::MOUNT_ATTR_NODEV
-                | if sh.ro { libc::MOUNT_ATTR_RDONLY } else { 0 };
+                | if sh.ro { libc::MOUNT_ATTR_RDONLY } else { 0 }
+                | if sh.noexec { libc::MOUNT_ATTR_NOEXEC } else { 0 };
             let copy =
                 copy_of(at, attr).map_err(|e| format!("{}: the volume at {}: {e}", d.label, sh.dest))?;
             volumes.push((copy.as_raw_fd(), cstr_of(real)?));
@@ -4581,6 +4585,7 @@ mod tests {
                     copy: true,
                     main: true,
                     own: true,
+                    noexec: false,
                     members: None,
                 },
                 Share {
@@ -4590,10 +4595,24 @@ mod tests {
                     copy: false,
                     main: false,
                     own: false,
+                    noexec: false,
                     members: None,
                 },
             ]
         );
+    }
+
+    /// A share whose files may not be run (D279): `noexec` among its flags, which each domain's
+    /// mount of it takes.
+    #[test]
+    fn a_share_refusing_execution_is_read_so() {
+        let noexec = |flags: &str| {
+            shares_of(&[[b"volume=shards0\0/proj\0".as_slice(), flags.as_bytes(), b"\0"].concat()])
+                .first()
+                .map(|s| s.noexec)
+        };
+        assert_eq!(noexec("domains,noexec"), Some(true));
+        assert_eq!(noexec("domains,ro"), Some(false));
     }
 
     /// A share its orchestrator gave members as they start (D277): theirs alone, by declared
@@ -4622,6 +4641,7 @@ mod tests {
             copy: false,
             main: true,
             own: false,
+            noexec: false,
             members,
         };
         let denied = vec![VolumeRule {

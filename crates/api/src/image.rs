@@ -200,6 +200,10 @@ pub struct ImageShare {
     pub host: PathBuf,
     pub at: String,
     pub read_only: bool,
+    /// Whether its files may be run from it (D279): where not, each mount of it is `noexec`,
+    /// the run's own and each member's, so a program or library there is refused (EACCES);
+    /// an interpreter elsewhere still reads a script there as data.
+    pub exec: bool,
     /// The members given it as they start, at `at` in each one's own root before its command
     /// runs, so that one may work in it from its first instruction (D277): every member that
     /// runs, or those named, each one the image declares that runs; none, the run's own root
@@ -376,6 +380,9 @@ pub struct Plug {
     /// share's top-level directory, and [`ImageSpec::plug_roots`]).
     pub at: String,
     pub read_only: bool,
+    /// Whether its files may be run from it (D279): where not, each member's mount of it is
+    /// `noexec`, as an [`ImageShare`]'s is.
+    pub exec: bool,
 }
 
 /// How a member ended.
@@ -1325,6 +1332,7 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
             at: s.at.clone(),
             read_only: s.read_only,
             members,
+            exec: s.exec,
         });
     }
     // The instant it becomes is nanoseconds since the Unix epoch in a u64, as `ready-by=`
@@ -1509,6 +1517,7 @@ mod tests {
                 host: std::env::current_dir().unwrap(),
                 at: "/work".into(),
                 read_only: true,
+                exec: true,
                 members: None,
             }],
             nesting: false,

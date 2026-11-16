@@ -386,6 +386,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         host: shared.to_path_buf(),
         at: "/work".into(),
         read_only: true,
+        exec: true,
         members: None,
     }];
     let guest = boot(&home, &s);
@@ -429,18 +430,21 @@ fn a_project_given_its_harness_is_where_it_works() {
             host: proj.clone(),
             at: at.clone(),
             read_only: false,
+            exec: true,
             members: to_codex.clone(),
         },
         ImageShare {
             host: plugin.to_path_buf(),
             at: "/plugins/p".into(),
             read_only: true,
+            exec: true,
             members: to_codex,
         },
         ImageShare {
             host: person.to_path_buf(),
             at: "/home/stub".into(),
             read_only: false,
+            exec: true,
             members: Some(PlugFor::Members(vec![codex()])),
         },
     ];
@@ -504,6 +508,7 @@ fn a_share_given_no_member_is_the_runs_alone() {
         host: real,
         at,
         read_only: false,
+        exec: true,
         members: None,
     }];
     let guest = boot(&home, &s);
@@ -536,6 +541,7 @@ fn a_share_given_no_member_of_its_image_is_refused() {
             host: real.clone(),
             at: at.into(),
             read_only: false,
+            exec: true,
             members: Some(PlugFor::Members(vec![member])),
         }];
         booted(&ImageShards::new(), &s).map(|_| ())
@@ -653,6 +659,72 @@ fn a_published_ingress_port_reaches_its_member() {
     guest.stop().unwrap();
 }
 
+/// D279: a share or a plug whose files may not be run refuses its programs, and one whose may
+/// runs them. The harness is given a share at `/proj` as it starts (D277) and a plug at
+/// `/plugs/p` once it runs (D271), each holding the test guest; its `run-when` runs each once
+/// it is there. Not runnable, exec(2) refuses both (EACCES, 13: the mounts are `noexec`);
+/// runnable, both run and exit 0.
+#[test]
+fn a_share_or_plug_whose_files_may_not_be_run_refuses_its_programs() {
+    if cannot_run_vms() {
+        return;
+    }
+    for exec in [false, true] {
+        let home = TempDir::new("api-exec-home");
+        let (shared, plugged) = (TempDir::new("api-exec-share"), TempDir::new("api-exec-plug"));
+        for dir in [&shared, &plugged] {
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            std::fs::write(dir.join("bin/tg"), std::fs::read(common::test_guest()).unwrap()).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(dir.join("bin/tg"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        build(
+            &home,
+            "api-exec:1",
+            &["run-when", "/proj/bin/tg", "/plugs/p/bin/tg"],
+            "",
+        );
+        let mut s = spec(&home, "api-exec:1");
+        s.shares = vec![ImageShare {
+            host: shared.to_path_buf(),
+            at: "/proj".into(),
+            read_only: true,
+            exec,
+            members: Some(PlugFor::Members(vec![codex()])),
+        }];
+        s.plug_roots = vec!["/plugs".into()];
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: None,
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        let guest = boot(&home, &s);
+        let said = if exec { "ran 0\n" } else { "run errno 13\n" };
+        let stdout = BufReader::new(guest.take_output(&codex(), 0, Channel::Stdout).unwrap());
+        let (stdout, line) = line_within(&*guest, stdout);
+        assert_eq!(line, said, "its share's program, exec {exec}");
+        let plug = Plug {
+            source: PlugSource::Host(plugged.to_path_buf()),
+            to: PlugFor::Members(vec![codex()]),
+            at: "/plugs/p".into(),
+            read_only: true,
+            exec,
+        };
+        ask(&*guest, |g| g.plug(&plug, Duration::from_secs(60))).unwrap();
+        let (_, line) = line_within(&*guest, stdout);
+        assert_eq!(line, said, "its plug's program, exec {exec}");
+        guest.stop().unwrap();
+    }
+}
+
 /// A project plugged into the running harness through its run's own channel (D235), as
 /// an orchestrator plugs one: refused outside the run's plug roots, and for a member that
 /// runs nothing, each by its kind; then at its host path, read and written by the harness,
@@ -681,6 +753,7 @@ fn a_project_is_plugged_into_the_running_harness() {
         host: bound.clone(),
         at: "/bound".into(),
         read_only: true,
+        exec: true,
         members: None,
     }];
     let guest = booted(&ImageShards::new(), &s).unwrap();
@@ -689,6 +762,7 @@ fn a_project_is_plugged_into_the_running_harness() {
         to: PlugFor::Members(vec![to.clone()]),
         at: at.into(),
         read_only: false,
+        exec: true,
     };
     match ask(&*guest, |g| {
         g.plug(&plug(&codex(), "/outside/proj"), Duration::MAX)
@@ -1007,6 +1081,7 @@ fn a_paused_runs_guest_takes_its_pause_for_its_hosts_on_kvm_x86_64() {
         host: out.to_path_buf(),
         at: "/out".into(),
         read_only: false,
+        exec: true,
         members: None,
     }];
     let guest = boot(&home, &s);
@@ -3943,6 +4018,7 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
         to,
         at: at.into(),
         read_only,
+        exec: true,
     };
     match ask(&*guest, |g| {
         g.plug(

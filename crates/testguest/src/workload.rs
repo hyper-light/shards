@@ -490,6 +490,7 @@ pub fn main() -> ! {
         "addrs" => addrs(),
         "neighbors" => neighbors(),
         "spawn" => spawn(args.get(1..).unwrap_or_default()),
+        "run-when" => run_when(args.get(1..).unwrap_or_default()),
         "spawns" => spawns(arg(1).parse().unwrap_or(1), args.get(2..).unwrap_or_default()),
         "tcp" => tcp(arg(1)),
         "reach-each" => reach_each(arg(1)),
@@ -2727,6 +2728,30 @@ fn spawn(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Runs each program of `paths`, in order, once it is there (D279's test: a share's, given its
+/// member as it starts, then a plug's, once plugged), as the test guest's own `exit 0`, saying
+/// how each went: `ran CODE`, or `run errno E` where exec(2) refused it (EACCES, 13, from a
+/// `noexec` mount); `never there PATH` past a minute without it.
+fn run_when(paths: &[String]) -> i32 {
+    for path in paths {
+        let mut looks = 0u32;
+        while std::fs::symlink_metadata(path).is_err() {
+            looks += 1;
+            if looks > 3000 {
+                let _ = writeln!(io::stdout(), "never there {path}");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let said = match std::process::Command::new(path).args(["exit", "0"]).status() {
+            Ok(status) => format!("ran {}", status.code().unwrap_or(-1)),
+            Err(e) => format!("run errno {}", e.raw_os_error().unwrap_or(0)),
+        };
+        let _ = writeln!(io::stdout(), "{said}");
+    }
+    0
 }
 
 /// Runs `/bin/testguest ARGS I` as a child `n` times, one after another, I its round, each

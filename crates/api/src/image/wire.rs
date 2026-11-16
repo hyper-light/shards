@@ -105,8 +105,11 @@ pub use shards_abi::run::nesting::Ready;
 /// member apart in its guest refuses the run as it is asked, rather than leaving a member the
 /// reach its orchestrator took back; 40, components swapped into a running microVM (D270 slice
 /// 4): a member's component at its path asked by digest or its image's back ([`to_host::SWAP`],
-/// [`SwapAsk`], [`SwapAnswer`]), so that a side that swaps none refuses the run as it is asked.
-pub const VERSION: u8 = 40;
+/// [`SwapAsk`], [`SwapAnswer`]), so that a side that swaps none refuses the run as it is asked;
+/// 41, whether a share's or a plug's files may be run from it (D279: [`ShareAt::exec`],
+/// [`PlugAsk::exec`]), so that a side that mounts none `noexec` refuses the run as it is asked,
+/// rather than running what its orchestrator said may not be run.
+pub const VERSION: u8 = 41;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -593,6 +596,9 @@ pub struct ShareAt {
     /// command runs (D277); none, the run's own root alone (a member's default deny, D59).
     /// Appended in version 37.
     pub members: Option<ShareTo>,
+    /// Whether its files may be run from it: where not, each mount of it is `noexec` (D279).
+    /// Appended in version 41.
+    pub exec: bool,
 }
 
 /// Whom a share is given to as they start, beside the run's own root (D277): every member of
@@ -1080,6 +1086,9 @@ pub struct PlugAsk {
     /// Absolute: where its members see it.
     pub at: String,
     pub read_only: bool,
+    /// Whether its files may be run from it: where not, each member's mount of it is
+    /// `noexec` (D279). Appended in version 41.
+    pub exec: bool,
 }
 
 /// What a plug gives its members (version 35, D271).
@@ -2352,6 +2361,11 @@ impl Request {
             w.text(&c.name)?;
             w.reach_past(&c.reach)?;
         }
+        // Whether each share's files may be run from it, in the shares' order, appended in
+        // version 41 (D279).
+        for share in &self.shares {
+            w.u8(u8::from(share.exec));
+        }
         w.done()
     }
 
@@ -2427,6 +2441,7 @@ impl Request {
                 at,
                 read_only,
                 members: None,
+                exec: true,
             });
         }
         let nesting = r.flag()?;
@@ -2607,6 +2622,10 @@ impl Request {
                 name,
                 reach: r.reach_past()?,
             });
+        }
+        // Whether each share's files may be run from it, appended in version 41 (D279).
+        for share in &mut shares {
+            share.exec = r.flag()?;
         }
         r.end()?;
         Ok(Request {
@@ -2902,6 +2921,8 @@ impl PlugAsk {
         }
         w.text(&self.at)?;
         w.u8(u8::from(self.read_only));
+        // Appended in version 41 (D279).
+        w.u8(u8::from(self.exec));
         w.done()
     }
 
@@ -2937,6 +2958,7 @@ impl PlugAsk {
             from,
             at: r.text()?,
             read_only: r.flag()?,
+            exec: r.flag()?,
         };
         r.end()?;
         Ok(ask)
@@ -4311,6 +4333,7 @@ mod tests {
                 from,
                 at: "/Users/u/proj".into(),
                 read_only: true,
+                exec: false,
             };
             let bytes = ask.encode().unwrap();
             assert_eq!(PlugAsk::decode(&bytes).unwrap(), ask);
@@ -4330,6 +4353,7 @@ mod tests {
                 from: PlugFrom::Host("/h".into()),
                 at: "/Users/u/proj".into(),
                 read_only: false,
+                exec: true,
             }
             .encode()
             .unwrap();
@@ -4828,6 +4852,7 @@ mod tests {
                 at: "/work".into(),
                 read_only: false,
                 members: None,
+                exec: true,
             }],
             nesting: false,
             ready_by: None,
@@ -4928,13 +4953,14 @@ mod tests {
         // ... the control ask's absence (version 15), the GPUs' count (version 16), the
         // member's arguments' count (version 18), the sign-ins' count (version 24), the
         // member's MCP bridge (version 25), the upstream roots' count (version 26), the GPU
-        // report's flag (version 29), the plug roots' count (version 35) and the share's members
-        // (none, version 37) last.
+        // report's flag (version 29), the plug roots' count (version 35), the share's members
+        // (none, version 37), the members' ceilings' count (version 39) and the share's exec flag
+        // (version 41) last.
         assert_eq!(
-            asked.get(asked.len() - 47..).unwrap(),
+            asked.get(asked.len() - 48..).unwrap(),
             [
                 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1
             ],
             "appended: the grant's flag, the deadline's, the destinations kept (all), the one \
              member's working directory (none) and its input, the credential grants' count \
@@ -4944,7 +4970,7 @@ mod tests {
              the sign-ins' count (zero, version 24), then its MCP bridge (none, version 25), then \
              the upstream roots' count (zero, version 26), then the GPU report's flag (none, \
              version 29), then the plug roots' count (zero, version 35), then the members' \
-             ceilings' count (zero, version 39)"
+             ceilings' count (zero, version 39), then the share's exec flag (yes, version 41)"
         );
         // Destinations kept by name, the host itself among them (D236), and none.
         for destinations in [
@@ -5322,10 +5348,10 @@ mod tests {
         // One member, so its input is the thirtieth byte from the end (the count's four, its
         // terminal's one, the reach's flag, the control ask's, the GPUs' count, its arguments'
         // count, the sign-ins' count, its MCP bridge, the upstream roots' count, the GPU
-        // report's flag, the plug roots' count, the share's members and the members' ceilings'
-        // count, version 39's, follow it).
+        // report's flag, the plug roots' count, the share's members, the members' ceilings'
+        // count, version 39's, and the share's exec flag, version 41's, follow it).
         let mut bad = request().encode().unwrap();
-        let at = bad.len() - 35;
+        let at = bad.len() - 36;
         assert_eq!(
             bad[at], 1,
             "the member's input flag precedes the credentials' count"
@@ -5353,6 +5379,7 @@ mod tests {
                 at: "/home/u/proj".into(),
                 read_only: false,
                 members,
+                exec: true,
             }];
             r
         };
@@ -5380,15 +5407,43 @@ mod tests {
             let bytes = with(refused).encode().unwrap();
             assert_eq!(Request::decode(&bytes), Err(WireError::ShareMembers));
         }
-        // The share's members' tag, before the members' ceilings' count (version 39).
+        // The share's members' tag, before the members' ceilings' count (version 39) and the
+        // share's exec flag (version 41).
         let mut bytes = with(None).encode().unwrap();
-        let at = bytes.len() - 1 - 4;
+        let at = bytes.len() - 1 - 4 - 1;
         bytes[at] = 3;
         assert_eq!(
             Request::decode(&bytes),
             Err(WireError::Tag {
                 what: "a share's members",
                 tag: 3
+            })
+        );
+    }
+
+    /// Whether each share's files may be run from it (version 41, D279): its flag, in the
+    /// shares' order, the request's last bytes; a flag of another value refused by type.
+    #[test]
+    fn each_shares_exec_rides_the_request_last() {
+        let mut r = request();
+        let share = r.shares.first().cloned().unwrap();
+        r.shares = vec![
+            ShareAt {
+                exec: false,
+                ..share.clone()
+            },
+            ShareAt { exec: true, ..share },
+        ];
+        let bytes = r.encode().unwrap();
+        assert_eq!(bytes.get(bytes.len() - 2..), Some(&[0, 1][..]));
+        assert_eq!(Request::decode(&bytes), Ok(r));
+        let mut bad = bytes.clone();
+        *bad.last_mut().unwrap() = 2;
+        assert_eq!(
+            Request::decode(&bad),
+            Err(WireError::Tag {
+                what: "a flag",
+                tag: 2
             })
         );
     }
@@ -5478,9 +5533,9 @@ mod tests {
         // ... then the control ask's absence (version 15), the GPUs' count (version 16), the
         // one member's arguments' count (version 18), the sign-ins' count (version 24), its MCP
         // bridge (version 25), the upstream roots' count (version 26), the GPU report's flag
-        // (version 29), the plug roots' count (version 35), the share's members (version 37) and
-        // the members' ceilings' count (version 39).
-        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1 + 4);
+        // (version 29), the plug roots' count (version 35), the share's members (version 37), the
+        // members' ceilings' count (version 39) and the share's exec flag (version 41).
+        let at = kindless.len() - (1 + 4 + "helper".len() + 4 + 1 + 4 + 4 + 4 + 1 + 4 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(kindless[at], MemberKind::Agent as u8);
         kindless[at] = 2;
         assert_eq!(
@@ -5689,9 +5744,10 @@ mod tests {
         // (version 15), the GPUs' count (version 16), its arguments' count (version 18), the
         // sign-ins' count (version 24), its MCP bridge (version 25), the upstream roots' count
         // (version 26), the GPU report's flag (version 29), the plug roots' count (version 35)
-        // the share's members (version 37) and the members' ceilings' count (version 39): no flag.
+        // the share's members (version 37), the members' ceilings' count (version 39) and the
+        // share's exec flag (version 41): no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 35;
+        let at = flag.len() - 36;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
@@ -5704,9 +5760,10 @@ mod tests {
         // credential grants' count, the member's terminal, the members' reach, the control ask,
         // the GPUs' count, the member's arguments' count, the sign-ins' count, its MCP bridge,
         // the upstream roots' count, the GPU report's flag, the plug roots' count, the share's
-        // members and the members' ceilings' count (version 39): no list of version 3's and on.
+        // members, the members' ceilings' count (version 39) and the share's exec flag (version
+        // 41): no list of version 3's and on.
         let mut list = request().encode().unwrap();
-        let at = list.len() - 37;
+        let at = list.len() - 38;
         list[at] = 2;
         assert_eq!(
             Request::decode(&list),
@@ -6568,8 +6625,8 @@ mod tests {
         // count (version 35) and the share's members (version 37), made one D232's grammar
         // refuses.
         let mut unnamed = bytes.clone();
-        // ... and the members' ceilings' count (version 39).
-        let at = unnamed.len() - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
+        // ... the members' ceilings' count (version 39) and the share's exec flag (version 41).
+        let at = unnamed.len() - 1 - 1 - 4 - 1 - 4 - 1 - 4 - 4 - 4 - "metal:00000001000002a1".len();
         assert_eq!(unnamed[at], b'm');
         unnamed[at] = b'x';
         assert_eq!(Request::decode(&unnamed), Err(WireError::Gpu));
@@ -6681,11 +6738,12 @@ mod tests {
         }
         // The second sign-in's CLI, its code after its name, made one no version has; the one
         // member's MCP bridge's flag (version 25), the upstream roots' count (version 26), the
-        // GPU report's flag (version 29), the plug roots' count (version 35) and the share's
-        // members (version 37) after it.
+        // GPU report's flag (version 29), the plug roots' count (version 35), the share's
+        // members (version 37), the members' ceilings' count (version 39) and the share's exec
+        // flag (version 41) after it.
         let mut cli = bytes.clone();
         let at = cli.len()
-            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1 + 4);
+            - (4 + "chatgpt.com".len() + 4 + "api.openai.com".len() + 4 + 1 + 1 + 1 + 4 + 1 + 4 + 1 + 4 + 1);
         assert_eq!(cli[at], Cli::Codex.code());
         cli[at] = 9;
         assert!(matches!(Request::decode(&cli), Err(WireError::Tag { .. })));

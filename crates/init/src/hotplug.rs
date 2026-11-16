@@ -121,6 +121,8 @@ const EXT4_IOC_RESIZE_FS: libc::c_ulong = 0x4008_6610;
 const MOUNT_ATTR_RDONLY: u64 = 0x1;
 const MOUNT_ATTR_NOSUID: u64 = 0x2;
 const MOUNT_ATTR_NODEV: u64 = 0x4;
+/// include/uapi/linux/mount.h:121 (Linux 7.2-rc4): `/* Disallow program execution */`.
+const MOUNT_ATTR_NOEXEC: u64 = 0x8;
 const MOVE_MOUNT_F_EMPTY_PATH: u32 = 0x4;
 
 /// Does what `args` ask in the microVM whose workload is process `workload` and whose
@@ -149,6 +151,12 @@ pub fn device(
         }
         ["share", addr, tag, dst, rest @ ..] => {
             let read_only = rest.contains(&"ro");
+            // Its files refused execution (D279): the mount `noexec` (fs/exec.c `path_noexec`).
+            let noexec = if rest.contains(&"noexec") {
+                MOUNT_ATTR_NOEXEC
+            } else {
+                0
+            };
             // A domain's beneath one of the run's plug roots (D235), refused before its
             // function is taken.
             let member = member_of(rest, domains)?;
@@ -169,14 +177,19 @@ pub fn device(
             // the host's notices touch through a mount of their own (D235, notice.rs), which
             // a read-only file system would refuse; its server refuses the guest's writes.
             let (Some((id, cgroup)), Some(parts)) = (member, parts) else {
-                let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 };
+                let attrs = if read_only { MOUNT_ATTR_RDONLY } else { 0 } | noexec;
                 let mounted = fs_mount(c"virtiofs", &tag, false, attrs)?;
                 return attach(mounted, workload, dst);
             };
             // A domain's, as a volume given it is (D109): `nosuid` and `nodev`, and the
             // files the host made there its user's, which it is told while the mount is
             // still writable, as a read-only mount takes no attribute.
-            let mounted = fs_mount(c"virtiofs", &tag, false, MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV)?;
+            let mounted = fs_mount(
+                c"virtiofs",
+                &tag,
+                false,
+                MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV | noexec,
+            )?;
             crate::setup::name_owner_as(&format!("/proc/self/fd/{}", mounted.as_raw_fd()), id, id);
             if read_only {
                 set_attrs(&mounted, MOUNT_ATTR_RDONLY)?;
