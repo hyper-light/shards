@@ -181,8 +181,9 @@ class Runs:
     def __init__(self, units, windows, width):
         unit = b"".join(b"[" + b"".join(re.escape(bytes([c])) for c in sorted(u)) + b"]" for u in units)
         self.start = re.compile(b"(?:" + unit + b"){%d}" % RUN)
-        page_units = max(1, mmap.PAGESIZE // len(units))
-        self.page = page_units * len(units)
+        self.units = len(units)
+        page_units = max(1, mmap.PAGESIZE // self.units)
+        self.page = page_units * self.units
         self.more = re.compile(b"(?:" + unit + b"){0,%d}" % page_units)
         self.windows = windows
         self.width = width
@@ -192,7 +193,9 @@ class Runs:
 
     def regions(self, buf, lo, hi):
         """Each (start, end) of a run in `buf[lo:hi]`, in order, as one unbounded match would
-        span it."""
+        span it. A run that reaches `hi` with less than a unit left takes what is left too: a
+        UTF-16LE run paired from the parity that leaves its last byte alone at `hi` (a file's
+        end, a range read from beside a hole) would otherwise lose the window ending there."""
         pos = lo
         while True:
             found = self.start.search(buf, pos, hi)
@@ -205,6 +208,8 @@ class Runs:
                 end = step
                 if not whole:
                     break
+            if hi - end < self.units:
+                end = hi
             yield start, end
             pos = end
 
