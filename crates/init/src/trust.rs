@@ -213,7 +213,7 @@ mod tests {
             connects: true,
             accepts: false,
             unix: Vec::new(),
-            granted: crate::egress::Granted::default(),
+            granted: crate::netplan::Granted::default(),
         }
     }
 

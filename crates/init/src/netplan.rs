@@ -18,6 +18,8 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use shards_abi::run::egress::Grants;
+
 use crate::json::Value;
 
 /// `/etc/hosts`'s first lines, as Docker writes them for every container (moby
@@ -75,6 +77,25 @@ pub type Egress = (u8, u16, u16);
 /// the same unless an `EXPOSE` maps one to the other (`<port>:<member_port>`, D122).
 pub type Ingress = (Egress, Egress);
 
+/// A member's grants past the microVM (D278), as its link holds them on every target: what
+/// its image grants it, the most its host may give it past that, and what its host gives it
+/// as they stand, whole, where it has given any.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Granted {
+    pub image: Grants,
+    pub ceiling: Grants,
+    pub given: Option<Grants>,
+}
+
+impl Granted {
+    /// What it reaches: what its host gave it, whole, in place of its image's grants, which
+    /// it reaches until its host gives it any; so its host takes back what its image grants
+    /// as it gives what its ceiling lets it.
+    pub fn reach(&self) -> Grants {
+        self.given.clone().unwrap_or_else(|| self.image.clone())
+    }
+}
+
 /// A domain's link: its addresses, the names it resolves (`/etc/hosts`), the ports it may
 /// reach past the microVM, and whether it opens connections and is connected to, which its
 /// Landlock rules follow.
@@ -112,7 +133,7 @@ pub struct Link {
     pub unix: Vec<(String, String, bool)>,
     /// Its grants past the microVM apart (D278): its image's, the most its host may give it
     /// past them, and its own its host gives it, which the fields above hold together.
-    pub granted: crate::egress::Granted,
+    pub granted: Granted,
 }
 
 /// Whether `link` joins a network that is not internal: one whose members may be let past

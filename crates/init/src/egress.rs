@@ -16,25 +16,7 @@ use std::sync::Mutex;
 
 use shards_abi::run::egress::{self as abi, Grants};
 
-use crate::netplan::{Egress, Link};
-
-/// A member's grants past the microVM: what its image grants it, the most its host may give
-/// it past that, and what its host gives it as they stand, whole, where it has given any.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Granted {
-    pub image: Grants,
-    pub ceiling: Grants,
-    pub given: Option<Grants>,
-}
-
-impl Granted {
-    /// What it reaches: what its host gave it, whole, in place of its image's grants, which
-    /// it reaches until its host gives it any; so its host takes back what its image grants
-    /// as it gives what its ceiling lets it.
-    pub fn reach(&self) -> Grants {
-        self.given.clone().unwrap_or_else(|| self.image.clone())
-    }
-}
+use crate::netplan::{Egress, Granted, Link};
 
 /// Whether `ranges` cover every port of `range`, of its protocol.
 pub fn covers(ranges: &[Egress], (proto, lo, hi): Egress) -> bool {
