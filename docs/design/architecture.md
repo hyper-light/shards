@@ -5337,6 +5337,8 @@ directive makes.
 [--endpoint=URL] [--region=R] [--path-style] [--version-id=V] [--credentials=aws-default]
 <name> FROM <source>`.
 - An http(s) source needs `--checksum`: the content behind a URL changes without notice.
+  Bytes that hash to another are refused, `digest mismatch GOT: WANT`
+  (`a_directives_source_serving_other_bytes_than_its_pin_is_refused`).
 - An `s3://` source needs `--checksum`, `--version-id`, or both. A version is immutable in
   S3; the bytes are hashed either way.
 - `--endpoint`, `--region`, `--path-style`, `--version-id` and `--credentials` go only with

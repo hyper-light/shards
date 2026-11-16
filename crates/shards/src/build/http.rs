@@ -1230,6 +1230,33 @@ mod tests {
         assert_eq!(refused.unwrap_err(), "invalid response status 401");
     }
 
+    /// An Agentfile directive's http(s) source is pinned by its checksum (D54, P4.2): bytes that
+    /// hash to another are refused in BuildKit's words, naming both digests; the bytes the pin
+    /// names are fetched.
+    #[test]
+    fn a_directives_source_serving_other_bytes_than_its_pin_is_refused() {
+        let (server, _) = serve(|_| ("HTTP/1.1 200 OK".into(), b"agent v2".to_vec()));
+        let url = format!("http://127.0.0.1:{server}/a.tgz");
+        let directive = std::collections::BTreeMap::from([(b"shards.grant".to_vec(), Vec::new())]);
+        let pinned = |sum: String| Source::Url {
+            checksum: Some(sum),
+            reach: Reach::of(&url, &directive, &secrets(&[])).unwrap(),
+            url: url.clone(),
+        };
+        let digest = |b: &[u8]| format!("sha256:{}", super::super::sha256(b).hex());
+        let (refused, _d1) = fetched(pinned(digest(b"agent v1")));
+        assert_eq!(
+            refused.unwrap_err(),
+            format!(
+                "digest mismatch {}: {}",
+                digest(b"agent v2"),
+                digest(b"agent v1")
+            )
+        );
+        let (got, _d2) = fetched(pinned(digest(b"agent v2")));
+        assert_eq!(got.unwrap().digest.to_string(), digest(b"agent v2"));
+    }
+
     /// The secret's header goes with the fetch and its redirects within its host's domain,
     /// in place of the URL's own credentials; once a redirect leaves the domain, it goes
     /// with none after it, as Go's client sends it.
