@@ -87,6 +87,45 @@ class Planted:
 # Unaligned, as a value lies in a guest's memory wherever its allocator put it.
 AT = (3 << 16) + 5
 
+# winioctl.h's CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 49, METHOD_BUFFERED, FILE_SPECIAL_ACCESS).
+FSCTL_SET_SPARSE = 0x900C4
+
+
+def sparse(f):
+    """`f`, open to write, made to keep what is never written to it as holes, as a save's files
+    are (snapshot::prepare): NTFS takes every cluster up to a file's end as it is extended
+    unless the file is sparse (FSCTL_SET_SPARSE; PM M349). A Unix file system keeps them so."""
+    if os.name != "nt":
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    returned = wintypes.DWORD()
+    if not scan.ioctl()(msvcrt.get_osfhandle(f.fileno()), FSCTL_SET_SPARSE, None, 0, None, 0, ctypes.byref(returned), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def held(path):
+    """The bytes `path`'s file system holds allocated for it, asked apart from the scan's
+    own ranges: st_blocks, in 512-byte units on Linux and macOS (their stat(2)); on Windows, a
+    sparse file's size on its volume (GetCompressedFileSizeW)."""
+    if os.name != "nt":
+        return os.stat(path).st_blocks * 512
+    import ctypes
+    from ctypes import wintypes
+
+    size = ctypes.WinDLL("kernel32", use_last_error=True).GetCompressedFileSizeW
+    size.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    size.restype = wintypes.DWORD
+    high = wintypes.DWORD()
+    ctypes.set_last_error(0)
+    low = size(path, ctypes.byref(high))
+    # fileapi.h's INVALID_FILE_SIZE, an error only where the call sets one.
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise ctypes.WinError(ctypes.get_last_error())
+    return high.value << 32 | low
+
 
 def runs_image(path, size):
     """A memory image of `size` bytes (4 MiB or more) at `path`, full of long runs of ACCESS's
@@ -254,31 +293,68 @@ class LeakTest(unittest.TestCase):
 
     def test_a_sparse_files_holes_are_not_read_and_what_lies_against_them_is_found(self):
         """A save's memory and swap are sparse files as long as the host's memory, mostly
-        holes (CI's x86_64 runners: two scans of a save took 28.6 minutes). Do: plant, each in
-        a sparse 64 MiB file of its own (APFS, macOS 26.4, allocates a hole shorter than
-        16 MiB, here between two writes), ACCESS
-        ending where its file's data ends, and REFRESH's UTF-16LE ending a byte short of it,
-        its last unit's zero the hole's first byte. Expect: both found where a read of the whole
-        files finds them, and a page or so read of each."""
+        holes (CI's x86_64 runners: two scans of a save took 28.6 minutes; on WHP, where the
+        scan read every hole, CI's step ended it first). Do: plant, twice in a sparse 64 MiB
+        file of its own, 32 MiB apart so that a hole parts them (APFS, macOS 26.4, allocates a
+        hole shorter than 16 MiB between two writes), and the file's data asked for range by
+        range: ACCESS ending where a range's data ends, and REFRESH's UTF-16LE ending a byte
+        short of it, its last unit's zero the first byte of the hole after it (the second at the
+        file's end). Expect: each found where a read of the whole files finds it; of each file,
+        which holds a hole, no more read than its file system holds allocated and what a
+        finding can take beside each range."""
         p = Planted()
         size, page = 64 << 20, mmap.PAGESIZE
+        ends = ((32 << 20) + page, size)
         whole = []
         index = scan.Index(scan.documents([p.secrets]), [])
+        most = 0
         for name, value in (("memory", ACCESS.encode()), ("swap", REFRESH.encode("utf-16-le")[:-1])):
             path = os.path.join(p.saved, name)
+            # Lengthened by the last write alone: on Windows a file lengthened by truncate holds
+            # all of its length, sparse or not (jupiter, CPython 3.14.8: 64 MiB held whole after
+            # 4.64 s), where a write past the end leaves a hole (65536 bytes held).
             with open(path, "wb") as f:
-                f.truncate(size)
-                f.seek((32 << 20) + page - len(value))
-                f.write(value)
+                sparse(f)
+                for end in ends:
+                    f.seek(end - len(value))
+                    f.write(value)
+                f.flush()
+                os.fsync(f.fileno())
+            self.assertLess(held(path), size, "%s holds no hole" % name)
+            most += held(path) + len(ends) * 2 * index.zeros()
             with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
                 whole += [(name, *found) for found in scan.leaks(buf, index)]
-        self.assertEqual(len(whole), 2, whole)
+        self.assertEqual(len(whole), 2 * len(ends), whole)
         code, said = p.scan()
         self.assertEqual(code, 3, said)
         for name, offset, length, label in whole:
             self.assertIn("%s offset %d length %d: a run of %s" % (name, offset, length, label), said)
         read = int(re.search(r"\(%d bytes, (\d+) read\)" % (2 * size), said).group(1))
-        self.assertLessEqual(read, 2 * (2 * page + 2 * index.zeros()), said)
+        self.assertLessEqual(read, most, said)
+
+    def test_data_ranges_that_touch_are_read_as_one(self):
+        """Windows' allocated ranges (FSCTL_QUERY_ALLOCATED_RANGES) are not said to come
+        joined where two touch, and a run across where they touch lies in neither alone. Do:
+        plant ACCESS across the middle of an image whose file system is told to hold it as two
+        ranges that touch there. Expect: ACCESS found once, where a read of the whole file
+        finds it."""
+        p = Planted()
+        half = 1 << 19
+        path = p.image("memory", ACCESS.encode(), half - len(ACCESS) // 2)
+        index = scan.Index(scan.documents([p.secrets]), [])
+        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
+            whole = scan.leaks(buf, index)
+        self.assertEqual(len(whole), 1, whole)
+        told = scan.data
+        scan.data = lambda f, size: [(0, half), (half, size)]
+        try:
+            code, said = p.scan()
+        finally:
+            scan.data = told
+        self.assertEqual(code, 3, said)
+        self.assertEqual(said.count("FOUND"), 1, said)
+        offset, length, label = whole[0]
+        self.assertIn("memory offset %d length %d: a run of %s" % (offset, length, label), said)
 
     def test_a_secret_holding_nul_has_its_files_holes_read(self):
         """A run of a secret's own bytes can lie in zeros where it holds NUL: there, holes are

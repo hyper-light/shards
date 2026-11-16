@@ -1,10 +1,15 @@
-"""Before and after of a scan.py on scan_test.py's runs_image: one scan's time, heap peak and
-resident peak, each in a process of its own, and a digest of what it said.
+"""Before and after of a scan.py on scan_test.py's runs_image, or on a sparse file: one scan's
+time, heap peak, resident peak and the bytes it read, each in a process of its own, and a
+digest of what it said.
 
     python3 -I measure.py image PATH SIZE
+    python3 -I measure.py sparse PATH SIZE
     python3 -I measure.py scan SCAN_PY PATH time|heap
     python3 -I measure.py prefixes SCAN_PY BYTES
 
+`sparse` makes a file shaped as a save's memory is (snapshot::prepare): SIZE bytes, sparse
+(scan_test.sparse), holding ACCESS at its middle and REFRESH's UTF-16LE at its end alone, the
+end's write lengthening it (scan_test's sparse test says why no truncate).
 `time` runs the scan as it runs; `heap` under tracemalloc, which slows it, for its traced peak.
 The resident peak (getrusage, where the host has it) counts the image's mapped pages too.
 `prefixes` times the credential shapes over BYTES of "eyJ" repeated, a run of JWT prefixes.
@@ -33,6 +38,18 @@ def main(argv):
         planted = test.runs_image(argv[1], int(argv[2]))
         print("image %s: %d bytes, %d values planted" % (argv[1], int(argv[2]), len(planted)))
         return 0
+    if argv[0] == "sparse":
+        size = int(argv[2])
+        planted = ((size // 2, test.ACCESS.encode()), (size, test.REFRESH.encode("utf-16-le")))
+        with open(argv[1], "wb") as f:
+            test.sparse(f)
+            for end, value in planted:
+                f.seek(end - len(value))
+                f.write(value)
+            f.flush()
+            os.fsync(f.fileno())
+        print("sparse %s: %d bytes, %d held, %d values planted" % (argv[1], size, test.held(argv[1]), len(planted)))
+        return 0
     scan = load("scan", argv[1])
     if argv[0] == "prefixes":
         buf = b"eyJ" * (int(argv[2]) // 3)
@@ -57,13 +74,15 @@ def main(argv):
     except ImportError:
         rss = None
     print(
-        "%s %s: %.2f s, heap peak %s, resident peak %s, %d secret runs, said %s"
+        "%s %s: %.2f s, heap peak %s, resident peak %s, %d of %d bytes read, %d secret runs, said %s"
         % (
             argv[1],
             argv[3],
             elapsed,
             peak,
             rss,
+            counts["read"],
+            counts["bytes"],
             counts["leaks"],
             hashlib.sha256("\n".join(said).encode()).hexdigest()[:16],
         )
