@@ -305,6 +305,23 @@ fn host(answers: &Answers) -> Result<(), No> {
     };
     step(format_args!("its request read"));
     input.shed();
+    // What its host has available where a test tells it (D188's told pipe, D252): the first
+    // line of what `SHARDS_PRESSURE` names, read before its run is made, so that every charge
+    // its run makes as it starts is held to it in place of its kernel's count.
+    match crate::pressure::first(crate::pressure::TOLD) {
+        Ok(Some(crate::pressure::Word::Available(bytes))) => {
+            say(format_args!(
+                "told its host has {bytes} bytes of memory available"
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return Err(No(
+                Cause::Boot,
+                format!("its host's word ({}): {e}", crate::pressure::TOLD),
+            ));
+        }
+    }
     // A warm host's exemplar (D253's pools): its run comes once its microVM is ready.
     if kind == wire::to_host::WARM {
         return hosted::warm(answers, &request, input);

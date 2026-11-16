@@ -1019,24 +1019,30 @@ mod tests {
 
     /// network-12: however many of the names a shared memory object would take next are
     /// another's, the next free one is taken, never an error after a chosen count of them.
+    /// A name this test finds taken is another's already: this process's other tests take
+    /// names as they run, each its own for a moment before it unlinks it.
     #[cfg(target_os = "macos")]
     #[test]
     fn shared_memory_passes_over_every_name_taken() {
         use std::sync::atomic::Ordering;
         let (pid, next) = (std::process::id(), platform::NAMES.load(Ordering::Relaxed));
-        let taken: Vec<std::ffi::CString> = (next..next + 40)
-            .map(|n| std::ffi::CString::new(format!("/sf{pid}.{n}")).unwrap())
-            .collect();
-        for c in &taken {
+        let mut made_here = Vec::new();
+        for n in next..next + 40 {
+            let c = std::ffi::CString::new(format!("/sf{pid}.{n}")).unwrap();
             // SAFETY: shm_open(2) of a NUL-terminated name, its descriptor closed at once.
             let fd =
                 unsafe { libc::shm_open(c.as_ptr(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600) };
-            assert!(fd >= 0, "{c:?}: {}", io::Error::last_os_error());
+            if fd < 0 {
+                let e = io::Error::last_os_error();
+                assert_eq!(e.raw_os_error(), Some(libc::EEXIST), "{c:?}: {e}");
+                continue;
+            }
             // SAFETY: the descriptor just made.
             unsafe { libc::close(fd) };
+            made_here.push(c);
         }
         let made = platform::shared_memory(4096);
-        for c in &taken {
+        for c in &made_here {
             // SAFETY: shm_unlink(2) of a name this test made.
             unsafe { libc::shm_unlink(c.as_ptr()) };
         }

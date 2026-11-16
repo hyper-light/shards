@@ -9800,6 +9800,64 @@ real-VM kill and stop tests on HVF, KVM and WHP (ROOT's).
 
 ### D188. A host short of memory gets back what its microVMs hold cold of their files (built)
 
+**Amended: a told line says what its host has available** (2026-11-16, ROOT's decision; lane
+charge-seam).
+- *Why.* D252's charges are held to the host's available memory (daemon/managed.rs
+  `Charge::grow`), which no unprivileged process can set. So no real-VM test could give a run
+  room for its link but not for its first lanes (lane phase6-v). ROOT's decision: tell it
+  through this channel (R12), with one reader for the daemon and the run host, and no channel
+  of its own.
+- *The words.* Each told line, its newline apart, is one of two:
+  - empty: the host is short of memory, as before;
+  - `available BYTES`, BYTES in decimal digits alone: the host has BYTES of memory available,
+    in place of its kernel's count (`shards_ipc::host_available`: Linux's `MemAvailable`,
+    macOS's `kern.memorystatus_level`, Windows' `ullAvailPhys`). Every charge is held to it
+    from then on, until a line says another.
+
+  Any other line is refused `InvalidData`: a sign, a CR, a space, a number past a u64, or a
+  line past the longest word. The longest word is 30 bytes (`available ` and the 20 digits of
+  `u64::MAX`); a longer line is refused as it reaches that length rather than held. A line its
+  pipe's end cuts off is `UnexpectedEof`. Before, any line was a short word. Every line
+  written so far was empty (`common::Told::say`, build.rs's and build_windows.rs's), so no
+  writer changes.
+- *One reader* (pressure.rs).
+  - `read_word` reads a line a byte at a time, as before, so that it never takes the next
+    line's bytes.
+  - `heard` keeps an `available` word's bytes as the process's own (`TOLD_AVAILABLE`).
+  - `available()` answers the told bytes where a line has told some, else the kernel's count.
+  - `Charge::grow` measures every charge against `available()`, the daemon's runs' and a run
+    host's alike.
+- *Where it is read.*
+  - The daemon: its watcher, through `Pressure::wait`, which now returns the word
+    (`Word::Short` for every word of its kernel's). It hears an `available` word as it hears a
+    short one, while a microVM runs, since it listens only then (above). It says each in its
+    log: `told the host has N bytes of memory available: every run's charge is held to that`.
+    A test keeps a microVM running and waits for that line before it starts a run.
+  - A run host (`shards api-run`, D231, which shards-api's boot starts): the first line of
+    what `SHARDS_PRESSURE` names in its environment (`ImageSpec::env`), a FIFO, a named pipe
+    or a file. It is read once its request is read and before its run is made
+    (`pressure::first`, in `host`), so that every charge its run makes as it starts is held to
+    it. A pipe no line has reached yet is waited on. The run host says the word in its
+    diagnostics; one it cannot read refuses its run `Cause::Boot`. Later lines are not read: a
+    run host is told once, as its run is made.
+  - A build (`SHARDS_BUILD_PRESSURE`): its watcher reads the word and asks its builders
+    nothing at it, as no builder is charged to a budget.
+- *Literals* (R03): the word's name, `available`; its longest line, 30 bytes, derived from the
+  name and `u64::MAX` (`u64::MAX.ilog10() + 1` digits). No number is chosen.
+- *Tested* (unit, written, not run: the person's rule of 2026-11-16).
+  - `pressure::words::a_told_line_is_short_or_what_its_host_has_available`: both words, one
+    after another from one pipe; each refused line; a line cut off. It reads only and tells
+    nothing, since the told bytes are the process's, which other unit tests' charges read.
+  - `pressure::tests::a_fifo_tells_its_pressure_a_line_at_a_time`: its words are `Word::Short`.
+  - Real VM: D252's two tests (its amendment of this date).
+- *Owed* (ROOT).
+  - `cargo test --profile test-release -p shards --bin shards -- pressure::`
+  - The told pipe's real-VM tests, whose words are unchanged, on HVF, KVM and WHP:
+    `--test containers -- --exact what_a_microvm_holds_cold_is_given_back_at_its_hosts_word`,
+    `--test engine_ring -- --exact a_give_back_lets_an_idle_slot_go`,
+    `--test build -- --exact a_builder_gives_back_what_it_holds_cold_at_its_builds_word`
+    (Unix), and `--test build_windows` (WHP).
+
 **R03 review memory-06..08, 10 (2026-11-14, implemented; PM M581):** no fixed time
 or level is left in how the host hears its pressure and paces what follows it:
 - *What a pressure is* (memory-07): a PSI trigger's window's stall is pressure once
@@ -9892,7 +9950,8 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   the daemon reads on its passes' pace (memory-06). Where `SHARDS_PRESSURE` names a FIFO (on Windows,
   a named pipe), each line written to it is the host's word in place of its kernel's, as
   `SHARDS_BUILD_PRESSURE` tells a build: a test's, as no unprivileged process may raise
-  macOS's or Windows' pressure.
+  macOS's or Windows' pressure. A line may say what the host has available instead (the
+  amendment of 2026-11-16, above).
 - **Each time, every running microVM gives back what it holds cold of its files.** Its
   init (builtin `RECLAIM`) reclaims as much of its run's file pages as its memory.stat
   counts inactive, of its file pages alone (`memory.reclaim` with `swappiness=0`, Linux
@@ -34718,7 +34777,74 @@ queues charged** (2026-11-16, ROOT's decisions 1 and 2; lane charge-2).
   - Clippy on the seven targets.
   - Real VM, on HVF, KVM and WHP: a run with stdio lanes whose budget has no room for its first
     generation, refused `Capacity`, its VM never handed the run (no member output, no
-    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once.
+    `STARTED`); and a daemon's agent-control run, its endpoint's waker charged once. Both
+    written since (the amendment below).
+
+**Amended: the host's available memory told, and the charges' two real-VM tests written**
+(2026-11-16, ROOT's decision; lane charge-seam).
+- *Why.* The two real-VM tests the amendment above owes could not be written (lane
+  phase6-v). Both charges are held to the host's available memory, which no test can set, and
+  a host with room shows no charge's size. ROOT's decision: a test seam on D188's told channel
+  (R12), read by the same reader in the daemon and in the run host; and a charge made
+  observable only where a test cannot otherwise see that it is charged once.
+- *The seam* (D188's amendment of this date). A told line `available BYTES` sets what
+  `Charge::grow` measures against (`pressure::available`): the told bytes where a line has
+  told some, else the kernel's count.
+  - The daemon hears the line on its watcher while a microVM runs, and logs it.
+  - A run host reads the first line of what its `SHARDS_PRESSURE` names before its run is
+    made.
+
+  No wire changed: the image channel stays at version 51.
+- *Nothing new made observable.* Each refusal already says what its charge asked:
+  - the daemon's, typed `Admission::Insufficient { requested, available }`, which its client
+    is told as `managed output admission: N bytes requested, M available`;
+  - the run host's link's, typed `Cause::Capacity`, which names the link's bytes.
+
+  A test that tells a size reads what the refused step asked, so no field was added.
+- *The tests* (written, not run: the person's rule of 2026-11-16).
+  1. api_image.rs
+     `a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`: an
+     image whose harness sleeps, its stdio as its endpoint's lanes (`ControlAsk::stdio`), its
+     run host told through a file.
+     - Told 0: refused `ImageRefusal::Capacity` at its link, which names the link's bytes, L.
+     - Told L, room for its link alone: refused `Capacity` at its harness's first lane
+       (`member N's first Stdout lane`), by `charge_first` before `hand_over`, so its VM is
+       never handed the run and none of its members starts.
+     - Told `u64::MAX`: it starts.
+  2. managed_output
+     `endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`:
+     log_lanes's image of agents `a` and `b` (its `Home`, now shared and given a told pipe),
+     with a plain microVM kept running so that the daemon's watcher listens.
+     - Told 0: a run asking `shards.control=true` and owning `a`'s output is refused at its
+       reservation, which says its bytes, R.
+     - Told R: that run, and one owning no output, are each refused at their endpoint with
+       nothing left, and each says the same charge. It is the link (`HANDSHAKE_BYTES` ×
+       `control::CONNECTIONS`, and a datagram each way) and the kernel queues of three
+       sockets. The test reads those queues from an endpoint of one stream it binds itself
+       (step 5's: its driver's served socket and wake, and its control's waker, all bound on
+       loopback by the same `net::Driver::bind_bounded`).
+     - A waker charged twice where an output is owned, or not at all where none is (as before
+       lane charge-2), makes one of the two charges differ by one socket's queues.
+     - Told `u64::MAX`: the run starts.
+- *Literals* (R03). Every number the tests use is D252's own or read on the host:
+  - RFC 8446 §4's largest handshake message (`HANDSHAKE_BYTES`, 16,777,219), D238's two
+    connections (`control::CONNECTIONS`) and D180's datagram (`DATAGRAM_BYTES`, 65,527), one
+    each way (`link_bytes`);
+  - the sockets' queues, as the OS where the test runs reports them (`getsockopt`);
+  - every other size is what a refusal said;
+  - 0 is no room at all, and `u64::MAX` the most a told word can say, room for any charge.
+- *On Windows.* The daemon's told pipe is a named pipe (`common::Told`). The run host's told
+  word is a file, read the same way on every OS.
+- *Owed* (ROOT), on HVF (macOS arm64), KVM (Linux amd64) and WHP (Windows), with
+  `SHARDS_REQUIRE_VMS=1`:
+  - `cargo test --profile test-release -p shards --bin shards -- pressure:: daemon::managed:: api_run::`
+  - `cargo test --profile test-release -p shards --test api_image -- --exact
+    a_run_with_no_room_for_its_first_lanes_is_refused_capacity_before_its_members_start`
+  - `cargo test --profile test-release -p shards --test managed_output -- --exact
+    endpoint_charge::a_daemon_runs_agent_control_endpoint_is_charged_its_waker_once_whatever_it_owns`
+  - `cargo test --profile test-release -p shards --test managed_output log_lanes` (its `Home`
+    changed)
+  - `scripts/lint` (the seven targets).
 
 ### D253. An orchestrator's run restores its image's template and takes a warm VM from its pool, as the daemon's runs do (built: templates and pools; their real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, a daemon run and restore on each OS, and the 2026-11-16 writable-layer amendment's runs owed)
 
@@ -35892,7 +36018,7 @@ ended by an orchestrator's broken channel, or by a VM that could not serve it, w
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
 
-### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and step 33's real sessions, owed)
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605, and on WHP once the scan left Windows' holes unread, step 33.10; again on KVM x86-64 with that scan, on KVM arm64, and step 33's real sessions, owed)
 
 **Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
 harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
@@ -35980,6 +36106,12 @@ on disk is the most sensitive thing a run has:
     mapped, not read in, and walked in time linear in its size, with a heap that does not grow
     with it (#74 step 10: a run of a form's bytes walked a host page at a time, windows looked
     up through anchors; the old unbounded match ran out of memory on WHP);
+  - a save's holes left unread (PM M561): only each file's data, as lseek(2)'s SEEK_DATA and
+    SEEK_HOLE give it, and on Windows as FSCTL_QUERY_ALLOCATED_RANGES gives it, the call the
+    VMM's `platform::allocated_ranges` makes (step 33.10: on WHP the check never ended, reading
+    every byte of a save's sparse files, a 10 GiB layer among them); each range widened by the zeros a
+    finding can take, those that meet joined, as the call does not say it gives touching ranges
+    joined; a run cut short of a unit where a read ends keeping its last byte;
   - each value's UTF-16LE and base64 forms;
   - the run's placeholders, given as public, whose windows are no leak;
   - the bring-up's credential shapes, those no value explains listed by where they lie;
@@ -36007,6 +36139,10 @@ on disk is the most sensitive thing a run has:
       macOS, 281300 B on Linux), where the old scan's reached 2239349400 B; the time is less
       than half the old; the findings are the same, digest for digest.
   - Exit 3 is credentials.py's for a leak; 4 is the next.
+  - Step 33.10 adds no chosen number. FSCTL_QUERY_ALLOCATED_RANGES (0x940CF) and
+    FSCTL_SET_SPARSE (0x900C4) are winioctl.h's CTL_CODEs, ERROR_MORE_DATA (234) winerror.h's and
+    INVALID_FILE_SIZE fileapi.h's; st_blocks counts 512-byte units (Linux's and macOS's stat(2)).
+    The scan asks for one range at a time, so no buffer is sized.
 
 **Cold start** (R03). Nothing is learned or chosen.
 
@@ -36034,15 +36170,21 @@ carrier: a bundle over origin/main in a blobless clone):
     now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
     first hung its test; the test's VM now bounds its reads, so the test fails rather than
     hangs.
+- Step 33.10 (lane s33-scan, the scan's README): `scan_test.py` 12 passed on Windows (jupiter,
+  NTFS, Python 3.14.8) and macOS (Python 3.9.6), and `guards.py`'s removals failed, 6 of 6 there
+  and 4 of 4 here, `windows-ranges` among them: scan.py as main had it on Windows, which the
+  sparse test fails there. The sparse test found the run's last byte lost on macOS first.
 
 **Owed** (ROOT).
-- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
-  WHP and, through L1, KVM arm64. On KVM x86_64 and HVF it passed (PM M605, 2026-11-15,
-  `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at 6a0adfc09, KVM twice, and 32 of
-  32 at the vendor point 4124d8c70).
+- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`
+  through L1 on KVM arm64, and again on KVM x86_64 with step 33.10's scan. On KVM x86_64 and HVF
+  it passed (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at
+  6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70). On WHP it passed in 22.49 s
+  with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, lane whp-verify's D272 commit
+  over main 3d91d54f1, on main since fe83503c2; the scan's README).
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
-- These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
+- These light tests on Linux (`scan_test.py`, `guards.py`), and `scripts/lint` on every target.
 
 **What would falsify it.**
 - A save asked other than on its run's own channel that is made.
@@ -36482,6 +36624,36 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   `with_kernel_options`).
   Red with the default command line set back to a literal other console. Owed (ROOT): a real
   default boot's `/proc/cmdline` against it.
+- **PID 1 with no console to open** (2026-11-16, kiln goal 1c4faeef, plan step P1.6). `run
+  --kernel --init`'s initramfs (`initramfs::root`) held `/dev/console` alone in /dev. A command
+  line naming a console the machine has none of registers none, so the kernel opens PID 1 no
+  stdio (Linux v6.18 init/main.c `console_on_rootfs`: "Warning: unable to open an initial
+  console."). Rust's runtime reopens a closed descriptor 0-2 on `/dev/null` before `main`
+  and aborts where it cannot (rust-lang/rust 1.98.1, library/std/src/sys/pal/unix/mod.rs
+  `sanitize_standard_fds`), and shards-init mounts devtmpfs only in `main`: PID 1 ended, the
+  kernel panicked and `panic=-1` reset the VM, its console silent. Hex met it in its own
+  initramfs (g121, 2026-11-15) and has carried `/dev/null` since Hex 414aa30d.
+  - Fixed: the archive holds `/dev/null`, 1:3 (devices.txt) and 0666 (devtmpfs's mode,
+    drivers/char/mem.c `devlist`), 120 bytes more. shards-init's devtmpfs mounts over it.
+  - Red (R09), WHP x86-64 (jupiter), 6a4b27d13 with f8f95832f's initramfs (the node removed):
+    `shards run --kernel <pinned hyperv vmlinux> --init shards-init --cmdline "<c> quiet
+    panic=-1"`, three boots each: `console=hvc1` and `console=ttyAMA0` exit 3 ("the guest's
+    kernel panicked", reset through ACPI, nothing on stdout, 185-335 ms in); `console=hvc0`, no
+    console named, and `console=ttyS0` exit 0 (x86-64's 8250 has its legacy 0x3f8 port,
+    asm/serial.h, UART or not). The test below fails there: `console=hvc1`, Some(3).
+  - Green, HVF arm64 (a Mac Studio), 6a4b27d13: all five lines exit 0, three boots each; the
+    test below, `runs_init_as_pid_1_and_powers_off`, `survives_back_to_back_boots` and both
+    panic tests 5/5; vmm `initramfs` units 2/2.
+  - Owed (ROOT): the red on arm64 (`console=ttyS0`, Hex's case), KVM x86-64 both ways, and
+    WHP's green (lane phase1-v's RUNS-OWED rows).
+  - Tests: boot.rs `runs_init_where_its_kernel_opened_no_console` (`console=hvc1`, a port this
+    one-port console never has, and `console=ttyS0`, Hex's line); vmm
+    `initramfs::tests::archive_roundtrips` names the node.
+  - Rejected: an init that skips std's start-up (`#![no_main]`) in shards-init and testguest
+    covers those two, not the other `--init` binaries `run --kernel` takes; refusing a line
+    that names another console leaves a kernel without hvc's driver (`configure guest`, D28)
+    dying the same way; `CONFIG_DEVTMPFS_MOUNT` "does not affect initramfs based booting"
+    (drivers/base/Kconfig).
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
@@ -37759,7 +37931,7 @@ for its VM process, as D269's did (a Linux run host starts its VM binary through
 **Owed** (ROOT, real VMs): both on WHP and KVM arm64; the test guest's `plugged-volumes` mode is
 new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; run on WHP 2026-11-16, two faults found and fixed, below; xwin clippy of S3-S5 owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37919,8 +38091,8 @@ finds nothing.
 - *Dials* go through the dialer as before (S3's spawner); with none, the muxer opens the
   host port's pair itself, waiting for nothing (`shards_ipc::vsock_open` to now): a taken pair
   refuses at once, as a socket's full backlog does, rather than stall the device.
-- *Slots*: a connection holds two handles on Windows (`HELD_PER_CONNECTION`), a served
-  port's one.
+- *Slots*: a connection holds two pipes on Windows, and an event each (the WHP run, below):
+  four handles (`HELD_PER_CONNECTION`), a served port's one.
 - *The pipes' conventions* are shards_ipc's (`pipe/vsock.rs`), every party's: names of 64
   random bits (`VsockNames::fresh`); the path's file, the way down's name and the way up's,
   each with a newline, read within two names' bytes (256 characters each, CreateNamedPipeW,
@@ -38036,6 +38208,40 @@ written, not run):
   nowhere (M358); green on pipes, as the device closes a connection's way up before its way
   down's end can be read: as the connection ends (`Conn::end`), and where the guest's one
   SHUTDOWN ends both ways at once and its way down closes in the same turn (`Conn::flush`).
+
+**The first WHP run** (lane whp-verify; jupiter, Windows 10.0.26200.9974; main 3d91d54f1):
+shards_ipc `pipe::vsock::tests` (4) and shards_api's `client::borrowed_tests` and full-listener
+dial (13, 2 ignored as written) passed; of shards_vmm's `platform::windows_pipes` and
+`devices::virtio::vsock` tests one failed and four hung, and the vsock E2E hung, each found here:
+- *A call's end on the device's port* (fixed). `muxer::tests`
+  `a_host_programs_pipes_reach_its_guest_and_end_with_it`, `a_rates_pipes_are_answered_by_its_owner`
+  and `a_client_gone_with_its_way_down_alone_lets_the_next_in` hung, each in GetOverlappedResult
+  (cdb: from `Conn::end` and from drops of `Pipes`), as did `vsock::tests::a_refused_worker_leaves_the_device_whole`,
+  and so did the E2E's VM process, its `virtio-vsock` thread there. `settle` cancelled a call and waited for its end on its handle,
+  the OVERLAPPED naming no event; a handle associated with a completion port has such a call's
+  end written, and the handle set, only as its packet is taken from the port, and the device's
+  worker, the one thread that takes it, was the thread waiting. Measured
+  (docs/research/measurements/vsock-pipes-port-cancel): a cancelled read's 3 s wait timed out
+  after 4.7 s still under way, its packet in the port; with no port, or with an event named,
+  it ended in 1.3 us at most. Each call's OVERLAPPED now names a manual-reset event of its own
+  (`platform::windows_pipes::Call`, shards_ipc's `Event`), which a ReadFile or WriteFile resets
+  as it begins and its end sets, its packet still the port's; `settle` and
+  `write_all_waiting` wait on it. A connection then holds four handles on Windows, two pipes and
+  an event each (`HELD_PER_CONNECTION`), a listening pair five.
+- *A wait a packet ends with nothing ready* (fixed). `poll::tests::a_wait_wakes_for_data_that_comes_while_it_waits`
+  failed: its wait for a socket's data returned after 292.6 us with nothing ready. A packet only
+  says to look, and one came that left nothing ready. Which one is unmeasured; the sockets'
+  event is set by network events no interest waits for (FD_WRITE as a socket is associated
+  anew, WSAEventSelect), and the thread-pool wait one wait sets is left set into the next. The
+  Windows wait now goes on for the time left past a packet that leaves nothing ready, as
+  poll(2)'s does: it ends as an interest is ready, as its waker wakes it, or as its timeout
+  passes.
+- *After both* (jupiter, the fix on main f8f95832f): shards_vmm's 62 passed, the five above
+  among them; shards_ipc's 4 and shards_api's 13 (2 ignored) passed again; and every test of
+  crates/shards/tests/vsock.rs passed on WHP, none skipped (`SHARDS_REQUIRE_VMS=1`): first
+  `a_guest_that_ends_its_stream_gives_its_host_every_byte_first` (34.8 s, the host's write after
+  each end refused at once, 232), then the other five, the two restores among them. Unmeasured
+  still: `VSOCK_QUOTA` over WHP's pipes, and a connection's cost in its four handles.
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
