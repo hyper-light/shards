@@ -462,6 +462,39 @@ impl Ended {
     }
 }
 
+/// `[member, held]`: the member (a big-endian u32), then 1 where its next generation is coming
+/// or 0 where its restart let it go: the payload of
+/// [`kind::MEMBER_HOLD`](super::kind::MEMBER_HOLD) (D270).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hold {
+    pub member: u32,
+    pub held: bool,
+}
+
+impl Hold {
+    pub const LEN: usize = size_of::<u32>() + 1;
+
+    pub fn encode(self) -> [u8; Self::LEN] {
+        let [a, b, c, d] = self.member.to_be_bytes();
+        [a, b, c, d, u8::from(self.held)]
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Hold> {
+        let (member, held) = <&[u8; Self::LEN]>::try_from(bytes)
+            .ok()?
+            .split_first_chunk::<4>()?;
+        let held = match held {
+            [0] => false,
+            [1] => true,
+            _ => return None,
+        };
+        Some(Hold {
+            member: u32::from_be_bytes(*member),
+            held,
+        })
+    }
+}
+
 /// `in-member=<index>`: an exec's setup entry that runs its command in the member of that
 /// declared index (plan step 6, D243): born in its PID namespace and cgroup, in the
 /// namespaces of its command, and confined as its command is, with its environment under
@@ -1346,6 +1379,34 @@ mod tests {
         }
         assert_eq!(Ended::decode(&[0; 8]), None);
         assert_eq!(Ended::decode(&[0; 10]), None);
+    }
+
+    /// A member held for its next generation, or let go (D270), round-trips; a hold of any
+    /// other length, or neither held nor let go, is none.
+    #[test]
+    fn holds_round_trip() {
+        for hold in [
+            Hold {
+                member: 0,
+                held: true,
+            },
+            Hold {
+                member: u32::MAX,
+                held: false,
+            },
+        ] {
+            assert_eq!(Hold::decode(&hold.encode()), Some(hold));
+        }
+        assert_eq!(
+            Hold::encode(Hold {
+                member: 1,
+                held: true
+            }),
+            [0, 0, 0, 1, 1]
+        );
+        assert_eq!(Hold::decode(&[0, 0, 0, 1]), None);
+        assert_eq!(Hold::decode(&[0, 0, 0, 1, 2]), None);
+        assert_eq!(Hold::decode(&[0, 0, 0, 1, 1, 0]), None);
     }
 
     /// An exec names one member at most, in the index's one spelling; an exec naming none

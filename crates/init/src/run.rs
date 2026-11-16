@@ -5259,7 +5259,7 @@ impl Workload {
                         // A generation no next one is held for ends its whole member, its server
                         // instance with it, as a member's end did before generations (D270).
                         if !d.held
-                            && let Err(e) = crate::domains::end_server(d)
+                            && let Err(e) = crate::domains::end_member(d)
                         {
                             let _ = writeln!(io::stderr(), "shards-init: {}'s server instance: {e}", d.label);
                         }
@@ -6647,14 +6647,26 @@ fn kill_member(args: &[Vec<u8>], domains: &[crate::domains::Started]) -> io::Res
 }
 
 /// A [`kind::MEMBER_HOLD`]: its member's next generation is coming (D270), so that its current
-/// one's end keeps its server instance and its namespaces. One of no member, or malformed, is
-/// nothing: the start that follows it is refused, typed.
+/// one's end keeps its server instance and its namespaces; or, its restart failed, let go: a
+/// generation that ended under the hold then ends its whole member, as an end with none does.
+/// One of no member, or malformed, is nothing: a start that follows it is refused, typed.
 fn hold_member(payload: &[u8], domains: &mut [crate::domains::Started]) {
-    let Some(member) = <[u8; 4]>::try_from(payload).ok().map(u32::from_be_bytes) else {
+    let Some(hold) = run::members::Hold::decode(payload) else {
         return;
     };
-    if let Some(d) = domains.iter_mut().find(|d| d.member == member) {
-        d.held = true;
+    let Some(d) = domains.iter_mut().find(|d| d.member == hold.member) else {
+        return;
+    };
+    // A generation that ended unheld ended its whole member: nothing of it is kept to hold.
+    if d.end_told && !d.held {
+        return;
+    }
+    d.held = hold.held;
+    if d.end_told
+        && !hold.held
+        && let Err(e) = crate::domains::end_member(d)
+    {
+        let _ = writeln!(io::stderr(), "shards-init: {}'s server instance: {e}", d.label);
     }
 }
 
@@ -7322,6 +7334,12 @@ mod generation_tests {
         let answer = next_generation(&malformed, &mut none, None);
         assert_eq!((answer.member, answer.generation), (4, 1));
         assert_eq!(answer.refused.map(|(why, _)| why), Some(StartRefusal::Failed));
+        let hold = run::members::Hold {
+            member: 4,
+            held: true,
+        };
+        hold_member(&hold.encode(), &mut none);
+        hold_member(&run::members::Hold { held: false, ..hold }.encode(), &mut none);
         hold_member(&4u32.to_be_bytes(), &mut none);
         hold_member(b"no", &mut none);
         let refused = kill_member(&run::members::kill_args(4), &none).unwrap_err();

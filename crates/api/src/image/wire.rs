@@ -866,6 +866,9 @@ pub struct MemberEnded {
     /// How its command ended: exited with its code, or killed by a signal (version 27), as
     /// its init's reaper saw it.
     pub end: shards_abi::run::members::End,
+    /// Whether its restart ended it at once (D270 slice 3b, `MEMBER_KILL`), its graceful end
+    /// having outlasted its patience: its end, then, is the kill's.
+    pub killed: bool,
 }
 
 /// What init's `STATS` says, each line `None` where it said none; and, for the run, what its
@@ -3420,7 +3423,11 @@ impl InputEnd {
         let generation = r.u32()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnd { member, generation, end })
+        Ok(InputEnd {
+            member,
+            generation,
+            end,
+        })
     }
 }
 
@@ -3462,7 +3469,12 @@ impl InputEnded {
         let written = r.u64()?;
         let end = r.stream_end("an input's end")?;
         r.end()?;
-        Ok(InputEnded { member, generation, written, end })
+        Ok(InputEnded {
+            member,
+            generation,
+            written,
+            end,
+        })
     }
 }
 
@@ -3509,12 +3521,14 @@ impl OutputEnd {
 
 impl MemberEnded {
     /// Its member and generation, then its end as the guest's `MEMBER_ENDED` carries it
-    /// (`run::members::End`: a tag, exited 0 or signaled 1, and its code or signal).
+    /// (`run::members::End`: a tag, exited 0 or signaled 1, and its code or signal), then 1
+    /// where its restart killed it, else 0.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer(Vec::new());
         w.u32(self.member);
         w.u32(self.generation);
         w.0.extend_from_slice(&self.end.encode());
+        w.u8(u8::from(self.killed));
         w.0
     }
 
@@ -3525,6 +3539,7 @@ impl MemberEnded {
         let generation = r.u32()?;
         let tag = r.u8()?;
         let word = r.u32()?;
+        let killed = r.u8()?;
         r.end()?;
         let end = match tag {
             0 => End::Exited(word),
@@ -3537,7 +3552,22 @@ impl MemberEnded {
                 });
             }
         };
-        Ok(MemberEnded { member, generation, end })
+        let killed = match killed {
+            0 => false,
+            1 => true,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a member's kill",
+                    tag,
+                });
+            }
+        };
+        Ok(MemberEnded {
+            member,
+            generation,
+            end,
+            killed,
+        })
     }
 }
 
@@ -4678,32 +4708,42 @@ mod tests {
             };
             assert_eq!(OutputEnd::decode(&e.encode()).unwrap(), e);
         }
-        for end in [
-            shards_abi::run::members::End::Exited(137),
-            shards_abi::run::members::End::Exited(143),
-            shards_abi::run::members::End::Signaled(15),
+        for (end, killed) in [
+            (shards_abi::run::members::End::Exited(137), false),
+            (shards_abi::run::members::End::Exited(143), false),
+            (shards_abi::run::members::End::Signaled(15), false),
+            (shards_abi::run::members::End::Signaled(9), true),
         ] {
             let ended = MemberEnded {
                 member: 2,
                 generation: 1,
                 end,
+                killed,
             };
             assert_eq!(MemberEnded::decode(&ended.encode()).unwrap(), ended);
         }
-        // A tag of neither end, or a signal no Linux has, is no end.
+        // A tag of neither end, a signal no Linux has, or a kill neither said nor unsaid, is
+        // no end.
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 1]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 1, 0]),
             Err(WireError::Tag {
                 what: "a member's end",
                 tag: 2
             })
         );
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]),
             Err(WireError::Signal(0))
         );
         assert_eq!(
-            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1]),
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 9, 2]),
+            Err(WireError::Tag {
+                what: "a member's kill",
+                tag: 2
+            })
+        );
+        assert_eq!(
+            MemberEnded::decode(&[0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
             Err(WireError::Short)
         );
         for end in [RunEnd::Exited(0), RunEnd::Stopped, RunEnd::Failed("x".into())] {

@@ -228,11 +228,14 @@ pub mod kind {
     /// Guest to host, on the workload's connection: what came of a [`MEMBER_START`], as
     /// [`members::StartAnswer`](super::members::StartAnswer) encodes it.
     pub const MEMBER_STARTED: u8 = 55;
-    /// Host to guest, on the signal connection: member `u32`'s next generation is coming
-    /// (D270): its current one's end keeps its server instance and its namespaces for it, as
-    /// its end otherwise ends its whole member. Sent before its host ends that generation
+    /// Host to guest, on the signal connection, as [`members::Hold`](super::members::Hold)
+    /// encodes it: member's next generation is coming (D270), so that its current one's end
+    /// keeps its server instance and its namespaces for it, as its end otherwise ends its whole
+    /// member; sent before its host ends that generation
     /// ([`builtin::SIGNAL`](super::builtin::SIGNAL)'s SIGTERM, then
-    /// [`builtin::MEMBER_KILL`](super::builtin::MEMBER_KILL) if it stalls).
+    /// [`builtin::MEMBER_KILL`](super::builtin::MEMBER_KILL) if it stalls). Or, its restart
+    /// having failed, let go: its generation's end, or the end it had under the hold, is then
+    /// its whole member's.
     pub const MEMBER_HOLD: u8 = 56;
 }
 

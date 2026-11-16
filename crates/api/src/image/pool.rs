@@ -1305,7 +1305,11 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.take_output(member, generation, channel)
     }
 
-    fn take_input(&self, member: &super::MemberName, generation: u32) -> Result<std::io::PipeWriter, ImageRefusal> {
+    fn take_input(
+        &self,
+        member: &super::MemberName,
+        generation: u32,
+    ) -> Result<std::io::PipeWriter, ImageRefusal> {
         self.guest.take_input(member, generation)
     }
 
@@ -1318,7 +1322,12 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.wait_member(member, generation, timeout)
     }
 
-    fn restart(&self, member: &super::MemberName, args: &[Vec<u8>], patience: Duration) -> Result<u32, ImageRefusal> {
+    fn restart(
+        &self,
+        member: &super::MemberName,
+        args: &[Vec<u8>],
+        patience: Duration,
+    ) -> Result<u32, ImageRefusal> {
         self.guest.restart(member, args, patience)
     }
 
@@ -1559,7 +1568,11 @@ mod tests {
         ) -> Result<std::io::PipeReader, ImageRefusal> {
             none()
         }
-        fn take_input(&self, _: &super::super::MemberName, _: u32) -> Result<std::io::PipeWriter, ImageRefusal> {
+        fn take_input(
+            &self,
+            _: &super::super::MemberName,
+            _: u32,
+        ) -> Result<std::io::PipeWriter, ImageRefusal> {
             none()
         }
         fn wait_member(
@@ -1570,7 +1583,12 @@ mod tests {
         ) -> Result<Option<super::super::MemberEnd>, ImageRefusal> {
             none()
         }
-        fn restart(&self, _: &super::super::MemberName, _: &[Vec<u8>], _: Duration) -> Result<u32, ImageRefusal> {
+        fn restart(
+            &self,
+            _: &super::super::MemberName,
+            _: &[Vec<u8>],
+            _: Duration,
+        ) -> Result<u32, ImageRefusal> {
             none()
         }
         fn wait_channel(

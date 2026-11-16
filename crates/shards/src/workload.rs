@@ -2456,10 +2456,11 @@ pub fn signal_guest(to: &ToGuest, linux: u32) -> Result<(), Unsent> {
     to_guest(to, kind::SIGNAL, &linux.to_be_bytes())
 }
 
-/// Holds member `member` for its next generation (D270 slice 3b), as [`signal_guest`] sends a
-/// signal: its current one's end keeps its server instance and its namespaces.
-pub fn hold_member(to: &ToGuest, member: u32) -> Result<(), Unsent> {
-    to_guest(to, kind::MEMBER_HOLD, &member.to_be_bytes())
+/// Holds a member for its next generation (D270 slice 3b), so that its current one's end keeps
+/// its server instance and its namespaces, or lets it go, as `hold` says, as [`signal_guest`]
+/// sends a signal.
+pub fn hold_member(to: &ToGuest, hold: run::members::Hold) -> Result<(), Unsent> {
+    to_guest(to, kind::MEMBER_HOLD, &hold.encode())
 }
 
 /// Gives the guest a member's next generation (D270 slice 3b), `start` as

@@ -11,7 +11,7 @@
 mod common;
 
 use std::ffi::OsString;
-use std::io::{Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, PipeReader, Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
@@ -4104,6 +4104,101 @@ fn an_egress_destination_revoked_refuses_the_next_connection_and_granted_back_re
         Err(ImageRefusal::Net(NetRefusal::Widening, _))
     ));
     // In place: the same start, the same VM process, no template saved or replaced.
+    assert_eq!(guest.started_from(), from);
+    assert_eq!(vm_processes(&home), vms);
+    assert_eq!(templates_of(&home), templates);
+    guest.stop().unwrap();
+}
+
+/// A line of a member's generation's channel, `reader`, or what it says to its end where no
+/// line ends first, read as [`read_within`] reads it: its wait judged, its kind its call site.
+#[track_caller]
+fn line_within(guest: &dyn ImageGuest, mut reader: BufReader<PipeReader>) -> (BufReader<PipeReader>, String) {
+    let stop = || {
+        let _ = guest.stop();
+    };
+    let read = move || {
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        (reader, line)
+    };
+    common::judged(Party::started(None), "a member's channel", stop, read)
+        .unwrap_or_else(|refused| panic!("the member's channel said no line: {refused}"))
+}
+
+/// What a member's generation's channel, `reader`, says to its end, read as [`line_within`]
+/// reads.
+#[track_caller]
+fn rest_within(guest: &dyn ImageGuest, mut reader: BufReader<PipeReader>) -> String {
+    let stop = || {
+        let _ = guest.stop();
+    };
+    let read = move || {
+        let mut rest = String::new();
+        let _ = reader.read_to_string(&mut rest);
+        rest
+    };
+    common::judged(Party::started(None), "a member's channel", stop, read)
+        .unwrap_or_else(|refused| panic!("the member's channel did not end: {refused}"))
+}
+
+/// D270 slice 3b: a member started again in its running microVM by its orchestrator. Its
+/// first generation, the test guest's `trap TERM`, says it is ready; its restart's SIGTERM ends
+/// it gracefully (`got 15`, exited 0), its end told before its restart answers; its next,
+/// generation 1, says it is ready on output of its own and runs until it too is asked to end,
+/// by a second restart, to generation 2. The run's VM processes, how it started and its
+/// templates stay as they were: no microVM was made or remade.
+#[test]
+fn a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-restart-home");
+    build(&home, "api-restart:1", &["trap", "TERM"], "");
+    let mut s = spec(&home, "api-restart:1");
+    s.members = vec![MemberSpec {
+        member: codex(),
+        env: Vec::new(),
+        files: Vec::new(),
+        workdir: None,
+        stdin: false,
+        terminal: false,
+        args: Vec::new(),
+        mcp: false,
+    }];
+    let guest = boot(&home, &s);
+    let (from, vms, templates) = (guest.started_from(), vm_processes(&home), templates_of(&home));
+    let stdout =
+        |generation| BufReader::new(guest.take_output(&codex(), generation, Channel::Stdout).unwrap());
+    let (first, line) = line_within(&*guest, stdout(0));
+    assert_eq!(line, "ready\n", "its first generation waits for its SIGTERM");
+    let patience = Duration::from_secs(60);
+    let restarted = ask(&*guest, |g| g.restart(&codex(), &[], patience));
+    assert_eq!(restarted, Ok(1));
+    assert_eq!(
+        guest.wait_member(&codex(), 0, Duration::ZERO),
+        Ok(Some(MemberEnd::Exited(0))),
+        "its first generation's end, told before its restart answered"
+    );
+    assert_eq!(rest_within(&*guest, first), "got 15\n", "it ended on its SIGTERM");
+    let (next, line) = line_within(&*guest, stdout(1));
+    assert_eq!(line, "ready\n", "its next generation, on output of its own");
+    assert_eq!(
+        guest.wait_member(&codex(), 1, Duration::ZERO),
+        Ok(None),
+        "its next generation runs"
+    );
+    assert!(
+        guest.take_output(&codex(), 2, Channel::Stdout).is_err(),
+        "a generation not started has no output"
+    );
+    let restarted = ask(&*guest, |g| g.restart(&codex(), &[], patience));
+    assert_eq!(restarted, Ok(2));
+    assert_eq!(
+        guest.wait_member(&codex(), 1, Duration::ZERO),
+        Ok(Some(MemberEnd::Exited(0)))
+    );
+    assert_eq!(rest_within(&*guest, next), "got 15\n");
     assert_eq!(guest.started_from(), from);
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);

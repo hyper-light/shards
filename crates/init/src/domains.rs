@@ -2630,6 +2630,18 @@ pub fn end_server(s: &Started) -> io::Result<()> {
     std::fs::write(format!("{}/{SERVER_LEAF}/cgroup.kill", s.cgroup), "1")
 }
 
+/// Member `s`'s whole end (D270), once a member: its generation ended with no next one held
+/// for it, or a restart that held it let it go after its end. Its server instance ends, and
+/// what its generations kept for a next one (its namespaces, its confinement) is let go: a
+/// start asked after is refused.
+pub fn end_member(s: &mut Started) -> io::Result<()> {
+    s.restart = Err(format!(
+        "its generation {} ended with no next one held for it, and its member with it",
+        s.generation
+    ));
+    end_server(s)
+}
+
 /// Starts member `s`'s next generation (D270), `start`, in the namespaces its generations keep
 /// ([`Kept`]), in a PID namespace of its own and its generation's leaf: its last ended and its
 /// end told, `start.generation` the one past it. Its server instance, its link, its volumes and
@@ -2710,7 +2722,11 @@ pub fn next_generation(
     // Its command, its image's as its first's was, its program found only in its own view as it
     // starts (confine-04), and its run-time arguments after it, as its first's staged ones were.
     let domain = d.clone();
-    let args = start.args.iter().map(|a| cstr(a)).collect::<Result<Vec<_>, _>>()?;
+    let args = start
+        .args
+        .iter()
+        .map(|a| cstr(a))
+        .collect::<Result<Vec<_>, _>>()?;
     let (explicit, paths) = executable(&domain, &env).map_err(|e| (R::Failed, e))?;
     let program = domain.argv.first().ok_or_else(|| failed("no program".into()))?;
     let workdir = match &start.workdir {

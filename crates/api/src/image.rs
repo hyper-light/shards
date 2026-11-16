@@ -36,9 +36,8 @@ pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
     GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
     NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RestartRefusal, RunEnd, RunEnded,
-    SaveRefusal, Secret,
-    SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken,
-    VcpuTime, decide,
+    SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats,
+    StatsScope, Unused, UseBroken, VcpuTime, decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -361,6 +360,9 @@ pub enum MemberEnd {
     /// Its population ended, its command killed by this signal, its Linux number
     /// (`1..=run::NSIG`): `docker run` would report 128 plus it, which an exit can be too.
     Signaled(u32),
+    /// Its generation ended at once by its restart (D270 slice 3b), its graceful end having
+    /// outlasted the restart's patience: every process of it killed (SIGKILL).
+    Killed,
     /// The run ended first, and the member with it.
     WithRun,
 }
@@ -678,7 +680,8 @@ pub trait ImageGuest: Send + Sync {
     /// has one: the generation started, whose output, input and end are taken by it. Refused
     /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
     /// way, one that starts once (a member given a port among others, D122).
-    fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration) -> Result<u32, ImageRefusal>;
+    fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)
+    -> Result<u32, ImageRefusal>;
     /// How member `member`'s `channel` ended, typed, once its run's host told it, after every
     /// byte of it that host sent: its writers' close, or its capture's abort, which its pipe's
     /// EOF ([`take_output`](Self::take_output)) does not tell apart; waiting at most `timeout`

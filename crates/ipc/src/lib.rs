@@ -772,9 +772,10 @@ pub mod kind {
     /// `shards_abi::rate::used` writes a use's answer. Told from another thread than the
     /// run's `DONE`, in no order with it: its owner reads both until the link closes.
     pub const FINAL_USE: u8 = 106;
-    /// Its owner → a VM, on its link (D270 slice 3b): member `member` (4, big-endian) is held
-    /// for its next generation, so that its current one's end keeps its server instance and
-    /// its namespaces: the VM holds the guest's `MEMBER_HOLD` for its signal connection.
+    /// Its owner → a VM, on its link (D270 slice 3b): a member held for its next generation,
+    /// so that its current one's end keeps its server instance and its namespaces, or let go
+    /// as its restart failed, as `run::members::Hold` encodes it: the VM holds the guest's
+    /// `MEMBER_HOLD` for its signal connection.
     pub const MEMBER_HOLD: u8 = 108;
     /// Its owner → a VM, on its link (D270 slice 3b): a member's next generation,
     /// `shards_abi::run::members::Start` as it encodes, its input's token none: the VM mints

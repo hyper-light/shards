@@ -397,14 +397,18 @@ fn nesting(
 /// payload: a member's end (D231), and its own command's readiness under the nesting grant
 /// (D234), each as the guest said it; none for the rest. A readiness that is none is said
 /// on this host's stderr and dropped, as the daemon drops it.
-fn relayed(which: u8, payload: &[u8], generation: impl Fn(u32) -> u32) -> Option<(u8, Vec<u8>)> {
+fn relayed(which: u8, payload: &[u8], generation: impl Fn(u32) -> (u32, bool)) -> Option<(u8, Vec<u8>)> {
     match which {
         kind::MEMBER_ENDED => {
             let e = shards_abi::run::members::Ended::decode(payload)?;
+            let (generation, kill_sent) = generation(e.member);
             let ended = wire::MemberEnded {
                 member: e.member,
-                generation: generation(e.member),
+                generation,
                 end: e.end,
+                // Its restart's kill ended it where its end is the kill's, SIGKILL (Linux's 9 on
+                // every architecture): one that ended of itself as the kill went is not killed.
+                killed: kill_sent && e.end == shards_abi::run::members::End::Signaled(9),
             };
             Some((wire::to_client::MEMBER_ENDED, ended.encode()))
         }
@@ -4064,12 +4068,25 @@ mod hosted {
 
     /// What the guest said of a member's start (`MEMBER_STARTED`, D270 slice 3b), kept for the
     /// restart that waits on it.
+    ///
+    /// A generation started is its member's current from here, on the thread that reads its
+    /// VM, before anything it tells after (its end, which may come at once): its ends are its
+    /// own, and its member's lanes are its (D238).
     fn started_told(live: &Live<'_>, payload: &[u8]) {
         let Ok(answer) = protocol::members::StartAnswer::decode(payload) else {
             super::say(format_args!("a member's start its guest answered malformed"));
             return;
         };
-        lock(&live.generations).started.insert(answer.member, answer);
+        let mut generations = lock(&live.generations);
+        let current = generations.current.get(&answer.member).copied().unwrap_or(0);
+        if answer.refused.is_none() && answer.generation > current {
+            generations.current.insert(answer.member, answer.generation);
+            if let Some(agent) = &live.agent {
+                agent.ends.again(answer.member);
+            }
+        }
+        generations.started.insert(answer.member, answer);
+        drop(generations);
         live.generations_moved.notify_all();
     }
 
@@ -4094,13 +4111,28 @@ mod hosted {
             if generations.gone {
                 return Err((R::Failed, "its microVM has gone".into()));
             }
+            let current = generations.current.get(&member).copied().unwrap_or(0);
+            // A generation that ended with no restart under way ended its whole member, its
+            // server instance with it: nothing of it is kept for a next one.
+            if generations.ended.contains(&(member, current)) && !generations.restarting.contains(&member) {
+                return Err((
+                    R::Unknown,
+                    format!("member {member} ended with its generation {current}, and runs no more"),
+                ));
+            }
             if !generations.restarting.insert(member) {
                 return Err((R::Running, format!("member {member}'s restart is under way")));
             }
             generations.started.remove(&member);
-            generations.current.get(&member).copied().unwrap_or(0)
+            current
         };
         let result = restart_turn(live, ask, generation, scope);
+        if result.is_err() {
+            // Let go: the end its generation had under the hold, or has after, ends its whole
+            // member, as an end with no restart under way does.
+            let go = protocol::members::Hold { member, held: false };
+            let _ = shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &go.encode(), &[]);
+        }
         lock(&live.generations).restarting.remove(&member);
         result
     }
@@ -4115,16 +4147,24 @@ mod hosted {
         use wire::RestartRefusal as R;
         let member = ask.member;
         let failed = |why: String| (R::Failed, why);
-        let next = generation
-            .checked_add(1)
-            .ok_or_else(|| (R::Generation, format!("member {member} has no generation past {generation}")))?;
+        let next = generation.checked_add(1).ok_or_else(|| {
+            (
+                R::Generation,
+                format!("member {member} has no generation past {generation}"),
+            )
+        })?;
         // Held, so that its generation's end keeps its server instance and its namespaces.
-        shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &member.to_be_bytes(), &[])
+        let hold = protocol::members::Hold { member, held: true };
+        shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &hold.encode(), &[])
             .map_err(|e| failed(format!("its VM: {e}")))?;
         let ended = |g: &Generations| g.ended.contains(&(member, generation)) || g.gone;
         if !ended(&lock(&live.generations)) {
-            let said = builtin(live, protocol::builtin::SIGNAL, protocol::members::signal_args(member, 15))
-                .map_err(failed)?;
+            let said = builtin(
+                live,
+                protocol::builtin::SIGNAL,
+                protocol::members::signal_args(member, 15),
+            )
+            .map_err(failed)?;
             // A generation that ended already, between its hold and its signal, is no refusal.
             if said.status != Some(0) && !ended(&lock(&live.generations)) {
                 return Err(failed(format!(
@@ -4135,9 +4175,15 @@ mod hosted {
         }
         if !wait_generations(live, ask.patience, ended) {
             // Its graceful end outlasted its patience: its generation ended at once, its PID
-            // namespace's reaper killed, its server instance and namespaces kept.
-            let said = builtin(live, protocol::builtin::MEMBER_KILL, protocol::members::kill_args(member))
-                .map_err(failed)?;
+            // namespace's reaper killed, its server instance and namespaces kept; its end told
+            // its orchestrator as killed (`MemberEnded::killed`).
+            lock(&live.generations).killed.insert((member, generation));
+            let said = builtin(
+                live,
+                protocol::builtin::MEMBER_KILL,
+                protocol::members::kill_args(member),
+            )
+            .map_err(failed)?;
             if said.status != Some(0) && !ended(&lock(&live.generations)) {
                 return Err(failed(format!(
                     "its kill: {}",
@@ -4180,7 +4226,9 @@ mod hosted {
             .map_err(|e| failed(format!("its VM: {e}")))?;
         let answered = |g: &Generations| g.started.contains_key(&member) || g.gone;
         if !wait_generations(live, ask.patience, answered) {
-            return Err(failed("its guest did not answer its start within its patience".into()));
+            return Err(failed(
+                "its guest did not answer its start within its patience".into(),
+            ));
         }
         let answer = lock(&live.generations).started.remove(&member);
         let Some(answer) = answer else {
@@ -4199,7 +4247,6 @@ mod hosted {
                 words,
             ));
         }
-        lock(&live.generations).current.insert(member, next);
         if has_input {
             let started = std::thread::Builder::new()
                 .name("api-run input".into())
@@ -4411,6 +4458,8 @@ mod hosted {
         restarting: std::collections::HashSet<u32>,
         /// The generations whose ends its guest told (`MEMBER_ENDED`), by member and generation.
         ended: std::collections::HashSet<(u32, u32)>,
+        /// The generations a restart ended at once (`MEMBER_KILL`), by member and generation.
+        killed: std::collections::HashSet<(u32, u32)>,
         /// What its guest said of each member's last start asked (`MEMBER_STARTED`).
         started: HashMap<u32, protocol::members::StartAnswer>,
         /// Each output stream's generation, fixed as it opened.
@@ -4734,6 +4783,14 @@ mod hosted {
         /// Member `member`'s current generation (D270): 0 where it never restarted.
         fn generation_of(&self, member: u32) -> u32 {
             lock(&self.generations).current.get(&member).copied().unwrap_or(0)
+        }
+
+        /// Member `member`'s current generation, the one an end its guest tells now is of, and
+        /// whether its restart sent it a kill.
+        fn ended_as(&self, member: u32) -> (u32, bool) {
+            let generations = lock(&self.generations);
+            let current = generations.current.get(&member).copied().unwrap_or(0);
+            (current, generations.killed.contains(&(member, current)))
         }
 
         /// Grants the guest a record on `key`'s channel where it has none, its room is
@@ -5894,7 +5951,7 @@ mod hosted {
                     drop(generations);
                     live.generations_moved.notify_all();
                 }
-                if let Some((answer, payload)) = super::relayed(m.kind, &m.payload, |m| live.generation_of(m)) {
+                if let Some((answer, payload)) = super::relayed(m.kind, &m.payload, |m| live.ended_as(m)) {
                     let _ = live.answers.send(answer, &[&payload]);
                 }
             }
@@ -8015,7 +8072,10 @@ mod hosted {
                 members: &members,
                 ..live(&answers, dir.path(), link, None)
             };
-            let (long, short) = (std::time::Duration::from_secs(60), std::time::Duration::from_millis(50));
+            let (long, short) = (
+                std::time::Duration::from_secs(60),
+                std::time::Duration::from_millis(50),
+            );
             let ask = |id, args: &[&[u8]], patience| wire::RestartAsk {
                 id,
                 member: 1,
@@ -8035,27 +8095,33 @@ mod hosted {
                         let conn = Stream::from(m.fds.into_iter().next().unwrap());
                         shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
                     };
-                    let held = || {
+                    let hold = |held| {
                         let m = shards_ipc::recv(&vm).unwrap().unwrap();
-                        assert_eq!((m.kind, m.payload), (kind::MEMBER_HOLD, 1u32.to_be_bytes().to_vec()));
+                        let hold = protocol::members::Hold { member: 1, held };
+                        assert_eq!((m.kind, m.payload), (kind::MEMBER_HOLD, hold.encode().to_vec()));
                     };
+                    let held = || hold(true);
                     let ended = |generation| {
                         lock(&live.generations).ended.insert((1, generation));
                         live.generations_moved.notify_all();
                     };
-                    let started = |generation, args: Vec<Vec<u8>>, refused: Option<(StartRefusal, Vec<u8>)>| {
-                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
-                        assert_eq!(m.kind, kind::MEMBER_START);
-                        let (flag, start) = m.payload.split_first().unwrap();
-                        let start = Start::decode(start).unwrap();
-                        assert_eq!((*flag, start.member, start.generation, start.args, start.input), (0, 1, generation, args, None));
-                        let answer = StartAnswer {
-                            member: 1,
-                            generation,
-                            refused,
+                    let started =
+                        |generation, args: Vec<Vec<u8>>, refused: Option<(StartRefusal, Vec<u8>)>| {
+                            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                            assert_eq!(m.kind, kind::MEMBER_START);
+                            let (flag, start) = m.payload.split_first().unwrap();
+                            let start = Start::decode(start).unwrap();
+                            assert_eq!(
+                                (*flag, start.member, start.generation, start.args, start.input),
+                                (0, 1, generation, args, None)
+                            );
+                            let answer = StartAnswer {
+                                member: 1,
+                                generation,
+                                refused,
+                            };
+                            started_told(&live, &answer.encode().unwrap());
                         };
-                        started_told(&live, &answer.encode().unwrap());
-                    };
                     held();
                     builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
                     ended(0);
@@ -8063,31 +8129,55 @@ mod hosted {
                     held();
                     builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
                     builtin(protocol::builtin::MEMBER_KILL, protocol::members::kill_args(1));
+                    assert!(
+                        lock(&live.generations).killed.contains(&(1, 1)),
+                        "its kill is marked before it goes"
+                    );
                     ended(1);
                     started(2, Vec::new(), None);
                     held();
                     builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
                     ended(2);
-                    started(3, Vec::new(), Some((StartRefusal::Failed, b"its exec: ENOENT".to_vec())));
+                    started(
+                        3,
+                        Vec::new(),
+                        Some((StartRefusal::Failed, b"its exec: ENOENT".to_vec())),
+                    );
+                    // Its restart failed: let go, so that the end it had under the hold ends its
+                    // whole member.
+                    hold(false);
                 });
                 assert_eq!(restart(&live, &ask(1, &[b"--resume"], long), scope), Ok(1));
                 assert_eq!(live.generation_of(1), 1);
+                assert_eq!(live.ended_as(1), (1, false));
                 assert_eq!(restart(&live, &ask(2, &[], short), scope), Ok(2));
+                assert_eq!(live.ended_as(1), (2, false), "its kill was its last generation's");
                 assert_eq!(
                     restart(&live, &ask(3, &[], long), scope),
                     Err((wire::RestartRefusal::Failed, "its exec: ENOENT".into()))
                 );
                 assert_eq!(live.generation_of(1), 2);
                 guest.join().unwrap();
+                // Its generation ended, its restart let go: its member ended whole, and runs no
+                // more.
+                let refused = restart(&live, &ask(6, &[], long), scope).unwrap_err();
+                assert_eq!(refused.0, wire::RestartRefusal::Unknown, "{refused:?}");
+                assert!(refused.1.contains("runs no more"), "{refused:?}");
                 let none = wire::RestartAsk {
                     id: 4,
                     member: 9,
                     args: Vec::new(),
                     patience: long,
                 };
-                assert!(matches!(restart(&live, &none, scope), Err((wire::RestartRefusal::Unknown, _))));
+                assert!(matches!(
+                    restart(&live, &none, scope),
+                    Err((wire::RestartRefusal::Unknown, _))
+                ));
                 lock(&live.generations).restarting.insert(1);
-                assert!(matches!(restart(&live, &ask(5, &[], long), scope), Err((wire::RestartRefusal::Running, _))));
+                assert!(matches!(
+                    restart(&live, &ask(5, &[], long), scope),
+                    Err((wire::RestartRefusal::Running, _))
+                ));
             });
         }
 
@@ -9913,32 +10003,49 @@ mod tests {
             wire::Ready::Passed(3),
         ] {
             let said = ready.encode();
-            let (answer, payload) = relayed(kind::WORKLOAD_READY, &said, |_| 0).unwrap();
+            let (answer, payload) = relayed(kind::WORKLOAD_READY, &said, |_| (0, false)).unwrap();
             assert_eq!(answer, wire::to_client::READY);
             assert_eq!(payload, said);
             assert_eq!(wire::ready(&payload), Ok(ready));
         }
         for malformed in [&[0u8; 9][..], &[1, 0, 0, 0, 0, 0, 0, 0, 1], &[2; 8], &[]] {
-            assert_eq!(relayed(kind::WORKLOAD_READY, malformed, |_| 0), None, "{malformed:?}");
+            assert_eq!(
+                relayed(kind::WORKLOAD_READY, malformed, |_| (0, false)),
+                None,
+                "{malformed:?}"
+            );
         }
         for end in [
             shards_abi::run::members::End::Exited(143),
             shards_abi::run::members::End::Signaled(15),
         ] {
             let ended = shards_abi::run::members::Ended { member: 1, end }.encode();
-            let (answer, payload) = relayed(kind::MEMBER_ENDED, &ended, |_| 0).unwrap();
+            let (answer, payload) = relayed(kind::MEMBER_ENDED, &ended, |_| (0, false)).unwrap();
             assert_eq!(answer, wire::to_client::MEMBER_ENDED);
             assert_eq!(
                 wire::MemberEnded::decode(&payload),
                 Ok(wire::MemberEnded {
                     member: 1,
                     generation: 0,
-                    end
+                    end,
+                    killed: false,
                 })
             );
         }
+        // A generation its restart sent a kill: killed where its end is the kill's, SIGKILL,
+        // and not where it ended of itself as the kill went (D270 slice 3b).
+        for (end, killed) in [
+            (shards_abi::run::members::End::Signaled(9), true),
+            (shards_abi::run::members::End::Exited(0), false),
+            (shards_abi::run::members::End::Signaled(15), false),
+        ] {
+            let ended = shards_abi::run::members::Ended { member: 1, end }.encode();
+            let (_, payload) = relayed(kind::MEMBER_ENDED, &ended, |_| (3, true)).unwrap();
+            let told = wire::MemberEnded::decode(&payload).unwrap();
+            assert_eq!((told.generation, told.end, told.killed), (3, end, killed));
+        }
         for other in [kind::READY, kind::PROCESS, kind::DONE] {
-            assert_eq!(relayed(other, &[1; 9], |_| 0), None);
+            assert_eq!(relayed(other, &[1; 9], |_| (0, false)), None);
         }
     }
 

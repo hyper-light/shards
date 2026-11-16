@@ -880,11 +880,11 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                     drop(held);
                 }
             }
-            // A member held for its next generation (D270 slice 3b), its owner's ask: held for
-            // the guest's signal connection.
+            // A member held for its next generation, or let go (D270 slice 3b), its owner's
+            // ask: held for the guest's signal connection.
             kind::MEMBER_HOLD if matches!(from, From::Daemon(_)) => {
-                if let Ok(member) = <[u8; 4]>::try_from(message.payload.as_slice()) {
-                    let _ = workload::hold_member(to, u32::from_be_bytes(member));
+                if let Some(hold) = shards_abi::run::members::Hold::decode(&message.payload) {
+                    let _ = workload::hold_member(to, hold);
                 }
             }
             // A member's next generation (D270 slice 3b), its owner's ask: its input's token

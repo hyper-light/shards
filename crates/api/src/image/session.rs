@@ -94,10 +94,10 @@ struct State {
     /// Each member's stdin its spec asked for, by its index and generation.
     inputs: HashMap<(u32, u32), InputFlow>,
     /// Each member's generation's end, by its index and generation.
-    ends: HashMap<(u32, u32), shards_abi::run::members::End>,
+    ends: HashMap<(u32, u32), MemberEnd>,
     /// Each restart asked and still awaited, by its ask's id, and its answer once it came
     /// (D270 slice 3b), held as [`rooms`](Self::rooms) is.
-    restarts: HashMap<u32, Option<Result<u32, (wire::RestartRefusal, String)>>>,
+    restarts: HashMap<u32, Option<Restarted>>,
     stats: HashMap<u32, Result<Stats, String>>,
     /// Each plug's or unplug's answer, by its ask's id (D235).
     plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
@@ -229,6 +229,10 @@ type Awaited<T> = HashMap<u32, Option<Result<T, String>>>;
 
 /// A save's outcome as its host said it (D259): saved, or refused and why.
 type Saved = Result<(), (wire::SaveRefusal, String)>;
+
+/// A restart's outcome as its host said it (D270 slice 3b): the generation it started, or
+/// refused and why.
+type Restarted = Result<u32, (wire::RestartRefusal, String)>;
 
 /// A network change's outcome as its host said it (D269): made, or refused and why.
 type NetAnswered = Result<wire::NetChanged, (wire::NetRefusal, String)>;
@@ -750,10 +754,11 @@ impl Shared {
                 why: e.to_string(),
             })
             .and_then(|ask| {
-                self.send(wire::to_host::RESTART, &ask).map_err(|e| ImageRefusal::Os {
-                    what: "the run host's restart",
-                    kind: e.kind(),
-                })
+                self.send(wire::to_host::RESTART, &ask)
+                    .map_err(|e| ImageRefusal::Os {
+                        what: "the run host's restart",
+                        kind: e.kind(),
+                    })
             })
             .and_then(|()| {
                 self.wait(waited, |s| {
@@ -1616,7 +1621,11 @@ type Pumped = ((u32, u32, Channel), io::PipeReader);
 /// same, its end its session's to tell (`State::end_seen`), as `pump` takes its own credits'
 /// (WHP at 3a05bc3f1: a template's run of `exit 3`, restored, ended before its first credit
 /// went, and its boot was refused `BrokenPipe`).
-fn pumped(shared: &Arc<Shared>, members: &[MemberInfo], generation: u32) -> Result<Vec<Pumped>, ImageRefusal> {
+fn pumped(
+    shared: &Arc<Shared>,
+    members: &[MemberInfo],
+    generation: u32,
+) -> Result<Vec<Pumped>, ImageRefusal> {
     let mut outputs = Vec::new();
     for m in members.iter().filter(|m| m.runs) {
         for channel in [Channel::Stdout, Channel::Stderr] {
@@ -1716,7 +1725,10 @@ fn feed(shared: &Shared, member: u32, generation: u32, mut reader: impl io::Read
             let state = lock(&shared.state);
             if state.end.is_some()
                 || state.answered
-                || state.inputs.get(&(member, generation)).is_none_or(|f| f.ended.is_some())
+                || state
+                    .inputs
+                    .get(&(member, generation))
+                    .is_none_or(|f| f.ended.is_some())
             {
                 return;
             }
@@ -1757,7 +1769,10 @@ fn input_pipe(
     if state.end.is_some() || state.answered {
         return Err(io::ErrorKind::BrokenPipe.into());
     }
-    let flow = state.inputs.get_mut(&(member, generation)).ok_or(io::ErrorKind::InvalidInput)?;
+    let flow = state
+        .inputs
+        .get_mut(&(member, generation))
+        .ok_or(io::ErrorKind::InvalidInput)?;
     if flow.ended.is_some() {
         return Err(io::ErrorKind::BrokenPipe.into());
     }
@@ -1893,7 +1908,10 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         }
         k::OUTPUT => {
             let out = wire::Output::decode(payload).map_err(bad)?;
-            let flow = state.flows.entry((out.member, out.generation, out.channel)).or_default();
+            let flow = state
+                .flows
+                .entry((out.member, out.generation, out.channel))
+                .or_default();
             if flow.ended.is_some() {
                 return Err("output after its channel's end".into());
             }
@@ -1901,14 +1919,22 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         }
         k::OUTPUT_END => {
             let end = wire::OutputEnd::decode(payload).map_err(bad)?;
-            let flow = state.flows.entry((end.member, end.generation, end.channel)).or_default();
+            let flow = state
+                .flows
+                .entry((end.member, end.generation, end.channel))
+                .or_default();
             if flow.ended.replace(end.end).is_some() {
                 return Err("a channel ended twice".into());
             }
         }
         k::MEMBER_ENDED => {
             let e = wire::MemberEnded::decode(payload).map_err(bad)?;
-            if state.ends.insert((e.member, e.generation), e.end).is_some() {
+            let end = match e.end {
+                _ if e.killed => MemberEnd::Killed,
+                shards_abi::run::members::End::Exited(code) => MemberEnd::Exited(code),
+                shards_abi::run::members::End::Signaled(signal) => MemberEnd::Signaled(signal),
+            };
+            if state.ends.insert((e.member, e.generation), end).is_some() {
                 return Err("a member ended twice".into());
             }
         }
@@ -2677,10 +2703,13 @@ impl ImageGuest for Session {
         let index = self.index(member)?.index;
         {
             let mut state = lock(&self.shared.state);
-            let flow = state.inputs.get_mut(&(index, generation)).ok_or_else(|| ImageRefusal::Spec {
-                what: "a member's stdin",
-                why: format!("{member:?}: its spec asks for no stdin of it"),
-            })?;
+            let flow = state
+                .inputs
+                .get_mut(&(index, generation))
+                .ok_or_else(|| ImageRefusal::Spec {
+                    what: "a member's stdin",
+                    why: format!("{member:?}: its spec asks for no stdin of it"),
+                })?;
             if flow.taken {
                 return Err(ImageRefusal::Spec {
                     what: "a member's stdin",
@@ -2725,10 +2754,7 @@ impl ImageGuest for Session {
         let index = info.index;
         Ok(self.shared.wait(timeout, |s| {
             if let Some(end) = s.ends.get(&(index, generation)) {
-                return Some(match *end {
-                    shards_abi::run::members::End::Exited(code) => MemberEnd::Exited(code),
-                    shards_abi::run::members::End::Signaled(signal) => MemberEnd::Signaled(signal),
-                });
+                return Some(*end);
             }
             (s.end.is_some() || s.gone()).then_some(MemberEnd::WithRun)
         }))
@@ -2748,10 +2774,17 @@ impl ImageGuest for Session {
             )));
         }
         let index = info.index;
-        Ok(self.shared.wait(timeout, |s| channel_end(s, index, generation, channel)))
+        Ok(self
+            .shared
+            .wait(timeout, |s| channel_end(s, index, generation, channel)))
     }
 
-    fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration) -> Result<u32, ImageRefusal> {
+    fn restart(
+        &self,
+        member: &MemberName,
+        args: &[Vec<u8>],
+        patience: Duration,
+    ) -> Result<u32, ImageRefusal> {
         let info = self.index(member)?;
         if !info.runs {
             return Err(ImageRefusal::Image(format!(
@@ -3020,7 +3053,10 @@ mod tests {
         let ended = untold(RunEnd::Exited(0)).encode().unwrap();
         assert_eq!(take(&s, wire::to_client::ENDED, &ended), Ok(true));
         let state = lock(&s.state);
-        assert_eq!(channel_end(&state, 1, 0, Channel::Stdout), Some(ChannelEnd::Closed));
+        assert_eq!(
+            channel_end(&state, 1, 0, Channel::Stdout),
+            Some(ChannelEnd::Closed)
+        );
         assert_eq!(
             channel_end(&state, 1, 0, Channel::Stderr),
             Some(ChannelEnd::Aborted(104))
@@ -4191,16 +4227,26 @@ mod tests {
         let s = shared();
         lock(&s.state).restarts.insert(7, None);
         let answer = wire::RestartAnswer { id: 7, result: Ok(1) };
-        assert_eq!(take(&s, wire::to_client::RESTARTED, &answer.encode().unwrap()), Ok(false));
+        assert_eq!(
+            take(&s, wire::to_client::RESTARTED, &answer.encode().unwrap()),
+            Ok(false)
+        );
         assert_eq!(lock(&s.state).restarts.get(&7).cloned(), Some(Some(Ok(1))));
         let unawaited = wire::RestartAnswer {
             id: 8,
             result: Err((wire::RestartRefusal::Running, "under way".into())),
         };
-        assert_eq!(take(&s, wire::to_client::RESTARTED, &unawaited.encode().unwrap()), Ok(false));
+        assert_eq!(
+            take(&s, wire::to_client::RESTARTED, &unawaited.encode().unwrap()),
+            Ok(false)
+        );
         assert!(!lock(&s.state).restarts.contains_key(&8));
         for generation in [0, 1] {
-            let payload = [&wire::Output::head(1, generation, Channel::Stdout)[..], b"its own"].concat();
+            let payload = [
+                &wire::Output::head(1, generation, Channel::Stdout)[..],
+                b"its own",
+            ]
+            .concat();
             assert_eq!(take(&s, wire::to_client::OUTPUT, &payload), Ok(false));
             let end = wire::OutputEnd {
                 member: 1,
@@ -4209,24 +4255,40 @@ mod tests {
                 end: wire::StreamEnd::Closed,
             };
             assert_eq!(take(&s, wire::to_client::OUTPUT_END, &end.encode()), Ok(false));
+            // Its first generation killed by its restart, its next exited of itself.
             let ended = wire::MemberEnded {
                 member: 1,
                 generation,
-                end: shards_abi::run::members::End::Exited(0),
+                end: [
+                    shards_abi::run::members::End::Signaled(9),
+                    shards_abi::run::members::End::Exited(0),
+                ][generation as usize],
+                killed: generation == 0,
             };
-            assert_eq!(take(&s, wire::to_client::MEMBER_ENDED, &ended.encode()), Ok(false));
+            assert_eq!(
+                take(&s, wire::to_client::MEMBER_ENDED, &ended.encode()),
+                Ok(false)
+            );
         }
         {
             let state = lock(&s.state);
-            assert_eq!(channel_end(&state, 1, 0, Channel::Stdout), Some(ChannelEnd::Closed));
-            assert_eq!(channel_end(&state, 1, 1, Channel::Stdout), Some(ChannelEnd::Closed));
+            assert_eq!(
+                channel_end(&state, 1, 0, Channel::Stdout),
+                Some(ChannelEnd::Closed)
+            );
+            assert_eq!(
+                channel_end(&state, 1, 1, Channel::Stdout),
+                Some(ChannelEnd::Closed)
+            );
             assert_eq!(state.flows[&(1, 1, Channel::Stdout)].queued.len(), 1);
-            assert_eq!(state.ends.len(), 2);
+            assert_eq!(state.ends.get(&(1, 0)), Some(&MemberEnd::Killed));
+            assert_eq!(state.ends.get(&(1, 1)), Some(&MemberEnd::Exited(0)));
         }
         let twice = wire::MemberEnded {
             member: 1,
             generation: 1,
             end: shards_abi::run::members::End::Exited(0),
+            killed: false,
         };
         assert!(take(&s, wire::to_client::MEMBER_ENDED, &twice.encode()).is_err());
         lock(&s.state).inputs.insert((2, 0), InputFlow::default());
@@ -4240,7 +4302,10 @@ mod tests {
         };
         assert_eq!(take(&s, wire::to_client::INPUT_ROOM, &room(2, 1)), Ok(false));
         assert_eq!(lock(&s.state).inputs[&(2, 1)].room, 5);
-        assert!(take(&s, wire::to_client::INPUT_ROOM, &room(3, 1)).is_err(), "a member with no stdin");
+        assert!(
+            take(&s, wire::to_client::INPUT_ROOM, &room(3, 1)).is_err(),
+            "a member with no stdin"
+        );
     }
 
     /// D271: a plug is for every member that runs, or for each one named that runs, by its
