@@ -1,0 +1,315 @@
+# Pinned sources' own words for the eight harnesses' sign-ins (D242, plan step 33's sign-in profiles lane).
+# Each file's commit and sha256 are SOURCES.tsv's. Quoted as file:line: text; client secrets redacted.
+
+## pi 1.5.2: Anthropic (Claude Pro/Max) sign-in
+pi/anthropic.ts:13: const decode = (s: string) => atob(s);
+pi/anthropic.ts:14: const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
+pi/anthropic.ts:15: const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
+pi/anthropic.ts:16: const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+pi/anthropic.ts:23: const COPY_CODE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
+pi/anthropic.ts:24: const ANTHROPIC_BROWSER_LOGIN_METHOD = "browser";
+pi/anthropic.ts:25: const ANTHROPIC_COPY_CODE_LOGIN_METHOD = "copy_code";
+pi/anthropic.ts:26: const SCOPES =
+pi/anthropic.ts:27: 	"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+pi/anthropic.ts:76: async function postJson(url: string, body: Record<string, string | number>, signal: AbortSignal): Promise<string> {
+pi/anthropic.ts:77: 	const response = await fetch(url, {
+pi/anthropic.ts:78: 		method: "POST",
+pi/anthropic.ts:79: 		headers: {
+pi/anthropic.ts:80: 			"Content-Type": "application/json",
+pi/anthropic.ts:81: 			Accept: "application/json",
+pi/anthropic.ts:82: 		},
+pi/anthropic.ts:83: 		body: JSON.stringify(body),
+pi/anthropic.ts:84: 		signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+pi/anthropic.ts:104: 	try {
+pi/anthropic.ts:105: 		responseBody = await postJson(
+pi/anthropic.ts:106: 			TOKEN_URL,
+pi/anthropic.ts:107: 			{
+pi/anthropic.ts:108: 				grant_type: "authorization_code",
+pi/anthropic.ts:109: 				client_id: CLIENT_ID,
+pi/anthropic.ts:110: 				code,
+pi/anthropic.ts:111: 				state,
+pi/anthropic.ts:112: 				redirect_uri: redirectUri,
+pi/anthropic.ts:113: 				code_verifier: verifier,
+pi/anthropic.ts:133: 		type: "oauth",
+pi/anthropic.ts:134: 		refresh: tokenData.refresh_token,
+pi/anthropic.ts:135: 		access: tokenData.access_token,
+pi/anthropic.ts:136: 		expires: Date.now() + tokenData.expires_in * 1000 - 5 * 60 * 1000,
+pi/anthropic.ts:137: 	};
+pi/anthropic.ts:240: async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal): Promise<OAuthCredential> {
+pi/anthropic.ts:241: 	let responseBody: string;
+pi/anthropic.ts:242: 	try {
+pi/anthropic.ts:243: 		responseBody = await postJson(
+pi/anthropic.ts:244: 			TOKEN_URL,
+pi/anthropic.ts:245: 			{
+pi/anthropic.ts:246: 				grant_type: "refresh_token",
+pi/anthropic.ts:247: 				client_id: CLIENT_ID,
+pi/anthropic.ts:248: 				refresh_token: refreshToken,
+pi/anthropic.ts:249: 			},
+pi/anthropic.ts:271: 		type: "oauth",
+pi/anthropic.ts:272: 		refresh: data.refresh_token,
+pi/anthropic.ts:273: 		access: data.access_token,
+pi/anthropic.ts:274: 		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+pi/anthropic.ts:275: 	};
+
+## pi 1.5.2: ChatGPT (openai-codex) sign-in reads its access token as a JWT
+pi/openai-codex.ts:22: const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+pi/openai-codex.ts:23: const AUTH_BASE_URL = "https://auth.openai.com";
+pi/openai-codex.ts:24: const AUTHORIZE_URL = `${AUTH_BASE_URL}/oauth/authorize`;
+pi/openai-codex.ts:25: const TOKEN_URL = `${AUTH_BASE_URL}/oauth/token`;
+pi/openai-codex.ts:26: const REDIRECT_URI = "http://localhost:1455/auth/callback";
+pi/openai-codex.ts:27: const DEVICE_USER_CODE_URL = `${AUTH_BASE_URL}/api/accounts/deviceauth/usercode`;
+pi/openai-codex.ts:28: const DEVICE_TOKEN_URL = `${AUTH_BASE_URL}/api/accounts/deviceauth/token`;
+pi/openai-codex.ts:35: const JWT_CLAIM_PATH = "https://api.openai.com/auth";
+pi/openai-codex.ts:99: function decodeJwt(token: string): JwtPayload | null {
+pi/openai-codex.ts:100: 	try {
+pi/openai-codex.ts:101: 		const parts = token.split(".");
+pi/openai-codex.ts:102: 		if (parts.length !== 3) return null;
+pi/openai-codex.ts:103: 		const payload = parts[1] ?? "";
+pi/openai-codex.ts:104: 		const decoded = atob(payload);
+pi/openai-codex.ts:105: 		return JSON.parse(decoded) as JwtPayload;
+pi/openai-codex.ts:106: 	} catch {
+pi/openai-codex.ts:107: 		return null;
+pi/openai-codex.ts:108: 	}
+pi/openai-codex.ts:109: }
+pi/openai-codex.ts:310: function getAccountId(accessToken: string): string | null {
+pi/openai-codex.ts:311: 	const payload = decodeJwt(accessToken);
+pi/openai-codex.ts:312: 	const auth = payload?.[JWT_CLAIM_PATH];
+pi/openai-codex.ts:313: 	const accountId = auth?.chatgpt_account_id;
+pi/openai-codex.ts:314: 	return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
+pi/openai-codex.ts:315: }
+pi/openai-codex.ts:316: 
+pi/openai-codex.ts:317: function credentialsFromToken(token: OAuthToken): OAuthCredential {
+pi/openai-codex.ts:318: 	const accountId = getAccountId(token.access);
+pi/openai-codex.ts:319: 	if (!accountId) {
+pi/openai-codex.ts:320: 		throw new Error("Failed to extract accountId from token");
+pi/openai-codex.ts:321: 	}
+
+## pi 1.5.2: its credential store
+pi/auth-storage.ts:64: 	constructor(authPath: string = join(getAgentDir(), "auth.json")) {
+pi/auth-storage.ts:243: 				if (validKey && validEnv) continue;
+pi/auth-storage.ts:244: 			} else if (
+pi/auth-storage.ts:245: 				value.type === "oauth" &&
+pi/auth-storage.ts:246: 				typeof value.access === "string" &&
+pi/auth-storage.ts:247: 				typeof value.refresh === "string" &&
+pi/auth-storage.ts:248: 				typeof value.expires === "number" &&
+pi/auth-storage.ts:249: 				Number.isFinite(value.expires)
+pi/auth-storage.ts:250: 			) {
+pi/auth-storage.ts:251: 				continue;
+
+## opencode 2.2.7: ChatGPT sign-in verifies its ID token's signature
+opencode/chatgpt.ts:24: const issuer = "https://auth.openai.com"
+opencode/chatgpt.ts:25: const tokenURL = `${issuer}/api/accounts/oauth/token`
+opencode/chatgpt.ts:26: const resource = "https://api.openai.com/v1"
+opencode/chatgpt.ts:184:                 )
+opencode/chatgpt.ts:185:               if (!tokens.id_token) return yield* Effect.fail(new Error("ChatGPT sign-in did not return an ID token."))
+opencode/chatgpt.ts:186:               yield* verifyIDToken(tokens.id_token, clientID, nonce)
+opencode/chatgpt.ts:187:               return credential(tokens, clientID)
+opencode/chatgpt.ts:461:   token: string,
+opencode/chatgpt.ts:462:   clientID: string,
+opencode/chatgpt.ts:463:   nonce: string,
+opencode/chatgpt.ts:464:   jwksURL = new URL(`${issuer}/.well-known/jwks.json`),
+opencode/chatgpt.ts:465: ) {
+opencode/chatgpt.ts:466:   return Effect.tryPromise({
+opencode/chatgpt.ts:467:     try: async () => {
+opencode/chatgpt.ts:468:       const { createRemoteJWKSet, jwtVerify } = await import("jose")
+opencode/chatgpt.ts:469:       const { payload } = await jwtVerify(token, createRemoteJWKSet(jwksURL), {
+opencode/chatgpt.ts:470:         issuer,
+opencode/chatgpt.ts:471:         audience: clientID,
+opencode/chatgpt.ts:472:         algorithms: ["RS256"],
+opencode/chatgpt.ts:473:         requiredClaims: ["exp", "nonce", "sub"],
+opencode/chatgpt.ts:474:       })
+opencode/chatgpt.ts:475:       if (typeof payload.sub !== "string" || !payload.sub.trim()) throw new Error("ID token subject is missing")
+opencode/chatgpt.ts:476:       if (payload.nonce !== nonce) throw new Error("ID token nonce does not match this sign-in attempt")
+opencode/chatgpt.ts:477:     },
+opencode/chatgpt.ts:478:     catch: (cause) => new Error("ChatGPT sign-in returned an invalid ID token.", { cause }),
+
+## goose 1.59.0: ChatGPT (chatgpt_codex) sign-in
+goose/chatgpt_codex.rs:38: const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+goose/chatgpt_codex.rs:39: const ISSUER: &str = "https://auth.openai.com";
+goose/chatgpt_codex.rs:40: const CODEX_API_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
+goose/chatgpt_codex.rs:317: #[derive(Debug, Clone, Serialize, Deserialize)]
+goose/chatgpt_codex.rs:318: struct TokenData {
+goose/chatgpt_codex.rs:319:     access_token: String,
+goose/chatgpt_codex.rs:320:     refresh_token: String,
+goose/chatgpt_codex.rs:321:     id_token: Option<String>,
+goose/chatgpt_codex.rs:322:     expires_at: DateTime<Utc>,
+goose/chatgpt_codex.rs:323:     account_id: Option<String>,
+goose/chatgpt_codex.rs:324: }
+goose/chatgpt_codex.rs:325: 
+goose/chatgpt_codex.rs:326: #[derive(Debug, Clone)]
+goose/chatgpt_codex.rs:327: pub(crate) struct TokenCache {
+goose/chatgpt_codex.rs:328:     cache_path: PathBuf,
+goose/chatgpt_codex.rs:329: }
+goose/chatgpt_codex.rs:330: 
+goose/chatgpt_codex.rs:331: fn get_cache_path() -> PathBuf {
+goose/chatgpt_codex.rs:332:     Paths::in_config_dir("chatgpt_codex/tokens.json")
+goose/chatgpt_codex.rs:333: }
+goose/chatgpt_codex.rs:412: fn extract_account_id(token_data: &TokenData) -> Option<String> {
+goose/chatgpt_codex.rs:413:     if let Some(id_token) = token_data.id_token.as_deref() {
+goose/chatgpt_codex.rs:414:         if let Some(claims) = parse_jwt_claims(id_token) {
+goose/chatgpt_codex.rs:415:             if let Some(account_id) = account_id_from_claims(&claims) {
+goose/chatgpt_codex.rs:416:                 return Some(account_id);
+goose/chatgpt_codex.rs:417:             }
+goose/chatgpt_codex.rs:418:         }
+goose/chatgpt_codex.rs:419:     }
+goose/chatgpt_codex.rs:420: 
+goose/chatgpt_codex.rs:421:     parse_jwt_claims(&token_data.access_token).and_then(|claims| account_id_from_claims(&claims))
+goose/chatgpt_codex.rs:422: }
+goose/chatgpt_codex.rs:461: #[derive(Debug, Deserialize)]
+goose/chatgpt_codex.rs:462: struct TokenResponse {
+goose/chatgpt_codex.rs:463:     access_token: String,
+goose/chatgpt_codex.rs:464:     refresh_token: String,
+goose/chatgpt_codex.rs:465:     id_token: Option<String>,
+goose/chatgpt_codex.rs:466:     expires_in: Option<i64>,
+goose/chatgpt_codex.rs:500: async fn refresh_access_token_with_issuer(
+goose/chatgpt_codex.rs:501:     issuer: &str,
+goose/chatgpt_codex.rs:502:     refresh_token: &str,
+goose/chatgpt_codex.rs:503: ) -> Result<TokenResponse> {
+goose/chatgpt_codex.rs:504:     let client = reqwest::Client::new();
+goose/chatgpt_codex.rs:505:     let params = [
+goose/chatgpt_codex.rs:506:         ("grant_type", "refresh_token"),
+goose/chatgpt_codex.rs:507:         ("refresh_token", refresh_token),
+goose/chatgpt_codex.rs:508:         ("client_id", CLIENT_ID),
+goose/chatgpt_codex.rs:509:     ];
+goose/chatgpt_codex.rs:510: 
+goose/chatgpt_codex.rs:511:     let resp = client
+goose/chatgpt_codex.rs:512:         .post(format!("{}/oauth/token", issuer))
+goose/chatgpt_codex.rs:513:         .header("Content-Type", "application/x-www-form-urlencoded")
+goose/chatgpt_codex.rs:514:         .form(&params)
+goose/chatgpt_codex.rs:767:     async fn get_valid_token(&self) -> Result<TokenData> {
+goose/chatgpt_codex.rs:768:         if let Some(mut token_data) = self.cache.load() {
+goose/chatgpt_codex.rs:769:             if token_data.expires_at > Utc::now() + chrono::Duration::seconds(60) {
+goose/chatgpt_codex.rs:770:                 return Ok(token_data);
+goose/chatgpt_codex.rs:771:             }
+goose/chatgpt_codex.rs:772: 
+goose/chatgpt_codex.rs:773:             tracing::debug!("Token expired, attempting refresh");
+goose/chatgpt_codex.rs:774:             match refresh_access_token_with_issuer(ISSUER, &token_data.refresh_token).await {
+goose/chatgpt_codex.rs:775:                 Ok(new_tokens) => {
+goose/chatgpt_codex.rs:776:                     token_data.access_token = new_tokens.access_token;
+goose/chatgpt_codex.rs:777:                     token_data.refresh_token = new_tokens.refresh_token;
+goose/chatgpt_codex.rs:778:                     if new_tokens.id_token.is_some() {
+goose/chatgpt_codex.rs:779:                         token_data.id_token = new_tokens.id_token;
+goose/chatgpt_codex.rs:780:                     }
+goose/chatgpt_codex.rs:781:                     token_data.expires_at = Utc::now()
+goose/chatgpt_codex.rs:782:                         + chrono::Duration::seconds(new_tokens.expires_in.unwrap_or(3600));
+goose/chatgpt_codex.rs:783:                     if token_data.account_id.is_none() {
+goose/chatgpt_codex.rs:784:                         token_data.account_id = extract_account_id(&token_data);
+goose/chatgpt_codex.rs:785:                     }
+goose/chatgpt_codex.rs:786:                     self.cache.save(&token_data)?;
+goose/chatgpt_codex.rs:787:                     tracing::info!("Token refreshed successfully");
+goose/chatgpt_codex.rs:788:                     return Ok(token_data);
+goose/chatgpt_codex.rs:789:                 }
+goose/chatgpt_codex.rs:790:                 Err(e) => {
+
+## goose 1.59.0: Google (gemini_oauth) sign-in
+goose/gemini_oauth.rs:50: // well-known public credentials published by the Gemini CLI.
+goose/gemini_oauth.rs:51: // Per Google's docs, client secrets for installed apps are not truly secret.
+goose/gemini_oauth.rs:52: //
+goose/gemini_oauth.rs:53: // The default values are constructed at runtime to avoid triggering
+goose/gemini_oauth.rs:54: // GitHub push protection (which flags any string that looks like a
+goose/gemini_oauth.rs:55: // Google OAuth credential, even public ones).
+goose/gemini_oauth.rs:56: fn google_oauth_client_id() -> String {
+goose/gemini_oauth.rs:57:     std::env::var("GEMINI_OAUTH_CLIENT_ID").unwrap_or_else(|_| {
+goose/gemini_oauth.rs:58:         // Public installed-app client ID from the Gemini CLI
+goose/gemini_oauth.rs:78: const GOOGLE_AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+goose/gemini_oauth.rs:79: const GOOGLE_TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
+goose/gemini_oauth.rs:80: 
+goose/gemini_oauth.rs:81: // Code Assist API endpoint (same as Gemini CLI uses for OAuth-based access).
+goose/gemini_oauth.rs:82: const CODE_ASSIST_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
+goose/gemini_oauth.rs:83: const CODE_ASSIST_API_VERSION: &str = "v1internal";
+goose/gemini_oauth.rs:84: 
+goose/gemini_oauth.rs:85: const OAUTH_SCOPES: &[&str] = &[
+goose/gemini_oauth.rs:86:     "https://www.googleapis.com/auth/cloud-platform",
+goose/gemini_oauth.rs:87:     "https://www.googleapis.com/auth/userinfo.email",
+goose/gemini_oauth.rs:88: ];
+goose/gemini_oauth.rs:152: fn get_cache_path() -> PathBuf {
+goose/gemini_oauth.rs:153:     Paths::in_config_dir("gemini_oauth/tokens.json")
+goose/gemini_oauth.rs:154: }
+goose/gemini_oauth.rs:272: async fn refresh_access_token(refresh_token: &str) -> Result<TokenResponse> {
+goose/gemini_oauth.rs:273:     let client = &*HTTP_CLIENT;
+goose/gemini_oauth.rs:274:     let client_id = google_oauth_client_id();
+goose/gemini_oauth.rs:275:     let client_secret = google_oauth_client_secret();
+goose/gemini_oauth.rs:276:     let params = [
+goose/gemini_oauth.rs:277:         ("grant_type", "refresh_token"),
+goose/gemini_oauth.rs:278:         ("refresh_token", refresh_token),
+goose/gemini_oauth.rs:279:         ("client_id", client_id.as_str()),
+goose/gemini_oauth.rs:280:         ("client_secret", client_secret.as_str()),
+goose/gemini_oauth.rs:281:     ];
+goose/gemini_oauth.rs:282: 
+goose/gemini_oauth.rs:283:     let resp = client
+goose/gemini_oauth.rs:284:         .post(GOOGLE_TOKEN_ENDPOINT)
+goose/gemini_oauth.rs:285:         .timeout(Duration::from_secs(DEFAULT_PROVIDER_TIMEOUT_SECS))
+goose/gemini_oauth.rs:286:         .header("Content-Type", "application/x-www-form-urlencoded")
+goose/gemini_oauth.rs:287:         .form(&params)
+goose/gemini_oauth.rs:288:         .send()
+
+## goose 1.59.0: GOOSE_PATH_ROOT
+goose/paths.rs:8:     fn get_dir(dir_type: DirType) -> PathBuf {
+goose/paths.rs:9:         if let Some(base) = Self::path_root() {
+goose/paths.rs:10:             match dir_type {
+goose/paths.rs:11:                 DirType::Config => base.join("config"),
+goose/paths.rs:12:                 DirType::Data => base.join("data"),
+goose/paths.rs:13:                 DirType::State => base.join("state"),
+goose/paths.rs:14:                 DirType::Plugins => base.join(".agents").join("plugins"),
+goose/paths.rs:15:                 DirType::Agents => base.join(".agents").join("agents"),
+goose/paths.rs:16:                 DirType::AgentsHome => base.join(".agents"),
+goose/paths.rs:41:         Self::validated_path_root(std::env::var_os("GOOSE_PATH_ROOT"))
+goose/paths.rs:80:     pub fn in_config_dir(subpath: &str) -> PathBuf {
+goose/paths.rs:81:         Self::config_dir().join(subpath)
+goose/paths.rs:82:     }
+
+## Amp (its docs, fetched 2026-11-16)
+docs/amp-cli.md:62: ## Manage CLI accounts
+docs/amp-cli.md:63: 
+docs/amp-cli.md:64: Run `amp login` to add an account and make it active for the current Amp server. The CLI keeps accounts
+docs/amp-cli.md:65: for each server separate. Use `amp account list` to see saved accounts and `amp account switch
+docs/amp-cli.md:66: <email-or-user-id>` to choose the account used by future CLI commands.
+docs/amp-cli.md:67: 
+docs/amp-cli.md:68: Each running CLI process stays with the account it started with. Switching accounts does not
+docs/amp-cli.md:69: change an already running process. Start a new `amp` process after switching.
+docs/amp-cli.md:70: 
+docs/amp-cli.md:71: Run `amp logout` to remove the active saved account, `amp logout <email-or-user-id>` to remove a
+docs/amp-cli.md:72: specific account, or `amp logout --all` to remove all saved CLI accounts on every Amp server.
+docs/amp-cli.md:73: Removing the active account does not select another account. Use `amp account switch` or log in again.
+docs/amp-cli.md:74: This does not sign out browser or native app sessions. If `AMP_API_KEY` is set, it remains active
+docs/amp-cli.md:75: in that shell and takes precedence over saved accounts until you unset it.
+docs/amp-cli-execute-mode.md:125: 
+docs/amp-cli-execute-mode.md:126: For non-interactive environments, such as scripts and CI/CD pipelines, set your
+docs/amp-cli-execute-mode.md:127: [access token](/settings/security#access-token) in an environment variable:
+docs/amp-cli-execute-mode.md:128: 
+docs/amp-cli-execute-mode.md:129: ```bash
+docs/amp-cli-execute-mode.md:130: export AMP_API_KEY=your-access-token-here
+docs/amp-cli-execute-mode.md:131: ```
+docs/amp-cli-execute-mode.md:132: 
+docs/amp-cli-execute-mode.md:133: Use an access token from Settings, which starts with `sgamp_`. The CLI rejects the short-lived
+docs/amp-cli-execute-mode.md:134: session token that `amp login` stores, because it expires within an hour and cannot be refreshed
+docs/amp-cli-execute-mode.md:135: from an environment variable.
+docs/amp-cli-execute-mode.md:136: 
+docs/amp-cli-execute-mode.md:137: To run a pipeline as the workspace instead of as yourself, use the API key of a
+docs/amp-cli-execute-mode.md:138: [service account](/docs/collaborate/workspaces#service-accounts).
+
+## pi 1.5.2: it tells an Anthropic OAuth token by its form
+pi/anthropic-messages.ts:1256: function isOAuthToken(apiKey: string): boolean {
+pi/anthropic-messages.ts:1257: 	return apiKey.includes("sk-ant-oat");
+pi/anthropic-messages.ts:1258: }
+pi/anthropic-messages.ts:1293: 	// OAuth: Bearer auth, Claude Code identity headers instead of the client identity.
+pi/anthropic-messages.ts:1294: 	if (apiKey && isOAuthToken(apiKey)) {
+pi/anthropic-messages.ts:1295: 		const client = new PiAnthropic({
+pi/anthropic-messages.ts:1296: 			apiKey: null,
+pi/anthropic-messages.ts:1297: 			authToken: apiKey,
+pi/anthropic-messages.ts:1298: 			baseURL: model.baseUrl,
+pi/anthropic-messages.ts:1299: 			dangerouslyAllowBrowser: true,
+pi/anthropic-messages.ts:1300: 			fetch,
+
+## goose 1.59.0: its ChatGPT token as a bearer
+goose/chatgpt_codex.rs:806:     async fn get_auth_header(&self) -> Result<(String, String)> {
+goose/chatgpt_codex.rs:807:         let token_data = self.get_valid_token().await?;
+goose/chatgpt_codex.rs:808:         Ok((
+goose/chatgpt_codex.rs:809:             "Authorization".to_string(),
+goose/chatgpt_codex.rs:810:             format!("Bearer {}", token_data.access_token),
+goose/chatgpt_codex.rs:811:         ))
+goose/chatgpt_codex.rs:869:             .post(format!("{}/responses", CODEX_API_ENDPOINT))
+goose/chatgpt_codex.rs:870:             .header(
+goose/chatgpt_codex.rs:871:                 "Authorization",
+goose/chatgpt_codex.rs:872:                 format!("Bearer {}", token_data.access_token),
+goose/chatgpt_codex.rs:873:             )

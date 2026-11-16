@@ -9,6 +9,10 @@
 //! Each shape is cited to the CLI's own build, read and never run: Claude Code 2.1.311's bundle
 //! (linux-x64, sha256 86dc1fcc…8ada; offsets into that file) and Codex rust-v0.167.2's sources
 //! (commit ce21072c9; paths under codex-rs). The reads are docs/research/s33-veil-creds/STEP8.md's.
+//!
+//! A profile is its OAuth client's token endpoint, so another CLI that signs in as one of these
+//! clients is granted as that client's CLI (goose 1.59.0's ChatGPT sign-in is Codex's). Why each
+//! other kiln harness has no profile is its row in D242 (the sign-in profiles lane).
 
 use std::collections::HashMap;
 use std::fmt;

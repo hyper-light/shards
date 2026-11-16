@@ -31237,7 +31237,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; the real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -32699,6 +32699,93 @@ lane inject-h2 of kiln plan 01a1d2b88be57304b972761e2a5c6781 step 7).
   The gateway's client against a live BuildKit: shards' frontend image from this revision driven by `docker buildx
   build` in `shards-dind` (D113), and the SPIFFE Workload API's against a live SPIRE agent. The injector's real-VM
   HTTP/2 runs, as before.
+
+**Built: the other eight harnesses' sign-ins surveyed, and goose's ChatGPT sign-in granted as Codex's client**
+(plan step 33's sign-in profiles lane, kiln goal 0c23237b06c885048109e6d0fd3fd3ad; evidence
+docs/research/s33-veil-creds/evidence/signin-profiles/: each open source file read at its kiln pin's commit, its sha256 in
+`SOURCES.tsv` and its words quoted by line in `EXCERPTS.txt`; each closed build streamed from its kiln pin's URL, held
+to the pin's sha256 and searched, nothing written but the matches, by `scripts/signin-profiles-builds.sh`, into
+`<harness>-build.txt`; Gemini CLI's own files are kiln's pinned copies, kiln docs/research/s18-host-in-vm/evidence/; no
+CLI run, no sign-in made, 2026-11-16). A profile is its OAuth client's token endpoint (`signin::Profile`), so a CLI that
+signs in as another CLI's client is granted as that CLI (`Cli`) and needs no profile of its own. What decides each
+harness: whether the injector can read its sign-in's answer (an OAuth token response, RFC 6749 §5.1), whether its CLI
+takes a placeholder where its token was (no check of the token's form, signature or claims, no check at a host or in
+a place the injector doesn't fill: `inject::token_in` fills `Authorization: Bearer` and `x-api-key` alone, and nothing
+at a sign-in's token host), and whether its token host is apart from the hosts its token goes to. Step 9's table
+(docs/research/s33-veil-creds/harness-survey.md) decided each harness's trust; these decide its sign-in.
+- *Gemini CLI 0.68.0: fallback until the injector fills one check.* It signs in to a Google account as its own
+  installed-app OAuth client through google-auth-library 10.9.0: its code exchanged and its refresh made in form
+  encoding at `oauth2.googleapis.com/token` (oauth2client.js:87-90, 180-213, 238-276), their answer JSON, kept in
+  `Storage.getOAuthCredsPath()`'s file (oauth2.ts:147, 740); it revokes nothing (its sign-out removes the file,
+  771-777), its sign-in verifies no ID token (oauth2.ts), and its build has no `at_hash` (step 9). Its token goes to `cloudcode-pa.googleapis.com` and to
+  `www.googleapis.com`'s userinfo (788-796). But each start with a kept sign-in POSTs its access token, `Authorization:
+  Bearer`, to its token host's `/tokeninfo` "to see if it hasn't been revoked" (oauth2.ts:199-202; oauth2client.js:551)
+  and signs in anew where that fails (224): with nothing filled at the token host, a placeholder fails it at every
+  start. Possible once the injector fills its access token toward that one path, whose answer holds no token, with
+  Google's token endpoint as a profile and a `SignInCli` of Hex's (owed).
+- *Antigravity 1.5.7: fallback.* It signs in to a Google account through Go's `x/oauth2/google` at
+  `oauth2.googleapis.com/token` (besides a Gemini API key, GCP's enterprise sign-in and ADC, kiln's s26 record), and
+  checks its token at `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=%s` ("failed to call tokeninfo",
+  "tokeninfo returned status %d"): the token in the request's query (RFC 6750 §2.3), a place the injector never fills.
+  Nor does its build name a file of its tokens among those searched (`token.json`, `credentials.json`, `oauth_creds`,
+  its settings folder's files; its tokens are protobuf and x/oauth2 fields), so kiln could not give a later run an
+  earlier capture's placeholders.
+- *opencode 2.2.7: fallback.* It signs in per provider in its own screen (kiln signs it in to none, kiln's
+  `accounts.rs`). Its ChatGPT sign-in verifies its ID token's signature against the issuer's JWKS, with its nonce
+  (`jwtVerify`, chatgpt.ts:184-187, 461-478), which the inert ID token fails by design. Its Claude provider drives
+  Claude Code (`claude-agent`), whose sign-in is Claude Code's profile where Claude Code runs. Its other providers'
+  sign-ins weren't read here.
+- *goose 1.59.0: Codex's profile, for its ChatGPT sign-in.* It signs in per provider (kiln signs it in to none). Its
+  `chatgpt_codex` sign-in is Codex's OAuth client (chatgpt_codex.rs:38-39) at `auth.openai.com/oauth/token`, its code
+  and its refresh as forms (500-514), reading `access_token`, `refresh_token` and, where they come, `id_token` and
+  `expires_in` (461-466, 774-781); it takes its account from its ID token's claims, unverified (412-422), which the
+  inert ID token keeps; it sends its token to `chatgpt.com/backend-api/codex` as `Authorization: Bearer` (40, 872); and
+  it keeps its tokens in `chatgpt_codex/tokens.json` in its configuration folder (331-333), `config` beneath the
+  `GOOSE_PATH_ROOT` kiln's image sets (paths.rs:8-16). It revokes nothing. Its `gemini_oauth` sign-in is Gemini CLI's
+  installed-app client at `oauth2.googleapis.com/token` in forms, with no tokeninfo (gemini_oauth.rs:50-88, 272-288):
+  possible with Google's token endpoint as a profile, a `SignInCli` of Hex's, and a second sign-in name for one
+  harness, as one sign-in of a CLI a run is granted (owed).
+- *pi 1.5.2: fallback.* kiln signs it in to Anthropic or ChatGPT (`pi auth login anthropic` or `openai-codex`). Its
+  Anthropic sign-in is Claude Code's OAuth client (anthropic.ts:13-16) at `platform.claude.com/v1/oauth/token` in JSON
+  (76-84, 104-113, 240-249), kept in `$PI_CODING_AGENT_DIR/auth.json` (auth-storage.ts:64, 243-251), but pi tells an
+  OAuth token by its form, `apiKey.includes("sk-ant-oat")` (anthropic-messages.ts:1256-1258): a placeholder of the
+  broker's form (`kiln-placeholder-`, then hex) goes as an API key, in `x-api-key`, without the OAuth identity
+  Anthropic asks of an OAuth token. Its ChatGPT sign-in reads its access token as a JWT for its account and throws
+  without one (openai-codex.ts:99-109, 310-321). Its Anthropic sign-in is Claude Code's profile once a sign-in's
+  placeholder may carry the form its CLI reads (a placeholder form per provider: the broker's to decide, owed).
+- *Cursor CLI 2026.11.11: fallback.* `agent login` polls `${apiBaseUrl}/auth/poll` on `api2.cursor.sh` for its tokens
+  and keeps them camelCase (`accessToken`, `refreshToken`, `apiKey`) in `$XDG_CONFIG_HOME/cursor/auth.json`; it reads
+  its access token's JWT `exp` to decide a refresh; and its API key is exchanged at
+  `${apiBaseUrl}/auth/exchange_user_api_key` for tokens. Its token host would be the host its requests go to, where a
+  token host gets nothing filled; its answer's names are no OAuth token response's; a placeholder has no `exp`; and a
+  key filled toward that exchange would mint tokens into the microVM.
+- *Devin 3000.12.43: fallback.* `devin auth login` runs PKCE at `/auth/cli/continue`, and the code pasted back is
+  exchanged by Connect RPC at `/exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCode`, answered
+  an `api_key` and its servers (`ExchangePkceAuthorizationCodeResponse`; kept as `WindsurfCredentials`, its
+  `chisel-api/src/auth/credentials.rs`): no OAuth token response, so no profile reads it. Its key, given instead (ACP `authenticate`'s `meta.api_key`, `DEVIN_API_KEY`), could be a
+  Secrets-backed key filled at egress (`CredentialGrant`) where its requests carry it in a field the injector fills;
+  its build doesn't show where its Connect requests carry it (owed: ROOT's run with a placeholder key, its requests
+  read at the injector).
+- *Amp 0.0.1794456033: not applicable, a Secrets-backed key.* Its access token (`AMP_API_KEY`, `sgamp_…`) is a
+  long-lived key (its docs, cli/execute-mode), so it is a credential grant: a placeholder in its environment, the key
+  filled at egress toward `ampcode.com`. Its `amp login` keeps a session token that "expires within an hour" and that
+  Amp refreshes itself ("Session expired and could not be refreshed"), from the host its requests go to, as Cursor's.
+  Its build's own curl hint names `Authorization: Bearer`; that its requests carry the key there is owed (ROOT, as
+  Devin's).
+- *Built, kiln* (`crates/kiln/src/secrets/signin.rs`, `sandbox/isolated.rs`, `harness/isolated/home.rs`):
+  `Provider::Goose`, named `goose/<person>`, whose token endpoint, refresh body, hosts and Hex CLI (`SignInCli::Codex`)
+  are Codex's and whose file is its own (`Provider::file`, `held` at its top level); `Provider::file_in` finds a CLI's
+  file by its run environment (Claude Code's and Codex's folder as before, goose's under `GOOSE_PATH_ROOT`), through
+  `home::Layout::dir_named`. The broker refreshes it in Codex's JSON, of the same client, where goose posts a form:
+  the provider takes either from that client (Codex's own refresh is JSON, client.rs:15). Shards changes no code: a
+  goose sign-in's grant carries `Cli::Codex`, and `signin.rs` and `credential.rs` say a profile is its OAuth client's.
+  Hex changes nothing. Its tests are written and not run (the person's rule of 2026-11-16: no builds or tests in
+  lanes): ROOT's `cargo test -p kiln --lib -- secrets::signin` and clippy of `kiln`.
+- *Owed.* ROOT: a real goose ChatGPT sign-in in a microVM through the injector, surviving a refresh answered outside
+  (whether its loopback sign-in completes in a microVM is part of it); the key-at-egress checks of Devin and Amp. The
+  owner of each decision: the injector's fill toward a token host's check path (Gemini CLI); Google's token endpoint
+  as a profile and its `SignInCli` (Gemini CLI, goose's Google sign-in; Hex's lead for Hex); a placeholder form per
+  provider (pi); a second sign-in name per harness (goose).
 
 **Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
 the network process telling its run host of a capture, a refresh and a revocation, the run host its
