@@ -1,0 +1,15 @@
+[package]
+name = "shards-http2"
+version = "0.1.0"
+description = "HTTP/2's frames, settings, flow control and HPACK, sans I/O: the credential injector's and the gateway's client's"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Field blocks and values wiped as they drop: a block may carry a credential (D242).
+zeroize = "1"

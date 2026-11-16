@@ -287,7 +287,8 @@ pub mod device {
     /// iommufd, not its group's.
     pub const BY_NODE: u8 = 1;
     /// A component's EROFS file plugged in (D270): a read-only virtio-pmem function whose
-    /// region its microVM maps in its components' window; its file a descriptor, opened to
+    /// region its microVM maps in its components' window; its key, its digest's 64 lowercase
+    /// hex digits, by which a snapshot keeps it (slice 5); its file a descriptor, opened to
     /// read. Answers as [`DISK`] does, then a space and the region's guest address and
     /// length, each decimal.
     pub const PMEM: u8 = 6;

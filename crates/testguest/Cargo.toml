@@ -23,5 +23,5 @@ path = "src/main.rs"
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 shards-devcgroup = { path = "../devcgroup" }
 shards-seccomp = { path = "../seccomp" }
-# shards-net's HPACK, which `tls-ask` includes by path.
-zeroize = "1"
+# HTTP/2's HPACK for `tls-ask`, the injector's own (D242, R12).
+shards-http2 = { path = "../http2" }

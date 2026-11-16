@@ -164,16 +164,19 @@ mod tests {
     /// not managed or has no socket.
     #[test]
     fn a_managed_vms_record_is_beside_its_socket() {
-        let at = |p: &str| record_of(Some(p.as_ref()), true);
-        assert_eq!(at("/run/g/v"), Some("/run/g/v.used".into()));
-        assert_eq!(at("g/v"), Some(std::env::current_dir().unwrap().join("g/v.used")));
-        assert_eq!(record_of(Some("/run/g/v".as_ref()), false), None);
+        let at = |p: &std::path::Path| record_of(Some(p.as_os_str()), true);
+        // Absolute on every host: "/run/g/v" is not on Windows, where it takes the current drive.
+        let root = std::env::current_dir().unwrap();
+        let v = root.join("run").join("g").join("v");
+        assert_eq!(at(&v), Some(root.join("run").join("g").join("v.used")));
+        assert_eq!(at("g/v".as_ref()), Some(root.join("g").join("v.used")));
+        assert_eq!(record_of(Some(v.as_os_str()), false), None);
         assert_eq!(record_of(None, true), None);
         assert_eq!(
-            vm_record_of(Some("/run/g/v".as_ref()), true),
-            Some("/run/g/v.vm".into())
+            vm_record_of(Some(v.as_os_str()), true),
+            Some(root.join("run").join("g").join("v.vm"))
         );
-        assert_eq!(vm_record_of(Some("/run/g/v".as_ref()), false), None);
+        assert_eq!(vm_record_of(Some(v.as_os_str()), false), None);
     }
 
     /// A managed VM's process is named whole, as shards-api reads it back: its pid and start,

@@ -6,6 +6,7 @@
 use std::io::{Read, Write};
 
 use crate::h2;
+use crate::hpack::Field;
 
 /// The most a message may be either way: grpcclient's MaxCallRecvMsgSize and
 /// MaxCallSendMsgSize (moby/buildkit frontend/gateway/grpcclient/client.go l. 1473-1474),
@@ -109,11 +110,11 @@ pub fn call_with<R: Read, W: Write>(
     ];
     headers.extend_from_slice(metadata);
     let response = conn.request(&headers, &body, MOST + 5)?;
-    let header = |fields: &[(Vec<u8>, Vec<u8>)], name: &str| {
+    let header = |fields: &[Field], name: &str| {
         fields
             .iter()
-            .find(|(n, _)| n == name.as_bytes())
-            .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
+            .find(|f| f.name == name.as_bytes())
+            .map(|f| String::from_utf8_lossy(&f.value).into_owned())
     };
     let status = header(&response.headers, ":status");
     if status.as_deref() != Some("200") {
