@@ -6441,6 +6441,17 @@ pub fn judged_there<T: Send>(
     judging(wait, Stage::Begun, asked, stop, call)
 }
 
+/// Where a judged call's own thread is ([`judging`]).
+enum Calling {
+    /// Spawned, not yet at its first line: its OS has it runnable, and it has run none of
+    /// its call.
+    Spawned,
+    /// Running its call, followed by its own clock.
+    Calls(ServerThread),
+    /// Past its call, its clock let go of; its answer on its way.
+    Called,
+}
+
 /// [`judged`]'s wait, its looks saying its answer missing where `stage` is
 /// [`Stage::Awaited`], and never where it is [`Stage::Begun`]. `call` runs on a thread of
 /// this process, shards-api's client, whose work (a spec's checks, an image's reads, a
@@ -6450,7 +6461,7 @@ pub fn judged_there<T: Send>(
 /// 206 µs on HVF and one in 28.6 ms on KVM at 0 ns of the started processes' CPU, taught
 /// their call sites a W* that refused the next call as it worked). The thread names itself
 /// as it starts and is let go of before it returns, under one lock, so its clock is read
-/// only while it lives.
+/// only while it lives ([`Calling`]).
 fn judging<T: Send>(
     mut wait: Wait,
     stage: Stage,
@@ -6458,14 +6469,14 @@ fn judging<T: Send>(
     stop: impl FnOnce(),
     call: impl FnOnce() -> T + Send,
 ) -> Result<T, String> {
-    let calling: std::sync::Mutex<Option<ServerThread>> = std::sync::Mutex::new(None);
+    let calling = std::sync::Mutex::new(Calling::Spawned);
     let thread = || calling.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
         let worker = scope.spawn(move || {
-            *thread() = Some(ServerThread::this());
+            *thread() = Calling::Calls(ServerThread::this());
             let answer = call();
-            *thread() = None;
+            *thread() = Calling::Called;
             let _ = tx.send(answer);
         });
         let refused = loop {
@@ -6481,9 +6492,18 @@ fn judging<T: Send>(
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
-            if let Some(thread) = thread().as_mut() {
-                let before = thread.last;
-                wait.call_looked(thread.ran() > before, thread.runnable());
+            match &mut *thread() {
+                // Runnable and none of its call run: its host's hold, as a thread of its
+                // that is runnable and not running is (CI 43968984258, aarch64 musl: a call
+                // spinning for 200 ms, its thread not yet named 2.06 ms into its wait beside
+                // the busy stand-ins of the tests around it, refused as idle, "its last
+                // progress its start").
+                Calling::Spawned => wait.call_looked(false, true),
+                Calling::Calls(thread) => {
+                    let before = thread.last;
+                    wait.call_looked(thread.ran() > before, thread.runnable());
+                }
+                Calling::Called => {}
             }
             let looked = if stage == Stage::Awaited {
                 wait.look(false)
