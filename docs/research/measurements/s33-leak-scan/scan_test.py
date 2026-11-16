@@ -294,14 +294,17 @@ class LeakTest(unittest.TestCase):
     def test_a_sparse_files_holes_are_not_read_and_what_lies_against_them_is_found(self):
         """A save's memory and swap are sparse files as long as the host's memory, mostly
         holes (CI's x86_64 runners: two scans of a save took 28.6 minutes; on WHP, where the
-        scan read every hole, CI's step ended it first). Do: plant, each in a sparse 64 MiB
-        file of its own (APFS, macOS 26.4, allocates a hole shorter than 16 MiB, here between
-        two writes), ACCESS ending where its file's data ends, and REFRESH's UTF-16LE ending a
-        byte short of it, its last unit's zero the hole's first byte. Expect: both found where a
-        read of the whole files finds them; of each file, which holds a hole, no more read than
-        its file system holds allocated and what a finding can take beside it."""
+        scan read every hole, CI's step ended it first). Do: plant, twice in a sparse 64 MiB
+        file of its own, 32 MiB apart so that a hole parts them (APFS, macOS 26.4, allocates a
+        hole shorter than 16 MiB between two writes), and the file's data asked for range by
+        range: ACCESS ending where a range's data ends, and REFRESH's UTF-16LE ending a byte
+        short of it, its last unit's zero the first byte of the hole after it (the second at the
+        file's end). Expect: each found where a read of the whole files finds it; of each file,
+        which holds a hole, no more read than its file system holds allocated and what a
+        finding can take beside each range."""
         p = Planted()
         size, page = 64 << 20, mmap.PAGESIZE
+        ends = ((32 << 20) + page, size)
         whole = []
         index = scan.Index(scan.documents([p.secrets]), [])
         most = 0
@@ -310,15 +313,16 @@ class LeakTest(unittest.TestCase):
             with open(path, "wb") as f:
                 sparse(f)
                 f.truncate(size)
-                f.seek((32 << 20) + page - len(value))
-                f.write(value)
+                for end in ends:
+                    f.seek(end - len(value))
+                    f.write(value)
                 f.flush()
                 os.fsync(f.fileno())
             self.assertLess(held(path), size, "%s holds no hole" % name)
-            most += held(path) + 2 * index.zeros()
+            most += held(path) + len(ends) * 2 * index.zeros()
             with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as buf:
                 whole += [(name, *found) for found in scan.leaks(buf, index)]
-        self.assertEqual(len(whole), 2, whole)
+        self.assertEqual(len(whole), 2 * len(ends), whole)
         code, said = p.scan()
         self.assertEqual(code, 3, said)
         for name, offset, length, label in whole:
