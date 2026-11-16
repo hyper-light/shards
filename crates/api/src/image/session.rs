@@ -3114,7 +3114,10 @@ impl ImageGuest for Session {
                     })?
                     .into(),
             ),
-            super::PlugSource::Volume(name) => wire::PlugFrom::Volume(name.clone()),
+            super::PlugSource::Volume { name, bound } => wire::PlugFrom::Volume {
+                name: name.clone(),
+                bound: *bound,
+            },
         };
         let (at, read_only, exec) = (plug.at.clone(), plug.read_only, plug.exec);
         self.plug_ask(wire::to_host::PLUG, patience, move |id| {

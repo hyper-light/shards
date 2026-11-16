@@ -3094,6 +3094,8 @@ mod hosted {
         /// Its sign-in grants, whose asks its host relays (D242, step 8).
         signing: Vec<wire::SignInGrant>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
+        /// The bound each bounded volume's share among them is served with (D281).
+        bounds: Vec<crate::volumes::Bounded>,
         /// The named volumes among them, held since they were opened (D281): its live state's
         /// once it is served ([`Live::volumes_held`]).
         volumes: crate::volumes::Holds,
@@ -3652,6 +3654,7 @@ mod hosted {
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
+            bounds: opened.bounds,
             volumes: opened.held,
             made,
             address: bridge
@@ -3776,6 +3779,7 @@ mod hosted {
     struct Launch<'a> {
         prepared: &'a crate::run::Prepared,
         dirs: &'a [(OwnedFd, bool, OsString)],
+        bounds: &'a [crate::volumes::Bounded],
         bridge: Option<&'a shards_net::bridge::Bridge>,
         /// Whether its network process makes its run's credential grants (D242).
         credentials: bool,
@@ -3791,6 +3795,7 @@ mod hosted {
             Launch {
                 prepared: &self.prepared,
                 dirs: &self.dirs,
+                bounds: &self.bounds,
                 bridge: self.bridge.as_ref(),
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
@@ -3805,6 +3810,7 @@ mod hosted {
             Launch {
                 prepared: &self.prepared,
                 dirs: &self.opened.dirs,
+                bounds: &self.opened.bounds,
                 bridge: self.bridge.as_ref(),
                 credentials: self.credentials.is_some(),
                 server: self.server.as_deref(),
@@ -4002,12 +4008,12 @@ mod hosted {
         let tags = run_tags(plan.dirs.len());
         #[cfg(unix)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, plan.dirs, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, plan.bounds, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         #[cfg(windows)]
         let shares = (!plan.dirs.is_empty())
-            .then(|| start_shares(home, plan.dirs, &job, Some(&tags)))
+            .then(|| start_shares(home, plan.dirs, plan.bounds, &job, Some(&tags)))
             .transpose()
             .map_err(boot)?;
         if let Some(shares) = &shares {
@@ -4260,11 +4266,13 @@ mod hosted {
     /// The share process (share.rs) serving `dirs`, as the daemon starts a run's
     /// (daemon.rs `started_shares`): its connection to it at 3, each directory at 4 + i,
     /// the home's private directory after them. The VM's end of its connection goes with
-    /// the run, which hands the VM each share's stream (`SHARE_ENDS`).
+    /// the run, which hands the VM each share's stream (`SHARE_ENDS`). Each of `bounds`
+    /// holds a bounded volume's share to its bound (D281).
     #[cfg(unix)]
     fn start_shares(
         home: &Path,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         tags: Option<&[String]>,
     ) -> Result<Shares, String> {
         let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
@@ -4279,6 +4287,8 @@ mod hosted {
             }
             None => None,
         };
+        let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -4319,6 +4329,7 @@ mod hosted {
     fn start_shares(
         home: &Path,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         job: &shards_ipc::GroupJob,
         tags: Option<&[String]>,
     ) -> Result<Shares, String> {
@@ -4338,6 +4349,8 @@ mod hosted {
             }
             None => None,
         };
+        let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -8553,10 +8566,18 @@ mod hosted {
         if lock(&live.plugged).contains_key(&ask.at) {
             return Err((R::Taken, format!("{} has something plugged in already", ask.at)));
         }
-        let host = source_dir(live, &ask.from, &ask.at)?;
+        let (host, bound) = source_dir(live, &ask.from, &ask.at)?;
         let mut given: Vec<Plugged> = Vec::with_capacity(ask.members.len());
         for &member in &ask.members {
-            match plug_one(live, member, &host, &ask.at, ask.read_only, ask.exec) {
+            match plug_one(
+                live,
+                member,
+                &host,
+                bound.as_ref(),
+                &ask.at,
+                ask.read_only,
+                ask.exec,
+            ) {
                 Ok(plugged) => given.push(plugged),
                 Err(refused) => {
                     // Those given it first let go of it: none of theirs has used it yet, and
@@ -8579,21 +8600,23 @@ mod hosted {
     /// The host directory a plug gives (D271): the one named, absolute; or the data of the
     /// home's volume named, made where it is not there, as a run's `-v NAME:PATH` makes one,
     /// and refused where its store refuses a run's own mount of it at `at` (D109's scoped
-    /// volumes, another microVM's engine's).
+    /// volumes, another microVM's engine's). With a bounded volume's, its bound and its count
+    /// file (D281): the bound its plug asks, which the volume is made with or, where no run
+    /// holds it, set to; else its own. Refused where its holders serve it with another.
     fn source_dir(
         live: &Live<'_>,
         from: &wire::PlugFrom,
         at: &str,
-    ) -> Result<PathBuf, (wire::PlugRefusal, String)> {
+    ) -> Result<(PathBuf, Option<(u64, PathBuf)>), (wire::PlugRefusal, String)> {
         use wire::PlugRefusal as R;
         match from {
             wire::PlugFrom::Host(host) => {
                 if !Path::new(host).is_absolute() {
                     return Err((R::Request, format!("{host}: not an absolute path")));
                 }
-                Ok(PathBuf::from(host))
+                Ok((PathBuf::from(host), None))
             }
-            wire::PlugFrom::Volume(name) => {
+            wire::PlugFrom::Volume { name, bound } => {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
                 // Held before it is made or found, so that no clearing removes it under the
@@ -8601,21 +8624,27 @@ mod hosted {
                 // refused at once while a clearing holds it, never waited for.
                 let mut hold = crate::volumes::Holds::default();
                 hold.take(&store, name).map_err(|e| (R::Volume, e))?;
+                let asked = bound.map(std::num::NonZeroU64::get);
                 {
                     let _held = crate::volumes::lock();
+                    // Made with the bound asked, as `--opt size` makes one (D281).
+                    let options: std::collections::BTreeMap<String, String> = asked
+                        .map(|bytes| ("size".to_string(), bytes.to_string()))
+                        .into_iter()
+                        .collect();
                     let (volume, _) = store
-                        .create(
-                            name,
-                            &std::collections::BTreeMap::new(),
-                            &std::collections::BTreeMap::new(),
-                            "",
-                        )
+                        .create(name, &std::collections::BTreeMap::new(), &options, "")
                         .map_err(|e| (R::Volume, e))?;
                     crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
                         .map_err(|e| (R::Volume, e))?;
                 }
+                // Counted with the run, its first holder walking it (D281).
+                let data = store.data(name);
+                let bounded = hold
+                    .count(&store, name, &data, asked)
+                    .map_err(|e| (R::Volume, e))?;
                 lock(&live.volumes_held).extend(hold);
-                Ok(store.data(name))
+                Ok((data, bounded))
             }
         }
     }
@@ -8627,6 +8656,7 @@ mod hosted {
         live: &Live<'_>,
         member: u32,
         host: &Path,
+        bound: Option<&(u64, PathBuf)>,
         at: &str,
         read_only: bool,
         exec: bool,
@@ -8648,10 +8678,20 @@ mod hosted {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let tags = [tag.clone()];
+        // A bounded volume's share held to its bound (D281), its only share.
+        let bounds: Vec<crate::volumes::Bounded> = bound
+            .map(|(limit, count)| crate::volumes::Bounded {
+                share: 0,
+                limit: *limit,
+                count: count.clone(),
+            })
+            .into_iter()
+            .collect();
         #[cfg(unix)]
-        let mut share = start_shares(live.home, &dirs, Some(&tags)).map_err(|e| (R::Host, e))?;
+        let mut share = start_shares(live.home, &dirs, &bounds, Some(&tags)).map_err(|e| (R::Host, e))?;
         #[cfg(windows)]
-        let mut share = start_shares(live.home, &dirs, live.job, Some(&tags)).map_err(|e| (R::Host, e))?;
+        let mut share =
+            start_shares(live.home, &dirs, &bounds, live.job, Some(&tags)).map_err(|e| (R::Host, e))?;
         let step = [&[shards_ipc::device::SHARE][..], tag.as_bytes()].concat();
         // On Unix its connection, which the share process sends and holds until it is
         // taken (M24); on Windows its stream itself, a duplex pipe made here (D197).
@@ -9581,23 +9621,38 @@ mod hosted {
             let at = "/session/x";
             assert_eq!(
                 source_dir(&live, &wire::PlugFrom::Host("/Users/u/proj".into()), at),
-                Ok(PathBuf::from("/Users/u/proj"))
+                Ok((PathBuf::from("/Users/u/proj"), None))
             );
             assert!(matches!(
                 source_dir(&live, &wire::PlugFrom::Host("proj".into()), at),
                 Err((R::Request, _))
             ));
             let store = crate::volumes::Store::new(dir.path());
+            let volume = |name: &str, bound: Option<u64>| wire::PlugFrom::Volume {
+                name: name.into(),
+                bound: bound.and_then(std::num::NonZeroU64::new),
+            };
             assert!(store.get("sessions").is_none());
-            let made = source_dir(&live, &wire::PlugFrom::Volume("sessions".into()), at).unwrap();
-            assert_eq!(made, store.data("sessions"));
+            let made = source_dir(&live, &volume("sessions", None), at).unwrap();
+            assert_eq!(made, (store.data("sessions"), None), "made, with no bound");
             assert!(store.get("sessions").is_some());
-            assert_eq!(
-                source_dir(&live, &wire::PlugFrom::Volume("sessions".into()), at),
-                Ok(made)
-            );
+            assert_eq!(source_dir(&live, &volume("sessions", None), at), Ok(made));
             assert!(matches!(
-                source_dir(&live, &wire::PlugFrom::Volume("a/b".into()), at),
+                source_dir(&live, &volume("a/b", None), at),
+                Err((R::Volume, _))
+            ));
+            // D281: one made with its bound is served with it and its count file; another
+            // bound asked while it is held is refused.
+            assert_eq!(
+                source_dir(&live, &volume("bounded", Some(1 << 20)), at),
+                Ok((
+                    store.data("bounded"),
+                    Some((1 << 20, dir.path().join("volumes").join(".bounded.charge")))
+                ))
+            );
+            assert_eq!(store.get("bounded").unwrap().bound(), Ok(Some(1 << 20)));
+            assert!(matches!(
+                source_dir(&live, &volume("bounded", Some(2 << 20)), at),
                 Err((R::Volume, _))
             ));
             let scoped: std::collections::BTreeMap<String, String> =
@@ -9611,7 +9666,7 @@ mod hosted {
                     .unwrap();
             }
             assert!(matches!(
-                source_dir(&live, &wire::PlugFrom::Volume("scoped".into()), at),
+                source_dir(&live, &volume("scoped", None), at),
                 Err((R::Volume, _))
             ));
             assert!(store.alone("sessions").unwrap().is_none());

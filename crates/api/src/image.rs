@@ -362,8 +362,15 @@ pub enum PlugSource {
     /// A host directory, absolute: the host's files there are its members'.
     Host(PathBuf),
     /// A volume of the run's home's store, by its name, made where it is not there, as a
-    /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run.
-    Volume(String),
+    /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run. Its bound
+    /// (D281): the bytes its files may take, held as they are written, a write past it refused
+    /// ENOSPC in its members, as a full disk refuses one: an agent's admitted `disk_bytes`,
+    /// which the volume is made with, or set to where no run holds it. None for the volume's
+    /// own: none where it was made with none.
+    Volume {
+        name: String,
+        bound: Option<std::num::NonZeroU64>,
+    },
 }
 
 /// Whom [`ImageGuest::plug`] plugs into (D271): every member of the run that runs, or those

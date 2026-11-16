@@ -4222,6 +4222,12 @@ impl<D: Disk> Daemon<D> {
                     );
                 }
                 if joining {
+                    // A join share holds no bound (D281): its volumes are its servers' alone.
+                    if !opened.bounds.is_empty() {
+                        return Err(
+                            "a bounded volume is served to no run joining another's network (--network container:NAME): its microVM's join share holds no bound".into(),
+                        );
+                    }
                     let names = opened
                         .dirs
                         .iter()
@@ -4235,7 +4241,15 @@ impl<D: Disk> Daemon<D> {
                 crate::spec::fits(&prepared.spec)?;
                 // Copies of the volumes a microVM moved here was saved with (D176 part 6).
                 let moved = lock(&self.containers).made(&id).is_some_and(|c| c.moved);
-                let link = self.start_shares(threads, &id, &opened.dirs, &prepared.parent, moved, true)?;
+                let link = self.start_shares(
+                    threads,
+                    &id,
+                    &opened.dirs,
+                    &opened.bounds,
+                    &prepared.parent,
+                    moved,
+                    true,
+                )?;
                 prepared.shares = u32::try_from(opened.dirs.len()).map_err(|_| "too many shares")?;
                 Ok(link)
             });
@@ -5123,12 +5137,15 @@ impl<D: Disk> Daemon<D> {
     /// Starts the share process (share.rs) serving `dirs`: the VM's connection to it, none
     /// for none. It is reaped on the followers' loop, and ends as its VM's connections
     /// close. A run's (`noticed`) tells its guest what its host changes beneath them once
-    /// it starts (D235); a visit's, which runs nothing, tells nothing.
+    /// it starts (D235); a visit's, which runs nothing, tells nothing. Each of `bounds` holds
+    /// a bounded volume's share to its bound (D281).
+    #[allow(clippy::too_many_arguments)]
     fn start_shares<'s, 'e>(
         &'s self,
         threads: &'s Threads<'s, 'e>,
         id: &str,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         noticed: bool,
@@ -5139,7 +5156,7 @@ impl<D: Disk> Daemon<D> {
         // Each share's tag, as the VM's devices are named (vm::Config, `shards{i}`).
         let tags: Vec<String> = (0..dirs.len()).map(|i| format!("shards{i}")).collect();
         let tags = noticed.then_some(tags.as_slice());
-        let (ends, child, notices) = self.started_shares(threads, dirs, parent, moved, tags)?;
+        let (ends, child, notices) = self.started_shares(threads, dirs, bounds, parent, moved, tags)?;
         if let Some(notices) = notices {
             lock(&self.noticing).insert(id.to_string(), vec![notices]);
         }
@@ -5181,6 +5198,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
@@ -5191,6 +5209,8 @@ impl<D: Disk> Daemon<D> {
         let mut served = Vec::new();
         // The tags of those served here, whose notices it tells (D235).
         let mut served_tags: Vec<&str> = Vec::new();
+        // Each served share's place in `dirs`, by which a bound names it (D281).
+        let mut places: Vec<usize> = Vec::new();
         for (i, (dir, read_only, only)) in dirs.iter().enumerate() {
             if is_pipe(dir) {
                 ends.push(Some(
@@ -5199,6 +5219,7 @@ impl<D: Disk> Daemon<D> {
             } else {
                 ends.push(None);
                 served.push((dir, *read_only, only));
+                places.push(i);
                 if let Some(tag) = tags.and_then(|t| t.get(i)) {
                     served_tags.push(tag);
                 }
@@ -5231,6 +5252,14 @@ impl<D: Disk> Daemon<D> {
         } else {
             None
         };
+        // Each bounded volume's share held to its bound (D281), by its place among those
+        // served here.
+        let bounded = crate::share::bound_args(
+            bounds
+                .iter()
+                .filter_map(|b| Some((places.iter().position(|p| *p == b.share)?, b))),
+        );
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in &served {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());
@@ -5273,6 +5302,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         dirs: &[(OwnedFd, bool, OsString)],
+        bounds: &[crate::volumes::Bounded],
         parent: &str,
         moved: bool,
         tags: Option<&[String]>,
@@ -5294,6 +5324,9 @@ impl<D: Disk> Daemon<D> {
             }
             _ => None,
         };
+        // Each bounded volume's share held to its bound (D281), by its place in `dirs`.
+        let bounded = crate::share::bound_args(bounds.iter().map(|b| (b.share, b)));
+        args.extend(bounded.iter().map(OsString::as_os_str));
         for (_, read_only, only) in dirs {
             args.push(OsStr::new(if *read_only { "ro" } else { "rw" }));
             args.push(only.as_os_str());

@@ -4197,7 +4197,10 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
     ask(&*guest, |g| {
         g.plug(
             &plug(
-                PlugSource::Volume(volume.into()),
+                PlugSource::Volume {
+                    name: volume.into(),
+                    bound: None,
+                },
                 PlugFor::Every,
                 "/session/vol",
                 false,
@@ -4266,7 +4269,10 @@ fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
         .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
     s.plug_roots = vec!["/session".into()];
     let plug = Plug {
-        source: PlugSource::Volume(volume.into()),
+        source: PlugSource::Volume {
+            name: volume.into(),
+            bound: None,
+        },
         to: PlugFor::Members(vec![codex()]),
         at: "/session/vol".into(),
         read_only: false,
