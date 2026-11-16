@@ -117,14 +117,12 @@ pub fn configure(addr: Ipv4Addr, prefix: u8, gateway: Ipv4Addr) -> io::Result<()
     attr(&mut link, IFLA_MTU, &MTU.to_ne_bytes());
     request(&sock, RTM_NEWLINK, 0, &link)?;
 
-    // The address (struct ifaddrmsg: family, prefix length, flags, scope, index).
-    let mut a = vec![libc::AF_INET as u8, prefix, 0, 0];
-    a.extend_from_slice(&index.to_ne_bytes());
-    attr(&mut a, IFA_LOCAL, &addr.octets());
-    attr(&mut a, IFA_ADDRESS, &addr.octets());
-    let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
-    attr(&mut a, IFA_BROADCAST, &(u32::from(addr) | mask).to_be_bytes());
-    request(&sock, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL, &a)?;
+    request(
+        &sock,
+        RTM_NEWADDR,
+        NLM_F_CREATE | NLM_F_EXCL,
+        &address4(index, addr, prefix),
+    )?;
 
     // The default route (struct rtmsg: family, dst and src length, tos, table, protocol,
     // scope, type, flags).
@@ -314,21 +312,12 @@ pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Resu
     }
     // SAFETY: a descriptor just made.
     let sock = unsafe { OwnedFd::from_raw_fd(fd) };
-    let address = |addr: Ipv4Addr, prefix: u8| {
-        let mut a = vec![libc::AF_INET as u8, prefix, 0, 0];
-        a.extend_from_slice(&index.to_ne_bytes());
-        attr(&mut a, IFA_LOCAL, &addr.octets());
-        attr(&mut a, IFA_ADDRESS, &addr.octets());
-        let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
-        attr(&mut a, IFA_BROADCAST, &(u32::from(addr) | mask).to_be_bytes());
-        a
-    };
-    request(&sock, RTM_DELADDR, 0, &address(from.0, from.1))?;
+    request(&sock, RTM_DELADDR, 0, &address4(index, from.0, from.1))?;
     request(
         &sock,
         RTM_NEWADDR,
         NLM_F_CREATE | NLM_F_EXCL,
-        &address(to.0, to.1),
+        &address4(index, to.0, to.1),
     )?;
     let mut r = vec![
         libc::AF_INET as u8,
@@ -347,6 +336,39 @@ pub fn readdress(from: (Ipv4Addr, u8), to: (Ipv4Addr, u8, Ipv4Addr)) -> io::Resu
     gateway_neighbor(&sock, index, to.2.into(), to.2)?;
     *MOVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(to);
     Ok(())
+}
+
+/// An IPv4 address `addr`/`prefix` on link `index`, with its broadcast address (struct
+/// ifaddrmsg: family, prefix length, flags, scope, index; then its attributes).
+fn address4(index: u32, addr: Ipv4Addr, prefix: u8) -> Vec<u8> {
+    let mut a = vec![libc::AF_INET as u8, prefix, 0, 0];
+    a.extend_from_slice(&index.to_ne_bytes());
+    attr(&mut a, IFA_LOCAL, &addr.octets());
+    attr(&mut a, IFA_ADDRESS, &addr.octets());
+    let mask = u32::MAX.checked_shr(u32::from(prefix)).unwrap_or(0);
+    attr(&mut a, IFA_BROADCAST, &(u32::from(addr) | mask).to_be_bytes());
+    a
+}
+
+/// Gives `eth0` the run's address `addr`/`prefix` on a network shared by runs (D285), beside
+/// its own, or takes it back (`add` false), as an `address=` entry sets eth0's: the kernel
+/// routes the network's subnet from it as it adds it (fib_add_ifaddr), and lets that route go
+/// with it; eth0's own address, on another subnet, stays. One there already, or gone already,
+/// is done, as a change told again is done again whole.
+pub fn shared_address(addr: Ipv4Addr, prefix: u8, add: bool) -> io::Result<()> {
+    let (sock, index) = eth0()?;
+    let message = address4(index, addr, prefix);
+    let done = if add {
+        request(&sock, RTM_NEWADDR, NLM_F_CREATE | NLM_F_EXCL, &message)
+    } else {
+        request(&sock, RTM_DELADDR, 0, &message)
+    };
+    match done {
+        Err(e) if add && e.raw_os_error() == Some(libc::EEXIST) => Ok(()),
+        // inet_rtm_deladdr's answer for an address the link does not hold (net/ipv4/devinet.c).
+        Err(e) if !add && e.raw_os_error() == Some(libc::EADDRNOTAVAIL) => Ok(()),
+        done => done,
+    }
 }
 
 /// IPv6's address flag that skips duplicate address detection (linux/if_addr.h), as

@@ -85,30 +85,41 @@ pub fn host_ok(host: &[u8]) -> bool {
             .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.'))
 }
 
+/// A port range as an item spells it, `PROTO/LO-HI`: PROTO the IP protocol's number, 6 or
+/// 17, and LO no more than HI.
+pub(super) fn port_range(item: &[u8]) -> Option<(u8, u16, u16)> {
+    let slash = item.iter().position(|&b| b == b'/')?;
+    let (proto, range) = (item.get(..slash)?, item.get(slash + 1..)?);
+    let proto = match proto {
+        b"6" => 6,
+        b"17" => 17,
+        _ => return None,
+    };
+    let dash = range.iter().position(|&b| b == b'-')?;
+    let lo = port(range.get(..dash)?).ok()?;
+    let hi = port(range.get(dash + 1..)?).ok()?;
+    (lo <= hi).then_some((proto, lo, hi))
+}
+
+/// `PROTO/LO-HI`, as [`port_range`] reads it.
+pub(super) fn push_port_range(out: &mut Vec<u8>, (proto, lo, hi): (u8, u16, u16)) {
+    push_decimal(out, u32::from(proto));
+    out.push(b'/');
+    push_decimal(out, u32::from(lo));
+    out.push(b'-');
+    push_decimal(out, u32::from(hi));
+}
+
 /// `item` added to `into`, each once.
 pub fn parse_item(item: &[u8], into: &mut Grants) -> Result<(), Error> {
     if item == DNS {
         into.dns = true;
         return Ok(());
     }
-    if let Some(slash) = item.iter().position(|&b| b == b'/') {
-        let (proto, range) = (
-            item.get(..slash).ok_or(Error::Item)?,
-            item.get(slash + 1..).ok_or(Error::Item)?,
-        );
-        let proto = match proto {
-            b"6" => 6,
-            b"17" => 17,
-            _ => return Err(Error::Item),
-        };
-        let dash = range.iter().position(|&b| b == b'-').ok_or(Error::Item)?;
-        let lo = port(range.get(..dash).ok_or(Error::Item)?)?;
-        let hi = port(range.get(dash + 1..).ok_or(Error::Item)?)?;
-        if lo > hi {
-            return Err(Error::Item);
-        }
-        if !into.ports.contains(&(proto, lo, hi)) {
-            into.ports.push((proto, lo, hi));
+    if item.contains(&b'/') {
+        let range = port_range(item).ok_or(Error::Item)?;
+        if !into.ports.contains(&range) {
+            into.ports.push(range);
         }
         return Ok(());
     }
@@ -129,13 +140,9 @@ pub fn parse_item(item: &[u8], into: &mut Grants) -> Result<(), Error> {
 /// then [`DNS`] where it asks names.
 pub fn items(g: &Grants) -> Vec<Vec<u8>> {
     let mut out = Vec::with_capacity(g.ports.len() + g.named.len() + 1);
-    for &(proto, lo, hi) in &g.ports {
+    for &range in &g.ports {
         let mut item = Vec::new();
-        push_decimal(&mut item, u32::from(proto));
-        item.push(b'/');
-        push_decimal(&mut item, u32::from(lo));
-        item.push(b'-');
-        push_decimal(&mut item, u32::from(hi));
+        push_port_range(&mut item, range);
         out.push(item);
     }
     for (host, at) in &g.named {

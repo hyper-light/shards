@@ -3848,6 +3848,15 @@ fn builtin(
                 .map_err(|e| (e.to_string(), failed_status(kind, &e)))
         })
     });
+    // The run's place on a network shared by runs and its members' grants there, as its host
+    // says (D285): init's own state, as D278's, done here likewise.
+    let networked = networked.or_else(|| {
+        (kind == run::builtin::SHARED).then(|| {
+            crate::egress::shared::change(args)
+                .map(|()| String::new())
+                .map_err(|e| (e.to_string(), failed_status(kind, &e)))
+        })
+    });
     // What reads the host's stdin: unpacking an archive, and the host's notices (D235).
     let input = if matches!(kind, run::builtin::EXTRACT | run::builtin::NOTICE) {
         Some(pipe()?)
@@ -3866,7 +3875,7 @@ fn builtin(
                 Ok(text) => (File::from(stdout_w), text, 0),
                 Err((why, code)) => (File::from(stderr_w), why, code),
             };
-            if !(text.is_empty() && kind == run::builtin::EGRESS) {
+            if !(text.is_empty() && matches!(kind, run::builtin::EGRESS | run::builtin::SHARED)) {
                 let _ = writeln!(to, "{text}");
             }
             // SAFETY: _exit(2) ends the child without running init's exit paths.
@@ -6586,12 +6595,25 @@ fn resize(fd: RawFd, size: Size) {
 
 /// A built-in's exit status for its failure `e`: 1, but where its host tells the cause apart by
 /// its kind: a device in use (`DEVICE_BUSY`, D235); a member whose command has ended or that
-/// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`).
+/// never started (`SIGNAL_ENDED`, `SIGNAL_UNKNOWN`); a member's grants refused (`EGRESS_*`,
+/// D278; `SHARED_*`, D285).
 fn failed_status(kind: u8, e: &io::Error) -> i32 {
     let unsignalled = e.get_ref().and_then(|inner| inner.downcast_ref::<Unsignalled>());
     let refused = e
         .get_ref()
         .and_then(|inner| inner.downcast_ref::<crate::egress::Refused>());
+    let unshared = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::egress::shared::Refused>());
+    if let (run::builtin::SHARED, Some(why)) = (kind, unshared) {
+        use crate::egress::shared::Refused;
+        return i32::from(match why {
+            Refused::Unknown(_) => run::builtin::SHARED_UNKNOWN,
+            Refused::Past(_) => run::builtin::SHARED_PAST,
+            Refused::Readdressed(_) => run::builtin::SHARED_READDRESSED,
+            Refused::Overlaps(_) => run::builtin::SHARED_OVERLAPS,
+        });
+    }
     match (kind, unsignalled, refused) {
         (run::builtin::DEVICE, _, _) if e.kind() == io::ErrorKind::ResourceBusy => {
             i32::from(run::builtin::DEVICE_BUSY)

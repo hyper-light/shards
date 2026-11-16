@@ -38562,6 +38562,13 @@ in place), and `a_members_open_connection_is_reset_as_its_reach_is_taken_back` (
 connection of a member narrowed reset, not stalled: a mode of the test guest that holds one open and
 says how it ended).
 
+**Amended (D285 slice 5, 2026-11-16).** A ceiling bounds a member's grants on networks shared by
+runs too: one with TCP ports leaves its Landlock bind to its gate, as its connect is, and one of
+ports alone gives it the agents' resolver in its resolv.conf from its start, its gate holding its
+questions until a grant opens them. `reset` takes which flows were lost as a test of each socket,
+this entry's (to a lost port past the microVM) and D285's (to or from a peer's lost port); its
+member's resolver answers its view of those networks' names beside what it may ask.
+
 ### D279. A share's or a plug's files may be refused execution: `exec` per volume, allowed by default (built; real-VM run on HVF below)
 
 **Asked.** kiln's sandbox page gives each volume `{read, write, exec}` (Hex ROOT's item 4,
@@ -39064,7 +39071,7 @@ per change is ROOT's to measure (R14).
   - Real VM, owed (ROOT; HVF, KVM, WHP): api_image.rs
     `an_agents_volume_refuses_writes_past_its_bound`.
 
-### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 3, a network's leases held across processes, the daemon's runs on them and the network process's switch, built; slices 4 to 6 owed)
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slices 1 to 3 and 5, a network's leases held across processes, the daemon's runs on them, the network process's switch and the guest's side, built; slices 4 and 6 owed)
 
 **Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
 third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
@@ -39235,7 +39242,8 @@ join until 4 and 5 have landed):
    second address and a route to the network's subnet from it, set as `address=` sets eth0's;
    init's translation of the member's flows to that subnet from that address, its gate letting out
    only its grants; each port it receives taken to it (D122's path); agentdns answering its names;
-   in D278's order: its gate first, its open flows to what it lost reset, then the tables.
+   in D278's order: its gate first, its open flows to what it lost reset, then the tables (built:
+   `builtin::SHARED`, 26, *Slice 5, built* below).
 6. *Real VMs* (ROOT; HVF, KVM, WHP): api_image.rs
    `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`: A's client reaches
    B's server's port once both have joined; refused on another port, the other way, and from B's
@@ -39429,6 +39437,89 @@ guest first where a grant is taken back.
 shards-net --profile test-release shared` on macOS, Linux (glibc and musl) and Windows (shared.rs's
 there), and `cargo test -p shards-ipc --profile test-release every_message_kind_has_its_own_number`;
 `scripts/lint` on the seven targets (sys.rs's Windows arm by cargo-xwin); slice 6's real VMs.
+
+**Slice 5, built** (lane xnet-s5, 2026-11-16; written, neither built nor run, by the person's word of
+that day: ROOT builds and runs it). abi `run::shared` and `builtin::SHARED`; shards-init
+`egress/shared.rs`, with its seams in `links.rs` (`Shared`, `Flows`, `Switch::share`,
+`Switch::retable`, init's `outside`), `egress.rs`, `net.rs` (`shared_address`) and `run.rs`.
+- *The wire* (`builtin::SHARED`, 26, the next free; `shared::args`, `args_off`, `parse_args`): the
+  run on one network as it is to stand, whole, as D278's `EGRESS` tells a member's reach, so that a
+  host that lost an answer asks again safely: the network's ID (slice 1's 64 hex digits), the
+  run's place `ADDR/PREFIX,GATEWAY` (as `address=` says eth0's), the network's name, then items:
+  `name NAME ADDR` (a member's, one address), `alias NAME ADDR` (shared: Compose's scaled replicas
+  hold one, ROOT's decision), `member INDEX NAME` (one of the run's own, by its index as `EGRESS`
+  names it, its name the network's at the run's address) and `in|out INDEX PEER PROTO/FIRST-LAST`
+  (a grant, kiln's `NetworkGrant`); the ID alone, the run off it (its last member left). Names are
+  Docker's grammar, lowercased (RFC 4343), within a host name's 253 bytes; a member with no grant,
+  a grant of no member or of its own name, a name at two addresses, anything twice, or an address
+  off the subnet or the gateway's is malformed (`shared::Error`, exit 1, as `EGRESS`'s).
+- *Held* (refused typed, `egress::shared::Refused`, nothing changed): a member that runs linked to
+  nothing, `SHARED_UNKNOWN`; a grant past its member's image and its ceiling, `SHARED_PAST` (out:
+  ports their port grants cover, or a destination either names at the peer's name; in: ports its
+  image lets in to it past the microVM, D122, or its ceiling's port grants cover; as slice 4's
+  `Widening`); the run on the network at another place, `SHARED_READDRESSED`; joining, a subnet
+  meeting eth0's, the microVM's own networks', another shared one's or its links' link-local block,
+  `SHARED_OVERLAPS`. A grant whose peer is on no network yet is held and opens nothing until the
+  peer is there.
+- *Done*, D278's order, by the one change whole: every member's gate first (`Switch::share`): its
+  flows there, each grant's peer at its addresses (an alias at each run's holding it, the run's own
+  never, its members meeting on its own networks), out its `opens`, in its `accepts`, and every
+  shared subnet kept off its egress past the microVM, as the engine's networks are (D181); then
+  each member's open TCP flows to what it lost reset by sock_diag, D278's `reset` (out: to a peer's
+  address at a port it lost; in: from one to a port of its own it lost), and its own connections'
+  ports kept clear of those it is now opened to (`ip_local_port_range`, D61); then the switch's
+  tables (its link up to its peers' ports, down to its own, its questions) and init's
+  (`Switch::retable`); then eth0's second address, given once those tables keep the run's own
+  processes off it, or taken back once nothing names it (`net::shared_address`, the kernel routing
+  the subnet from it, one there or gone already done); then each member's resolver.
+- *Init's namespace* (`outside`), each network: `shared-in`, a NAT chain before the chooser's and
+  `pre` (which take a port whatever address it came to, D122), gives a new flow a grant in admits,
+  from its peer to the run's address there on its member's port, the member's first address, and
+  drops any other new flow to that address; `forward` lets in what it gave, and lets each member's
+  flows out to the peers its grants out name, on their ports, marked, before any grant past the
+  microVM, then drops anything else of a domain's or an engine's member's to the subnet; `post`
+  gives them the run's address there, before eth0's own; `in` and `own` keep the run's own
+  processes off it (nothing from that address or to that subnet, nothing new to that address).
+  The network process takes them from that address to that network alone (slice 3).
+- *Names*: each member answered by the agents' resolver its own name at the run's address and each
+  name and alias its grants name, at every address holding it but the run's own (D46's rule, a name
+  only where a flow is), the names first so that an address's PTR is a member's name; its gate and
+  the switch let its questions through while it is on a shared network. A member whose ceiling is
+  of ports alone now has the agents' resolver in its resolv.conf from its start too, its gate
+  holding its questions until a grant opens them, as D278 gives one to a ceiling that names names.
+- *Landlock*: a ceiling with TCP ports leaves its member's TCP bind to its gate, as D278 leaves its
+  connect, so that a grant in within it needs no right Landlock took away.
+- *Literals* (R03): 26, the next built-in number free at landing; the exit statuses errno's numbers
+  as D278's (13 EACCES, 2 ENOENT; 17 EEXIST for a place held, 98 EADDRINUSE for a subnet met,
+  include/uapi/asm-generic/errno-base.h and errno.h); 169.254.0.0/16, the link-local block (RFC 3927
+  §2.1) the microVM's links take theirs from (`TRANSIT_SWITCH`, the gates', `UPLINK_NET`); `shared-in`
+  at NAT's priority less two, an order (the chooser's at less one, `pre` at NAT's), not a measure;
+  the kernel's default `ip_local_port_range`, 32768-60999 (net/ipv4/af_inet.c), now named
+  (`links::LOCAL_PORTS`). Nothing else: frames, flows and their timers are slice 3's.
+- *What fails, and how it ends*: a refusal changes nothing; a failure part way (a reset, a table)
+  leaves the gates ahead of the tables, never behind, and the network as it was in init's record,
+  so the change told again does it whole; a run's end takes everything with its guest.
+- *Open* (ROOT's): slice 3's `Join` takes each name once and as a host's (`dns::host_name`), where
+  this takes Docker's names with `_` and `.` and shared aliases (ROOT's decision for slice 4), so
+  slice 4's wire carries both to the guest and its network process must take aliases as this does;
+  a UDP port that both a grant in and a contested `EXPOSE` (D122) give is tracked in the chooser's
+  zone (`chosen-zone`, which reads no address), so its replies may miss their translation; an empty
+  `shared-in` on every run with an uplink, one more NAT chain a new flow's first packet passes,
+  unmeasured (R14); IPv6 comes after (`Ipv6`, slice 4).
+
+**Tests** (slice 5, light; written, not run). abi `run::shared`:
+`a_runs_place_and_grants_on_a_shared_network_read_back_as_written`; init `links`:
+`a_shared_networks_flows_are_translated_and_held_by_their_grants` (init's tables rule for rule with
+and without a network, the gate's merge, the switch's grants); `egress::shared`:
+`a_members_grants_on_a_shared_network_are_held_within_its_image_and_its_ceiling`,
+`a_members_flows_and_names_are_its_grants_peers` (its view answered as DNS),
+`what_a_member_lost_is_found_by_its_peer_and_port`, `a_shared_network_meets_none_of_the_microvms`.
+Owed (ROOT): `cargo test -p shards-abi --profile test-release run::` (host);
+`cargo test -p shards-init --profile test-release --target <arch>-unknown-linux-musl --
+links:: egress::` on Linux x86_64 and aarch64, as D278's init tests run; `scripts/lint` on the seven
+targets (init's Linux code through its musl targets); D278's `a_lost_flow_is_found_and_named_exactly`
+and `grants_as_a_run_starts_join_its_links` again (`reset` and `at_start` changed); slice 6's real
+VMs once slice 4 lands.
 
 ## 4. Start path (≤ 5 ms budget)
 
