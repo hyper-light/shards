@@ -132,8 +132,24 @@ pub use shards_abi::run::nesting::Ready;
 /// [`SwapRefusal::Capacity`], D252), and a plug of a volume refused typed where it is asked
 /// another bound than its holders serve it with ([`PlugRefusal::Bound`]) or a clearing holds
 /// it ([`PlugRefusal::Clearing`], D281), so that a side that reads none of these refusals
-/// refuses the run as it is asked, rather than its answer breaking the channel.
-pub const VERSION: u8 = 49;
+/// refuses the run as it is asked, rather than its answer breaking the channel; 50, a member's
+/// grants on a network shared by runs (D285 slice 4): one grant added or taken back
+/// ([`NetChange::Connect`], [`NetChange::Disconnect`]), a link to another run there and its
+/// members told again ([`NetChange::Link`], [`NetChange::Rejoin`]), the run's places on such
+/// networks with each answer ([`NetChanged::networks`]) and their refusals, so that a side
+/// that switches no shared network refuses the run as it is asked, rather than a grant its
+/// orchestrator made holding nowhere.
+pub const VERSION: u8 = 50;
+
+/// The run host's links socket's descriptor on Unix (version 50, D285 slice 4): the first past
+/// its standard streams, given it as it starts with [`LINKS_ARG`] on its command line, on which
+/// its orchestrator's process hands it each link of a network shared by runs, as `NET_LINK`
+/// hands one (its kind, the network's ID and the peer's address, the link's socket beside),
+/// before that link's [`NetChange::Link`]: its pipes carry no socket. On Windows a link's
+/// socket rides its ask instead, shared with the run host's process.
+pub const LINKS_FD: i32 = 3;
+/// What on a run host's command line says it holds its links socket at [`LINKS_FD`].
+pub const LINKS_ARG: &str = "--links";
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1301,6 +1317,37 @@ pub enum NetChange {
     /// reached; or none, its image's grants back (version 39, D278): within its image's grants
     /// and its ceiling ([`Request::egress_ceiling`]), held in its guest.
     Member { member: u32, reach: Option<Reach> },
+    /// One grant of member `member`, by its declared index, on the network shared by runs
+    /// named `network` (version 50, D285): the member on it from its first, under its grant's
+    /// name, its run leased an address there and its network process told. `pairer` is the
+    /// token of the process that links the network's runs, its orchestrator's, 64 lowercase
+    /// hex digits, which its run host holds the network's pairing under. A grant held already
+    /// is done already.
+    Connect {
+        member: u32,
+        network: String,
+        grant: NetworkGrant,
+        pairer: String,
+    },
+    /// One grant of member `member` on network `network` taken back (version 50): the member
+    /// off it with its last there, the run with its last member's. One not held is done already.
+    Disconnect {
+        member: u32,
+        network: String,
+        grant: NetworkGrant,
+    },
+    /// A link to the run at `peer` on shared network `network`, by its ID, which the process
+    /// that links the network's runs made (version 50, D285): its socket's end on Unix sent
+    /// before this on the run host's links socket (`socket` empty), on Windows `socket`, its
+    /// protocol info shared with the run host (WSADuplicateSocketW).
+    Link {
+        network: String,
+        peer: std::net::Ipv4Addr,
+        socket: Vec<u8>,
+    },
+    /// Shared network `network`'s members, by its ID, read again from the home and told the
+    /// run's network process whole (version 50): another run's member came or went.
+    Rejoin { network: String },
 }
 
 /// A network change asked (D269), its answer named by `id`.
@@ -1330,6 +1377,26 @@ pub enum NetRefusal {
     /// Members whose reach, so changed, the microVM cannot hold apart (D278, D236's `held`):
     /// on a TCP port one reaches by name, another by other names or a port grant.
     Unheld = 6,
+    /// No network of that name or ID in the run's home (version 50, D285): one is made
+    /// beforehand, never by a join.
+    NoSuchNetwork = 7,
+    /// The grant's name is another member's on the network, of this run or another's.
+    NameTaken = 8,
+    /// Every address of the network's range is another run's.
+    Exhausted = 9,
+    /// Another process links the network's runs: the daemon, or another orchestrator.
+    PairedElsewhere = 10,
+    /// The network has IPv6 (D99), which a network shared by runs does not carry yet.
+    Ipv6 = 11,
+    /// A grant that is none: a name or peer of no name's grammar (Docker's, a host's name
+    /// among them), its peer its own name, port 0, or a first port past its last, as kiln's
+    /// `NetworkGrant::check` refuses one; or a name other than the member's on that network
+    /// already.
+    Grant = 12,
+    /// The network's subnet meets another of the microVM's networks: its own, another shared
+    /// one, or its link-local addresses (D285 slice 5's `SHARED_OVERLAPS`, slice 3's
+    /// `Overlaps`).
+    Overlaps = 13,
 }
 
 fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
@@ -1341,6 +1408,13 @@ fn net_refusal(tag: u8) -> Result<NetRefusal, WireError> {
         4 => NetRefusal::Network,
         5 => NetRefusal::Image,
         6 => NetRefusal::Unheld,
+        7 => NetRefusal::NoSuchNetwork,
+        8 => NetRefusal::NameTaken,
+        9 => NetRefusal::Exhausted,
+        10 => NetRefusal::PairedElsewhere,
+        11 => NetRefusal::Ipv6,
+        12 => NetRefusal::Grant,
+        13 => NetRefusal::Overlaps,
         tag => {
             return Err(WireError::Tag {
                 what: "a network change's refusal",
@@ -1358,6 +1432,86 @@ pub struct NetChanged {
     pub changed: Vec<Bound>,
     pub published: Vec<Bound>,
     pub egress: Narrowing,
+    /// The run's places on networks shared by runs once it was made (version 50, D285), as
+    /// its host holds them.
+    pub networks: Vec<OnNetwork>,
+}
+
+/// Which way a [`NetworkGrant`] lets a flow open on a network shared by runs (D285): from its
+/// peer to its member (`In`), or from its member to its peer (`Out`). A flow's replies come
+/// back by its state, whichever way it opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Way {
+    In = 1,
+    Out = 2,
+}
+
+/// A member's grant on a network shared by runs (version 50, D285), as kiln's `NetworkGrant`
+/// names one (kiln bb9ffcea1, crates/kiln-seams/src/sandbox.rs): the member's name on the
+/// network and its peer's, a member of another run (its name or an alias), each by Docker's
+/// grammar compared lowercased (RFC 4343); a range of one protocol's ports, its peer's where
+/// it opens `Out`, its member's where it opens `In`; and which way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkGrant {
+    pub name: String,
+    pub peer: String,
+    pub proto: Proto,
+    pub first: u16,
+    pub last: u16,
+    pub way: Way,
+}
+
+impl NetworkGrant {
+    /// Why it is no grant: a name or peer of no name's grammar, Docker's
+    /// (`[a-z0-9][a-z0-9_.-]*` lowercased, at most 253 bytes, `shards_abi::run::shared::name_ok`,
+    /// as a network's leases, its guest and its network process take one: ROOT, 2026-11-16),
+    /// its peer its own name, port 0, which names no port, or a first port past its last, as
+    /// kiln's `NetworkGrant::check` refuses one, whose host's names are among Docker's. None
+    /// where it is one.
+    pub fn refused(&self) -> Option<String> {
+        for (what, name) in [("name", &self.name), ("peer", &self.peer)] {
+            if !shards_abi::run::shared::name_ok(name.to_ascii_lowercase().as_bytes()) {
+                return Some(format!("its {what} {name:?} is no name"));
+            }
+        }
+        if self.name.eq_ignore_ascii_case(&self.peer) {
+            return Some(format!("{:?} is its own peer", self.name));
+        }
+        if self.first == 0 || self.first > self.last {
+            return Some(format!(
+                "ports {}-{}: a range from 1, its first not past its last",
+                self.first, self.last
+            ));
+        }
+        None
+    }
+
+    /// The same grant, its names lowercased, as a network holds them.
+    pub fn lowered(&self) -> NetworkGrant {
+        NetworkGrant {
+            name: self.name.to_ascii_lowercase(),
+            peer: self.peer.to_ascii_lowercase(),
+            ..self.clone()
+        }
+    }
+}
+
+/// A run's place on a network shared by runs (version 50, D285), as its host holds it: the
+/// network's name and ID, the run's address on it, and each of its members there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnNetwork {
+    pub network: String,
+    pub id: String,
+    pub address: std::net::Ipv4Addr,
+    pub members: Vec<OnNetworkMember>,
+}
+
+/// A member on a network shared by runs: its declared index, its name there, and its grants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnNetworkMember {
+    pub member: u32,
+    pub name: String,
+    pub grants: Vec<NetworkGrant>,
 }
 
 /// A network change's outcome, by its ask's id: made, or refused and why. Its host makes one
@@ -1786,6 +1940,37 @@ impl Writer {
         self.u8(u8::from(n.dns));
         self.reach(n.members.as_deref())
     }
+    /// A grant on a shared network (version 50): its name and its peer's, its protocol, its
+    /// first and last port, and its way.
+    fn grant(&mut self, g: &NetworkGrant) -> Result<(), WireError> {
+        self.text(&g.name)?;
+        self.text(&g.peer)?;
+        self.u8(g.proto as u8);
+        self.u16(g.first);
+        self.u16(g.last);
+        self.u8(g.way as u8);
+        Ok(())
+    }
+    /// The run's places on shared networks (version 50): a count, then each network's name,
+    /// ID and the run's address, and a count of its members, each its index, name and grants.
+    fn networks(&mut self, networks: &[OnNetwork]) -> Result<(), WireError> {
+        self.count(networks.len())?;
+        for n in networks {
+            self.text(&n.network)?;
+            self.text(&n.id)?;
+            self.0.extend_from_slice(&n.address.octets());
+            self.count(n.members.len())?;
+            for m in &n.members {
+                self.u32(m.member);
+                self.text(&m.name)?;
+                self.count(m.grants.len())?;
+                for g in &m.grants {
+                    self.grant(g)?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// A port to publish: its guest port, protocol, host address (or none) and host port.
     fn publish(&mut self, p: &Publish) {
         self.u16(p.guest_port);
@@ -2031,6 +2216,58 @@ impl<'a> Reader<'a> {
             dns: self.flag()?,
             members: self.reach()?,
         })
+    }
+    /// What [`Writer::grant`] wrote.
+    fn grant(&mut self) -> Result<NetworkGrant, WireError> {
+        Ok(NetworkGrant {
+            name: self.text()?,
+            peer: self.text()?,
+            proto: proto(self.u8()?)?,
+            first: self.u16()?,
+            last: self.u16()?,
+            way: match self.u8()? {
+                1 => Way::In,
+                2 => Way::Out,
+                tag => {
+                    return Err(WireError::Tag {
+                        what: "a grant's way",
+                        tag,
+                    });
+                }
+            },
+        })
+    }
+    /// What [`Writer::networks`] wrote: each network at least its name's and ID's lengths,
+    /// its address and its members' count (4 + 4 + 4 + 4), each member at least its index,
+    /// its name's length and its grants' count (4 + 4 + 4), each grant at least its names'
+    /// lengths, its protocol, ports and way (4 + 4 + 1 + 2 + 2 + 1).
+    fn networks(&mut self) -> Result<Vec<OnNetwork>, WireError> {
+        let n = self.count(4 + 4 + 4 + 4)?;
+        let mut networks = Vec::with_capacity(n);
+        for _ in 0..n {
+            let network = self.text()?;
+            let id = self.text()?;
+            let address = std::net::Ipv4Addr::from(self.array::<4>()?);
+            let k = self.count(4 + 4 + 4)?;
+            let mut members = Vec::with_capacity(k);
+            for _ in 0..k {
+                let member = self.u32()?;
+                let name = self.text()?;
+                let g = self.count(4 + 4 + 1 + 2 + 2 + 1)?;
+                let mut grants = Vec::with_capacity(g);
+                for _ in 0..g {
+                    grants.push(self.grant()?);
+                }
+                members.push(OnNetworkMember { member, name, grants });
+            }
+            networks.push(OnNetwork {
+                network,
+                id,
+                address,
+                members,
+            });
+        }
+        Ok(networks)
     }
     /// What [`Writer::publish`] wrote.
     fn publish(&mut self) -> Result<Publish, WireError> {
@@ -3272,6 +3509,42 @@ impl NetAsk {
                     }
                 }
             }
+            NetChange::Connect {
+                member,
+                network,
+                grant,
+                pairer,
+            } => {
+                w.u8(4);
+                w.u32(*member);
+                w.text(network)?;
+                w.grant(grant)?;
+                w.text(pairer)?;
+            }
+            NetChange::Disconnect {
+                member,
+                network,
+                grant,
+            } => {
+                w.u8(5);
+                w.u32(*member);
+                w.text(network)?;
+                w.grant(grant)?;
+            }
+            NetChange::Link {
+                network,
+                peer,
+                socket,
+            } => {
+                w.u8(6);
+                w.text(network)?;
+                w.0.extend_from_slice(&peer.octets());
+                w.bytes(socket)?;
+            }
+            NetChange::Rejoin { network } => {
+                w.u8(7);
+                w.text(network)?;
+            }
         }
         w.done()
     }
@@ -3298,6 +3571,23 @@ impl NetAsk {
                 let reach = if r.flag()? { Some(r.reach_past()?) } else { None };
                 NetChange::Member { member, reach }
             }
+            4 => NetChange::Connect {
+                member: r.u32()?,
+                network: r.text()?,
+                grant: r.grant()?,
+                pairer: r.text()?,
+            },
+            5 => NetChange::Disconnect {
+                member: r.u32()?,
+                network: r.text()?,
+                grant: r.grant()?,
+            },
+            6 => NetChange::Link {
+                network: r.text()?,
+                peer: std::net::Ipv4Addr::from(r.array::<4>()?),
+                socket: r.bytes()?.to_vec(),
+            },
+            7 => NetChange::Rejoin { network: r.text()? },
             tag => {
                 return Err(WireError::Tag {
                     what: "a network change",
@@ -3322,6 +3612,7 @@ impl NetAnswer {
                 w.bounds(&changed.changed)?;
                 w.bounds(&changed.published)?;
                 w.narrowing(&changed.egress)?;
+                w.networks(&changed.networks)?;
             }
             Err((cause, why)) => {
                 w.u8(1);
@@ -3340,6 +3631,7 @@ impl NetAnswer {
                 changed: r.bounds()?,
                 published: r.bounds()?,
                 egress: r.narrowing()?,
+                networks: r.networks()?,
             }),
             1 => Err((net_refusal(r.u8()?)?, r.text()?)),
             tag => {
@@ -4541,12 +4833,31 @@ mod tests {
 
     /// Version 34 (D269). Do: carry a publish to an address and to none, an unpublish of an
     /// IPv4 and an IPv6 binding, an answer with bindings and their receivers, an empty one, and
-    /// each refusal; cut each, trail a byte, and give a change, a refusal or an answer a tag no
-    /// version has, and an unpublish no address. Expect: each read back exactly; each cut,
-    /// trailing byte and unknown tag refused, never a default.
+    /// each refusal; and (version 50, D285) a member's grant on a shared network added and
+    /// taken back, a link with its socket's record and without, its members told again, an
+    /// answer with the run's places on shared networks, and their refusals; cut each, trail a
+    /// byte, and give a change, a refusal, a way or an answer a tag no version has, and an
+    /// unpublish no address. Expect: each read back exactly; each cut, trailing byte and
+    /// unknown tag refused, never a default.
     #[test]
     fn network_changes_and_their_answers_cross_the_channel() {
-        const { assert!(VERSION >= 36, "the channel's version 36 carries the run's grants") };
+        const { assert!(VERSION >= 50, "the channel's version 50 carries shared networks") };
+        let out = NetworkGrant {
+            name: "web".into(),
+            peer: "db".into(),
+            proto: Proto::Tcp,
+            first: 5432,
+            last: 5432,
+            way: Way::Out,
+        };
+        let inward = NetworkGrant {
+            name: "db".into(),
+            peer: "web".into(),
+            proto: Proto::Udp,
+            first: 5000,
+            last: 5010,
+            way: Way::In,
+        };
         let granted = Narrowing {
             egress: Keep::Only(vec!["443/tcp".into(), "8000-8010/udp".into()]),
             mcp: Keep::Only(vec!["mcp.example.com:443".into()]),
@@ -4602,6 +4913,30 @@ mod tests {
                 member: u32::MAX,
                 reach: None,
             },
+            NetChange::Connect {
+                member: 1,
+                network: "shared".into(),
+                grant: out.clone(),
+                pairer: "1".repeat(64),
+            },
+            NetChange::Disconnect {
+                member: 2,
+                network: "e".repeat(64),
+                grant: inward.clone(),
+            },
+            NetChange::Link {
+                network: "e".repeat(64),
+                peer: "10.89.0.3".parse().unwrap(),
+                socket: Vec::new(),
+            },
+            NetChange::Link {
+                network: "e".repeat(64),
+                peer: "10.89.0.4".parse().unwrap(),
+                socket: vec![7; 628],
+            },
+            NetChange::Rejoin {
+                network: "e".repeat(64),
+            },
         ];
         for change in asks {
             let ask = NetAsk { id: 7, change };
@@ -4616,8 +4951,31 @@ mod tests {
             );
         }
         assert!(matches!(
-            NetAsk::decode(&[0, 0, 0, 7, 4]),
+            NetAsk::decode(&[0, 0, 0, 7, 8]),
             Err(WireError::Tag { .. })
+        ));
+        // A grant's way is In (1) or Out (2), nothing else.
+        let ask = NetAsk {
+            id: 7,
+            change: NetChange::Connect {
+                member: 1,
+                network: "n".into(),
+                grant: out.clone(),
+                pairer: "1".repeat(64),
+            },
+        };
+        let mut bytes = ask.encode().unwrap();
+        // Past its id, tag and member, the network's name ("n"), the grant's names ("web",
+        // "db"), its protocol and its ports.
+        let way = 4 + 1 + 4 + (4 + 1) + (4 + 3) + (4 + 2) + 1 + 2 + 2;
+        assert_eq!(bytes[way], Way::Out as u8);
+        bytes[way] = 3;
+        assert!(matches!(
+            NetAsk::decode(&bytes),
+            Err(WireError::Tag {
+                what: "a grant's way",
+                ..
+            })
         ));
         // An unpublish names the address it lets go of: none is no binding.
         assert!(matches!(
@@ -4639,19 +4997,45 @@ mod tests {
             host: "[::]:5353".parse().unwrap(),
             to: Vec::new(),
         };
+        let on = OnNetwork {
+            network: "shared".into(),
+            id: "e".repeat(64),
+            address: "10.89.0.2".parse().unwrap(),
+            members: vec![
+                OnNetworkMember {
+                    member: 1,
+                    name: "web".into(),
+                    grants: vec![out.clone()],
+                },
+                OnNetworkMember {
+                    member: 2,
+                    name: "db".into(),
+                    grants: vec![inward.clone(), out.clone()],
+                },
+            ],
+        };
         let mut results = vec![
             Ok(NetChanged {
                 changed: vec![bound.clone()],
                 published: vec![alone.clone(), bound],
                 egress: granted,
+                networks: vec![on.clone()],
             }),
             Ok(NetChanged {
                 changed: Vec::new(),
                 published: Vec::new(),
                 egress: Narrowing::default(),
+                networks: Vec::new(),
             }),
         ];
         for cause in [
+            NetRefusal::NoSuchNetwork,
+            NetRefusal::NameTaken,
+            NetRefusal::Exhausted,
+            NetRefusal::PairedElsewhere,
+            NetRefusal::Ipv6,
+            NetRefusal::Grant,
+            NetRefusal::Overlaps,
             NetRefusal::Unheld,
             NetRefusal::NoNetwork,
             NetRefusal::Widening,
@@ -4679,7 +5063,7 @@ mod tests {
             Err(WireError::Tag { .. })
         ));
         assert!(matches!(
-            NetAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
+            NetAnswer::decode(&[0, 0, 0, 9, 1, 14, 0, 0, 0, 0]),
             Err(WireError::Tag { .. })
         ));
         // A count of bindings past the bytes left is refused, allocating nothing.
@@ -4687,6 +5071,54 @@ mod tests {
             NetAnswer::decode(&[0, 0, 0, 9, 0, 255, 255, 255, 255]),
             Err(WireError::Short)
         );
+    }
+
+    /// A grant on a shared network is one as kiln's `NetworkGrant::check` takes one (D285), its
+    /// names by Docker's grammar (`_` and `.` among it): its peer not its own name whatever the
+    /// case, its ports from 1, its first not past its last; and lowered as a network holds it.
+    #[test]
+    fn a_shared_networks_grant_is_refused_as_kiln_refuses_one() {
+        let grant = NetworkGrant {
+            name: "Web".into(),
+            peer: "db".into(),
+            proto: Proto::Tcp,
+            first: 80,
+            last: 90,
+            way: Way::Out,
+        };
+        assert_eq!(grant.refused(), None);
+        assert_eq!(grant.lowered().name, "web");
+        let refused = |g: NetworkGrant| g.refused().is_some();
+        assert!(!refused(NetworkGrant {
+            name: "Web_1".into(),
+            peer: "db.proj".into(),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            name: "_web".into(),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            name: "a".repeat(254),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            peer: "-db".into(),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            peer: "WEB".into(),
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            first: 0,
+            ..grant.clone()
+        }));
+        assert!(refused(NetworkGrant {
+            first: 91,
+            ..grant.clone()
+        }));
+        assert!(!refused(NetworkGrant { first: 90, ..grant }));
     }
 
     /// A save's ask and its answer come back as they went, each refusal by its tag (D259); a

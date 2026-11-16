@@ -45,8 +45,12 @@ pub struct Join {
     pub gateway: Ipv4Addr,
     /// The network's name, under which a member's may be asked too (`name.network`, D46).
     pub name: String,
-    /// Every member on it, the run's own among them: its name there (a host's name, RFC 1123
-    /// §2.1, compared lowercased, RFC 4343) and its run's address.
+    /// Every name on it, the run's own members' among them, at its run's address, by Docker's
+    /// rules (ROOT, 2026-11-16): a member's name, one member's, at one address; an alias,
+    /// shared, at each address of a run one of whose members holds it (Compose's scaled
+    /// replicas); each by Docker's grammar, `_` and `.` among it, compared lowercased (RFC
+    /// 4343, `shards_abi::run::shared::name_ok`). Names before aliases, so that an address's
+    /// first name, its PTR's, is a member's.
     pub members: Vec<(String, Ipv4Addr)>,
 }
 
@@ -70,10 +74,10 @@ impl Join {
         Some(out)
     }
 
-    /// What [`Join::encode`] wrote, each member's name lowercased. None for a malformed one: a
-    /// prefix past 32; the guest's address its gateway's, or off the gateway's subnet; a
-    /// member's name not a host's, or named twice; a member's address off the subnet or the
-    /// gateway's; or bytes past the members.
+    /// What [`Join::encode`] wrote, each name lowercased. None for a malformed one: a prefix
+    /// past 32; the guest's address its gateway's, or off the gateway's subnet; a name of no
+    /// name's grammar, or at one address twice; an address off the subnet or the gateway's; or
+    /// bytes past the members.
     pub fn decode(bytes: &[u8]) -> Option<Join> {
         let (id, rest) = bytes.split_at_checked(ID_LEN)?;
         let network = NetworkId::of(id)?;
@@ -85,17 +89,17 @@ impl Join {
         let name = take_name(&mut rest)?;
         let (count, mut rest) = rest.split_first_chunk::<4>()?;
         let mut members: Vec<(String, Ipv4Addr)> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, Ipv4Addr)> = std::collections::HashSet::new();
         // Each member takes six bytes at least, so a count past them ends at the first missing.
         for _ in 0..u32::from_be_bytes(*count) {
             let member = take_name(&mut rest)?.to_ascii_lowercase();
             let (octets, tail) = rest.split_first_chunk::<4>()?;
             rest = tail;
             let at = Ipv4Addr::from(*octets);
-            if !dns::host_name(&member)
+            if !shards_abi::run::shared::name_ok(member.as_bytes())
                 || at == gateway
                 || !within(at, gateway, prefix)
-                || !seen.insert(member.clone())
+                || !seen.insert((member.clone(), at))
             {
                 return None;
             }
@@ -184,9 +188,9 @@ pub fn encode_grant(network: &NetworkId, change: &Change) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// What [`encode_grant`] wrote, its names lowercased. None for a malformed one, as kiln's
-/// `NetworkGrant::check` refuses one: a name not a host's, a peer that is its member, port 0,
-/// or a first port past the last; or bytes past its peer's name.
+/// What [`encode_grant`] wrote, its names lowercased. None for a malformed one: a name of no
+/// name's grammar ([`Join::members`]'), a peer that is its member, port 0, or a first port
+/// past the last, as kiln's `NetworkGrant::check` refuses one; or bytes past its peer's name.
 pub fn decode_grant(bytes: &[u8]) -> Option<(NetworkId, Change)> {
     let (id, rest) = bytes.split_at_checked(ID_LEN)?;
     let network = NetworkId::of(id)?;
@@ -205,8 +209,8 @@ pub fn decode_grant(bytes: &[u8]) -> Option<(NetworkId, Change)> {
     let member = take_name(&mut rest)?.to_ascii_lowercase();
     let peer = take_name(&mut rest)?.to_ascii_lowercase();
     if !rest.is_empty()
-        || !dns::host_name(&member)
-        || !dns::host_name(&peer)
+        || !shards_abi::run::shared::name_ok(member.as_bytes())
+        || !shards_abi::run::shared::name_ok(peer.as_bytes())
         || member == peer
         || first == 0
         || first > last
@@ -257,8 +261,8 @@ pub enum Refusal {
     Overlaps,
     /// A link to an address at which no member of another run is.
     NotAPeer,
-    /// Fewer descriptors left the process than the links its join still needs, which
-    /// would come cut from their messages.
+    /// The process could not hold a descriptor for each link its join still needs, which
+    /// would come cut from their messages (`sys::reserve`).
     NoDescriptors,
     /// A grant added that the run holds already.
     Granted,
@@ -334,8 +338,9 @@ pub(crate) struct Network {
     prefix: u8,
     pub(crate) gateway: Ipv4Addr,
     name: String,
-    /// Each member's run's address, by its name.
-    members: HashMap<String, Ipv4Addr>,
+    /// Each name there at its run's address, as its join gives them ([`Join::members`]): a
+    /// member's at one, an alias at each that holds it.
+    members: Vec<(String, Ipv4Addr)>,
     grants: Vec<Grant>,
     /// The names its guest is answered there (D46's rule, a name only where a flow is): its
     /// run's members' own and those its grants name. Made again whole from `members` and
@@ -351,7 +356,7 @@ impl Network {
             prefix: join.prefix,
             gateway: join.gateway,
             name: join.name,
-            members: join.members.into_iter().collect(),
+            members: join.members,
             grants: Vec::new(),
             names: dns::Names::default(),
         };
@@ -360,24 +365,35 @@ impl Network {
     }
 
     /// The names its guest is answered, made again from its members and its grants, in its
-    /// members' names' order, so that an address's first name, its PTR's, is one alone.
+    /// join's order, names before aliases, so that an address's first name, its PTR's, is a
+    /// member's.
     fn rename(&mut self) {
-        let mut answered: Vec<(&String, &Ipv4Addr)> = self
-            .members
-            .iter()
-            .filter(|&(name, at)| *at == self.address || self.grants.iter().any(|g| g.peer == *name))
-            .collect();
-        answered.sort_unstable();
         let mut names = dns::Names::new(&self.name);
-        for (name, at) in answered {
-            names.add(name, IpAddr::V4(*at));
+        for (name, at) in &self.members {
+            if *at == self.address || self.grants.iter().any(|g| g.peer == *name) {
+                names.add(name, IpAddr::V4(*at));
+            }
         }
         self.names = names;
     }
 
+    /// Whether `name` is a member's or an alias at `peer`.
+    fn names_at(&self, name: &str, peer: Ipv4Addr) -> bool {
+        self.members.iter().any(|(n, at)| n == name && *at == peer)
+    }
+
+    /// Each other run's address on it, once: a link's to come where it has none.
+    pub(crate) fn runs(&self) -> std::collections::HashSet<Ipv4Addr> {
+        self.members
+            .iter()
+            .map(|&(_, at)| at)
+            .filter(|&at| at != self.address)
+            .collect()
+    }
+
     /// Whether a member of another run is at `peer`: a link there is one of its.
     pub(crate) fn names_peer(&self, peer: Ipv4Addr) -> bool {
-        peer != self.address && self.members.values().any(|&at| at == peer)
+        peer != self.address && self.members.iter().any(|&(_, at)| at == peer)
     }
 
     /// Whether flow `key` on the link to `peer`, opened by `by`, is granted: by a grant that
@@ -392,7 +408,7 @@ impl Network {
             g.way == way
                 && g.proto == key.proto
                 && (g.first..=g.last).contains(&port)
-                && self.members.get(&g.peer) == Some(&peer)
+                && self.names_at(&g.peer, peer)
         })
     }
 
@@ -404,7 +420,7 @@ impl Network {
             Ports(
                 self.grants
                     .iter()
-                    .filter(|g| g.way == way && self.members.get(&g.peer) == Some(&peer))
+                    .filter(|g| g.way == way && self.names_at(&g.peer, peer))
                     .map(|g| (g.proto, g.first, g.last))
                     .collect(),
             )
@@ -468,6 +484,10 @@ fn count(ports: &Ports) -> u64 {
 pub(crate) struct Networks(Vec<Network>);
 
 impl Networks {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Network> {
+        self.0.iter()
+    }
+
     pub(crate) fn get(&self, id: &NetworkId) -> Option<&Network> {
         self.0.iter().find(|n| n.id == *id)
     }
@@ -503,7 +523,7 @@ impl Networks {
         match self.0.iter_mut().find(|n| n.id == join.network) {
             Some(n) => {
                 n.name = join.name;
-                n.members = join.members.into_iter().collect();
+                n.members = join.members;
                 n.rename();
             }
             None => self.0.push(Network::new(join)),
@@ -909,10 +929,11 @@ mod tests {
 
     /// D285 slice 3. A join, a grant's change, a link and an answer read back as written,
     /// names lowercased; a join with a prefix past 32, its address its gateway's or off its
-    /// subnet, a member off the subnet, not a host's name or named twice, an ID that is not
-    /// lowercase hex, and a payload cut short or with bytes past it are refused; so is a
-    /// grant of port 0, of ports first past last, to its own member, or of an unknown way,
-    /// and an answer of no refusal.
+    /// subnet, a member off the subnet, of no name's grammar or at one address twice, an ID
+    /// that is not lowercase hex, and a payload cut short or with bytes past it are refused; so
+    /// is a grant of port 0, of ports first past last, to its own member, or of an unknown way,
+    /// and an answer of no refusal. By Docker's rules (slice 4): a name with `_` and `.`, and
+    /// an alias at two addresses, are taken, in a join and a grant.
     #[test]
     fn joins_grants_links_and_answers_read_back_as_written() {
         let j = join();
@@ -936,8 +957,16 @@ mod tests {
         assert_eq!(malformed(&|j| j.address = Ipv4Addr::new(10, 90, 0, 2)), None);
         assert_eq!(malformed(&|j| j.members[1].1 = Ipv4Addr::new(10, 90, 0, 3)), None);
         assert_eq!(malformed(&|j| j.members[1].1 = j.gateway), None);
-        assert_eq!(malformed(&|j| j.members[1].0 = "no_such".into()), None);
-        assert_eq!(malformed(&|j| j.members[2].0 = "DB".into()), None, "db twice");
+        assert_eq!(malformed(&|j| j.members[1].0 = "_no".into()), None);
+        assert_eq!(malformed(&|j| j.members[1].0 = "no such".into()), None);
+        assert_eq!(
+            malformed(&|j| j.members[2].0 = "DB".into()),
+            None,
+            "db twice at one address"
+        );
+        let shared = malformed(&|j| j.members[3].0 = "DB".into()).expect("an alias at two addresses");
+        assert_eq!(shared.members[3], ("db".to_string(), Ipv4Addr::new(10, 89, 0, 4)));
+        assert!(malformed(&|j| j.members[3].0 = "Web_1.proj".into()).is_some());
         let mut upper = bytes.clone();
         upper[0] = b'A';
         assert_eq!(Join::decode(&upper), None, "an ID's hex is lowercase");
@@ -950,10 +979,16 @@ mod tests {
             decode_grant(&encode_grant(&id(1), &shouted).unwrap()),
             Some((id(1), lowered))
         );
+        let docker = Change::Add(grant("web_1", "db.proj", Proto::Tcp, (80, 80), Way::Out));
+        assert_eq!(
+            decode_grant(&encode_grant(&id(1), &docker).unwrap()),
+            Some((id(1), docker))
+        );
         for bad in [
             grant("harness", "db", Proto::Tcp, (0, 80), Way::Out),
             grant("harness", "db", Proto::Tcp, (81, 80), Way::Out),
             grant("harness", "Harness", Proto::Tcp, (80, 80), Way::Out),
+            grant("harness", "-db", Proto::Tcp, (80, 80), Way::Out),
         ] {
             assert_eq!(
                 decode_grant(&encode_grant(&id(1), &Change::Add(bad)).unwrap()),

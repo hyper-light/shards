@@ -112,7 +112,7 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("share") => share::share(args),
         // an image's run for an orchestrator, which shards-api starts (D231): not for
         // people to run.
-        Some("api-run") => api_run::command(),
+        Some("api-run") => api_run::command(args),
         // whether this host runs microVMs now, which shards-api asks (D262): not for people
         // to run.
         Some("api-check") => api_check::command(),

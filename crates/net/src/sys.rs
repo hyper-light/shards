@@ -348,37 +348,24 @@ pub fn entropy(buf: &mut [u8]) -> io::Result<()> {
     }
 }
 
-/// How many of `wanted` more descriptors this process may open now (D285: a shared
-/// network's links to come), read from its limit as the kernel holds it to it, as
-/// network-08 admits a relay's workers. On Unix, as many duplicates of `held` as the kernel
-/// gives before its limit (EMFILE), each closed again: a confined process opens no file to
-/// count its own (Landlock, D31), and F_DUPFD_CLOEXEC is among its seccomp filter's calls.
-/// On Windows, what the 2^24 handles a process may hold ("The per-process limit on kernel
-/// handles is 2^24", Microsoft, "Kernel Objects") leave past those it holds; none where it
-/// cannot say.
-#[cfg(unix)]
-pub fn descriptors_left(held: &UnixStream, wanted: usize) -> usize {
-    let mut taken = Vec::new();
-    while taken.len() < wanted {
+/// Holds `reserved` at `wanted` descriptors for a shared network's links to come (D285),
+/// each a duplicate of `held`, those past `wanted` closed: whether it holds them all. A link's
+/// socket comes beside its message (SCM_RIGHTS on Unix; on Windows its protocol info, adopted
+/// as its message is read), which a process at its limit takes cut, ending its control
+/// (MSG_CTRUNC); so its descriptor is held from the join that counts it until its message is
+/// read, never a flow's to take meanwhile. Duplicates, as a confined process opens no file
+/// (Landlock, D31) and F_DUPFD_CLOEXEC is among its seccomp filter's calls; the kernel refuses
+/// one past the limit (EMFILE; on Windows the 2^24 handles a process may hold, Microsoft,
+/// "Kernel Objects").
+pub fn reserve(held: &UnixStream, wanted: usize, reserved: &mut Vec<UnixStream>) -> bool {
+    reserved.truncate(wanted);
+    while reserved.len() < wanted {
         match held.try_clone() {
-            Ok(copy) => taken.push(copy),
-            Err(_) => break,
+            Ok(copy) => reserved.push(copy),
+            Err(_) => return false,
         }
     }
-    taken.len()
-}
-
-#[cfg(windows)]
-pub fn descriptors_left(_held: &UnixStream, wanted: usize) -> usize {
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
-    const HANDLES: u64 = 1 << 24;
-    let mut count = 0u32;
-    // SAFETY: this process's pseudo-handle, and a count to fill.
-    if unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) } == 0 {
-        return 0;
-    }
-    let left = HANDLES.saturating_sub(u64::from(count));
-    usize::try_from(left).map_or(wanted, |left| left.min(wanted))
+    true
 }
 
 /// Asks `sock`'s send and receive buffers to be `size` bytes each (SO_SNDBUF, SO_RCVBUF);
@@ -426,5 +413,29 @@ pub fn drain(bell: shards_netring::RawWait) {
             windows_sys::Win32::Networking::WinSock::recv(s, buf.as_mut_ptr(), buf.len() as i32, 0)
         } > 0
         {}
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// Do hold three descriptors for a shared network's links to come, then one, then none
+    /// (D285). Expect: three duplicates of the held socket, then one, then none, each time
+    /// said held; and a socket's end still read by its peer once its duplicates go.
+    #[test]
+    fn a_reservation_holds_what_is_wanted_and_lets_the_rest_go() {
+        use std::io::Read as _;
+        let (held, mut peer) = UnixStream::pair().unwrap();
+        let mut reserved = Vec::new();
+        assert!(reserve(&held, 3, &mut reserved));
+        assert_eq!(reserved.len(), 3);
+        assert!(reserve(&held, 1, &mut reserved));
+        assert_eq!(reserved.len(), 1);
+        assert!(reserve(&held, 0, &mut reserved));
+        assert!(reserved.is_empty());
+        drop(held);
+        let mut rest = Vec::new();
+        assert_eq!(peer.read_to_end(&mut rest).unwrap(), 0);
     }
 }
