@@ -3733,11 +3733,11 @@ mod tests {
             &socket,
             vec![
                 Some(
-                    b"USED\ndeparted 5\nvcpu 0 400\nvcpu 1 600 unread hvf-exec-time 3\nhost 1500 8192 4096\n",
+                    b"USED\ndeparted 5\nvcpu 0 400\nvcpu 1 600 unread hvf-exec-time 3\nhost 1500 8192 4096 thread\n",
                 ),
-                Some(b"USED\nguest-unread the microVM has not started\nhost 70 1 2\n"),
+                Some(b"USED\nguest-unread the microVM has not started\nhost 70 1 2 thread\n"),
                 Some(b"USED\ndeparted 9\nhost-unread its VM process: denied\n"),
-                Some(b"USED\nhost 1 2 3\n"),
+                Some(b"USED\nhost 1 2 3 thread\n"),
                 Some(b"USED\ndeparted 1\nhost 1 2"),
                 Some(b"RATED 250 1\n"),
                 None,
