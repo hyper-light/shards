@@ -1825,13 +1825,9 @@ credential_process = echo no >&2 & exit /b 3
             ("listed", rfc3339("2099-01-01T00:00:00Z"))
         );
         assert!(run("two").err().unwrap().contains("Version is not 1"));
-        let exited = if cfg!(windows) {
-            "it exited exit code: 3"
-        } else {
-            "exited 3"
-        };
+        // Its exit code, as shards_ipc's Child::wait gives it on every OS.
         let failed = run("fails").err().unwrap();
-        assert!(failed.contains(exited), "{failed}");
+        assert!(failed.contains("it exited 3"), "{failed}");
         if cfg!(windows) {
             let found = run("quoted").unwrap();
             assert_eq!(found.creds.access_key.as_str(), "listed");
