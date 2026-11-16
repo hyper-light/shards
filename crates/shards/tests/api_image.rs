@@ -4397,11 +4397,12 @@ fn component(home: &TempDir, kind: &str, tag: &str, marker: &str, asks: &str) ->
         std::fs::read(common::test_guest()).unwrap(),
     )
     .unwrap();
-    std::fs::set_permissions(
-        dir.join("bin/codex"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
+    // An artifact's files keep their modes on a Unix host; a Windows host's context gives every file 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.join("bin/codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     std::fs::write(dir.join("marker.txt"), format!("{marker}\n")).unwrap();
     std::fs::write(
         dir.join(format!("{kind}.json")),

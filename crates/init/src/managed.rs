@@ -335,12 +335,21 @@ impl Launch {
 
     /// Only the actor branch returns; the namespace init immediately execs fresh code.
     pub fn child(&self) -> RawFd {
-        self.child_into(None)
+        self.child_into(None, None)
     }
 
     /// [`child`](Self::child), the actor entering `mounts`, the mount namespace its member's
-    /// earlier generations had (D270), where given, rather than a copy of its reaper's.
-    pub fn child_into(&self, mounts: Option<RawFd>) -> RawFd {
+    /// earlier generations had (D270), where given, rather than a copy of its reaper's; and
+    /// both entering `cgroup`, their cgroup namespace, where given, joined here, in its leaf,
+    /// since a clone into a cgroup from inside it is refused under `nsdelegate` (its failure
+    /// said on the ready pipe, as the helper's are).
+    pub fn child_into(&self, mounts: Option<RawFd>, cgroup: Option<RawFd>) -> RawFd {
+        if let Some(fd) = cgroup {
+            // SAFETY: setns(2) of a namespace descriptor, from the namespace's single thread.
+            if unsafe { libc::setns(fd, libc::CLONE_NEWCGROUP) } != 0 {
+                raw_fail(self.ready.1.as_raw_fd(), Step::Helper);
+            }
+        }
         // SAFETY: raw clone as fork, from the namespace's single thread. No Rust runtime
         // or allocator is entered in either branch before its exec.
         let actor = unsafe { libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0) };
@@ -479,6 +488,34 @@ impl Owned {
     /// Its generation's own cgroup (D270, `gen/`): where its processes are listed.
     pub fn population(&self) -> &std::fs::File {
         &self.population
+    }
+
+    /// How its reaper ended, where it has, read without reaping it: what a launch whose reaper
+    /// said nothing ([`Failure`]'s EPROTO) adds to its words.
+    pub fn reaper_end(&self) -> Option<String> {
+        // SAFETY: a zeroed siginfo_t is a valid one for waitid(2) to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let id = libc::id_t::try_from(self.pidfd.as_raw_fd()).ok()?;
+        // SAFETY: waitid(2) of its reaper by its pidfd, neither reaping it (WNOWAIT) nor waiting
+        // for it (WNOHANG), into the siginfo_t above.
+        let waited = unsafe {
+            libc::waitid(
+                libc::P_PIDFD,
+                id,
+                &raw mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        // SAFETY: si_pid and si_status of a siginfo_t waitid(2) filled for a child's end.
+        let (pid, status) = unsafe { (info.si_pid(), info.si_status()) };
+        if waited != 0 || pid == 0 {
+            return None;
+        }
+        Some(match info.si_code {
+            libc::CLD_EXITED => format!("its reaper exited {status}"),
+            libc::CLD_KILLED | libc::CLD_DUMPED => format!("its reaper was killed by signal {status}"),
+            code => format!("its reaper ended, code {code}, status {status}"),
+        })
     }
 
     /// Its generation ended at once (D270, `builtin::MEMBER_KILL`): SIGKILL to its reaper, its

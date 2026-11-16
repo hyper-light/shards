@@ -2866,7 +2866,16 @@ pub fn next_generation(
     // Its launch into its generation's leaf, cloned by a helper of one thread in its kept
     // namespaces (setns(2) of a mount namespace refuses a caller of several threads, and init
     // has several), its parent this process (CLONE_PARENT), so that this process reaps it and
-    // its PID is no other's until then.
+    // its PID is no other's until then. Not cloned into its leaf (CLONE_INTO_CGROUP) but moved
+    // there by the helper (`cgroup.procs`) before it does anything: a clone into a cgroup that
+    // was ever killed (`cgroup.kill`, as its last generation's end killed this leaf) is killed
+    // at birth, the kernel comparing the caller's cgroup's kill count with the leaf's (Linux
+    // 7.2-rc4 kernel/cgroup/cgroup.c: `cgroup_css_set_fork` reads `kill_seq` before it sets
+    // `kargs->cgrp`, `cgroup_post_fork` reads the leaf's). It waits to be moved, then joins its
+    // member's cgroup namespace there: with cgroup2's `nsdelegate` (run.rs) a move into a
+    // cgroup is checked against the mover's cgroup namespace, which must see both cgroups
+    // (`cgroup_procs_write_permission`, -ENOENT), and from the member's init's is out of sight.
+    // The helper says its child's PID, or the errno that stopped it, negated.
     let open_dir = |path: &str| -> Result<std::fs::File, (R, String)> {
         std::fs::File::options()
             .read(true)
@@ -2878,6 +2887,29 @@ pub fn next_generation(
     let group = open_dir(&s.cgroup)?;
     let launch = crate::managed::Launch::new(again.last_cap, &population)
         .map_err(|e| failed(format!("preparing its owner: {e}")))?;
+    let procs = std::fs::File::options()
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(format!("{}/cgroup.procs", s.population))
+        .map_err(|e| failed(format!("its leaf's cgroup.procs: {e}")))?;
+    // Its starter is new again: its member's pids.max takes it beside what it declared, as its
+    // first start's did (`with_starter`), until it goes (`Started::starter_gone`).
+    if let Some(n) = s.pids {
+        let most =
+            with_starter(n).ok_or_else(|| failed(format!("{n} processes and its starter overflow")))?;
+        std::fs::write(format!("{}/pids.max", s.cgroup), most.to_string())
+            .map_err(|e| failed(format!("its pids.max: {e}")))?;
+    }
+    let mut placed = [0 as RawFd; 2];
+    // SAFETY: pipe2(2) into a two-element array.
+    if unsafe { libc::pipe2(placed.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(failed(format!(
+            "its placing pipe: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: both descriptors were just made, and are owned here alone.
+    let (placed_r, placed_w) = unsafe { (OwnedFd::from_raw_fd(placed[0]), OwnedFd::from_raw_fd(placed[1])) };
     let mut said = [0 as RawFd; 2];
     // SAFETY: pipe2(2) into a two-element array.
     if unsafe { libc::pipe2(said.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -2888,10 +2920,12 @@ pub fn next_generation(
     }
     // SAFETY: both descriptors were just made, and are owned here alone.
     let (said_r, said_w) = unsafe { (OwnedFd::from_raw_fd(said[0]), OwnedFd::from_raw_fd(said[1])) };
+    // No exit signal of its own: clone3(2) refuses one beside CLONE_PARENT (kernel/fork.c
+    // `clone3_args_valid`: EINVAL), and its child takes the helper's, SIGCHLD to this process
+    // (`copy_process`: `current->group_leader->exit_signal`).
     let mut args = CloneArgs {
-        flags: (libc::CLONE_PARENT | libc::CLONE_NEWNS | libc::CLONE_NEWPID) as u64 | CLONE_INTO_CGROUP,
-        exit_signal: libc::SIGCHLD as u64,
-        cgroup: population.as_raw_fd() as u64,
+        flags: (libc::CLONE_PARENT | libc::CLONE_NEWNS | libc::CLONE_NEWPID) as u64,
+        exit_signal: 0,
         ..CloneArgs::default()
     };
     // SAFETY: fork(2); the child calls only the kernel, on what was made above, and exits, or
@@ -2904,19 +2938,31 @@ pub fn next_generation(
         // SAFETY: setns(2) and clone3(2) on descriptors and a clone_args made before the fork,
         // in a process of one thread; write(2) and _exit(2).
         unsafe {
+            let said = |value: libc::c_long| {
+                let bytes = value.to_be_bytes();
+                libc::write(said_w.as_raw_fd(), bytes.as_ptr().cast(), bytes.len());
+            };
+            let errno = || libc::c_long::from(io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
             for (ns, kind) in [
                 (&kept.net, libc::CLONE_NEWNET),
                 (&kept.ipc, libc::CLONE_NEWIPC),
                 (&kept.uts, libc::CLONE_NEWUTS),
-                (&kept.cgroup, libc::CLONE_NEWCGROUP),
             ] {
                 if libc::setns(ns.as_raw_fd(), kind) != 0 {
+                    said(-errno());
                     libc::_exit(1);
                 }
             }
             let pid = libc::syscall(libc::SYS_clone3, &raw mut args, std::mem::size_of::<CloneArgs>());
             if pid == 0 {
-                let setup = launch.child_into(Some(kept.mounts.as_raw_fd()));
+                // Nothing done until it is in its leaf: the helper's word, or its end.
+                libc::close(placed_w.as_raw_fd());
+                let mut word = [0u8; 1];
+                if libc::read(placed_r.as_raw_fd(), word.as_mut_ptr().cast(), 1) != 1 {
+                    libc::_exit(126);
+                }
+                // In its leaf now: its member's cgroup namespace sees it.
+                let setup = launch.child_into(Some(kept.mounts.as_raw_fd()), Some(kept.cgroup.as_raw_fd()));
                 rechild(
                     &prepared,
                     &confinement,
@@ -2926,22 +2972,63 @@ pub fn next_generation(
                     setup,
                 );
             }
-            let bytes = pid.to_be_bytes();
-            libc::write(said_w.as_raw_fd(), bytes.as_ptr().cast(), bytes.len());
+            if pid < 0 {
+                said(-errno());
+                libc::_exit(1);
+            }
+            // Its PID in decimal into its leaf's cgroup.procs, then its word to go on.
+            let mut digits = [0u8; 20];
+            let mut at = digits.len();
+            let mut left = u64::try_from(pid).unwrap_or(0);
+            loop {
+                at = at.saturating_sub(1);
+                if let Some(d) = digits.get_mut(at) {
+                    *d = b'0'.saturating_add(u8::try_from(left % 10).unwrap_or(0));
+                }
+                left /= 10;
+                if left == 0 || at == 0 {
+                    break;
+                }
+            }
+            let text = digits.get(at..).unwrap_or_default();
+            let moved = libc::write(procs.as_raw_fd(), text.as_ptr().cast(), text.len());
+            if usize::try_from(moved).ok() != Some(text.len()) {
+                let why = errno();
+                // Never kill(0): its PID is clone3(2)'s, positive.
+                if let Ok(child) = libc::pid_t::try_from(pid)
+                    && child > 0
+                {
+                    libc::kill(child, libc::SIGKILL);
+                }
+                said(-why);
+                libc::_exit(1);
+            }
+            libc::write(placed_w.as_raw_fd(), [1u8].as_ptr().cast(), 1);
+            said(pid);
             libc::_exit(0);
         }
     }
     drop(said_w);
+    drop(placed_w);
+    drop(placed_r);
+    drop(procs);
     let mut bytes = [0u8; std::mem::size_of::<libc::c_long>()];
     let heard = std::fs::File::from(said_r).read_exact(&mut bytes);
     let mut status = 0;
     // SAFETY: waitpid(2) of the helper, this process's child, which exits as it has said.
     unsafe { libc::waitpid(helper, &raw mut status, 0) };
     heard.map_err(|e| failed(format!("its helper said nothing: {e}")))?;
-    let pid = libc::pid_t::try_from(libc::c_long::from_be_bytes(bytes))
+    let said = libc::c_long::from_be_bytes(bytes);
+    let pid = libc::pid_t::try_from(said)
         .ok()
         .filter(|p| *p > 0)
-        .ok_or_else(|| failed("its helper could not clone it".into()))?;
+        .ok_or_else(|| {
+            let errno = i32::try_from(said.saturating_neg()).unwrap_or(libc::EIO);
+            failed(format!(
+                "its helper could not join its namespaces or clone it: {}",
+                io::Error::from_raw_os_error(errno)
+            ))
+        })?;
     // SAFETY: pidfd_open(2) of this process's child, not yet reaped.
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0u32) };
     let pidfd = RawFd::try_from(pidfd)
@@ -2958,9 +3045,24 @@ pub fn next_generation(
     drop(stderr_write);
     drop(starter_end);
     drop(copies);
-    lifecycle
-        .launched()
-        .map_err(|e| failed(format!("its launch: {e}")))?;
+    if let Err(e) = lifecycle.launched() {
+        let ended = lifecycle
+            .reaper_end()
+            .map(|how| format!(" ({how})"))
+            .unwrap_or_default();
+        // What its cgroup counted as it failed: an OOM kill, a fork past its pids.max.
+        let counted = |file: &str| {
+            std::fs::read_to_string(format!("{}/{file}", s.cgroup))
+                .map(|t| t.split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default()
+        };
+        return Err(failed(format!(
+            "its launch: {e}{ended}; its cgroup's memory.events: {}; pids.events: {}; pids.max: {}",
+            counted("memory.events"),
+            counted("pids.events"),
+            counted("pids.max")
+        )));
+    }
     s.lifecycle = lifecycle;
     s.stdout = stdout;
     s.stderr = stderr;
