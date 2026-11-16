@@ -115,10 +115,15 @@ impl Cpio {
     }
 }
 
-/// The entries before `/init` in [`with_init`]'s archive.
+/// The entries before `/init` in [`with_init`]'s archive: devices.txt's numbers, the kernel's
+/// modes (`console` its default initramfs's, usr/default_cpio_list; `null` devtmpfs's,
+/// drivers/char/mem.c). `/dev/null` is for an init the kernel opened no console for as its
+/// stdio (init/main.c `console_on_rootfs`; D261): Rust's runtime reopens a closed descriptor
+/// 0-2 on it before `main`, and aborts where it cannot, ending PID 1.
 fn root(c: &mut Cpio) {
     c.dir("dev", 0o755)
         .char_dev("dev/console", 0o600, 5, 1)
+        .char_dev("dev/null", 0o666, 1, 3)
         .dir("proc", 0o555)
         .dir("sys", 0o555);
 }
@@ -127,13 +132,15 @@ fn root(c: &mut Cpio) {
 pub const fn archive_len(init_len: usize) -> usize {
     entry_len("dev", 0)
         + entry_len("dev/console", 0)
+        + entry_len("dev/null", 0)
         + entry_len("proc", 0)
         + entry_len("sys", 0)
         + entry_len("init", init_len)
         + entry_len("TRAILER!!!", 0)
 }
 
-/// The minimal root an init binary needs: `/dev/console` for its stdio, and `/init`.
+/// The minimal root an init binary needs: `/dev/console` and `/dev/null` for its stdio, and
+/// `/init`.
 pub fn with_init(init: &[u8]) -> Vec<u8> {
     let mut c = Cpio::with_capacity(archive_len(init.len()));
     root(&mut c);
@@ -209,10 +216,23 @@ mod tests {
     fn archive_roundtrips() {
         let entries = parse(&with_init(b"\x7fELF-ish"));
         let names: Vec<&str> = entries.iter().map(|e| e.0.as_str()).collect();
-        assert_eq!(names, ["dev", "dev/console", "proc", "sys", "init", "TRAILER!!!"]);
+        assert_eq!(
+            names,
+            [
+                "dev",
+                "dev/console",
+                "dev/null",
+                "proc",
+                "sys",
+                "init",
+                "TRAILER!!!"
+            ]
+        );
         assert_eq!(entries[1].1, S_IFCHR | 0o600);
         assert_eq!(entries[1].2, (5, 1));
-        assert_eq!(entries[4].1, S_IFREG | 0o755);
-        assert_eq!(entries[4].3, b"\x7fELF-ish");
+        assert_eq!(entries[2].1, S_IFCHR | 0o666);
+        assert_eq!(entries[2].2, (1, 3));
+        assert_eq!(entries[5].1, S_IFREG | 0o755);
+        assert_eq!(entries[5].3, b"\x7fELF-ish");
     }
 }
