@@ -810,15 +810,20 @@ pub trait Stream: Read + Write + Send + Sync {
     /// `&dyn Stream`'s `Write` does.
     fn write_shared(&self, buf: &[u8]) -> io::Result<usize>;
     /// The connection's socket, owned by its caller from here: a Unix stream socket's
-    /// descriptor, close-on-exec; on Windows shards' AF_UNIX socket, not inheritable. It is
-    /// left non-blocking, as every stream's is (its timeouts were this value's own polls, and
-    /// go with it), still shared by any clone.
+    /// descriptor, close-on-exec, left non-blocking, as every stream's is (its timeouts were
+    /// this value's own polls, and go with it), still shared by any clone. On Windows its two
+    /// pipes' handles (D272, [`OwnedSocket`]), copies its clones keep their own of, not
+    /// inheritable, each opened for overlapped calls; a write under way finished first.
     fn into_socket(self: Box<Self>) -> OwnedSocket;
     /// The OS handle under it, for a caller that waits in its own event loop (epoll, kqueue,
     /// IOCP) rather than in a read: readable when a read won't wait, writable when a write
     /// won't, both once the connection has ended. Borrowed: it stays the stream's, open for as
     /// long as the borrow, so a caller waits on it without `unsafe` and never closes it; one that
-    /// adds it to an event set takes it out before the stream drops.
+    /// adds it to an event set takes it out before the stream drops. On Windows the way down's
+    /// pipe end (D272), which a caller's completion port is told of by an overlapped read of no
+    /// bytes, finishing as something comes or the connection ends (PM M348); a pipe says nothing
+    /// of its room (M549): a write there waits on the stream's last write alone, which
+    /// `WouldBlock` says while it is under way.
     fn handle(&self) -> Handle<'_>;
     /// With `on`, a read or a write that would wait fails `WouldBlock` at once, for a caller
     /// that waits on [`handle`](Stream::handle); else each waits to its timeout, as by
@@ -844,18 +849,27 @@ pub trait Stream: Read + Write + Send + Sync {
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
 }
 
-/// The OS handle under a [`Stream`], borrowed from it: a file descriptor on Unix, a Winsock socket
-/// on Windows.
+/// The OS handle under a [`Stream`], borrowed from it: a file descriptor on Unix; on Windows its
+/// way down's pipe end (D272).
 #[cfg(unix)]
 pub type Handle<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
-pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
+pub type Handle<'a> = std::os::windows::io::BorrowedHandle<'a>;
 
 /// The OS handle under a [`Stream`], owned ([`Stream::into_socket`]).
 #[cfg(unix)]
 pub type OwnedSocket = std::os::fd::OwnedFd;
+
+/// The OS handles under a [`Stream`] on Windows, owned ([`Stream::into_socket`]): its
+/// connection's two pipes (D272), the way down it reads and the way up it writes, each opened
+/// for overlapped calls. Each is none where the OS made no copy of it for a stream whose clones
+/// hold it still, the way up also where the stream's writes were shut down.
 #[cfg(windows)]
-pub type OwnedSocket = std::os::windows::io::OwnedSocket;
+#[derive(Debug)]
+pub struct OwnedSocket {
+    pub down: Option<std::os::windows::io::OwnedHandle>,
+    pub up: Option<std::os::windows::io::OwnedHandle>,
+}
 
 impl Read for &(dyn Stream + '_) {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {

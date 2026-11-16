@@ -2231,10 +2231,11 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
             .spawn()
             .unwrap()
     };
-    // Its socket accepts once its VM process has made its device and listens. On macOS and
-    // Windows its spawner binds the path first and a client is refused until the VM listens
-    // (grant_answer.rs `bound`), so the path's being there says nothing: a dial that connects
-    // does. Waited for while its VM process lives, each dial paced as shards-api paces its
+    // Its socket accepts once its VM process has made its device and listens. On macOS its
+    // spawner binds the path first and a client is refused until the VM listens, so the path's
+    // being there says nothing: a dial that connects does. On Windows its spawner makes its
+    // pipes and names them at the path first (D272): a dial opens them at once, its connection
+    // taken as the device comes up, and the next dial waits for the device's next pair. Waited for while its VM process lives, each dial paced as shards-api paces its
     // own (`shards_api::pause`), with no clock of the test's (WHP at 0a3dde0db: a dial as the
     // path appeared was refused, WSAECONNREFUSED).
     let listening = |socket: &std::path::Path, child: &mut std::process::Child| {
@@ -2242,7 +2243,7 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
         loop {
             let dialed = Instant::now();
             if socket.exists() {
-                match shards_vmm::platform::UnixStream::connect(socket) {
+                match common::vsock_dial(socket) {
                     Ok(_) => return,
                     Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
                     Err(e) => panic!("dialing {}: {e}", socket.display()),
@@ -2262,7 +2263,7 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     // One ask, and the line its VM answers before it closes the ask: none where it closes it
     // unanswered.
     let asked = |socket: &std::path::Path, milli: u64| {
-        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        let mut s = common::vsock_dial(socket).unwrap();
         s.write_all(ask(milli).as_bytes()).unwrap();
         let mut line = String::new();
         s.read_to_string(&mut line).unwrap();
@@ -2272,7 +2273,7 @@ fn a_managed_guest_is_held_to_the_rate_its_client_asks_on_its_socket() {
     let mut child = boot(&socket, true);
     listening(&socket, &mut child);
     let used = |socket: &std::path::Path| {
-        let mut s = shards_vmm::platform::UnixStream::connect(socket).unwrap();
+        let mut s = common::vsock_dial(socket).unwrap();
         s.write_all(shards_abi::rate::USE_ASK).unwrap();
         let mut answer = Vec::new();
         s.read_to_end(&mut answer).unwrap();
