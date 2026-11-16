@@ -3081,7 +3081,9 @@ mod hosted {
 
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
-    use crate::daemon::managed::{Charge, execs, input_bytes, mcp, members, output_bytes, storage_excess};
+    use crate::daemon::managed::{
+        Charge, execs, input_bytes, link_bytes, mcp, members, output_bytes, storage_excess,
+    };
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -4697,7 +4699,8 @@ mod hosted {
             // member, as an end with no restart under way does.
             let go = protocol::members::Hold { member, held: false };
             let _ = shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &go.encode(), &[]);
-            // Lanes of a next generation that may never run are revoked (D252), not left open.
+            // Lanes of a next generation that may never run are revoked (D252), not left open,
+            // and their charges given back.
             if let (Some(stdio), Some(next)) = (live.stdio.get(), generation.checked_add(1)) {
                 stdio.abort_generation(member, next);
             }
@@ -4807,9 +4810,10 @@ mod hosted {
             );
         }
         // Its next generation's streams on its endpoint's lanes, where it serves its members'
-        // stdio (D252): joined before its start, as its feed is.
+        // stdio (D252): joined before its start, as its feed is; refused `Capacity`, and never
+        // started, where its budget has no room for them.
         if let Some(stdio) = live.stdio.get() {
-            stdio.join(live, member, next, has_input, scope).map_err(failed)?;
+            stdio.join(live, member, next, has_input, scope)?;
         }
         shards_ipc::send(&lock(&live.link), kind::MEMBER_START, &payload, &[])
             .map_err(|e| failed(format!("its VM: {e}")))?;
@@ -5666,8 +5670,8 @@ mod hosted {
         /// What each exec's and MCP connection's streams are admitted, as the daemon's runs
         /// admit them (`shards_api::control::exec_admissions`).
         admissions: shards_remote::control::exec::Admissions,
-        /// The budget its lanes are charged to: this host's own, held to the host's available
-        /// memory as the daemon's runs' is.
+        /// The budget its endpoint's link ([`charge_link`]) and its lanes are charged to: this
+        /// host's own, held to the host's available memory as the daemon's runs' is.
         charge: std::sync::Arc<Charge>,
         /// Where its command stands, for each lane that waits on its start.
         begun: Mutex<Begun>,
@@ -5807,7 +5811,8 @@ mod hosted {
         /// runs' owned outputs (`output_bytes` of what its endpoint admits it, its host's record
         /// of it its entry here, and `storage_excess`), its control held, its thread started.
         /// One its budget has no room for is let go (`no_room`), each lane to it refused
-        /// `Capacity`; one that has no thread is revoked, which its lane is told.
+        /// `Capacity`; one that has no thread is revoked, which its lane is told. Whether its
+        /// budget had room for it.
         fn output<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
@@ -5815,7 +5820,7 @@ mod hosted {
             producer: shards_remote::managed::Producer,
             control: shards_remote::managed::Control,
             scope: &'scope std::thread::Scope<'scope, 'env>,
-        ) {
+        ) -> bool {
             let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
             let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
                 .zip(storage_excess(&producer, admitted.record_bytes).ok())
@@ -5835,7 +5840,7 @@ mod hosted {
                         charged,
                     },
                 );
-                return;
+                return false;
             }
             let (records, taken) = std::sync::mpsc::channel();
             lock(&self.outputs).insert(
@@ -5853,6 +5858,7 @@ mod hosted {
                 super::say(format_args!("member {}'s output lane has no thread: {e}", key.0));
                 self.abort(key);
             }
+            true
         }
 
         /// Serves member `key.0`'s generation `key.1`'s stdin from now on: charged to its budget
@@ -5860,7 +5866,7 @@ mod hosted {
         /// entry here), its control held, its relay's thread started ([`lane_input`]). One its
         /// budget has no room for is let go (`no_room`), each lane to it refused `Capacity` and
         /// its member's input connection ended by its relay, which finds it gone; one that has
-        /// no thread is revoked.
+        /// no thread is revoked. Whether its budget had room for it.
         fn input<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
@@ -5868,14 +5874,15 @@ mod hosted {
             relay: shards_remote::managed::input::Relay,
             control: shards_remote::managed::input::Control,
             scope: &'scope std::thread::Scope<'scope, 'env>,
-        ) {
+        ) -> bool {
             let (_, admitted) = shards_api::control::member_input(key.0, key.1);
             let charged = charge_stream(
                 &self.charge,
                 input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
                 format_args!("member {}'s generation {} stdin lane", key.0, key.1),
             );
-            if charged.is_none() {
+            let room = charged.is_some();
+            if !room {
                 control.no_room();
             }
             lock(&self.inputs).insert(key, LaneInput { control, charged });
@@ -5888,6 +5895,7 @@ mod hosted {
                     lane.control.abort();
                 }
             }
+            room
         }
 
         /// Gives back what member `member`'s generations before `generation` hold of its budget
@@ -5925,7 +5933,9 @@ mod hosted {
         /// before its start, so that its guest's first record and its input find them: its
         /// stdout and stderr, and its stdin where it has one, each served and charged as its
         /// first generation's are, once what its past generations' streams that are over hold
-        /// of its budget is given back.
+        /// of its budget is given back. Refused `Capacity` where its budget had no room for one
+        /// of them, each such stream let go and its lanes refused `Capacity`, so that its
+        /// restart starts no generation whose output none would credit (D252).
         fn join<'scope, 'env>(
             &'env self,
             live: &'env Live<'env>,
@@ -5933,23 +5943,33 @@ mod hosted {
             generation: u32,
             stdin: bool,
             scope: &'scope std::thread::Scope<'scope, 'env>,
-        ) -> Result<(), String> {
+        ) -> Result<(), (wire::RestartRefusal, String)> {
+            let failed = |why: String| (wire::RestartRefusal::Failed, why);
             self.give_back(member, generation);
+            let mut room = true;
             for channel in [Channel::Stdout, Channel::Stderr] {
                 let (named, _) = shards_api::control::member_output(member, generation, channel);
                 let (producer, control) = self
                     .generations
                     .output(named)
-                    .map_err(|e| format!("its generation {generation}'s output lane: {e}"))?;
-                self.output(live, (member, generation, channel), producer, control, scope);
+                    .map_err(|e| failed(format!("its generation {generation}'s output lane: {e}")))?;
+                room &= self.output(live, (member, generation, channel), producer, control, scope);
             }
             if stdin {
                 let (named, _) = shards_api::control::member_input(member, generation);
                 let (relay, control) = self
                     .generations
                     .input(named)
-                    .map_err(|e| format!("its generation {generation}'s stdin lane: {e}"))?;
-                self.input(live, (member, generation), relay, control, scope);
+                    .map_err(|e| failed(format!("its generation {generation}'s stdin lane: {e}")))?;
+                room &= self.input(live, (member, generation), relay, control, scope);
+            }
+            if !room {
+                return Err((
+                    wire::RestartRefusal::Capacity,
+                    format!(
+                        "its run host's budget has no room for its generation {generation}'s stdio lanes"
+                    ),
+                ));
             }
             Ok(())
         }
@@ -5981,13 +6001,18 @@ mod hosted {
         }
 
         /// Member `member`'s generation `generation`'s streams revoked: a restart that failed
-        /// past joining them (D270), whose generation may never run.
+        /// past joining them (D270), whose generation may never run. What they held of its
+        /// budget goes back with them, as their buffers go (D252).
         fn abort_generation(&self, member: u32, generation: u32) {
             for channel in [Channel::Stdout, Channel::Stderr] {
-                self.abort((member, generation, channel));
+                if let Some(lane) = lock(&self.outputs).get_mut(&(member, generation, channel)) {
+                    lane.control.abort();
+                    lane.charged = None;
+                }
             }
-            if let Some(lane) = lock(&self.inputs).get(&(member, generation)) {
+            if let Some(lane) = lock(&self.inputs).get_mut(&(member, generation)) {
                 lane.control.abort();
+                lane.charged = None;
             }
         }
 
@@ -6791,11 +6816,14 @@ mod hosted {
                     let (outputs, inputs) = first_streams(agent).map_err(boot)?;
                     let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
                         .map_err(boot)?;
+                    let charged = charge_link(agent, &bound.0).map_err(boot)?;
                     super::step(format_args!("its agent-control endpoint bound"));
-                    Some(bound)
+                    Some((bound, charged))
                 }
                 _ => None,
             };
+            // Its link's charge, held while the run is served.
+            let (control, _link_charge) = control.unzip();
             let started = wire::Started {
                 members: plan.members.clone(),
                 published: ports.published(),
@@ -7169,6 +7197,20 @@ mod hosted {
             },
         )
         .map_err(|e| format!("its agent-control endpoint: {e}"))
+    }
+
+    /// `endpoint`'s link charged to `agent`'s budget once, whatever lanes it carries, as the
+    /// daemon charges its runs' (`link_bytes`, D252): a handshake's crypto for each connection
+    /// it holds at once, and a datagram each way; before its driver makes any connection. Its
+    /// endpoint could not be made where its budget has no room for it.
+    fn charge_link(
+        agent: &Agent,
+        endpoint: &shards_remote::control::Endpoint,
+    ) -> Result<execs::Held<std::sync::Arc<Charge>>, String> {
+        let bytes = link_bytes(&endpoint.link(), shards_remote::control::CONNECTIONS)
+            .ok_or_else(|| "its agent-control link: its charge overflows".to_owned())?;
+        execs::Held::new(std::sync::Arc::clone(&agent.charge), bytes)
+            .map_err(|e| format!("its agent-control link: its budget has no room for {bytes} bytes: {e:?}"))
     }
 
     /// The member streams a run's endpoint serves where its orchestrator asked for its members'
@@ -11283,6 +11325,186 @@ mod hosted {
                     drop(redialed);
                     let _ = driver.join();
                     let _ = redriver.join();
+                });
+            }
+            assert_eq!(*lock(&budget), Some(0), "its streams' charge outlived its run");
+        }
+
+        /// D252: an orchestrator's run host charges its endpoint's link once, as it binds it, as
+        /// the daemon charges its runs' (`link_bytes`): TLS 1.3's largest handshake message for
+        /// each connection it holds at once (`control::CONNECTIONS`) and a datagram each way,
+        /// whatever lanes it carries; each lane is charged its own buffers alone. Do: bind an
+        /// endpoint serving member 1's stdout, stderr and stdin, and one serving no member
+        /// stream; charge each its link, then let it go. Expect: the same charge for both, given
+        /// back whole.
+        #[test]
+        fn an_orchestrators_endpoint_is_charged_its_link_once_whatever_lanes_it_carries() {
+            let admissions = shards_api::control::exec_admissions();
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let agent = Agent {
+                admissions,
+                charge: std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap()),
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends: members::Ends::new(2).unwrap(),
+                active: vec![1],
+                terminals: Vec::new(),
+                inputs: vec![1],
+                stdio: true,
+                bridges: None,
+            };
+            let kiln = shards_remote::identity::Identity::generate().unwrap();
+            let ask = wire::ControlAsk {
+                controller: kiln.fingerprint(),
+                sockets: None,
+                stdio: true,
+            };
+            let link = (shards_remote::control::CONNECTIONS * shards_api::control::HANDSHAKE_BYTES
+                + 2 * shards_remote::managed::DATAGRAM_BYTES) as u64;
+            let (outputs, inputs) = first_streams(&agent).unwrap();
+            assert_eq!(outputs.len() + inputs.len(), 3);
+            for (outputs, inputs) in [(&outputs[..], &inputs[..]), (&[][..], &[][..])] {
+                let (endpoint, _served) = bind_control(
+                    ControlKey::made().unwrap(),
+                    &ask,
+                    admissions,
+                    outputs,
+                    inputs,
+                    &[],
+                )
+                .unwrap();
+                let charged = charge_link(&agent, &endpoint).unwrap();
+                assert_eq!(
+                    *lock(&budget),
+                    Some(link),
+                    "{} member streams",
+                    outputs.len() + inputs.len()
+                );
+                drop(charged);
+                assert_eq!(*lock(&budget), Some(0));
+            }
+        }
+
+        /// D252, D270: a restart whose next generation's stdio lanes its run host's budget has no
+        /// room for is refused `Capacity` before that generation starts: no member started whose
+        /// output none would credit. Do: serve member 1's first generation's stdout and stderr,
+        /// charged; fill its budget; restart member 1, its VM ending its generation at its
+        /// SIGTERM. Expect: the restart refused `Capacity`; its VM asked to hold the member, then
+        /// to let it go, as a refused restart's is, and never to start its next generation; its
+        /// first generation's charge given back as its next joined, the next's never held; the
+        /// budget whole once its run has ended.
+        #[test]
+        fn a_restart_whose_next_generation_has_no_room_is_refused_capacity_before_it_starts() {
+            let dir = shards_testdir::TempDir::new("api-noroom").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let kiln = shards_remote::identity::Identity::generate().unwrap();
+            let admissions = shards_api::control::exec_admissions();
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let agent = Agent {
+                admissions,
+                charge: std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap()),
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends: members::Ends::new(2).unwrap(),
+                active: vec![1],
+                terminals: Vec::new(),
+                inputs: Vec::new(),
+                stdio: true,
+                bridges: None,
+            };
+            let (_, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
+            let output = output_bytes(&admitted, size_of::<(Key, LaneOutput)>()).unwrap();
+            // Past any host's available memory, and far from overflow: no stream has room.
+            let full = u64::MAX / 2;
+            {
+                let host = Live {
+                    members: &members,
+                    agent: Some(agent),
+                    ..live(&answers, dir.path(), link, None)
+                };
+                let live = &host;
+                let agent = live.agent.as_ref().unwrap();
+                let (outputs, inputs) = first_streams(agent).unwrap();
+                let ask = wire::ControlAsk {
+                    controller: kiln.fingerprint(),
+                    sockets: None,
+                    stdio: true,
+                };
+                let (endpoint, served) = bind_control(
+                    ControlKey::made().unwrap(),
+                    &ask,
+                    admissions,
+                    &outputs,
+                    &inputs,
+                    &[],
+                )
+                .unwrap();
+                let revoke = served.revoke;
+                std::thread::scope(|scope| {
+                    let serving = scope.spawn(move || endpoint.run());
+                    serve_stdio(
+                        live,
+                        agent,
+                        served.generations,
+                        served.outputs,
+                        served.inputs,
+                        scope,
+                    );
+                    assert_eq!(*lock(&budget), Some(2 * output), "its first generation's charge");
+                    {
+                        let mut used = lock(&budget);
+                        *used = used.map(|bytes| bytes + full);
+                    }
+                    let guest = scope.spawn(|| {
+                        let hold = |held| {
+                            let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                            let hold = protocol::members::Hold { member: 1, held };
+                            assert_eq!((m.kind, m.payload), (kind::MEMBER_HOLD, hold.encode().to_vec()));
+                        };
+                        hold(true);
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!(
+                            (spec.builtin, spec.argv),
+                            (protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15))
+                        );
+                        let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                        shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                        lock(&live.generations).ended.insert((1, 0));
+                        live.generations_moved.notify_all();
+                        // Refused: let go, and its next generation never asked to start.
+                        hold(false);
+                        assert!(
+                            shards_ipc::recv(&vm).unwrap().is_none(),
+                            "its next generation was asked to start"
+                        );
+                    });
+                    let none: Vec<Vec<u8>> = Vec::new();
+                    let patience = std::time::Duration::from_secs(60);
+                    let refused = restart(live, 1, Some(&none[..]), patience, scope).unwrap_err();
+                    assert_eq!(refused.0, wire::RestartRefusal::Capacity, "{refused:?}");
+                    assert_eq!(
+                        *lock(&budget),
+                        Some(full),
+                        "a generation's charge outlived its refusal"
+                    );
+                    lock(&live.link).shutdown(std::net::Shutdown::Write).unwrap();
+                    guest.join().unwrap();
+                    {
+                        let mut used = lock(&budget);
+                        *used = used.map(|bytes| bytes - full);
+                    }
+                    revoke.revoke();
+                    serving.join().unwrap().unwrap();
                 });
             }
             assert_eq!(*lock(&budget), Some(0), "its streams' charge outlived its run");

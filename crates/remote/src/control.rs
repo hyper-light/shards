@@ -328,8 +328,9 @@ pub fn read_refused(bytes: &[u8]) -> Result<Option<Reason>, Option<Tag>> {
 /// that replaces it. A newer connection's handshake closes the older ([`Lanes::connected`]),
 /// whose place, while its close drains (RFC 9000 §10.2), the driver frees for the next to come
 /// (`DriverLimits::connections`); a third is refused at its first packet only while both are
-/// open, the newer's handshake not yet done, and its controller dials again.
-const CONNECTIONS: usize = 2;
+/// open, the newer's handshake not yet done, and its controller dials again. Its host's budget
+/// holds each one's handshake and none per lane ([`Endpoint::link`], D252).
+pub const CONNECTIONS: usize = 2;
 
 /// What one microVM's endpoint serves: each member stream, with what its caller admitted for
 /// it, as for step 5's endpoint of one stream (`managed::Endpoint`, `managed::input::Endpoint`).
@@ -477,6 +478,8 @@ pub struct Endpoint {
     pub wake: SocketAddr,
     /// The SHA-256 of the microVM's key, which its controller pins.
     pub fingerprint: Fingerprint,
+    /// What each of its connections is admitted ([`Endpoint::link`]).
+    link: Admitted,
 }
 
 impl std::fmt::Debug for Endpoint {
@@ -634,6 +637,7 @@ impl Endpoint {
                 waker,
                 wake,
                 fingerprint: vm.fingerprint(),
+                link,
             },
             Served {
                 outputs,
@@ -653,6 +657,13 @@ impl Endpoint {
         self.driver
             .kernel_buffer_bytes()
             .map_err(managed::Error::Transport)
+    }
+
+    /// What each of its [`CONNECTIONS`] is admitted, whatever lanes it carries: its handshake's
+    /// crypto and its datagrams, the most its streams admitted (the cited link's where it serves
+    /// none). Its caller's budget holds them once per connection, as it binds (D252).
+    pub fn link(&self) -> Admitted {
+        self.link
     }
 
     /// Serves until revoked; then every output not finished is aborted and every input not
@@ -2443,7 +2454,8 @@ mod tests {
 
         /// The endpoint's windows are its streams' own: each lane's as its endpoint of one
         /// stream bounds it, summed, the per-stream window the largest; one stream each; a
-        /// refusal's frame for each stream; the largest handshake.
+        /// refusal's frame for each stream; the largest handshake, which the bound endpoint
+        /// tells as its link (D252).
         #[test]
         fn its_windows_are_its_streams_own_summed() {
             let out = admitted(100, 100 + DATA_HEAD);
@@ -2487,21 +2499,42 @@ mod tests {
                     streams: 0
                 }
             );
-            assert!(
-                Endpoint::bind(
-                    &Identity::generate().unwrap(),
-                    [0; 32],
-                    loopback(),
-                    Streams {
-                        outputs: &[],
-                        inputs: &[],
-                        execs: None,
-                        sockets: None,
-                        bridges: &[],
-                    },
-                )
-                .is_ok()
-            );
+            // Each endpoint tells the link it was bound with, which its host's budget holds once
+            // per connection, whatever lanes it carries (D252): the cited one where it serves no
+            // stream, the most its streams admitted otherwise.
+            let (bare_endpoint, _bare) = Endpoint::bind(
+                &Identity::generate().unwrap(),
+                [0; 32],
+                loopback(),
+                Streams {
+                    outputs: &[],
+                    inputs: &[],
+                    execs: None,
+                    sockets: None,
+                    bridges: &[],
+                },
+            )
+            .unwrap();
+            assert_eq!(bare_endpoint.link().handshake_bytes, unix::HANDSHAKE_MOST);
+            assert_eq!(bare_endpoint.link().datagram_bytes, managed::DATAGRAM_BYTES);
+            let small = Admitted {
+                handshake_bytes: 1000,
+                ..out
+            };
+            let (streams_endpoint, _streams) = Endpoint::bind(
+                &Identity::generate().unwrap(),
+                [0; 32],
+                loopback(),
+                Streams {
+                    outputs: &[(output(Channel::Stdout), small), (output(Channel::Stderr), out)],
+                    inputs: &[],
+                    execs: None,
+                    sockets: None,
+                    bridges: &[],
+                },
+            )
+            .unwrap();
+            assert_eq!(streams_endpoint.link().handshake_bytes, out.handshake_bytes);
             let none = Admitted {
                 record_bytes: 0,
                 ..out

@@ -125,13 +125,16 @@ pub use shards_abi::run::nesting::Ready;
 /// arguments its orchestrator started it with; 47, the bound a plug of a volume asks
 /// ([`PlugFrom::Volume`]'s `bound`, D281), Hex's admitted `disk_bytes`, so that a side that
 /// holds none refuses the run as it is asked, rather than serving its volume unbounded; 48, a
-/// swap whose member, restarted now, could not enter its working directory refused typed
-/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, and a plug of a volume refused
-/// typed where it is asked another bound than its holders serve it with
+/// restart whose next generation's stdio lanes its run host's budget has no room for refused
+/// typed before that generation starts ([`RestartRefusal::Capacity`], D252), so that a side that
+/// reads no such refusal refuses the run as it is asked, as 45 does; 49, a swap whose member,
+/// restarted now, could not enter its working directory refused typed
+/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, and a plug of a volume
+/// refused typed where it is asked another bound than its holders serve it with
 /// ([`PlugRefusal::Bound`]) or a clearing holds it ([`PlugRefusal::Clearing`], D281), so that a
 /// side that reads none of these refusals refuses the run as it is asked, rather than its
 /// answer breaking the channel.
-pub const VERSION: u8 = 48;
+pub const VERSION: u8 = 49;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1397,6 +1400,10 @@ pub enum RestartRefusal {
     /// [`Cause::Workdir`] refuses a first generation that could not: its run host's words name
     /// the member, the directory and the errno.
     Workdir = 6,
+    /// Its run host's budget had no room for its next generation's stdio lanes (D252), which
+    /// its endpoint serves where its run's control asked for them: that generation was not
+    /// started, its member let go as any refused restart's is. Appended in version 48.
+    Capacity = 7,
 }
 
 /// A restart's outcome, by its ask's id: the generation started, or why not.
@@ -3580,6 +3587,7 @@ impl RestartAnswer {
                     4 => RestartRefusal::Unsupported,
                     5 => RestartRefusal::Failed,
                     6 => RestartRefusal::Workdir,
+                    7 => RestartRefusal::Capacity,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a restart's refusal",
@@ -4510,8 +4518,8 @@ mod tests {
         }
         const {
             assert!(
-                VERSION >= 48,
-                "the channel's version 48 carries a plug's Bound and Clearing"
+                VERSION >= 49,
+                "the channel's version 49 carries a plug's Bound and Clearing"
             )
         };
         assert!(matches!(
@@ -5429,7 +5437,7 @@ mod tests {
             };
             assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
         }
-        const { assert!(VERSION >= 48, "the channel's version 48 carries a swap's Workdir") };
+        const { assert!(VERSION >= 49, "the channel's version 49 carries a swap's Workdir") };
         assert!(matches!(
             SwapAnswer::decode(&[0, 0, 0, 1, 1, 10, 0, 0, 0, 0]),
             Err(WireError::Tag {
@@ -5462,13 +5470,17 @@ mod tests {
                 RestartRefusal::Workdir,
                 "Harness codex: /Users/ada/proj: errno 2".to_owned(),
             )),
+            Err((
+                RestartRefusal::Capacity,
+                "no room for its generation 1's stdio lanes".to_owned(),
+            )),
         ] {
             let answer = RestartAnswer { id: 9, result };
             assert_eq!(RestartAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
         }
         assert!(matches!(
-            RestartAnswer::decode(&[0, 0, 0, 9, 1, 7, 0, 0, 0, 0]),
-            Err(WireError::Tag { tag: 7, .. })
+            RestartAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            Err(WireError::Tag { tag: 8, .. })
         ));
         assert!(matches!(
             RestartAnswer::decode(&[0, 0, 0, 9, 2]),
