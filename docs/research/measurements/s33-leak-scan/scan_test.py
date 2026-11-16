@@ -310,9 +310,9 @@ class LeakTest(unittest.TestCase):
         most = 0
         for name, value in (("memory", ACCESS.encode()), ("swap", REFRESH.encode("utf-16-le")[:-1])):
             path = os.path.join(p.saved, name)
-            # Lengthened by the last write alone: CPython's truncate lengthens a file on Windows
-            # by writing zeros, which NTFS holds allocated, sparse or not (jupiter, 3.14.8: 64 MiB
-            # held whole, 4.64 s), where a write past the end leaves a hole (65536 bytes held).
+            # Lengthened by the last write alone: on Windows a file lengthened by truncate holds
+            # all of its length, sparse or not (jupiter, CPython 3.14.8: 64 MiB held whole after
+            # 4.64 s), where a write past the end leaves a hole (65536 bytes held).
             with open(path, "wb") as f:
                 sparse(f)
                 for end in ends:

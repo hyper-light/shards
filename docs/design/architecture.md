@@ -35868,7 +35868,7 @@ ended by an orchestrator's broken channel, or by a VM that could not serve it, w
 not say why. A run's end read once as one thing and later as another. A host's diagnostic that
 its named file lacks, or holds twice.
 
-### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and step 33's real sessions, owed)
+### D259. An orchestrator's run saved whole for its owner: `ImageGuest::save`, D176's save made by its run's host, and plan step 33's leak scan over what it writes (built; its real-VM test passing on HVF and KVM x86-64, PM M605, and on WHP once the scan left Windows' holes unread, step 33.10; again on KVM x86-64 with that scan, on KVM arm64, and step 33's real sessions, owed)
 
 **Why.** Plan step 33's acceptance (D242) is that no credential value is anywhere in a
 harness's microVM: its memory, its disk, its environment. Checking its memory needs the guest's
@@ -35956,6 +35956,12 @@ on disk is the most sensitive thing a run has:
     mapped, not read in, and walked in time linear in its size, with a heap that does not grow
     with it (#74 step 10: a run of a form's bytes walked a host page at a time, windows looked
     up through anchors; the old unbounded match ran out of memory on WHP);
+  - a save's holes left unread (PM M561): only each file's data, as lseek(2)'s SEEK_DATA and
+    SEEK_HOLE give it, and on Windows as FSCTL_QUERY_ALLOCATED_RANGES gives it, the call the
+    VMM's `platform::allocated_ranges` makes (step 33.10: on WHP the check never ended, reading
+    every byte of a save's sparse files, a 10 GiB layer among them); each range widened by the zeros a
+    finding can take, those that meet joined, as the call does not say it gives touching ranges
+    joined; a run cut short of a unit where a read ends keeping its last byte;
   - each value's UTF-16LE and base64 forms;
   - the run's placeholders, given as public, whose windows are no leak;
   - the bring-up's credential shapes, those no value explains listed by where they lie;
@@ -35983,6 +35989,10 @@ on disk is the most sensitive thing a run has:
       macOS, 281300 B on Linux), where the old scan's reached 2239349400 B; the time is less
       than half the old; the findings are the same, digest for digest.
   - Exit 3 is credentials.py's for a leak; 4 is the next.
+  - Step 33.10 adds no chosen number. FSCTL_QUERY_ALLOCATED_RANGES (0x940CF) and
+    FSCTL_SET_SPARSE (0x900C4) are winioctl.h's CTL_CODEs, ERROR_MORE_DATA (234) winerror.h's and
+    INVALID_FILE_SIZE fileapi.h's; st_blocks counts 512-byte units (Linux's and macOS's stat(2)).
+    The scan asks for one range at a time, so no buffer is sized.
 
 **Cold start** (R03). Nothing is learned or chosen.
 
@@ -36010,15 +36020,21 @@ carrier: a bundle over origin/main in a blobless clone):
     now holds the scan to credentials.py's run (d1d50e7f8). The failed save's directory, left,
     first hung its test; the test's VM now bounds its reads, so the test fails rather than
     hangs.
+- Step 33.10 (lane s33-scan, the scan's README): `scan_test.py` 12 passed on Windows (jupiter,
+  NTFS, Python 3.14.8) and macOS (Python 3.9.6), and `guards.py`'s removals failed, 6 of 6 there
+  and 4 of 4 here, `windows-ranges` among them: scan.py as main had it on Windows, which the
+  sparse test fails there. The sparse test found the run's last byte lost on macOS first.
 
 **Owed** (ROOT).
-- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it` on
-  WHP and, through L1, KVM arm64. On KVM x86_64 and HVF it passed (PM M605, 2026-11-15,
-  `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at 6a0adfc09, KVM twice, and 32 of
-  32 at the vendor point 4124d8c70).
+- `api_image`'s `a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it`
+  through L1 on KVM arm64, and again on KVM x86_64 with step 33.10's scan. On KVM x86_64 and HVF
+  it passed (PM M605, 2026-11-15, `SHARDS_REQUIRE_VMS=1`: in api_image's whole runs, 33 of 33 at
+  6a0adfc09, KVM twice, and 32 of 32 at the vendor point 4124d8c70). On WHP it passed in 22.49 s
+  with step 33.10's scan (jupiter, 2026-11-16, at 41d6ea3c2, main 3d91d54f1 with lane
+  whp-verify's unlanded D272 commit; the scan's README).
 - Step 33's real sessions scanned, once steps 3, 6 and 8 land, with a save hook in Hex (the
   Hex lead's).
-- These light tests on Linux and Windows (CI), and `scripts/lint` on every target.
+- These light tests on Linux (`scan_test.py`, `guards.py`), and `scripts/lint` on every target.
 
 **What would falsify it.**
 - A save asked other than on its run's own channel that is made.
