@@ -13,6 +13,7 @@
 //! - [`bookmark`]: a directory's bookmark, for the VM process to resolve (D30).
 //! - [`sandbox`]: whether this process is in App Sandbox (D30, D31).
 //! - [`fsevents`]: what changes beneath a share's directories, for its guest (D235).
+//! - [`storage`]: the I/O the host's block storage has completed, for D215's judge (IOKit).
 //!
 //! Elsewhere this crate is empty.
 
@@ -24,5 +25,7 @@ mod frameworks;
 pub mod fsevents;
 #[cfg(target_os = "macos")]
 pub mod sandbox;
+#[cfg(target_os = "macos")]
+pub mod storage;
 #[cfg(target_os = "macos")]
 pub mod trust;

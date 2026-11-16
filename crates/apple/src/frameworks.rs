@@ -56,7 +56,15 @@ pub struct Api {
     pub SecTaskCreateFromSelf: unsafe extern "C" fn(CFTypeRef) -> CFTypeRef,
     pub SecTaskCopyValueForEntitlement:
         unsafe extern "C" fn(CFTypeRef, CFTypeRef, *mut CFTypeRef) -> CFTypeRef,
+    pub CFGetTypeID: unsafe extern "C" fn(CFTypeRef) -> usize,
+    pub CFDictionaryGetTypeID: unsafe extern "C" fn() -> usize,
+    pub CFNumberGetTypeID: unsafe extern "C" fn() -> usize,
+    pub CFDictionaryGetValue: unsafe extern "C" fn(CFTypeRef, *const c_void) -> CFTypeRef,
+    pub CFNumberGetValue: unsafe extern "C" fn(CFTypeRef, CFIndex, *mut c_void) -> u8,
 }
+
+/// `kCFNumberSInt64Type` (CFNumber.h).
+pub const SINT64: CFIndex = 4;
 
 // SAFETY: function pointers and constants of process-wide frameworks, never written.
 unsafe impl Send for Api {}
@@ -118,8 +126,8 @@ fn load() -> Result<Api, String> {
             let at = symbol($h, $name)?;
             // SAFETY: the framework's own function of that name, whose C signature the
             // field it fills declares (Apple's headers: CFBase.h, CFData.h, CFArray.h,
-            // CFString.h, CFDate.h, CFError.h, CFURL.h, SecCertificate.h, SecPolicy.h,
-            // SecTrust.h, SecBase.h, SecTask.h).
+            // CFString.h, CFDate.h, CFError.h, CFURL.h, CFDictionary.h, CFNumber.h,
+            // SecCertificate.h, SecPolicy.h, SecTrust.h, SecBase.h, SecTask.h).
             unsafe { function(at) }
         }};
     }
@@ -157,6 +165,11 @@ fn load() -> Result<Api, String> {
         kCFBooleanTrue: unsafe { *(yes as *const CFTypeRef) },
         SecTaskCreateFromSelf: f!(sec, c"SecTaskCreateFromSelf"),
         SecTaskCopyValueForEntitlement: f!(sec, c"SecTaskCopyValueForEntitlement"),
+        CFGetTypeID: f!(cf, c"CFGetTypeID"),
+        CFDictionaryGetTypeID: f!(cf, c"CFDictionaryGetTypeID"),
+        CFNumberGetTypeID: f!(cf, c"CFNumberGetTypeID"),
+        CFDictionaryGetValue: f!(cf, c"CFDictionaryGetValue"),
+        CFNumberGetValue: f!(cf, c"CFNumberGetValue"),
     })
 }
 

@@ -27,6 +27,11 @@ rustls-webpki = { version = "0.103.16", default-features = false, features = ["s
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Its host's block storage's completed I/O, which tells D215's judge whether a wait in a
+# kernel is its host's (IOKit, bound when first read).
+shards-apple = { path = "../apple" }
+
 [target.'cfg(windows)'.dependencies]
 shards-afunix = { path = "../afunix" }
 # A guest's VM process followed (D215): Toolhelp32's snapshot of its descendants,

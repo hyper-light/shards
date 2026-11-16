@@ -5878,12 +5878,13 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// [`set_aside`](Self::set_aside), then [`complete`](Self::complete), of a batch: one
-    /// sync of their directory makes every removal set aside before it durable.
+    /// sync of their directory makes every removal set aside before it durable, and a batch
+    /// of `--rm` ones alone needs none (`Removal::sync_all`).
     fn complete_batch(&self, batch: &[Removal]) {
         let aside: Vec<&Removal> = batch.iter().filter(|r| self.set_aside(r).is_ok()).collect();
-        let Some(first) = aside.first() else {
+        if aside.is_empty() {
             return;
-        };
+        }
         let ids = || {
             aside
                 .iter()
@@ -5892,8 +5893,11 @@ impl<D: Disk> Daemon<D> {
                 .join(" ")
         };
         shards_vmm::stage!("the removal of {}: set aside", ids());
-        let synced = first.sync(&self.disk);
-        shards_vmm::stage!("the removal of {}: their directory synced: {synced:?}", ids());
+        let synced = Removal::sync_all(&aside, &self.disk);
+        shards_vmm::stage!(
+            "the removal of {}: their directory synced where needed: {synced:?}",
+            ids()
+        );
         for removal in &aside {
             let id = &removal.container.id;
             match &synced {
