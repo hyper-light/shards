@@ -126,7 +126,7 @@ fn boot_member(home: &TempDir, image: &str, terminal: bool, stdin: bool) -> Box<
 /// run goes on (`common::judged`, its kind its call site): refused, its run is stopped.
 #[track_caller]
 fn lines_until(guest: &dyn ImageGuest, last: &str) -> Vec<String> {
-    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let pipe = guest.take_output(&codex(), 0, Channel::Stdout).unwrap();
     common::judged(
         Party::started(None),
         "the harness's lines",
@@ -438,7 +438,7 @@ fn a_command_run_in_a_member_has_a_terminal_that_resizes() {
 /// carriage return a terminal's line discipline puts before its newline (termios(3),
 /// ONLCR).
 fn terminal_lines(guest: &dyn ImageGuest) -> std::sync::mpsc::Receiver<String> {
-    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let pipe = guest.take_output(&codex(), 0, Channel::Stdout).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(pipe).lines() {
@@ -469,9 +469,9 @@ fn until(guest: &dyn ImageGuest, lines: &std::sync::mpsc::Receiver<String>, last
                     "no {last:?} ({e}) after:\n{}\nthe harness's end: {:?}; the run's: {:?}",
                     said.join("\n"),
                     if closed {
-                        ask(guest, |g| g.wait_member(&codex(), Duration::MAX))
+                        ask(guest, |g| g.wait_member(&codex(), 0, Duration::MAX))
                     } else {
-                        guest.wait_member(&codex(), Duration::ZERO)
+                        guest.wait_member(&codex(), 0, Duration::ZERO)
                     },
                     guest.wait_for(Duration::ZERO)
                 )
@@ -498,7 +498,7 @@ fn a_harness_on_a_terminal_of_its_own_is_shown_and_sized_by_its_owner() {
     let home = TempDir::new("mx-term-home");
     build(&home, "mx-term:1", &["tty", "winch"]);
     let guest = boot_member(&home, "mx-term:1", true, false);
-    let mut stderr = guest.take_output(&codex(), Channel::Stderr).unwrap();
+    let mut stderr = guest.take_output(&codex(), 0, Channel::Stderr).unwrap();
     let mut rest = Vec::new();
     std::io::Read::read_to_end(&mut stderr, &mut rest).unwrap();
     assert!(rest.is_empty(), "its stderr is its terminal: {rest:?}");
@@ -538,7 +538,7 @@ fn a_harness_on_a_terminal_of_its_own_reads_what_its_owner_types() {
     let guest = boot_member(&home, "mx-keys:1", true, true);
     let lines = terminal_lines(&*guest);
     until(&*guest, &lines, "ready");
-    let mut keys = guest.take_input(&codex()).unwrap();
+    let mut keys = guest.take_input(&codex(), 0).unwrap();
     std::io::Write::write_all(&mut keys, b"hello\n").unwrap();
     let said = until(&*guest, &lines, "read ");
     assert_eq!(said.last().map(String::as_str), Some("read hello"));

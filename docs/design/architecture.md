@@ -36454,6 +36454,43 @@ there, and for shards-init on aarch64- and x86_64-unknown-linux-musl.
 end), slice 4 (swap, restore, components, and its four E2E tests), slice 5 (saves), and the
 real-VM runs of every member's start with its processes in `gen/` and `server/`.
 
+**Slice 3b: a member started again, from its orchestrator** (shards-api, its run host and VM
+process; built, its real-VM tests owed).
+- *The API* (shards-api, `ImageGuest`): `restart(member, args, patience) -> generation`, and a
+  `generation` (0 its first, each restart's one more) on `take_output`, `take_input`,
+  `wait_member` and `wait_channel`; refused as `ImageRefusal::Restart(RestartRefusal, words)`:
+  `Unknown`, `Running` (its restart under way, or its last generation not ended), `Generation`,
+  `Unsupported` (one that starts once, D122), `Failed`.
+- *The image channel*, version 38: `RESTART` (47) and `RESTARTED` (48); each member output,
+  input and end frame, and each output credit, says its generation, so that no side reads one
+  generation's bytes or room as another's.
+- *Its run host* holds a member to restart (its VM's `MEMBER_HOLD`), asks its command's end
+  (init's `SIGNAL` built-in, SIGTERM), waits for its generation's end at most its patience, ends
+  it at once past that (`MEMBER_KILL`) and waits again, then asks its next generation of its VM
+  (`MEMBER_START`) and waits for its guest's answer, each at most its patience. A member's output
+  flows are its generations' own, a stream's generation fixed as it opened: its end and its
+  member's come on two connections, in no order between them, so a record of one generation
+  that comes after the next started is still its own. A generation's input is a feed of its
+  own, its frames saying its generation, a writer of its own.
+- *Its VM process* gives the guest's signal connection its owner's `MEMBER_HOLD` and
+  `MEMBER_START`, minting the next generation's input token and registering it as it minted
+  its first's (its owner sends none: tokens stay the VM's), and gives its owner the guest's
+  `MEMBER_STARTED`, or its own refusal in that shape where it could not give the guest the
+  start.
+- *Not yet*: `MemberEnd::Killed` (a generation its restart killed ends `Signaled(9)` as told);
+  the judged stall (its member's CPU and D state as `Held`) in place of patience alone; a
+  restart that fails past its hold leaves its member held, its next end keeping its server.
+
+**Tests** (light, Linux in a container): the image channel's restart and generations round
+trips (wire); shards-api's `a_members_generations_are_each_their_own`; the run host's
+`a_member_starts_again_as_its_generation_ends` (a graceful restart, one killed past its patience,
+one its guest refused, and the refusals of no member and of a restart under way, against a VM
+and guest stood in); shards-api lib, the run host's, the VM process's and ipc's suites.
+
+**Owed (ROOT)**: the E2E tests on HVF, KVM and WHP: a member restarted whose new generation's
+output, input and end are its own, its microVM's pid and `started_from` unchanged; a SIGTERM
+trap's flushed file whole after its restart; a member killed past its patience.
+
 **A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
 as its host's address reach when its microVM is made, and is kept with its save, so a restore
 onto a host of shorter reach is refused (`window_kept`) rather than laid out otherwise. Until a

@@ -4168,7 +4168,13 @@ mod hosted {
         let mut payload = vec![u8::from(has_input)];
         payload.extend_from_slice(&start.encode().map_err(|e| failed(format!("its start: {e}")))?);
         if has_input {
-            lock(&live.feeds).insert(member, Feed::default());
+            lock(&live.feeds).insert(
+                member,
+                Feed {
+                    generation: next,
+                    ..Feed::default()
+                },
+            );
         }
         shards_ipc::send(&lock(&live.link), kind::MEMBER_START, &payload, &[])
             .map_err(|e| failed(format!("its VM: {e}")))?;
@@ -4420,6 +4426,9 @@ mod hosted {
     /// as it is written, cleared or let go of (D242).
     #[derive(Default)]
     struct Feed {
+        /// The generation it is the stdin of (D270): its frames say it, and its orchestrator's
+        /// for another generation go nowhere.
+        generation: u32,
         conn: Conn,
         queued: std::collections::VecDeque<wire::Secret>,
         room: u64,
@@ -6374,7 +6383,7 @@ mod hosted {
             return;
         };
         let room = protocol::CHUNK as u64;
-        {
+        let generation = {
             let mut feeds = lock(&live.feeds);
             let Some(feed) = feeds
                 .get_mut(&member)
@@ -6385,11 +6394,12 @@ mod hosted {
             };
             feed.conn = Conn::Here(conn);
             feed.room = feed.room.saturating_add(room);
-        }
+            feed.generation
+        };
         live.fed.notify_all();
         let given = wire::InputRoom {
             member,
-            generation: live.generation_of(member),
+            generation,
             bytes: room,
         };
         let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&given.encode()]);
@@ -6405,10 +6415,11 @@ mod hosted {
             );
             return;
         };
+        let generation = lock(&live.feeds).get(&ended.member).map_or(0, |f| f.generation);
         end_input(live, ended.member);
         let told = wire::InputEnded {
             member: ended.member,
-            generation: live.generation_of(ended.member),
+            generation,
             written: ended.written,
             end: match ended.end {
                 managed::InputEnd::Closed => wire::StreamEnd::Closed,
@@ -6434,14 +6445,14 @@ mod hosted {
     /// contract is broken, as said.
     fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), String> {
         let member = given.member;
-        // Bytes for a generation past have no stdin to go to now (D270).
-        if given.generation != live.generation_of(member) {
-            return Ok(());
-        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds
             .get_mut(&member)
             .ok_or_else(|| format!("an INPUT for member {member}, whose stdin its run did not ask for"))?;
+        // Bytes for another generation's stdin than the one it has now go nowhere (D270).
+        if given.generation != feed.generation {
+            return Ok(());
+        }
         let n = u64::try_from(given.bytes.0.len())
             .map_err(|_| format!("member {member}'s INPUT has no length"))?;
         if n > feed.room {
@@ -6466,13 +6477,13 @@ mod hosted {
     /// once, so that a writer held by a member that does not read lets go.
     fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), String> {
         let member = end.member;
-        if end.generation != live.generation_of(member) {
-            return Ok(());
-        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds.get_mut(&member).ok_or_else(|| {
             format!("an INPUT_END for member {member}, whose stdin its run did not ask for")
         })?;
+        if end.generation != feed.generation {
+            return Ok(());
+        }
         if feed.end.replace(end.end).is_some() {
             return Err(format!("member {member}'s input ended twice"));
         }
@@ -6540,12 +6551,16 @@ mod hosted {
                         }
                         continue;
                     };
-                    if let Some(feed) = lock(&live.feeds).get_mut(&member) {
-                        feed.room = feed.room.saturating_add(u64::from(len));
-                    }
+                    let generation = match lock(&live.feeds).get_mut(&member) {
+                        Some(feed) => {
+                            feed.room = feed.room.saturating_add(u64::from(len));
+                            feed.generation
+                        }
+                        None => 0,
+                    };
                     let room = wire::InputRoom {
                         member,
-                        generation: live.generation_of(member),
+                        generation,
                         bytes: u64::from(len),
                     };
                     let _ = live.answers.send(wire::to_client::INPUT_ROOM, &[&room.encode()]);
@@ -7974,6 +7989,106 @@ mod hosted {
                 said.exists(),
                 "the share process was ended at the grace's end, not by its door's"
             );
+        }
+
+        /// D270 slice 3b: a member started again. Its VM is asked to hold it, its command's
+        /// SIGTERM goes as init's SIGNAL built-in, its generation's end comes, and its next is
+        /// asked of its VM (`MEMBER_START`: no input asked, as its run asked no stdin of it; its
+        /// arguments as given), which its guest's answer starts: generation 1, its member's from
+        /// then on. A second, whose graceful end outlasts its patience, is killed (`MEMBER_KILL`)
+        /// before its next starts: generation 2. A third its guest refuses is that refusal, its
+        /// member at 2 still. A member that runs in no run's, or one whose restart is under way,
+        /// is refused typed, asking its VM nothing.
+        #[test]
+        fn a_member_starts_again_as_its_generation_ends() {
+            use protocol::members::{Start, StartAnswer, StartRefusal};
+            let dir = shards_testdir::TempDir::new("api-restart").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let live = Live {
+                members: &members,
+                ..live(&answers, dir.path(), link, None)
+            };
+            let (long, short) = (std::time::Duration::from_secs(60), std::time::Duration::from_millis(50));
+            let ask = |id, args: &[&[u8]], patience| wire::RestartAsk {
+                id,
+                member: 1,
+                args: args.iter().map(|a| a.to_vec()).collect(),
+                patience,
+            };
+            std::thread::scope(|scope| {
+                // Its VM and its guest: each built-in taken, its member's ends and answers told.
+                let guest = scope.spawn(|| {
+                    let builtin = |which: u8, argv: Vec<Vec<u8>>| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!((spec.builtin, spec.argv), (which, argv));
+                        // Untold of its start (no `EXEC_TOLD`): its exit alone.
+                        let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                        shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    };
+                    let held = || {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!((m.kind, m.payload), (kind::MEMBER_HOLD, 1u32.to_be_bytes().to_vec()));
+                    };
+                    let ended = |generation| {
+                        lock(&live.generations).ended.insert((1, generation));
+                        live.generations_moved.notify_all();
+                    };
+                    let started = |generation, args: Vec<Vec<u8>>, refused: Option<(StartRefusal, Vec<u8>)>| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::MEMBER_START);
+                        let (flag, start) = m.payload.split_first().unwrap();
+                        let start = Start::decode(start).unwrap();
+                        assert_eq!((*flag, start.member, start.generation, start.args, start.input), (0, 1, generation, args, None));
+                        let answer = StartAnswer {
+                            member: 1,
+                            generation,
+                            refused,
+                        };
+                        started_told(&live, &answer.encode().unwrap());
+                    };
+                    held();
+                    builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
+                    ended(0);
+                    started(1, vec![b"--resume".to_vec()], None);
+                    held();
+                    builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
+                    builtin(protocol::builtin::MEMBER_KILL, protocol::members::kill_args(1));
+                    ended(1);
+                    started(2, Vec::new(), None);
+                    held();
+                    builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
+                    ended(2);
+                    started(3, Vec::new(), Some((StartRefusal::Failed, b"its exec: ENOENT".to_vec())));
+                });
+                assert_eq!(restart(&live, &ask(1, &[b"--resume"], long), scope), Ok(1));
+                assert_eq!(live.generation_of(1), 1);
+                assert_eq!(restart(&live, &ask(2, &[], short), scope), Ok(2));
+                assert_eq!(
+                    restart(&live, &ask(3, &[], long), scope),
+                    Err((wire::RestartRefusal::Failed, "its exec: ENOENT".into()))
+                );
+                assert_eq!(live.generation_of(1), 2);
+                guest.join().unwrap();
+                let none = wire::RestartAsk {
+                    id: 4,
+                    member: 9,
+                    args: Vec::new(),
+                    patience: long,
+                };
+                assert!(matches!(restart(&live, &none, scope), Err((wire::RestartRefusal::Unknown, _))));
+                lock(&live.generations).restarting.insert(1);
+                assert!(matches!(restart(&live, &ask(5, &[], long), scope), Err((wire::RestartRefusal::Running, _))));
+            });
         }
 
         /// D238, D252, D254: an orchestrator's run hosts its own lanes as the daemon hosts its

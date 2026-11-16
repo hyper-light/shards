@@ -153,7 +153,7 @@ fn boot(home: &TempDir, s: &ImageSpec) -> Box<dyn ImageGuest> {
 /// HVF at 2b89e8504, `WithRun` and `Exited(125)`, nothing more said).
 #[track_caller]
 fn assert_ended(guest: &dyn ImageGuest, expected: MemberEnd) {
-    let ended = ask(guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap();
+    let ended = ask(guest, |g| g.wait_member(&codex(), 0, Duration::MAX)).unwrap();
     assert_eq!(
         ended,
         Some(expected),
@@ -177,8 +177,8 @@ fn read_all(guest: &dyn ImageGuest, channel: Channel) -> Vec<u8> {
 /// 21 ms, R* 0 ns, that refused a read waiting on an outside sign-in).
 #[track_caller]
 fn read_within(guest: &dyn ImageGuest, channel: Channel) -> Result<Vec<u8>, String> {
-    let mut pipe = guest.take_output(&codex(), channel).unwrap();
-    let ended = matches!(guest.wait_member(&codex(), Duration::ZERO), Ok(Some(_)));
+    let mut pipe = guest.take_output(&codex(), 0, channel).unwrap();
+    let ended = matches!(guest.wait_member(&codex(), 0, Duration::ZERO), Ok(Some(_)));
     let stop = || {
         let _ = guest.stop();
     };
@@ -825,7 +825,7 @@ fn a_paused_run_runs_no_guest_and_goes_on_where_it_stopped() {
     let home = TempDir::new("api-pause-home");
     build(&home, "api-pause:1", &["ticks", "50"], "");
     let guest = boot(&home, &spec(&home, "api-pause:1"));
-    let pipe = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let pipe = guest.take_output(&codex(), 0, Channel::Stdout).unwrap();
     let (lines, heard) = std::sync::mpsc::channel::<(u128, String)>();
     let heard = std::sync::Mutex::new(heard);
     let reader = std::thread::spawn(move || {
@@ -1125,7 +1125,7 @@ fn a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug() {
         }];
         let guest = boot(&home, &s);
         let said = String::from_utf8_lossy(&read_all(&*guest, Channel::Stdout)).into_owned();
-        let ended = ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap();
+        let ended = ask(&*guest, |g| g.wait_member(&codex(), 0, Duration::MAX)).unwrap();
         guest.stop().unwrap();
         (said, ended)
     };
@@ -1614,7 +1614,7 @@ fn timed_start(images: &dyn shards_api::image::Images, home: &TempDir, s: &Image
         )
     });
     let from = guest.started_from();
-    let mut out = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let mut out = guest.take_output(&codex(), 0, Channel::Stdout).unwrap();
     let (line, usable) = common::judged(
         Party::started(None),
         "a measured start's first output",
@@ -2013,7 +2013,7 @@ fn stop_ends_the_run_at_once() {
     let home = TempDir::new("api-stop-home");
     build(&home, "api-stop:1", &["sleep-for", "600000"], "");
     let guest = booted(&ImageShards::new(), &spec(&home, "api-stop:1")).unwrap();
-    assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
+    assert_eq!(guest.wait_member(&codex(), 0, Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
     // Killed at once: what its microVM used went with it, typed, never a zero (D260).
     assert_eq!(
@@ -2021,7 +2021,7 @@ fn stop_ends_the_run_at_once() {
         Some(RunEnded::unused(RunEnd::Stopped, Unused::Killed))
     );
     assert_eq!(
-        guest.wait_member(&codex(), Duration::ZERO).unwrap(),
+        guest.wait_member(&codex(), 0, Duration::ZERO).unwrap(),
         Some(MemberEnd::WithRun)
     );
 }
@@ -2321,8 +2321,8 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n");
     input.extend_from_slice(b"\0\xff\x80\x1b[2Jno-newline\xc3\x28");
     input.extend((0..300 * 1024u32).map(|i| (i % 251) as u8));
-    let mut writer = guest.take_input(&codex()).unwrap();
-    assert!(guest.take_input(&codex()).is_err(), "taken once");
+    let mut writer = guest.take_input(&codex(), 0).unwrap();
+    assert!(guest.take_input(&codex(), 0).is_err(), "taken once");
     let echoed = std::thread::scope(|scope| {
         let reading = scope.spawn(|| read_all(guest.as_ref(), Channel::Stdout));
         let written = writer.write_all(&input);
@@ -2334,7 +2334,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
             panic!(
                 "its stdin took no more ({e}): the harness said {:?} and ended {:?}; the run's end {:?}",
                 said.as_deref().map(String::from_utf8_lossy),
-                ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)),
+                ask(&*guest, |g| g.wait_member(&codex(), 0, Duration::MAX)),
                 guest.wait_for(Duration::ZERO)
             );
         }
@@ -2353,7 +2353,7 @@ fn a_harness_reads_its_orchestrators_stdin_exactly_and_its_close_is_its_end() {
     let home = TempDir::new("api-nostdin-home");
     build(&home, "api-nostdin:1", &["managed-capture", "codex", "echo"], "");
     let guest = booted(&ImageShards::new(), &spec(&home, "api-nostdin:1")).unwrap();
-    assert!(guest.take_input(&codex()).is_err());
+    assert!(guest.take_input(&codex(), 0).is_err());
     guest.stop().unwrap();
 }
 
@@ -2541,7 +2541,7 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
         String::from_utf8_lossy(shards_testguest::MCP_INITIALIZE)
     );
     // `claude` asleep, as its own word says, before it is signalled.
-    let mut asleep = guest.take_output(&claude, Channel::Stdout).unwrap();
+    let mut asleep = guest.take_output(&claude, 0, Channel::Stdout).unwrap();
     let mut line = [0; 6];
     on_endpoint(&*guest, "claude's ready", || asleep.read_exact(&mut line)).unwrap();
     assert_eq!(&line, b"ready\n");
@@ -2568,11 +2568,11 @@ fn an_orchestrators_members_are_signaled_and_their_mcp_connections_reached_on_it
     assert_eq!(sent, Ok(Some(())));
     assert_eq!(ended, Ok(exec::End::Signaled(9)));
     assert_eq!(
-        ask(&*guest, |g| g.wait_member(&codex(), Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_member(&codex(), 0, Duration::MAX)).unwrap(),
         Some(MemberEnd::Signaled(15))
     );
     assert_eq!(
-        ask(&*guest, |g| g.wait_member(&claude, Duration::MAX)).unwrap(),
+        ask(&*guest, |g| g.wait_member(&claude, 0, Duration::MAX)).unwrap(),
         Some(MemberEnd::Signaled(9))
     );
     let again = on_endpoint(&*guest, "an ended member's lane", || {
@@ -2662,8 +2662,8 @@ fn a_saved_runs_memory_holds_what_its_harness_was_given_and_the_scan_finds_it() 
         mcp: false,
     }];
     let guest = boot(&home, &s);
-    let mut input = guest.take_input(&codex()).unwrap();
-    let mut output = guest.take_output(&codex(), Channel::Stdout).unwrap();
+    let mut input = guest.take_input(&codex(), 0).unwrap();
+    let mut output = guest.take_output(&codex(), 0, Channel::Stdout).unwrap();
     let mut echo = |line: &[u8]| {
         input.write_all(line).unwrap();
         let mut echoed = vec![0; line.len()];
@@ -3862,7 +3862,7 @@ fn a_port_published_live_answers_and_is_gone_after_unpublish() {
 /// The lines a running member writes on `channel`, as they come, read on a thread of their own
 /// until its channel ends (its run's end): each sent on the receiver this returns.
 fn lines_of(guest: &dyn ImageGuest, channel: Channel) -> std::sync::mpsc::Receiver<String> {
-    let pipe = guest.take_output(&codex(), channel).unwrap();
+    let pipe = guest.take_output(&codex(), 0, channel).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead as _;

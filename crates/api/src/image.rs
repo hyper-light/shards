@@ -35,7 +35,8 @@ pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 pub use wire::{
     Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
     GuestTimes, HostUse, Keep, LeaseRefusal, MemberInfo, MemberKind, MemberReach, Microvm, Narrowing,
-    NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RunEnd, RunEnded, SaveRefusal, Secret,
+    NetRefusal, Paused, PlugRefusal, Proto, Publish, Ready, Receiving, RestartRefusal, RunEnd, RunEnded,
+    SaveRefusal, Secret,
     SignInGrant, SignInRefusal, SignInTokens, SocketGrant, StartedFrom, Stats, StatsScope, Unused, UseBroken,
     VcpuTime, decide,
 };
@@ -434,6 +435,8 @@ pub enum ImageRefusal {
     Pause(String),
     /// A change of the running run's network its host refused (D269), by what refused it.
     Net(NetRefusal, String),
+    /// A member's restart its host refused (D270 slice 3b), by why.
+    Restart(RestartRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -470,6 +473,7 @@ impl std::fmt::Display for ImageRefusal {
             ),
             Self::Pause(why) => write!(f, "the pause: {why}"),
             Self::Net(cause, why) => write!(f, "the run's network: {cause:?}: {why}"),
+            Self::Restart(cause, why) => write!(f, "a member's restart: {cause:?}: {why}"),
         }
     }
 }
@@ -646,16 +650,35 @@ pub trait ImageGuest: Send + Sync {
     /// unchanged until it ends. With it, the endpoint's two other sockets, its waker and its
     /// wake ([`ControlAt::sockets`], all three): every UDP socket the endpoint holds.
     fn control(&self) -> Option<&ControlAt>;
-    /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
-    /// them, ending at the channel's end; once each. What no one reads backs up into that
-    /// channel alone. Refused for a member that does not run.
-    fn take_output(&self, member: &MemberName, channel: Channel)
-    -> Result<std::io::PipeReader, ImageRefusal>;
-    /// A member's stdin, asked for at create ([`MemberSpec::stdin`]), as a pipe's write end:
-    /// its close ends the member's input.
-    fn take_input(&self, member: &MemberName) -> Result<std::io::PipeWriter, ImageRefusal>;
-    /// The member's end, waiting at most `timeout` (`Duration::MAX`: until it comes).
-    fn wait_member(&self, member: &MemberName, timeout: Duration) -> Result<Option<MemberEnd>, ImageRefusal>;
+    /// A member's generation's channel (D270: 0 its first, each restart's one more), as a
+    /// pipe's read end, its bytes exactly as the member wrote them, ending at the channel's
+    /// end; once each. What no one reads backs up into that channel alone. Refused for a member
+    /// that does not run, and for a generation it has not started.
+    fn take_output(
+        &self,
+        member: &MemberName,
+        generation: u32,
+        channel: Channel,
+    ) -> Result<std::io::PipeReader, ImageRefusal>;
+    /// A member's generation's stdin, asked for at create ([`MemberSpec::stdin`]), as a pipe's
+    /// write end: its close ends that generation's input.
+    fn take_input(&self, member: &MemberName, generation: u32) -> Result<std::io::PipeWriter, ImageRefusal>;
+    /// The member's generation's end, waiting at most `timeout` (`Duration::MAX`: until it
+    /// comes).
+    fn wait_member(
+        &self,
+        member: &MemberName,
+        generation: u32,
+        timeout: Duration,
+    ) -> Result<Option<MemberEnd>, ImageRefusal>;
+    /// Starts member `member` again in its microVM (D270 slice 3b): its current generation
+    /// asked to end (SIGTERM to its command), ended at once where its graceful end outlasts
+    /// `patience`, then its next started with `args` after its image's command, in the
+    /// namespaces, server instance and volumes its generations keep, its input its own where it
+    /// has one: the generation started, whose output, input and end are taken by it. Refused
+    /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
+    /// way, one that starts once (a member given a port among others, D122).
+    fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration) -> Result<u32, ImageRefusal>;
     /// How member `member`'s `channel` ended, typed, once its run's host told it, after every
     /// byte of it that host sent: its writers' close, or its capture's abort, which its pipe's
     /// EOF ([`take_output`](Self::take_output)) does not tell apart; waiting at most `timeout`
@@ -664,6 +687,7 @@ pub trait ImageGuest: Send + Sync {
     fn wait_channel(
         &self,
         member: &MemberName,
+        generation: u32,
         channel: Channel,
         timeout: Duration,
     ) -> Result<Option<ChannelEnd>, ImageRefusal>;

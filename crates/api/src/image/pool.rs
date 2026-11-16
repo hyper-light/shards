@@ -1299,30 +1299,37 @@ impl<W: Send> ImageGuest for Pooled<W> {
     fn take_output(
         &self,
         member: &super::MemberName,
+        generation: u32,
         channel: wire::Channel,
     ) -> Result<std::io::PipeReader, ImageRefusal> {
-        self.guest.take_output(member, channel)
+        self.guest.take_output(member, generation, channel)
     }
 
-    fn take_input(&self, member: &super::MemberName) -> Result<std::io::PipeWriter, ImageRefusal> {
-        self.guest.take_input(member)
+    fn take_input(&self, member: &super::MemberName, generation: u32) -> Result<std::io::PipeWriter, ImageRefusal> {
+        self.guest.take_input(member, generation)
     }
 
     fn wait_member(
         &self,
         member: &super::MemberName,
+        generation: u32,
         timeout: Duration,
     ) -> Result<Option<super::MemberEnd>, ImageRefusal> {
-        self.guest.wait_member(member, timeout)
+        self.guest.wait_member(member, generation, timeout)
+    }
+
+    fn restart(&self, member: &super::MemberName, args: &[Vec<u8>], patience: Duration) -> Result<u32, ImageRefusal> {
+        self.guest.restart(member, args, patience)
     }
 
     fn wait_channel(
         &self,
         member: &super::MemberName,
+        generation: u32,
         channel: wire::Channel,
         timeout: Duration,
     ) -> Result<Option<super::ChannelEnd>, ImageRefusal> {
-        self.guest.wait_channel(member, channel, timeout)
+        self.guest.wait_channel(member, generation, channel, timeout)
     }
 
     fn stats(&self, scope: wire::StatsScope, patience: Duration) -> Result<wire::Stats, ImageRefusal> {
@@ -1547,23 +1554,29 @@ mod tests {
         fn take_output(
             &self,
             _: &super::super::MemberName,
+            _: u32,
             _: wire::Channel,
         ) -> Result<std::io::PipeReader, ImageRefusal> {
             none()
         }
-        fn take_input(&self, _: &super::super::MemberName) -> Result<std::io::PipeWriter, ImageRefusal> {
+        fn take_input(&self, _: &super::super::MemberName, _: u32) -> Result<std::io::PipeWriter, ImageRefusal> {
             none()
         }
         fn wait_member(
             &self,
             _: &super::super::MemberName,
+            _: u32,
             _: Duration,
         ) -> Result<Option<super::super::MemberEnd>, ImageRefusal> {
+            none()
+        }
+        fn restart(&self, _: &super::super::MemberName, _: &[Vec<u8>], _: Duration) -> Result<u32, ImageRefusal> {
             none()
         }
         fn wait_channel(
             &self,
             _: &super::super::MemberName,
+            _: u32,
             _: wire::Channel,
             _: Duration,
         ) -> Result<Option<super::super::ChannelEnd>, ImageRefusal> {
