@@ -4853,6 +4853,21 @@ mod hosted {
         Ok(next)
     }
 
+    /// What a swap now is refused as, its member's restart refused `cause` (D270 slice 4): as
+    /// that restart was, in its words, where the swap has the cause (`Running`, D277's
+    /// `Workdir`, D252's `Capacity`); `Failed`, naming the cause, otherwise.
+    fn swap_restart_refused(cause: wire::RestartRefusal, why: String) -> (wire::SwapRefusal, String) {
+        use wire::{RestartRefusal as Restart, SwapRefusal as R};
+        match cause {
+            Restart::Running => (R::Running, why),
+            Restart::Workdir => (R::Workdir, why),
+            Restart::Capacity => (R::Capacity, why),
+            Restart::Unknown | Restart::Generation | Restart::Unsupported | Restart::Failed => {
+                (R::Failed, format!("its member's restart, {cause:?}: {why}"))
+            }
+        }
+    }
+
     /// What a restart is refused as, its guest having refused its member's next generation `why`
     /// (D270 slice 3b), `said` its answer's bytes: its init's refusal, in its words; one that could
     /// not enter its working directory (D277) named as a first generation's is
@@ -5093,13 +5108,7 @@ mod hosted {
             }
             wire::SwapWhen::Now => {
                 let again = restart(live, member, ask.args.as_deref(), ask.patience, scope);
-                let generation = again.map_err(|(cause, why)| match cause {
-                    wire::RestartRefusal::Running => (R::Running, why),
-                    // In the restart's words (`workdir_refused`): the member, the directory
-                    // and the errno.
-                    wire::RestartRefusal::Workdir => (R::Workdir, why),
-                    _ => (R::Failed, format!("its member's restart, {cause:?}: {why}")),
-                })?;
+                let generation = again.map_err(|(cause, why)| swap_restart_refused(cause, why))?;
                 super::step(format_args!(
                     "swap at {at}: its member's generation {generation} started"
                 ));
@@ -10528,6 +10537,32 @@ mod hosted {
                 (R::Failed, "its exec: ENOENT".into())
             );
             assert_eq!(start_refused(&members, S::Running, b"under way").0, R::Running);
+        }
+
+        /// D270 slice 4: a swap now whose member's restart was refused is refused as that restart
+        /// was, in its words, where the swap has the cause (`Running`, D277's `Workdir`, D252's
+        /// `Capacity`), and `Failed`, naming the cause, otherwise.
+        #[test]
+        fn a_swaps_restart_refusal_is_carried_typed() {
+            use wire::{RestartRefusal as Restart, SwapRefusal as R};
+            for (cause, swap) in [
+                (Restart::Running, R::Running),
+                (Restart::Workdir, R::Workdir),
+                (Restart::Capacity, R::Capacity),
+            ] {
+                assert_eq!(swap_restart_refused(cause, "why".into()), (swap, "why".into()));
+            }
+            for cause in [
+                Restart::Unknown,
+                Restart::Generation,
+                Restart::Unsupported,
+                Restart::Failed,
+            ] {
+                assert_eq!(
+                    swap_restart_refused(cause, "why".into()),
+                    (R::Failed, format!("its member's restart, {cause:?}: why"))
+                );
+            }
         }
 
         /// D277 for a swap now (D270 slice 4): a swap that restarts its member at once, whose next

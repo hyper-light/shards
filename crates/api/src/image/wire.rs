@@ -127,13 +127,12 @@ pub use shards_abi::run::nesting::Ready;
 /// holds none refuses the run as it is asked, rather than serving its volume unbounded; 48, a
 /// restart whose next generation's stdio lanes its run host's budget has no room for refused
 /// typed before that generation starts ([`RestartRefusal::Capacity`], D252), so that a side that
-/// reads no such refusal refuses the run as it is asked, as 45 does; 49, a swap whose member,
-/// restarted now, could not enter its working directory refused typed
-/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, and a plug of a volume
-/// refused typed where it is asked another bound than its holders serve it with
-/// ([`PlugRefusal::Bound`]) or a clearing holds it ([`PlugRefusal::Clearing`], D281), so that a
-/// side that reads none of these refusals refuses the run as it is asked, rather than its
-/// answer breaking the channel.
+/// reads no such refusal refuses the run as it is asked, as 45 does; 49, a swap refused typed
+/// as its member's restart now was refused ([`SwapRefusal::Workdir`], D277;
+/// [`SwapRefusal::Capacity`], D252), and a plug of a volume refused typed where it is asked
+/// another bound than its holders serve it with ([`PlugRefusal::Bound`]) or a clearing holds
+/// it ([`PlugRefusal::Clearing`], D281), so that a side that reads none of these refusals
+/// refuses the run as it is asked, rather than its answer breaking the channel.
 pub const VERSION: u8 = 49;
 
 /// What the orchestrator's side sends.
@@ -1477,6 +1476,10 @@ pub enum SwapRefusal {
     /// started (D277), as [`RestartRefusal::Workdir`] refuses a restart: its run host's words
     /// name the member, the directory and the errno. Its member then ended whole.
     Workdir = 9,
+    /// Its member, restarted now, was not started again: its run host's budget had no room for
+    /// its next generation's stdio lanes (D252), as [`RestartRefusal::Capacity`] refuses a
+    /// restart. Its member then ended whole.
+    Capacity = 10,
 }
 
 /// What a swap did (D270 slice 4): every member's component after it, and, where its member was
@@ -3534,6 +3537,7 @@ impl SwapAnswer {
                     7 => SwapRefusal::Running,
                     8 => SwapRefusal::Failed,
                     9 => SwapRefusal::Workdir,
+                    10 => SwapRefusal::Capacity,
                     tag => {
                         return Err(WireError::Tag {
                             what: "a swap's refusal",
@@ -5430,6 +5434,7 @@ mod tests {
             SwapRefusal::Running,
             SwapRefusal::Failed,
             SwapRefusal::Workdir,
+            SwapRefusal::Capacity,
         ] {
             let answer = SwapAnswer {
                 id: 1,
@@ -5437,12 +5442,17 @@ mod tests {
             };
             assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
         }
-        const { assert!(VERSION >= 49, "the channel's version 49 carries a swap's Workdir") };
+        const {
+            assert!(
+                VERSION >= 49,
+                "the channel's version 49 carries a swap's Workdir and Capacity"
+            )
+        };
         assert!(matches!(
-            SwapAnswer::decode(&[0, 0, 0, 1, 1, 10, 0, 0, 0, 0]),
+            SwapAnswer::decode(&[0, 0, 0, 1, 1, 11, 0, 0, 0, 0]),
             Err(WireError::Tag {
                 what: "a swap's refusal",
-                tag: 10,
+                tag: 11,
             })
         ));
     }

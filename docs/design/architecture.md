@@ -37371,7 +37371,8 @@ and its run host, image channel version 40; built, its real-VM tests owed with s
   (no such artifact here, one unread, or no sha256 digest), `Kind` (another kind than its path's),
   `Platform`, `Asks`, `Device` (no bus, slot or room in its microVM), `Running`, `Failed`; now,
   where its member's next generation could not enter its working directory, `Workdir`, which
-  shards-api refuses as `ImageRefusal::Workdir` (D277, amended P6-fix-3; image channel 49).
+  shards-api refuses as `ImageRefusal::Workdir`, and where its run host's budget had no room for
+  that generation's stdio lanes, `Capacity` (D252) (D277, amended P6-fix-3; image channel 49).
 - *The image channel*: `SWAP` (49), `SWAPPED` (50).
 - *Its run host*: the artifact checked as a build checks one it takes (`agent::checked`), its
   content its only layer, built into an EROFS root once, which the store keeps by its chain; its
@@ -38418,18 +38419,24 @@ typed too.**
   Workdir: …").
 - *Decided: the restart's cause carried.*
   - The image channel: `SwapRefusal::Workdir` (9, appended).
-  - The run host (api_run `swap`) answers its restart's `Workdir` as `Workdir`, as it answers its
-    `Running` as `Running`. The words are the restart's (`workdir_refused`): the member as the
-    image declares it, the directory and the errno. Its member has ended whole, as after the
-    restart.
+  - The run host (api_run `swap`, `swap_restart_refused`) answers its restart's `Workdir` as
+    `Workdir`, as it answers its `Running` as `Running`. The words are the restart's
+    (`workdir_refused`): the member as the image declares it, the directory and the errno. Its
+    member has ended whole, as after the restart.
+  - So too D252's restart refusal (`RestartRefusal::Capacity`, which landed beside this): a swap
+    now whose member's next generation its run host's budget had no room for is refused
+    `SwapRefusal::Capacity` (10), in the restart's words, never `Failed`. The mapping is
+    exhaustive, so a restart refusal added later is placed here by whoever adds it.
   - shards-api (session `swap_refused`): `swap` and `restore` are refused `ImageRefusal::Workdir`,
     as `restart` is, rather than `ImageRefusal::Swap`.
   - The image channel's version is 49 (46 the swap's arguments, D270 slice 4; 47 a volume's
-    bound, D281; 48 a restart's `Capacity`, D252): a side of 48 reads no swap refusal 9.
-- No literal: 9 is the enum's next value; no wait or cache touched.
+    bound, D281; 48 a restart's `Capacity`, D252): a side of 48 reads no swap refusal 9 or 10.
+- No literal: 9 and 10 are the enum's next values; no wait or cache touched.
 - **Tests** (written, not run: the person's rule of 2026-11-16):
   - The channel's `a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused`: `Workdir`
-    round-trips; tag 10 is refused.
+    and `Capacity` round-trip; tag 11 is refused.
+  - The run host's `a_swaps_restart_refusal_is_carried_typed`: each restart refusal's swap
+    refusal and words.
   - The run host's `a_swap_whose_restart_could_not_enter_its_workdir_is_refused_typed`: a swap now
     whose stand-in guest refuses the member's next generation `Workdir` is refused `Workdir`, the
     member, the directory and errno 2 in its words; its member let go, at generation 0.
@@ -38934,7 +38941,7 @@ neither removed nor pruned by the daemon.**
   - The image channel's `PlugRefusal::Bound` (9) and `PlugRefusal::Clearing` (10), the run
     host's `source_dir` answering each by its cause. `Bound`'s words name the volume, its
     bound and the one asked. `Volume` keeps the store's other refusals. Version 49, with D277's
-    `SwapRefusal::Workdir` (one landing, one version past main's 48).
+    swap refusals (one landing, one version past main's 48).
   - Tests (written, not run): the run host's
     `a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots` (a bound
     conflict refused `Bound`, its words naming the volume, 1048576 bytes and the 2097152
