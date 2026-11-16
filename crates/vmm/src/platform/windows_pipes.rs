@@ -1080,10 +1080,18 @@ mod tests {
         let mut pair = Listening::new(down, up);
         assert_eq!(pair.look(), Paired::Waiting);
         let mut their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
-        assert_eq!(pair.look(), Paired::Waiting, "{pair:?}");
-        assert_eq!(pair.watch, Watch::UnderWay, "its way down unwatched");
+        // Its connect's finish is the next look's, as it lands.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pair.watch != Watch::UnderWay {
+            assert_eq!(pair.look(), Paired::Waiting, "{pair:?}");
+            assert!(Instant::now() < deadline, "its way down unwatched: {pair:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let mut their_up = OpenOptions::new().write(true).open(&names.up).unwrap();
-        assert_eq!(pair.look(), Paired::Connected);
+        while pair.look() != Paired::Connected {
+            assert!(Instant::now() < deadline, "not whole: {pair:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let mut p = pair.into_pipes().unwrap();
         assert_eq!(p.write(b"hi").unwrap(), 2);
         let mut got = [0u8; 2];
@@ -1104,7 +1112,12 @@ mod tests {
         let (down, up) = shards_ipc::vsock_pair(&names, true).unwrap();
         let mut pair = Listening::new(down, up);
         let their_down = OpenOptions::new().read(true).open(&names.down).unwrap();
-        assert_eq!(pair.look(), Paired::Waiting);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while pair.watch != Watch::UnderWay {
+            assert_eq!(pair.look(), Paired::Waiting, "{pair:?}");
+            assert!(Instant::now() < deadline, "its way down unwatched: {pair:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         drop(their_down);
         let deadline = Instant::now() + Duration::from_secs(10);
         while pair.look() != Paired::Broken {
