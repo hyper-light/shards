@@ -161,10 +161,10 @@ pub struct MemberSpec {
     pub env: Vec<(String, Secret)>,
     pub files: Vec<MemberFile>,
     /// Its working directory, absolute and plain: the project path it works in, which must be
-    /// there as it starts (D231): at or beneath a share given it as it starts
-    /// ([`ImageShare::members`], or the image's `VOLUME` there for it), else the run is refused
-    /// [`ImageRefusal::Workdir`] before anything of it starts (D277). None for its image's (its
-    /// config's `run.workdir`, in its directory).
+    /// there as it starts (D231), in its image or in a share given it as it starts
+    /// ([`ImageShare::members`]); one its guest cannot enter refuses its run's members
+    /// [`ImageRefusal::Workdir`] (D277). None for its image's (its config's `run.workdir`, in
+    /// its directory).
     pub workdir: Option<String>,
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
@@ -277,7 +277,9 @@ pub struct ImageSpec {
     /// The run's agent-control endpoint (D238, D252), bound by its host for this run alone,
     /// its key the run's own, made after its restore and held by the endpoint alone; it takes
     /// [`ControlAsk::controller`]'s key alone, and serves lanes to the run's own command's
-    /// sockets where [`ControlAsk::sockets`] grants them (D251). None: no endpoint.
+    /// sockets where [`ControlAsk::sockets`] grants them (D251), and its members' stdio where
+    /// [`ControlAsk::stdio`] asks it (D252): then [`ImageGuest::take_output`] and
+    /// [`ImageGuest::take_input`] give none of it. None: no endpoint.
     pub control: Option<ControlAsk>,
     /// The host GPUs the run's VM renders on, each by its exact identity (D232, as
     /// [`crate::GuestSpec::gpu_devices`] names them), bound by its VM process; under the
@@ -476,9 +478,11 @@ pub enum ImageRefusal {
     Restart(RestartRefusal, String),
     /// A component's swap its host refused (D270 slice 4), by why.
     Swap(SwapRefusal, String),
-    /// A member's working directory ([`MemberSpec::workdir`]) that no share or volume given it
-    /// as it starts holds (D277), so it could not start there: its run host's words name the
-    /// member and the directory.
+    /// A member's working directory ([`MemberSpec::workdir`], else its image's) its guest
+    /// could not enter as it started (D277), so none of its run's members runs: told as they
+    /// start, after the boot, to [`ImageGuest::wait_member`]; or as its next generation started
+    /// (D270), which its [`ImageGuest::restart`] is refused with, its member ended whole. Its
+    /// run host's words name the member, the directory and the errno.
     Workdir(String),
 }
 
@@ -528,10 +532,11 @@ impl std::error::Error for ImageRefusal {}
 /// What boots images.
 pub trait Images: Send + Sync {
     fn backend(&self) -> Result<crate::Backend, ImageRefusal>;
-    /// Boots `spec`'s image, returning once its members have started, or why not, waiting
-    /// at most `patience` for it (`Duration::MAX`: until the run starts or its host ends):
-    /// past it, the run's host is killed and its run refused with what it last said. It is
-    /// the caller's until it drops, which ends it.
+    /// Boots `spec`'s image, returning once its run has started in its microVM, its members
+    /// starting there (one that cannot refuses their waits, [`ImageGuest::wait_member`]), or
+    /// why not, waiting at most `patience` for it (`Duration::MAX`: until the run starts or its
+    /// host ends): past it, the run's host is killed and its run refused with what it last
+    /// said. It is the caller's until it drops, which ends it.
     fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
     /// [`boot`](Self::boot), ended by `stop` (D231's stop of a boot under way): a
     /// [`BootStop::stop`] from any thread while it boots kills the run's host and every
@@ -724,7 +729,8 @@ pub trait ImageGuest: Send + Sync {
     /// write end: its close ends that generation's input.
     fn take_input(&self, member: &MemberName, generation: u32) -> Result<std::io::PipeWriter, ImageRefusal>;
     /// The member's generation's end, waiting at most `timeout` (`Duration::MAX`: until it
-    /// comes).
+    /// comes). Refused [`ImageRefusal::Workdir`] where its run's members did not start, as one
+    /// of theirs could not enter its working directory (D277).
     fn wait_member(
         &self,
         member: &MemberName,
@@ -737,7 +743,9 @@ pub trait ImageGuest: Send + Sync {
     /// namespaces, server instance and volumes its generations keep, its input its own where it
     /// has one: the generation started, whose output, input and end are taken by it. Refused
     /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
-    /// way, one that starts once (a member given a port among others, D122).
+    /// way, one that starts once (a member given a port among others, D122); and as
+    /// [`ImageRefusal::Workdir`] where its next generation could not enter its working directory
+    /// (D277), its member then ended whole.
     fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)
     -> Result<u32, ImageRefusal>;
     /// The member at path `at` (`/agents/NAME`, `/harness/NAME`, `/mcp/NAME`) given the OSI
@@ -2049,6 +2057,7 @@ mod tests {
                 lanes,
                 window,
             }),
+            stdio: false,
         };
         for (dir, lanes, window) in [
             ("run/hex/channel", 8, 65_536),
@@ -2077,6 +2086,14 @@ mod tests {
         s.control = Some(ControlAsk {
             controller: [1u8; 32],
             sockets: None,
+            stdio: false,
+        });
+        assert_eq!(request(&s).unwrap().control, s.control);
+        // Its members' stdio served as the endpoint's lanes (D252), carried whole.
+        s.control = Some(ControlAsk {
+            controller: [1u8; 32],
+            sockets: None,
+            stdio: true,
         });
         assert_eq!(request(&s).unwrap().control, s.control);
     }
@@ -2097,6 +2114,7 @@ mod tests {
         s.control = Some(ControlAsk {
             controller: [1u8; 32],
             sockets: None,
+            stdio: false,
         });
         assert!(request(&s).unwrap().members[0].mcp);
     }

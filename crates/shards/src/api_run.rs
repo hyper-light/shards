@@ -669,77 +669,25 @@ fn give_members(
     Ok(())
 }
 
-/// Each member's working directory refused where no mount given it as it starts holds it
-/// (D277), `mounts` as [`give_members`] told them: the member could not enter it, as the
-/// image's own tree holds no project of its run's (D240) and a plug lands after it starts
-/// (D235).
-fn workdirs_held(
-    request: &wire::Request,
+/// What the orchestrator is told of a member its guest could not start in its working
+/// directory (D277; init's `entering its working directory`), `told` as its guest said it:
+/// `Workdir`, naming the member as the image declares it, the directory and the errno.
+fn workdir_refused(
     members: &[wire::MemberInfo],
-    mounts: &[(String, Vec<u8>)],
-    volumes: &[crate::agentfile::AgentVolume],
-) -> Result<(), No> {
-    for m in &request.members {
-        let Some(w) = &m.workdir else { continue };
-        let info = members
-            .iter()
-            .find(|i| i.kind == m.kind && i.name == m.name)
-            .ok_or_else(|| {
-                No(
-                    Cause::Image,
-                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
-                )
-            })?;
-        let held = mounts
-            .iter()
-            .any(|(dest, entry)| holds(dest, w) && given_at_start(entry, dest, info, volumes));
-        if !held {
-            return Err(No(
-                Cause::Workdir,
-                format!(
-                    "{:?} {}: {w}: no share given it as it starts holds it; share its project there and give it the member (ImageShare::members)",
-                    m.kind, m.name
-                ),
-            ));
-        }
+    told: &shards_abi::run::members::Unentered,
+) -> wire::Refused {
+    let who = members.iter().find(|m| m.index == told.member).map_or_else(
+        || format!("member {}", told.member),
+        |m| format!("{:?} {}", m.kind, m.name),
+    );
+    wire::Refused {
+        cause: Cause::Workdir,
+        why: format!(
+            "{who}: {}: errno {}: its guest could not enter it as it started",
+            String::from_utf8_lossy(&told.workdir),
+            told.errno
+        ),
     }
-    Ok(())
-}
-
-/// Whether `path` is `top` or lies beneath it, each absolute and plain.
-fn holds(top: &str, path: &str) -> bool {
-    path.strip_prefix(top)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || top.ends_with('/'))
-}
-
-/// Whether the mount whose setup entry is `entry`, at `dest`, is given member `info` as it
-/// starts, as init's `given_share` reads it (domains.rs): a directory its members are given
-/// (`domains`), to those it names alone where it names any (`member=N`, D277), and where the
-/// image's `VOLUME` lies there, only as its Agentfile gives it (D109).
-fn given_at_start(
-    entry: &[u8],
-    dest: &str,
-    info: &wire::MemberInfo,
-    volumes: &[crate::agentfile::AgentVolume],
-) -> bool {
-    let mut parts = entry.splitn(4, |&b| b == 0);
-    let (Some(_), Some(_), Some(flags), Some(only)) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return false;
-    };
-    let flags: Vec<&[u8]> = flags.split(|&b| b == b',').collect();
-    if !only.is_empty() || !flags.contains(&&b"domains"[..]) {
-        return false;
-    }
-    let index = info.index.to_string();
-    let named: Vec<&[u8]> = flags.iter().filter_map(|f| f.strip_prefix(b"member=")).collect();
-    let by_name = named.is_empty() || named.contains(&index.as_bytes());
-    let by_volume = volumes
-        .iter()
-        .find(|v| v.paths.iter().any(|p| shards_cmdline::mounts::clean(p) == dest))
-        .is_none_or(|v| volume_gives(v, info.kind, &info.name));
-    by_name && by_volume
 }
 
 /// The members `request` asks `asked` of, by their declared index, ascending: each one of the
@@ -3114,7 +3062,7 @@ mod hosted {
 
     use super::{Answers, No, no};
     use crate::daemon::ends::Ends;
-    use crate::daemon::managed::{Charge, execs, mcp, members};
+    use crate::daemon::managed::{Charge, execs, input_bytes, mcp, members, output_bytes, storage_excess};
     use crate::daemon::publish;
 
     fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -3146,6 +3094,9 @@ mod hosted {
         /// Its sign-in grants, whose asks its host relays (D242, step 8).
         signing: Vec<wire::SignInGrant>,
         dirs: Vec<(OwnedFd, bool, OsString)>,
+        /// The named volumes among them, held since they were opened (D281): its live state's
+        /// once it is served ([`Live::volumes_held`]).
+        volumes: crate::volumes::Holds,
         /// The anonymous volumes its `VOLUME`s made, removed as it ends (`--rm`'s).
         made: Vec<String>,
         bridge: Option<shards_net::bridge::Bridge>,
@@ -3569,7 +3520,6 @@ mod hosted {
             .map(|a| a.volumes.as_slice())
             .unwrap_or_default();
         super::give_members(&mut opened.mounts, &given, volumes)?;
-        super::workdirs_held(request, &members, &opened.mounts, volumes)?;
         let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
             .map_err(no(Cause::Request))?;
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
@@ -3702,6 +3652,7 @@ mod hosted {
             granted: request.credentials.iter().map(|g| g.reference.clone()).collect(),
             signing: request.sign_ins.clone(),
             dirs: opened.dirs,
+            volumes: opened.held,
             made,
             address: bridge
                 .as_ref()
@@ -4646,6 +4597,21 @@ mod hosted {
         live.generations_moved.notify_all();
     }
 
+    /// A member its guest could not start in its working directory (D277), refused typed to its
+    /// orchestrator as its members start (`REFUSED`, `Cause::Workdir`), before the run's end its
+    /// guest's words fail; one told malformed said on this host's stderr alone.
+    fn unentered(live: &Live<'_>, payload: &[u8]) {
+        let Some(told) = protocol::members::Unentered::decode(payload) else {
+            super::say(format_args!(
+                "a working directory its guest could not enter, told malformed"
+            ));
+            return;
+        };
+        if let Ok(refused) = super::workdir_refused(live.members, &told).encode() {
+            let _ = live.answers.send(wire::to_client::REFUSED, &[&refused]);
+        }
+    }
+
     /// Starts member `ask.member` again (D270 slice 3b): held for its next generation, its
     /// command asked to end (SIGTERM), its generation's end waited for at most its patience and
     /// its generation ended at once past that (`MEMBER_KILL`), then its next started, `ask.args`
@@ -4688,6 +4654,10 @@ mod hosted {
             // member, as an end with no restart under way does.
             let go = protocol::members::Hold { member, held: false };
             let _ = shards_ipc::send(&lock(&live.link), kind::MEMBER_HOLD, &go.encode(), &[]);
+            // Lanes of a next generation that may never run are revoked (D252), not left open.
+            if let (Some(stdio), Some(next)) = (live.stdio.get(), generation.checked_add(1)) {
+                stdio.abort_generation(member, next);
+            }
         }
         lock(&live.generations).restarting.remove(&member);
         result
@@ -4791,6 +4761,11 @@ mod hosted {
                 },
             );
         }
+        // Its next generation's streams on its endpoint's lanes, where it serves its members'
+        // stdio (D252): joined before its start, as its feed is.
+        if let Some(stdio) = live.stdio.get() {
+            stdio.join(live, member, next, has_input, scope).map_err(failed)?;
+        }
         shards_ipc::send(&lock(&live.link), kind::MEMBER_START, &payload, &[])
             .map_err(|e| failed(format!("its VM: {e}")))?;
         let answered = |g: &Generations| g.started.contains_key(&member) || g.gone;
@@ -4803,20 +4778,10 @@ mod hosted {
         let Some(answer) = answer else {
             return Err(failed("its microVM has gone".into()));
         };
-        if let Some((why, words)) = answer.refused {
-            let words = String::from_utf8_lossy(&words).into_owned();
-            return Err((
-                match why {
-                    protocol::members::StartRefusal::Unknown => R::Unknown,
-                    protocol::members::StartRefusal::Running => R::Running,
-                    protocol::members::StartRefusal::Generation => R::Generation,
-                    protocol::members::StartRefusal::Unsupported => R::Unsupported,
-                    protocol::members::StartRefusal::Failed => R::Failed,
-                },
-                words,
-            ));
+        if let Some((why, said)) = answer.refused {
+            return Err(start_refused(live.members, why, &said));
         }
-        if has_input {
+        if has_input && live.stdio.get().is_none() {
             let started = std::thread::Builder::new()
                 .name("api-run input".into())
                 .spawn_scoped(scope, move || write_input(live, member));
@@ -4836,6 +4801,34 @@ mod hosted {
         }
         release_unused(live);
         Ok(next)
+    }
+
+    /// What a restart is refused as, its guest having refused its member's next generation `why`
+    /// (D270 slice 3b), `said` its answer's bytes: its init's refusal, in its words; one that could
+    /// not enter its working directory (D277) named as a first generation's is
+    /// (`workdir_refused`): the member as the image declares it, the directory and the errno.
+    fn start_refused(
+        members: &[wire::MemberInfo],
+        why: protocol::members::StartRefusal,
+        said: &[u8],
+    ) -> (wire::RestartRefusal, String) {
+        use protocol::members::StartRefusal as S;
+        use wire::RestartRefusal as R;
+        let words = || String::from_utf8_lossy(said).into_owned();
+        match why {
+            S::Unknown => (R::Unknown, words()),
+            S::Running => (R::Running, words()),
+            S::Generation => (R::Generation, words()),
+            S::Unsupported => (R::Unsupported, words()),
+            S::Failed => (R::Failed, words()),
+            S::Workdir => match protocol::members::Unentered::decode(said) {
+                Some(told) => (R::Workdir, super::workdir_refused(members, &told).why),
+                None => (
+                    R::Failed,
+                    "its guest told a working directory it could not enter malformed".into(),
+                ),
+            },
+        }
     }
 
     /// What came of a swap (D270 slice 4), told its orchestrator by its ask's id.
@@ -5091,6 +5084,16 @@ mod hosted {
             });
             if !open {
                 flows.sealed.insert((member, generation));
+                // A lane on a channel no credit went to (D252) reads nothing more: revoked, as
+                // its generation is past.
+                if let Some(stdio) = live.stdio.get() {
+                    for channel in [Channel::Stdout, Channel::Stderr] {
+                        let key = (member, generation, channel);
+                        if !flows.granted.contains_key(&key) {
+                            stdio.abort(key);
+                        }
+                    }
+                }
                 return true;
             }
             let left = match deadline {
@@ -5546,6 +5549,9 @@ mod hosted {
         /// A plug/unplug's ownership turn, held through device and guest completion;
         /// replies never need this lock. The mounted registry stays readable meanwhile.
         plug_turn: Mutex<()>,
+        /// Each named volume of its home it mounts or plugged, held for its life (D281): a
+        /// clearing of one is refused while it runs.
+        volumes_held: Mutex<crate::volumes::Holds>,
         /// The pipe the run's share process tells what its host changes on (D235), until
         /// its guest's NOTICE built-in is given it as the run starts; and the streams each
         /// of those built-ins' ends are told on, held while the run is.
@@ -5564,6 +5570,10 @@ mod hosted {
         /// What its own lanes of its agent-control endpoint are served with, where its
         /// orchestrator asked for the endpoint (D238, D252, D254).
         agent: Option<Agent>,
+        /// Its members' stdio its endpoint serves as lanes, where its orchestrator asked for it
+        /// (D252): set once as its endpoint starts serving ([`serve_stdio`]), before anything
+        /// reads its VM.
+        stdio: std::sync::OnceLock<Stdio>,
         /// Its network process's control, where it has a network (D242, D269).
         net: Option<&'a super::NetControl<'a>>,
         /// The ports it publishes (D269).
@@ -5613,6 +5623,10 @@ mod hosted {
         /// Its members that run a program, and those with a terminal of their own (D244).
         active: Vec<u32>,
         terminals: Vec<u32>,
+        /// Its members whose stdin its orchestrator writes, by their declared index.
+        inputs: Vec<u32>,
+        /// Its endpoint serves its members' stdio as lanes (`ControlAsk::stdio`, D252).
+        stdio: bool,
         /// Its members' MCP connections, where its request gave any a bridge (D254).
         bridges: Option<mcp::Bridges>,
     }
@@ -5647,6 +5661,8 @@ mod hosted {
                 ends,
                 active: plan.members.iter().filter(|m| m.runs).map(|m| m.index).collect(),
                 terminals: plan.terminals.clone(),
+                inputs: plan.inputs.clone(),
+                stdio: plan.control.as_ref().is_some_and(|c| c.stdio),
                 bridges,
             })
         }
@@ -5674,6 +5690,406 @@ mod hosted {
                 begun = self.began.wait(begun).unwrap_or_else(PoisonError::into_inner);
             }
             *begun == Begun::Started
+        }
+    }
+
+    /// Its members' stdio its endpoint serves as lanes, where its orchestrator asked for it
+    /// (`ControlAsk::stdio`, D252), as a daemon's run's endpoint serves the streams its owner
+    /// reads (D238): each stream's control by member, generation (D270) and channel, held for
+    /// the run's life, as a control let go revokes its stream; each output's way to the thread
+    /// that serves it ([`lane_output`]); where each next generation's streams join the
+    /// endpoint; and the budget each stream is charged to, its run host's own
+    /// ([`Agent::charge`]).
+    struct Stdio {
+        generations: shards_remote::control::Generations,
+        outputs: Mutex<HashMap<Key, LaneOutput>>,
+        inputs: Mutex<HashMap<(u32, u32), LaneInput>>,
+        charge: std::sync::Arc<Charge>,
+    }
+
+    /// What a member stream its endpoint serves holds of its run host's budget (D252), as the
+    /// daemon's runs' streams hold of the daemon's: none where its budget had no room for it,
+    /// its lanes refused `Capacity`, or once it was given back, its stream over.
+    type Charged = Option<execs::Held<std::sync::Arc<Charge>>>;
+
+    /// A member output its endpoint serves: its records' way to its thread, none once its
+    /// capture has ended, or where it has no room; its control; and its charge.
+    struct LaneOutput {
+        records: Option<std::sync::mpsc::Sender<(Vec<u8>, bool)>>,
+        control: shards_remote::managed::Control,
+        charged: Charged,
+    }
+
+    /// A member stdin its endpoint serves: its control, and its charge.
+    struct LaneInput {
+        control: shards_remote::managed::input::Control,
+        charged: Charged,
+    }
+
+    /// Charges `charge` `bytes` for a member stream its endpoint serves (D252): held, or none
+    /// where its budget has no room for them or they overflow, said as `what`.
+    fn charge_stream(
+        charge: &std::sync::Arc<Charge>,
+        bytes: Option<u64>,
+        what: std::fmt::Arguments<'_>,
+    ) -> Charged {
+        let Some(bytes) = bytes else {
+            super::say(format_args!("{what}: its charge overflows"));
+            return None;
+        };
+        match execs::Held::new(std::sync::Arc::clone(charge), bytes) {
+            Ok(held) => Some(held),
+            Err(e) => {
+                super::say(format_args!(
+                    "{what}: its budget has no room for {bytes} bytes: {e:?}"
+                ));
+                None
+            }
+        }
+    }
+
+    impl Stdio {
+        /// Serves output `key` from now on: charged to its budget as the daemon charges its
+        /// runs' owned outputs (`output_bytes` of what its endpoint admits it, its host's record
+        /// of it its entry here, and `storage_excess`), its control held, its thread started.
+        /// One its budget has no room for is let go (`no_room`), each lane to it refused
+        /// `Capacity`; one that has no thread is revoked, which its lane is told.
+        fn output<'scope, 'env>(
+            &'env self,
+            live: &'env Live<'env>,
+            key: Key,
+            producer: shards_remote::managed::Producer,
+            control: shards_remote::managed::Control,
+            scope: &'scope std::thread::Scope<'scope, 'env>,
+        ) {
+            let (_, admitted) = shards_api::control::member_output(key.0, key.1, key.2);
+            let bytes = output_bytes(&admitted, size_of::<(Key, LaneOutput)>())
+                .zip(storage_excess(&producer, admitted.record_bytes).ok())
+                .and_then(|(lane, excess)| lane.checked_add(excess));
+            let charged = charge_stream(
+                &self.charge,
+                bytes,
+                format_args!("member {}'s generation {} output lane", key.0, key.1),
+            );
+            if charged.is_none() {
+                control.no_room();
+                lock(&self.outputs).insert(
+                    key,
+                    LaneOutput {
+                        records: None,
+                        control,
+                        charged,
+                    },
+                );
+                return;
+            }
+            let (records, taken) = std::sync::mpsc::channel();
+            lock(&self.outputs).insert(
+                key,
+                LaneOutput {
+                    records: Some(records),
+                    control,
+                    charged,
+                },
+            );
+            let started = std::thread::Builder::new()
+                .name("api-run lane".into())
+                .spawn_scoped(scope, move || lane_output(live, self, key, &producer, &taken));
+            if let Err(e) = started {
+                super::say(format_args!("member {}'s output lane has no thread: {e}", key.0));
+                self.abort(key);
+            }
+        }
+
+        /// Serves member `key.0`'s generation `key.1`'s stdin from now on: charged to its budget
+        /// as the daemon charges its runs' inputs (`input_bytes`, its host's record of it its
+        /// entry here), its control held, its relay's thread started ([`lane_input`]). One its
+        /// budget has no room for is let go (`no_room`), each lane to it refused `Capacity` and
+        /// its member's input connection ended by its relay, which finds it gone; one that has
+        /// no thread is revoked.
+        fn input<'scope, 'env>(
+            &'env self,
+            live: &'env Live<'env>,
+            key: (u32, u32),
+            relay: shards_remote::managed::input::Relay,
+            control: shards_remote::managed::input::Control,
+            scope: &'scope std::thread::Scope<'scope, 'env>,
+        ) {
+            let (_, admitted) = shards_api::control::member_input(key.0, key.1);
+            let charged = charge_stream(
+                &self.charge,
+                input_bytes(&admitted, size_of::<((u32, u32), LaneInput)>()),
+                format_args!("member {}'s generation {} stdin lane", key.0, key.1),
+            );
+            if charged.is_none() {
+                control.no_room();
+            }
+            lock(&self.inputs).insert(key, LaneInput { control, charged });
+            let started = std::thread::Builder::new()
+                .name("api-run stdin".into())
+                .spawn_scoped(scope, move || lane_input(live, key, &relay));
+            if let Err(e) = started {
+                super::say(format_args!("member {}'s stdin lane has no thread: {e}", key.0));
+                if let Some(lane) = lock(&self.inputs).get(&key) {
+                    lane.control.abort();
+                }
+            }
+        }
+
+        /// Gives back what member `member`'s generations before `generation` hold of its budget
+        /// for each stream of theirs that is over (D252): an output finished or let go, a stdin
+        /// ended or let go, none of its buffers held any more. One not yet over keeps its charge
+        /// until the member's next restart, or the run's end.
+        fn give_back(&self, member: u32, generation: u32) {
+            for ((m, g, _), lane) in lock(&self.outputs).iter_mut() {
+                if *m == member
+                    && *g < generation
+                    && matches!(
+                        lane.control.state(),
+                        shards_remote::managed::State::Finished(_)
+                            | shards_remote::managed::State::Aborted(_)
+                    )
+                {
+                    lane.charged = None;
+                }
+            }
+            for ((m, g), lane) in lock(&self.inputs).iter_mut() {
+                if *m == member
+                    && *g < generation
+                    && matches!(
+                        lane.control.state(),
+                        shards_remote::managed::input::State::Ended { .. }
+                            | shards_remote::managed::input::State::Revoked
+                    )
+                {
+                    lane.charged = None;
+                }
+            }
+        }
+
+        /// Member `member`'s generation `generation`'s streams joined to its endpoint (D270),
+        /// before its start, so that its guest's first record and its input find them: its
+        /// stdout and stderr, and its stdin where it has one, each served and charged as its
+        /// first generation's are, once what its past generations' streams that are over hold
+        /// of its budget is given back.
+        fn join<'scope, 'env>(
+            &'env self,
+            live: &'env Live<'env>,
+            member: u32,
+            generation: u32,
+            stdin: bool,
+            scope: &'scope std::thread::Scope<'scope, 'env>,
+        ) -> Result<(), String> {
+            self.give_back(member, generation);
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                let (named, _) = shards_api::control::member_output(member, generation, channel);
+                let (producer, control) = self
+                    .generations
+                    .output(named)
+                    .map_err(|e| format!("its generation {generation}'s output lane: {e}"))?;
+                self.output(live, (member, generation, channel), producer, control, scope);
+            }
+            if stdin {
+                let (named, _) = shards_api::control::member_input(member, generation);
+                let (relay, control) = self
+                    .generations
+                    .input(named)
+                    .map_err(|e| format!("its generation {generation}'s stdin lane: {e}"))?;
+                self.input(live, (member, generation), relay, control, scope);
+            }
+            Ok(())
+        }
+
+        /// The record `record` of output `key` to its thread, `last` its end or abort: whether
+        /// a thread took it.
+        fn record(&self, key: Key, record: Vec<u8>, last: bool) -> bool {
+            lock(&self.outputs)
+                .get(&key)
+                .and_then(|o| o.records.as_ref())
+                .is_some_and(|records| records.send((record, last)).is_ok())
+        }
+
+        /// Output `key`'s last record has gone to its lane: its end follows as it is consumed;
+        /// one its stream refuses is revoked.
+        fn finish(&self, key: Key) {
+            if let Some(lane) = lock(&self.outputs).get(&key)
+                && lane.control.finish().is_err()
+            {
+                lane.control.abort();
+            }
+        }
+
+        /// Output `key` revoked: its lane told so (`Revoked`), a later one refused `Closed`.
+        fn abort(&self, key: Key) {
+            if let Some(lane) = lock(&self.outputs).get(&key) {
+                lane.control.abort();
+            }
+        }
+
+        /// Member `member`'s generation `generation`'s streams revoked: a restart that failed
+        /// past joining them (D270), whose generation may never run.
+        fn abort_generation(&self, member: u32, generation: u32) {
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                self.abort((member, generation, channel));
+            }
+            if let Some(lane) = lock(&self.inputs).get(&(member, generation)) {
+                lane.control.abort();
+            }
+        }
+
+        /// Member `key.0`'s generation `key.1`'s stdin has ended as its init told it: its lane
+        /// told, as the daemon tells its owner's (`Outputs::input_ended`).
+        fn input_ended(&self, key: (u32, u32), written: u64, end: managed::InputEnd) {
+            if let Some(lane) = lock(&self.inputs).get(&key) {
+                lane.control.ended(written, end);
+            }
+        }
+    }
+
+    /// Serves member output `key` on its endpoint's lane (D252), as the daemon's credit worker
+    /// serves an owned one (daemon/managed.rs `send_credits`): its guest credited one record of
+    /// the room its lane's subscriber has (`Producer::wait_capacity`), that record put whole in
+    /// the lane's own buffer as its capture brought it (the guest's record, which its
+    /// controller decodes), and the output finished after its last, its end or its abort. A
+    /// record that came as its subscriber left waits for the next; one past its credit revokes
+    /// the output. Ends with its output, with its credits (its generation past, or its VM
+    /// gone), or with its capture, which cut it ([`Live::cut`]).
+    fn lane_output(
+        live: &Live<'_>,
+        stdio: &Stdio,
+        key: Key,
+        producer: &shards_remote::managed::Producer,
+        records: &std::sync::mpsc::Receiver<(Vec<u8>, bool)>,
+    ) {
+        loop {
+            let Ok(room) = producer.wait_capacity() else {
+                return;
+            };
+            if !live.credit_lane(key, room) {
+                return;
+            }
+            let Ok((record, last)) = records.recv() else {
+                return;
+            };
+            let mut buffer = loop {
+                match producer.take_buffer() {
+                    Ok(Some(buffer)) => break buffer,
+                    // Its subscriber left between its credit and its record: it waits for the
+                    // next, at the same place.
+                    Ok(None) => {
+                        if producer.wait_capacity().is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        stdio.abort(key);
+                        return;
+                    }
+                }
+            };
+            // A record past its credit is its guest's breach of it: the output revoked, the
+            // buffer it took with it.
+            if record.len() > buffer.capacity() {
+                stdio.abort(key);
+                return;
+            }
+            buffer.clear();
+            buffer.extend_from_slice(&record);
+            if producer.submit(buffer).is_err() {
+                stdio.abort(key);
+                return;
+            }
+            if last {
+                stdio.finish(key);
+                return;
+            }
+        }
+    }
+
+    /// Relays member `key.0`'s generation `key.1`'s stdin from its endpoint's lane to its input
+    /// connection (D252) with the daemon's relay (daemon/managed.rs `relay_input`): the
+    /// connection its feed holds once its VM has handed it over, none once that generation's
+    /// input has ended or its feed is another generation's.
+    fn lane_input(live: &Live<'_>, key: (u32, u32), relay: &shards_remote::managed::input::Relay) {
+        let (member, generation) = key;
+        crate::daemon::managed::relay_input(relay, &|| feed_conn(live, member, generation), &|| {
+            feed_close(live, member, generation)
+        });
+    }
+
+    /// Waits for member `member`'s generation `generation`'s input connection: a copy of it,
+    /// none where it will not come.
+    fn feed_conn(live: &Live<'_>, member: u32, generation: u32) -> Option<Stream> {
+        let mut feeds = lock(&live.feeds);
+        loop {
+            let feed = feeds
+                .get(&member)
+                .filter(|f| f.generation == generation && !f.ended)?;
+            match &feed.conn {
+                Conn::Here(conn) => return conn.try_clone().ok(),
+                Conn::Gone => return None,
+                Conn::Awaited => {}
+            }
+            feeds = live.fed.wait(feeds).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Ends member `member`'s generation `generation`'s input connection, where its feed is
+    /// that generation's: none comes after.
+    fn feed_close(live: &Live<'_>, member: u32, generation: u32) {
+        if let Some(feed) = lock(&live.feeds)
+            .get_mut(&member)
+            .filter(|f| f.generation == generation)
+        {
+            feed.conn.end();
+        }
+        live.fed.notify_all();
+    }
+
+    /// Serves its members' stdio on its endpoint's lanes from now on (D252), where its
+    /// orchestrator asked for it: `outputs` and `inputs`, the streams its endpoint was bound
+    /// with ([`first_streams`]' order), held in [`Live::stdio`] with `generations`, where each
+    /// next generation's join it, each one charged to `agent`'s budget, or let go where it has
+    /// no room, and each one's thread started. Called before its endpoint's driver serves a
+    /// lane, so that no lane finds a stream its budget has no room for before it is let go.
+    fn serve_stdio<'scope, 'env>(
+        live: &'env Live<'env>,
+        agent: &Agent,
+        generations: shards_remote::control::Generations,
+        outputs: Vec<(shards_remote::managed::Producer, shards_remote::managed::Control)>,
+        inputs: Vec<(
+            shards_remote::managed::input::Relay,
+            shards_remote::managed::input::Control,
+        )>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        let (keys, members) = match first_streams(agent) {
+            Ok(streams) => streams,
+            Err(why) => {
+                super::say(format_args!("its members' stdio is served none: {why}"));
+                return;
+            }
+        };
+        if keys.is_empty() && members.is_empty() {
+            return;
+        }
+        let stdio = Stdio {
+            generations,
+            outputs: Mutex::new(HashMap::new()),
+            inputs: Mutex::new(HashMap::new()),
+            charge: std::sync::Arc::clone(&agent.charge),
+        };
+        if live.stdio.set(stdio).is_err() {
+            return;
+        }
+        let Some(stdio) = live.stdio.get() else {
+            return;
+        };
+        for (key, (producer, control)) in keys.into_iter().zip(outputs) {
+            stdio.output(live, key, producer, control, scope);
+        }
+        for (member, (relay, control)) in members.into_iter().zip(inputs) {
+            stdio.input(live, (member, 0), relay, control, scope);
         }
     }
 
@@ -5827,6 +6243,45 @@ mod hosted {
             let capacity = room
                 .saturating_add(managed::HEADER as u64)
                 .clamp(least, u64::from(protocol::MAX_PAYLOAD));
+            Self::credit(capture, flows, key, capacity)
+        }
+
+        /// Credits the guest one record of output `key`, `room` bytes at most, the room its
+        /// lane's subscriber has (D252), where its generation is its member's current and not
+        /// sealed, and its end has not come: whether it went. One its VM can take no more of
+        /// is its VM ending, said once, as [`Live::grant`]'s.
+        fn credit_lane(&self, key: Key, room: usize) -> bool {
+            let Some(capture) = &self.capture else {
+                return false;
+            };
+            let mut flows = lock(&self.flows);
+            if key.1 != self.generation_of(key.0)
+                || flows.sealed.contains(&(key.0, key.1))
+                || flows.ended.get(&key).copied().unwrap_or(false)
+            {
+                return false;
+            }
+            let least = (managed::HEADER + size_of::<i32>()) as u64;
+            let capacity = u64::try_from(room)
+                .unwrap_or(u64::MAX)
+                .min(u64::from(protocol::MAX_PAYLOAD));
+            if capacity < least {
+                return false;
+            }
+            match Self::credit(capture, &mut flows, key, capacity) {
+                Ok(()) => true,
+                Err(e) => {
+                    if !std::mem::replace(&mut flows.ungranted, true) {
+                        super::say(format_args!("its VM takes no more of its members' output: {e}"));
+                    }
+                    false
+                }
+            }
+        }
+
+        /// Credits the guest `capacity` bytes of output `key`'s next record
+        /// (`MANAGED_CREDIT`), its credit out from then on.
+        fn credit(capture: &Mutex<Stream>, flows: &mut Flows, key: Key, capacity: u64) -> io::Result<()> {
             let credit = managed::Credit {
                 member: key.0,
                 channel: managed_channel(key.2),
@@ -5869,6 +6324,17 @@ mod hosted {
         /// rather than its orchestrator waiting for this process's exit to learn it ended.
         fn cut(&self) -> io::Result<()> {
             let mut flows = lock(&self.flows);
+            // Each of its members' streams its endpoint serves (D252) whose end did not come is
+            // revoked, its lane told so; each whose end came goes on to its lane, consumed as
+            // its controller reads it; every lane's thread let go.
+            if let Some(stdio) = self.stdio.get() {
+                for (key, lane) in lock(&stdio.outputs).iter_mut() {
+                    lane.records = None;
+                    if !flows.ended.get(key).copied().unwrap_or(false) {
+                        lane.control.abort();
+                    }
+                }
+            }
             let known: std::collections::HashSet<Key> = flows
                 .room
                 .keys()
@@ -6202,6 +6668,7 @@ mod hosted {
         // Its share process's notices (D235), given its guest as its run starts.
         let due = launched.shares.as_mut().and_then(|s| s.notices.take());
         let listeners = std::mem::take(&mut plan.listeners);
+        let volumes = std::mem::take(&mut plan.volumes);
         let served = (|| -> Result<(), No> {
             // Its published ports, each held under a number of its own (D269), by which its
             // owner may let it go as the run goes.
@@ -6266,7 +6733,9 @@ mod hosted {
             let control = match (plan.control.as_ref(), agent.as_ref()) {
                 (Some(ask), Some(agent)) => {
                     let key = control_key(premade.take()).map_err(boot)?;
-                    let bound = bind_control(key, ask, agent.admissions).map_err(boot)?;
+                    let (outputs, inputs) = first_streams(agent).map_err(boot)?;
+                    let bound = bind_control(key, ask, agent.admissions, &outputs, &inputs, &plan.mcps)
+                        .map_err(boot)?;
                     super::step(format_args!("its agent-control endpoint bound"));
                     Some(bound)
                 }
@@ -6322,6 +6791,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::new(volumes),
                 notices_due: Mutex::new(due),
                 notices: Mutex::new(Vec::new()),
                 leasing,
@@ -6330,6 +6800,7 @@ mod hosted {
                 pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &plan.reached,
                 agent,
+                stdio: std::sync::OnceLock::new(),
                 net: net.as_ref(),
                 ports: Mutex::new(ports),
                 egress: Mutex::new(plan.narrowing.clone()),
@@ -6393,6 +6864,18 @@ mod hosted {
             // Its agent-control endpoint's driver, and its socket lanes, each opened through the
             // VM (D251, D252); revoked as the run's asks end, which ends both.
             let revoke = control.map(|(endpoint, served)| {
+                // Its members' stdio, where its orchestrator asked for it (D252): each stream
+                // charged to its budget, or let go, before the driver serves a lane of it.
+                if let Some(agent) = &live.agent {
+                    serve_stdio(
+                        live,
+                        agent,
+                        served.generations,
+                        served.outputs,
+                        served.inputs,
+                        scope,
+                    );
+                }
                 let driver = std::thread::Builder::new()
                     .name("api-run control".into())
                     .spawn_scoped(scope, move || {
@@ -6427,7 +6910,12 @@ mod hosted {
                 }
                 served.revoke
             });
-            let members: Vec<u32> = lock(&live.feeds).keys().copied().collect();
+            // Each stdin its orchestrator writes on this channel; one its endpoint serves is its
+            // lane's ([`serve_stdio`]).
+            let members: Vec<u32> = match live.stdio.get() {
+                Some(_) => Vec::new(),
+                None => lock(&live.feeds).keys().copied().collect(),
+            };
             for member in members {
                 let started = std::thread::Builder::new()
                     .name("api-run input".into())
@@ -6574,13 +7062,20 @@ mod hosted {
 
     /// The run's agent-control endpoint (D252), bound on loopback, as step 5's endpoints bind:
     /// its microVM's own key `key`, which it takes, and the controller's key the one it admits;
-    /// serving the run's socket lanes where its ask grants them (D251), and its execs, its
-    /// members' MCP connections (D254) and its members' own lanes, their streams admitted as
-    /// `execs` says.
+    /// serving the run's socket lanes where its ask grants them (D251), its execs, the MCP
+    /// connections (D254) of the members its request gave a bridge (`bridges`, which its report
+    /// names) and its members' own lanes, their streams admitted as `execs` says, and its
+    /// members' stdio streams `outputs` and `inputs` (their first generation's,
+    /// [`first_streams`]), each admitted as shards-api names it to its controller
+    /// (`member_output`, `member_input`), as a daemon's run's endpoint serves its owned ones
+    /// (daemon/managed.rs `bind_agent`).
     pub(super) fn bind_control(
         key: ControlKey,
         ask: &wire::ControlAsk,
         execs: shards_remote::control::exec::Admissions,
+        outputs: &[Key],
+        inputs: &[u32],
+        bridges: &[u32],
     ) -> Result<(shards_remote::control::Endpoint, shards_remote::control::Served), String> {
         let ControlKey(vm) = key;
         let sockets = ask
@@ -6590,18 +7085,54 @@ mod hosted {
                 lanes: grant.lanes,
                 window: grant.window,
             });
+        let room = |e: std::collections::TryReserveError| format!("its members' lanes: {e}");
+        let mut stdio = Vec::new();
+        stdio.try_reserve_exact(outputs.len()).map_err(room)?;
+        stdio.extend(outputs.iter().map(|&(member, generation, channel)| {
+            shards_api::control::member_output(member, generation, channel)
+        }));
+        let mut stdins = Vec::new();
+        stdins.try_reserve_exact(inputs.len()).map_err(room)?;
+        stdins.extend(
+            inputs
+                .iter()
+                .map(|&member| shards_api::control::member_input(member, 0)),
+        );
         shards_remote::control::Endpoint::bind(
             &vm,
             ask.controller,
             std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
             shards_remote::control::Streams {
-                outputs: &[],
-                inputs: &[],
+                outputs: &stdio,
+                inputs: &stdins,
                 execs: Some(execs),
                 sockets,
+                bridges,
             },
         )
         .map_err(|e| format!("its agent-control endpoint: {e}"))
+    }
+
+    /// The member streams a run's endpoint serves where its orchestrator asked for its members'
+    /// stdio (`ControlAsk::stdio`, D252), each its first generation's, in the order the endpoint
+    /// is bound with them: every running member's stdout and stderr, and each member's stdin
+    /// its orchestrator asked for; none where it asked for none.
+    fn first_streams(agent: &Agent) -> Result<(Vec<Key>, Vec<u32>), String> {
+        if !agent.stdio {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let room = |e: std::collections::TryReserveError| format!("its members' lanes: {e}");
+        let mut outputs = Vec::new();
+        outputs
+            .try_reserve_exact(agent.active.len().saturating_mul(2))
+            .map_err(room)?;
+        for &member in &agent.active {
+            outputs.extend([(member, 0, Channel::Stdout), (member, 0, Channel::Stderr)]);
+        }
+        let mut inputs = Vec::new();
+        inputs.try_reserve_exact(agent.inputs.len()).map_err(room)?;
+        inputs.extend_from_slice(&agent.inputs);
+        Ok((outputs, inputs))
     }
 
     /// What the run's orchestrator is told of its endpoint (D252): where it serves, its
@@ -6946,6 +7477,8 @@ mod hosted {
                 answered(&live.pause_asks, &m.payload);
             } else if m.kind == kind::MEMBER_STARTED {
                 started_told(live, &m.payload);
+            } else if m.kind == kind::WORKDIR_UNENTERED {
+                unentered(live, &m.payload);
             } else if m.kind == kind::MANAGED_INPUT {
                 input_arrived(live, &m.payload, m.fds);
             } else if m.kind == kind::MANAGED_INPUT_ENDED {
@@ -7061,6 +7594,13 @@ mod hosted {
         use super::{Ask, AsksEnd};
         match ask {
             Ask::Credit(credit) => {
+                // Room for a stream its endpoint serves is its lane's (D252).
+                if live.stdio.get().is_some() {
+                    return Err(super::broke(format_args!(
+                        "a CREDIT for member {}'s output, which its run's endpoint serves (D252)",
+                        credit.member
+                    )));
+                }
                 let key = (credit.member, credit.generation, credit.channel);
                 let mut flows = lock(&live.flows);
                 let room = flows.room.entry(key).or_insert(0);
@@ -7488,6 +8028,8 @@ mod hosted {
             return;
         };
         let room = protocol::CHUNK as u64;
+        // A stdin its endpoint serves takes its room from its lane (D252): none is told here.
+        let lanes = live.stdio.get().is_some();
         let generation = {
             let mut feeds = lock(&live.feeds);
             let Some(feed) = feeds
@@ -7498,10 +8040,15 @@ mod hosted {
                 return;
             };
             feed.conn = Conn::Here(conn);
-            feed.room = feed.room.saturating_add(room);
+            if !lanes {
+                feed.room = feed.room.saturating_add(room);
+            }
             feed.generation
         };
         live.fed.notify_all();
+        if lanes {
+            return;
+        }
         let given = wire::InputRoom {
             member,
             generation,
@@ -7522,6 +8069,11 @@ mod hosted {
         };
         let generation = lock(&live.feeds).get(&ended.member).map_or(0, |f| f.generation);
         end_input(live, ended.member);
+        // A stdin its endpoint serves (D252): its end told its lane alone.
+        if let Some(stdio) = live.stdio.get() {
+            stdio.input_ended((ended.member, generation), ended.written, ended.end);
+            return;
+        }
         let told = wire::InputEnded {
             member: ended.member,
             generation,
@@ -7550,6 +8102,11 @@ mod hosted {
     /// contract is broken, as said.
     fn input_given(live: &Live<'_>, given: wire::Input) -> Result<(), String> {
         let member = given.member;
+        if live.stdio.get().is_some() {
+            return Err(format!(
+                "an INPUT for member {member}, whose stdin its run's endpoint serves (D252)"
+            ));
+        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds
             .get_mut(&member)
@@ -7582,6 +8139,11 @@ mod hosted {
     /// once, so that a writer held by a member that does not read lets go.
     fn input_end(live: &Live<'_>, end: wire::InputEnd) -> Result<(), String> {
         let member = end.member;
+        if live.stdio.get().is_some() {
+            return Err(format!(
+                "an INPUT_END for member {member}, whose stdin its run's endpoint serves (D252)"
+            ));
+        }
         let mut feeds = lock(&live.feeds);
         let feed = feeds.get_mut(&member).ok_or_else(|| {
             format!("an INPUT_END for member {member}, whose stdin its run did not ask for")
@@ -7743,8 +8305,30 @@ mod hosted {
                 }
             };
             let key = (parsed.member, generation, channel);
+            let end = match parsed.event {
+                managed::Event::End => Some(wire::StreamEnd::Closed),
+                managed::Event::Aborted(errno) => Some(wire::StreamEnd::Aborted(errno)),
+                managed::Event::Open(_) | managed::Event::Data(_) => None,
+            };
             let mut flows = lock(&live.flows);
             flows.granted.insert(key, false);
+            // A member's stream its endpoint serves (D252): the record whole to its lane's
+            // thread, which credits the next as its lane has room ([`lane_output`]); its end
+            // told on this channel too, as a channel's is, for its orchestrator's
+            // `wait_channel`.
+            if let Some(stdio) = live.stdio.get() {
+                if !stdio.record(key, record, end.is_some()) {
+                    super::say(format_args!(
+                        "member {}'s output came with no lane to take it",
+                        key.0
+                    ));
+                }
+                if let Some(end) = end {
+                    live.end_channel(&mut flows, key, end)
+                        .map_err(|e| format!("its answers to its orchestrator: {e}"))?;
+                }
+                continue;
+            }
             let sent = match parsed.event {
                 managed::Event::Open(_) => Ok(()),
                 managed::Event::Data(bytes) => {
@@ -8129,17 +8713,25 @@ mod hosted {
             wire::PlugFrom::Volume(name) => {
                 let store = crate::volumes::Store::new(live.home);
                 crate::volumes::Store::valid(name).map_err(|e| (R::Volume, e))?;
-                let _held = crate::volumes::lock();
-                let (volume, _) = store
-                    .create(
-                        name,
-                        &std::collections::BTreeMap::new(),
-                        &std::collections::BTreeMap::new(),
-                        "",
-                    )
-                    .map_err(|e| (R::Volume, e))?;
-                crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
-                    .map_err(|e| (R::Volume, e))?;
+                // Held before it is made or found, so that no clearing removes it under the
+                // run, and kept with what the run mounts for its life once taken (D281);
+                // refused at once while a clearing holds it, never waited for.
+                let mut hold = crate::volumes::Holds::default();
+                hold.take(&store, name).map_err(|e| (R::Volume, e))?;
+                {
+                    let _held = crate::volumes::lock();
+                    let (volume, _) = store
+                        .create(
+                            name,
+                            &std::collections::BTreeMap::new(),
+                            &std::collections::BTreeMap::new(),
+                            "",
+                        )
+                        .map_err(|e| (R::Volume, e))?;
+                    crate::volumes::scoped_to(&volume, at, live.agentfile.map(|a| a.volumes.as_slice()))
+                        .map_err(|e| (R::Volume, e))?;
+                }
+                lock(&live.volumes_held).extend(hold);
                 Ok(store.data(name))
             }
         }
@@ -8573,6 +9165,7 @@ mod hosted {
                 next_lane: std::sync::atomic::AtomicU64::new(0),
                 plugged: Mutex::new(HashMap::new()),
                 plug_turn: Mutex::new(()),
+                volumes_held: Mutex::default(),
                 notices_due: Mutex::new(None),
                 notices: Mutex::new(Vec::new()),
                 leasing: None,
@@ -8581,6 +9174,7 @@ mod hosted {
                 pause_asks: Mutex::new(Some(Vec::new())),
                 reached: &[],
                 agent: None,
+                stdio: std::sync::OnceLock::new(),
                 net: None,
                 ports: Mutex::new(Ports::default()),
                 egress: Mutex::new(wire::Narrowing::default()),
@@ -9091,7 +9685,9 @@ mod hosted {
         /// directory as named; a relative one refused (`Request`); the volume made, its data
         /// directory in the home, and the same one taken again; a bad name and a scoped
         /// volume refused (`Volume`); each root granted once, after its host's, and one of
-        /// init's own refused.
+        /// init's own refused. D281: the volume plugged held by the run while it lives, no
+        /// clearing taking it alone, and let go of with it; the scoped one it was refused, not
+        /// held.
         #[test]
         fn a_plugs_source_is_a_host_directory_or_its_homes_volume_beneath_granted_roots() {
             use wire::PlugRefusal as R;
@@ -9135,6 +9731,10 @@ mod hosted {
                 source_dir(&live, &wire::PlugFrom::Volume("scoped".into()), at),
                 Err((R::Volume, _))
             ));
+            assert!(store.alone("sessions").unwrap().is_none());
+            assert!(store.alone("scoped").unwrap().is_some());
+            drop(live);
+            assert!(store.alone("sessions").unwrap().is_some());
             let own = vec![b"plug-root=/Users".to_vec()];
             assert_eq!(
                 granted_roots(own.clone(), &["/session".into(), "/Users".into()]).unwrap(),
@@ -9609,6 +10209,39 @@ mod hosted {
             });
         }
 
+        /// D277 for a restart (D270 slice 3b): a next generation its guest refused as it could not
+        /// enter its working directory is refused `Workdir`, naming the member as its image
+        /// declares it, the directory and the errno, as a first generation's is; one told
+        /// malformed is `Failed`; each other refusal is its own, in its guest's words.
+        #[test]
+        fn a_restart_that_could_not_enter_its_workdir_is_refused_typed() {
+            use protocol::members::{StartRefusal as S, Unentered};
+            use wire::RestartRefusal as R;
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let told = Unentered {
+                member: 1,
+                errno: 2,
+                workdir: b"/Users/ada/proj".to_vec(),
+            };
+            let (why, words) = start_refused(&members, S::Workdir, &told.encode());
+            assert_eq!(why, R::Workdir);
+            assert!(
+                words.starts_with("Harness codex: /Users/ada/proj: errno 2"),
+                "{words}"
+            );
+            assert_eq!(start_refused(&members, S::Workdir, b"errno 2").0, R::Failed);
+            assert_eq!(
+                start_refused(&members, S::Failed, b"its exec: ENOENT"),
+                (R::Failed, "its exec: ENOENT".into())
+            );
+            assert_eq!(start_refused(&members, S::Running, b"under way").0, R::Running);
+        }
+
         /// D270 slice 3b: a restart starts its member's next generation once every channel of its
         /// last that its guest was given a credit for has ended, and not before: no start is asked
         /// of its VM while either is open; once both ended it is, and its next starts. Then its last
@@ -9735,7 +10368,7 @@ mod hosted {
         fn an_orchestrators_run_hosts_its_lanes_as_the_daemons_runs() {
             use shards_remote::control::exec::{Unstarted, Unsteered};
             use shards_remote::control::{
-                Controller, Fault, Got, McpConnection, Member, MemberControl, Subscriptions,
+                Controller, Fault, Got, Granted, McpConnection, Member, MemberControl, Subscriptions,
             };
             use std::io::Read as _;
             let dir = shards_testdir::TempDir::new("api-lanes").unwrap();
@@ -9753,6 +10386,8 @@ mod hosted {
                 ends: members::Ends::new(3).unwrap(),
                 active: vec![1, 2],
                 terminals: Vec::new(),
+                inputs: Vec::new(),
+                stdio: false,
                 bridges: Some(mcp::Bridges::new(vec![1], protocol::CHUNK, charge)),
             };
             let live = Live {
@@ -9763,8 +10398,10 @@ mod hosted {
             let ask = wire::ControlAsk {
                 controller: kiln.fingerprint(),
                 sockets: None,
+                stdio: false,
             };
-            let (endpoint, served) = bind_control(ControlKey::made().unwrap(), &ask, admissions).unwrap();
+            let (endpoint, served) =
+                bind_control(ControlKey::made().unwrap(), &ask, admissions, &[], &[], &[1]).unwrap();
             let (key, address) = (endpoint.fingerprint, endpoint.address);
             let request = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
             std::thread::scope(|scope| {
@@ -9788,7 +10425,7 @@ mod hosted {
                         shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
                     }
                 });
-                let (controller, dialed) = Controller::dial(
+                let (controller, mut dialed) = Controller::dial(
                     &kiln,
                     key,
                     address,
@@ -9801,6 +10438,14 @@ mod hosted {
                 )
                 .unwrap();
                 let driver = scope.spawn(move || controller.run());
+                // Its endpoint's report names member 1's bridge, which its request gave it, among
+                // its lanes, beside both ends' TLS (D254).
+                let report = dialed.link.report().unwrap();
+                let lanes: Vec<String> = report.lanes.iter().map(Granted::name).collect();
+                assert_eq!(lanes, ["control", "exec", "log:run", "mcp:1"]);
+                for end in [report.link.controller, report.link.endpoint] {
+                    assert_eq!(end.suite_name(), Some("TLS13_AES_256_GCM_SHA384"), "{end:?}");
+                }
                 let execs = dialed.execs.as_ref().unwrap();
                 agent.stands(Begun::Started);
                 let Member::Running(MemberControl {
@@ -9895,6 +10540,439 @@ mod hosted {
                 let _ = driver.join();
             });
             assert_eq!(*lock(&budget), Some(0), "its lanes' charge outlived them");
+        }
+
+        /// Member 1's stdout record at `offset` saying `event`, as its guest's capture writes it.
+        fn stdout_record(offset: u64, event: managed::Event<'_>) -> Vec<u8> {
+            let record = managed::Record {
+                member: 1,
+                channel: managed::Channel::Stdout,
+                offset,
+                event,
+            };
+            let mut bytes = vec![0u8; record.encoded_len().unwrap()];
+            record.encode(&mut bytes).unwrap();
+            bytes
+        }
+
+        /// Its guest's capture: each of `records` written once member 1's stdout is credited.
+        fn guest_brings(capture: &Stream, records: &[Vec<u8>]) {
+            use std::io::{Read as _, Write as _};
+            for record in records {
+                let mut head = [0u8; protocol::HEADER];
+                (&*capture).read_exact(&mut head).unwrap();
+                let (which, len) = protocol::parse_header(head).unwrap();
+                assert_eq!(which, protocol::kind::MANAGED_CREDIT);
+                let mut credit = vec![0u8; len as usize];
+                (&*capture).read_exact(&mut credit).unwrap();
+                let credit = managed::Credit::decode(&credit).unwrap();
+                assert_eq!((credit.member, credit.channel), (1, managed::Channel::Stdout));
+                assert!(credit.capacity >= protocol::CHUNK as u64, "{credit:?}");
+                (&*capture)
+                    .write_all(&protocol::header(protocol::kind::MANAGED, record.len() as u32))
+                    .unwrap();
+                (&*capture).write_all(record).unwrap();
+            }
+        }
+
+        /// D252: an orchestrator's run that asks for its members' stdio (`ControlAsk::stdio`)
+        /// serves it on its endpoint as the daemon's runs serve their owners' streams (D238),
+        /// each generation's its own (D270). Do: bind member 1's streams; dial its stdout, its
+        /// stdin and member 0's stdout; have its guest bring a record each time it is
+        /// credited; write its stdin, end it, and have its init tell that end; start its next
+        /// generation and dial that one's stdout and a generation not started. Expect: its
+        /// guest credited only as its lane has room, each record its lane's whole, then the
+        /// output's end; its orchestrator told each channel's end and none of its bytes; its
+        /// stdin's record one `STDIN` frame on its input connection, its end an empty one, and
+        /// its init's word its lane's end; member 0, which runs nothing, refused `Scope`; its
+        /// next generation's records its own lane's; a generation not started refused `Stale`.
+        #[test]
+        fn an_orchestrators_run_serves_its_members_stdio_on_its_endpoint_by_generation() {
+            use shards_remote::control::{Controller, Fault, Got, Subscriptions};
+            use shards_remote::managed::Reason;
+            use std::io::Read as _;
+            let dir = shards_testdir::TempDir::new("api-stdio").unwrap();
+            let said = Said::default();
+            let answers = super::super::Answers(Mutex::new(Box::new(said.clone())));
+            let (link, _vm_link) = Stream::pair().unwrap();
+            let (capture, its_guest) = Stream::pair().unwrap();
+            let reading = capture.try_clone().unwrap();
+            let kiln = shards_remote::identity::Identity::generate().unwrap();
+            let admissions = shards_api::control::exec_admissions();
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let agent = Agent {
+                admissions,
+                charge: std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap()),
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends: members::Ends::new(2).unwrap(),
+                active: vec![1],
+                terminals: Vec::new(),
+                inputs: vec![1],
+                stdio: true,
+                bridges: None,
+            };
+            let live = Live {
+                agent: Some(agent),
+                feeds: Mutex::new(HashMap::from([(1, Feed::default())])),
+                ..live(&answers, dir.path(), link, Some(capture))
+            };
+            let live = &live;
+            let agent = live.agent.as_ref().unwrap();
+            let (outputs, inputs) = first_streams(agent).unwrap();
+            assert_eq!(outputs, [(1, 0, Channel::Stdout), (1, 0, Channel::Stderr)]);
+            assert_eq!(inputs, [1]);
+            let ask = wire::ControlAsk {
+                controller: kiln.fingerprint(),
+                sockets: None,
+                stdio: true,
+            };
+            let (endpoint, served) = bind_control(
+                ControlKey::made().unwrap(),
+                &ask,
+                admissions,
+                &outputs,
+                &inputs,
+                &[],
+            )
+            .unwrap();
+            let (key, address) = (endpoint.fingerprint, endpoint.address);
+            let (stdout0, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
+            let (files_alone, _) = shards_api::control::member_output(0, 0, Channel::Stdout);
+            let (stdin0, input_admitted) = shards_api::control::member_input(1, 0);
+            let (stdout1, _) = shards_api::control::member_output(1, 1, Channel::Stdout);
+            let (stdout2, _) = shards_api::control::member_output(1, 2, Channel::Stdout);
+            let first = [
+                stdout_record(0, managed::Event::Open("agent one")),
+                stdout_record(0, managed::Event::Data(b"hello\n")),
+                stdout_record(6, managed::Event::End),
+            ];
+            let next = [
+                stdout_record(0, managed::Event::Open("agent one")),
+                stdout_record(0, managed::Event::End),
+            ];
+            let revoke = served.revoke;
+            std::thread::scope(|scope| {
+                let serving = scope.spawn(move || endpoint.run());
+                serve_stdio(
+                    live,
+                    agent,
+                    served.generations,
+                    served.outputs,
+                    served.inputs,
+                    scope,
+                );
+                let capturing = scope.spawn(move || {
+                    let read = read_records(live, reading);
+                    let cut = live.cut();
+                    (read, cut.is_ok())
+                });
+                let (controller, mut dialed) = Controller::dial(
+                    &kiln,
+                    key,
+                    address,
+                    Subscriptions {
+                        outputs: &[(stdout0, admitted, 0), (files_alone, admitted, 0)],
+                        inputs: &[(stdin0, input_admitted, 0)],
+                        execs: None,
+                        sockets: None,
+                    },
+                )
+                .unwrap();
+                let driver = scope.spawn(move || controller.run());
+                // Its stdout: each record as its guest brought it, credited one at a time.
+                let feeding = scope.spawn(|| guest_brings(&its_guest, &first));
+                let mut stdout = dialed.outputs.remove(0);
+                let mut at = 0u64;
+                for record in &first {
+                    assert_eq!(
+                        stdout.next_record(),
+                        Ok(Got::Record {
+                            at,
+                            bytes: record.clone()
+                        })
+                    );
+                    at += record.len() as u64;
+                }
+                assert_eq!(stdout.next_record(), Ok(Got::Finished));
+                feeding.join().unwrap();
+                // Member 0 runs nothing: the endpoint serves no stream of its.
+                let mut files = dialed.outputs.remove(0);
+                assert_eq!(files.next_record(), Err(Fault::Refused(Reason::Scope)));
+                // Its stdin: its record and its end on its input connection, as its VM handed
+                // it over, and its init's word on its end its lane's.
+                let (ours, init) = Stream::pair().unwrap();
+                input_arrived(live, &1u32.to_be_bytes(), vec![OwnedFd::from(ours)]);
+                let initing = scope.spawn(move || {
+                    let mut frame = [0u8; protocol::HEADER + 5];
+                    (&init).read_exact(&mut frame).unwrap();
+                    let mut end = [0u8; protocol::HEADER];
+                    (&init).read_exact(&mut end).unwrap();
+                    let told = managed::InputEnded {
+                        member: 1,
+                        written: 5,
+                        end: managed::InputEnd::Closed,
+                    }
+                    .encode()
+                    .unwrap();
+                    input_ended(live, &told);
+                    (frame, end)
+                });
+                let mut stdin = dialed.inputs.remove(0);
+                assert_eq!(stdin.write(b"typed"), Ok(5));
+                assert_eq!(stdin.end(), Ok((5, managed::InputEnd::Closed)));
+                let (frame, end) = initing.join().unwrap();
+                assert_eq!(
+                    frame[..protocol::HEADER],
+                    protocol::header(protocol::kind::STDIN, 5)
+                );
+                assert_eq!(&frame[protocol::HEADER..], b"typed");
+                assert_eq!(end, protocol::header(protocol::kind::STDIN, 0));
+                // Member 1 started again (D270): its next generation's lanes joined, as its
+                // restart joins them before its start, and dialed by its controller anew.
+                lock(&live.generations).current.insert(1, 1);
+                live.stdio.get().unwrap().join(live, 1, 1, false, scope).unwrap();
+                let (again, mut redialed) = Controller::dial(
+                    &kiln,
+                    key,
+                    address,
+                    Subscriptions {
+                        outputs: &[(stdout1, admitted, 0), (stdout2, admitted, 0)],
+                        inputs: &[],
+                        execs: None,
+                        sockets: None,
+                    },
+                )
+                .unwrap();
+                let redriver = scope.spawn(move || again.run());
+                let feeding = scope.spawn(|| guest_brings(&its_guest, &next));
+                let mut stdout = redialed.outputs.remove(0);
+                let mut at = 0u64;
+                for record in &next {
+                    assert_eq!(
+                        stdout.next_record(),
+                        Ok(Got::Record {
+                            at,
+                            bytes: record.clone()
+                        })
+                    );
+                    at += record.len() as u64;
+                }
+                assert_eq!(stdout.next_record(), Ok(Got::Finished));
+                feeding.join().unwrap();
+                let mut unstarted = redialed.outputs.remove(0);
+                assert_eq!(unstarted.next_record(), Err(Fault::Refused(Reason::Stale)));
+                // Its capture's end cuts what never ended (each stderr), and the run's end
+                // revokes its endpoint.
+                its_guest.shutdown(std::net::Shutdown::Both).unwrap();
+                let (read, cut) = capturing.join().unwrap();
+                assert_eq!(read, Ok(()));
+                assert!(cut);
+                revoke.revoke();
+                serving.join().unwrap().unwrap();
+                drop(dialed);
+                drop(redialed);
+                let _ = driver.join();
+                let _ = redriver.join();
+            });
+            // Its orchestrator heard each output's end, and none of its bytes.
+            let all = lock(&said.0).clone();
+            let mut from = &all[..];
+            let mut ends = Vec::new();
+            while let Some((kind, payload)) = wire::read_frame(&mut from).unwrap() {
+                assert_eq!(kind, wire::to_client::OUTPUT_END, "a lane's bytes on the channel");
+                ends.push(wire::OutputEnd::decode(&payload).unwrap());
+            }
+            let closed = |generation| wire::OutputEnd {
+                member: 1,
+                generation,
+                channel: Channel::Stdout,
+                end: wire::StreamEnd::Closed,
+            };
+            assert_eq!(ends, [closed(0), closed(1)]);
+        }
+
+        /// D252: each member stream an orchestrator's run's endpoint serves is charged to its run
+        /// host's budget as the daemon charges its runs' streams (daemon/managed.rs
+        /// `output_bytes`, `input_bytes`, `storage_excess`), and one its budget has no room for
+        /// is let go and refused typed. Do: serve member 1's first generation (its stdout,
+        /// stderr and stdin) with its budget full; dial its stdout and its stdin; have its VM
+        /// hand over its input connection; give the budget room and join its next generation's
+        /// outputs; read that one's stdout to its end and let its stderr go, as a restart seals
+        /// a channel no credit went to; join the generation after; end the run. Expect: the
+        /// first generation's lanes refused `Capacity` and nothing charged for them, its stdin's
+        /// relay ending its member's input connection, which reads its end; each next
+        /// generation's two outputs charged exactly the daemon's bytes for them while served;
+        /// the generation past given back as the next joins, its streams over; and the budget
+        /// whole once the run has ended.
+        #[test]
+        fn an_orchestrators_stdio_lanes_are_charged_to_its_budget_or_refused_capacity() {
+            use shards_remote::control::{Controller, Fault, Got, Subscriptions};
+            use shards_remote::managed::Reason;
+            use std::io::Read as _;
+            let dir = shards_testdir::TempDir::new("api-room").unwrap();
+            let said = Said::default();
+            let answers = super::super::Answers(Mutex::new(Box::new(said.clone())));
+            let (link, _vm_link) = Stream::pair().unwrap();
+            let (capture, its_guest) = Stream::pair().unwrap();
+            let reading = capture.try_clone().unwrap();
+            let kiln = shards_remote::identity::Identity::generate().unwrap();
+            let admissions = shards_api::control::exec_admissions();
+            let budget = std::sync::Arc::new(Mutex::new(Some(0)));
+            let agent = Agent {
+                admissions,
+                charge: std::sync::Arc::new(Charge::reserve(&budget, 0).unwrap()),
+                begun: Mutex::new(Begun::Awaited),
+                began: std::sync::Condvar::new(),
+                ends: members::Ends::new(2).unwrap(),
+                active: vec![1],
+                terminals: Vec::new(),
+                inputs: vec![1],
+                stdio: true,
+                bridges: None,
+            };
+            let (stdout0, admitted) = shards_api::control::member_output(1, 0, Channel::Stdout);
+            let (stdin0, input_admitted) = shards_api::control::member_input(1, 0);
+            let (stdout1, _) = shards_api::control::member_output(1, 1, Channel::Stdout);
+            // The daemon's bytes for one output, this host's record of it its entry: no record's
+            // allocation holds more than it asked, so `storage_excess` adds none.
+            let output = output_bytes(&admitted, size_of::<(Key, LaneOutput)>()).unwrap();
+            let next = [
+                stdout_record(0, managed::Event::Open("agent one")),
+                stdout_record(0, managed::Event::End),
+            ];
+            {
+                let host = Live {
+                    agent: Some(agent),
+                    feeds: Mutex::new(HashMap::from([(1, Feed::default())])),
+                    ..live(&answers, dir.path(), link, Some(capture))
+                };
+                let live = &host;
+                let agent = live.agent.as_ref().unwrap();
+                let (outputs, inputs) = first_streams(agent).unwrap();
+                let ask = wire::ControlAsk {
+                    controller: kiln.fingerprint(),
+                    sockets: None,
+                    stdio: true,
+                };
+                let (endpoint, served) = bind_control(
+                    ControlKey::made().unwrap(),
+                    &ask,
+                    admissions,
+                    &outputs,
+                    &inputs,
+                    &[],
+                )
+                .unwrap();
+                let (key, address) = (endpoint.fingerprint, endpoint.address);
+                let revoke = served.revoke;
+                std::thread::scope(|scope| {
+                    // Its budget full as its first generation is served: no stream has room.
+                    *lock(&budget) = Some(u64::MAX);
+                    serve_stdio(
+                        live,
+                        agent,
+                        served.generations,
+                        served.outputs,
+                        served.inputs,
+                        scope,
+                    );
+                    *lock(&budget) = Some(0);
+                    let serving = scope.spawn(move || endpoint.run());
+                    let capturing = scope.spawn(move || {
+                        let read = read_records(live, reading);
+                        let cut = live.cut();
+                        (read, cut.is_ok())
+                    });
+                    let (controller, mut dialed) = Controller::dial(
+                        &kiln,
+                        key,
+                        address,
+                        Subscriptions {
+                            outputs: &[(stdout0, admitted, 0)],
+                            inputs: &[(stdin0, input_admitted, 0)],
+                            execs: None,
+                            sockets: None,
+                        },
+                    )
+                    .unwrap();
+                    let driver = scope.spawn(move || controller.run());
+                    let mut stdout = dialed.outputs.remove(0);
+                    assert_eq!(stdout.next_record(), Err(Fault::Refused(Reason::Capacity)));
+                    let mut stdin = dialed.inputs.remove(0);
+                    assert_eq!(stdin.write(b"typed"), Err(Fault::Refused(Reason::Capacity)));
+                    assert_eq!(*lock(&budget), Some(0), "a stream with no room was charged");
+                    // Its stdin's relay found it gone and ended its input connection: the one its
+                    // VM hands over is let go, and its member reads its end.
+                    {
+                        let mut feeds = lock(&live.feeds);
+                        while !matches!(feeds.get(&1).map(|f| &f.conn), Some(Conn::Gone)) {
+                            feeds = live.fed.wait(feeds).unwrap();
+                        }
+                    }
+                    let (ours, init) = Stream::pair().unwrap();
+                    input_arrived(live, &1u32.to_be_bytes(), vec![OwnedFd::from(ours)]);
+                    let mut heard = Vec::new();
+                    assert_eq!(
+                        (&init).read_to_end(&mut heard).unwrap(),
+                        0,
+                        "its stdin, not ended"
+                    );
+                    // Its next generation, with room: its two outputs charged as they join.
+                    lock(&live.generations).current.insert(1, 1);
+                    live.stdio.get().unwrap().join(live, 1, 1, false, scope).unwrap();
+                    assert_eq!(*lock(&budget), Some(2 * output), "its next generation's charge");
+                    let (again, mut redialed) = Controller::dial(
+                        &kiln,
+                        key,
+                        address,
+                        Subscriptions {
+                            outputs: &[(stdout1, admitted, 0)],
+                            inputs: &[],
+                            execs: None,
+                            sockets: None,
+                        },
+                    )
+                    .unwrap();
+                    let redriver = scope.spawn(move || again.run());
+                    let feeding = scope.spawn(|| guest_brings(&its_guest, &next));
+                    let mut stdout = redialed.outputs.remove(0);
+                    let mut at = 0u64;
+                    for record in &next {
+                        assert_eq!(
+                            stdout.next_record(),
+                            Ok(Got::Record {
+                                at,
+                                bytes: record.clone()
+                            })
+                        );
+                        at += record.len() as u64;
+                    }
+                    assert_eq!(stdout.next_record(), Ok(Got::Finished));
+                    feeding.join().unwrap();
+                    // Its stderr never credited, let go as a restart seals it; the generation after
+                    // joins, and this one's streams, over, give back what they held.
+                    live.stdio.get().unwrap().abort((1, 1, Channel::Stderr));
+                    lock(&live.generations).current.insert(1, 2);
+                    live.stdio.get().unwrap().join(live, 1, 2, false, scope).unwrap();
+                    assert_eq!(
+                        *lock(&budget),
+                        Some(2 * output),
+                        "its past generation still charged"
+                    );
+                    its_guest.shutdown(std::net::Shutdown::Both).unwrap();
+                    let (read, cut) = capturing.join().unwrap();
+                    assert_eq!(read, Ok(()));
+                    assert!(cut);
+                    revoke.revoke();
+                    serving.join().unwrap().unwrap();
+                    drop(dialed);
+                    drop(redialed);
+                    let _ = driver.join();
+                    let _ = redriver.join();
+                });
+            }
+            assert_eq!(*lock(&budget), Some(0), "its streams' charge outlived its run");
         }
 
         /// D254: a member's MCP connection its VM hands over unprompted is answered as taken
@@ -10824,6 +11902,7 @@ mod tests {
             control: Some(wire::ControlAsk {
                 controller: [7; 32],
                 sockets: None,
+                stdio: false,
             }),
             ..request(members)
         };
@@ -10906,83 +11985,29 @@ mod tests {
         }
     }
 
-    /// A member's working directory stands only where a mount given it as it starts holds it
-    /// (D277), as init gives mounts (`given_share`): a share given it by name, at or beneath
-    /// its path, or the image's `VOLUME` its Agentfile gives it there; refused `Workdir` at a
-    /// share given no member or another, a file shared alone, the volume's where its `FOR` names
-    /// another, a path that only begins with a share's name, and where nothing is mounted.
+    /// D277: a member its guest could not start in its working directory is refused its
+    /// orchestrator typed `Workdir`, naming the member as the image declares it, the directory
+    /// and the errno, as its guest told them; one of an index the image declares not, by it.
     #[test]
-    fn a_members_workdir_stands_only_in_a_mount_given_it() {
-        use shards_agentfile::agentfile::{Scope, TargetKind};
-        let entry = |dest: &str, flags: &str, only: &str| {
-            (
-                dest.to_string(),
-                format!("volume=shards0\0{dest}\0{flags}\0{only}").into_bytes(),
-            )
+    fn a_member_its_guest_could_not_start_in_its_workdir_is_refused_typed() {
+        let told = |member| shards_abi::run::members::Unentered {
+            member,
+            errno: 2,
+            workdir: b"/Users/ada/proj".to_vec(),
         };
-        let at = |workdir: &str| {
-            let mut s = stage(wire::MemberKind::Harness, "codex");
-            s.workdir = Some(workdir.into());
-            request(vec![s])
-        };
-        let for_whom = |names: &[&str]| crate::agentfile::AgentVolume {
-            name: None,
-            paths: vec!["/work/".into()],
-            scoped: true,
-            scope: Scope {
-                kind: Some(TargetKind::Harness),
-                names: names.iter().map(|n| n.as_bytes().to_vec()).collect(),
-            },
-        };
-        let given = [entry("/Users/ada/proj", "domains,member=1", "")];
-        for workdir in ["/Users/ada/proj", "/Users/ada/proj/sub"] {
-            assert!(
-                workdirs_held(&at(workdir), &members(), &given, &[]).is_ok(),
-                "{workdir}"
-            );
-        }
-        let volume = [entry("/work", "domains,own,copy", "")];
-        assert!(workdirs_held(&at("/work/src"), &members(), &volume, &[for_whom(&["codex"])]).is_ok());
-        assert!(workdirs_held(&at("/work"), &members(), &volume, &[]).is_ok());
-        for (mounts, workdir, volumes) in [
-            (&given[..], "/Users/ada/project", Vec::new()),
-            (
-                &[entry("/Users/ada/proj", "", "")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (
-                &[entry("/Users/ada/proj", "domains,member=0", "")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (
-                &[entry("/Users/ada", "domains,member=1", "proj")][..],
-                "/Users/ada/proj",
-                Vec::new(),
-            ),
-            (&volume[..], "/work", vec![for_whom(&["claude"])]),
-            (&[][..], "/Users/ada/proj", Vec::new()),
-        ] {
-            assert!(
-                matches!(
-                    workdirs_held(&at(workdir), &members(), mounts, &volumes),
-                    Err(No(Cause::Workdir, why)) if why.contains(workdir) && why.contains("codex")
-                ),
-                "{workdir} {mounts:?}"
-            );
-        }
-        // None given, none held; and a member the image does not declare is refused as such.
-        let mut none = stage(wire::MemberKind::Harness, "codex");
-        none.workdir = None;
-        assert!(workdirs_held(&request(vec![none]), &members(), &[], &[]).is_ok());
-        let mut stranger = stage(wire::MemberKind::Harness, "nobody");
-        stranger.workdir = Some("/w".into());
-        assert!(matches!(
-            workdirs_held(&request(vec![stranger]), &members(), &[], &[]),
-            Err(No(Cause::Image, _))
-        ));
-        assert!(holds("/", "/anything") && holds("/a", "/a") && !holds("/a", "/ab"));
+        let refused = workdir_refused(&members(), &told(1));
+        assert_eq!(refused.cause, Cause::Workdir);
+        assert_eq!(
+            refused.why,
+            "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started"
+        );
+        let stranger = workdir_refused(&members(), &told(9));
+        assert_eq!(stranger.cause, Cause::Workdir);
+        assert!(
+            stranger.why.starts_with("member 9: /Users/ada/proj: errno 2"),
+            "{}",
+            stranger.why
+        );
     }
 
     /// A member's run-time arguments (D256) are staged after its other entries, one
@@ -12195,14 +13220,17 @@ mod tests {
                 lanes: 2,
                 window: 4096,
             }),
+            stdio: false,
         };
         let execs = shards_api::control::exec_admissions();
-        let (first, served) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
+        let (first, served) =
+            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert!(first.address.ip().is_loopback(), "{:?}", first.address);
         assert!(served.sockets.is_some());
         // Its execs, its members' MCP connections and its members' own lanes (D254, D238).
         assert!(served.execs.is_some() && served.members.is_some());
-        let (second, _) = hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs).unwrap();
+        let (second, _) =
+            hosted::bind_control(hosted::ControlKey::made().unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert_ne!(first.fingerprint, second.fingerprint, "two runs share one key");
     }
 
@@ -12215,6 +13243,7 @@ mod tests {
         let ask = wire::ControlAsk {
             controller: [7; 32],
             sockets: None,
+            stdio: false,
         };
         let execs = shards_api::control::exec_admissions();
         let (one, other) = (
@@ -12223,13 +13252,21 @@ mod tests {
         );
         let (made, made_other) = (one.fingerprint(), other.fingerprint());
         assert_ne!(made, made_other, "two warm hosts share one key");
-        let (endpoint, _) =
-            hosted::bind_control(hosted::control_key(Some(one)).unwrap(), &ask, execs).unwrap();
+        let (endpoint, _) = hosted::bind_control(
+            hosted::control_key(Some(one)).unwrap(),
+            &ask,
+            execs,
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             endpoint.fingerprint, made,
             "its endpoint took another key than its host made"
         );
-        let (own, _) = hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs).unwrap();
+        let (own, _) =
+            hosted::bind_control(hosted::control_key(None).unwrap(), &ask, execs, &[], &[], &[]).unwrap();
         assert!(
             own.fingerprint != made && own.fingerprint != made_other,
             "a run whose host made none bound with another's"
@@ -12251,11 +13288,15 @@ mod tests {
                 lanes: 2,
                 window: 4096,
             }),
+            stdio: false,
         };
         let (endpoint, served) = hosted::bind_control(
             hosted::ControlKey::made().unwrap(),
             &ask,
             shards_api::control::exec_admissions(),
+            &[],
+            &[],
+            &[],
         )
         .unwrap();
         let started = wire::Started {

@@ -522,13 +522,7 @@ impl super::Lanes {
     /// An ask read whole: refused alone for another run or generation, or past the run's
     /// admitted most; else handed to the host.
     fn admit_socket(&mut self, run: RunId, generation: u64, name: String, at: usize) -> Result<(), Reason> {
-        let (ours, our_generation) = self.execs.run;
-        if run != ours {
-            return Err(Reason::Scope);
-        }
-        if generation != our_generation {
-            return Err(Reason::Stale);
-        }
+        self.in_scope(run, generation)?;
         let admission = self.sockets.admission.ok_or(Reason::Scope)?;
         let open = self
             .sockets
@@ -640,7 +634,7 @@ impl super::Lanes {
         let socket = match reply {
             Reply::Unreached(errno) => {
                 self.sockets.lanes.swap_remove(at);
-                self.answer(io, conn, stream, &unreached(errno));
+                self.answer(io, conn, stream, &unreached(errno), false);
                 return;
             }
             Reply::Connected(socket) => socket,
@@ -976,6 +970,7 @@ mod tests {
                 inputs: &[],
                 execs: None,
                 sockets: Some(sockets),
+                bridges: &[],
             },
         )
         .unwrap();
@@ -1503,6 +1498,7 @@ mod tests {
                 inputs: &[],
                 execs: Some(exec_admissions(RECORD)),
                 sockets: Some(admission(1)),
+                bridges: &[],
             },
         )
         .unwrap();
@@ -1728,6 +1724,7 @@ mod tests {
                 inputs: &[],
                 execs: None,
                 sockets: None,
+                bridges: &[],
             },
         )
         .unwrap();

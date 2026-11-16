@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use shards_cmdline::mounts::{self, Mount, clean};
+use shards_image::store::Locked;
 
 /// A mount point of a microVM, in the shape `inspect`'s `Mounts` answers
 /// (volumemounts.MountPoint, D38).
@@ -625,6 +626,48 @@ impl Store {
         self.root.join(name).join("_data")
     }
 
+    /// Where volume `name`'s holders hold it (D281): a lock file beside it, `.NAME.lock`, a
+    /// name no volume takes (each begins with a letter or a digit) and no removal's
+    /// (`.NAME.removing`). Never removed, so that every hold and every clearing of the name
+    /// lock one file.
+    fn holders(&self, name: &str) -> PathBuf {
+        self.root.join(format!(".{name}.lock"))
+    }
+
+    /// Volume `name` held for a run that mounts or plugs it (D281), beside every other run's
+    /// hold: its lock file, made where missing with the store's directory, taken shared
+    /// (flock(2), LockFileEx on Windows); none at once where a clearing of it holds it. Let go
+    /// of as it drops, or as its process ends, however it ends. A run's holds are its
+    /// [`Holds`].
+    pub fn hold(&self, name: &str) -> Result<Option<Locked>, String> {
+        crate::networks::make_dir(&self.root).map_err(|e| format!("{}: {e}", self.root.display()))?;
+        self.locking(name, Locked::try_share)
+    }
+
+    /// Volume `name` held alone for its clearing (D281): none at once where a run holds it,
+    /// never waiting for that run to end.
+    pub fn alone(&self, name: &str) -> Result<Option<Locked>, String> {
+        self.locking(name, Locked::try_hold)
+    }
+
+    /// Volume `name`'s lock file ([`holders`](Self::holders)), made where missing, as `take`
+    /// takes it.
+    fn locking(
+        &self,
+        name: &str,
+        take: fn(std::fs::File) -> std::io::Result<Option<Locked>>,
+    ) -> Result<Option<Locked>, String> {
+        let path = self.holders(name);
+        let said = |e: std::io::Error| format!("{}: {e}", path.display());
+        let file = std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(said)?;
+        take(file).map_err(said)
+    }
+
     /// The local driver's validateName.
     pub(crate) fn valid(name: &str) -> Result<(), String> {
         if name.chars().count() == 1 {
@@ -798,6 +841,57 @@ impl Store {
             }
         }
         Ok(())
+    }
+}
+
+/// The named volumes of the store a run holds for its life (D281), each once, by its name: those
+/// it mounts as it starts ([`open_for`]) and those plugged into it as it runs, a daemon's run's
+/// and an orchestrator's alike. A clearing of one is refused while it is held; each is let go
+/// of as this drops, or as its process ends, however it ends.
+#[derive(Debug, Default)]
+pub struct Holds(BTreeMap<String, Locked>);
+
+impl Holds {
+    /// Volume `name` of `store` held ([`Store::hold`]), once however often its run mounts or
+    /// plugs it; refused at once where a clearing of it holds it, never waiting for that.
+    pub fn take(&mut self, store: &Store, name: &str) -> Result<(), String> {
+        if !self.0.contains_key(name) {
+            let held = store
+                .hold(name)?
+                .ok_or_else(|| format!("volume {name} is being cleared"))?;
+            self.0.insert(name.to_string(), held);
+        }
+        Ok(())
+    }
+
+    /// Volume `name` of `store` as it is there, held as [`take`](Self::take) holds it where it
+    /// is a named one, then found again: refused where a clearing took it meanwhile. None where
+    /// it is not there, for which no hold's file is made. An anonymous one, its run's own and
+    /// gone with it, is held by none: its name is never asked again, and its lock file would
+    /// outlive it.
+    pub fn found(&mut self, store: &Store, name: &str) -> Result<Option<Volume>, String> {
+        match store.get(name) {
+            Some(v) if !v.is_anonymous() => {
+                self.take(store, name)?;
+                store
+                    .get(name)
+                    .map(Some)
+                    .ok_or_else(|| format!("volume {name} was cleared as it was held"))
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// `other`'s holds, this run's from now.
+    pub fn extend(&mut self, other: Holds) {
+        for (name, held) in other.0 {
+            self.0.entry(name).or_insert(held);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn holds(&self, name: &str) -> bool {
+        self.0.contains_key(name)
     }
 }
 
@@ -1193,12 +1287,14 @@ fn register_into(
 }
 
 /// A microVM's mount points, opened for a start: each shared directory, read-only or not,
-/// and its one name where a file is bound alone; and the guest's setup entry for each mount
-/// point, by its destination.
+/// and its one name where a file is bound alone; the guest's setup entry for each mount
+/// point, by its destination; and the named volumes among them, held from before they were
+/// opened (D281), which its starter keeps with its run until the run ends.
 #[derive(Debug, Default)]
 pub struct Opened {
     pub dirs: Vec<(shards_ipc::fd::OwnedFd, bool, std::ffi::OsString)>,
     pub mounts: Vec<(String, Vec<u8>)>,
+    pub held: Holds,
 }
 
 /// Opens `points` for a start, its first where `first`: a `-v` bind's missing source made,
@@ -1267,14 +1363,19 @@ pub fn open_for(
             ));
             continue;
         }
+        // A named volume of the store, held for its run's life before its files are opened
+        // (D281): no clearing removes them under the run, and one under way refuses its start.
+        let volume = match p.kind.as_str() {
+            "volume" => opened
+                .held
+                .found(store, &p.name)
+                .map_err(|e| format!("error while mounting volume '{}': {e}", p.source))?,
+            _ => None,
+        };
         // A local volume made with options mounts what they say (the local driver's
         // mount): a host directory bound (`o=bind`, its `device`) is shared as a bind is.
         let device;
-        let source = match store
-            .get(&p.name)
-            .filter(|_| p.kind == "volume")
-            .map(|v| v.options)
-        {
+        let source = match volume.map(|v| v.options) {
             Some(opts) if !opts.is_empty() => {
                 let bound = opts
                     .get("o")
@@ -1821,5 +1922,49 @@ mod tests {
         assert_eq!(m.source, clean_drive(&dir.path().to_string_lossy()));
         // A microVM's own paths are Linux's here too.
         assert_eq!(parse_raw_within("/host:/ctr").unwrap().source, "/host");
+    }
+
+    /// D281: a start holds each named volume it mounts, once however often, from before its
+    /// files are opened until what it opened drops with its run: a clearing is refused
+    /// meanwhile, and a start while a clearing holds one is refused. An anonymous one, its run's
+    /// own, is held by none, and no hold's file is made for it.
+    #[test]
+    fn a_starts_named_volumes_are_held_until_its_run_lets_go() {
+        let dir = shards_testdir::TempDir::new("vol-holds").unwrap();
+        let store = Store::new(dir.path());
+        let none = BTreeMap::new();
+        let anonymous = {
+            let _held = lock();
+            store.create("agent-a", &none, &none, "").unwrap();
+            store.create("", &none, &none, "").unwrap().0.name
+        };
+        let point = |name: &str, dest: &str| MountPoint {
+            kind: "volume".into(),
+            name: name.into(),
+            source: store.data(name).to_string_lossy().into_owned(),
+            destination: dest.into(),
+            rw: true,
+            ..MountPoint::default()
+        };
+        let points = [
+            point("agent-a", "/a"),
+            point(&anonymous, "/b"),
+            point("agent-a", "/c"),
+        ];
+        let opened = open(&points, true, &store).unwrap();
+        assert_eq!(opened.dirs.len(), 3);
+        assert!(opened.held.holds("agent-a"));
+        assert!(!opened.held.holds(&anonymous));
+        assert!(!dir.path().join(ROOT).join(format!(".{anonymous}.lock")).exists());
+        assert!(
+            store.alone("agent-a").unwrap().is_none(),
+            "its clearing is refused"
+        );
+        drop(opened);
+        let clearing = store.alone("agent-a").unwrap().unwrap();
+        let refused = open(&points, true, &store).unwrap_err();
+        assert!(refused.contains("volume agent-a is being cleared"), "{refused}");
+        drop(clearing);
+        assert!(open(&points, true, &store).unwrap().held.holds("agent-a"));
     }
 }

@@ -239,6 +239,16 @@ type Saved = Result<(), (wire::SaveRefusal, String)>;
 /// refused and why.
 type Restarted = Result<u32, (wire::RestartRefusal, String)>;
 
+/// What a restart its host refused (D270 slice 3b) is refused as: [`ImageRefusal::Workdir`]
+/// where its next generation could not enter its working directory, as a first generation's
+/// waits are refused (D277); [`ImageRefusal::Restart`] by its cause otherwise.
+fn restart_refused(cause: wire::RestartRefusal, why: String) -> ImageRefusal {
+    match cause {
+        wire::RestartRefusal::Workdir => ImageRefusal::Workdir(why),
+        cause => ImageRefusal::Restart(cause, why),
+    }
+}
+
 /// A swap's outcome as its host said it (D270 slice 4): every member's component after it, or
 /// refused and why.
 type Swapped = Result<wire::Swapped, (wire::SwapRefusal, String)>;
@@ -327,6 +337,51 @@ fn with_said(refused: ImageRefusal, said: &VecDeque<u8>) -> ImageRefusal {
         ImageRefusal::Boot(why) => ImageRefusal::Boot(format!("{why}{}", quoted(said))),
         other => other,
     }
+}
+
+/// What a boot waiting for its run's start takes of `s`, none while it waits: its start, once
+/// told, whatever its host said after it (a refusal after the start is its members', D277,
+/// which their waits are refused with, [`member_end`]); else the host's refusal of `request`'s
+/// run, once it has exited and said all it will; else its end before a start, or its exit.
+fn start_of(s: &mut State, request: &wire::Request) -> Option<Result<wire::Started, ImageRefusal>> {
+    if let Some(started) = s.started.take() {
+        return Some(Ok(started));
+    }
+    if s.refused.is_some() {
+        if !(s.gone() && s.said_all) {
+            return None;
+        }
+        if let Some(refused) = gpu_refused(s, request) {
+            s.refused = None;
+            return Some(Err(refused));
+        }
+        return s.refused.take().map(|r| Err(with_said(r, &s.said)));
+    }
+    if let Some(end) = &s.end {
+        return Some(Err(ImageRefusal::Host(format!(
+            "the run ended before it started: {end:?}{}",
+            quoted(&s.said)
+        ))));
+    }
+    s.gone().then(|| {
+        Err(ImageRefusal::Host(format!(
+            "it exited before its run started{}",
+            quoted(&s.said)
+        )))
+    })
+}
+
+/// Member `index`'s generation `generation`'s end as `s` holds it, none while it waits: its
+/// end, once told; else its run's members refused their start (D277: a member's working
+/// directory its guest could not enter), typed; else ended with its run.
+fn member_end(s: &State, index: u32, generation: u32) -> Option<Result<MemberEnd, ImageRefusal>> {
+    if let Some(end) = s.ends.get(&(index, generation)) {
+        return Some(Ok(*end));
+    }
+    if let Some(refused) = &s.refused {
+        return Some(Err(refused.clone()));
+    }
+    (s.end.is_some() || s.gone()).then_some(Ok(MemberEnd::WithRun))
 }
 
 #[derive(Debug)]
@@ -787,7 +842,7 @@ impl Shared {
             .and_then(|()| {
                 self.wait(waited, |s| {
                     if let Some(answer) = s.restarts.get_mut(&id).and_then(Option::take) {
-                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Restart(cause, why)));
+                        return Some(answer.map_err(|(cause, why)| restart_refused(cause, why)));
                     }
                     if let Some(end) = &s.end {
                         return Some(Err(ImageRefusal::Ended(end.clone())));
@@ -1044,6 +1099,9 @@ pub(super) struct Session {
     members: Vec<MemberInfo>,
     /// Where its agent-control endpoint is bound (D252), where it asked for one.
     control: Option<wire::ControlAt>,
+    /// Its endpoint serves its members' stdio as lanes (`ControlAsk::stdio`, D252): this
+    /// channel carries none of it, so no pipe takes it.
+    stdio: bool,
     outputs: Mutex<HashMap<(u32, u32, Channel), io::PipeReader>>,
     /// Its command has the nesting grant (D234): its spec asked for it, and its host, which
     /// refuses a grant it cannot give, started it.
@@ -1158,7 +1216,10 @@ impl Begun {
         *lock(&self.shared.sign_ins) = request.sign_ins.clone();
         {
             let mut state = lock(&self.shared.state);
-            state.asked_inputs = State::asking(&request.members).asked_inputs;
+            // A stdin its run's endpoint serves (D252) is no flow of this channel's.
+            if !request.control.as_ref().is_some_and(|c| c.stdio) {
+                state.asked_inputs = State::asking(&request.members).asked_inputs;
+            }
             if request.gpu_report.is_some() {
                 state.report = Report::Awaited;
             }
@@ -1261,33 +1322,7 @@ impl Begun {
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = match created {
             Err(e) => Some(Err(e)),
-            Ok(()) => shared.wait(patience, |s| {
-                if s.refused.is_some() {
-                    if !(s.gone() && s.said_all) {
-                        return None;
-                    }
-                    if let Some(refused) = gpu_refused(s, request) {
-                        s.refused = None;
-                        return Some(Err(refused));
-                    }
-                    return s.refused.take().map(|r| Err(with_said(r, &s.said)));
-                }
-                if let Some(started) = s.started.take() {
-                    return Some(Ok(started));
-                }
-                if let Some(end) = &s.end {
-                    return Some(Err(ImageRefusal::Host(format!(
-                        "the run ended before it started: {end:?}{}",
-                        quoted(&s.said)
-                    ))));
-                }
-                s.gone().then(|| {
-                    Err(ImageRefusal::Host(format!(
-                        "it exited before its run started{}",
-                        quoted(&s.said)
-                    )))
-                })
-            }),
+            Ok(()) => shared.wait(patience, |s| start_of(s, request)),
         };
         if stop.release() {
             end_it(&shared);
@@ -1379,6 +1414,7 @@ impl Begun {
             host,
             members: started.members,
             control: started.control,
+            stdio: request.control.as_ref().is_some_and(|c| c.stdio),
             outputs: Mutex::new(HashMap::new()),
             nesting: request.nesting,
             terminals,
@@ -1628,8 +1664,11 @@ impl Session {
             .map_err(|(refused, _)| refused)
     }
 
-    /// Its running members' outputs ([`pumped`]).
+    /// Its running members' outputs ([`pumped`]), where its endpoint serves none of them.
     fn pump_outputs(&self) -> Result<(), ImageRefusal> {
+        if self.stdio {
+            return Ok(());
+        }
         let pumped = pumped(&self.shared, &self.members, 0)?;
         lock(&self.outputs).extend(pumped);
         Ok(())
@@ -1704,6 +1743,9 @@ impl Session {
         let info = self.members.iter().find(|m| m.index == index).ok_or_else(|| {
             ImageRefusal::Host(format!("a swap started member {index}, which the run has not"))
         })?;
+        if self.stdio {
+            return Ok(());
+        }
         let pumped = pumped(&self.shared, std::slice::from_ref(info), generation)?;
         lock(&self.outputs).extend(pumped);
         let mut state = lock(&self.shared.state);
@@ -1717,6 +1759,15 @@ impl Session {
 /// A member's channel, by its index, its generation and the channel, and the pipe its bytes
 /// come out of ([`pumped`]).
 type Pumped = ((u32, u32, Channel), io::PipeReader);
+
+/// `what` asked of a run whose endpoint serves its members' stdio (`ControlAsk::stdio`, D252):
+/// its lanes carry it (`shards_api::control::member_output`, `member_input`), never a pipe.
+fn served_on_lanes(what: &'static str) -> ImageRefusal {
+    ImageRefusal::Spec {
+        what,
+        why: "the run's agent-control endpoint serves its members' stdio as its lanes".into(),
+    }
+}
 
 /// A pipe for each of `members`' running members' channels, and the thread that fills it as
 /// its bytes come, the host granted room for its first [`AHEAD`] bytes and for as many more as
@@ -2854,6 +2905,9 @@ impl ImageGuest for Session {
         channel: Channel,
     ) -> Result<io::PipeReader, ImageRefusal> {
         let index = self.index(member)?.index;
+        if self.stdio {
+            return Err(served_on_lanes("a member's output"));
+        }
         lock(&self.outputs)
             .remove(&(index, generation, channel))
             .ok_or_else(|| ImageRefusal::Spec {
@@ -2866,6 +2920,9 @@ impl ImageGuest for Session {
 
     fn take_input(&self, member: &MemberName, generation: u32) -> Result<io::PipeWriter, ImageRefusal> {
         let index = self.index(member)?.index;
+        if self.stdio {
+            return Err(served_on_lanes("a member's stdin"));
+        }
         {
             let mut state = lock(&self.shared.state);
             let flow = state
@@ -2917,12 +2974,9 @@ impl ImageGuest for Session {
             )));
         }
         let index = info.index;
-        Ok(self.shared.wait(timeout, |s| {
-            if let Some(end) = s.ends.get(&(index, generation)) {
-                return Some(*end);
-            }
-            (s.end.is_some() || s.gone()).then_some(MemberEnd::WithRun)
-        }))
+        self.shared
+            .wait(timeout, |s| member_end(s, index, generation))
+            .transpose()
     }
 
     fn wait_channel(
@@ -2959,7 +3013,11 @@ impl ImageGuest for Session {
         let index = info.index;
         let generation = self.shared.restart(index, args, patience)?;
         // Its generation's channels, pumped and given their room as its first's were, and its
-        // stdin's flow, where it has one, kept as its first's was.
+        // stdin's flow, where it has one, kept as its first's was: none where its endpoint
+        // serves them (D252), its lanes then the generation's.
+        if self.stdio {
+            return Ok(generation);
+        }
         let pumped = pumped(&self.shared, std::slice::from_ref(info), generation)?;
         lock(&self.outputs).extend(pumped);
         let mut state = lock(&self.shared.state);
@@ -3988,8 +4046,8 @@ mod tests {
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting
     /// grant asked of an image that does not give it (D234) a widening, in the daemon's
     /// words; a crafted image's (NESTING beside an agent) the image's, in its build's, as
-    /// the daemon's read of the image says them; a member's working directory in no share
-    /// given it (D277) its own.
+    /// the daemon's read of the image says them; a member's working directory its guest could
+    /// not enter (D277) in its run host's.
     #[test]
     fn refusals_come_typed_in_their_hosts_words() {
         let undeclared = shards_abi::run::nesting::undeclared();
@@ -3997,7 +4055,8 @@ mod tests {
             "the image's Agentfile (sha256:00): {}",
             shards_abi::run::beside::nesting("agent", "a")
         );
-        let unshared = "Harness codex: /Users/ada/proj: no share given it there".to_string();
+        let unentered =
+            "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started".to_string();
         for (cause, why, typed) in [
             (
                 wire::Cause::Widening,
@@ -4007,8 +4066,8 @@ mod tests {
             (wire::Cause::Image, &crafted, ImageRefusal::Image(crafted.clone())),
             (
                 wire::Cause::Workdir,
-                &unshared,
-                ImageRefusal::Workdir(unshared.clone()),
+                &unentered,
+                ImageRefusal::Workdir(unentered.clone()),
             ),
         ] {
             let s = shared();
@@ -4021,6 +4080,30 @@ mod tests {
             assert_eq!(take(&s, wire::to_client::REFUSED, &refused), Ok(false));
             assert_eq!(lock(&s.state).refused, Some(typed));
         }
+    }
+
+    /// D277: a refusal its host tells after the run's start is its members': the boot takes
+    /// its start whatever came after it, and a member's wait is refused with it, typed, where
+    /// no end of its own came first; before either, the wait goes on.
+    #[test]
+    fn a_refusal_after_the_start_refuses_the_members_waits_not_the_boot() {
+        let request = super::super::request(&stand_in_spec(Path::new("/shards"), Vec::new())).unwrap();
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
+        };
+        let workdir = ImageRefusal::Workdir("Harness codex: /w: errno 2".into());
+        let mut state = State::default();
+        assert_eq!(member_end(&state, 1, 0), None);
+        state.started = Some(started.clone());
+        state.refused = Some(workdir.clone());
+        assert_eq!(start_of(&mut state, &request), Some(Ok(started)));
+        assert_eq!(member_end(&state, 1, 0), Some(Err(workdir)));
+        state.ends.insert((1, 0), MemberEnd::Exited(0));
+        assert_eq!(member_end(&state, 1, 0), Some(Ok(MemberEnd::Exited(0))));
     }
 
     /// A room's answer is kept for the ask awaiting it alone (D241): one for an ask no
@@ -4393,6 +4476,22 @@ mod tests {
             Ok(false)
         );
         assert_eq!(lock(&s.state).egress, added);
+    }
+
+    /// D277 for a restart (D270 slice 3b): one its host refused as its member's next generation
+    /// could not enter its working directory is refused `Workdir`, as a first generation's waits
+    /// are, in its host's words; any other is the restart's own refusal.
+    #[test]
+    fn a_restart_whose_workdir_could_not_be_entered_is_refused_as_one() {
+        let words = "Harness codex: /w: errno 2: its guest could not enter it as it started";
+        assert_eq!(
+            restart_refused(wire::RestartRefusal::Workdir, words.into()),
+            ImageRefusal::Workdir(words.into())
+        );
+        assert_eq!(
+            restart_refused(wire::RestartRefusal::Failed, "its exec: ENOENT".into()),
+            ImageRefusal::Restart(wire::RestartRefusal::Failed, "its exec: ENOENT".into())
+        );
     }
 
     /// D270 slice 3b: a restart's answer is its asker's by its id, one no ask awaits dropped; a

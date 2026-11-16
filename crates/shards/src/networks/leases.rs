@@ -16,18 +16,19 @@
 //! ```text
 //! networks/lock                     the home's networks held still (hold)
 //! networks/ID.leases/addr/A.B.C.D   an address, held by the run on it: its holder's ID
+//! networks/ID.leases/addr6/HEX      an IPv6 address, its 128 bits in hex: its holder's ID
 //! networks/ID.leases/name/@NAME     a name on the network: the address it names
 //! networks/ID.leases/pairer         the process linking the network's members (Pairing)
 //! ```
 
 use std::fs::File;
 use std::io::{self, Read as _, Write as _};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 
 use shards_image::store::Locked;
 
-use super::Pool;
+use super::{Pool, Pool6};
 
 /// The home's networks lock's file, in its `networks/`.
 const LOCK: &str = "lock";
@@ -35,6 +36,12 @@ const LOCK: &str = "lock";
 const PAIRER: &str = "pairer";
 /// A network's address leases' directory.
 const ADDRESSES: &str = "addr";
+/// A network's IPv6 address leases' directory (D99's members' second addresses).
+const ADDRESSES6: &str = "addr6";
+/// An IPv6 address lease's file name: the address's 128 bits as lowercase hex digits, four
+/// bits each, as Windows takes no `:` in a file's name (Microsoft, "Naming Files, Paths, and
+/// Namespaces").
+const HEX6: usize = 2 * std::mem::size_of::<u128>();
 /// A network's name leases' directory.
 const NAMES: &str = "name";
 /// What begins a name lease's file: Windows takes a base name of `CON`, `PRN`, `AUX`, `NUL`,
@@ -54,9 +61,11 @@ const ADDRESS_LEN: usize = "255.255.255.255".len();
 pub enum Refused {
     /// The address asked is in use: a live lease's, or one its pool keeps (its network's and
     /// broadcast addresses, its gateway, an auxiliary address), as dockerd says it.
-    AddressTaken(Ipv4Addr),
-    /// The address asked lies outside the pool's range.
-    OutOfRange(Ipv4Addr),
+    AddressTaken(IpAddr),
+    /// The address asked lies outside the pool's subnet: its range bounds only the addresses
+    /// given unasked, as libnetwork's (moby f78c987a, ipams/defaultipam/address_space.go:350-353,
+    /// allocator.go:315-319).
+    OutOfRange(IpAddr),
     /// Every address of the pool's range is in use.
     Exhausted,
     /// The name is a live lease's on the network, whatever its case.
@@ -78,7 +87,7 @@ impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Refused::AddressTaken(ip) => write!(f, "{ip}: Address already in use"),
-            Refused::OutOfRange(ip) => write!(f, "{ip}: not in the network's range"),
+            Refused::OutOfRange(ip) => write!(f, "{ip}: not in the network's subnet"),
             Refused::Exhausted => f.write_str("no address left in the network's range"),
             Refused::NameTaken(name) => write!(f, "{name}: another member's name on the network"),
             Refused::NotAName(name) => write!(
@@ -121,18 +130,18 @@ pub struct Leases {
     dir: PathBuf,
 }
 
-/// A run's address on a network, held by this process for as long as it lives: let go as it
-/// drops (its file removed, then its lock), or as the process ends (its lock let go by the
-/// kernel, its file then stale).
+/// A run's address on a network, IPv4 or IPv6 (`A`), held by this process for as long as it
+/// lives: let go as it drops (its file removed, then its lock), or as the process ends (its
+/// lock let go by the kernel, its file then stale).
 #[derive(Debug)]
-pub struct Lease {
-    ip: Ipv4Addr,
+pub struct Lease<A = Ipv4Addr> {
+    ip: A,
     path: PathBuf,
     _held: Locked,
 }
 
-impl Lease {
-    pub fn ip(&self) -> Ipv4Addr {
+impl<A: Copy> Lease<A> {
+    pub fn ip(&self) -> A {
         self.ip
     }
 }
@@ -153,7 +162,7 @@ impl Name {
 
 // Removed while still held, so that no look finds it stale while its holder lives; its lock
 // goes after, as its fields drop.
-impl Drop for Lease {
+impl<A> Drop for Lease<A> {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
@@ -189,11 +198,15 @@ impl Leases {
     pub fn addresses(&self, _held: &Held) -> Result<Vec<(Ipv4Addr, Option<String>)>, Refused> {
         Ok(live(&self.dir.join(ADDRESSES), ID_LEN)?
             .into_iter()
-            .filter_map(|(file, said)| {
-                let ip = file.parse::<Ipv4Addr>().ok()?;
-                let holder = String::from_utf8(said).ok().filter(|h| is_id(h));
-                Some((ip, holder))
-            })
+            .filter_map(|(file, said)| Some((file.parse::<Ipv4Addr>().ok()?, holder_of(said))))
+            .collect())
+    }
+
+    /// Each IPv6 address held now, as [`Leases::addresses`] says each IPv4 one.
+    pub fn addresses6(&self, _held: &Held) -> Result<Vec<(Ipv6Addr, Option<String>)>, Refused> {
+        Ok(live(&self.dir.join(ADDRESSES6), ID_LEN)?
+            .into_iter()
+            .filter_map(|(file, said)| Some((parse6(&file)?, holder_of(said))))
             .collect())
     }
 
@@ -212,9 +225,9 @@ impl Leases {
             .collect())
     }
 
-    /// An address of `pool` held for `holder` from now on: `asked`, or the lowest free in the
-    /// pool's range (libnetwork's local IPAM, as [`super::allocate`] gives one: an address let
-    /// go is the next given, D46).
+    /// An address of `pool` held for `holder` from now on: `asked`, anywhere in the pool's
+    /// subnet, or the lowest free in its range (libnetwork's local IPAM, as
+    /// [`super::allocate`] gives one: an address let go is the next given, D46).
     pub fn take(
         &self,
         held: &Held,
@@ -227,17 +240,54 @@ impl Leases {
         }
         let leased: Vec<Ipv4Addr> = self.addresses(held)?.into_iter().map(|(ip, _)| ip).collect();
         let ip = match asked {
-            Some(ip) if !super::contains(super::span(pool), ip) => return Err(Refused::OutOfRange(ip)),
+            Some(ip) if !super::contains(pool.subnet, ip) => return Err(Refused::OutOfRange(ip.into())),
             Some(ip) if super::in_use(pool, &leased).contains(&ip) => {
-                return Err(Refused::AddressTaken(ip));
+                return Err(Refused::AddressTaken(ip.into()));
             }
             Some(ip) => ip,
             None => super::allocate(pool, &leased).ok_or(Refused::Exhausted)?,
         };
-        let dir = self.dir.join(ADDRESSES);
+        self.lease(ADDRESSES, &ip.to_string(), ip, holder)
+    }
+
+    /// An IPv6 address of `pool` held for `holder` from now on, as [`Leases::take`] gives an
+    /// IPv4 one ([`super::allocate6`]'s, D99).
+    pub fn take6(
+        &self,
+        held: &Held,
+        pool: &Pool6,
+        asked: Option<Ipv6Addr>,
+        holder: &str,
+    ) -> Result<Lease<Ipv6Addr>, Refused> {
+        if !is_id(holder) {
+            return Err(Refused::NotAnId);
+        }
+        let leased: Vec<Ipv6Addr> = self.addresses6(held)?.into_iter().map(|(ip, _)| ip).collect();
+        let ip = match asked {
+            Some(ip) if !super::prefix6(&pool.subnet).is_some_and(|subnet| super::contains6(subnet, ip)) => {
+                return Err(Refused::OutOfRange(ip.into()));
+            }
+            Some(ip) if super::in_use6(pool, &leased).contains(&ip) => {
+                return Err(Refused::AddressTaken(ip.into()));
+            }
+            Some(ip) => ip,
+            None => super::allocate6(pool, &leased).ok_or(Refused::Exhausted)?,
+        };
+        self.lease(ADDRESSES6, &file6(ip), ip, holder)
+    }
+
+    /// `ip`'s lease, file `file` of directory `kind`, made for `holder`: refused
+    /// [`Refused::AddressTaken`] where a live lease has it.
+    fn lease<A: Copy + Into<IpAddr>>(
+        &self,
+        kind: &str,
+        file: &str,
+        ip: A,
+        holder: &str,
+    ) -> Result<Lease<A>, Refused> {
+        let dir = self.dir.join(kind);
         make_dirs(&dir)?;
-        let (path, lock) =
-            made(&dir, &ip.to_string(), holder.as_bytes())?.ok_or(Refused::AddressTaken(ip))?;
+        let (path, lock) = made(&dir, file, holder.as_bytes())?.ok_or(Refused::AddressTaken(ip.into()))?;
         Ok(Lease {
             ip,
             path,
@@ -285,7 +335,10 @@ impl Leases {
     /// The network's leases removed, as the network is: refused [`Refused::InUse`] where a
     /// lease of it lives or a process links its members.
     pub fn clear(&self, held: &Held) -> Result<(), Refused> {
-        if !self.addresses(held)?.is_empty() || !self.names(held)?.is_empty() {
+        if !self.addresses(held)?.is_empty()
+            || !self.addresses6(held)?.is_empty()
+            || !self.names(held)?.is_empty()
+        {
             return Err(Refused::InUse);
         }
         match File::open(self.dir.join(PAIRER)) {
@@ -309,10 +362,32 @@ impl Leases {
 
 /// Whether `id` is a microVM ID's form: [`ID_LEN`] lowercase hex digits.
 fn is_id(id: &str) -> bool {
-    id.len() == ID_LEN
-        && id
-            .bytes()
+    lower_hex(id, ID_LEN)
+}
+
+/// Whether `s` is `len` lowercase hex digits.
+fn lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// What an address lease says of its holder: its ID, none where it says no ID.
+fn holder_of(said: Vec<u8>) -> Option<String> {
+    String::from_utf8(said).ok().filter(|h| is_id(h))
+}
+
+/// An IPv6 address lease's file name ([`HEX6`]).
+fn file6(ip: Ipv6Addr) -> String {
+    format!("{:0width$x}", u128::from(ip), width = HEX6)
+}
+
+/// The IPv6 address an address lease's file names: none where it is no [`file6`] name.
+fn parse6(file: &str) -> Option<Ipv6Addr> {
+    if !lower_hex(file, HEX6) {
+        return None;
+    }
+    u128::from_str_radix(file, 16).ok().map(Ipv6Addr::from)
 }
 
 /// `dir`, a kind of lease's directory, made where it is not, with its network's leases'.
@@ -522,7 +597,7 @@ mod tests {
         assert_eq!(leases.addresses(&held).unwrap(), vec![(a.ip(), Some(id('a')))]);
     }
 
-    /// An address a live lease holds, the gateway, and one outside the range are refused,
+    /// An address a live lease holds, the gateway, and one outside the subnet are refused,
     /// each by its cause; the full range is refused as such.
     #[test]
     fn an_address_in_use_or_out_of_range_is_refused_by_its_cause() {
@@ -533,17 +608,17 @@ mod tests {
         assert_eq!(a.ip(), five);
         assert_eq!(
             leases.take(&held, &range, Some(five), &id('b')).unwrap_err(),
-            Refused::AddressTaken(five)
+            Refused::AddressTaken(five.into())
         );
         let gateway = Ipv4Addr::new(10, 89, 0, 1);
         assert_eq!(
             leases.take(&held, &range, Some(gateway), &id('b')).unwrap_err(),
-            Refused::AddressTaken(gateway)
+            Refused::AddressTaken(gateway.into())
         );
         let outside = Ipv4Addr::new(10, 90, 0, 5);
         assert_eq!(
             leases.take(&held, &range, Some(outside), &id('b')).unwrap_err(),
-            Refused::OutOfRange(outside)
+            Refused::OutOfRange(outside.into())
         );
         assert_eq!(
             leases.take(&held, &range, None, "not-an-id").unwrap_err(),
@@ -558,6 +633,73 @@ mod tests {
             leases.take(&held, &small, None, &id('b')).unwrap_err(),
             Refused::Exhausted
         );
+    }
+
+    /// An address asked for is given anywhere in its subnet, the range bounding only those
+    /// given unasked, as libnetwork gives them (moby f78c987a, ipams/defaultipam
+    /// address_space.go:350-353, allocator.go:315-319): `--ip` beside `--ip-range`.
+    #[test]
+    fn an_asked_address_is_given_anywhere_in_its_subnet() {
+        let (_home, held, leases) = network("leases-subnet");
+        let ranged = super::super::new_pool(
+            super::super::parse_prefix("10.89.0.0/24"),
+            super::super::parse_prefix("10.89.0.128/25"),
+            None,
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
+        let low = Ipv4Addr::new(10, 89, 0, 9);
+        let a = leases.take(&held, &ranged, Some(low), &id('a')).unwrap();
+        assert_eq!(a.ip(), low);
+        // The range's first address is its gateway: the next is given.
+        let b = leases.take(&held, &ranged, None, &id('b')).unwrap();
+        assert_eq!(b.ip(), Ipv4Addr::new(10, 89, 0, 129));
+    }
+
+    /// IPv6 addresses are leased as IPv4 ones are, each file its address's 128 bits in hex:
+    /// the lowest free past the subnet's first and the gateway, one in use or outside the
+    /// subnet refused by its cause, one let go the next given, and a lease no process holds
+    /// removed.
+    #[test]
+    fn ipv6_addresses_are_leased_as_ipv4_ones_are() {
+        let (home, held, leases) = network("leases-six");
+        let pool6 = Pool6 {
+            subnet: "fd00:1::/64".into(),
+            ip_range: String::new(),
+            gateway: "fd00:1::1".into(),
+            aux: BTreeMap::new(),
+        };
+        let two: Ipv6Addr = "fd00:1::2".parse().unwrap();
+        let a = leases.take6(&held, &pool6, None, &id('a')).unwrap();
+        assert_eq!(a.ip(), two);
+        assert_eq!(leases.addresses6(&held).unwrap(), vec![(two, Some(id('a')))]);
+        assert_eq!(
+            leases.take6(&held, &pool6, Some(two), &id('b')).unwrap_err(),
+            Refused::AddressTaken(two.into())
+        );
+        let outside: Ipv6Addr = "fd00:2::5".parse().unwrap();
+        assert_eq!(
+            leases.take6(&held, &pool6, Some(outside), &id('b')).unwrap_err(),
+            Refused::OutOfRange(outside.into())
+        );
+        assert_eq!(leases.clear(&held).unwrap_err(), Refused::InUse);
+        drop(a);
+        let c = leases.take6(&held, &pool6, None, &id('c')).unwrap();
+        assert_eq!(c.ip(), two);
+        drop(c);
+        let file = home
+            .join("networks")
+            .join(format!("{}.leases", id('e')))
+            .join(ADDRESSES6)
+            .join(file6(two));
+        assert_eq!(
+            file.file_name().and_then(|n| n.to_str()),
+            Some("fd000001000000000000000000000002")
+        );
+        std::fs::write(&file, id('d')).unwrap();
+        assert!(leases.addresses6(&held).unwrap().is_empty());
+        assert!(!file.exists(), "the stale lease was kept");
     }
 
     /// A name is held once on a network, whatever its case, until it is let go or its holder

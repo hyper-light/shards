@@ -1,0 +1,15 @@
+lable from `Readiness`. Did you forget to call `Readiness::set_waker`?WindsurfCredentialsapi_keyapi_server_urldevin_webapp_hostdevin_api_urlAttributesparentraw
+ line ChatMessageInnerFusionTransitionskipped_existingRegistryApiEntrycredentials.tomlDeleted session Persisting node open in a client, terminal_auth=, clie
+ host has not authenticated. Call the `authenticate` ACP method with `meta.api_key` set to the user's API key (or invoke the browser auth method to star
+commands/src/worker/api.rs...?phase=pending../../claim../../release.. /auth/cli/continue?redirect_uri=..&state=.&&prompt=select_account&code_challenge=..&code
+_challenge_method=S256...&..../auth/cli/token..Token exchange failed (HTTP ..): ...model router '..' resolved to no
+Code:Paste the code from the sign-in pageFailed to read code - user canceledCode cannot be emptyFailed to excha
+ion code via Connect at /exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCodeSuccessfully exchanged PKCE code for user:  (API server: PKCE exchange
+Code:Paste the code from the sign-in pageFailed to read code - user canceledCode cannot be emptyFailed to excha
+ion code via Connect at /exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCodeSuccessfully exchanged PKCE code for user:  (API server: PKCE exchange
+ion code via Connect at /exa.seat_management_pb.SeatManagementService/ExchangePKCEAuthorizationCodeSuccessfully exchanged PKCE code for user:  (API server: PKCE exchange
+moveUserManagedPluginResponseModelAssignmentassignment_jwtharness_uidsExchangePkceAuthorizationCodeResponseapi_keyapi_server_urldevin_webapp_hostdevin_api_urlsession_tokenAssign
+stfetched_at_secspayloadstruct CachedDeployment with 2 elementsstruct WindsurfCredentials with 4 elementsstruct Envelope with 4 elementsfalse......./a Display 
+macs33s?truenullmacsUserTool................33s?.Qx?code_lenhas_code../auth/cli/continue?state=.&&prompt=select_account&code_challenge=..&code_challenge_metho
+22step_typeis_user_initiatedtranslate_toolsstruct TokenResponsestruct WindsurfCredentialsSystemAssistanttracing::spana Display implementation returned an error
+# archive sha256 6a19997b5fc2d6ba1a8c341d4e2b12f1b78cad5d415ee9c0ca413a8d52a99562: the pin's

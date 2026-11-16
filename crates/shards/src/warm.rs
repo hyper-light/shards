@@ -2138,6 +2138,10 @@ pub fn finish(
     if let Some(facts) = served.as_ref().ok().and_then(|ended| ended.pids.as_deref()) {
         let _ = to_daemon(&link.daemon, kind::PIDS, facts, &[]);
     }
+    // A member that could not enter its working directory (D277), typed for its owner.
+    if let Some(told) = served.as_ref().ok().and_then(|ended| ended.unentered.as_deref()) {
+        let _ = to_daemon(&link.daemon, kind::WORKDIR_UNENTERED, told, &[]);
+    }
     if let Some((name, set)) = working_set {
         let _ = shards_ipc::working_set_parts(name, set, |part| {
             to_daemon(&link.daemon, kind::WORKING_SET, part, &[])

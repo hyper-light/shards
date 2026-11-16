@@ -1009,6 +1009,8 @@ struct Keep<'a> {
     link_local: Vec<std::net::IpAddr>,
     /// Its microVM's own engine (D181), where its run has one.
     engine: Option<OwnEngine>,
+    /// The named volumes it mounts, held since they were opened (D281): its [`Inbox`]'s.
+    volumes: crate::volumes::Holds,
 }
 
 /// A run in progress: its VM's socket, to signal the command, and the VM itself.
@@ -1183,6 +1185,9 @@ struct Inbox {
     /// The streams its guest's NOTICE built-ins are told on, one for each share process
     /// that tells what its host changes (D235): held while it runs.
     notices: Vec<shards_ipc::Stream>,
+    /// The named volumes it mounts and those plugged into it (D281), held until it ends, so
+    /// that no clearing of them through shards-api removes their files under it.
+    volumes: crate::volumes::Holds,
 }
 
 /// A part of the working set run `id`'s VM recorded (`kind::WORKING_SET`), which the
@@ -1507,8 +1512,13 @@ struct Daemon<D: Disk = Real> {
     /// ends.
     joiner_links: Mutex<HashMap<String, (String, UnixStream)>>,
     /// Each user network's members, by its ID: the endpoints of its running microVMs
-    /// (D46).
-    members: Mutex<std::collections::BTreeMap<String, Vec<networks::Member>>>,
+    /// (D46), their addresses' leases and the network's pairing (D285).
+    members: Mutex<std::collections::BTreeMap<String, networks::Joined>>,
+    /// Its runs' links and names told one member's at a time (D46), so that each network
+    /// process has its tables in the order members came and went: held across their
+    /// answers, and so never with the home's networks lock, which no process holds across
+    /// another's answer (D285).
+    telling: Mutex<()>,
     /// A microVM's ID, directory and log, made ahead of the run that takes them.
     spare: Mutex<Spare>,
     /// Numbers the templates a run saves before they become the template.
@@ -2410,6 +2420,7 @@ impl<D: Disk> Daemon<D> {
             noticing: Mutex::default(),
             joiner_links: Mutex::default(),
             members: Mutex::default(),
+            telling: Mutex::default(),
             events,
             settling: Mutex::default(),
             settled: Condvar::new(),
@@ -3984,6 +3995,8 @@ impl<D: Disk> Daemon<D> {
             (Some((_, name)), true) if !run.engine_nets.is_empty() => Some(name.clone()),
             _ => None,
         };
+        // Its named volumes, held from before their files are opened until it ends (D281).
+        let mut volumes = crate::volumes::Holds::default();
         let shared = cdi_points
             .and_then(|more| {
                 points.extend(more);
@@ -3998,7 +4011,8 @@ impl<D: Disk> Daemon<D> {
                 };
                 crate::volumes::open_for(&points, first, &crate::volumes::Store::new(&self.home), &access)
             })
-            .and_then(|opened| {
+            .and_then(|mut opened| {
+                volumes = std::mem::take(&mut opened.held);
                 let cdi = prepared.cdi.as_ref().ok().and_then(Option::as_ref);
                 prepared.spec.setup =
                     crate::setup::setup(&run, &opened.mounts, cdi, Some(self.microvm_shm(&id, &run).map_err(|e| e.to_string())?))?;
@@ -4596,6 +4610,7 @@ impl<D: Disk> Daemon<D> {
                     token,
                     registry_env: run.registry_env.clone(),
                 }),
+                volumes,
             },
             || match &start {
                 // A joiner's I/O is the microVM's it joins (D119), whose run's limits it takes
@@ -6070,6 +6085,7 @@ impl<D: Disk> Daemon<D> {
             mac: _,
             link_local: _,
             engine,
+            volumes,
         } = keep;
         // A pool's run keeps its pool in use until it ends (`shards_api::demand`).
         if let Some(key) = &ready.pool
@@ -6161,6 +6177,7 @@ impl<D: Disk> Daemon<D> {
             saved_as: None,
             engine,
             notices: Vec::new(),
+            volumes,
         }));
         let tracked = Tracked {
             base: Arc::new(Base {
@@ -7146,6 +7163,8 @@ impl<D: Disk> Daemon<D> {
         // microVM's join share ends with its VM, the daemon's connection to it let go (D119).
         lock(&self.joiner_links).remove(id);
         lock(&self.join_shares).remove(id);
+        // Its named volumes let go of (D281): their clearing is refused no more for its sake.
+        inbox.volumes = crate::volumes::Holds::default();
         // On the host's network (D124): the host's ports of its guest's binds let go, but
         // its joiners', which go as each of them ends (D119).
         if inbox.joiners == 0 {
@@ -10276,18 +10295,42 @@ mod tests {
     }
 
     /// A process that does nothing for `secs` seconds and ends, standing in for a VM or a
-    /// network process: `sleep` on Unix; on Windows cmd's pings of the loopback, a second
-    /// apart (`ping -n`'s first answers at once).
+    /// network process: `sleep` on Unix; on Windows this test binary running `asleep` alone.
+    /// cmd's pings of the loopback stood in there before, and ping wakes its thread pool
+    /// between its echoes: a judge's looks a W* of 100 ms apart found its cycles grown, and
+    /// its pool's threads switched, in every other window, so a handoff or a join share
+    /// waiting on it went unrefused for 10 s and a network process of it unended (CI runs
+    /// 43748291795 and 43876891053, x86_64 Windows, `SHARDS_JUDGE_TRACE`).
     fn sleeper(secs: u64) -> shards_ipc::Child {
+        let secs = secs.to_string();
         #[cfg(unix)]
-        let (program, args) = (PathBuf::from("/bin/sleep"), vec![secs.to_string()]);
+        let started = shards_ipc::spawn(Path::new("/bin/sleep"), &[OsStr::new(&secs)], &[], false);
         #[cfg(windows)]
-        let (program, args) = (
-            Path::new(&std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe"),
-            vec!["/c".to_string(), format!("ping -n {} 127.0.0.1 >nul", secs + 1)],
+        let started = shards_ipc::spawn_with(
+            &std::env::current_exe().unwrap(),
+            &[
+                "daemon::tests::asleep",
+                "--exact",
+                "--ignored",
+                "--test-threads=1",
+            ]
+            .map(OsStr::new),
+            &[],
+            false,
+            &[("SHARDS_ASLEEP", OsStr::new(&secs))],
         );
-        let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
-        shards_ipc::spawn(&program, &args, &[], false).unwrap()
+        started.unwrap()
+    }
+
+    /// [`sleeper`]'s process on Windows: asleep for the seconds its `SHARDS_ASLEEP` says.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "a process of its own for sleeper, which runs it"]
+    fn asleep() {
+        let Some(secs) = std::env::var("SHARDS_ASLEEP").ok().and_then(|s| s.parse().ok()) else {
+            return;
+        };
+        std::thread::sleep(Duration::from_secs(secs));
     }
 
     /// A starting VM progresses by more CPU than an idle microVM takes in as long (PM M357):
@@ -11391,6 +11434,7 @@ mod tests {
                         mac: None,
                         link_local: Vec::new(),
                         engine: None,
+                        volumes: Default::default(),
                     },
                     acquire,
                 )?;
@@ -11844,6 +11888,7 @@ mod tests {
                             mac: None,
                             link_local: Vec::new(),
                             engine: None,
+                            volumes: Default::default(),
                         },
                         || received(&offered).map_err(|e| format!("no warm VM: {e:?}")),
                     )
@@ -15370,6 +15415,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: None,
+                    volumes: Default::default(),
                 },
                 || ready.take().ok_or_else(|| "no warm VM".to_string()),
             )?;
@@ -15492,6 +15538,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -15544,6 +15591,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);
@@ -15559,6 +15607,92 @@ mod tests {
             );
             say(&vm, kind::DONE, &[0]);
             assert_eq!(ask(), Ok(()));
+        });
+    }
+
+    /// The daemon's runs on a network have their addresses leased from the home's records,
+    /// held while each runs, and the network paired by the daemon from its first run's join
+    /// to its last's leaving (D285): a network another process pairs refuses them by that
+    /// cause, and the daemon's pairing refuses that process.
+    #[test]
+    fn a_networks_runs_are_leased_and_paired_by_one_process() {
+        use crate::networks::leases::{Leases, Refused, hold};
+        let t = Test::new("net-leases");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.4.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            // Another process's pairing, the home's lock let go before the daemon asks.
+            let held = hold(&t.daemon.home).unwrap();
+            let elsewhere = leases.pair(&held).unwrap();
+            drop(held);
+            let id = t.create("member");
+            assert_eq!(
+                t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap_err(),
+                "failed to set up container networking: network n: another process links its members"
+            );
+            drop(elsewhere);
+            let (_, member) = t.daemon.join_network(&id, "n", "", "", &[], "m").unwrap();
+            assert_eq!(member.ip, std::net::Ipv4Addr::new(10, 78, 4, 2));
+            let held = hold(&t.daemon.home).unwrap();
+            assert_eq!(
+                leases.addresses(&held).unwrap(),
+                vec![(member.ip, Some(id.clone()))]
+            );
+            assert_eq!(leases.pair(&held).unwrap_err(), Refused::PairedElsewhere);
+            drop(held);
+            t.daemon.leave_network(&id);
+            let held = hold(&t.daemon.home).unwrap();
+            assert!(
+                leases.addresses(&held).unwrap().is_empty(),
+                "its address was kept"
+            );
+            assert!(leases.pair(&held).is_ok(), "the daemon kept the network paired");
+        });
+    }
+
+    /// A network another process's run holds an address of (D285) is in use, as one of the
+    /// daemon's runs keeps it: `network rm` refuses it by that cause and inspect lists that
+    /// run by its ID and address; its lease let go, the network and its leases go.
+    #[test]
+    fn a_network_with_another_processs_run_on_it_stays() {
+        use crate::networks::leases::{Leases, hold};
+        let t = Test::new("net-elsewhere");
+        t.run(|t| {
+            let made = t.ask(&["network", "create", "--subnet", "10.78.5.0/24", "n"]);
+            assert_eq!(made.0, 0, "{made:?}");
+            let network = t.daemon.user_network("n").unwrap();
+            let leases = Leases::of(&t.daemon.home, &network.id).unwrap();
+            let other = "c".repeat(64);
+            let held = hold(&t.daemon.home).unwrap();
+            let lease = leases
+                .take(&held, network.pools.first().unwrap(), None, &other)
+                .unwrap();
+            drop(held);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 1, "{removed:?}");
+            assert!(
+                removed
+                    .2
+                    .contains("shards: cannot remove network n: another process's runs are on it"),
+                "{removed:?}"
+            );
+            let inspected = t.ask(&["network", "inspect", "n"]);
+            assert!(
+                inspected.1.contains(&other) && inspected.1.contains("10.78.5.2/24"),
+                "{inspected:?}"
+            );
+            drop(lease);
+            let removed = t.ask(&["network", "rm", "n"]);
+            assert_eq!(removed.0, 0, "{removed:?}");
+            assert!(
+                !t.daemon
+                    .home
+                    .join("networks")
+                    .join(format!("{}.leases", network.id))
+                    .exists()
+            );
         });
     }
 
@@ -16268,6 +16402,7 @@ mod tests {
                     mac: None,
                     link_local: Vec::new(),
                     engine: engine.clone(),
+                    volumes: Default::default(),
                 };
                 let _inbox = t.daemon.register(ready, &id, keep);
                 say(&vm, kind::STARTED, &[]);
@@ -16343,6 +16478,7 @@ mod tests {
                 mac: None,
                 link_local: Vec::new(),
                 engine: None,
+                volumes: Default::default(),
             };
             let _inbox = t.daemon.register(ready, &id, keep);
             say(&vm, kind::STARTED, &[]);

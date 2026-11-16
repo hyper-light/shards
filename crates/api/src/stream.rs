@@ -1,6 +1,7 @@
-//! The [`Stream`] every guest connection is: a Unix stream socket, or on Windows shards' own
-//! AF_UNIX socket, non-blocking, whose reads and writes wait in a poll (poll(2), WSAPoll) to
-//! their timeouts.
+//! The [`Stream`] every guest connection is: a Unix stream socket, non-blocking, whose reads
+//! and writes wait in a poll (poll(2)) to their timeouts; on Windows its two pipes (D272),
+//! its way down read and its way up written, each call overlapped and waited for to its
+//! timeout ([`pipes`]).
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -14,8 +15,9 @@ use crate::Stream;
 pub(crate) struct Socket {
     #[cfg(unix)]
     inner: std::os::unix::net::UnixStream,
+    /// Its pipes, which its clones share, as a socket's descriptors share it.
     #[cfg(windows)]
-    inner: shards_afunix::UnixStream,
+    inner: triomphe::Arc<pipes::Pipes>,
     /// How long a read and a write wait, in ns, 0 for ever: shared by its clones, as a
     /// socket's own timeouts are.
     shared: triomphe::Arc<Shared>,
@@ -31,11 +33,17 @@ impl Socket {
     /// One operation on the already nonblocking OS socket, including Interrupted.
     /// Readiness-only handshakes must not enter the normal wait/retry path.
     pub(crate) fn read_nowait(&self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.inner).read(buf)
+        #[cfg(unix)]
+        return (&self.inner).read(buf);
+        #[cfg(windows)]
+        self.inner.read_nowait(buf)
     }
 
     pub(crate) fn write_nowait(&self, buf: &[u8]) -> io::Result<usize> {
-        (&self.inner).write(buf)
+        #[cfg(unix)]
+        return (&self.inner).write(buf);
+        #[cfg(windows)]
+        self.inner.write_nowait(buf)
     }
 
     fn shared() -> io::Result<triomphe::Arc<Shared>> {
@@ -66,17 +74,20 @@ impl Socket {
 /// instead", connect(2)): EAGAIN where the listener's queue is full (Linux) and
 /// ECONNREFUSED where none listens or (macOS) its queue is full, so `wait` has nothing to
 /// bound there, as a blocking one waits for room for as long as its send timeout, for ever
-/// as std leaves it (unix(7)). On Windows its connect is under way until afunix.sys ends it,
-/// waited out within `wait` (`shards_afunix::UnixStream::connect_within`).
+/// as std leaves it (unix(7)). On Windows the pair of pipes its file at `path` names, opened
+/// its way down first, each waited for while another client holds it, to `deadline`
+/// (`shards_ipc::vsock_open`, D272).
 pub(crate) fn connect_until(path: &Path, deadline: Option<Instant>) -> io::Result<Socket> {
     #[cfg(unix)]
-    let inner = {
+    {
         let _ = deadline;
-        unix::connect(path)?
-    };
+        Socket::new(unix::connect(path)?)
+    }
     #[cfg(windows)]
-    let inner = shards_afunix::UnixStream::connect_until(path, deadline)?;
-    Socket::new(inner)
+    {
+        let (down, up) = shards_ipc::vsock_open(path, deadline)?;
+        Socket::of_pipes(down, up)
+    }
 }
 
 /// What a [`Socket::read_watched`] or [`Socket::write_watched`] waits on beside its socket:
@@ -124,19 +135,36 @@ impl Socket {
 
 pub(crate) fn connect_nowait(path: &Path) -> io::Result<Socket> {
     #[cfg(unix)]
-    let inner = unix::connect(path)?;
+    return Socket::new(unix::connect(path)?);
+    // A pair another client holds waits for nothing here: `WouldBlock`, as a socket's full
+    // backlog is.
     #[cfg(windows)]
-    let inner = shards_afunix::UnixStream::connect_ready(path)?;
-    Socket::new(inner)
+    match shards_ipc::vsock_open(path, Some(Instant::now())) {
+        Ok((down, up)) => Socket::of_pipes(down, up),
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => Err(io::ErrorKind::WouldBlock.into()),
+        Err(e) => Err(e),
+    }
 }
 
-/// Two connected ends.
+/// Two connected ends: on Windows a pipe each way, as a guest connection's are (D272), each
+/// way's quota a guest connection's (`shards_ipc::VSOCK_QUOTA`).
 pub(crate) fn pair() -> io::Result<(Socket, Socket)> {
     #[cfg(unix)]
-    let (a, b) = std::os::unix::net::UnixStream::pair()?;
+    {
+        let (a, b) = std::os::unix::net::UnixStream::pair()?;
+        Ok((Socket::new(a)?, Socket::new(b)?))
+    }
     #[cfg(windows)]
-    let (a, b) = shards_afunix::UnixStream::pair()?;
-    Ok((Socket::new(a)?, Socket::new(b)?))
+    {
+        let quota = usize::try_from(shards_ipc::VSOCK_QUOTA).map_err(io::Error::other)?;
+        let window = shards_ipc::Window::frame(quota)?;
+        let (a_to_b, b_from_a) = shards_ipc::byte_pair(window)?;
+        let (b_to_a, a_from_b) = shards_ipc::byte_pair(window)?;
+        Ok((
+            Socket::of_pipes(a_from_b, a_to_b)?,
+            Socket::of_pipes(b_from_a, b_to_a)?,
+        ))
+    }
 }
 
 /// Every stream's waits, on every OS: a non-blocking socket, and each read and write looping
@@ -441,48 +469,42 @@ mod unix {
 
 #[cfg(windows)]
 impl Socket {
-    /// Its socket made non-blocking, its waits this value's (`waits`), as on Unix: shards'
-    /// AF_UNIX socket's own timeouts poll and then send a whole buffer, which a peer that
-    /// stops reading holds for ever.
-    fn new(inner: shards_afunix::UnixStream) -> io::Result<Socket> {
-        inner.set_nonblocking(true)?;
+    /// The connection whose way down is `down` and way up `up`, ends of their pipes opened for
+    /// overlapped calls; its waits this value's (`waits`), as on Unix.
+    fn of_pipes(
+        down: std::os::windows::io::OwnedHandle,
+        up: std::os::windows::io::OwnedHandle,
+    ) -> io::Result<Socket> {
+        let inner = triomphe::Arc::try_new(pipes::Pipes::new(down, up)?)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         Ok(Socket {
             inner,
             shared: Socket::shared()?,
         })
     }
 
-    /// Waits in WSAPoll at most `ms` (-1: for ever) for it to be readable (`READ`) or
-    /// writable, or to have ended.
+    /// Waits at most `ms` (-1: for ever) for it to be readable (`READ`) or writable, or to
+    /// have ended.
     fn poll_ready(&self, which: usize, ms: i32) -> io::Result<()> {
-        self.inner.ready_within(which == waits::WRITE, ms).map(drop)
+        let deadline = u64::try_from(ms)
+            .ok()
+            .and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)));
+        if which == waits::WRITE {
+            self.inner.writable_by(deadline)
+        } else {
+            self.inner.readable_by(deadline)
+        }
     }
 
     /// Waits, with no clock, for it to be readable (`READ`) or writable, or to have ended,
     /// and for the process `exit` to be signalled, as it is once it has exited: whether it
-    /// is. WSAPoll takes sockets alone, so the socket's readiness is an event
-    /// (WSAEventSelect, FD_READ or FD_WRITE, and FD_CLOSE: signalled at once where the
-    /// condition holds as it is selected), waited on with the process
-    /// (`shards_ipc::await_any`, WaitForMultipleObjects), and let go of after, the socket left
-    /// non-blocking, as `new` made it.
+    /// is.
     fn ready_or_exited(&self, which: usize, exit: Exit<'_>) -> io::Result<bool> {
-        use std::os::windows::io::AsHandle as _;
-        use windows_sys::Win32::Networking::WinSock::{
-            FD_CLOSE, FD_READ, FD_WRITE, WSAEVENT, WSAEventSelect,
-        };
-        let wanted = if which == waits::WRITE { FD_WRITE } else { FD_READ };
-        let wanted = i32::try_from(wanted | FD_CLOSE).map_err(io::Error::other)?;
-        let event = shards_ipc::Event::new()?;
-        // SAFETY: the socket this value holds, and an event of ours, which outlives the
-        // selection: it is let go of below.
-        if unsafe { WSAEventSelect(self.inner.raw(), event.raw() as WSAEVENT, wanted) } != 0 {
-            return Err(io::Error::last_os_error());
+        if which == waits::WRITE {
+            self.inner.writable_or_exited(exit)
+        } else {
+            self.inner.readable_or_exited(exit)
         }
-        let waited = shards_ipc::await_any(&[], &[event.as_handle(), exit], None);
-        // SAFETY: as above: no event of the socket's is set from here on.
-        unsafe { WSAEventSelect(self.inner.raw(), 0, 0) };
-        let (_, signalled) = waited?;
-        Ok(signalled.get(1).copied().unwrap_or(false))
     }
 }
 
@@ -506,7 +528,10 @@ impl Write for Socket {
 
 impl Stream for Socket {
     fn try_clone(&self) -> io::Result<Box<dyn Stream>> {
+        #[cfg(unix)]
         let inner = self.inner.try_clone()?;
+        #[cfg(windows)]
+        let inner = self.inner.clone();
         let at = Self::allocation()?;
         // Each additional strong count belongs to this independently owned socket and
         // ALREADY allocated box. Forgotten boxes retain their nonoverlapping allocation.
@@ -533,14 +558,17 @@ impl Stream for Socket {
     }
 
     fn into_socket(self: Box<Self>) -> crate::OwnedSocket {
-        crate::OwnedSocket::from(self.inner)
+        #[cfg(unix)]
+        return crate::OwnedSocket::from(self.inner);
+        #[cfg(windows)]
+        self.inner.owned()
     }
 
     fn handle(&self) -> crate::Handle<'_> {
         #[cfg(unix)]
         return std::os::fd::AsFd::as_fd(&self.inner);
         #[cfg(windows)]
-        std::os::windows::io::AsSocket::as_socket(&self.inner)
+        self.inner.down()
     }
 
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
@@ -550,6 +578,18 @@ impl Stream for Socket {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        if matches!(how, Shutdown::Write | Shutdown::Both) {
+            self.inner.shutdown_write()?;
+        }
+        if matches!(how, Shutdown::Read | Shutdown::Both) {
+            self.inner.shutdown_read();
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
     fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         // Both ways one way at a time: XNU shuts both at once or neither, and neither once
         // the peer has half-closed (ENOTCONN), so the peer would never read this end (D175,
@@ -574,7 +614,7 @@ impl Stream for Socket {
             self.buffer_size(libc::SO_RCVBUF, "SO_RCVBUF")?,
         ));
         #[cfg(windows)]
-        Ok((self.inner.send_buffer_size()?, self.inner.recv_buffer_size()?))
+        self.inner.buffer_sizes()
     }
 
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
@@ -583,6 +623,395 @@ impl Stream for Socket {
 
     fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.set_wait(waits::WRITE, timeout)
+    }
+}
+
+/// A guest connection's two pipes on Windows (D272): its way down, read here, and its way
+/// up, written here, each an end opened for overlapped calls. Reads are calls of their own,
+/// each waited for to its deadline (`shards_ipc::Pipe`). A write is one call at a time, its
+/// bytes this connection's until it finishes, as a socket's send buffer holds what a send
+/// took: a pipe says nothing of its room (PM M549), and a cancelled write says nothing of
+/// what its reader took (M603), so none is cancelled while the connection lives.
+#[cfg(windows)]
+mod pipes {
+    use std::cell::UnsafeCell;
+    use std::io;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _, BorrowedHandle, OwnedHandle};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::time::Instant;
+
+    use windows_sys::Win32::Foundation::{ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GetLastError};
+    use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+    use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Pipes::{GetNamedPipeInfo, PIPE_SERVER_END};
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+
+    /// Where its writes stand (R04).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Writing {
+        /// None under way: the next starts at once.
+        Idle,
+        /// One under way, its bytes the system's until it finishes.
+        UnderWay,
+        /// Its writes shut down: the way up closed, which its peer reads as their end.
+        Shut,
+        /// A write failed with this error, which every write says from here on.
+        Failed(u32),
+    }
+
+    /// Its writes: the way up, the one write's OVERLAPPED, its event, set as it finishes, and
+    /// its bytes.
+    struct Writes {
+        up: Option<OwnedHandle>,
+        /// Boxed, so that the write under way keeps its OVERLAPPED where it is.
+        call: Box<UnsafeCell<OVERLAPPED>>,
+        done: shards_ipc::Event,
+        out: Vec<u8>,
+        writing: Writing,
+    }
+
+    pub(super) struct Pipes {
+        down: shards_ipc::Pipe,
+        writes: Mutex<Writes>,
+        /// Its reads shut down: each says the end.
+        reads_ended: AtomicBool,
+        /// The most one write takes: what the way up holds, so that it finishes as soon as
+        /// the pipe has room for it whole.
+        most: usize,
+    }
+
+    // SAFETY: the write's OVERLAPPED and bytes are the system's only while it is under way,
+    // and otherwise touched only under `writes`' lock; the handles are used from any thread.
+    unsafe impl Send for Pipes {}
+    // SAFETY: as above.
+    unsafe impl Sync for Pipes {}
+
+    impl std::fmt::Debug for Pipes {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Pipes")
+                .field("most", &self.most)
+                .finish_non_exhaustive()
+        }
+    }
+
+    /// `code`, a Win32 error, as an `io::Error`.
+    fn error(code: u32) -> io::Error {
+        io::Error::from_raw_os_error(i32::try_from(code).unwrap_or(i32::MAX))
+    }
+
+    /// What the way `handle` carries holds, as its maker gave it (GetNamedPipeInfo): a server
+    /// end reads its inbound quota and writes its outbound; a client end the other way about.
+    fn quota(handle: BorrowedHandle<'_>, reads: bool) -> io::Result<usize> {
+        let (mut flags, mut outbound, mut inbound) = (0u32, 0u32, 0u32);
+        // SAFETY: a pipe end of ours; the flags and two quotas asked for are written to locals.
+        let read = unsafe {
+            GetNamedPipeInfo(
+                handle.as_raw_handle(),
+                &mut flags,
+                &mut outbound,
+                &mut inbound,
+                std::ptr::null_mut(),
+            )
+        };
+        if read == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let server = flags & PIPE_SERVER_END != 0;
+        let quota = if server == reads { inbound } else { outbound };
+        usize::try_from(quota)
+            .ok()
+            .filter(|&q| q > 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a pipe with no quota"))
+    }
+
+    /// A deadline in its wait's unit, ms, rounded up so that a deadline is never missed by
+    /// waking a moment early; none, for ever (INFINITE).
+    fn ms(deadline: Option<Instant>) -> u32 {
+        deadline.map_or(INFINITE, |d| {
+            u32::try_from(
+                d.saturating_duration_since(Instant::now())
+                    .as_micros()
+                    .div_ceil(1000),
+            )
+            .unwrap_or(INFINITE - 1)
+            .min(INFINITE - 1)
+        })
+    }
+
+    /// Takes what finished of the write under way, without waiting: a part it left written
+    /// on (a pipe that waits finishes a write whole, WriteFile's Remarks).
+    fn settle(w: &mut Writes) {
+        if w.writing != Writing::UnderWay {
+            return;
+        }
+        let Some(up) = &w.up else {
+            w.writing = Writing::Shut;
+            return;
+        };
+        let mut moved = 0u32;
+        // SAFETY: the OVERLAPPED of the write under way on `up`, not waited for.
+        if unsafe { GetOverlappedResult(up.as_raw_handle(), w.call.get(), &mut moved, 0) } != 0 {
+            let moved = usize::try_from(moved).unwrap_or(usize::MAX).min(w.out.len());
+            w.out.drain(..moved);
+            w.writing = Writing::Idle;
+            if !w.out.is_empty() {
+                start(w);
+            }
+            return;
+        }
+        // SAFETY: no arguments.
+        match unsafe { GetLastError() } {
+            ERROR_IO_INCOMPLETE => {}
+            code => w.writing = Writing::Failed(code),
+        }
+    }
+
+    /// Starts the write of `w`'s bytes.
+    fn start(w: &mut Writes) {
+        let Some(up) = &w.up else {
+            w.writing = Writing::Shut;
+            return;
+        };
+        let len = u32::try_from(w.out.len()).unwrap_or(u32::MAX);
+        let ov = w.call.get();
+        w.done.reset();
+        // SAFETY: no write is under way: its OVERLAPPED is ours to make fresh, with our event;
+        // its bytes are the system's, untouched, until it finishes (`settle`, `drop`).
+        let started = unsafe {
+            ov.write(OVERLAPPED {
+                hEvent: w.done.raw(),
+                ..OVERLAPPED::default()
+            });
+            WriteFile(up.as_raw_handle(), w.out.as_ptr(), len, std::ptr::null_mut(), ov)
+        };
+        // One that finished at once is under way still: `settle` takes it.
+        let code = if started != 0 {
+            ERROR_IO_PENDING
+        } else {
+            // SAFETY: no arguments.
+            unsafe { GetLastError() }
+        };
+        w.writing = if code == ERROR_IO_PENDING {
+            Writing::UnderWay
+        } else {
+            Writing::Failed(code)
+        };
+    }
+
+    /// Waits for the write under way to finish, if one is.
+    fn finish(w: &mut Writes) {
+        while w.writing == Writing::UnderWay {
+            if let Some(up) = &w.up {
+                let mut moved = 0u32;
+                // SAFETY: the OVERLAPPED of the write under way on `up`, waited for (bWait 1)
+                // on its event; its outcome is `settle`'s to take.
+                unsafe { GetOverlappedResult(up.as_raw_handle(), w.call.get(), &mut moved, 1) };
+            }
+            settle(w);
+        }
+    }
+
+    impl Pipes {
+        /// The connection whose way down is `down` and way up `up`.
+        pub(super) fn new(down: OwnedHandle, up: OwnedHandle) -> io::Result<Pipes> {
+            let most = quota(up.as_handle(), false)?;
+            Ok(Pipes {
+                down: shards_ipc::Pipe::from_handle(down),
+                writes: Mutex::new(Writes {
+                    up: Some(up),
+                    call: Box::new(UnsafeCell::new(OVERLAPPED::default())),
+                    done: shards_ipc::Event::new()?,
+                    out: Vec::new(),
+                    writing: Writing::Idle,
+                }),
+                reads_ended: AtomicBool::new(false),
+                most,
+            })
+        }
+
+        fn writes(&self) -> MutexGuard<'_, Writes> {
+            self.writes.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+
+        /// The way down's handle, which a caller's own loop may watch by a read of no bytes,
+        /// finishing as something comes or the stream ends (PM M348).
+        pub(super) fn down(&self) -> BorrowedHandle<'_> {
+            self.down.as_handle()
+        }
+
+        /// A read of what is there now: `WouldBlock` where nothing is, its end `Ok(0)`. A
+        /// clone that took the bytes first leaves this one's read nothing, which waits for
+        /// nothing either.
+        pub(super) fn read_nowait(&self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.reads_ended.load(Ordering::Acquire) {
+                return Ok(0);
+            }
+            match self.down.peek()? {
+                None => Ok(0),
+                Some(0) => Err(io::ErrorKind::WouldBlock.into()),
+                Some(there) => {
+                    let len = buf.len().min(there);
+                    match self
+                        .down
+                        .read_by(buf.get_mut(..len).unwrap_or_default(), Some(Instant::now()))
+                    {
+                        Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                            Err(io::ErrorKind::WouldBlock.into())
+                        }
+                        read => read,
+                    }
+                }
+            }
+        }
+
+        /// Waits until `deadline` for something to read, or its end: a read of no bytes.
+        pub(super) fn readable_by(&self, deadline: Option<Instant>) -> io::Result<()> {
+            match self.down.read_by(&mut [], deadline) {
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(()),
+                waited => waited.map(drop),
+            }
+        }
+
+        /// Waits with no clock for something to read, or its end, or for `exit` to be
+        /// signalled first: whether it was.
+        pub(super) fn readable_or_exited(&self, exit: BorrowedHandle<'_>) -> io::Result<bool> {
+            let event = shards_ipc::Event::new()?;
+            let handle = self.down.as_handle().as_raw_handle();
+            let mut ov = OVERLAPPED {
+                hEvent: event.raw(),
+                ..OVERLAPPED::default()
+            };
+            let mut none = 0u8;
+            // SAFETY: a read of no bytes into a byte of ours, its OVERLAPPED on this stack,
+            // finished or cancelled and waited for below before either goes.
+            let started = unsafe { ReadFile(handle, &mut none, 0, std::ptr::null_mut(), &mut ov) };
+            // SAFETY: no arguments.
+            if started != 0 || unsafe { GetLastError() } != ERROR_IO_PENDING {
+                return Ok(false);
+            }
+            let waited = shards_ipc::await_any(&[], &[event.as_handle(), exit], None);
+            let mut moved = 0u32;
+            // SAFETY: the read above, cancelled where it is under way still, and waited for.
+            unsafe {
+                CancelIoEx(handle, &ov);
+                GetOverlappedResult(handle, &ov, &mut moved, 1);
+            }
+            let (_, signalled) = waited?;
+            let read = signalled.first().copied().unwrap_or(false);
+            Ok(!read && signalled.get(1).copied().unwrap_or(false))
+        }
+
+        /// Takes `buf`'s bytes, as many as one write takes, for a write of their own where none
+        /// is under way: `WouldBlock` while one is.
+        pub(super) fn write_nowait(&self, buf: &[u8]) -> io::Result<usize> {
+            let mut w = self.writes();
+            settle(&mut w);
+            match w.writing {
+                Writing::Idle => {}
+                Writing::UnderWay => return Err(io::ErrorKind::WouldBlock.into()),
+                Writing::Shut => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "its writes are shut down",
+                    ));
+                }
+                Writing::Failed(code) => return Err(error(code)),
+            }
+            let taken = buf.get(..buf.len().min(self.most)).unwrap_or_default();
+            if taken.is_empty() {
+                return Ok(0);
+            }
+            w.out.clear();
+            w.out
+                .try_reserve_exact(taken.len())
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            w.out.extend_from_slice(taken);
+            start(&mut w);
+            match w.writing {
+                Writing::Failed(code) => Err(error(code)),
+                _ => Ok(taken.len()),
+            }
+        }
+
+        /// The write under way's event, where one is: what a wait for room waits on.
+        fn under_way(&self) -> io::Result<Option<shards_ipc::Event>> {
+            let mut w = self.writes();
+            settle(&mut w);
+            match w.writing {
+                Writing::UnderWay => w.done.try_clone().map(Some),
+                _ => Ok(None),
+            }
+        }
+
+        /// Waits until `deadline` for the write under way to finish.
+        pub(super) fn writable_by(&self, deadline: Option<Instant>) -> io::Result<()> {
+            if let Some(done) = self.under_way()? {
+                // SAFETY: an event of ours.
+                unsafe { WaitForSingleObject(done.raw(), ms(deadline)) };
+            }
+            Ok(())
+        }
+
+        /// Waits with no clock for the write under way to finish, or for `exit` to be
+        /// signalled first: whether it was.
+        pub(super) fn writable_or_exited(&self, exit: BorrowedHandle<'_>) -> io::Result<bool> {
+            let Some(done) = self.under_way()? else {
+                return Ok(false);
+            };
+            let (_, signalled) = shards_ipc::await_any(&[], &[done.as_handle(), exit], None)?;
+            let finished = signalled.first().copied().unwrap_or(false);
+            Ok(!finished && signalled.get(1).copied().unwrap_or(false))
+        }
+
+        /// Ends its writes: the write under way waited for, as its bytes are its peer's before
+        /// their end, then the way up closed, which its peer reads as their end.
+        pub(super) fn shutdown_write(&self) -> io::Result<()> {
+            let mut w = self.writes();
+            finish(&mut w);
+            w.up = None;
+            w.writing = Writing::Shut;
+            Ok(())
+        }
+
+        /// Ends its reads: each says the end from here on.
+        pub(super) fn shutdown_read(&self) {
+            self.reads_ended.store(true, Ordering::Release);
+        }
+
+        /// Its send and receive buffers: what its way up and its way down hold.
+        pub(super) fn buffer_sizes(&self) -> io::Result<(usize, usize)> {
+            Ok((self.most, quota(self.down.as_handle(), true)?))
+        }
+
+        /// Its pipes' handles, its caller's from here on, its write under way waited for first:
+        /// copies, as its clones hold them still; each none where the OS would make none, the
+        /// way up's where its writes were shut down.
+        pub(super) fn owned(&self) -> crate::OwnedSocket {
+            let mut w = self.writes();
+            finish(&mut w);
+            crate::OwnedSocket {
+                down: self.down.as_handle().try_clone_to_owned().ok(),
+                up: w.up.as_ref().and_then(|up| up.try_clone().ok()),
+            }
+        }
+    }
+
+    /// A connection's write under way ends before its OVERLAPPED and bytes go: cancelled, as
+    /// the connection has ended, and waited for.
+    impl Drop for Writes {
+        fn drop(&mut self) {
+            if let (Writing::UnderWay, Some(up)) = (self.writing, &self.up) {
+                let mut moved = 0u32;
+                // SAFETY: the OVERLAPPED of the write under way on `up`: cancelled, then
+                // waited for (bWait 1) on its event, so the system is done with it and its
+                // bytes once this returns.
+                unsafe {
+                    CancelIoEx(up.as_raw_handle(), self.call.get());
+                    GetOverlappedResult(up.as_raw_handle(), self.call.get(), &mut moved, 1);
+                }
+            }
+        }
     }
 }
 
@@ -853,15 +1282,12 @@ mod tests {
         assert_eq!((&sent, &got), (b"from", b"to a"));
         #[cfg(windows)]
         {
-            use std::os::windows::io::AsRawSocket as _;
+            use std::os::windows::io::AsRawHandle as _;
             let inheritable = |s: crate::Handle<'_>| {
                 let mut flags = 0u32;
-                // SAFETY: a socket the stream holds open, and a u32 for the call to fill.
+                // SAFETY: a handle the stream holds open, and a u32 for the call to fill.
                 let ok = unsafe {
-                    windows_sys::Win32::Foundation::GetHandleInformation(
-                        s.as_raw_socket() as windows_sys::Win32::Foundation::HANDLE,
-                        &raw mut flags,
-                    )
+                    windows_sys::Win32::Foundation::GetHandleInformation(s.as_raw_handle(), &raw mut flags)
                 };
                 assert_ne!(ok, 0, "{}", io::Error::last_os_error());
                 flags & windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT != 0
@@ -879,17 +1305,24 @@ mod tests {
         let (a, mut b) = pair().unwrap();
         let socket = a.boxed().unwrap().into_socket();
         #[cfg(unix)]
-        let taken = std::os::unix::net::UnixStream::from(socket);
+        let (reads, writes) = {
+            let taken = std::os::unix::net::UnixStream::from(socket);
+            taken.set_nonblocking(false).unwrap();
+            (taken.try_clone().unwrap(), taken)
+        };
+        // Its pipes (D272): the way up it writes, the way down it reads.
         #[cfg(windows)]
-        let taken = shards_afunix::UnixStream::from(socket);
-        taken.set_nonblocking(false).unwrap();
-        (&taken).write_all(b"taken").unwrap();
+        let (reads, writes) = (
+            shards_ipc::Pipe::from_handle(socket.down.unwrap()),
+            shards_ipc::Pipe::from_handle(socket.up.unwrap()),
+        );
+        (&writes).write_all(b"taken").unwrap();
         let mut got = [0u8; 5];
         b.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"taken");
         b.write_all(b"back").unwrap();
         let mut back = [0u8; 4];
-        (&taken).read_exact(&mut back).unwrap();
+        (&reads).read_exact(&mut back).unwrap();
         assert_eq!(&back, b"back");
     }
 

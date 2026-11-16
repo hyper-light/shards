@@ -2,9 +2,9 @@
 //! (docs/design/architecture.md D281): [`volumes`] reads each volume of the home's store with
 //! the bytes its files take, which its orchestrator admits to its node's room and holds to its
 //! own bound, and [`clear_volume`] removes one with its files, so that the next plug of its name
-//! ([`crate::image::PlugSource::Volume`]) makes it empty. Each asks `shards api-volumes`, which
-//! reads the store as the daemon's `volume ls`, `system df` and `volume rm` do, and answers in
-//! one frame.
+//! ([`crate::image::PlugSource::Volume`]) makes it empty, once no run holds it. Each asks
+//! `shards api-volumes`, which reads the store as the daemon's `volume ls`, `system df` and
+//! `volume rm` do, and answers in one frame.
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -18,8 +18,9 @@ pub const LISTED: u8 = 1;
 /// The frame kind of `shards api-volumes clear NAME`'s answer.
 pub const CLEARED: u8 = 2;
 
-/// The answers' version, each one's first byte: changed only by appending.
-pub const VERSION: u8 = 1;
+/// The answers' version, each one's first byte: changed only by appending. 2: a clearing
+/// refused [`ClearCause::InUse`] (D281).
+pub const VERSION: u8 = 2;
 
 /// A volume of a home's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,9 @@ pub enum ClearCause {
     Unknown = 2,
     /// Its files were not all removed.
     Store = 3,
+    /// A run holds it (D281): each run, a daemon's or an orchestrator's, holds every named
+    /// volume it mounts or plugs for its life. Its files are kept.
+    InUse = 4,
 }
 
 /// Why a home's volumes were not read, or one not cleared.
@@ -115,9 +119,9 @@ pub fn volumes(
 }
 
 /// Removes volume `name` of the home `env` names, and its files, as `volume rm` does: gone at
-/// once, deleted after. Shards keeps no record of which of an orchestrator's runs hold a
-/// volume (a plug's share process holds it open), so the orchestrator clears one none of its
-/// runs holds; a run holding it would see its files go.
+/// once, deleted after. Refused [`ClearCause::InUse`] at once where a run that mounts or
+/// plugged it holds it (D281), a daemon's or an orchestrator's, never waiting for that run to
+/// end.
 pub fn clear_volume(
     binary: Option<&Path>,
     env: &[(OsString, OsString)],
@@ -242,6 +246,7 @@ fn read_cleared(payload: &[u8]) -> Result<(), VolumeRefusal> {
         1 => ClearCause::Name,
         2 => ClearCause::Unknown,
         3 => ClearCause::Store,
+        4 => ClearCause::InUse,
         tag => {
             return Err(wire(WireError::Tag {
                 what: "why a volume was not cleared",
@@ -331,14 +336,19 @@ mod tests {
     fn a_clearings_answer_reads_back_typed() {
         let p = payload(&cleared(&Ok(())).unwrap(), CLEARED);
         assert_eq!(read_cleared(&p), Ok(()));
-        for cause in [ClearCause::Name, ClearCause::Unknown, ClearCause::Store] {
+        for cause in [
+            ClearCause::Name,
+            ClearCause::Unknown,
+            ClearCause::Store,
+            ClearCause::InUse,
+        ] {
             let why = format!("{cause:?}'s words");
             let p = payload(&cleared(&Err((cause, why.clone()))).unwrap(), CLEARED);
             assert_eq!(read_cleared(&p), Err(VolumeRefusal::Clear(cause, why)));
         }
         assert!(matches!(
-            read_cleared(&[VERSION, 4]),
-            Err(VolumeRefusal::Wire(WireError::Tag { tag: 4, .. }))
+            read_cleared(&[VERSION, 5]),
+            Err(VolumeRefusal::Wire(WireError::Tag { tag: 5, .. }))
         ));
         assert_eq!(
             read_cleared(&[VERSION, 0, 0]),
