@@ -36983,7 +36983,7 @@ host starts its VM binary through its own descriptor (`/proc/PID/fd/N`), so the 
 
 **Owed** (ROOT, real VMs): that test on WHP and KVM arm64.
 
-### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed)
+### D270. Components swapped into running image VMs, sans rebuild: built alone once, attached by digest (slices 1 to 5 built, 3 and 4 run on HVF: the component build, its image plugged in and mapped DAX, a member's next generation, its restart from its orchestrator, a swap by digest, and a save of a run holding components, slice 5's real-VM test owed; a swap's kept run-time arguments built, their tests owed)
 
 **Asked.** The person, 2026-11-15: "although agentfiles allow for static specification of
 agents. I'd love for the ability to hot-swap agents, harnesses, and mcps at given paths in
@@ -37242,10 +37242,11 @@ with its generation.
 
 **Slice 4a: a component swapped in by digest, or its image's back, from the orchestrator** (shards-api
 and its run host, image channel version 40; built, its real-VM tests owed with slice 4b).
-- *The API* (shards-api, `ImageGuest`): `swap(at, digest, when, patience) -> Swapped`, the member
-  at path `at` (`/agents/NAME`, `/harness/NAME`) given the OSI artifact of manifest digest `digest`
-  of its run host's store as its component there; `restore(at, when, patience)`, its image's own
-  back; `components()`, every member's as its host last said them (`ComponentAt { at, desired,
+- *The API* (shards-api, `ImageGuest`): `swap(at, digest, when, args, patience) -> Swapped`, the
+  member at path `at` (`/agents/NAME`, `/harness/NAME`) given the OSI artifact of manifest digest
+  `digest` of its run host's store as its component there; `restore(at, when, args, patience)`, its
+  image's own back (`args`, its start's run-time arguments or none for its kept ones: amended
+  below); `components()`, every member's as its host last said them (`ComponentAt { at, desired,
   held }`: what its next start lays, what its current generation runs with). `when`: `NextStart`
   (laid at the member's next restart, by its orchestrator or `Now`'s), or `Now` (the member
   restarted at once, as `restart` does). `Swapped { components, started }`, `started` the member's
@@ -37288,6 +37289,46 @@ says what its directory holds at each generation's start).
 now: plugged, mounted, laid at its member's restart, wanted and held; a restore at its next start:
 held, nothing let go; the restart past it: nothing laid, then unmounted and unplugged; `Unknown`
 and `Artifact`, nothing asked).
+
+**Slice 4a amended: a swap's run-time arguments** (2026-11-16, image channel version 46; built,
+its tests written and not yet run).
+- *Found* by Hex ROOT bringing Hex to Shards: a `Now` swap restarted its member with no run-time
+  arguments (the run host's `RestartAsk` for it gave none). kiln starts a harness with flags of
+  its own (`--resume <id>`, `--model`, its permission mode), so a `Now` swap of `/harness/NAME`
+  brought it back without them, its conversation and settings lost.
+- *Decided* (ROOT): a `Now` swap restarts its member with its last start's run-time arguments by
+  default; `SwapAsk` carries an optional `args`, which, given, are that start's and its member's
+  kept ones after; the swap's typed refusals stay as they were (R04).
+- *Its run host* keeps each member's arguments (`Generations::args`): its first start's staged
+  ones (D256), read back from its setup's entries as its guest reads them
+  (`members::args_of`, `api_run::first_args`), then each later start's as it was given them,
+  kept once its guest has answered that start (a restart that fails keeps the last ones). A
+  restart (`restart(member, args, patience)`, internal) takes given arguments or, from a swap
+  that gives none, the kept ones, read under the lock that claims the member's restart, so that
+  no other start of it comes between the read and the start. A `NextStart` swap's given
+  arguments are kept at once, for the start that takes it (a later `Now` swap's; a restart from
+  its orchestrator gives its own, which win as they are given).
+- *The API*: `swap` and `restore` take `args: Option<&[Vec<u8>]>` before `patience`; `None` keeps
+  the last start's arguments, `Some(&[])` starts the member with none. *The image channel*:
+  `SwapAsk::args` after `when`, 0, or 1 then a count and each argument's length and bytes, as
+  `RestartAsk`'s are; version 46.
+- *Not taken*: arguments carried in `SwapWhen::Now` (no meaning left for a `NextStart` swap's,
+  and the field on `SwapAsk` was ROOT's call); shards-api remembering each member's arguments and
+  sending them with every swap (a second owner of what the run host alone starts members with,
+  R05, which a client that did not create the run would not have); a refusal of arguments given
+  at its next start (the refusals stay as they were).
+- *Literals*: none.
+
+**Tests** (amendment, light, written and not yet run: the lane ran no builds): the image channel's
+`a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused` (with no arguments, an empty
+list and its own, an empty one among them; an arguments' flag of 2 and a count past the payload
+refused); the run host's `a_swap_starts_its_member_with_its_kept_arguments_or_those_it_gives` (a
+`Now` swap with none starts its member with its first start's staged ones, then with a restart's;
+one with its own uses and keeps them; a `NextStart` swap keeps them, and one with its own keeps
+those at once, each used by the `Now` swap after) and
+`a_members_arguments_are_staged_after_its_own_in_order` (`first_args`). Owed (ROOT): those runs,
+`cargo clippy --workspace --all-targets` with the lint matrix, and a real-VM test of a harness
+that says its command line across a `Now` swap (the test guest has no such mode yet).
 
 **Real-VM runs (ROOT, HVF on this Mac, 2026-11-16), and what they found.** api_image.rs's slice
 3b and 4 tests found five faults the light tests could not reach, each fixed at its root:
