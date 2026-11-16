@@ -31245,7 +31245,7 @@ memory its guest holds before its guest drops its page cache (D188's measure, PM
 image run); an orchestrator that needs D188's pressure give-back through its run host to keep
 its runs within its budget.
 
-### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a credential yet; the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's), though kiln grants no sign-in yet; the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
+### D242. Credentials in Veil's shape: a credential is named, never carried, and filled in at the VM's egress (the contract decided and built; the run's CA in its network process and in its granted members' trust built, step 2; its leases built, step 4; kiln's broker built, step 5; every harness's trust surveyed, step 9; the injector built, step 3: TLS ended for granted hosts, HTTP/1.1 heads filled in, echoes masked; Hex filling a harness VM's grants and answering its leases from kiln's broker built, step 6, on Hex's main and kiln's, though no kiln harness launch grants a key yet (its sign-ins it does, below); the leak scan's harness built, step 10's first part, D259; the injector's A/B harness built, step 10's second part; the Claude Code and Codex sign-in profiles built, step 8's first slice; HTTP/2's layer built, step 7's first slice; the injector's capture and its run host's relay built, step 8's second slice; HTTP/2 in the injector's connections built, step 7's second slice; a sign-in's token host over HTTP/2 built, its token handling per stream; the injector's upstream roots made explicit, the same on every OS, and never taken from its environment; HTTP/2's codec made one crate, the gateway's client's too (R12); kiln's broker answering sign-ins built, step 8's third slice, on kiln main (its build and tests ROOT's); kiln granting each isolated Claude Code and Codex launch its person's sign-in on every runner, through its server's one broker, built (kiln main c5f3d5b36: 54a38d288, 70d70c69d), what crosses a runner's link wiped once used, a session restored before its server's word granted its sign-in once that's known, and a harness swapped into its microVM granted its sign-in or refused (kiln main d7c57d0cb); the other eight harnesses' sign-ins surveyed, goose's ChatGPT sign-in granted in kiln as Codex's client and the seven others' reasons recorded, the sign-in profiles lane; its three api_image injector tests passing on HVF and KVM x86-64 (PM M605) and on x86-64 KVM and WHP (CI); its other real-VM runs owed)
 
 **Why.** Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 33: every kiln harness runs in a
 Shards microVM, and a harness needs its model-provider credential without the credential
@@ -31968,10 +31968,18 @@ shards-api (D231) and is their orchestrator; kiln is Hex's.
   `SimSecrets` and kiln's store alike (`cp_t8_3_kilns_lessors_pass_hexs_lease_contract`); its server gives them to its
   own runner, whose sandbox carries each launch's credential grants, by reference with their placeholders, to
   `ShardsImage::credentials` (458a8df23, b2fc6cebb).
-- *Owed.* No kiln harness launch grants a credential yet: `sandbox::isolated::launch_of` gives `credentials:
-  Vec::new()`, its harness signing in natively, its tokens in the microVM, until step 8's capture reaches kiln; kiln's
-  sandbox gives Hex no sign-in grant (`ShardsImage::sign_ins`); a kiln runner other than the server's own holds no
-  broker and refuses a granted launch (`hexvm::NO_BROKER`). ROOT's real runs (step 10).
+- *Built since* (kiln main c5f3d5b36, read 2026-11-16). kiln's sandbox gives Hex each isolated Claude Code and Codex
+  launch's sign-in (`ShardsImage::sign_ins`, through `hexvm::sign_ins_of`; 54a38d288), granted where its runner's
+  microVMs lease credentials and a broker answers; a kiln runner other than the server's own leases from its server's
+  one broker over its link (`secrets::lessor::Remote`, named feature `secrets.leases`; 54a38d288), refused
+  (`hexvm::NO_BROKER`) only where it has no link to ask over; and an agent can't ask that broker through its runner's
+  socket (70d70c69d). Since (kiln main d7c57d0cb): what crosses a runner's link is wiped once used (its words made the
+  size they come to, its frames in the net thread's outbox; hyper-transport's own buffers are its own), a launch
+  before its server's word on `secrets.leases` (a restored session) waits for it and is granted its sign-in, and a
+  harness swapped into its microVM is granted its sign-in or refused, typed.
+- *Owed.* No kiln harness launch grants a key (a credential other than a sign-in) yet: `sandbox::isolated::launch_of`
+  gives `credentials: Vec::new()`. ROOT: kiln's build, clippy and the tests these landings wrote, none run; the real
+  runs (step 10), on the server's own runner and on another.
 
 **Built: step 9, every harness's trust and token checks surveyed** (docs/research/s33-veil-creds/
 harness-survey.md, its evidence `evidence/survey/<harness>.txt`). Each of kiln's ten harnesses was read from its own
@@ -32330,12 +32338,14 @@ a 503 in the guest. No Shards code changes in this slice.
   the rotated access token kept under its reference; a revocation keeping the sign-in; refusals by kind (a name
   naming no provider, never captured, refused 400, unavailable 503 with no token in its words); two refreshes at
   once one call to the provider. Pure tests of the bodies, the token response's reading and the answer.
-- *Owed.* kiln granting a run's sign-ins: its sandbox carrying them to `ShardsImage::sign_ins` (name and CLI from
-  one value), and staging a later run's CLI file with the captured placeholders, inert ID token and scope. The
-  broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each refresh, which
-  nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy (`-D warnings`)
-  and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether platform.claude.com answers
-  a refresh asking the captured scope as it answers Claude Code's.
+- *Built since* (kiln main c5f3d5b36: 54a38d288). kiln grants a run's sign-in through its sandbox to
+  `ShardsImage::sign_ins`, its name and CLI from one value (`Provider::grant`); a later run is granted the
+  placeholders its CLI's file in its person's volume holds (`.credentials.json`, `auth.json`), so they stand for the
+  sign-in again: the file is kept there with what the capture gave it, never staged.
+- *Owed.* The broker keeping a sign-in's placeholders across refreshes and restarts: it mints new ones at each
+  refresh, which nothing passes on, as the network process writes the sign-in's own. ROOT: kiln's build, clippy
+  (`-D warnings`) and these tests, none run yet; the real sign-ins and refreshes (step 10); and whether
+  platform.claude.com answers a refresh asking the captured scope as it answers Claude Code's.
 
 **Built: step 7's first slice, HTTP/2's layer** (`crates/net/src/http2.rs`, `crates/net/src/hpack.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 7; research f10, f22, f41, f42, f58, f67; record
@@ -32800,11 +32810,13 @@ at a sign-in's token host), and whether its token host is apart from the hosts i
   as a profile and its `SignInCli` (Gemini CLI, goose's Google sign-in; Hex's lead for Hex); a placeholder form per
   provider (pi); a second sign-in name per harness (goose).
 
-**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** Kiln's broker answering the sign-ins' words (step 8's third slice;
-the network process telling its run host of a capture, a refresh and a revocation, the run host its
-orchestrator, and the injector capturing and answering outside are built, its second); and ROOT's real-VM runs on KVM, HVF and WHP with a whole-guest-memory leak scan
-(its harness built, D259), the injector's measured cost (its harness built, step 10's second part), and a real sign-in of each
-CLI surviving a refresh answered outside (step 8). Step 6's own owed items are its block's,
+**Owed (later slices of step 33, this plan's steps 7, 8 and 10).** ROOT's real-VM runs on KVM, HVF and WHP with a
+whole-guest-memory leak scan (its harness built, D259), the injector's measured cost (its harness built, step 10's
+second part), and a real sign-in of each CLI surviving a refresh answered outside (step 8), on the kiln server's own
+runner and on another. Built since: kiln's broker answering the sign-ins' words (step 8's third slice, kiln main
+bd2565641; the network process telling its run host of a capture, a refresh and a revocation, the run host its
+orchestrator, and the injector capturing and answering outside, its second), and kiln granting each isolated launch
+its person's sign-in on every runner (kiln main c5f3d5b36, d7c57d0cb). Step 6's own owed items are its block's,
 above.
 
 **Literals.** None of its own: this slice adds no numeric bound. A credential's `reference`
