@@ -22043,6 +22043,47 @@ the run's directory.
 
 ### D122. The members an `EXPOSE` is for: one receiver for each incoming port
 
+**eth0's own address alone (D285, lane xnet-s5b, 2026-11-16, ROOT's decision).** A run on a
+network shared by runs has eth0's second address there (D285 slice 5), and the chooser's chains
+took a port whatever address it came to. A UDP flow from a peer to a contested port at that
+address, which `shared-in` gives the member a grant in names, was put in the port's holder's
+zone as it came in, where the member's answers, unless it held the port, are tracked in zone 0:
+they met no flow, and went out untranslated or not at all. Matching what comes in to eth0's own
+address alone would leave the other case: a holder's answers to a peer there, put in its zone,
+would meet the flow kept in zone 0.
+- *So the chooser chooses for eth0's own address alone*: `chosen-zone`'s rule for what comes in
+  and `chosen`'s translation each match eth0's address (`links::program_chosen`'s `own`, read
+  as the chooser starts, after the run's `address=`), after their ports, so that a datagram to
+  no chosen port pays nothing more in a chain that sees every packet; and a holder's answers
+  are put in its zone only where they go to none of the run's networks shared by runs (its
+  `shared`, each subnet's `not_within`), the flows there kept in zone 0 both ways. The flows
+  of eth0's own address come from its gateway (a published port's, D143) or its network's
+  members (D46), whose subnet no shared network meets (`SHARED_OVERLAPS`); a client at an
+  address of a shared network the guest routes to that network, from eth0's second address,
+  whatever its zone, so no flow the chooser could answer is left out of one.
+- *Told as the run joins and leaves*: init sends the chooser each such subnet (its control's
+  `S` message: on or off, the subnet's address and prefix, beside `L` and `N`) before eth0
+  takes the run's address there, and after eth0 gives it back, and waits for its answer (`S`
+  and whether its chains are programmed so, `Chooser::share`), so that no answer of a member
+  there is zoned while the run is on it. A chooser that could not program them, or has gone,
+  fails the change (the built-in's exit 1, as its other failures), told again, done again
+  whole.
+- *Not* a raw chain of the shared networks' own, always on (ROOT): it would cost every packet
+  that comes in; this costs a chosen port's packets one comparison more (a new flow's first, one
+  more in `chosen`), and a holder's answers one for each shared network.
+- *Tests* (written, not run): links `the_chooser_takes_eth0s_own_address_alone` (each rule of
+  the chains, with and without a shared network), chooser
+  `a_shared_networks_subnet_is_told_and_answered` (the message both ways; init's wait ended
+  by the chooser's answer, programmed or not, or by its going). Owed (ROOT): `cargo test -p
+  shards-init --profile test-release --target <arch>-unknown-linux-musl -- links:: chooser::`
+  on Linux x86_64 and aarch64; this entry's real-VM tests again, every chosen flow now matched
+  to eth0's address (`cargo test -p shards --profile test-release --test build --
+  a_port_comes_in_to_the_member_listening_on_it a_udp_flow_goes_to_its_ports_next_holder
+  each_agent_answers_the_port_its_expose_names`); and, with D285's slice 4 on main, a member
+  granted in on a shared network on a UDP port its `EXPOSE` contests, answered there whether
+  or not it holds the port, and a holder's answers to eth0's own clients still in its zone
+  (slice 6's real VMs, no test yet).
+
 **Each port its own holder (network-06, 2026-11-14).** A contest had one holder for
 its whole range, chosen where it listened on any port of it: with web listening on
 7000 alone and api on 7001 alone under one `EXPOSE 7000-7001`, api's 7001 went to web.
@@ -26222,6 +26263,10 @@ Mutation-checked:
 - The network process's filter granting any question fails its unit tests.
 - Without the Landlock grant, g's TCP question fails with EACCES.
 
+**Amended (D278, 2026-11-16).** The agents' resolver answers a name its asker is not granted
+NXDOMAIN, by UDP and by TCP, where it answered REFUSED (D278's amendment of that day): the
+test's m reads rcode 3 for `api.example` both ways. The network process's filter is unchanged.
+
 ### D78. An Agentfile made from an image (§10, §12.16)
 
 `shards make agentfile IMAGE [-o FILE]` (`create agentfile`, or `shards agentfile`)
@@ -27628,6 +27673,11 @@ a pair's ports, each fail their test.
 
 Open: process events; ingress to a network of several members. DNS over TCP is D79.
 IPv6 is D99's: agents' subnets (part two), past the microVM (parts three and four).
+
+**Amended (D278, 2026-11-16).** The relay answers a name its asker is not granted NXDOMAIN,
+at once, where it answered REFUSED, which musl's stub resolver drops, waiting out its
+timeout (D278's amendment of that day); REFUSED stays for what is no query of one question
+and for a question past its asker's share of those in flight.
 
 ### A domain sees the image as built (D59, part eight)
 
@@ -38648,6 +38698,46 @@ questions until a grant opens them. `reset` takes which flows were lost as a tes
 this entry's (to a lost port past the microVM) and D285's (to or from a peer's lost port); its
 member's resolver answers its view of those networks' names beside what it may ask.
 
+**Amended (lane xnet-s5b, 2026-11-16, ROOT's decision): a member's questions answered at once,
+never held.** A member whose resolv.conf names the agents' resolver (`egress::resolves`: a grant
+naming names, or a ceiling that may give it some, past the microVM or, of ports alone too, on a
+network shared by runs, D285) had its questions dropped by its gate and the switch's `input`
+until a grant opened names, so that each lookup of its waited out its stub's timeout and failed.
+- *Its questions taken from its start*, whatever it is granted: its gate's (`domains::gate_of`,
+  and `egress::change` keeping them as its grants change, `Linked::resolves`) and the switch's
+  (`Carried::asking`, beside `dns`, which alone opens the uplink's way to the microVM's
+  resolver, as only a grant of names asks past the microVM); the agents' resolver started at
+  the run's start with every such member an asker.
+- *Answered at once*: from here its own names (D181, D285), upstream what a grant names, and a
+  name nothing grants it **NXDOMAIN**, for every asker, where it was REFUSED. ROOT's decision
+  allowed either, as the resolver's refusals answer; REFUSED is not an answer at once to every
+  member. musl's stub drops it: "Only accept positive or negative responses; retry
+  immediately on server failure, and ignore all other codes such as refusal"
+  (src/network/res_msend.c, its `switch` on the RCODE: 0 and 3 kept, 2 sent again, the rest
+  `continue`), so its query waits out its timeout (`RES_TIMEOUT`, 5 s, asked again every
+  `timeout / attempts`) and its lookup ends EAI_AGAIN (lookup_name.c `name_from_dns`: no
+  answer, `alens[i] < 4`, is EAI_AGAIN; RCODE 3 is no address, which `__lookup_name` ends
+  EAI_NONAME at once). glibc's ends either at once (resolv/res_send.c `send_dg`: SERVFAIL,
+  NOTIMP and REFUSED each end the server's turn, `next_ns`). The answer carries no SOA, so that
+  no resolver of the member's caches it past a grant that names the name later (RFC 2308 §5:
+  negative answers without one are not cached). REFUSED stays for what is no query of one
+  question, a link no asker holds and a question past its asker's share of those in flight
+  (D59), which a stub asks again after its interval. The answer is made here: nothing more
+  leaves the microVM.
+- *Literals* (R03): NXDOMAIN, 3, and REFUSED, 5: RFC 1035 §4.1.1's RCODEs.
+- *Tests* (written, not run, by the person's word of 2026-11-16): agentdns
+  `an_askers_names_are_admitted_with_it` (a name not granted: NXDOMAIN, its ID kept),
+  `an_existing_tcp_session_uses_the_members_current_names`,
+  `a_refused_query_keeps_its_id_and_question` (what is no query: REFUSED); links
+  `a_domain_that_asks_the_resolver_is_taken_whatever_it_is_granted`; egress
+  `grants_as_a_run_starts_join_its_links` (`resolves`, a ceiling of ports alone among them);
+  build.rs `a_remote_mcp_server_is_a_grant_of_that_server_alone` (m's ungranted
+  `api.example`: rcode 3 by UDP and by TCP, D79). Owed (ROOT): `cargo test -p shards-init
+  --profile test-release --target <arch>-unknown-linux-musl -- agentdns:: links:: egress::` on
+  Linux x86_64 and aarch64; `scripts/lint`; on real VMs (HVF, KVM, WHP) that test and b3's two
+  above; and a real-VM test of a member with a ceiling and no grant, its lookup of a name
+  answered at once (EAI_NONAME) and, once granted, its address: none drives one yet.
+
 ### D279. A share's or a plug's files may be refused execution: `exec` per volume, allowed by default (built; real-VM run on HVF below)
 
 **Asked.** kiln's sandbox page gives each volume `{read, write, exec}` (Hex ROOT's item 4,
@@ -39617,7 +39707,8 @@ that day: ROOT builds and runs it). abi `run::shared` and `builtin::SHARED`; sha
   processes off it, or taken back once nothing names it (`net::shared_address`, the kernel routing
   the subnet from it, one there or gone already done); then each member's resolver.
 - *Init's namespace* (`outside`), each network: `shared-in`, a NAT chain before the chooser's and
-  `pre` (which take a port whatever address it came to, D122), gives a new flow a grant in admits,
+  `pre` (`pre` takes a port whatever address it came to; the chooser, eth0's own alone since
+  D122's amendment of 2026-11-16), gives a new flow a grant in admits,
   from its peer to the run's address there on its member's port, the member's first address, and
   drops any other new flow to that address; `forward` lets in what it gave, and lets each member's
   flows out to the peers its grants out name, on their ports, marked, before any grant past the
@@ -39629,8 +39720,9 @@ that day: ROOT builds and runs it). abi `run::shared` and `builtin::SHARED`; sha
   name and alias its grants name, at every address holding it but the run's own (D46's rule, a name
   only where a flow is), the names first so that an address's PTR is a member's name; its gate and
   the switch let its questions through while it is on a shared network. A member whose ceiling is
-  of ports alone now has the agents' resolver in its resolv.conf from its start too, its gate
-  holding its questions until a grant opens them, as D278 gives one to a ceiling that names names.
+  of ports alone now has the agents' resolver in its resolv.conf from its start too, as D278 gives
+  one to a ceiling that names names, each question of its answered at once, a name nothing grants
+  it NXDOMAIN (D278's amendment of 2026-11-16).
 - *Landlock*: a ceiling with TCP ports leaves its member's TCP bind to its gate, as D278 leaves its
   connect, so that a grant in within it needs no right Landlock took away.
 - *Literals* (R03): 26, the next built-in number free at landing; the exit statuses errno's numbers
@@ -39647,8 +39739,9 @@ that day: ROOT builds and runs it). abi `run::shared` and `builtin::SHARED`; sha
   this takes Docker's names with `_` and `.` and shared aliases (ROOT's decision for slice 4), so
   slice 4's wire carries both to the guest and its network process must take aliases as this does
   (closed by slice 4: its `Join` takes them so);
-  a UDP port that both a grant in and a contested `EXPOSE` (D122) give is tracked in the chooser's
-  zone (`chosen-zone`, which reads no address), so its replies may miss their translation; an empty
+  a UDP port that both a grant in and a contested `EXPOSE` (D122) give was tracked in the chooser's
+  zone (`chosen-zone`, which read no address), so its replies might miss their translation (closed
+  by D122's amendment of 2026-11-16: the chooser takes eth0's own address alone); an empty
   `shared-in` on every run with an uplink, one more NAT chain a new flow's first packet passes,
   unmeasured (R14); IPv6 comes after (`Ipv6`, slice 4).
 
@@ -39756,6 +39849,17 @@ process and VM); leases: `an_alias_is_answered_at_every_address_that_holds_it`,
 macOS, Linux (glibc and musl) and Windows (the links' Windows arm: cargo-xwin, jupiter);
 `scripts/lint` on the seven targets; slice 6's real VMs, api_image.rs
 `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`.
+
+**Amended (lane xnet-s5b, 2026-11-16, ROOT's decisions on slice 5's open items).**
+- *A UDP port both a grant in and a contested `EXPOSE` give*: the chooser's chains, which took a
+  port whatever address it came to, now take eth0's own address alone, and keep its holders'
+  answers to a shared network out of their zones, init telling it each network's subnet before
+  eth0 takes the run's address there and waiting for its answer (D122's amendment of this day),
+  where an always-on raw chain of the networks' own would cost every packet.
+- *Names at once*: a member whose resolv.conf names the agents' resolver, a ceiling of ports alone
+  among them, has its questions taken by its gate and the switch from its start, each answered at
+  once, a name nothing grants it NXDOMAIN, where its gate held them until a grant opened them and
+  each lookup waited out its stub's timeout (D278's amendment of this day).
 
 ## 4. Start path (≤ 5 ms budget)
 

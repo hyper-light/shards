@@ -87,10 +87,18 @@ pub fn opened(g: &Grants) -> Vec<Egress> {
     out
 }
 
-/// Whether `g` asks the agents' resolver: for any name, or its destinations' (as a link's
-/// gate lets its questions through, `domains::gate_of`).
+/// Whether `g` asks names past the microVM: any name, or its destinations'.
 pub fn asks(g: &Grants) -> bool {
     g.dns || !g.named.is_empty()
+}
+
+/// Whether `link` has the agents' resolver in its resolv.conf from its start: where it is
+/// granted names, or its ceiling may give it some past the microVM (D278) or on a network
+/// shared by runs (D285). Its gate and the switch take its questions from then on, whatever it
+/// is granted, so that each is answered at once: a name nothing grants it, NXDOMAIN
+/// (`agentdns`).
+pub fn resolves(link: &Link) -> bool {
+    link.dns || !link.named.is_empty() || may_widen(link)
 }
 
 /// The first item of `asked` past what `image` and `ceiling` grant together; none where every
@@ -223,10 +231,10 @@ fn hosts_the_host(link: &mut Link, g: &Grants, gateway: Option<Ipv4Addr>) {
 /// `members` is each domain's member index, `labels` its label and `outward` whether its link
 /// joins a network that is not internal; `gateway`, eth0's. A member its link lets past the
 /// microVM may be given a ceiling: its link then has its way past the microVM from the start
-/// (its resolver, its hosts file's entry for the host itself, its TCP connections), which its
-/// gate holds shut until a grant opens it. Refused, saying why: a ceiling or a grant for a
-/// member of no such link or of none, a grant past its ceiling, a second entry for one member,
-/// and members the microVM cannot hold apart.
+/// (its hosts file's entry for the host itself, its TCP connections), which its gate holds
+/// shut until a grant opens it, and its resolver, which answers it at once ([`resolves`]).
+/// Refused, saying why: a ceiling or a grant for a member of no such link or of none, a grant
+/// past its ceiling, a second entry for one member, and members the microVM cannot hold apart.
 pub fn at_start(
     links: &mut [Option<Link>],
     members: &[u32],
@@ -326,6 +334,9 @@ struct Linked {
     /// Its view of each network shared by runs it is on (D285), which the agents' resolver
     /// answers it from.
     names: Vec<shards_dns::Names>,
+    /// Whether its resolv.conf names the agents' resolver ([`resolves`]): its gate takes its
+    /// questions whatever it is granted.
+    resolves: bool,
 }
 
 /// Every member linked in this run, for [`change`].
@@ -351,6 +362,7 @@ pub fn linked(member: u32, domain: usize, label: &str, link: &Link, gate: &crate
         ingress: gate.ingress.clone(),
         accepted: gate.accepted(),
         names: Vec::new(),
+        resolves: resolves(link),
     });
 }
 
@@ -417,8 +429,9 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     }
     let egress = opened(&after);
     let dns = asks(&after);
-    // Its gate first: no new flow opens on what it lost.
-    switch.regate_domain(l.domain, &egress, dns)?;
+    // Its gate first: no new flow opens on what it lost; its questions taken still where its
+    // resolv.conf names the agents' resolver, which answers each at once.
+    switch.regate_domain(l.domain, &egress, dns || l.resolves)?;
     // Its open TCP flows on those ports reset, their RSTs crossing the rules still there.
     let lost = lost(&opened(&before), &egress);
     if !lost.is_empty() {
@@ -827,6 +840,18 @@ mod tests {
             "its image's, none given"
         );
         assert!(may_widen(codex) && !may_widen(helper));
+        // The agents' resolver in its resolv.conf, its questions answered at once: where a
+        // ceiling may give it names, of ports alone too (its peers' on a network shared by
+        // runs, D285); not where nothing could.
+        assert!(resolves(codex) && !resolves(helper));
+        let ports_alone = Link {
+            granted: Granted {
+                ceiling: g(&[(17, 9000, 9010)], &[], false),
+                ..Granted::default()
+            },
+            ..Link::default()
+        };
+        assert!(resolves(&ports_alone));
         let refused = |setup: Vec<Vec<u8>>, links: &mut Vec<Option<Link>>| {
             at_start(links, &[0, 1, 2], &labels, &[true, true, false], &setup, gateway).unwrap_err()
         };
