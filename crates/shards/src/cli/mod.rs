@@ -106,7 +106,7 @@ const OWN: [&str; 26] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 13] = [
+pub(crate) const INTERNAL: [&str; 14] = [
     // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
     // The recorder of a directly booted VM's console report (`shards run vm --kernel`,
@@ -137,6 +137,8 @@ pub(crate) const INTERNAL: [&str; 13] = [
     "api-build",
     // A home's volumes listed and cleared for shards-api (D281).
     "api-volumes",
+    // A home's networks made and removed for shards-api (D285).
+    "api-networks",
 ];
 
 /// The words [`dispatch`] runs `args` as, its context's options taken off first (`context::

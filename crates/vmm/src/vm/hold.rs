@@ -1105,7 +1105,8 @@ mod tests {
         std::thread::scope(|s| {
             let pausing = s.spawn(|| hold.pause(1, &|| {}, &|| false));
             // Its vCPU comes to its guest's door once the pause holds it, as a kicked one does.
-            while !hold.held.load(Ordering::Acquire) {
+            // `held` says so already: the share's hold, its end past, is still set.
+            while !lock(&hold.state).paused {
                 std::thread::yield_now();
             }
             let waiting = s.spawn(|| hold.wait(&|| false));
