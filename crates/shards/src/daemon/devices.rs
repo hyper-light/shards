@@ -859,6 +859,8 @@ impl<D: Disk> Daemon<D> {
             let _ = read_only;
             return Ok((self.ask_device(id, &step, &[end.as_fd()])?, None));
         }
+        // A bounded volume's share held to its bound (D281).
+        let mut bounds = Vec::new();
         let dir = if Path::new(source).is_absolute() {
             PathBuf::from(source)
         } else {
@@ -866,11 +868,29 @@ impl<D: Disk> Daemon<D> {
             // run ends (D281): no clearing removes them under it.
             let store = crate::volumes::Store::new(&self.home);
             let mut held = crate::volumes::Holds::default();
-            held.found(&store, source)?
+            let volume = held.found(&store, source)?
                 .ok_or_else(|| format!("no volume {source}: a volume is made first, or a host directory given by its absolute path"))?;
+            let data = store.data(source);
+            // Counted with its run, its first holder walking it; its bound, a named one's alone.
+            if !volume.is_anonymous() {
+                if let Some((limit, count)) = held
+                    .count(&store, source, &data, None)
+                    .map_err(|e| e.to_string())?
+                {
+                    bounds.push(crate::volumes::Bounded {
+                        share: 0,
+                        limit,
+                        count,
+                    });
+                }
+            } else if volume.bound()?.is_some() {
+                return Err(format!(
+                    "volume {source}: a bound (size) is held for a named volume alone"
+                ));
+            }
             let inbox = self.inbox_of(id).ok_or_else(|| format!("{id} is not running"))?;
             lock(&inbox).volumes.extend(held);
-            store.data(source)
+            data
         };
         // A directory opens on Windows only with backup semantics (`platform::open_dir`).
         let opened = shards_vmm::platform::open_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -897,7 +917,8 @@ impl<D: Disk> Daemon<D> {
         )];
         let parent = self.parent_of(id).unwrap_or_default();
         let tags = [tag.to_string()];
-        let (ends, child, notices) = self.started_shares(threads, &dirs, &parent, false, Some(&tags))?;
+        let (ends, child, notices) =
+            self.started_shares(threads, &dirs, &bounds, &parent, false, Some(&tags))?;
         // On Windows none where the share is a client's; this one is the machine's.
         #[cfg(unix)]
         let child = Some(child);

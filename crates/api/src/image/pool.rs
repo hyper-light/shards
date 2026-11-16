@@ -1326,18 +1326,20 @@ impl<W: Send> ImageGuest for Pooled<W> {
         at: &str,
         digest: &str,
         when: wire::SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<wire::Swapped, ImageRefusal> {
-        self.guest.swap(at, digest, when, patience)
+        self.guest.swap(at, digest, when, args, patience)
     }
 
     fn restore(
         &self,
         at: &str,
         when: wire::SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<wire::Swapped, ImageRefusal> {
-        self.guest.restore(at, when, patience)
+        self.guest.restore(at, when, args, patience)
     }
 
     fn components(&self) -> Vec<wire::ComponentAt> {
@@ -1622,11 +1624,18 @@ mod tests {
             _: &str,
             _: &str,
             _: wire::SwapWhen,
+            _: Option<&[Vec<u8>]>,
             _: Duration,
         ) -> Result<wire::Swapped, ImageRefusal> {
             none()
         }
-        fn restore(&self, _: &str, _: wire::SwapWhen, _: Duration) -> Result<wire::Swapped, ImageRefusal> {
+        fn restore(
+            &self,
+            _: &str,
+            _: wire::SwapWhen,
+            _: Option<&[Vec<u8>]>,
+            _: Duration,
+        ) -> Result<wire::Swapped, ImageRefusal> {
             none()
         }
         fn components(&self) -> Vec<wire::ComponentAt> {

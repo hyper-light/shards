@@ -362,8 +362,16 @@ pub enum PlugSource {
     /// A host directory, absolute: the host's files there are its members'.
     Host(PathBuf),
     /// A volume of the run's home's store, by its name, made where it is not there, as a
-    /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run.
-    Volume(String),
+    /// run's `-v NAME:PATH` makes one: its files are kept in the home past the run. Its bound
+    /// (D281): the bytes its files may take, held as they are written, a write past it refused
+    /// ENOSPC in its members, as a full disk refuses one: an agent's admitted `disk_bytes`,
+    /// which the volume is made with, or set to where no run holds it, and refused
+    /// ([`PlugRefusal::Bound`]) where one does with another. None for the volume's own: none
+    /// where it was made with none.
+    Volume {
+        name: String,
+        bound: Option<std::num::NonZeroU64>,
+    },
 }
 
 /// Whom [`ImageGuest::plug`] plugs into (D271): every member of the run that runs, or those
@@ -481,8 +489,9 @@ pub enum ImageRefusal {
     /// A member's working directory ([`MemberSpec::workdir`], else its image's) its guest
     /// could not enter as it started (D277), so none of its run's members runs: told as they
     /// start, after the boot, to [`ImageGuest::wait_member`]; or as its next generation started
-    /// (D270), which its [`ImageGuest::restart`] is refused with, its member ended whole. Its
-    /// run host's words name the member, the directory and the errno.
+    /// (D270), which its [`ImageGuest::restart`] is refused with, and a swap that restarted it
+    /// now ([`ImageGuest::swap`], [`ImageGuest::restore`]), its member ended whole. Its run
+    /// host's words name the member, the directory and the errno.
     Workdir(String),
 }
 
@@ -790,7 +799,9 @@ pub trait ImageGuest: Send + Sync {
     /// namespaces, server instance and volumes its generations keep, its input its own where it
     /// has one: the generation started, whose output, input and end are taken by it. Refused
     /// as [`ImageRefusal::Restart`]: a member that does not run, one whose restart is under
-    /// way, one that starts once (a member given a port among others, D122); and as
+    /// way, one that starts once (a member given a port among others, D122), and one whose next
+    /// generation's stdio lanes its run host's budget had no room for (`Capacity`, D252), that
+    /// generation never started and its member then ended whole; and as
     /// [`ImageRefusal::Workdir`] where its next generation could not enter its working directory
     /// (D277), its member then ended whole.
     fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)
@@ -801,20 +812,32 @@ pub trait ImageGuest: Send + Sync {
     /// its path's, its platform the microVM's, its asks within its member's grants), its EROFS
     /// image plugged into the microVM and mounted read-only beside its writable layer, then laid
     /// at its path as its member starts again: at its next start, or now, its member restarted
-    /// as [`restart`](Self::restart) restarts it. Answers every member's component as its host
-    /// holds them after it ([`ComponentAt`]), and, now, the member's index and the generation
-    /// started, whose output, input and end are taken by it ([`Swapped`]); refused as
-    /// [`ImageRefusal::Swap`].
+    /// as [`restart`](Self::restart) restarts it. That start's run-time arguments are `args`,
+    /// after its image's command, which its member keeps from then (given for its next start,
+    /// kept at once); none, the ones its host keeps: its first start's ([`MemberSpec::args`]),
+    /// then each later start's as it was given them. Answers every member's component as its
+    /// host holds them after it ([`ComponentAt`]), and, now, the member's index and the
+    /// generation started, whose output, input and end are taken by it ([`Swapped`]); refused
+    /// as [`ImageRefusal::Swap`], and, now, as [`ImageRefusal::Workdir`] where its member's next
+    /// generation could not enter its working directory (D277), its member then ended whole.
     fn swap(
         &self,
         at: &str,
         digest: &str,
         when: SwapWhen,
+        args: Option<&[Vec<u8>]>,
         patience: Duration,
     ) -> Result<Swapped, ImageRefusal>;
     /// The member at path `at` given its image's own component back (D270 slice 4), at its next
-    /// start or now, as [`swap`](Self::swap) gives it another; answered and refused as it is.
-    fn restore(&self, at: &str, when: SwapWhen, patience: Duration) -> Result<Swapped, ImageRefusal>;
+    /// start or now, its start's arguments `args` or its kept ones, as [`swap`](Self::swap)
+    /// gives it another; answered and refused as it is.
+    fn restore(
+        &self,
+        at: &str,
+        when: SwapWhen,
+        args: Option<&[Vec<u8>]>,
+        patience: Duration,
+    ) -> Result<Swapped, ImageRefusal>;
     /// Every member's component as its run host last said them (D270 slice 4): none where none
     /// was swapped.
     fn components(&self) -> Vec<ComponentAt>;
@@ -904,7 +927,9 @@ pub trait ImageGuest: Send + Sync {
     /// host path and a session's volumes beneath a root granted for them; each member its own
     /// device, read-only where asked. The plug grants nothing beyond its own path. A member
     /// that is files alone is refused ([`PlugRefusal::Member`]), as is one plugged at `at`
-    /// already; a plug that one member refuses is let go of by those it was given to first.
+    /// already; a plug that one member refuses is let go of by those it was given to first. A
+    /// volume a clearing holds is refused at once ([`PlugRefusal::Clearing`]), and one asked
+    /// another bound than the one its holders serve it with ([`PlugRefusal::Bound`], D281).
     /// Waits at most `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
     fn plug(&self, plug: &Plug, patience: Duration) -> Result<(), ImageRefusal>;
     /// What is plugged in at `at` let go of, in each member it was plugged into: unmounted

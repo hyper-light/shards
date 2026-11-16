@@ -151,8 +151,7 @@ fn the_vm_processs_end_mid_wait_is_refused_exited() {
 #[test]
 fn a_pid_that_names_another_process_is_never_followed() {
     let dir = shards_testdir::TempDir::new("nc-pid").unwrap();
-    let listener = UnixListener::bind(dir.join("v")).unwrap();
-    listener.set_nonblocking(true).unwrap();
+    let listener = stand_in_listener(&dir.join("v"));
     let mut child = holder();
     let id = identity_of(&child, dir.join("v"));
     let other = Identity {
@@ -182,5 +181,5 @@ fn a_pid_that_names_another_process_is_never_followed() {
         "{:?}",
         result.as_ref().err()
     );
-    assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    assert!(undialed(&listener, &dir.join("v")));
 }

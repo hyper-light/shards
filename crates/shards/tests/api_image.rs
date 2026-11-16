@@ -4079,7 +4079,16 @@ fn a_port_published_live_answers_and_is_gone_after_unpublish() {
 /// The lines a running member writes on `channel`, as they come, read on a thread of their own
 /// until its channel ends (its run's end): each sent on the receiver this returns.
 fn lines_of(guest: &dyn ImageGuest, channel: Channel) -> std::sync::mpsc::Receiver<String> {
-    let pipe = guest.take_output(&codex(), 0, channel).unwrap();
+    lines_of_member(guest, &codex(), channel)
+}
+
+/// [`lines_of`] member `member`.
+fn lines_of_member(
+    guest: &dyn ImageGuest,
+    member: &MemberName,
+    channel: Channel,
+) -> std::sync::mpsc::Receiver<String> {
+    let pipe = guest.take_output(member, 0, channel).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         use std::io::BufRead as _;
@@ -4197,7 +4206,10 @@ fn volumes_plugged_live_are_read_and_written_as_asked_and_a_busy_one_stays() {
     ask(&*guest, |g| {
         g.plug(
             &plug(
-                PlugSource::Volume(volume.into()),
+                PlugSource::Volume {
+                    name: volume.into(),
+                    bound: None,
+                },
                 PlugFor::Every,
                 "/session/vol",
                 false,
@@ -4266,7 +4278,10 @@ fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
         .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
     s.plug_roots = vec!["/session".into()];
     let plug = Plug {
-        source: PlugSource::Volume(volume.into()),
+        source: PlugSource::Volume {
+            name: volume.into(),
+            bound: None,
+        },
         to: PlugFor::Members(vec![codex()]),
         at: "/session/vol".into(),
         read_only: false,
@@ -4318,6 +4333,92 @@ fn an_agents_volume_outlives_its_session_and_is_listed_and_cleared() {
         shards_api::volumes::clear_volume(binary, &s.env, volume),
         Err(VolumeRefusal::Clear(ClearCause::Unknown, _))
     ));
+}
+
+/// P6.2 (D281): an agent's volume plugged with its bound into two members, each served by a
+/// share process of its own, is held to that bound in one count: each member's df says the
+/// bound as its volume's size; each fills a file of its own until a write is refused ENOSPC,
+/// the room the two share gone; and what both wrote stays within the bound together, where a
+/// count each would have let each fill it. It is listed with its bound and its count, which
+/// holds at least what its members wrote and never more than its bound.
+#[test]
+fn an_agents_volume_refuses_writes_past_its_bound() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = common::home_with("api-bound-vol-home");
+    let volume = "agent-b.cache";
+    // A whole number of every host's allocation unit (4 KiB on APFS, ext4 and NTFS, 16 KiB at
+    // most), so that df's size is the bound itself.
+    let bound: u64 = 4 << 20;
+    build(
+        &home,
+        "api-bound-vol:1",
+        &["plugged-bound", "/session/vol"],
+        "HARNESS claude FROM ./harness.tar\n",
+    );
+    let mut s = spec(&home, "api-bound-vol:1");
+    s.env
+        .retain(|(name, _)| name != "SHARDS_KERNEL" && name != "SHARDS_INIT");
+    s.plug_roots = vec!["/session".into()];
+    let guest = boot(&home, &s);
+    let members = [codex(), MemberName::harness("claude")];
+    let lines: Vec<_> = members
+        .iter()
+        .map(|m| lines_of_member(&*guest, m, Channel::Stdout))
+        .collect();
+    let plug = Plug {
+        source: PlugSource::Volume {
+            name: volume.into(),
+            bound: NonZeroU64::new(bound),
+        },
+        to: PlugFor::Every,
+        at: "/session/vol".into(),
+        read_only: false,
+        exec: true,
+    };
+    ask(&*guest, |g| g.plug(&plug, Duration::MAX)).unwrap();
+    let data = home.join("volumes").join(volume).join("_data");
+    std::fs::write(data.join("from-host"), "fill\n").unwrap();
+    let mut filled = 0u64;
+    for lines in &lines {
+        let seen = said_all(lines, &["holding /session/vol".to_string()]);
+        let said = |what: &str| {
+            seen.iter()
+                .find_map(|l| {
+                    l.strip_prefix(&format!("/session/vol {what} "))
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| panic!("no {what} in {seen:?}"))
+        };
+        let df = said("statfs");
+        let (size, _room) = df.split_once(' ').unwrap();
+        assert_eq!(size.parse::<u64>().unwrap(), bound, "its df's size: {seen:?}");
+        let fill = said("filled");
+        let (bytes, errno) = fill.split_once(" errno ").unwrap();
+        assert_eq!(errno, "28", "refused ENOSPC: {seen:?}");
+        filled += bytes.parse::<u64>().unwrap();
+    }
+    assert!(
+        filled > 0 && filled < bound,
+        "both together within the bound: {filled} of {bound}"
+    );
+    let on_host: u64 = std::fs::read_dir(&data)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("fill-"))
+        .map(|e| e.metadata().unwrap().len())
+        .sum();
+    assert_eq!(on_host, filled, "what its members were told they wrote");
+    let listed = shards_api::volumes::volumes(s.binary.as_deref(), &s.env).unwrap();
+    let found = listed.iter().find(|v| v.name == volume).unwrap();
+    assert_eq!(found.bound, Some(bound));
+    let charge = found.charge.unwrap();
+    assert!(
+        charge >= filled && charge <= bound,
+        "its count {charge} of {bound}, {filled} written"
+    );
+    guest.stop().unwrap();
 }
 
 /// D273, P6b.1 AC2: a destination its image grants, reached by the running harness, revoked
@@ -4494,6 +4595,76 @@ fn a_member_restarted_goes_on_in_its_microvm_with_output_and_end_of_its_own() {
     assert_eq!(vm_processes(&home), vms);
     assert_eq!(templates_of(&home), templates);
     guest.stop().unwrap();
+}
+
+/// D277 for a member's next generation (D270 slices 3b and 4): a harness that removed its own
+/// working directory as it ran (its project's subdirectory, shared and given it) is refused
+/// `Workdir` as it starts again, naming the directory and errno 2: by its restart, and by a swap
+/// that restarts it now (its image's own component given back). Each on a run of its own, as a
+/// refused restart ends its member whole.
+#[test]
+fn a_member_whose_workdir_is_gone_is_refused_workdir_as_it_starts_again() {
+    if cannot_run_vms() {
+        return;
+    }
+    let home = TempDir::new("api-gone-home");
+    let proj = TempDir::new("api-gone-proj");
+    let real = std::fs::canonicalize(proj.to_path_buf()).unwrap();
+    let at = guest_at(&real);
+    let workdir = format!("{at}/work");
+    let removal = format!("rmdir:{workdir}");
+    build(&home, "api-gone:1", &["fs", &removal, "trap:TERM"], "");
+    let patience = Duration::from_secs(60);
+    // A run whose harness starts in its working directory, removes it, and says it is ready.
+    let gone = || {
+        std::fs::create_dir(real.join("work")).unwrap();
+        let mut s = spec(&home, "api-gone:1");
+        s.shares = vec![ImageShare {
+            host: real.clone(),
+            at: at.clone(),
+            read_only: false,
+            exec: true,
+            members: Some(PlugFor::Members(vec![codex()])),
+        }];
+        s.members = vec![MemberSpec {
+            member: codex(),
+            env: Vec::new(),
+            files: Vec::new(),
+            workdir: Some(workdir.clone()),
+            stdin: false,
+            terminal: false,
+            args: Vec::new(),
+            mcp: false,
+        }];
+        let guest = boot(&home, &s);
+        let stdout = BufReader::new(guest.take_output(&codex(), 0, Channel::Stdout).unwrap());
+        let (first, line) = line_within(&*guest, stdout);
+        assert_eq!(
+            line, "ready\n",
+            "its working directory removed, it waits for its SIGTERM"
+        );
+        assert!(!real.join("work").exists(), "removed by its harness");
+        // Its output's reader kept, so that its generation's last line (`got 15`) has room to
+        // end before its next starts.
+        (guest, first)
+    };
+    let refused_workdir = |what: &str, answer: Result<(), ImageRefusal>| match answer {
+        Err(ImageRefusal::Workdir(why)) => {
+            assert!(why.contains(&workdir) && why.contains("errno 2"), "{what}: {why}");
+        }
+        other => panic!("{what}: {other:?}"),
+    };
+    let (guest, first) = gone();
+    let restarted = ask(&*guest, |g| g.restart(&codex(), &[], patience));
+    refused_workdir("its restart", restarted.map(|_| ()));
+    assert_eq!(rest_within(&*guest, first), "got 15\n", "it ended on its SIGTERM");
+    drop(guest);
+    let (guest, first) = gone();
+    let swapped = ask(&*guest, |g| {
+        g.restore("/harness/codex", SwapWhen::Now, None, patience)
+    });
+    refused_workdir("its swap now", swapped.map(|_| ()));
+    assert_eq!(rest_within(&*guest, first), "got 15\n", "it ended on its SIGTERM");
 }
 
 /// D278 b3: a member given, as its run runs, a destination its ceiling allows and its image
@@ -4744,7 +4915,7 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     assert_eq!(line, "none\n", "its image's own: no marker");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::Now, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
@@ -4759,7 +4930,10 @@ fn a_harness_swapped_now_runs_its_component_and_restored_runs_its_images_own() {
     assert_eq!(rest_within(&*guest, first), "ready\ngot 15\n");
     let (next, line) = line_within(&*guest, stdout(1));
     assert_eq!(line, "v2\n", "its component, laid at its path");
-    let restored = ask(&*guest, |g| g.restore("/harness/codex", SwapWhen::Now, patience)).unwrap();
+    let restored = ask(&*guest, |g| {
+        g.restore("/harness/codex", SwapWhen::Now, None, patience)
+    })
+    .unwrap();
     assert_eq!(restored.started.map(|(_, g)| g), Some(2));
     assert_eq!(
         restored.components,
@@ -4793,7 +4967,7 @@ fn a_run_holding_a_component_is_saved_with_it() {
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::Now, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::Now, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started.map(|(_, g)| g), Some(1));
@@ -4832,7 +5006,7 @@ fn a_harness_swapped_at_its_next_start_runs_its_component_once_restarted() {
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
     let swapped = ask(&*guest, |g| {
-        g.swap("/harness/codex", &digest, SwapWhen::NextStart, patience)
+        g.swap("/harness/codex", &digest, SwapWhen::NextStart, None, patience)
     })
     .unwrap();
     assert_eq!(swapped.started, None, "nothing restarted");
@@ -4886,7 +5060,8 @@ fn a_swap_that_cannot_be_made_is_refused_typed_and_its_member_runs_on() {
     );
     assert_eq!(line, "none\n");
     let patience = Duration::from_secs(60);
-    let refused = |at: &str, digest: &str| ask(&*guest, |g| g.swap(at, digest, SwapWhen::Now, patience));
+    let refused =
+        |at: &str, digest: &str| ask(&*guest, |g| g.swap(at, digest, SwapWhen::Now, None, patience));
     let absent = format!("sha256:{}", "0".repeat(64));
     for (at, digest, why) in [
         ("/harness/codex", absent.as_str(), SwapRefusal::Artifact),

@@ -59,6 +59,7 @@ pub fn main() -> ! {
         "cat" => cat(),
         "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
         "plugged-volumes" => crate::plugged::volumes(args.get(1..).unwrap_or_default()),
+        "plugged-bound" => crate::plugged::bound(args.get(1..).unwrap_or_default()),
         "inotify" => crate::watch::main(arg(1)),
         // The steps of names differing in case alone in DIR, each its result (D235).
         "case" => {
@@ -3139,6 +3140,13 @@ fn fs(ops: &[String]) -> i32 {
                 .parse::<u64>()
                 .map_err(io::Error::other)
                 .map(|ms| std::thread::sleep(std::time::Duration::from_millis(ms))),
+            // `trap:SIG`: waits for SIG as [`trap`] does, once the operations before it are done:
+            // a member's generation that changed what its next will find, waiting for its restart
+            // (D277).
+            "trap" => match trap(rest) {
+                0 => Ok(()),
+                _ => Err(io::Error::other("trap:INT|TERM|USR1")),
+            },
             // sync(2): what was written committed to its file systems' journals.
             "sync" => {
                 // SAFETY: sync(2) takes no arguments and cannot fail.

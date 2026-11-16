@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use shards_api::volumes::ClearCause;
 use shards_template::{Kind, Struct, Value};
 
 use super::commands::{Asker, Reply};
@@ -285,8 +286,9 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `shards volume rm NAME...` (VolumesService.Remove): each removed said by its name;
-    /// one a microVM mounts is refused, with the microVMs, `-f` or not, so that no microVM
-    /// loses the data it was given (D38); with `-f`, one not there is no error.
+    /// one a microVM mounts is refused, with the microVMs, and one a run holds (D281), `-f` or
+    /// not, so that no microVM loses the data it was given (D38); with `-f`, one not there is
+    /// no error.
     pub(super) fn volume_rm(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -299,21 +301,7 @@ impl<D: Disk> Daemon<D> {
         let mut status = 0;
         let mut removed = Vec::new();
         for name in &parsed.args {
-            let said = {
-                let _held = crate::volumes::lock();
-                match store.get(name) {
-                    None if force => Ok(()),
-                    None => Err(format!("no volume is named {name}")),
-                    Some(_) => match self.volume_refs(name) {
-                        refs if !refs.is_empty() => Err(format!(
-                            "cannot remove volume {name}: in use by {}",
-                            refs.join(", ")
-                        )),
-                        _ => store.remove(name),
-                    },
-                }
-            };
-            match said {
+            match self.remove_volume(&store, name, force) {
                 Ok(()) => {
                     if styled {
                         removed.push(name.clone());
@@ -337,9 +325,41 @@ impl<D: Disk> Daemon<D> {
         status
     }
 
+    /// Volume `name` of `store` removed for `volume rm`, under the store's lock: refused while
+    /// a microVM here mounts it (its references, D38), or while a run holds it (D281: an
+    /// orchestrator's, a plug's, or a removal under way), `-f` or not; with `force`, one not
+    /// there is no error.
+    fn remove_volume(&self, store: &Store, name: &str, force: bool) -> Result<(), String> {
+        let _held = crate::volumes::lock();
+        let missing = || {
+            if force {
+                Ok(())
+            } else {
+                Err(format!("no volume is named {name}"))
+            }
+        };
+        if store.get(name).is_none() {
+            return missing();
+        }
+        let refs = self.volume_refs(name);
+        if !refs.is_empty() {
+            return Err(format!(
+                "cannot remove volume {name}: in use by {}",
+                refs.join(", ")
+            ));
+        }
+        match store.remove_unheld(name) {
+            Err((ClearCause::Unknown, _)) => missing(),
+            Err((ClearCause::InUse, _)) => Err(format!(
+                "cannot remove volume {name}: in use by a run that mounts or plugged it, or by another removal"
+            )),
+            other => other.map_err(|(_, e)| e),
+        }
+    }
+
     /// `shards volume prune` (VolumesService.Prune, withPrune): the local volumes no
-    /// microVM mounts and the filters keep, anonymous ones alone unless `all`; with the
-    /// bytes they took.
+    /// microVM mounts, no run holds (D281) and the filters keep, anonymous ones alone unless
+    /// `all`; with the bytes they took.
     pub(super) fn volume_prune(
         &self,
         parsed: &shards_cmdline::flags::Parsed,
@@ -380,9 +400,9 @@ impl<D: Disk> Daemon<D> {
         0
     }
 
-    /// The volumes a prune removes, and the bytes they took: those no microVM mounts,
-    /// of the local driver with no options, that the filters keep; anonymous ones alone
-    /// unless `all` or a filter `all` says otherwise.
+    /// The volumes a prune removes, and the bytes they took: those no microVM mounts and no
+    /// run holds (D281), of the local driver with no options, that the filters keep; anonymous
+    /// ones alone unless `all` or a filter `all` says otherwise.
     pub(super) fn prune_volumes(&self, given: &[String], all: bool) -> Result<(Vec<String>, u64), String> {
         self.await_removals();
         let mut given = given.to_vec();
@@ -435,7 +455,8 @@ impl<D: Disk> Daemon<D> {
                 continue;
             }
             let size = u64::try_from(store.size(&v.name)).unwrap_or(0);
-            if store.remove(&v.name).is_ok() {
+            // One a run holds stays, as one a microVM here mounts does.
+            if store.remove_unheld(&v.name).is_ok() {
                 reclaimed = reclaimed.saturating_add(size);
                 removed.push(v.name);
             }
@@ -483,5 +504,39 @@ mod tests {
             d.bool_or("dangling", false),
             Err("invalid filter 'dangling=[maybe]'".into())
         );
+    }
+
+    /// D281: a volume a run holds that no microVM here mounts (an orchestrator's run, a plug) is
+    /// refused `volume rm` in use, `-f` or not, and passed by `volume prune --all`, its files
+    /// kept, as the volume beside it is pruned; once let go of, it is removed. Then, gone, it is
+    /// refused by name, and with `-f` is nothing.
+    #[test]
+    fn a_volume_a_run_holds_is_neither_removed_nor_pruned() {
+        let t = super::super::tests::Test::new("volume-held");
+        let store = Store::new(&t.daemon.home);
+        let none = BTreeMap::new();
+        for name in ["held", "free"] {
+            let _changes = crate::volumes::lock();
+            store.create(name, &none, &none, "").unwrap();
+        }
+        let run = store.hold("held").unwrap().unwrap();
+        for force in [false, true] {
+            let refused = t.daemon.remove_volume(&store, "held", force).unwrap_err();
+            assert!(
+                refused.starts_with("cannot remove volume held: in use by a run"),
+                "{refused}"
+            );
+        }
+        let (pruned, _) = t.daemon.prune_volumes(&[], true).unwrap();
+        assert_eq!(pruned, ["free"]);
+        assert!(store.data("held").exists());
+        drop(run);
+        assert_eq!(t.daemon.remove_volume(&store, "held", false), Ok(()));
+        assert!(!store.data("held").exists());
+        assert_eq!(
+            t.daemon.remove_volume(&store, "held", false),
+            Err("no volume is named held".into())
+        );
+        assert_eq!(t.daemon.remove_volume(&store, "held", true), Ok(()));
     }
 }

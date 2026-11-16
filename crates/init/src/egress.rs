@@ -18,6 +18,8 @@ use shards_abi::run::egress::{self as abi, Grants};
 
 use crate::netplan::{Egress, Granted, Link};
 
+pub mod shared;
+
 /// Whether `ranges` cover every port of `range`, of its protocol.
 pub fn covers(ranges: &[Egress], (proto, lo, hi): Egress) -> bool {
     let mut of: Vec<(u16, u16)> = ranges
@@ -254,6 +256,9 @@ pub fn at_start(
             link.granted.ceiling = ceiling.clone();
             // Its way past the microVM from the start, its gate shut until a grant opens it.
             link.connects |= !ceiling.ports.is_empty() || !ceiling.named.is_empty() || ceiling.dns;
+            // Its TCP ports a peer on a network shared by runs may be granted in on (D285),
+            // Landlock's bind left to its gate likewise.
+            link.accepts |= ceiling.ports.iter().any(|&(proto, _, _)| proto == 6);
             hosts_the_host(link, ceiling, gateway);
         }
     }
@@ -312,6 +317,15 @@ struct Linked {
     /// The microVM's own subnets, which no flow past it goes to (its gate's).
     subnets: Vec<(Ipv4Addr, u8)>,
     subnets6: Vec<(Ipv6Addr, u8)>,
+    /// The ports let in to it past the microVM, at its own (D122): with its ceiling's port
+    /// grants, what a grant in on a network shared by runs stays within (D285).
+    ingress: Vec<Egress>,
+    /// Every port others open flows to it on as it was linked, which its own connections'
+    /// ports keep clear of (D61, `links::local_ports`).
+    accepted: Vec<Egress>,
+    /// Its view of each network shared by runs it is on (D285), which the agents' resolver
+    /// answers it from.
+    names: Vec<shards_dns::Names>,
 }
 
 /// Every member linked in this run, for [`change`].
@@ -334,6 +348,9 @@ pub fn linked(member: u32, domain: usize, label: &str, link: &Link, gate: &crate
         ns,
         subnets: gate.subnets.clone(),
         subnets6: gate.subnets6.clone(),
+        ingress: gate.ingress.clone(),
+        accepted: gate.accepted(),
+        names: Vec::new(),
     });
 }
 
@@ -405,7 +422,9 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
     // Its open TCP flows on those ports reset, their RSTs crossing the rules still there.
     let lost = lost(&opened(&before), &egress);
     if !lost.is_empty() {
-        reset(&l.ns, &lost, &l.subnets, &l.subnets6)?;
+        reset(&l.ns, |family, id| {
+            past_the_microvm(family, id, &lost, &l.subnets, &l.subnets6)
+        })?;
     }
     switch.regrant(l.domain, &l.own, &l.own6, &egress, dns)?;
     resolver(switch, l, &after)?;
@@ -416,8 +435,9 @@ pub fn change(args: &[Vec<u8>]) -> io::Result<()> {
 }
 
 /// The agents' resolver told what member `l` may ask now, `g`'s names: any, or its
-/// destinations' but the host itself's, which its hosts file holds (D236); started for it
-/// where it runs for no one yet.
+/// destinations' but the host itself's, which its hosts file holds (D236); and answered its
+/// view of each network shared by runs it is on (D285); started for it where it runs for no
+/// one yet.
 fn resolver(switch: &crate::links::Switch, l: &Linked, g: &Grants) -> io::Result<()> {
     let asker = crate::agentdns::Asker {
         link: crate::links::link_index(l.domain)?,
@@ -429,12 +449,12 @@ fn resolver(switch: &crate::links::Switch, l: &Linked, g: &Grants) -> io::Result
             .filter(|h| h != shards_dns::HOST)
             .collect(),
         addrs: l.own.clone(),
-        local: Vec::new(),
+        local: l.names.clone(),
     };
     if crate::agentdns::running() {
         return crate::agentdns::admit(&asker);
     }
-    if !asker.any && asker.names.is_empty() {
+    if !asker.any && asker.names.is_empty() && asker.local.is_empty() {
         return Ok(());
     }
     let (_, _, gateway) = crate::net::current()
@@ -452,23 +472,17 @@ const SOCK_DESTROY: u16 = 21;
 /// NLM_F_ACK (linux/netlink.h).
 const NLM_F_ACK: u16 = 4;
 
-/// Resets every TCP flow in network namespace `ns` to a port of `lost` at an address past the
-/// microVM (none of `subnets`, `subnets6` or loopback), by sock_diag's SOCK_DESTROY
-/// (CONFIG_INET_DIAG_DESTROY): its process reads ECONNABORTED, its peer an RST. A socket that
-/// ended meanwhile is no failure.
-fn reset(
-    ns: &OwnedFd,
-    lost: &[(u16, u16)],
-    subnets: &[(Ipv4Addr, u8)],
-    subnets6: &[(Ipv6Addr, u8)],
-) -> io::Result<()> {
-    crate::links::in_netns(Some(ns.as_raw_fd()), || {
+/// Resets every TCP flow in network namespace `ns` that `lost` names by its family and its
+/// inet_diag_sockid, by sock_diag's SOCK_DESTROY (CONFIG_INET_DIAG_DESTROY): its process reads
+/// ECONNABORTED, its peer an RST. A socket that ended meanwhile is no failure.
+fn reset(ns: &OwnedFd, lost: impl Fn(u8, &[u8; 48]) -> bool + Send) -> io::Result<()> {
+    crate::links::in_netns(Some(ns.as_raw_fd()), move || {
         let ask = crate::hostbind::diag_socket()?;
         let mut found: Vec<(u8, [u8; 48])> = Vec::new();
         for family in [libc::AF_INET as u8, libc::AF_INET6 as u8] {
             found.extend(dump(&ask, family)?.into_iter().filter_map(|m| {
                 let (family, id) = flow(&m)?;
-                past_the_microvm(family, &id, lost, subnets, subnets6).then_some((family, id))
+                lost(family, &id).then_some((family, id))
             }));
         }
         for (family, id) in found {

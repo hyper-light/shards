@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
+use shards_api::volumes::ClearCause;
 
 use super::Call;
 use super::http::Answer;
@@ -184,7 +185,7 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// `DELETE /volumes/{name}` of a microVM's own engine: its own, none of its joiners
-    /// mounting it; with `force`, one not there is no error.
+    /// mounting it and no run holding it (D281); with `force`, one not there is no error.
     pub(super) fn scoped_volume_remove(&self, given: &str, call: &Call<'_>, scope: &Scope) -> Answer {
         self.await_removals();
         let _held = crate::volumes::lock();
@@ -208,15 +209,19 @@ impl<D: Disk> Daemon<D> {
                 .collect();
             return Answer::error(409, format!("volume {given}: in use by {}", names.join(", ")));
         }
-        match Store::new(&self.home).remove(&v.name) {
+        match Store::new(&self.home).remove_unheld(&v.name) {
             Ok(()) => Answer::text(204, ""),
-            Err(e) => Answer::error(500, format!("volume {given}: {e}")),
+            Err((ClearCause::InUse, _)) => Answer::error(
+                409,
+                format!("volume {given}: in use by a run that mounts or plugged it, or by another removal"),
+            ),
+            Err((_, e)) => Answer::error(500, format!("volume {given}: {e}")),
         }
     }
 
     /// `POST /volumes/prune` of a microVM's own engine: its own volumes none of its
-    /// joiners mounts that the filters keep (`label`, `label!`), those made for none
-    /// alone unless `all`; their names there, and the bytes their files took.
+    /// joiners mounts and no run holds (D281) that the filters keep (`label`, `label!`), those
+    /// made for none alone unless `all`; their names there, and the bytes their files took.
     pub(super) fn scoped_volume_prune(&self, call: &Call<'_>, scope: &Scope) -> Answer {
         let given = match super::containers::filters(call.query("filters")) {
             Ok(f) => f.into_iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>(),
@@ -241,7 +246,7 @@ impl<D: Disk> Daemon<D> {
                 continue;
             }
             let size = u64::try_from(store.size(&v.name)).unwrap_or(0);
-            if store.remove(&v.name).is_ok() {
+            if store.remove_unheld(&v.name).is_ok() {
                 removed.push(name_there(&v).to_string());
                 bytes = bytes.saturating_add(size);
             }
@@ -286,8 +291,8 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Removes the volumes microVM `provider`'s own engine made, as `provider` goes (D181):
-    /// each no joiner mounts; one a microVM of the host's mounts stays, said in the
-    /// log.
+    /// each no joiner mounts; one a microVM of the host's mounts, or a run holds (D281), stays,
+    /// said in the log.
     pub(in crate::daemon) fn remove_own_volumes(&self, provider: &str) {
         let _held = crate::volumes::lock();
         let store = Store::new(&self.home);
@@ -299,7 +304,7 @@ impl<D: Disk> Daemon<D> {
                 ));
                 continue;
             }
-            if let Err(e) = store.remove(&v.name) {
+            if let Err((_, e)) = store.remove_unheld(&v.name) {
                 crate::daemon::log(format!("volume {}: as its microVM went: {e}", v.name));
             }
         }
