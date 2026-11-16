@@ -7,7 +7,7 @@
 //! and the tests' host ports.
 
 use std::io::{self, Read as _, Write as _};
-use std::os::windows::io::OwnedHandle;
+use std::os::windows::io::{AsRawHandle as _, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -229,6 +229,56 @@ fn open_waiting(name: &str, deadline: Option<Instant>) -> io::Result<OwnedHandle
     }
 }
 
+/// A host program's listener at a path (D272): one pair at a time, named by its file there,
+/// the next made as a client has opened both ways of the last, its way down first. A host port
+/// a guest dials (`<path>_<port>`) is listened at so, its VM's spawner the client.
+#[derive(Debug)]
+pub struct VsockListener {
+    names: VsockNames,
+    /// The pair its next client opens: none where it could not be made, made again by the
+    /// next [`accept`](VsockListener::accept).
+    pair: Option<(OwnedHandle, OwnedHandle)>,
+}
+
+/// A listener's side of a client's connection: the way down, which it writes, and the way
+/// up, which it reads, each a server end opened for overlapped calls.
+#[derive(Debug)]
+pub struct VsockConn {
+    pub down: super::Pipe,
+    pub up: super::Pipe,
+}
+
+impl VsockListener {
+    /// Listens at `path` ([`vsock_listen`]).
+    pub fn bind(path: &Path) -> io::Result<VsockListener> {
+        let (names, down, up) = vsock_listen(path)?;
+        Ok(VsockListener {
+            names,
+            pair: Some((down, up)),
+        })
+    }
+
+    /// The next client's connection, waited for until it has opened both ways (ConnectNamedPipe,
+    /// for ever), its way down first; the pair after it made at once, so that the next client
+    /// waits on its way down (ERROR_PIPE_BUSY) no longer than this takes.
+    pub fn accept(&mut self) -> io::Result<VsockConn> {
+        let (down, up) = match self.pair.take() {
+            Some(pair) => pair,
+            None => vsock_pair(&self.names, false)?,
+        };
+        for end in [&down, &up] {
+            if !super::connected(end.as_raw_handle(), &[])? {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+        }
+        self.pair = vsock_pair(&self.names, false).ok();
+        Ok(VsockConn {
+            down: super::Pipe::from_handle(down),
+            up: super::Pipe::from_handle(up),
+        })
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -335,5 +385,39 @@ mod tests {
         let opened = vsock_open(&path, Some(later));
         let _next = next.join().unwrap();
         opened.unwrap();
+    }
+
+    /// A listener lets its clients in one after another, each its own pair: the first's way
+    /// down and way up carry its bytes, and the second, opened as the first's pair is taken,
+    /// is let in by the next accept.
+    #[test]
+    fn a_listener_lets_its_clients_in_one_after_another() {
+        let dir = shards_testdir::TempDir::new("vsock-listener").unwrap();
+        let path = dir.join("v_5000");
+        let mut listener = VsockListener::bind(&path).unwrap();
+        let first = std::thread::spawn({
+            let path = path.clone();
+            move || vsock_open(&path, None).unwrap()
+        });
+        let conn = listener.accept().unwrap();
+        let (their_down, their_up) = first.join().unwrap();
+        (&conn.down).write_all(b"one").unwrap();
+        let mut got = [0u8; 3];
+        (&super::super::Pipe::from_handle(their_down))
+            .read_exact(&mut got)
+            .unwrap();
+        assert_eq!(&got, b"one");
+        (&super::super::Pipe::from_handle(their_up))
+            .write_all(b"up")
+            .unwrap();
+        let mut got = [0u8; 2];
+        (&conn.up).read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"up");
+        let second = std::thread::spawn({
+            let path = path.clone();
+            move || vsock_open(&path, None).unwrap()
+        });
+        let _second = listener.accept().unwrap();
+        drop(second.join().unwrap());
     }
 }

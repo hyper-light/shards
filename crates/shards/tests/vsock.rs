@@ -1,7 +1,8 @@
 //! vsock between the host and real guests: connections both ways, many streams at once,
 //! refusals, and restored copies of a guest that listens or holds a connection. On Windows
-//! through a VM process confined as D141 confines it: its socket bound and its host ports
-//! dialled by its spawner (PM M203).
+//! through a VM process confined as D141 confines it, a connection's host side two pipes
+//! (D272): its listener's pairs made and its host ports' opened by its spawner, a host port
+//! a pipe listener of its own ([`common::host_port`]).
 
 #![allow(
     clippy::panic,
@@ -13,14 +14,14 @@
 
 mod common;
 
-use shards_vmm::platform::{UnixListener, UnixStream};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
 use common::{
-    Following, TempDir, Vm, cannot_run_vms, cannot_snapshot, echo, kernel, test_guest, vsock_connect, within,
+    Following, TempDir, Vm, VsockStream, cannot_run_vms, cannot_snapshot, echo, host_port, host_port_accept,
+    kernel, test_guest, vsock_connect, vsock_dial, within,
 };
 const ECHO_PORT: u32 = 1234;
 
@@ -50,13 +51,13 @@ fn os(args: &[std::ffi::OsString]) -> Vec<&std::ffi::OsStr> {
 #[track_caller]
 fn boot_echo_guest(dir: &Path) -> (Vm, PathBuf) {
     let sock = dir.join("v.sock");
-    let host = UnixListener::bind(dir.join("v.sock_5000")).unwrap();
+    let mut host = host_port(dir.join("v.sock_5000"));
     // Its device's debug lines, which a failure prints with what the VM said.
     let mut vm = Vm::spawn_env(&os(&guest_args("vsock", &sock)), &[("SHARDS_LOG", "debug")]);
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let result = (|| {
-            let (mut s, _) = host.accept().map_err(|e| e.to_string())?;
+            let mut s = host_port_accept(&mut host).map_err(|e| e.to_string())?;
             let mut line = String::new();
             let mut greeting = BufReader::new(Following::of(&s, None));
             greeting.read_line(&mut line).map_err(|e| e.to_string())?;
@@ -107,7 +108,7 @@ fn refused_ports_and_bad_handshakes_close_the_host_socket() {
             vsock_connect(&sock, 4321).is_err(),
             "a port nobody listens on was accepted"
         );
-        let mut s = UnixStream::connect(&sock).unwrap();
+        let mut s = vsock_dial(&sock).unwrap();
         s.write_all(b"HELLO 1234\n").unwrap();
         let mut rest = Vec::new();
         assert_eq!(
@@ -172,9 +173,9 @@ fn restored_copies_listen_on_their_own_sockets() {
 fn greet_once(sock: &Path) -> thread::JoinHandle<String> {
     let mut path = sock.as_os_str().to_owned();
     path.push("_5000");
-    let host = UnixListener::bind(path).unwrap();
+    let mut host = host_port(path);
     thread::spawn(move || {
-        let (s, _) = host.accept().unwrap();
+        let s = host_port_accept(&mut host).unwrap();
         let mut reader = BufReader::new(Following::of(&s, None));
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
@@ -259,10 +260,9 @@ fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
 /// that sends a stream and closes it while its host's way is open (close(2), one SHUTDOWN of
 /// RCV and SEND: the test guest's `C`), or cuts it as shards-init's relay does (its reads'
 /// end, then both ways: `X`), has its host read every byte, in order, then end-of-stream,
-/// never a reset. On Unix a host's write after it then fails, and is never taken for a guest
-/// that has gone; on Windows the VM process holds its end until the host ends its own, as a
-/// close there loses its peer what it had not read (PM M358), and the host's writes go
-/// nowhere meanwhile, an open limit of Windows' AF_UNIX.
+/// never a reset. A host's write after it then fails, and is never taken for a guest that has
+/// gone: on Windows at once, ERROR_NO_DATA (232), as the VM closes its connection's way up
+/// before its way down's end (D272), where on AF_UNIX it was taken and went nowhere (PM M358).
 #[test]
 fn a_guest_that_ends_its_stream_gives_its_host_every_byte_first() {
     if cannot_run_vms() {
@@ -293,12 +293,20 @@ fn a_guest_that_ends_its_stream_gives_its_host_every_byte_first() {
             // bounded by `within`, never filling a socket nobody reads.
             #[cfg(unix)]
             while (&s).write(b"x").is_ok() {}
+            // On Windows the first fails: its way up closed before its way down's end.
+            #[cfg(windows)]
+            assert_eq!(
+                (&s).write(b"x").map_err(|e| e.raw_os_error()),
+                Err(Some(232)),
+                "{}: a write after the guest's end",
+                op as char
+            );
         }
     });
 }
 
 /// A connection to the test guest's `vsock_bench`, asking for `op` of `bytes` bytes.
-fn bench_open(sock: &Path, op: u8, bytes: u64) -> UnixStream {
+fn bench_open(sock: &Path, op: u8, bytes: u64) -> VsockStream {
     let mut s = vsock_connect(sock, BENCH_PORT).unwrap();
     let mut head = [0u8; 9];
     head[0] = op;

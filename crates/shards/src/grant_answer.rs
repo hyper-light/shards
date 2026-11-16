@@ -1110,6 +1110,14 @@ mod windows_tests {
     fn a_vms_vsock_pipes_are_made_and_dialled_for_it() {
         use shards_vmm::platform::{Listening, Paired, Pipes, listen_pipes};
         use std::time::{Duration, Instant};
+        // A pair's connects finish as their clients open them: the next looks', as they land.
+        let whole = |pair: &mut Listening, what: &str| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while pair.look() != Paired::Connected {
+                assert!(Instant::now() < deadline, "{what}: not whole after 10 s");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
         let until = |p: &mut Pipes, what: &str| {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
@@ -1145,23 +1153,15 @@ mod windows_tests {
             let ((down, up), _) = listen_pipes(&vsock).unwrap();
             let mut first = Listening::new(down, up);
             let theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
-            assert_eq!(first.look(), Paired::Connected, "the granted pair is the path's");
+            whole(&mut first, "the granted pair, the path's");
             drop((first, theirs));
             let (down, up) = crate::grant_ask::next_pair(&vm).unwrap();
             let mut next = Listening::new(down, up);
             let _theirs = shards_ipc::vsock_open(&vsock, None).unwrap();
-            assert_eq!(
-                next.look(),
-                Paired::Connected,
-                "the next pair is the first's names'"
-            );
+            whole(&mut next, "the next pair, the first's names'");
             assert_eq!(shards_ipc::VsockNames::read(&vsock).unwrap(), names);
             let mut dialled = dial(&vm, 5000).unwrap();
-            assert_eq!(
-                host.look(),
-                Paired::Connected,
-                "the dial opened the host port's pair"
-            );
+            whole(&mut host, "the host port's pair, the dial's");
             let mut host = host.into_pipes().unwrap();
             dialled.write_all_waiting(b"x").unwrap();
             until(&mut host, "the guest's byte");

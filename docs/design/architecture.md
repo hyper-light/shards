@@ -32742,7 +32742,7 @@ step 9 lists each); a provider that issues sender-constrained tokens, DPoP- or m
 (then bearer substitution cannot serve it, and it is fallback); a measured injector cost
 that a run cannot bear (then the native-sign-in delegation path, which stays, D231).
 
-### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal building; its three real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed)
+### D243. A command run in a member: born into its PID namespace and cgroup, in its command's namespaces, and confined as that command is (built: plan step 6, the CLI's and init's, every run's through the run protocol; a member's own terminal built, D244; its three real-VM tests passing on HVF and KVM x86-64, PM M605; on WHP and KVM arm64, and its other real-VM runs, owed)
 
 **Why.** Plan step 6 (G24, D240): kiln runs a harness's sign-in in its member and shows its
 own screen, so a command run in a member must run as the member does, with a terminal that
@@ -33038,7 +33038,7 @@ ask. A member's own stdio is attached through step 5's streams (D240).
 
 **A member's own terminal** is D244's.
 
-### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs; its real-VM tests passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
+### D244. A member's own terminal: its stdio a pty whose master init holds, shown as its stdout, typed into through its stdin, sized by its owner (built: plan step 6, an orchestrator's runs, and a daemon's since goal 58's step 6; its real-VM tests passing on HVF and KVM x86-64, PM M605; WHP and KVM arm64 owed)
 
 **Why.** Plan step 6 (G24, D240): kiln shows a harness's own screen and its sign-in, so a
 member must be able to run on a terminal of its own, its owner reading what it shows,
@@ -37231,7 +37231,7 @@ for its VM process, as D269's did (a Linux run host starts its VM binary through
 **Owed** (ROOT, real VMs): both on WHP and KVM arm64; the test guest's `plugged-volumes` mode is
 new, so the test guests are rebuilt.
 
-### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S3 built, S4 and S5 owed; Windows tests and WHP runs owed)
+### D272. A vsock connection's Windows host side is a named pipe each way (decided 2026-11-15; S0 and S0b measured, S1-S5 built; their Windows tests, xwin clippy of S3-S5 and the WHP runs owed)
 
 **Why.** D251's amendment holds that every byte a guest sent before its end is its host's,
 and ROOT's second invariant that a host's write after the guest's end fails at once. Windows'
@@ -37444,6 +37444,52 @@ written, not run):
   refused, the granted pair the path's, the next pair the first's names', a dial's byte and
   its close its host's, a dial and a pair before any vsock path refused, nothing granted after
   the start); vm_run `each_rate_handed_over_is_answered_on_its_pipes`.
+
+**S4, built** (`shards_api`'s client and the tests' helpers; Windows tests written, not run):
+- *`shards_api`'s stream on Windows* (stream.rs `pipes`): it connects by the path's file
+  (`shards_ipc::vsock_open`, its way down first, each waited for while another client holds
+  it, to the dial's deadline; a dial that waits for nothing says `WouldBlock`). A read is an
+  overlapped call waited for to its deadline (`Pipe::read_by`); what is there is read without
+  waiting (`Pipe::peek`), and a wait for something to read, or the end, is a read of no bytes
+  (M348). A write is one call at a time, its bytes the stream's until it finishes, as a send
+  buffer holds what a send took, at most the way up's quota: a pipe says nothing of its room
+  (M549), and none is cancelled while the stream lives (M603); a wait for room waits on that
+  write's event, so a peer that stops reading holds no write past its timeout. `shutdown(Write)`
+  waits for the write under way, then closes the way up. Clones share the pipes, as a socket's
+  descriptors share it. `pair()`, the simulator's, is a pipe each way, of the vsock quota.
+- *Its public types on Windows*: `Handle` is the way down's handle (`BorrowedHandle`), and
+  `OwnedSocket` both pipes' handles (`down`, `up`: copies, each none where the OS made none,
+  the way up also where its writes were shut down). Hex's own loop on Windows reads the way
+  down by an overlapped read of no bytes, and writes through the stream.
+- *shards_ipc*: `VsockListener`, a host program's listener (a host port's): one pair at a
+  time, the next made as a client's is taken; `VsockConn`; `Pipe::peek`, `Pipe::read_by`, and
+  a pipe's handle taken back (`From<Pipe> for OwnedHandle`).
+- *The tests' helpers* (`crates/shards/tests/common`): `VsockStream`, on Windows `PipeStream`
+  (its reads overlapped and timed, its writes as `std` writes a file, a refused one's error the
+  OS's own, 232 once its reader has closed); `vsock_dial`; `HostPort`, `host_port`,
+  `host_port_accept`. `vsock_connect` and `echo` ride them, `echo`'s writer sharing its stream
+  (a pipe's end is one handle, whose close alone is its end for its peer). boot.rs's managed
+  rate test dials by `vsock_dial`.
+- *Owed on Windows*: fixtures that stand in for a guest's socket with AF_UNIX listeners run on
+  Unix alone now, their Windows forms on pipes owed: `shards_api`'s `borrowed_tests`
+  (docs/research/measurements/managed-borrowed-nowait/focused.rs and the two it includes) and
+  `a_dial_to_a_full_listener_is_asked_again_within_its_patience`. On pipes a dial to a pair
+  another client holds waits to its deadline (D272's order), never refused as a full backlog
+  is: that test's Windows form expects the dial's expiry.
+- *Tests* (Windows, written, not run): shards_ipc `a_listener_lets_its_clients_in_one_after_another`;
+  `shards_api`'s stream tests over pipes (`pair`), `a_streams_socket_is_handed_over` taking its
+  pipes, the inheritability check on the way down's handle; client.rs's rate stand-in on a
+  `VsockListener`.
+
+**S5, built** (crates/shards/tests/vsock.rs on pipes; to be run on WHP, jupiter, by ROOT):
+- Its host ports are `host_port`s, its raw dials `vsock_dial`s, its streams `VsockStream`s:
+  each test runs on every host as written, Windows' over pipes.
+- `a_guest_that_ends_its_stream_gives_its_host_every_byte_first`: on Windows a host's write
+  after the guest's end, which it read after every byte, fails at once, ERROR_NO_DATA (232),
+  for the close (`C`) and the cut (`X`) alike. Red on AF_UNIX, where it was taken and went
+  nowhere (M358); green on pipes, as the device closes a connection's way up before its way
+  down's end can be read: as the connection ends (`Conn::end`), and where the guest's one
+  SHUTDOWN ends both ways at once and its way down closes in the same turn (`Conn::flush`).
 
 **A client's change** (Hex's on Windows): read the file at the VM's socket path for its
 pipes' names and open both (CreateFileW, SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION),
