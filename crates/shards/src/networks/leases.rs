@@ -14,12 +14,19 @@
 //! any of this waits for, and no caller holds it across another process's answer.
 //!
 //! ```text
-//! networks/lock                     the home's networks held still (hold)
-//! networks/ID.leases/addr/A.B.C.D   an address, held by the run on it: its holder's ID
-//! networks/ID.leases/addr6/HEX      an IPv6 address, its 128 bits in hex: its holder's ID
-//! networks/ID.leases/name/@NAME     a name on the network: the address it names
-//! networks/ID.leases/pairer         the process linking the network's members (Pairing)
+//! networks/lock                          the home's networks held still (hold)
+//! networks/ID.leases/addr/A.B.C.D        an address, held by the run on it: its holder's ID
+//! networks/ID.leases/addr6/HEX           an IPv6 address, its 128 bits in hex: its holder's ID
+//! networks/ID.leases/name/@NAME          a member's name, one member's: the address it names
+//! networks/ID.leases/alias/@NAME/A.B.C.D an alias, shared: an address that answers to it
+//! networks/ID.leases/pairer              the daemon linking the network's members (Pairing)
+//! networks/ID.leases/pairers/HOLDER      a run host of the orchestrator linking them: its token
 //! ```
+//!
+//! Names follow Docker's rules (ROOT, 2026-11-16): a member's own name, a container's, is one
+//! member's; an alias is shared, Compose's scaled replicas answering to one each at its own
+//! address (moby f78c987a, daemon/names/names.go's grammar; libnetwork's service records, a
+//! name to every address that has it).
 
 use std::fs::File;
 use std::io::{self, Read as _, Write as _};
@@ -44,6 +51,16 @@ const ADDRESSES6: &str = "addr6";
 const HEX6: usize = 2 * std::mem::size_of::<u128>();
 /// A network's name leases' directory.
 const NAMES: &str = "name";
+/// A network's aliases' directory: a directory for each alias, a lease in it for each address
+/// that answers to it.
+const ALIASES: &str = "alias";
+/// The leases of an orchestrator's run hosts that link a network's members, each by its
+/// holder's ID, saying its orchestrator's token.
+const PAIRERS: &str = "pairers";
+/// The longest name a lease holds: a whole name in the DNS (RFC 1035 §2.3.4, 255 octets on
+/// the wire, 253 in text), so that every name a network's resolver could be asked fits, and
+/// with `@` its file's name fits each supported filesystem's 255 bytes.
+const NAME_LEN: usize = 253;
 /// What begins a name lease's file: Windows takes a base name of `CON`, `PRN`, `AUX`, `NUL`,
 /// `COM1`-`COM9` or `LPT1`-`LPT9`, with any extension, for a device (Microsoft, "Naming Files,
 /// Paths, and Namespaces"), each of them a host's name too; `@` begins none, nor any host's
@@ -68,10 +85,12 @@ pub enum Refused {
     OutOfRange(IpAddr),
     /// Every address of the pool's range is in use.
     Exhausted,
-    /// The name is a live lease's on the network, whatever its case.
+    /// The name is a live lease's on the network, whatever its case: a member's, or an alias
+    /// its address answers to already.
     NameTaken(String),
-    /// Not a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1), which the network's resolver
-    /// answers.
+    /// Neither a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1) nor a container's (Docker's
+    /// `[a-zA-Z0-9][a-zA-Z0-9_.-]+`), or longer than [`NAME_LEN`], or ending in `.`, which
+    /// Windows drops from a file's name (Microsoft, "Naming Files, Paths, and Namespaces").
     NotAName(String),
     /// An ID (a holder's, a network's) that is not a microVM ID's form.
     NotAnId,
@@ -92,7 +111,7 @@ impl std::fmt::Display for Refused {
             Refused::NameTaken(name) => write!(f, "{name}: another member's name on the network"),
             Refused::NotAName(name) => write!(
                 f,
-                "{name:?}: not a host's name (letters, digits and hyphens, labels of 63 bytes at most, 253 in all)"
+                "{name:?}: not a host's name nor a container's ([a-zA-Z0-9][a-zA-Z0-9_.-]+, 253 bytes at most, no last dot)"
             ),
             Refused::NotAnId => write!(f, "not an ID: {ID_LEN} lowercase hex digits"),
             Refused::InUse => f.write_str("in use: a lease of it lives, or a process links its members"),
@@ -175,10 +194,21 @@ impl Drop for Name {
 }
 
 /// The process that links a network's members (D285: one at a time, so that its members are
-/// never split between two that cannot link them), until it drops or the process ends.
+/// never split between two that cannot link them), until it drops or the process ends: the
+/// daemon's, or one run host's share of its orchestrator's ([`Leases::pair_as`]), its lease
+/// removed as it drops.
 #[derive(Debug)]
 pub struct Pairing {
+    path: Option<PathBuf>,
     _held: Locked,
+}
+
+impl Drop for Pairing {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 impl Leases {
@@ -210,10 +240,11 @@ impl Leases {
             .collect())
     }
 
-    /// Each name held now, with the address it names (none where its record is not one);
-    /// each lease no process holds removed.
+    /// Each name held now, with the address it names (none where its record is not one):
+    /// each member's, then each alias at each address that answers to it; each lease no
+    /// process holds removed.
     pub fn names(&self, _held: &Held) -> Result<Vec<(String, Option<Ipv4Addr>)>, Refused> {
-        Ok(live(&self.dir.join(NAMES), ADDRESS_LEN)?
+        let mut names: Vec<(String, Option<Ipv4Addr>)> = live(&self.dir.join(NAMES), ADDRESS_LEN)?
             .into_iter()
             .filter_map(|(file, said)| {
                 let name = file.strip_prefix(NAME_MARK)?.to_string();
@@ -222,7 +253,27 @@ impl Leases {
                     .and_then(|s| s.parse::<Ipv4Addr>().ok());
                 Some((name, ip))
             })
-            .collect())
+            .collect();
+        let aliases = match std::fs::read_dir(self.dir.join(ALIASES)) {
+            Ok(aliases) => aliases,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(names),
+            Err(e) => return Err(io_err("a network's aliases")(e)),
+        };
+        for alias in aliases {
+            let alias = alias.map_err(io_err("a network's aliases"))?;
+            let Some(name) = alias
+                .file_name()
+                .to_str()
+                .and_then(|f| f.strip_prefix(NAME_MARK))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            for (file, _) in live(&alias.path(), 0)? {
+                names.push((name.clone(), file.parse::<Ipv4Addr>().ok()));
+            }
+        }
+        Ok(names)
     }
 
     /// An address of `pool` held for `holder` from now on: `asked`, anywhere in the pool's
@@ -295,13 +346,11 @@ impl Leases {
         })
     }
 
-    /// `name` on the network, lowercased (RFC 4343), naming `lease`'s address, held from now
-    /// on: refused where a live lease holds it.
+    /// `name` on the network, a member's own and one member's (a container's name, Docker's
+    /// rule), lowercased (RFC 4343), naming `lease`'s address, held from now on: refused where
+    /// a live lease holds it.
     pub fn name(&self, _held: &Held, lease: &Lease, name: &str) -> Result<Name, Refused> {
-        let name = name.to_ascii_lowercase();
-        if !shards_net::dns::host_name(&name) {
-            return Err(Refused::NotAName(name));
-        }
+        let name = named(name)?;
         let dir = self.dir.join(NAMES);
         make_dirs(&dir)?;
         let file = format!("{NAME_MARK}{name}");
@@ -315,10 +364,72 @@ impl Leases {
         }
     }
 
+    /// `name` as an alias `lease`'s address answers to on the network, lowercased, held from
+    /// now on: shared, every address that holds it answered (Docker's rule for an alias,
+    /// Compose's scaled replicas each at its own); refused [`Refused::NameTaken`] where
+    /// `lease`'s address holds it already.
+    pub fn alias(&self, _held: &Held, lease: &Lease, name: &str) -> Result<Name, Refused> {
+        let name = named(name)?;
+        let dir = self.dir.join(ALIASES).join(format!("{NAME_MARK}{name}"));
+        make_dirs(&self.dir.join(ALIASES))?;
+        super::make_dir(&dir).map_err(io_err("a network's aliases"))?;
+        match made(&dir, &lease.ip.to_string(), &[])? {
+            Some((path, lock)) => Ok(Name {
+                name,
+                path,
+                _held: lock,
+            }),
+            None => Err(Refused::NameTaken(name)),
+        }
+    }
+
+    /// The network's pairing, shared by the run hosts of the orchestrator whose token is
+    /// `pairer` (D285 slice 4: its process makes their links), this run host's, `holder`, from
+    /// now on: refused [`Refused::PairedElsewhere`] where the daemon pairs it, where another
+    /// orchestrator's run host holds it, or where `holder` holds it already. Its lease says
+    /// its orchestrator's token; a run host's end lets it go with its other leases.
+    pub fn pair_as(&self, held: &Held, pairer: &str, holder: &str) -> Result<Pairing, Refused> {
+        if !is_id(pairer) || !is_id(holder) {
+            return Err(Refused::NotAnId);
+        }
+        if self.paired(held)? {
+            return Err(Refused::PairedElsewhere);
+        }
+        let others = live(&self.dir.join(PAIRERS), ID_LEN)?;
+        if others
+            .iter()
+            .any(|(_, said)| said.as_slice() != pairer.as_bytes())
+        {
+            return Err(Refused::PairedElsewhere);
+        }
+        let dir = self.dir.join(PAIRERS);
+        make_dirs(&dir)?;
+        let (path, lock) = made(&dir, holder, pairer.as_bytes())?.ok_or(Refused::PairedElsewhere)?;
+        Ok(Pairing {
+            path: Some(path),
+            _held: lock,
+        })
+    }
+
+    /// Whether the daemon pairs the network now: its pairer's file held.
+    fn paired(&self, _held: &Held) -> Result<bool, Refused> {
+        match File::open(self.dir.join(PAIRER)) {
+            Ok(file) => Ok(Locked::try_hold(file)
+                .map_err(io_err("a network's pairer"))?
+                .is_none()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(io_err("a network's pairer")(e)),
+        }
+    }
+
     /// The network's pairing, this process's from now on: refused
     /// [`Refused::PairedElsewhere`] while another open of it holds it, this process's own
-    /// among them, so that a process holds one pairing of a network, which its runs share.
+    /// among them, so that a process holds one pairing of a network, which its runs share;
+    /// and while an orchestrator's run hosts pair it ([`Leases::pair_as`]).
     pub fn pair(&self, _held: &Held) -> Result<Pairing, Refused> {
+        if !live(&self.dir.join(PAIRERS), ID_LEN)?.is_empty() {
+            return Err(Refused::PairedElsewhere);
+        }
         super::make_dir(&self.dir).map_err(io_err("a network's leases"))?;
         let file = File::options()
             .create(true)
@@ -328,7 +439,10 @@ impl Leases {
             .map_err(io_err("a network's pairer"))?;
         Locked::try_hold(file)
             .map_err(io_err("a network's pairer"))?
-            .map(|held| Pairing { _held: held })
+            .map(|held| Pairing {
+                path: None,
+                _held: held,
+            })
             .ok_or(Refused::PairedElsewhere)
     }
 
@@ -338,6 +452,7 @@ impl Leases {
         if !self.addresses(held)?.is_empty()
             || !self.addresses6(held)?.is_empty()
             || !self.names(held)?.is_empty()
+            || !live(&self.dir.join(PAIRERS), ID_LEN)?.is_empty()
         {
             return Err(Refused::InUse);
         }
@@ -363,6 +478,18 @@ impl Leases {
 /// Whether `id` is a microVM ID's form: [`ID_LEN`] lowercase hex digits.
 fn is_id(id: &str) -> bool {
     lower_hex(id, ID_LEN)
+}
+
+/// `name` as a lease holds it, lowercased (RFC 4343): a host's name or a container's, at most
+/// [`NAME_LEN`] bytes, its last not `.`; refused [`Refused::NotAName`] otherwise.
+fn named(name: &str) -> Result<String, Refused> {
+    let name = name.to_ascii_lowercase();
+    let container = !name.starts_with('/') && crate::containers::valid_name(&name);
+    if (shards_net::dns::host_name(&name) || container) && name.len() <= NAME_LEN && !name.ends_with('.') {
+        Ok(name)
+    } else {
+        Err(Refused::NotAName(name))
+    }
 }
 
 /// Whether `s` is `len` lowercase hex digits.
@@ -703,7 +830,8 @@ mod tests {
     }
 
     /// A name is held once on a network, whatever its case, until it is let go or its holder
-    /// ends; a name that is not a host's is refused.
+    /// ends; a container's name (Docker's grammar, `_` and `.` among it) is held as a host's
+    /// is; one that is neither, too long, or ending in `.` is refused.
     #[test]
     fn a_name_is_held_once_on_a_network_whatever_its_case() {
         let (home, held, leases) = network("leases-names");
@@ -720,11 +848,17 @@ mod tests {
             leases.names(&held).unwrap(),
             vec![("db".to_string(), Some(a.ip()))]
         );
-        let long = "a".repeat(64);
-        for bad in ["", "db_1", "-db", "db-", "1234", long.as_str()] {
+        let long = "a".repeat(NAME_LEN + 1);
+        for bad in ["", "-db", "_db", "db.", "/db", "a/b", "a\\b", long.as_str()] {
             assert_eq!(
                 leases.name(&held, &b, bad).unwrap_err(),
                 Refused::NotAName(bad.to_ascii_lowercase())
+            );
+        }
+        for docker in ["Web_1", "proj.web.1", "1234", "db-"] {
+            assert_eq!(
+                leases.name(&held, &b, docker).unwrap().name(),
+                docker.to_ascii_lowercase()
             );
         }
         // A device's name on Windows is a host's name, held as any other.
@@ -739,6 +873,81 @@ mod tests {
             .join(NAMES);
         std::fs::write(dir.join("@cache"), "10.89.0.9").unwrap();
         assert_eq!(leases.name(&held, &a, "cache").unwrap().name(), "cache");
+    }
+
+    /// An alias is answered at every address that holds it, Compose's scaled replicas each at
+    /// its own (Docker's rule); one address holds it once; a member's own name beside it is
+    /// one member's still; and an alias let go is no longer answered at its address.
+    #[test]
+    fn an_alias_is_answered_at_every_address_that_holds_it() {
+        let (_home, held, leases) = network("leases-alias");
+        let range = pool("10.89.0.0/24");
+        let a = leases.take(&held, &range, None, &id('a')).unwrap();
+        let b = leases.take(&held, &range, None, &id('b')).unwrap();
+        let web_a = leases.alias(&held, &a, "Web").unwrap();
+        let web_b = leases.alias(&held, &b, "web").unwrap();
+        assert_eq!(web_a.name(), "web");
+        assert_eq!(
+            leases.alias(&held, &a, "web").unwrap_err(),
+            Refused::NameTaken("web".into())
+        );
+        let own = leases.name(&held, &a, "proj-web-1").unwrap();
+        assert_eq!(
+            leases.name(&held, &b, "proj-web-1").unwrap_err(),
+            Refused::NameTaken("proj-web-1".into())
+        );
+        assert_eq!(
+            sorted(leases.names(&held).unwrap()),
+            vec![
+                ("proj-web-1".to_string(), Some(a.ip())),
+                ("web".to_string(), Some(a.ip())),
+                ("web".to_string(), Some(b.ip())),
+            ]
+        );
+        drop(web_b);
+        assert_eq!(
+            sorted(leases.names(&held).unwrap()),
+            vec![
+                ("proj-web-1".to_string(), Some(a.ip())),
+                ("web".to_string(), Some(a.ip())),
+            ]
+        );
+        assert_eq!(leases.clear(&held).unwrap_err(), Refused::InUse);
+        drop((own, web_a));
+    }
+
+    /// An orchestrator's run hosts share a network's pairing, each its own lease saying their
+    /// orchestrator's token (D285 slice 4): another orchestrator's run host and the daemon are
+    /// refused while one holds it, and a network so paired is in use; once the last lets go,
+    /// the daemon pairs it, and no run host does meanwhile.
+    #[test]
+    fn an_orchestrators_run_hosts_share_a_pairing_no_other_process_takes() {
+        let (_home, held, leases) = network("leases-pair-as");
+        let (ours, theirs) = (id('1'), id('2'));
+        let a = leases.pair_as(&held, &ours, &id('a')).unwrap();
+        let b = leases.pair_as(&held, &ours, &id('b')).unwrap();
+        assert_eq!(
+            leases.pair_as(&held, &ours, &id('a')).unwrap_err(),
+            Refused::PairedElsewhere
+        );
+        assert_eq!(
+            leases.pair_as(&held, &theirs, &id('c')).unwrap_err(),
+            Refused::PairedElsewhere
+        );
+        assert_eq!(leases.pair(&held).unwrap_err(), Refused::PairedElsewhere);
+        assert_eq!(leases.clear(&held).unwrap_err(), Refused::InUse);
+        assert_eq!(
+            leases.pair_as(&held, "not-a-token", &id('c')).unwrap_err(),
+            Refused::NotAnId
+        );
+        drop((a, b));
+        let daemon = leases.pair(&held).unwrap();
+        assert_eq!(
+            leases.pair_as(&held, &theirs, &id('c')).unwrap_err(),
+            Refused::PairedElsewhere
+        );
+        drop(daemon);
+        assert!(leases.pair_as(&held, &theirs, &id('c')).is_ok());
     }
 
     /// One open of a network's pairer holds it at a time, as one process's would against

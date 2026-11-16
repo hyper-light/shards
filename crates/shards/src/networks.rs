@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use shards_net::bridge::{Prefix, free_subnet, overlap};
 
-// Its names' caller is D285's slice 4 (a run host's members); the daemon leases its runs'
-// addresses alone (slice 2).
+// A run host leases its members' names (D285 slice 4); its aliases' caller is the daemon's
+// names on a network, which it leases not yet (slice 2 leases its runs' addresses alone).
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod leases;
 

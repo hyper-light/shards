@@ -257,8 +257,8 @@ pub enum Refusal {
     Overlaps,
     /// A link to an address at which no member of another run is.
     NotAPeer,
-    /// Fewer descriptors left the process than the links its join still needs, which
-    /// would come cut from their messages.
+    /// The process could not hold a descriptor for each link its join still needs, which
+    /// would come cut from their messages (`sys::reserve`).
     NoDescriptors,
     /// A grant added that the run holds already.
     Granted,
@@ -375,6 +375,15 @@ impl Network {
         self.names = names;
     }
 
+    /// Each other run's address on it, once: a link's to come where it has none.
+    pub(crate) fn runs(&self) -> std::collections::HashSet<Ipv4Addr> {
+        self.members
+            .values()
+            .copied()
+            .filter(|&at| at != self.address)
+            .collect()
+    }
+
     /// Whether a member of another run is at `peer`: a link there is one of its.
     pub(crate) fn names_peer(&self, peer: Ipv4Addr) -> bool {
         peer != self.address && self.members.values().any(|&at| at == peer)
@@ -468,6 +477,10 @@ fn count(ports: &Ports) -> u64 {
 pub(crate) struct Networks(Vec<Network>);
 
 impl Networks {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Network> {
+        self.0.iter()
+    }
+
     pub(crate) fn get(&self, id: &NetworkId) -> Option<&Network> {
         self.0.iter().find(|n| n.id == *id)
     }
