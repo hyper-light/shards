@@ -5441,6 +5441,8 @@ Agentfile directive's source is its own grant.
   (D101) is how a build refuses an `ADD`'s hosts.
 - Tests: `a_fetch_reaches_its_own_origin_and_what_it_grants_alone`,
   `a_git_source_opens_only_the_remotes_it_grants`,
+  `a_git_sources_redirect_elsewhere_is_refused_until_granted` (a smart-HTTP advertisement
+  redirected to another origin: refused naming both, nothing sent there; followed once granted),
   `a_granted_fetch_is_refused_a_redirect_it_does_not_name`,
   `a_skill_from_a_redirecting_source_is_fetched_once_granted`; real VMs:
   `a_skill_from_a_redirecting_source_builds_once_granted`.

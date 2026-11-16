@@ -1473,6 +1473,54 @@ mod tests {
         );
     }
 
+    /// A Git source's fetch over smart HTTP is held to its directive's grant (D54, P4.3): its
+    /// advertisement redirected to another origin is refused before anything is sent there,
+    /// naming both origins, and followed once `--redirect` grants that origin.
+    #[test]
+    fn a_git_sources_redirect_elsewhere_is_refused_until_granted() {
+        let (elsewhere, seen_elsewhere) = super::super::http::serve(|_| {
+            (
+                format!("HTTP/1.1 200 OK\r\nContent-Type: {ADVERTISEMENT_TYPE}"),
+                b"0000".to_vec(),
+            )
+        });
+        let (first, _) = super::super::http::serve(move |_| {
+            (
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{elsewhere}/repo.git/info/refs?service=git-upload-pack"
+                ),
+                Vec::new(),
+            )
+        });
+        let url = format!("http://127.0.0.1:{first}/repo.git");
+        let asking = Asking::new(&Cancel::new(), None).unwrap();
+        let advertised = |grant: &super::super::grant::Redirects| {
+            let http = Http::new(&url, &asking, None, Some((url.as_str(), grant)))?;
+            let mut body = Vec::new();
+            http.advertise()?
+                .read_to_end(&mut body)
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>(body)
+        };
+        assert_eq!(
+            advertised(&super::super::grant::Redirects::default()),
+            Err(format!(
+                "unable to access 'http://127.0.0.1:{first}/repo.git/': redirected from http://127.0.0.1:{first} to http://127.0.0.1:{elsewhere}, which the source does not grant: name it with --redirect=HOST[:PORT]"
+            ))
+        );
+        assert!(
+            seen_elsewhere.lock().unwrap().is_empty(),
+            "nothing reached the origin refused"
+        );
+        let granted = super::super::grant::of(&BTreeMap::from([(
+            b"shards.grant".to_vec(),
+            format!("127.0.0.1:{elsewhere}").into_bytes(),
+        )]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(advertised(&granted), Ok(b"0000".to_vec()));
+    }
+
     #[test]
     fn sources_are_read_as_the_plan_writes_them() {
         let attrs: BTreeMap<Vec<u8>, Vec<u8>> = [
