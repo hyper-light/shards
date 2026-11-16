@@ -103,8 +103,10 @@ pub use shards_abi::run::nesting::Ready;
 /// member's own reach past its microVM (D278): the most it may be given ([`Request::egress_ceiling`])
 /// and its reach set as the run goes ([`NetChange::Member`]), so that a side that holds no
 /// member apart in its guest refuses the run as it is asked, rather than leaving a member the
-/// reach its orchestrator took back.
-pub const VERSION: u8 = 39;
+/// reach its orchestrator took back; 40, components swapped into a running microVM (D270 slice
+/// 4): a member's component at its path asked by digest or its image's back ([`to_host::SWAP`],
+/// [`SwapAsk`], [`SwapAnswer`]), so that a side that swaps none refuses the run as it is asked.
+pub const VERSION: u8 = 40;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -160,6 +162,8 @@ pub mod to_host {
     pub const NET: u8 = 45;
     /// A member started again in its microVM (D270 slice 3b): [`RestartAsk`].
     pub const RESTART: u8 = 47;
+    /// A member's component swapped by digest, or its image's back (D270 slice 4): [`SwapAsk`].
+    pub const SWAP: u8 = 49;
 }
 
 /// What the run host sends.
@@ -233,6 +237,8 @@ pub mod to_client {
     pub const NET_CHANGED: u8 = 46;
     /// What came of a [`to_host::RESTART`](super::to_host::RESTART): [`RestartAnswer`].
     pub const RESTARTED: u8 = 48;
+    /// What came of a swap (D270 slice 4): [`SwapAnswer`], the run's components after it.
+    pub const SWAPPED: u8 = 50;
 }
 
 /// Why a payload could not be read or written.
@@ -1339,6 +1345,79 @@ pub enum RestartRefusal {
 pub struct RestartAnswer {
     pub id: u32,
     pub result: Result<u32, (RestartRefusal, String)>,
+}
+
+/// When a swap takes its member (D270 slice 4): at its next start (its next restart, by its
+/// orchestrator or its own end), or now, its member restarted at once as [`RestartAsk`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapWhen {
+    NextStart = 0,
+    Now = 1,
+}
+
+/// What a swap asks (D270 slice 4): a member's component at its path (`/agents/NAME`,
+/// `/harness/NAME`, `/mcp/NAME`), an OSI artifact of the run host's store by its manifest's
+/// digest (`sha256:…`), or its image's own back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwapChange {
+    Swap { at: String, digest: String },
+    Restore { at: String },
+}
+
+/// A swap asked, its answer named by `id`, waiting at most `patience` for each of its steps (its
+/// member's restart's among them, where `when` is now).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapAsk {
+    pub id: u32,
+    pub change: SwapChange,
+    pub when: SwapWhen,
+    pub patience: std::time::Duration,
+}
+
+/// One member's component as its run host holds it (D270 slice 4): its path; the component its
+/// next start lays there, by digest, none for its image's own; and the one its current
+/// generation runs with, none for its image's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentAt {
+    pub at: String,
+    pub desired: Option<String>,
+    pub held: Option<String>,
+}
+
+/// Why a swap was refused (D270 slice 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapRefusal {
+    /// No member of the run's image runs at that path.
+    Unknown = 1,
+    /// No OSI artifact of that digest in its host's store, or one it cannot read.
+    Artifact = 2,
+    /// An artifact of another kind than its path's (an agent's at a harness's path).
+    Kind = 3,
+    /// An artifact of another platform than its microVM's.
+    Platform = 4,
+    /// An artifact that asks past what its member is granted.
+    Asks = 5,
+    /// Its microVM could not take it: no bus, no slot, no room in its components' window.
+    Device = 6,
+    /// A swap or restart of its member is under way.
+    Running = 7,
+    /// Its swap failed, in its guest's or its host's words.
+    Failed = 8,
+}
+
+/// What a swap did (D270 slice 4): every member's component after it, and, where its member was
+/// restarted now, its index and the generation it started, whose output, input and end are its.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Swapped {
+    pub components: Vec<ComponentAt>,
+    pub started: Option<(u32, u32)>,
+}
+
+/// A swap's outcome, by its ask's id: what it did, or why not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapAnswer {
+    pub id: u32,
+    pub result: Result<Swapped, (SwapRefusal, String)>,
 }
 
 /// How the run ended.
@@ -3201,6 +3280,153 @@ impl RestartAsk {
     }
 }
 
+impl SwapAsk {
+    /// Its id, then its change: 0, the path and the digest; or 1 and the path; then when (0 its
+    /// next start, 1 now) and its patience.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.change {
+            SwapChange::Swap { at, digest } => {
+                w.u8(0);
+                w.text(at)?;
+                w.text(digest)?;
+            }
+            SwapChange::Restore { at } => {
+                w.u8(1);
+                w.text(at)?;
+            }
+        }
+        w.u8(self.when as u8);
+        w.duration(self.patience);
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SwapAsk, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let change = match r.u8()? {
+            0 => SwapChange::Swap {
+                at: r.text()?,
+                digest: r.text()?,
+            },
+            1 => SwapChange::Restore { at: r.text()? },
+            tag => return Err(WireError::Tag { what: "a swap", tag }),
+        };
+        let when = match r.u8()? {
+            0 => SwapWhen::NextStart,
+            1 => SwapWhen::Now,
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a swap's when",
+                    tag,
+                });
+            }
+        };
+        let patience = r.duration()?;
+        r.end()?;
+        Ok(SwapAsk {
+            id,
+            change,
+            when,
+            patience,
+        })
+    }
+}
+
+impl SwapAnswer {
+    /// Its id, then 0, each member's component (its path, then each digest's flag and text) and
+    /// the generation started (0, or 1, its member and its generation); or 1, its refusal's tag
+    /// and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(Swapped { components, started }) => {
+                w.u8(0);
+                w.count(components.len())?;
+                for c in components {
+                    w.text(&c.at)?;
+                    for digest in [&c.desired, &c.held] {
+                        match digest {
+                            None => w.u8(0),
+                            Some(d) => {
+                                w.u8(1);
+                                w.text(d)?;
+                            }
+                        }
+                    }
+                }
+                match started {
+                    None => w.u8(0),
+                    Some((member, generation)) => {
+                        w.u8(1);
+                        w.u32(*member);
+                        w.u32(*generation);
+                    }
+                }
+            }
+            Err((why, words)) => {
+                w.u8(1);
+                w.u8(*why as u8);
+                w.text(words)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<SwapAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => {
+                // Each at least its path's length and its two flags.
+                let n = r.count(4 + 1 + 1)?;
+                let mut components = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let at = r.text()?;
+                    let desired = if r.flag()? { Some(r.text()?) } else { None };
+                    let held = if r.flag()? { Some(r.text()?) } else { None };
+                    components.push(ComponentAt { at, desired, held });
+                }
+                let started = if r.flag()? {
+                    Some((r.u32()?, r.u32()?))
+                } else {
+                    None
+                };
+                Ok(Swapped { components, started })
+            }
+            1 => {
+                let why = match r.u8()? {
+                    1 => SwapRefusal::Unknown,
+                    2 => SwapRefusal::Artifact,
+                    3 => SwapRefusal::Kind,
+                    4 => SwapRefusal::Platform,
+                    5 => SwapRefusal::Asks,
+                    6 => SwapRefusal::Device,
+                    7 => SwapRefusal::Running,
+                    8 => SwapRefusal::Failed,
+                    tag => {
+                        return Err(WireError::Tag {
+                            what: "a swap's refusal",
+                            tag,
+                        });
+                    }
+                };
+                Err((why, r.text()?))
+            }
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a swap's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(SwapAnswer { id, result })
+    }
+}
+
 impl RestartAnswer {
     /// Its id, then 0 and the generation started; or 1, its refusal's tag and why.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
@@ -4895,6 +5121,124 @@ mod tests {
 
     fn libc_eio() -> i32 {
         5
+    }
+
+    /// A swap (D270 slice 4) round-trips, of a digest and of its image's back, at its next start
+    /// and now; its answer too, every member's component or why not; a cut one, one of another
+    /// change, when or refusal, and one trailing a byte, refused.
+    #[test]
+    fn a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused() {
+        const { assert!(VERSION >= 40, "the channel's version 40 carries swaps") };
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        for ask in [
+            SwapAsk {
+                id: 7,
+                change: SwapChange::Swap {
+                    at: "/harness/codex".into(),
+                    digest: digest.clone(),
+                },
+                when: SwapWhen::Now,
+                patience: std::time::Duration::from_secs(30),
+            },
+            SwapAsk {
+                id: u32::MAX,
+                change: SwapChange::Restore {
+                    at: "/agents/helper".into(),
+                },
+                when: SwapWhen::NextStart,
+                patience: std::time::Duration::ZERO,
+            },
+        ] {
+            let bytes = ask.encode().unwrap();
+            assert_eq!(SwapAsk::decode(&bytes), Ok(ask));
+            for cut in 1..bytes.len() {
+                assert!(SwapAsk::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+            assert_eq!(
+                SwapAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+                Err(WireError::Trailing)
+            );
+        }
+        assert!(matches!(
+            SwapAsk::decode(&[0, 0, 0, 1, 2]),
+            Err(WireError::Tag { .. })
+        ));
+        let restore = SwapAsk {
+            id: 1,
+            change: SwapChange::Restore { at: "/mcp/x".into() },
+            when: SwapWhen::Now,
+            patience: std::time::Duration::ZERO,
+        };
+        let mut when = restore.encode().unwrap();
+        let at = 4 + 1 + 4 + "/mcp/x".len();
+        when[at] = 2;
+        assert!(matches!(
+            SwapAsk::decode(&when),
+            Err(WireError::Tag {
+                what: "a swap's when",
+                ..
+            })
+        ));
+        for answer in [
+            SwapAnswer {
+                id: 7,
+                result: Ok(Swapped {
+                    components: vec![
+                        ComponentAt {
+                            at: "/harness/codex".into(),
+                            desired: Some(digest.clone()),
+                            held: None,
+                        },
+                        ComponentAt {
+                            at: "/agents/helper".into(),
+                            desired: None,
+                            held: Some(digest.clone()),
+                        },
+                    ],
+                    started: Some((1, 3)),
+                }),
+            },
+            SwapAnswer {
+                id: 8,
+                result: Ok(Swapped {
+                    components: Vec::new(),
+                    started: None,
+                }),
+            },
+            SwapAnswer {
+                id: 9,
+                result: Err((SwapRefusal::Kind, "an agent's at a harness's path".into())),
+            },
+        ] {
+            let bytes = answer.encode().unwrap();
+            assert_eq!(SwapAnswer::decode(&bytes), Ok(answer));
+            for cut in 1..bytes.len() {
+                assert!(SwapAnswer::decode(&bytes[..cut]).is_err(), "cut at {cut}");
+            }
+        }
+        for cause in [
+            SwapRefusal::Unknown,
+            SwapRefusal::Artifact,
+            SwapRefusal::Kind,
+            SwapRefusal::Platform,
+            SwapRefusal::Asks,
+            SwapRefusal::Device,
+            SwapRefusal::Running,
+            SwapRefusal::Failed,
+        ] {
+            let answer = SwapAnswer {
+                id: 1,
+                result: Err((cause, String::new())),
+            };
+            assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
+        }
+        assert!(matches!(
+            SwapAnswer::decode(&[0, 0, 0, 1, 1, 9, 0, 0, 0, 0]),
+            Err(WireError::Tag {
+                what: "a swap's refusal",
+                ..
+            })
+        ));
     }
 
     /// A restart's ask and answer round-trip (D270 slice 3b): its arguments as they are, empty

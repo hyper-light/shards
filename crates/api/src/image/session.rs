@@ -98,6 +98,11 @@ struct State {
     /// Each restart asked and still awaited, by its ask's id, and its answer once it came
     /// (D270 slice 3b), held as [`rooms`](Self::rooms) is.
     restarts: HashMap<u32, Option<Restarted>>,
+    /// Each swap asked and still awaited, by its ask's id, and its answer once it came (D270
+    /// slice 4), held as `restarts` are.
+    swaps: HashMap<u32, Option<Swapped>>,
+    /// Every member's component as its host last said them (D270 slice 4).
+    components: Vec<wire::ComponentAt>,
     stats: HashMap<u32, Result<Stats, String>>,
     /// Each plug's or unplug's answer, by its ask's id (D235).
     plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
@@ -233,6 +238,10 @@ type Saved = Result<(), (wire::SaveRefusal, String)>;
 /// A restart's outcome as its host said it (D270 slice 3b): the generation it started, or
 /// refused and why.
 type Restarted = Result<u32, (wire::RestartRefusal, String)>;
+
+/// A swap's outcome as its host said it (D270 slice 4): every member's component after it, or
+/// refused and why.
+type Swapped = Result<wire::Swapped, (wire::SwapRefusal, String)>;
 
 /// A network change's outcome as its host said it (D269): made, or refused and why.
 type NetAnswered = Result<wire::NetChanged, (wire::NetRefusal, String)>;
@@ -779,6 +788,68 @@ impl Shared {
                 })
             });
         lock(&self.state).restarts.remove(&id);
+        answer
+    }
+
+    /// Asks a swap of the run's host (D270 slice 4) and waits for its answer: its artifact read
+    /// and checked, its image built where its store has none, plugged, mounted and, now, its
+    /// member restarted, each at most `patience`.
+    fn swap(
+        &self,
+        change: wire::SwapChange,
+        when: wire::SwapWhen,
+        patience: Duration,
+    ) -> Result<wire::Swapped, ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            let id = state.next_ask;
+            state.swaps.insert(id, None);
+            id
+        };
+        let ask = wire::SwapAsk {
+            id,
+            change,
+            when,
+            patience,
+        };
+        // Its image's build, its plug and mount, and, now, its member's restart's three waits.
+        let waited = patience.saturating_mul(6);
+        let answer = ask
+            .encode()
+            .map_err(|e| ImageRefusal::Spec {
+                what: "a swap",
+                why: e.to_string(),
+            })
+            .and_then(|ask| {
+                self.send(wire::to_host::SWAP, &ask)
+                    .map_err(|e| ImageRefusal::Os {
+                        what: "the run host's swap",
+                        kind: e.kind(),
+                    })
+            })
+            .and_then(|()| {
+                self.wait(waited, |s| {
+                    if let Some(answer) = s.swaps.get_mut(&id).and_then(Option::take) {
+                        return Some(answer.map_err(|(cause, why)| ImageRefusal::Swap(cause, why)));
+                    }
+                    if let Some(end) = &s.end {
+                        return Some(Err(ImageRefusal::Ended(end.clone())));
+                    }
+                    s.gone()
+                        .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+                })
+                .unwrap_or_else(|| {
+                    Err(ImageRefusal::Unsupported {
+                        what: "a swap",
+                        why: format!("no answer within {waited:?}"),
+                    })
+                })
+            });
+        lock(&self.state).swaps.remove(&id);
         answer
     }
 
@@ -1608,6 +1679,24 @@ impl Session {
             .find(|m| m.kind == member.kind && m.name == member.name)
             .ok_or_else(|| ImageRefusal::Image(format!("{member:?}: the image declares no such member")))
     }
+
+    /// The generation a swap started now (D270 slice 4), its channels pumped and given their room
+    /// and its stdin's flow kept, as a restart's are ([`ImageGuest::restart`]).
+    fn started_by_swap(&self, swapped: &wire::Swapped) -> Result<(), ImageRefusal> {
+        let Some((index, generation)) = swapped.started else {
+            return Ok(());
+        };
+        let info = self.members.iter().find(|m| m.index == index).ok_or_else(|| {
+            ImageRefusal::Host(format!("a swap started member {index}, which the run has not"))
+        })?;
+        let pumped = pumped(&self.shared, std::slice::from_ref(info), generation)?;
+        lock(&self.outputs).extend(pumped);
+        let mut state = lock(&self.shared.state);
+        if state.inputs.contains_key(&(index, 0)) {
+            state.inputs.entry((index, generation)).or_default();
+        }
+        Ok(())
+    }
 }
 
 /// A member's channel, by its index, its generation and the channel, and the pipe its bytes
@@ -1941,6 +2030,15 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         k::RESTARTED => {
             let answer = wire::RestartAnswer::decode(payload).map_err(bad)?;
             if let Some(awaited) = state.restarts.get_mut(&answer.id) {
+                *awaited = Some(answer.result);
+            }
+        }
+        k::SWAPPED => {
+            let answer = wire::SwapAnswer::decode(payload).map_err(bad)?;
+            if let Ok(swapped) = &answer.result {
+                state.components.clone_from(&swapped.components);
+            }
+            if let Some(awaited) = state.swaps.get_mut(&answer.id) {
                 *awaited = Some(answer.result);
             }
         }
@@ -2676,6 +2774,38 @@ impl ImageGuest for Session {
         self.shared
             .net(wire::NetChange::Egress(asked), patience)
             .map(|changed| changed.egress)
+    }
+
+    fn swap(
+        &self,
+        at: &str,
+        digest: &str,
+        when: wire::SwapWhen,
+        patience: Duration,
+    ) -> Result<wire::Swapped, ImageRefusal> {
+        let change = wire::SwapChange::Swap {
+            at: at.to_string(),
+            digest: digest.to_string(),
+        };
+        let swapped = self.shared.swap(change, when, patience)?;
+        self.started_by_swap(&swapped)?;
+        Ok(swapped)
+    }
+
+    fn restore(
+        &self,
+        at: &str,
+        when: wire::SwapWhen,
+        patience: Duration,
+    ) -> Result<wire::Swapped, ImageRefusal> {
+        let change = wire::SwapChange::Restore { at: at.to_string() };
+        let swapped = self.shared.swap(change, when, patience)?;
+        self.started_by_swap(&swapped)?;
+        Ok(swapped)
+    }
+
+    fn components(&self) -> Vec<wire::ComponentAt> {
+        lock(&self.shared.state).components.clone()
     }
 
     fn member_egress(

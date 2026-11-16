@@ -1301,6 +1301,29 @@ impl<W: Send> ImageGuest for Pooled<W> {
         self.guest.member_egress(member, reach, patience)
     }
 
+    fn swap(
+        &self,
+        at: &str,
+        digest: &str,
+        when: wire::SwapWhen,
+        patience: Duration,
+    ) -> Result<wire::Swapped, ImageRefusal> {
+        self.guest.swap(at, digest, when, patience)
+    }
+
+    fn restore(
+        &self,
+        at: &str,
+        when: wire::SwapWhen,
+        patience: Duration,
+    ) -> Result<wire::Swapped, ImageRefusal> {
+        self.guest.restore(at, when, patience)
+    }
+
+    fn components(&self) -> Vec<wire::ComponentAt> {
+        self.guest.components()
+    }
+
     fn control(&self) -> Option<&wire::ControlAt> {
         self.guest.control()
     }
@@ -1573,6 +1596,21 @@ mod tests {
             _: Duration,
         ) -> Result<wire::Narrowing, ImageRefusal> {
             none()
+        }
+        fn swap(
+            &self,
+            _: &str,
+            _: &str,
+            _: wire::SwapWhen,
+            _: Duration,
+        ) -> Result<wire::Swapped, ImageRefusal> {
+            none()
+        }
+        fn restore(&self, _: &str, _: wire::SwapWhen, _: Duration) -> Result<wire::Swapped, ImageRefusal> {
+            none()
+        }
+        fn components(&self) -> Vec<wire::ComponentAt> {
+            Vec::new()
         }
         fn control(&self) -> Option<&wire::ControlAt> {
             None

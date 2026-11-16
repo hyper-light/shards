@@ -926,6 +926,67 @@ fn past_run(
     None
 }
 
+/// The EROFS image of the component of manifest digest `digest` for path `at` (D270 slice 4):
+/// the OSI artifact of the home's store (`shards pull`, `shards build agent`, a component's
+/// build), checked as a build checks one it takes (`agent::checked`: its config, its content,
+/// its kind the path's: an agent's at `/agents/`, a harness's at `/harness/`), its content tar
+/// its only layer, built into an EROFS root once, which the store keeps by its chain, opened
+/// read-only. Refused typed: no such artifact here, or one unread (`Artifact`); one of another
+/// kind (`Kind`).
+fn component_image(
+    home: &std::path::Path,
+    at: &str,
+    digest: &str,
+) -> Result<std::fs::File, (wire::SwapRefusal, String)> {
+    use shards_image::osi::Kind;
+    use wire::SwapRefusal as R;
+    let want = if at.starts_with("/agents/") {
+        Kind::Agent
+    } else if at.starts_with("/harness/") {
+        Kind::Harness
+    } else {
+        return Err((R::Unknown, format!("{at} is no member's path")));
+    };
+    let store = crate::pull::store(home).map_err(|e| (R::Artifact, e))?;
+    let d = shards_image::reference::Digest::parse(digest)
+        .map_err(|e| (R::Artifact, format!("{digest}: {e}")))?;
+    let size = std::fs::metadata(store.blob_path(&d))
+        .map_err(|e| (R::Artifact, format!("{digest}: not in this host's store: {e}")))?
+        .len();
+    let desc = shards_image::oci::Descriptor {
+        media_type: shards_image::oci::media::OCI_MANIFEST.to_string(),
+        digest: digest.to_string(),
+        size: i64::try_from(size).map_err(|_| (R::Artifact, format!("{digest}: too large")))?,
+        platform: None,
+        annotations: std::collections::BTreeMap::new(),
+    };
+    let (manifest, _config, kind) =
+        crate::agent::checked(&store, digest, &desc, None).map_err(|e| (R::Artifact, e))?;
+    if kind != want {
+        return Err((
+            R::Kind,
+            format!("{digest} is {}, where {at} takes {}", kind.word(), want.word()),
+        ));
+    }
+    let diff_ids = crate::agent::diff_ids(&store, kind, &manifest).map_err(|e| (R::Artifact, e))?;
+    let mut layers = Vec::with_capacity(manifest.layers.len());
+    for (l, diff_id) in manifest.layers.iter().zip(diff_ids) {
+        let blob = l.digest().map_err(|e| (R::Artifact, format!("{digest}: {e}")))?;
+        let media_type = crate::agent::layer_type(kind, &l.media_type)
+            .ok_or_else(|| (R::Artifact, format!("{digest}: a layer of type {}", l.media_type)))?;
+        layers.push(shards_image::store::Layer {
+            blob,
+            media_type: media_type.to_string(),
+            diff_id,
+        });
+    }
+    let limits = crate::pull::limits().map_err(|e| (R::Failed, e))?;
+    let rootfs = store
+        .rootfs(&layers, &limits)
+        .map_err(|e| (R::Failed, format!("{digest}'s image: {e}")))?;
+    std::fs::File::open(&rootfs).map_err(|e| (R::Failed, format!("{}: {e}", rootfs.display())))
+}
+
 /// `a`'s reach and `b`'s together, each item once (D278).
 fn reach_union(a: &wire::Reach, b: &wire::Reach) -> wire::Reach {
     let mut out = a.clone();
@@ -1552,6 +1613,8 @@ enum Ask<'a> {
     Net(wire::NetAsk),
     /// A member started again in its microVM (D270 slice 3b).
     Restart(wire::RestartAsk),
+    /// A member's component swapped, or its image's back (D270 slice 4).
+    Swap(wire::SwapAsk),
 }
 
 /// The orchestrator's next ask, from what reading its next frame gave (`read`: its kind and
@@ -1592,6 +1655,7 @@ fn judged(which: u8, payload: &[u8]) -> Result<Ask<'_>, AsksEnd> {
         wire::to_host::PAUSE => ("PAUSE", wire::PauseAsk::decode(payload).map(Ask::Pause)),
         wire::to_host::NET => ("NET", wire::NetAsk::decode(payload).map(Ask::Net)),
         wire::to_host::RESTART => ("RESTART", wire::RestartAsk::decode(payload).map(Ask::Restart)),
+        wire::to_host::SWAP => ("SWAP", wire::SwapAsk::decode(payload).map(Ask::Swap)),
         other => return Err(broke(format_args!("a frame of kind {other}, which is no ask"))),
     };
     ask.map_err(|e| broke(format_args!("a malformed {what}: {e}")))
@@ -4403,13 +4467,21 @@ mod hosted {
         // Its input, where it has one: its next generation's own, its feed waiting for the
         // connection its guest dials with the token its VM mints.
         let has_input = lock(&live.feeds).contains_key(&member);
+        // Its components as its orchestrator swapped them (D270 slice 4): laid at its path.
+        let laid = lock(&live.components).desired.get(&member).cloned();
         let start = protocol::members::Start {
             member,
             generation: next,
             args: ask.args.clone(),
             env: Vec::new(),
             workdir: None,
-            components: Vec::new(),
+            components: laid
+                .iter()
+                .map(|(at, key)| protocol::members::Component {
+                    path: at.as_bytes().to_vec(),
+                    key: *key,
+                })
+                .collect(),
             input: None,
         };
         let mut payload = vec![u8::from(has_input)];
@@ -4457,7 +4529,236 @@ mod hosted {
                 end_input(live, member);
             }
         }
+        // What its new generation runs with (D270 slice 4), and the components no generation
+        // runs with nor wants let go of.
+        {
+            let mut c = lock(&live.components);
+            match laid {
+                Some(laid) => c.held.insert(member, laid),
+                None => c.held.remove(&member),
+            };
+        }
+        release_unused(live);
         Ok(next)
+    }
+
+    /// What came of a swap (D270 slice 4), told its orchestrator by its ask's id.
+    fn swapped(live: &Live<'_>, id: u32, result: Result<wire::Swapped, (wire::SwapRefusal, String)>) {
+        if let Err((cause, why)) = &result {
+            super::say(format_args!("a swap refused, {cause:?}: {why}"));
+        }
+        let payload = wire::SwapAnswer { id, result }.encode().or_else(|e| {
+            wire::SwapAnswer {
+                id,
+                result: Err((wire::SwapRefusal::Failed, format!("its answer: {e}"))),
+            }
+            .encode()
+        });
+        if let Ok(payload) = payload {
+            let _ = live.answers.send(wire::to_client::SWAPPED, &[&payload]);
+        }
+    }
+
+    /// The member running at path `at` (D270 slice 4): its image's agent or harness of that
+    /// directory (`/agents/NAME`, `/harness/NAME`, AGENTFILE_ARCH.md §12.1), by its index.
+    fn member_at(live: &Live<'_>, at: &str) -> Option<u32> {
+        let (kind, name) = match at.strip_prefix("/agents/") {
+            Some(name) => (wire::MemberKind::Agent, name),
+            None => (wire::MemberKind::Harness, at.strip_prefix("/harness/")?),
+        };
+        live.members
+            .iter()
+            .find(|m| m.kind == kind && m.name == name && m.runs)
+            .map(|m| m.index)
+    }
+
+    /// A component's key (D270 slice 2): its manifest digest's 64 lowercase hex digits, as init
+    /// takes one (`components/KEY`).
+    fn key_of(digest: &str) -> Result<protocol::members::ComponentKey, (wire::SwapRefusal, String)> {
+        let hex = digest
+            .strip_prefix("sha256:")
+            .filter(|h| {
+                h.len() == protocol::members::KEY_LEN
+                    && h.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or_else(|| {
+                (
+                    wire::SwapRefusal::Artifact,
+                    format!("{digest:?} is no sha256 digest"),
+                )
+            })?;
+        <protocol::members::ComponentKey>::try_from(hex.as_bytes()).map_err(|_| {
+            (
+                wire::SwapRefusal::Artifact,
+                format!("{digest:?} is no sha256 digest"),
+            )
+        })
+    }
+
+    /// The component of `digest` plugged into the run's microVM and mounted beside its writable
+    /// layer where it is not already (D270 slices 2 and 4): its EROFS image, checked for path
+    /// `at` (`component_image`), plugged as a read-only virtio-pmem function (the VM process's
+    /// `PMEM`: `DEVFN ADDRESS GPA LEN`), then mounted by its guest (init's `DEVICE pmem ADDRESS
+    /// GPA KEY`), its function let go where its guest refused it. Its key.
+    fn plug_component(
+        live: &Live<'_>,
+        at: &str,
+        digest: &str,
+    ) -> Result<protocol::members::ComponentKey, (wire::SwapRefusal, String)> {
+        use wire::SwapRefusal as R;
+        let key = key_of(digest)?;
+        if lock(&live.components).plugged.contains_key(&key) {
+            return Ok(key);
+        }
+        let image = (live.component_image)(at, digest)?;
+        let said = ask_device(live, &[shards_ipc::device::PMEM], &[image.as_fd()])
+            .map_err(|refusal| (R::Device, format!("its microVM: {refusal}")))?;
+        let words: Vec<&str> = said.split_whitespace().collect();
+        let [devfn, address, gpa, _len] = words.as_slice() else {
+            return Err((R::Failed, format!("its microVM answered its plug {said:?}")));
+        };
+        let devfn: u8 = devfn
+            .parse()
+            .map_err(|_| (R::Failed, format!("its microVM answered its plug {said:?}")))?;
+        let mounted = builtin(
+            live,
+            protocol::builtin::DEVICE,
+            vec![
+                b"pmem".to_vec(),
+                address.as_bytes().to_vec(),
+                gpa.as_bytes().to_vec(),
+                key.to_vec(),
+            ],
+        );
+        let refused = match mounted {
+            Ok(said) if said.status == Some(0) => None,
+            Ok(said) => Some(String::from_utf8_lossy(&said.err).trim().to_string()),
+            Err(e) => Some(e),
+        };
+        if let Some(words) = refused {
+            let _ = ask_device(live, &[shards_ipc::device::UNPLUG, devfn], &[]);
+            return Err((R::Failed, format!("its guest: {words}")));
+        }
+        lock(&live.components).plugged.insert(
+            key,
+            PluggedComponent {
+                devfn,
+                address: (*address).to_string(),
+                digest: digest.to_string(),
+            },
+        );
+        Ok(key)
+    }
+
+    /// Each component plugged that no member's generation runs with nor its next start lays
+    /// let go of (D270 slice 4): unmounted by its guest (init's `DEVICE unpmem`), then its
+    /// function unplugged. One its guest still holds stays, said.
+    fn release_unused(live: &Live<'_>) {
+        let unused: Vec<(protocol::members::ComponentKey, PluggedComponent)> = {
+            let c = lock(&live.components);
+            c.plugged
+                .iter()
+                .filter(|(key, _)| !c.desired.values().chain(c.held.values()).any(|(_, k)| k == *key))
+                .map(|(key, p)| (*key, p.clone()))
+                .collect()
+        };
+        for (key, p) in unused {
+            let unmounted = builtin(
+                live,
+                protocol::builtin::DEVICE,
+                vec![b"unpmem".to_vec(), p.address.as_bytes().to_vec(), key.to_vec()],
+            );
+            match unmounted {
+                Ok(said) if said.status == Some(0) => {}
+                Ok(said) => {
+                    super::say(format_args!(
+                        "component {} kept: {}",
+                        p.digest,
+                        String::from_utf8_lossy(&said.err).trim()
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    super::say(format_args!("component {} kept: {e}", p.digest));
+                    continue;
+                }
+            }
+            if let Err(e) = ask_device(live, &[shards_ipc::device::UNPLUG, p.devfn], &[]) {
+                super::say(format_args!("component {}'s function: {e}", p.digest));
+            }
+            lock(&live.components).plugged.remove(&key);
+        }
+    }
+
+    /// Every member's component as the run holds them (D270 slice 4), in their members' order.
+    fn components_of(live: &Live<'_>) -> Vec<wire::ComponentAt> {
+        let c = lock(&live.components);
+        let digest = |key: &protocol::members::ComponentKey| c.plugged.get(key).map(|p| p.digest.clone());
+        let mut members: Vec<u32> = c.desired.keys().chain(c.held.keys()).copied().collect();
+        members.sort_unstable();
+        members.dedup();
+        members
+            .into_iter()
+            .filter_map(|m| {
+                let desired = c.desired.get(&m);
+                let held = c.held.get(&m);
+                let at = desired.or(held).map(|(at, _)| at.clone())?;
+                Some(wire::ComponentAt {
+                    at,
+                    desired: desired.and_then(|(_, k)| digest(k)),
+                    held: held.and_then(|(_, k)| digest(k)),
+                })
+            })
+            .collect()
+    }
+
+    /// Swap `ask` (D270 slice 4): its member's component at its path plugged (where it swaps one)
+    /// and wanted from its next start, or its image's wanted back; now, its member restarted
+    /// with it as a restart restarts it ([`restart`]). What the run's components are after it,
+    /// and the generation started now.
+    fn swap<'scope, 'env>(
+        live: &'env Live<'env>,
+        ask: &wire::SwapAsk,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) -> Result<wire::Swapped, (wire::SwapRefusal, String)> {
+        use wire::SwapRefusal as R;
+        let (at, digest) = match &ask.change {
+            wire::SwapChange::Swap { at, digest } => (at, Some(digest)),
+            wire::SwapChange::Restore { at } => (at, None),
+        };
+        let member = member_at(live, at)
+            .ok_or_else(|| (R::Unknown, format!("no member of the image runs at {at}")))?;
+        let key = digest.map(|d| plug_component(live, at, d)).transpose()?;
+        {
+            let mut c = lock(&live.components);
+            match key {
+                Some(key) => c.desired.insert(member, (at.clone(), key)),
+                None => c.desired.remove(&member),
+            };
+        }
+        let started = match ask.when {
+            wire::SwapWhen::NextStart => None,
+            wire::SwapWhen::Now => {
+                let again = wire::RestartAsk {
+                    id: ask.id,
+                    member,
+                    args: Vec::new(),
+                    patience: ask.patience,
+                };
+                let generation = restart(live, &again, scope).map_err(|(cause, why)| match cause {
+                    wire::RestartRefusal::Running => (R::Running, why),
+                    _ => (R::Failed, format!("its member's restart, {cause:?}: {why}")),
+                })?;
+                Some((member, generation))
+            }
+        };
+        // A component swapped for its next start, the one before it never run: let go.
+        release_unused(live);
+        Ok(wire::Swapped {
+            components: components_of(live),
+            started,
+        })
     }
 
     /// Waits until `done` says its generations are as asked, at most `patience`: whether they
@@ -4772,6 +5073,30 @@ mod hosted {
     /// next's.
     type Key = (u32, u32, Channel);
 
+    /// Where a run's component images come from (D270 slice 4): path `at`'s EROFS image of
+    /// manifest digest `digest`, or why not.
+    type ComponentImage<'a> =
+        dyn Fn(&str, &str) -> Result<std::fs::File, (wire::SwapRefusal, String)> + Sync + 'a;
+
+    /// Each member's components (D270 slice 4): what its next start lays at its path and what
+    /// its current generation runs with, each its path and key, by its index; and each component
+    /// plugged into its microVM, by its key.
+    #[derive(Default)]
+    struct Components {
+        desired: HashMap<u32, (String, protocol::members::ComponentKey)>,
+        held: HashMap<u32, (String, protocol::members::ComponentKey)>,
+        plugged: HashMap<protocol::members::ComponentKey, PluggedComponent>,
+    }
+
+    /// A component plugged into a run's microVM (D270 slice 2): its function's slot and address,
+    /// and its manifest's digest.
+    #[derive(Clone)]
+    struct PluggedComponent {
+        devfn: u8,
+        address: String,
+        digest: String,
+    }
+
     /// Each member's generations (D270 slice 3b), as its restarts and its guest move them.
     #[derive(Default)]
     struct Generations {
@@ -4902,6 +5227,11 @@ mod hosted {
         /// Each member's ceiling past its microVM, by its index (D278): none, nothing past its
         /// image's grants.
         ceilings: Vec<(u32, protocol::egress::Grants)>,
+        /// Each member's components as its orchestrator swapped them (D270 slice 4).
+        components: Mutex<Components>,
+        /// A component's EROFS image for path `at` of digest `digest` (D270 slice 4): its host's
+        /// store's, checked against its member; a test's stand-in.
+        component_image: &'a ComponentImage<'a>,
         /// Whether its network process was told a ceiling (`NET_POLICY`): its image grants
         /// something past its microVM (D273).
         ceiled: bool,
@@ -5646,6 +5976,8 @@ mod hosted {
                 egress: Mutex::new(plan.narrowing.clone()),
                 given: Mutex::new(HashMap::new()),
                 ceilings: plan.member_ceilings.clone(),
+                components: Mutex::new(Components::default()),
+                component_image: &|at, digest| super::component_image(home, at, digest),
                 ceiled: plan.ceiling.is_some(),
                 agentfile: plan.prepared.agentfile.as_ref(),
                 command: plan.command,
@@ -6540,6 +6872,21 @@ mod hosted {
                         live,
                         id,
                         Err((wire::RestartRefusal::Failed, "no thread to restart it on".into())),
+                    );
+                }
+            }
+            // On a thread of its own, as a restart: its image may be built, and its member
+            // restarted (D270 slice 4).
+            Ask::Swap(ask) => {
+                let id = ask.id;
+                let asked = std::thread::Builder::new()
+                    .name("api-run swap".into())
+                    .spawn_scoped(scope, move || swapped(live, id, swap(live, &ask, scope)));
+                if asked.is_err() {
+                    swapped(
+                        live,
+                        id,
+                        Err((wire::SwapRefusal::Failed, "no thread to swap it on".into())),
                     );
                 }
             }
@@ -7760,6 +8107,8 @@ mod hosted {
                 egress: Mutex::new(wire::Narrowing::default()),
                 given: Mutex::new(HashMap::new()),
                 ceilings: Vec::new(),
+                components: Mutex::new(Components::default()),
+                component_image: &|_, _| Err((wire::SwapRefusal::Artifact, "no store in this test".into())),
                 ceiled: false,
                 agentfile: None,
                 command: false,
@@ -7988,6 +8337,153 @@ mod hosted {
                 egress_live(&unnetworked, &asked(&[])),
                 Err((R::NoNetwork, _))
             ));
+        }
+
+        /// D270 slice 4. Do, on a run whose member 1 (a harness, `/harness/codex`) runs, its
+        /// stand-in VM and guest taking what they are asked: swap `/harness/codex` to digest D
+        /// now; give it its image's back at its next start; restart it; swap a path no member
+        /// runs at, and one to no sha256 digest. Expect: D's image plugged (the VM's `PMEM`,
+        /// answered `DEVFN ADDRESS GPA LEN`) and mounted (init's `DEVICE pmem ADDRESS GPA KEY`),
+        /// its member restarted with D laid at its path, the swap answering D wanted and held and
+        /// the generation started; the restore answering D held and nothing wanted, nothing let
+        /// go; the restart laying nothing, then D unmounted (`DEVICE unpmem ADDRESS KEY`) and its
+        /// function unplugged; `Unknown` and `Artifact`, nothing asked.
+        #[test]
+        fn a_component_swapped_is_plugged_mounted_laid_at_its_members_start_and_let_go_of_unused() {
+            use protocol::members::{Component, Start, StartAnswer};
+            use wire::SwapRefusal as R;
+            let dir = shards_testdir::TempDir::new("api-swap").unwrap();
+            let image = dir.join("component.erofs");
+            std::fs::write(&image, b"erofs").unwrap();
+            let answers = super::super::Answers(Mutex::new(Box::new(Vec::<u8>::new())));
+            let (link, vm) = Stream::pair().unwrap();
+            let members = [wire::MemberInfo {
+                index: 1,
+                kind: wire::MemberKind::Harness,
+                name: "codex".into(),
+                runs: true,
+            }];
+            let opened =
+                |_: &str, _: &str| std::fs::File::open(&image).map_err(|e| (R::Artifact, e.to_string()));
+            let live = Live {
+                members: &members,
+                component_image: &opened,
+                ..live(&answers, dir.path(), link, None)
+            };
+            let hex = "ab".repeat(32);
+            let digest = format!("sha256:{hex}");
+            let key = <protocol::members::ComponentKey>::try_from(hex.as_bytes()).unwrap();
+            let (address, gpa) = ("0000:00:05.0", "274877906944");
+            let ask = |id, change, when| wire::SwapAsk {
+                id,
+                change,
+                when,
+                patience: std::time::Duration::from_secs(60),
+            };
+            let swap_to = |at: &str| wire::SwapChange::Swap {
+                at: at.into(),
+                digest: digest.clone(),
+            };
+            std::thread::scope(|scope| {
+                let guest = scope.spawn(|| {
+                    let device = |step: &[u8], reply: &str| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::DEVICE);
+                        let (number, asked) = m.payload.split_first_chunk::<8>().unwrap();
+                        assert_eq!(asked, step);
+                        let said = shards_ipc::device::encode(&Ok(reply.to_string())).unwrap();
+                        answered(&live.devices, &[&number[..], &said].concat());
+                    };
+                    let builtin = |which: u8, argv: Vec<Vec<u8>>| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::EXEC_RUN);
+                        let (_, rest) = m.payload.split_first_chunk::<8>().unwrap();
+                        let spec = protocol::Spec::decode(&rest[1..]).unwrap();
+                        assert_eq!((spec.builtin, spec.argv), (which, argv));
+                        let conn = Stream::from(m.fds.into_iter().next().unwrap());
+                        shards_ipc::send(&conn, kind::EXIT, &[0], &[]).unwrap();
+                    };
+                    let restarted = |generation: u32, components: Vec<Component>| {
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::MEMBER_HOLD);
+                        builtin(protocol::builtin::SIGNAL, protocol::members::signal_args(1, 15));
+                        lock(&live.generations).ended.insert((1, generation - 1));
+                        live.generations_moved.notify_all();
+                        let m = shards_ipc::recv(&vm).unwrap().unwrap();
+                        assert_eq!(m.kind, kind::MEMBER_START);
+                        let start = Start::decode(&m.payload[1..]).unwrap();
+                        assert_eq!((start.generation, start.components), (generation, components));
+                        let answer = StartAnswer {
+                            member: 1,
+                            generation,
+                            refused: None,
+                        };
+                        started_told(&live, &answer.encode().unwrap());
+                    };
+                    device(&[shards_ipc::device::PMEM], &format!("5 {address} {gpa} 2097152"));
+                    builtin(
+                        protocol::builtin::DEVICE,
+                        vec![b"pmem".to_vec(), address.into(), gpa.into(), key.to_vec()],
+                    );
+                    let laid = Component {
+                        path: b"/harness/codex".to_vec(),
+                        key,
+                    };
+                    restarted(1, vec![laid]);
+                    // The restart past the restore: nothing laid, then D let go of.
+                    restarted(2, Vec::new());
+                    builtin(
+                        protocol::builtin::DEVICE,
+                        vec![b"unpmem".to_vec(), address.into(), key.to_vec()],
+                    );
+                    device(&[shards_ipc::device::UNPLUG, 5], "");
+                });
+                let held = |desired: Option<&str>, held: Option<&str>| wire::ComponentAt {
+                    at: "/harness/codex".into(),
+                    desired: desired.map(str::to_string),
+                    held: held.map(str::to_string),
+                };
+                let swapped = swap(
+                    &live,
+                    &ask(1, swap_to("/harness/codex"), wire::SwapWhen::Now),
+                    scope,
+                )
+                .unwrap();
+                assert_eq!(swapped.components, vec![held(Some(&digest), Some(&digest))]);
+                assert_eq!(swapped.started, Some((1, 1)));
+                let restore = wire::SwapChange::Restore {
+                    at: "/harness/codex".into(),
+                };
+                let restored = swap(&live, &ask(2, restore, wire::SwapWhen::NextStart), scope).unwrap();
+                assert_eq!(restored.components, vec![held(None, Some(&digest))]);
+                assert_eq!(restored.started, None);
+                let again = wire::RestartAsk {
+                    id: 3,
+                    member: 1,
+                    args: Vec::new(),
+                    patience: std::time::Duration::from_secs(60),
+                };
+                assert_eq!(restart(&live, &again, scope), Ok(2));
+                guest.join().unwrap();
+                assert_eq!(components_of(&live), Vec::new());
+                assert!(lock(&live.components).plugged.is_empty(), "let go of");
+                assert!(matches!(
+                    swap(
+                        &live,
+                        &ask(4, swap_to("/harness/nobody"), wire::SwapWhen::Now),
+                        scope
+                    ),
+                    Err((R::Unknown, _))
+                ));
+                let bad = wire::SwapChange::Swap {
+                    at: "/harness/codex".into(),
+                    digest: "sha256:XYZ".into(),
+                };
+                assert!(matches!(
+                    swap(&live, &ask(5, bad, wire::SwapWhen::Now), scope),
+                    Err((R::Artifact, _))
+                ));
+            });
         }
 
         /// D278. Do, on a run whose image grants 443/tcp and whose member 1 (a harness) runs

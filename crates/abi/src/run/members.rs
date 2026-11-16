@@ -699,6 +699,9 @@ pub struct Component {
 /// A component key's length: a SHA-256 digest's 32 bytes in hex (FIPS 180-4).
 pub const KEY_LEN: usize = 64;
 
+/// A component's key (D270): its manifest digest's [`KEY_LEN`] lowercase hex digits.
+pub type ComponentKey = [u8; KEY_LEN];
+
 /// A member's next generation (D270), the payload of
 /// [`kind::MEMBER_START`](super::kind::MEMBER_START): its index, the generation it is to be
 /// (its last ended, this one past it), its run-time arguments (D256), on its command line

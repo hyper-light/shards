@@ -36520,6 +36520,41 @@ unchanged); a SIGTERM trap's flushed file whole after its restart; a member kill
 patience, ended `Killed`; a member whose restart fails past its hold, its server instance ended
 with its generation.
 
+**Slice 4a: a component swapped in by digest, or its image's back, from the orchestrator** (shards-api
+and its run host, image channel version 40; built, its real-VM tests owed with slice 4b).
+- *The API* (shards-api, `ImageGuest`): `swap(at, digest, when, patience) -> Swapped`, the member
+  at path `at` (`/agents/NAME`, `/harness/NAME`) given the OSI artifact of manifest digest `digest`
+  of its run host's store as its component there; `restore(at, when, patience)`, its image's own
+  back; `components()`, every member's as its host last said them (`ComponentAt { at, desired,
+  held }`: what its next start lays, what its current generation runs with). `when`: `NextStart`
+  (laid at the member's next restart, by its orchestrator or `Now`'s), or `Now` (the member
+  restarted at once, as `restart` does). `Swapped { components, started }`, `started` the member's
+  index and the generation a `Now` started, whose output, input and end its orchestrator takes as
+  a restart's (shards-api makes its pumps and input flow as it answers). Refused
+  `ImageRefusal::Swap(SwapRefusal, words)`: `Unknown` (no member runs at that path), `Artifact`
+  (no such artifact here, one unread, or no sha256 digest), `Kind` (another kind than its path's),
+  `Platform`, `Asks`, `Device` (no bus, slot or room in its microVM), `Running`, `Failed`.
+- *The image channel*: `SWAP` (49), `SWAPPED` (50).
+- *Its run host*: the artifact checked as a build checks one it takes (`agent::checked`), its
+  content its only layer, built into an EROFS root once, which the store keeps by its chain; its
+  image plugged into the microVM where it is not already (the VM process's `PMEM`, slice 2) and
+  mounted by its guest (`DEVICE pmem`); the member's wanted component recorded; now, its member
+  restarted. Every restart lays the member's wanted component at its path (`Start.components`,
+  slice 3a), and once its generation has started, each component no generation runs with nor any
+  start wants is let go of: unmounted by its guest (`DEVICE unpmem`), then its function unplugged.
+  One its guest still holds stays, said.
+- *Not yet* (slice 4b): the artifact's platform and its asks checked against its member's grants,
+  its provenance against the run's policy (D126); image runs' slots derived (2 × the image's
+  agents, harnesses and stdio MCP servers, for a swap's old and new, with its plug roots); the
+  steps' timing lines; MCP servers' paths.
+
+**Tests** (slice 4a, light, Linux in a container): the image channel's
+`a_swap_and_its_answer_round_trip_and_malformed_ones_are_refused`; the run host's
+`a_component_swapped_is_plugged_mounted_laid_at_its_members_start_and_let_go_of_unused` (a swap
+now: plugged, mounted, laid at its member's restart, wanted and held; a restore at its next start:
+held, nothing let go; the restart past it: nothing laid, then unmounted and unplugged; `Unknown`
+and `Artifact`, nothing asked).
+
 **A known limit, for moves across hosts** (ROOT, 2026-11-15): the components' window is as long
 as its host's address reach when its microVM is made, and is kept with its save, so a restore
 onto a host of shorter reach is refused (`window_kept`) rather than laid out otherwise. Until a

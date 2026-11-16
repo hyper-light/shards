@@ -33,11 +33,12 @@ pub mod wire;
 pub use pool::{Gave, PoolHeld, PoolId, Released, WarmHost, WarmRoom};
 
 pub use wire::{
-    Bound, Captured, Channel, Charged, Cli, ControlAsk, ControlAt, CredentialGrant, Fill, FinalUse,
-    GuestTimes, HostUse, Keep, LeaseRefusal, MemberCeiling, MemberInfo, MemberKind, MemberReach, Microvm,
-    Narrowing, NetRefusal, Paused, PlugRefusal, Proto, Publish, Reach, Ready, Receiving, RestartRefusal,
-    RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens, SocketGrant,
-    StartedFrom, Stats, StatsScope, Unused, UseBroken, VcpuTime, decide,
+    Bound, Captured, Channel, Charged, Cli, ComponentAt, ControlAsk, ControlAt, CredentialGrant, Fill,
+    FinalUse, GuestTimes, HostUse, Keep, LeaseRefusal, MemberCeiling, MemberInfo, MemberKind, MemberReach,
+    Microvm, Narrowing, NetRefusal, Paused, PlugRefusal, Proto, Publish, Reach, Ready, Receiving,
+    RestartRefusal, RunEnd, RunEnded, SaveRefusal, Secret, SignInGrant, SignInRefusal, SignInTokens,
+    SocketGrant, StartedFrom, Stats, StatsScope, SwapRefusal, SwapWhen, Swapped, Unused, UseBroken, VcpuTime,
+    decide,
 };
 
 /// A credential's lease, as a run's [`Lessor`] gives it (D242): what its release names it
@@ -464,6 +465,8 @@ pub enum ImageRefusal {
     Net(NetRefusal, String),
     /// A member's restart its host refused (D270 slice 3b), by why.
     Restart(RestartRefusal, String),
+    /// A component's swap its host refused (D270 slice 4), by why.
+    Swap(SwapRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -501,6 +504,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Pause(why) => write!(f, "the pause: {why}"),
             Self::Net(cause, why) => write!(f, "the run's network: {cause:?}: {why}"),
             Self::Restart(cause, why) => write!(f, "a member's restart: {cause:?}: {why}"),
+            Self::Swap(cause, why) => write!(f, "a component's swap: {cause:?}: {why}"),
         }
     }
 }
@@ -722,6 +726,29 @@ pub trait ImageGuest: Send + Sync {
     /// way, one that starts once (a member given a port among others, D122).
     fn restart(&self, member: &MemberName, args: &[Vec<u8>], patience: Duration)
     -> Result<u32, ImageRefusal>;
+    /// The member at path `at` (`/agents/NAME`, `/harness/NAME`, `/mcp/NAME`) given the OSI
+    /// artifact of manifest digest `digest` (`sha256:…`) of its run host's store as its component
+    /// there, in its running microVM in place (D270 slice 4): checked against its image (its kind
+    /// its path's, its platform the microVM's, its asks within its member's grants), its EROFS
+    /// image plugged into the microVM and mounted read-only beside its writable layer, then laid
+    /// at its path as its member starts again: at its next start, or now, its member restarted
+    /// as [`restart`](Self::restart) restarts it. Answers every member's component as its host
+    /// holds them after it ([`ComponentAt`]), and, now, the member's index and the generation
+    /// started, whose output, input and end are taken by it ([`Swapped`]); refused as
+    /// [`ImageRefusal::Swap`].
+    fn swap(
+        &self,
+        at: &str,
+        digest: &str,
+        when: SwapWhen,
+        patience: Duration,
+    ) -> Result<Swapped, ImageRefusal>;
+    /// The member at path `at` given its image's own component back (D270 slice 4), at its next
+    /// start or now, as [`swap`](Self::swap) gives it another; answered and refused as it is.
+    fn restore(&self, at: &str, when: SwapWhen, patience: Duration) -> Result<Swapped, ImageRefusal>;
+    /// Every member's component as its run host last said them (D270 slice 4): none where none
+    /// was swapped.
+    fn components(&self) -> Vec<ComponentAt>;
     /// How member `member`'s `channel` ended, typed, once its run's host told it, after every
     /// byte of it that host sent: its writers' close, or its capture's abort, which its pipe's
     /// EOF ([`take_output`](Self::take_output)) does not tell apart; waiting at most `timeout`
