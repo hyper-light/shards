@@ -37826,6 +37826,239 @@ clearing's files gone, `Unknown` again, `Name` for names the store refuses) and
 session and written there, read by the next session's member; listed with its files' bytes;
 cleared, gone from the list and the home, `Unknown` again).
 
+### D285. Networks shared by runs: a member of one microVM reaches a member of another on a named network, each flow granted at both of its ends (designed 2026-11-16; slice 1, a network's leases held across processes, built; slices 2 to 6 owed)
+
+**Asked.** The person's live changes, with no rebuild or restart (kiln plan 01a1dd2e… P6b.1, its
+third criterion; kiln goal 394cd57a): "Connect and disconnect a member (harness, agent, MCP server)
+to and from a named network shared with other runs", every change explicit (who, to whom, which
+ports, which way: default deny), checked as the start's grants are and refused typed; its test,
+"two runs' members on one network reach each other only while both are connected". kiln's seam
+names it (kiln fc6e47db5, crates/kiln-seams/src/sandbox.rs:449-451, `Change::Connect { member,
+network }`, "`member` joins the named `network`, shared with the runs connected to it", and
+`Disconnect`), which its Hex sandbox refuses until Hex and Shards have it
+(crates/kiln/src/sandbox/hexvm.rs:802-820, `NO_LIVE`). Part (c) of live egress, after a member's own
+reach past its microVM (b, D278).
+
+**What there is.**
+- *A daemon's runs on a user network* (D46): their addresses libnetwork's (`networks::allocate`,
+  the lowest free), kept in the daemon's memory under a lock of its alone (`networks::lock`, a
+  `static Mutex`); every two members' network processes linked by the daemon (`NET_PEER`: an
+  AF_UNIX stream pair, a ring's 1 MiB each way, PM M182), each switching a guest's frame whose
+  destination is a peer's address to that peer whole, past every policy (membership is reach, as
+  on dockerd's bridge; `enable_icc` false links none); names per member (`NET_NAMES`). A microVM
+  is on one network, and a running one is never connected to another (D46's open item).
+- *An orchestrator's runs* (D231): one `shards api-run` each, its channel three pipes; each on the
+  default bridge, every guest at its one address (D31: one template serves all); no user network.
+- *A member's own reach* (D278): held in its guest (its gate, its switch's and init's tables, its
+  resolver) and by its network process (the run's union).
+
+**Alternatives** (R02; sources at pinned revisions, read in their files).
+1. *Where frames are switched.*
+   - A switch of the network's own, a process or a kernel bridge, as dockerd's bridge driver,
+     CNI's `bridge` plugin (containernetworking/plugins v1.8.0, 0e648479,
+     plugins/main/bridge/bridge.go) and netavark's (containers/netavark v1.17.0, 53a710a5,
+     src/network/bridge.rs) make one for each network: a link per member, but a process of its own
+     to start, confine and end beside the runs, whose end parts every member at once, and a second
+     hop for every frame. Not taken.
+   - A second device per network, plugged into the running microVM: D46's open item; a device
+     plugged on HVF, KVM and WHP alike and a network process for each, for what an address and a
+     table do below. Not taken now.
+   - Each flow ended in its network processes and carried as a stream between them, as a
+     published port comes in (D269): no frame of one guest would reach another's kernel; but one
+     link carries every stream (Windows' AF_UNIX passes no socket for each), with a multiplexer and
+     flow control of its own, two TCP stacks a flow and no ICMP, its cost unmeasured (R14). Not
+     taken: what it guards against is held below, a peer's frames admitted only as whole TCP and
+     UDP of a granted flow, from that peer's own address.
+   - **Taken: D46's mesh, each member's network process a switch of several networks.** Each two
+     runs on a network are linked as D46 links two members (its pair, framing, buffers and drops);
+     each process switches its guest's frames by destination to the link of the network whose peer
+     has that address. A process's end ends its own links alone. A run on a network of n holds
+     n − 1 links, each a pair whose 1 MiB each way is a bound the kernel fills only with what
+     waits, not an allocation; a join is refused where its network process has no descriptors left
+     for its links (slice 3: the room read from its limit, as network-08 admits a relay's workers).
+2. *The address.* One per member (D236's deferred alternative: init's translation and several
+   addresses per network in one guest), or **one per run on each network, eth0's beside its own
+   (taken)**, as D46 gives a microVM one address on its network and D122 one receiver to each port
+   coming in.
+3. *Addresses across processes.*
+   - In one process's memory, as dockerd keeps them (moby docker-v29.3.1, f78c987a:
+     daemon/libnetwork/controller.go:100 and 503-521, a lock for each network's ID and name;
+     ipams/defaultipam/address_space.go:31, a `sync.Mutex`, and 361-364, the first free address
+     unless the serial order is asked): every allocation goes through one daemon. Shards' runs are
+     hosted by several processes, a daemon and each orchestrator's run hosts, so no one process's
+     memory is the record.
+   - A database file, as Podman keeps them (containers/common v0.64.2, 82146f3a:
+     libnetwork/netavark/ipam.go:17-22, a bbolt `ipam.db`; network.go:113-119, its lock file;
+     netavark's names for aardvark-dns are written under a file's exclusive lock too, netavark
+     src/dns/aardvark.rs:21 and 234-258): a lease is its container's until the container's teardown
+     lets it go; one whose holder crashed stays until the container is removed.
+   - A file for each address under a directory's flock, as CNI's host-local keeps them (plugins
+     0e648479: plugins/ipam/host-local/backend/disk/backend.go:34-35 and 60-86, each made O_EXCL
+     holding its container's ID; lock.go:24-55; backend/allocator/allocator.go:43-46): a lease stays
+     until its runtime's DEL; host-local has no GC (main.go:37, `FIXME GC`), and CNI's GC has the
+     runtime name the attachments still valid for its plugins to drop the rest
+     (containernetworking/cni v1.3.0, a28faab9, SPEC.md:370-395).
+   - **Taken: host-local's files, each held by its holder for as long as it lives.** A lease is a
+     file made only where none is, its record written, then held shared (flock(2), LockFileEx) by
+     the process that took it; one no process holds is stale, found at once by an exclusive try
+     under the home's networks lock, and removed. No clock decides it, no process ID (which the OS
+     gives again), no GC to call: the kernel lets a lock go as the last descriptor of its open file
+     closes, however its holder ended. On Windows "if a process terminates with a portion of a file
+     locked … the locks are unlocked by the operating system. However, the time it takes … depends
+     upon available system resources" (Microsoft, LockFileEx): a holder just ended keeps its
+     address that long, never given twice. Holders hold shared and lookers try exclusive because
+     "locking a portion of a file for exclusive access denies all other processes both read and
+     write access" to it, where under a shared lock "all processes can read the locked region" (the
+     same page), and a looker reads what a live lease says; the image store's leases work so already
+     (`Store::lease` shared, `Store::collect` exclusive).
+   - *The order*: libnetwork's lowest free (D46's tests pin it), not host-local's round robin, whose
+     reason is that "a crash-looping container will not see the same IP until the entire range has
+     been run through" (allocator.go:139-142): nothing here keeps a member by its address after it.
+     Links are per pair of runs and go with either; a newer link to an address replaces an older one
+     (slice 3); a flow's state is its link's; names are answered with TTL 0 (D46); every peer is
+     reached through the gateway's MAC.
+4. *Who links two runs.*
+   - The daemon, as in D46: the runs it hosts alone.
+   - A socket of each run's in the home, which others connect to: shards' interfaces are files,
+     never sockets, and a network process opens no path (D31).
+   - **Taken: the process that holds both runs.** shards-api, in the orchestrator's process, holds
+     the channel of every run host it started: for each two of its runs on a network it makes the
+     pair and gives each run's host its end, which hands it to its network process as `NET_PEER`
+     hands one: on Unix by SCM_RIGHTS on a socket the run host is given at its start for links
+     alone, as its pipes carry none; on Windows shared with the run host's process
+     (WSADuplicateSocketW, PM M203), its record on the wire, as `netproc::send` hands one. A
+     network's members are linked by one process at a time (`Pairing`): another process's join is
+     refused `PairedElsewhere`, never a network split into halves that cannot reach each other. The
+     daemon pairs the networks of its runs so too (slice 2).
+5. *What a member reaches* (default deny). Joining grants nothing, where dockerd links every
+   member of a network to every other, and netavark isolates networks from one another and nothing
+   within one (src/firewall/nft.rs:266-330). A member joins with its name on the network (one
+   member's, whatever its case), the ports it receives (TCP and UDP ranges; each port of its run's
+   address one member's, D122), and the flows it may open (a peer's name and its ports). A flow
+   exists where its sender's grant names its receiver and port and its receiver's grant takes that
+   port: each network process holds its own guest's side, neither guest trusted with the other's.
+   A reply is let by its flow's state, made as its first packet was admitted: dockerd's links let
+   the way back by source port (moby f78c987a, daemon/libnetwork/iptables/iptables.go:205-226, its
+   reverse rule's `--sport`), so that a linked container reaches any port of the other from that
+   one. A member is answered its own name and the names its grants name (D46's rule: a name only
+   where a flow is).
+
+**Decided.** D46's mesh, its network processes each switching several networks; one address for
+each run on each network; leases in the home's files, held by their holders; shards-api linking
+its runs; grants at both ends, replies by state. In slices, each its own landing (the API refuses a
+join until 4 and 5 have landed):
+1. *A network's leases across processes* (built: `networks::leases`): the home's networks lock
+   (`hold`); address leases (`Leases::take`: asked, or the lowest free; refused typed
+   `AddressTaken`, `OutOfRange`, `Exhausted`, `NotAnId`); name leases (`Leases::name`: a host's name,
+   lowercased; `NameTaken`, `NotAName`); the stale removed at each look (`addresses`, `names`); the
+   pairing (`Leases::pair`, `PairedElsewhere`); a network's leases removed with it (`Leases::clear`,
+   `InUse`); on `shards_image::store::Locked`, given `try_hold` and `try_share`.
+2. *The daemon's members as leases*: D46's join takes its run's address and names from them (their
+   holder the daemon); `networks::lock` becomes the home's (`hold`); `network inspect` lists every
+   live lease's member; `network rm` refuses a network in use (`InUse`, in dockerd's words: "has
+   active endpoints"); the daemon pairs its runs' networks.
+3. *The network process's networks* (the net crate): `NET_JOIN` (a network's slot, the guest's
+   address, prefix and gateway, the ports it receives) and `NET_LEAVE`; `NET_PEER` with its
+   network's slot and the ports its guest may open to that peer; each network's names; a table of
+   flows for each link (below); a fragment refused, as no port admits it; a newer link to a peer's
+   address replacing an older. Unit-tested with frames, as D46's peers are.
+4. *The wire, the API and the run host*: `ImageGuest::join(member, &Join, patience)` and
+   `leave(member, network, patience)`, `Join { network, name, ingress, egress }`; `NetAsk::Join` and
+   `Leave`, refused typed (`NoSuchNetwork`, `AddressTaken`, `NameTaken`, `Exhausted`,
+   `PairedElsewhere`, `Ipv6`); the run host's leases (their holder the run host, its run's ID a
+   microVM ID's form), its network process's and its guest's asks; shards-api's pairings and each
+   run host's links socket; a network made beforehand, with `network create`'s pool and words
+   (`Networks::create`), never by a join. The image channel's version one past main's at landing
+   (43 over today's 42).
+5. *The guest*: a built-in (26, the next free at landing), `join` and `leave` of a member: eth0's
+   second address and a route to the network's subnet from it, set as `address=` sets eth0's;
+   init's translation of the member's flows to that subnet from that address, its gate letting out
+   only its grants; each port it receives taken to it (D122's path); agentdns answering its names;
+   in D278's order: its gate first, its open flows to what it lost reset, then the tables.
+6. *Real VMs* (ROOT; HVF, KVM, WHP): api_image.rs
+   `members_of_two_runs_reach_each_other_on_a_shared_network_only_as_granted`: A's client reaches
+   B's server's port once both have joined; refused on another port, the other way, and from B's
+   other member; reset and refused once A leaves; a run host killed, its address given to the next
+   join.
+- IPv6 on a shared network (D99's) comes after: a network with IPv6 is refused (`Ipv6`) until then.
+- Docker's `network connect` of a running microVM (D46's open item) can come of slice 3's table,
+  Docker's networks keeping Docker's reach; a microVM's second network is then eth0's second
+  address, not an `eth1`.
+
+**States** (R04).
+- *A lease*, an address or a name: none → (taken: under the home's lock, free, made with its
+  record, held shared) **held** → (let go by its holder: its file removed, then its lock) none;
+  **held** → (its holder ends: the kernel lets its lock go) **stale** → (the next look under the
+  home's lock takes the exclusive lock and removes its file) none. A lease made but not yet held
+  when its maker ended is stale too. Invariants: a lease a process holds is never given again;
+  every take and look is under the home's lock; no lease's lock is ever waited for, only tried; no
+  caller holds the home's lock across another process's answer, so a wait for it is another
+  process's few file operations.
+- *A pairing*: none → (tried, exclusive) **paired**: this process links the network's members →
+  (dropped: its last member left, or the process ended) none; a try another holds:
+  `PairedElsewhere`.
+- *A network*: **kept** while no lease of it lives and no process pairs it, **in use** while one
+  does; removed only kept: its record and its leases, under the home's lock.
+- *A member's join* (slice 4): asked → leased (its run's address, taken or its run's already, and
+  its name) → told (its network process answered `NET_JOIN`) → linked (each other run on the
+  network paired, `NET_PEER` answered at both ends) → granted (its guest's built-in answered) →
+  **joined**; a failure undoes the steps before it in reverse, its refusal naming the step.
+  **joined** → leaving (its guest first: its gate shut, its open flows reset; then `NET_LEAVE`, its
+  run's last member's dropping the run's links; then its name, and the last member's, its run's
+  address) → none. A run's end lets every lease go with its host and every link with its network
+  process; shards-api tells the network's other runs their names without it.
+- *A flow* (slice 3), per link: none → (its first packet admitted: a TCP SYN or a UDP datagram, its
+  sender's grant and its receiver's both taking it, each at its own end) **open** → (a TCP RST, or a
+  FIN each way) none; **open** → (idle past its timer) none; its link dropped, every flow of it
+  none. A packet of no open flow and of no grant is dropped.
+
+**Literals** (R03).
+- A holder's ID is a microVM ID's form, 2 × `MICROVM_ID_BYTES` (32) lowercase hex digits
+  (`containers::new_id`); so is a network's ID, which names its leases' directory, so that no ID
+  names another path.
+- A name lease says its address: at most `"255.255.255.255".len()`, 15 bytes, the longest IPv4
+  address in dotted decimal; an address lease says its holder's ID, 64. A lease's record is read no
+  further than its kind's longest, so that no file of another's making has a look allocate past
+  it.
+- A name is a host's name (RFC 1035 §2.3.1, RFC 1123 §2.1, `shards_dns::host_name`: labels of 63
+  bytes, 253 in all), lowercased (RFC 4343), so that its file's name fits each supported
+  filesystem's 255 bytes. Its file is `@` and the name: Windows takes a base name of `CON`, `PRN`,
+  `AUX`, `NUL`, `COM1`-`COM9` or `LPT1`-`LPT9`, "followed immediately by an extension" too, for a
+  device (Microsoft, "Naming Files, Paths, and Namespaces"), each a host's name; `@` begins none,
+  nor any host's name.
+- Slice 3's timers: a UDP flow's two minutes past its last datagram (RFC 4787 REQ-5,
+  `bounds::UDP_MAPPING_IDLE`, the network process's own, D46 network-12); a TCP flow's RFC 5382
+  REQ-5 floors, 2 h 4 min established and 4 min opening or closing ("the value of the 'established
+  connection idle-timeout' MUST NOT be less than 2 hours 4 minutes. The value of the 'transitory
+  connection idle-timeout' MUST NOT be less than 4 minutes"), past which a flow goes only to make
+  room for a new one, as REQ-5's justification has a NAT "abandon sessions reactively in response
+  to new connection initiations": no live connection is cut on a clock alone. The table's room is
+  slice 3's to derive, learned from the network process's measured cost per flow and its memory
+  (R14), its cold start its grants' own 5-tuples.
+- Nothing else: frames, buffers and drops are D46's (PM M182).
+
+**What fails, and how it ends.** A holder that dies: its locks go with it, its leases are stale and
+given again at the next take, with no GC. A pairer that dies: its runs end with it (each run host's
+channel), and with them their leases and links. A run host that hangs: its leases stay, as its VM
+may run, never given twice. Two pairers: refused. A home on a network filesystem: flock there is not
+assured, unsupported as for each of the home's other locks (the image store's, the daemon's).
+
+**Questions for ROOT.** kiln's `Change::Connect` carries no ports, which this asks for both ways:
+its shape is kiln's and Hex's, a seam change to route. Whether a member's grants on a shared network
+are bounded by its image or a ceiling, as D278's past the microVM are: as designed, the
+orchestrator's join says them whole, nothing of a shared network leaving the machine's network
+processes.
+
+**Tests** (slice 1, light; written, not run, by the person's word of 2026-11-16: ROOT runs them).
+networks::leases: `addresses_are_the_lowest_free_and_one_let_go_is_the_next_given`,
+`a_lease_no_process_holds_is_removed_and_its_address_given_again` (a holder's end: its file left,
+held by none), `an_address_in_use_or_out_of_range_is_refused_by_its_cause`,
+`a_name_is_held_once_on_a_network_whatever_its_case` (a device's name on Windows among them),
+`one_open_links_a_networks_members_at_a_time`, `a_network_in_use_keeps_its_leases`,
+`the_homes_networks_are_held_against_every_other_open`. Owed (ROOT): `cargo test -p shards
+--profile test-release networks::leases` on macOS, Linux (glibc and musl) and Windows, as flock(2)
+and LockFileEx each hold them; `scripts/lint` on the seven targets.
+
 ## 4. Start path (≤ 5 ms budget)
 
 The target: a user's `shards run IMAGE COMMAND` to its command executing in its microVM

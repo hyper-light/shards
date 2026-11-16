@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use shards_net::bridge::{Prefix, free_subnet, overlap};
 
+// Its callers are D285's slices 2 (the daemon's members) and 4 (a run host's joins).
+#[cfg_attr(not(test), allow(dead_code))]
+pub mod leases;
+
 /// dockerd's predefined networks, which no user's may be named or removed.
 pub const PREDEFINED: [&str; 4] = ["bridge", "host", "none", "default"];
 
