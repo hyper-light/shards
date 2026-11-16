@@ -37183,6 +37183,31 @@ with no room the domains' `memory.current` counts their page cache, which `MemAv
 as reclaimable too. Reverted from this revision; until it returns, a member past an
 orchestrator's room is throttled at the run's hold, as before.
 
+**The reproduction read (2026-11-16, p/member-share-trace).** R09's run (adacachy2, 4dfa731b1 with
+4e0b82699, `--test nesting` three times: run 1 red) failed
+`a_granted_workload_still_reaches_no_host_port_over_vsock` and
+`a_granted_workload_cannot_detach_its_device_program`, whose runs start no domain and were told no
+`ROOM`: their homes' whole `daemon.log` has no budget word, which `tell_room_now` writes as a
+budget first holds a microVM. With no domain `reshare` and `domains::start` return before any
+share, and with no room told `plug::cap()` is `u64::MAX`, so `most_within` is `most` and the
+pluggable report is the one before: nothing those runs did changed. Each stop was refused in
+`Home::drop` 28.9 ms into its wait, the two at once, past a W* of 8.96 ms. The run left the
+daemon's runs as its end was told, under the lock its client is told it under (`tell_end`), so the
+stop waited on its daemon's exit, whose waits in `finish` are the `--rm` run's removal (its
+directory's sync and its files' deletion, `complete_batch`), the records (`await_recorded`) and the
+files made (`await_made`): the host's file system's work, in which neither the client nor the
+daemon runs. A judge's record is kept per checkout
+(`target/judge-records`) and learns from each answer, so later runs of one tree pass (runs 2 and
+3), which the comparisons above did not hold equal. The daemon started in the home after
+(1886439) was the refusal's own `ps -a` (`stacks_of`). So the stall is a judged stop waiting on
+its daemon's durable file-system work on that host (its btrfs device wholly allocated), not on
+the share: to be shown by A/B runs from one restored record. Each stage is said with the wall
+clock at `SHARDS_LOG=info` (`shards_vmm::stage!`; below `info`, an atomic's load): the stop
+client's slot, ask, answer and stopping lock; the daemon's stepping aside, each run's stop, its
+end heard and told, what a closed daemon's exit waits on and each wait of `finish`; each
+removal's set-aside, sync and deletion; each `ROOM` word told and answered. The guest's own end
+is already said there (its markers, `WORKLOAD_EXITED`, `POWERING_OFF`).
+
 **Verified.** E2E (api_image.rs): `a_member_at_the_least_envelope_grows_into_the_memory_its_run_may_plug`
 (4631b27d9: a harness at the least envelope holds four times its boot memory a page at a time,
 its kernel's `MemTotal` is the host's memory, and one allocation past all of it is refused at
