@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub use shards_http2::*;
 
 use crate::dns::credential::{self, CredentialGrant, Fill};
-use crate::hpack::{self, Field, Indexing};
+use crate::hpack::{Field, Indexing};
 use crate::inject::{authority_host, token_in};
 
 /// What the injector does with a request's field block (D242), as `credential::decide` says.
