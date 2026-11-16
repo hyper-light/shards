@@ -122,11 +122,14 @@ pub use shards_abi::run::nesting::Ready;
 /// restart's answer breaking the channel; 46, a swap's run-time arguments for the start that
 /// takes it ([`SwapAsk::args`], D270 slice 4), none its member's kept ones, so that a side that
 /// reads none refuses the run as it is asked, rather than starting its member again without the
-/// arguments its orchestrator started it with; 47, a swap whose member, restarted now, could
-/// not enter its working directory refused typed ([`SwapRefusal::Workdir`], D277), as 45
-/// refuses a restart's, so that a side that reads no such refusal refuses the run as it is
-/// asked, rather than its swap's answer breaking the channel.
-pub const VERSION: u8 = 47;
+/// arguments its orchestrator started it with; 47, the bound a plug of a volume asks
+/// ([`PlugFrom::Volume`]'s `bound`, D281), Hex's admitted `disk_bytes`, so that a side that
+/// holds none refuses the run as it is asked, rather than serving its volume unbounded; 48, a
+/// swap whose member, restarted now, could not enter its working directory refused typed
+/// ([`SwapRefusal::Workdir`], D277), as 45 refuses a restart's, so that a side that reads no
+/// such refusal refuses the run as it is asked, rather than its swap's answer breaking the
+/// channel.
+pub const VERSION: u8 = 48;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -1127,8 +1130,9 @@ pub enum PlugFrom {
     /// A host directory: absolute, UTF-8.
     Host(String),
     /// A volume of the run's home's store, by its name, made where it is not there as a
-    /// run's `-v NAME:PATH` makes one.
-    Volume(String),
+    /// run's `-v NAME:PATH` makes one. Its bound (version 47, D281): the bytes its files may
+    /// take, which it is made with, or set to where no run holds it; none for its own.
+    Volume { name: String, bound: Option<NonZeroU64> },
 }
 
 /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
@@ -2969,9 +2973,11 @@ impl PlugAsk {
                 w.u8(0);
                 w.text(host)?;
             }
-            PlugFrom::Volume(name) => {
+            PlugFrom::Volume { name, bound } => {
                 w.u8(1);
                 w.text(name)?;
+                // Appended in version 47 (D281): 0 for none.
+                w.u64(bound.map_or(0, NonZeroU64::get));
             }
         }
         w.text(&self.at)?;
@@ -2999,7 +3005,10 @@ impl PlugAsk {
         }
         let from = match r.u8()? {
             0 => PlugFrom::Host(r.text()?),
-            1 => PlugFrom::Volume(r.text()?),
+            1 => PlugFrom::Volume {
+                name: r.text()?,
+                bound: NonZeroU64::new(r.u64()?),
+            },
             tag => {
                 return Err(WireError::Tag {
                     what: "a plug's source",
@@ -4405,7 +4414,20 @@ mod tests {
     fn plugs_round_trip_and_bad_ones_are_refused() {
         for (members, from) in [
             (vec![2], PlugFrom::Host("/Users/u/proj".into())),
-            (vec![1, 2], PlugFrom::Volume("kiln-session".into())),
+            (
+                vec![1, 2],
+                PlugFrom::Volume {
+                    name: "kiln-session".into(),
+                    bound: None,
+                },
+            ),
+            (
+                vec![2],
+                PlugFrom::Volume {
+                    name: "kiln-session".into(),
+                    bound: NonZeroU64::new(10 << 30),
+                },
+            ),
         ] {
             let ask = PlugAsk {
                 id: 7,
@@ -5380,7 +5402,7 @@ mod tests {
             };
             assert_eq!(SwapAnswer::decode(&answer.encode().unwrap()), Ok(answer));
         }
-        const { assert!(VERSION >= 47, "the channel's version 47 carries a swap's Workdir") };
+        const { assert!(VERSION >= 48, "the channel's version 48 carries a swap's Workdir") };
         assert!(matches!(
             SwapAnswer::decode(&[0, 0, 0, 1, 1, 10, 0, 0, 0, 0]),
             Err(WireError::Tag {

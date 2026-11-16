@@ -11,7 +11,15 @@
 //! `DEST from-member ok` (or the errno that refused its write, a read-only plug's EROFS) on
 //! stdout; then it holds the first DEST busy, its working directory there, says `holding
 //! DEST`, and waits to be stopped.
+//!
+//! `plugged-bound DEST`: a member whose bounded volume is plugged at DEST (D281): once DEST's
+//! `from-host` appears, `DEST statfs SIZE ROOM` (its file system's size and the room left in
+//! it, in bytes, as df reads them), then a file of its own, `fill-` and a random name, filled
+//! until a write is refused: `DEST filled BYTES errno ERRNO`, the bytes it took and the errno
+//! that refused the next, its making's where that was refused; then `holding DEST`, and it
+//! waits to be stopped.
 
+use std::io::Read as _;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
@@ -101,6 +109,66 @@ pub fn volumes(dests: &[String]) -> i32 {
         return 1;
     }
     let _ = writeln!(std::io::stdout(), "holding {first}");
+    let _ = std::io::stdout().flush();
+    loop {
+        // SAFETY: blocks until a signal arrives.
+        unsafe { libc::pause() };
+    }
+}
+
+/// `plugged-bound DEST` ([the module's words](self)).
+pub fn bound(args: &[String]) -> i32 {
+    let Some(dest) = args.first() else {
+        let _ = writeln!(std::io::stderr(), "plugged-bound: DEST");
+        return 2;
+    };
+    let from_host = format!("{dest}/from-host");
+    let start = Instant::now();
+    while std::fs::metadata(&from_host).is_err() {
+        if start.elapsed() >= PATIENCE {
+            let _ = writeln!(std::io::stderr(), "plugged-bound: {from_host} never came");
+            return 1;
+        }
+        std::thread::sleep(LOOK);
+    }
+    let Ok(path) = std::ffi::CString::new(dest.as_str()) else {
+        return 2;
+    };
+    // SAFETY: an all-zero statvfs is a valid out-parameter.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statvfs(3) of a NUL-terminated path into a struct it owns.
+    if unsafe { libc::statvfs(path.as_ptr(), &raw mut st) } != 0 {
+        let e = std::io::Error::last_os_error();
+        let _ = writeln!(std::io::stderr(), "plugged-bound: statvfs {dest}: {e}");
+        return 1;
+    }
+    let _ = writeln!(
+        std::io::stdout(),
+        "{dest} statfs {} {}",
+        st.f_blocks.saturating_mul(st.f_frsize),
+        st.f_bavail.saturating_mul(st.f_frsize)
+    );
+    let mut name = [0u8; 8];
+    if let Err(e) = std::fs::File::open("/dev/urandom").and_then(|mut r| r.read_exact(&mut name)) {
+        let _ = writeln!(std::io::stderr(), "plugged-bound: a name: {e}");
+        return 1;
+    }
+    let name: String = name.iter().map(|b| format!("{b:02x}")).collect();
+    let chunk = vec![7u8; 64 << 10];
+    let mut filled = 0u64;
+    let refused = match std::fs::File::create(format!("{dest}/fill-{name}")) {
+        Err(e) => e,
+        Ok(mut f) => loop {
+            match f.write(&chunk) {
+                Ok(0) => break std::io::Error::from(std::io::ErrorKind::WriteZero),
+                Ok(n) => filled = filled.saturating_add(u64::try_from(n).unwrap_or(u64::MAX)),
+                Err(e) => break e,
+            }
+        },
+    };
+    let errno = refused.raw_os_error().unwrap_or(0);
+    let _ = writeln!(std::io::stdout(), "{dest} filled {filled} errno {errno}");
+    let _ = writeln!(std::io::stdout(), "holding {dest}");
     let _ = std::io::stdout().flush();
     loop {
         // SAFETY: blocks until a signal arrives.

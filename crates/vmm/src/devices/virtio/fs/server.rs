@@ -19,8 +19,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, PoisonError};
 
+use super::bound::Taken;
 use super::host::{self, AsRaw as _, Stat, linux};
 pub use super::proto::{HEADER_BYTES, IN_HEADER_BYTES, MAX_PAGES, MAX_TABLES, MAX_WRITE};
 use super::proto::{OUT_HEADER_BYTES, op};
@@ -790,23 +792,21 @@ impl Server {
     }
 
     /// Holds the files of the directory the share serves to `limit` bytes by D281's
-    /// measure ([`super::bound`]): its host file system's allocation unit read, what they
-    /// take now walked ([`charge_of`]), and from then on each request that would take more
-    /// than is left refused (ENOSPC). What they take, returned. Asked before the share is
-    /// served. A join share's volumes and a file bound alone take none.
-    pub fn bound(&self, limit: u64) -> Result<u64, String> {
+    /// measure ([`super::bound`]), charged in `charge`, the count every server of its volume
+    /// shares, which its first holder walked ([`charge_of_dir`]): its host file system's
+    /// allocation unit read, and from then on each request that would take more than is left
+    /// refused (ENOSPC). Asked before the share is served. A join share's volumes and a file
+    /// bound alone take none.
+    pub fn bound(&self, limit: u64, charge: &'static AtomicU64) -> Result<(), String> {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if s.joined || self.only.is_some() {
             return Err("a join share or a file bound alone takes no bound".into());
         }
-        let root = s.root.raw();
-        let host = fs_stats(root).map_err(|e| format!("its file system: errno {e}"))?;
-        let mut bound = super::bound::Bound::new(limit, u64::from(host.fragment_size))
+        let host = fs_stats(s.root.raw()).map_err(|e| format!("its file system: errno {e}"))?;
+        let bound = super::bound::Bound::new(limit, u64::from(host.fragment_size), charge)
             .ok_or("its file system says no allocation unit")?;
-        let charged = charge_of(root, &bound).map_err(|e| format!("what its files take: errno {e}"))?;
-        bound.take(charged);
         s.bound = Some(bound);
-        Ok(charged)
+        Ok(())
     }
 
     /// A join share's server (D119): its root the empty directory `root` holds, nothing
@@ -1653,9 +1653,9 @@ impl Server {
                 let len = s.bound.map_or(0, |b| {
                     b.whole(u64::try_from(target.to_bytes().len()).unwrap_or(u64::MAX))
                 });
-                room_for_name(s, len)?;
+                let taken = reserve_name(s, len)?;
                 symlink_at(&target, dir, &name)?;
-                took_name(s, len);
+                keep_taken(taken);
                 let made = self.made(s, nodeid, &name, caller, Kept::default(), r);
                 unmade(s, dir, &name, len, made.is_err());
                 made?;
@@ -1668,7 +1668,7 @@ impl Server {
                 let _ = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                room_for_name(s, 0)?;
+                let taken = reserve_name(s, 0)?;
                 let kind = mode & S_IFMT;
                 let perm = mode & 0o7777;
                 let empty = |perm: u32| {
@@ -1711,7 +1711,7 @@ impl Server {
                         Err(e) => return Err(e),
                     }
                 };
-                took_name(s, 0);
+                keep_taken(taken);
                 let made = self.made(s, nodeid, &name, caller, kept, r);
                 unmade(s, dir, &name, 0, made.is_err());
                 made?;
@@ -1722,9 +1722,9 @@ impl Server {
                 let _umask = a.u32()?;
                 let name = a.name()?;
                 let dir = dir_fd(s, nodeid)?;
-                room_for_name(s, 0)?;
+                let taken = reserve_name(s, 0)?;
                 mkdir_at(dir, &name, host_perm(mode, true))?;
-                took_name(s, 0);
+                keep_taken(taken);
                 let made = self.made(s, nodeid, &name, caller, Kept::mode(mode), r);
                 unmade(s, dir, &name, 0, made.is_err());
                 made?;
@@ -1776,9 +1776,9 @@ impl Server {
                 let name = a.name()?;
                 let (odir, oname) = at(s, old)?;
                 let dir = dir_fd(s, nodeid)?;
-                room_for_name(s, 0)?;
+                let taken = reserve_name(s, 0)?;
                 link_at(odir, &oname, dir, &name)?;
-                took_name(s, 0);
+                keep_taken(taken);
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
                 let dax = self.dax_of(s, id, &st);
                 r.entry(id, &st, owner, dax);
@@ -1835,12 +1835,13 @@ impl Server {
                 room_for_handle(s)?;
                 let dir = dir_fd(s, nodeid)?;
                 let flags = host::open_flags(flags) | host::O_CREAT;
-                // A name made takes a unit of the share's bound (D281): with none left, a file
-                // there already is opened still, as a full disk opens one.
-                let room = room_for_name(s, 0);
-                if room.is_err() && stat_at(dir, &name).is_err() {
-                    room?;
-                }
+                // A name made takes a unit of the share's bound (D281), taken first: with none
+                // left, a file there already is opened still, as a full disk opens one.
+                let taken = match reserve_name(s, 0) {
+                    Ok(taken) => taken,
+                    Err(e) if stat_at(dir, &name).is_err() => return Err(e),
+                    Err(_) => None,
+                };
                 let bounded = s.bound.is_some();
                 // Made here, or found there: a file O_CREAT finds keeps its owner and mode; one
                 // it truncates gives back its length (D281).
@@ -1858,11 +1859,21 @@ impl Server {
                         Err(e) => return Err(e),
                     };
                 let made = if created {
-                    took_name(s, 0);
+                    match taken {
+                        Some(taken) => taken.keep(),
+                        // Gone as it was opened, its name made with no room taken for it.
+                        None if bounded => {
+                            let _ = unlink_at(dir, &name, false);
+                            return Err(ENOSPC);
+                        }
+                        None => {}
+                    }
                     let made = self.made(s, nodeid, &name, caller, Kept::mode(mode), r);
                     unmade(s, dir, &name, 0, made.is_err());
                     made?
                 } else {
+                    // Found: no name made, what was taken for one given back.
+                    drop(taken);
                     let (id, found, owner) = lookup(s, nodeid, &name)?;
                     let dax = self.dax_of(s, id, &found);
                     r.entry_for(id, &found, owner, dax, name_valid(s, nodeid, &name)?);
@@ -1923,28 +1934,29 @@ impl Server {
                     .is_some_and(|f| f & host::O_APPEND != 0);
                 // Held to the share's bound (D281): what would take the file past the end its
                 // room lets it reach is not written, as a nearly full disk writes what fits;
-                // a write none of which fits is refused.
+                // a write none of which fits is refused. Its room is taken first, and what
+                // it did not write given back once it has.
                 let mut grows = None;
                 let data = match s.bound {
                     Some(b) => {
                         let len = stat_fd(fd)?.size;
                         let at = if appends { len } else { offset };
                         let asked = u64::try_from(data.len()).unwrap_or(u64::MAX);
-                        let fits = b.writable(len, at, asked);
+                        let (fits, taken) = b.reserve_write(len, at, asked);
                         if fits == 0 && asked > 0 {
                             return Err(ENOSPC);
                         }
-                        grows = Some((len, at));
+                        grows = Some((b, len, at, taken));
                         data.get(..usize::try_from(fits).unwrap_or(usize::MAX))
                             .unwrap_or(data)
                     }
                     None => data,
                 };
                 let n = pwrite(fd, data, (!appends).then_some(offset))?;
-                if let Some((len, at)) = grows {
+                if let Some((b, len, at, taken)) = grows {
                     let node = s.handles.get(&fh).map_or(nodeid, |h| h.node);
                     let end = at.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
-                    resized(s, node, len, len.max(end));
+                    grown(s, node, taken, b.growth(len, len.max(end)));
                 }
                 r.u32(u32::try_from(n).unwrap_or(0)).u32(0);
             }
@@ -2130,16 +2142,17 @@ impl Server {
                         let has = had
                             .saturating_sub(attr_len(&name, old))
                             .saturating_add(attr_len(&name, Some(value.len())));
-                        if !b.fits(b.growth(had, has)) {
-                            return Err(ENOSPC);
-                        }
-                        Some((had, has))
+                        let taken = b.reserve(b.growth(had, has)).ok_or(ENOSPC)?;
+                        Some((had, has, taken))
                     }
                     None => None,
                 };
                 fset_xattr(fd.raw(), &host_name, value, flags)?;
-                if let Some((had, has)) = grows {
-                    resized(s, nodeid, had, has);
+                if let Some((had, has, taken)) = grows {
+                    let grew = taken.bytes();
+                    grown(s, nodeid, taken, grew);
+                    // A smaller value gives back its whole units.
+                    resized(s, nodeid, had, has.min(had));
                 }
             }
             op::REMOVEXATTR => {
@@ -2184,17 +2197,15 @@ impl Server {
                     Some(b) => {
                         let len = stat_fd(fd)?.size;
                         let to = offset.checked_add(length).ok_or(EINVAL)?.max(len);
-                        if !b.fits(b.growth(len, to)) {
-                            return Err(ENOSPC);
-                        }
-                        Some((len, to))
+                        Some(b.reserve(b.growth(len, to)).ok_or(ENOSPC)?)
                     }
                     None => None,
                 };
                 fallocate(fd, mode, offset, length)?;
-                if let Some((len, to)) = grows {
+                if let Some(taken) = grows {
                     let node = s.handles.get(&fh).map_or(nodeid, |h| h.node);
-                    resized(s, node, len, to);
+                    let grew = taken.bytes();
+                    grown(s, node, taken, grew);
                 }
             }
             _ => return Err(ENOSYS),
@@ -2308,19 +2319,18 @@ impl Server {
             return Err(EACCES);
         }
         // A size the share's bound has no room for is refused before anything changes
-        // (D281), from the length the truncation will find.
+        // (D281), from the length the truncation will find: its room taken first, given
+        // back where the truncation is not made.
         let bound = s.bound;
-        let resized_from = match bound {
+        let resizing = match bound {
             Some(b) if valid & fattr::SIZE != 0 => {
                 let len = if valid & fattr::FH != 0 && is_file(s, fh) {
                     stat_fd(file_fd(s, fh)?)?.size
                 } else {
                     stat_at(dir, &name)?.size
                 };
-                if !b.fits(b.growth(len, size)) {
-                    return Err(ENOSPC);
-                }
-                Some(len)
+                let taken = b.reserve(b.growth(len, size)).ok_or(ENOSPC)?;
+                Some((len, taken))
             }
             _ => None,
         };
@@ -2362,8 +2372,11 @@ impl Server {
                     truncate_fd(fd.raw(), size)?;
                 }
             }
-            if let Some(len) = resized_from {
-                resized(s, nodeid, len, size);
+            if let Some((len, taken)) = resizing {
+                let grew = taken.bytes();
+                grown(s, nodeid, taken, grew);
+                // A shrink gives back its whole units; none where it grew.
+                resized(s, nodeid, len, size.min(len));
             }
         }
         if valid & (fattr::ATIME | fattr::MTIME) != 0 {
@@ -2411,8 +2424,8 @@ impl Server {
         if flags & linux::RENAME_EXCHANGE != 0 {
             return Err(EINVAL);
         }
-        // The whiteout is a name the share's bound needs room for (D281).
-        room_for_name(s, 0)?;
+        // The whiteout is a name the share's bound needs room for (D281), taken first.
+        let taken = reserve_name(s, 0)?;
         rename(s, olddir, old, newdir, new, flags & !linux::RENAME_WHITEOUT)?;
         let dir = dir_fd(s, olddir)?;
         let whiteout = Kept {
@@ -2427,7 +2440,7 @@ impl Server {
             let _ = rename(s, newdir, new, olddir, old, linux::RENAME_NOREPLACE);
             return Err(e);
         }
-        took_name(s, 0);
+        keep_taken(taken);
         Ok(())
     }
 
@@ -3348,24 +3361,39 @@ fn room_for_pin(s: &State) -> bool {
     u64::try_from(s.pins.len()).unwrap_or(u64::MAX) < s.budget
 }
 
-/// Refused (ENOSPC) where the share's bound (D281) has no room for a name and `bytes` more.
-fn room_for_name(s: &State, bytes: u64) -> Result<(), Errno> {
+/// A name and `bytes` more taken of the share's bound (D281) before it is made: refused
+/// (ENOSPC) where its count leaves no room for them, taken in one step with every other
+/// server's of its volume ([`super::bound::Bound::reserve`]). Given back as what is
+/// returned drops, unless the name was made ([`keep_taken`]). None without a bound.
+fn reserve_name(s: &State, bytes: u64) -> Result<Option<Taken>, Errno> {
     match s.bound {
-        Some(b) if !b.fits(b.unit().get().saturating_add(bytes)) => Err(ENOSPC),
-        _ => Ok(()),
+        Some(b) => b
+            .reserve(b.unit().get().saturating_add(bytes))
+            .map(Some)
+            .ok_or(ENOSPC),
+        None => Ok(None),
     }
 }
 
-/// A name made, with `bytes` more, taken from the share's bound (D281).
-fn took_name(s: &mut State, bytes: u64) {
-    if let Some(b) = s.bound.as_mut() {
-        let unit = b.unit().get();
-        b.take(unit.saturating_add(bytes));
+/// What a change took of the share's bound (D281) before it was made, kept: it was made.
+fn keep_taken(taken: Option<Taken>) {
+    if let Some(taken) = taken {
+        taken.keep();
     }
 }
 
-/// What [`took_name`] took given back where making the name `failed` and left it gone, as
-/// a record that cannot be kept removes what it made ([`Server::record`]).
+/// Node `node` grown, `grew` of what `taken` took first used (D281): that kept, the rest
+/// given back, and held back with a removed file the guest holds open until its last
+/// handle goes.
+fn grown(s: &mut State, node: u64, taken: Taken, grew: u64) {
+    if let Some(held) = s.removed_open.get_mut(&node) {
+        *held = held.saturating_add(grew);
+    }
+    taken.keep_only(grew);
+}
+
+/// What [`reserve_name`] took given back where making the name `failed` and left it gone,
+/// as a record that cannot be kept removes what it made ([`Server::record`]).
 fn unmade(s: &mut State, dir: host::Raw, name: &CStr, bytes: u64, failed: bool) {
     if failed && stat_at(dir, name).is_err() {
         let took = s.bound.map_or(0, |b| b.unit().get().saturating_add(bytes));
@@ -3474,18 +3502,29 @@ fn attrs_at(dir: host::Raw, name: &CStr, st: &Stat) -> Result<u64, Errno> {
     }
 }
 
+/// What the files beneath directory `dir` take by D281's measure ([`super::bound`]), in its
+/// host file system's allocation units ([`charge_of`]): walked as a volume's first holder
+/// counts it, before any server serves it.
+pub fn charge_of_dir(dir: std::fs::File) -> Result<u64, String> {
+    let root: host::Owned = dir.into();
+    let host = fs_stats(root.raw()).map_err(|e| format!("its file system: errno {e}"))?;
+    let unit = std::num::NonZeroU64::new(u64::from(host.fragment_size))
+        .ok_or("its file system says no allocation unit")?;
+    charge_of(root.raw(), unit).map_err(|e| format!("what its files take: errno {e}"))
+}
+
 /// What the files beneath directory `root` take by D281's measure ([`super::bound`]), in
-/// `b`'s units: each name a unit, each other file's length in whole units once however
-/// many names it has, and each file's guest's attributes in whole units. Read a directory
-/// at a time, a descriptor held for each above the one read, never recursed: a tree deeper
-/// than the process may hold descriptors for is refused (EMFILE).
-fn charge_of(root: host::Raw, b: &super::bound::Bound) -> Result<u64, Errno> {
+/// units of `unit` bytes: each name a unit, each other file's length in whole units once
+/// however many names it has, and each file's guest's attributes in whole units. Read a
+/// directory at a time, a descriptor held for each above the one read, never recursed: a
+/// tree deeper than the process may hold descriptors for is refused (EMFILE).
+fn charge_of(root: host::Raw, unit: std::num::NonZeroU64) -> Result<u64, Errno> {
     let mut seen = std::collections::HashSet::new();
     let mut total = 0u64;
     // Each directory being read, by its descriptor (none for the root, its caller's), with
     // its own directories still to be read.
     let mut open: Vec<(Option<host::Owned>, Vec<CString>)> =
-        vec![(None, charge_in(root, b, &mut seen, &mut total)?)];
+        vec![(None, charge_in(root, unit, &mut seen, &mut total)?)];
     while let Some((fd, left)) = open.last_mut() {
         let parent = fd.as_ref().map_or(root, |fd| fd.raw());
         let Some(name) = left.pop() else {
@@ -3498,7 +3537,7 @@ fn charge_of(root: host::Raw, b: &super::bound::Bound) -> Result<u64, Errno> {
             host::O_RDONLY | host::O_DIRECTORY | host::O_NOFOLLOW,
             0,
         )?;
-        let below = charge_in(dir.raw(), b, &mut seen, &mut total)?;
+        let below = charge_in(dir.raw(), unit, &mut seen, &mut total)?;
         open.push((Some(dir), below));
     }
     Ok(total)
@@ -3509,7 +3548,7 @@ fn charge_of(root: host::Raw, b: &super::bound::Bound) -> Result<u64, Errno> {
 /// read next.
 fn charge_in(
     dir: host::Raw,
-    b: &super::bound::Bound,
+    unit: std::num::NonZeroU64,
     seen: &mut std::collections::HashSet<(u64, u64)>,
     total: &mut u64,
 ) -> Result<Vec<CString>, Errno> {
@@ -3528,12 +3567,13 @@ fn charge_in(
             Err(ENOENT) => continue,
             Err(e) => return Err(e),
         };
-        let mut takes = b.unit().get();
+        let whole = |bytes: u64| super::bound::whole(bytes, unit);
+        let mut takes = unit.get();
         if is_dir(&st) || st.nlink < 2 || seen.insert(key(&st)) {
             if !is_dir(&st) {
-                takes = takes.saturating_add(b.whole(st.size));
+                takes = takes.saturating_add(whole(st.size));
             }
-            takes = takes.saturating_add(b.whole(attrs_at(dir, &name, &st)?));
+            takes = takes.saturating_add(whole(attrs_at(dir, &name, &st)?));
         }
         *total = total.saturating_add(takes);
         if is_dir(&st) {
@@ -6641,6 +6681,15 @@ mod tests {
         b
     }
 
+    /// `s`, serving `path`, bounded to `limit` (D281), its files walked first as its volume's
+    /// first holder walks them: what they take, and the count its servers share.
+    fn bounded(s: &Server, path: &std::path::Path, limit: u64) -> (u64, &'static AtomicU64) {
+        let walked = charge_of_dir(crate::platform::open_dir(path).unwrap()).unwrap();
+        let count: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(walked)));
+        s.bound(limit, count).unwrap();
+        (walked, count)
+    }
+
     /// D281: a share bounded as it is served charges each name a unit of its host's and each
     /// file its length in whole units, walked as it is bounded; a write past its room is cut
     /// where the room lets its file end and the next is refused (ENOSPC), as a name, a size
@@ -6652,12 +6701,12 @@ mod tests {
         let (path, s) = dir();
         std::fs::write(path.join("old"), vec![1u8; 5000]).unwrap();
         std::fs::create_dir(path.join("d")).unwrap();
-        let first = s.bound(u64::MAX).unwrap();
+        let (first, _) = bounded(&s, &path, u64::MAX);
         let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
         let whole = |n: u64| n.div_ceil(unit) * unit;
         assert_eq!(first, 2 * unit + whole(5000), "two names, and old's length");
         let limit = first + 4 * unit;
-        assert_eq!(s.bound(limit).unwrap(), first, "walked again alike");
+        assert_eq!(bounded(&s, &path, limit).0, first, "walked again alike");
         let charged = || s.state.lock().unwrap().bound.unwrap().charged();
         let (f, fh) = create(&s, ROOT, "f", 2, 0o644);
         assert_eq!(charged(), first + unit, "a name made");
@@ -6723,7 +6772,7 @@ mod tests {
     #[test]
     fn a_removed_open_files_charge_goes_with_its_last_handle() {
         let (path, s) = dir();
-        assert_eq!(s.bound(u64::MAX).unwrap(), 0, "an empty share takes nothing");
+        assert_eq!(bounded(&s, &path, u64::MAX).0, 0, "an empty share takes nothing");
         let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
         let charged = || s.state.lock().unwrap().bound.unwrap().charged();
         let (f, fh) = create(&s, ROOT, "f", 2, 0o644);
@@ -6761,11 +6810,39 @@ mod tests {
         set.extend(name("user.k"));
         set.extend(b"abc");
         assert_eq!(answer(&s, &req(op::SETXATTR, f, 0, &set)).0, 0);
-        let charged = s.bound(u64::MAX).unwrap();
+        let (charged, _) = bounded(&s, &path, u64::MAX);
         let unit = s.state.lock().unwrap().bound.unwrap().unit().get();
         let whole = |n: u64| n.div_ceil(unit) * unit;
         // a, a/b, a/b/f, a/g and l; f's length once; l's target's; f's attribute.
         assert_eq!(charged, 5 * unit + whole(10) + whole(5) + whole(6 + 3));
+    }
+
+    /// D281: the servers of one volume, as two members' share processes are, charge one
+    /// count: what one makes and writes takes the room the other then has not, and what one
+    /// gives back is room the other then has.
+    #[test]
+    fn the_servers_of_one_volume_charge_one_count() {
+        let (path, a) = dir();
+        let b = Server::new(root_of(&path), false, None).unwrap();
+        let (walked, count) = bounded(&a, &path, 0);
+        assert_eq!(walked, 0, "an empty share takes nothing");
+        let unit = a.state.lock().unwrap().bound.unwrap().unit().get();
+        a.bound(4 * unit, count).unwrap();
+        b.bound(4 * unit, count).unwrap();
+        let charged = || count.load(std::sync::atomic::Ordering::Relaxed);
+        let (f, f_fh) = create(&a, ROOT, "f", 2, 0o644);
+        let (g, g_fh) = create(&b, ROOT, "g", 2, 0o644);
+        assert_eq!(charged(), 2 * unit, "a name each");
+        let data = vec![1u8; usize::try_from(2 * unit).unwrap()];
+        assert_eq!(write(&a, f, f_fh, 0, &data), 0);
+        assert_eq!(charged(), 4 * unit, "the bound reached through one");
+        assert_eq!(write(&b, g, g_fh, 0, b"x"), -ENOSPC, "no room through the other");
+        release(&a, f, f_fh);
+        assert_eq!(answer(&a, &req(op::UNLINK, ROOT, 0, &name("f"))).0, 0);
+        assert_eq!(charged(), unit, "given back through one");
+        assert_eq!(write(&b, g, g_fh, 0, b"x"), 0, "room through the other");
+        assert_eq!(charged(), 2 * unit);
+        release(&b, g, g_fh);
     }
 
     /// Names Windows holds none of keep their characters to the guest, escaped on NTFS as
