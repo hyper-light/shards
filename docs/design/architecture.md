@@ -31972,11 +31972,13 @@ s33-injector-ab, 6cb1213f2; kept in step with the injector by 529838116 and b681
   round's upper end to the largest sample. It holds each round's interval up to n = 11776 to
   binomial terms summed apart from `interval`'s own: the narrowest whose tails are each within
   2.5%. It holds the quantiles to nearest rank and the arms to their turns.
-- *Owed* (ROOT). Its runs with `--release`, quiet and under load, on each OS and
-  architecture the network process runs on (on macOS through launchd-run.sh); their numbers
-  in PM, and any miss of R08's target recorded. Not measured here: Claude Code reading the
-  bundle `NODE_EXTRA_CA_CERTS` names as it starts, which step 2 owes and which needs Claude
-  Code itself.
+- *Owed* (ROOT). That test's first run, with its five guard removals (the harness's README):
+  under the person's rule of 2026-11-16 the lane that wrote it ran nothing. The harness's
+  runs with `--release`, quiet and under load, on each OS and architecture the network
+  process runs on (on macOS through launchd-run.sh); their numbers in PM, and any miss of
+  R08's target recorded. Not measured here: Claude Code reading the bundle
+  `NODE_EXTRA_CA_CERTS` names as it starts, which step 2 owes and which needs Claude Code
+  itself.
 
 **Built: step 8's first slice, the sign-in profiles** (`crates/net/src/signin.rs`; kiln plan
 01a1d2b88be57304b972761e2a5c6781 step 8; research f16, f43, f47, f49, f50, f52–f55, f63, f64; record

@@ -123,6 +123,29 @@ are ignored, so they are skipped):
 cargo test -p shards-net --lib inject::ab
 ```
 
+It has not run yet: the person's rule of 2026-11-16 leaves every build and test to ROOT. Its
+first run is owed, with these guard removals. Each must fail the test (cargo's exit code 101),
+and the file is restored after each, then touched, or cargo keeps the mutant build:
+
+```sh
+F=docs/research/measurements/s33-injector-ab/ab.rs
+T=inject::ab::the_statistics_each_line_reports_hold_to_their_sources
+for e in \
+  's/let tail = \(1\.0 - CONFIDENCE\) \/ 2\.0;/let tail = 1.0 - CONFIDENCE;/' \
+  's/\.filter\(\|&j\| cdf\[j - 1\] <= tail\)\.max\(\)\?/.find(|&j| cdf[j - 1] <= tail)?/' \
+  's/\.find\(\|&k\| cdf\[k - 1\] >= 1\.0 - tail\)\?/.filter(|&k| cdf[k - 1] >= 1.0 - tail).max()?/' \
+  's/\(q \* x\.len\(\) as f64\)\.ceil\(\)/(q * x.len() as f64).floor()/' \
+  's/if i\.is_multiple_of\(2\) \{ \[0, 1\] \} else \{ \[1, 0\] \}/let _ = i; [0, 1]/'
+do
+  perl -0pi -e "$e" "$F" && cargo test -p shards-net --lib "$T"; echo "rc=$?"
+  git checkout -- "$F" && touch "$F"
+done
+```
+
+In turn: `interval`'s tails not halved (the first n becomes 299); its lower end the lowest, not
+the highest; its upper end the highest, not the lowest; `quantile`'s rank floored; the arms
+always AB.
+
 ## What it does not count
 
 - The lease's round trip to the run host and kiln's broker. The harness answers a lease at once
