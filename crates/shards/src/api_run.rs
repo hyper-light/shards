@@ -669,6 +669,79 @@ fn give_members(
     Ok(())
 }
 
+/// Each member's working directory refused where no mount given it as it starts holds it
+/// (D277), `mounts` as [`give_members`] told them: the member could not enter it, as the
+/// image's own tree holds no project of its run's (D240) and a plug lands after it starts
+/// (D235).
+fn workdirs_held(
+    request: &wire::Request,
+    members: &[wire::MemberInfo],
+    mounts: &[(String, Vec<u8>)],
+    volumes: &[crate::agentfile::AgentVolume],
+) -> Result<(), No> {
+    for m in &request.members {
+        let Some(w) = &m.workdir else { continue };
+        let info = members
+            .iter()
+            .find(|i| i.kind == m.kind && i.name == m.name)
+            .ok_or_else(|| {
+                No(
+                    Cause::Image,
+                    format!("{:?} {}: the image declares no such member", m.kind, m.name),
+                )
+            })?;
+        let held = mounts
+            .iter()
+            .any(|(dest, entry)| holds(dest, w) && given_at_start(entry, dest, info, volumes));
+        if !held {
+            return Err(No(
+                Cause::Workdir,
+                format!(
+                    "{:?} {}: {w}: no share given it as it starts holds it; share its project there and give it the member (ImageShare::members)",
+                    m.kind, m.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` is `top` or lies beneath it, each absolute and plain.
+fn holds(top: &str, path: &str) -> bool {
+    path.strip_prefix(top)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || top.ends_with('/'))
+}
+
+/// Whether the mount whose setup entry is `entry`, at `dest`, is given member `info` as it
+/// starts, as init's `given_share` reads it (domains.rs): a directory its members are given
+/// (`domains`), to those it names alone where it names any (`member=N`, D277), and where the
+/// image's `VOLUME` lies there, only as its Agentfile gives it (D109).
+fn given_at_start(
+    entry: &[u8],
+    dest: &str,
+    info: &wire::MemberInfo,
+    volumes: &[crate::agentfile::AgentVolume],
+) -> bool {
+    let mut parts = entry.splitn(4, |&b| b == 0);
+    let (Some(_), Some(_), Some(flags), Some(only)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let flags: Vec<&[u8]> = flags.split(|&b| b == b',').collect();
+    if !only.is_empty() || !flags.contains(&&b"domains"[..]) {
+        return false;
+    }
+    let index = info.index.to_string();
+    let named: Vec<&[u8]> = flags.iter().filter_map(|f| f.strip_prefix(b"member=")).collect();
+    let by_name = named.is_empty() || named.contains(&index.as_bytes());
+    let by_volume = volumes
+        .iter()
+        .find(|v| v.paths.iter().any(|p| shards_cmdline::mounts::clean(p) == dest))
+        .is_none_or(|v| volume_gives(v, info.kind, &info.name));
+    by_name && by_volume
+}
+
 /// The members `request` asks `asked` of, by their declared index, ascending: each one of the
 /// image's that runs a program, each asked once, refused by name otherwise; `purpose` what one
 /// of files alone runs nothing for, `what` what is asked.
@@ -3483,6 +3556,7 @@ mod hosted {
             .map(|a| a.volumes.as_slice())
             .unwrap_or_default();
         super::give_members(&mut opened.mounts, &given, volumes)?;
+        super::workdirs_held(request, &members, &opened.mounts, volumes)?;
         let mut setup = crate::setup::setup(&run, &opened.mounts, None, Some(crate::run::shm_bytes(most)))
             .map_err(no(Cause::Request))?;
         if let Some(a) = agentfile.as_ref().filter(|a| a.domains > 0 && a.uplink) {
@@ -10669,6 +10743,85 @@ mod tests {
                 Ok(_) => panic!("{kind:?} {name} staged"),
             }
         }
+    }
+
+    /// A member's working directory stands only where a mount given it as it starts holds it
+    /// (D277), as init gives mounts (`given_share`): a share given it by name, at or beneath
+    /// its path, or the image's `VOLUME` its Agentfile gives it there; refused `Workdir` at a
+    /// share given no member or another, a file shared alone, the volume's where its `FOR` names
+    /// another, a path that only begins with a share's name, and where nothing is mounted.
+    #[test]
+    fn a_members_workdir_stands_only_in_a_mount_given_it() {
+        use shards_agentfile::agentfile::{Scope, TargetKind};
+        let entry = |dest: &str, flags: &str, only: &str| {
+            (
+                dest.to_string(),
+                format!("volume=shards0\0{dest}\0{flags}\0{only}").into_bytes(),
+            )
+        };
+        let at = |workdir: &str| {
+            let mut s = stage(wire::MemberKind::Harness, "codex");
+            s.workdir = Some(workdir.into());
+            request(vec![s])
+        };
+        let for_whom = |names: &[&str]| crate::agentfile::AgentVolume {
+            name: None,
+            paths: vec!["/work/".into()],
+            scoped: true,
+            scope: Scope {
+                kind: Some(TargetKind::Harness),
+                names: names.iter().map(|n| n.as_bytes().to_vec()).collect(),
+            },
+        };
+        let given = [entry("/Users/ada/proj", "domains,member=1", "")];
+        for workdir in ["/Users/ada/proj", "/Users/ada/proj/sub"] {
+            assert!(
+                workdirs_held(&at(workdir), &members(), &given, &[]).is_ok(),
+                "{workdir}"
+            );
+        }
+        let volume = [entry("/work", "domains,own,copy", "")];
+        assert!(workdirs_held(&at("/work/src"), &members(), &volume, &[for_whom(&["codex"])]).is_ok());
+        assert!(workdirs_held(&at("/work"), &members(), &volume, &[]).is_ok());
+        for (mounts, workdir, volumes) in [
+            (&given[..], "/Users/ada/project", Vec::new()),
+            (
+                &[entry("/Users/ada/proj", "", "")][..],
+                "/Users/ada/proj",
+                Vec::new(),
+            ),
+            (
+                &[entry("/Users/ada/proj", "domains,member=0", "")][..],
+                "/Users/ada/proj",
+                Vec::new(),
+            ),
+            (
+                &[entry("/Users/ada", "domains,member=1", "proj")][..],
+                "/Users/ada/proj",
+                Vec::new(),
+            ),
+            (&volume[..], "/work", vec![for_whom(&["claude"])]),
+            (&[][..], "/Users/ada/proj", Vec::new()),
+        ] {
+            assert!(
+                matches!(
+                    workdirs_held(&at(workdir), &members(), mounts, &volumes),
+                    Err(No(Cause::Workdir, why)) if why.contains(workdir) && why.contains("codex")
+                ),
+                "{workdir} {mounts:?}"
+            );
+        }
+        // None given, none held; and a member the image does not declare is refused as such.
+        let mut none = stage(wire::MemberKind::Harness, "codex");
+        none.workdir = None;
+        assert!(workdirs_held(&request(vec![none]), &members(), &[], &[]).is_ok());
+        let mut stranger = stage(wire::MemberKind::Harness, "nobody");
+        stranger.workdir = Some("/w".into());
+        assert!(matches!(
+            workdirs_held(&request(vec![stranger]), &members(), &[], &[]),
+            Err(No(Cause::Image, _))
+        ));
+        assert!(holds("/", "/anything") && holds("/a", "/a") && !holds("/a", "/ab"));
     }
 
     /// A member's run-time arguments (D256) are staged after its other entries, one

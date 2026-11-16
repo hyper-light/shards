@@ -15,6 +15,7 @@ mod alloc_count;
 mod api_build;
 mod api_check;
 mod api_run;
+mod api_volumes;
 mod aws;
 mod build;
 mod cli;
@@ -117,6 +118,8 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         Some("api-check") => api_check::command(),
         // an Agentfile's build for shards-api (D263): not for people to run.
         Some("api-build") => api_build::command(),
+        // a home's volumes listed and cleared for shards-api (D281): not for people to run.
+        Some("api-volumes") => api_volumes::command(args),
         // what serves a client's binds for a run through its context that goes on without
         // its command (D228): not for people to run.
         Some(client_binds::SERVE_APART) => client_binds::serve_apart(args),
