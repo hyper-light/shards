@@ -367,8 +367,9 @@ fn runs_init_as_pid_1_and_powers_off() {
 /// PID 1 runs where its kernel opened it no console: a command line naming a console the
 /// machine has none of leaves PID 1's descriptors 0-2 closed (init/main.c
 /// `console_on_rootfs`), which Rust's runtime reopens on the initramfs's `/dev/null` before
-/// init's `main`, or aborts, ending PID 1 (D261). `hvc1` is a port shards' one-port console
-/// never has; `ttyS0`, the 16550 shards' machines no longer have, is what Hex's guests named.
+/// init's `main`, or aborts, ending PID 1 (D261). `hvc1` names none on any machine (the
+/// console has one port); `ttyS0`, Hex's guests' line, none on arm64, whose 8250 driver has
+/// no legacy port (x86-64's asm/serial.h gives it 0x3f8, UART or not).
 #[test]
 fn runs_init_where_its_kernel_opened_no_console() {
     if cannot_run_vms() {

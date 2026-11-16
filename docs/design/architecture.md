@@ -36458,6 +36458,36 @@ post-mortem read of the printk ring through VMCOREINFO, not a debug port.
   `with_kernel_options`).
   Red with the default command line set back to a literal other console. Owed (ROOT): a real
   default boot's `/proc/cmdline` against it.
+- **PID 1 with no console to open** (2026-11-16, kiln goal 1c4faeef, plan step P1.6). `run
+  --kernel --init`'s initramfs (`initramfs::root`) held `/dev/console` alone in /dev. A command
+  line naming a console the machine has none of registers none, so the kernel opens PID 1 no
+  stdio (Linux v6.18 init/main.c `console_on_rootfs`: "Warning: unable to open an initial
+  console."). Rust's runtime reopens a closed descriptor 0-2 on `/dev/null` before `main`
+  and aborts where it cannot (rust-lang/rust 1.98.1, library/std/src/sys/pal/unix/mod.rs
+  `sanitize_standard_fds`), and shards-init mounts devtmpfs only in `main`: PID 1 ended, the
+  kernel panicked and `panic=-1` reset the VM, its console silent. Hex met it in its own
+  initramfs (g121, 2026-11-15) and has carried `/dev/null` since Hex 414aa30d.
+  - Fixed: the archive holds `/dev/null`, 1:3 (devices.txt) and 0666 (devtmpfs's mode,
+    drivers/char/mem.c `devlist`), 120 bytes more. shards-init's devtmpfs mounts over it.
+  - Red (R09), WHP x86-64 (jupiter), 6a4b27d13 with f8f95832f's initramfs (the node removed):
+    `shards run --kernel <pinned hyperv vmlinux> --init shards-init --cmdline "<c> quiet
+    panic=-1"`, three boots each: `console=hvc1` and `console=ttyAMA0` exit 3 ("the guest's
+    kernel panicked", reset through ACPI, nothing on stdout, 185-335 ms in); `console=hvc0`, no
+    console named, and `console=ttyS0` exit 0 (x86-64's 8250 has its legacy 0x3f8 port,
+    asm/serial.h, UART or not). The test below fails there: `console=hvc1`, Some(3).
+  - Green, HVF arm64 (a Mac Studio), 6a4b27d13: all five lines exit 0, three boots each; the
+    test below, `runs_init_as_pid_1_and_powers_off`, `survives_back_to_back_boots` and both
+    panic tests 5/5; vmm `initramfs` units 2/2.
+  - Owed (ROOT): the red on arm64 (`console=ttyS0`, Hex's case), KVM x86-64 both ways, and
+    WHP's green (lane phase1-v's RUNS-OWED rows).
+  - Tests: boot.rs `runs_init_where_its_kernel_opened_no_console` (`console=hvc1`, a port this
+    one-port console never has, and `console=ttyS0`, Hex's line); vmm
+    `initramfs::tests::archive_roundtrips` names the node.
+  - Rejected: an init that skips std's start-up (`#![no_main]`) in shards-init and testguest
+    covers those two, not the other `--init` binaries `run --kernel` takes; refusing a line
+    that names another console leaves a kernel without hvc's driver (`configure guest`, D28)
+    dying the same way; `CONFIG_DEVTMPFS_MOUNT` "does not affect initramfs based booting"
+    (drivers/base/Kconfig).
 
 **Alternatives rejected.**
 - A write-only debug port (x86's 0xe9 debugcon): mainline x86 early_printk has no 0xe9
