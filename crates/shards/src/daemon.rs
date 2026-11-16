@@ -11477,8 +11477,8 @@ mod tests {
             daemon.recording.end();
             daemon.followers.end();
             // What its VMs said as the test ended, which the followers' loop may have ended
-            // before it took (a loaded host's): taken, so that each run that ended lets go of
-            // the exec connections it held for its VM (M24), whose askers wait on them.
+            // before it took (a loaded host's): taken, and each run it left lets go of the
+            // exec connections it held for its VM (M24), whose askers wait on them.
             daemon.take_left();
             // A run's thread waiting for its end, which no follower takes now, returns.
             drop(lock(&daemon.runs));
@@ -14538,17 +14538,19 @@ mod tests {
         });
     }
 
-    /// A run whose end its followers' loop had not taken as it ended, with its test, ends
-    /// then as the loop would have ended it: the daemon lets go of the exec connection it
-    /// handed its VM and held until taken (M24), and the thread waiting on the exec returns.
-    /// Red with a test's end that left the run followed by none: the daemon's copy held the
-    /// exec's connection open, its asker waited on, and the tests' watchdog aborted them, as
-    /// a group's word to a member whose played VM answered no more did under load
-    /// (a_joiner_and_its_provider_in_one_group_count_their_vm_process_once, CI 43496145972).
+    /// A run whose end its followers' loop had not taken as it ended lets go, with its test,
+    /// of the exec connection the daemon handed its VM and held until taken (M24), and the
+    /// thread waiting on the exec returns, whether its VM's end has come or not: here its
+    /// VM's socket outlives the test, as a copy of it does in a child another test's thread
+    /// spawns, until that child's exec (PM M134). Red with a test's end that left the run
+    /// followed by none: the daemon's copy held the exec's connection open, its asker waited
+    /// on, and the tests' watchdog aborted them, as a group's word to a member whose played
+    /// VM answered no more did under load (CI 43496145972); and again where its end was looked
+    /// for once, as the test ended, and such a copy hid it (the whole suite, b240f4322).
     #[test]
     fn a_run_its_followers_left_lets_go_of_the_execs_handed_its_vm() {
         let t = Test::new("left-run");
-        t.run(|t| {
+        let _held = t.run(|t| {
             let id = t.create("left");
             let starting = t.start(&id);
             let (ready, vm) = t.warm_vm(None);
@@ -14575,7 +14577,7 @@ mod tests {
             // Its followers' loop ends before its VM's end comes.
             t.daemon.followers.end();
             t.until("its followers' loop woke to end", |d| d.followers.ended_awake());
-            drop(vm);
+            vm
         });
     }
 
