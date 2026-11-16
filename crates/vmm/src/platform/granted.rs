@@ -195,15 +195,19 @@ fn given(path: &Path, write: bool) -> io::Result<Option<File>> {
 }
 
 /// A socket handed this process bound at the path it is for, not yet listening: a
-/// descriptor on Unix, a socket shared with it on Windows (PM M203).
+/// descriptor on Unix. On Windows a vsock listener's first pair of pipe instances, its way
+/// down's and its way up's, which its spawner made and named at the path (D272).
 #[cfg(unix)]
 type Bound = OwnedFd;
 #[cfg(windows)]
-type Bound = super::UnixListener;
+type Bound = (
+    std::os::windows::io::OwnedHandle,
+    std::os::windows::io::OwnedHandle,
+);
 
 /// Sockets handed this process bound at the paths they are for, not yet listening: a VM's
-/// vsock device's, which App Sandbox will not let it bind (PM M67), nor an AppContainer
-/// in a directory that does not grant it (PM M201).
+/// vsock device's, which App Sandbox will not let it bind (PM M67); on Windows its first pair
+/// of pipes, which an AppContainer can make none of that its user may open (PM M603).
 static LISTENERS: Mutex<Vec<(PathBuf, Bound)>> = Mutex::new(Vec::new());
 
 /// Takes `socket`, bound at `path`, for the vsock device there to listen on.
@@ -215,6 +219,7 @@ pub fn grant_listener(path: PathBuf, socket: Bound) {
 
 /// A socket listening at `path`: the one granted for it, taken and listened on now, or one
 /// bound now. Until then, as where none is bound yet, a client is refused.
+#[cfg(unix)]
 pub fn listen_unix(path: &Path) -> io::Result<super::UnixListener> {
     let mut listeners = LISTENERS.lock().unwrap_or_else(PoisonError::into_inner);
     match listeners.iter().position(|(p, _)| p == path) {
@@ -232,16 +237,80 @@ fn listen(socket: OwnedFd) -> io::Result<super::UnixListener> {
     Ok(super::UnixListener::from(socket))
 }
 
+/// A vsock listener's pairs at `path` on Windows (D272): its first, the one its spawner
+/// granted for the path, or else one this process makes under fresh names and names at the
+/// path; and where its next come from.
 #[cfg(windows)]
-fn listen(socket: super::UnixListener) -> io::Result<super::UnixListener> {
-    socket.listen()?;
-    Ok(socket)
+pub fn listen_pipes(path: &Path) -> io::Result<(Bound, PairMaker)> {
+    let granted = {
+        let mut listeners = LISTENERS.lock().unwrap_or_else(PoisonError::into_inner);
+        listeners
+            .iter()
+            .position(|(p, _)| p == path)
+            .map(|i| listeners.swap_remove(i).1)
+    };
+    let path = path.to_path_buf();
+    match granted {
+        Some(pair) => Ok((pair, PairMaker { path, own: None })),
+        None => {
+            let (names, down, up) = shards_ipc::vsock_listen(&path)?;
+            Ok((
+                (down, up),
+                PairMaker {
+                    path,
+                    own: Some(names),
+                },
+            ))
+        }
+    }
+}
+
+/// Where a vsock listener's next pairs come from on Windows (D272): its spawner, through the
+/// hook its VM process set ([`set_pair_maker`]), where it granted the first; else this process,
+/// which made the first under names of its own and makes each next under them.
+#[cfg(windows)]
+#[derive(Debug)]
+pub struct PairMaker {
+    path: PathBuf,
+    own: Option<shards_ipc::VsockNames>,
+}
+
+#[cfg(windows)]
+impl PairMaker {
+    /// The listener's next pair: server ends of its way down and way up, unconnected.
+    pub fn next(&self) -> io::Result<Bound> {
+        match &self.own {
+            Some(names) => shards_ipc::vsock_pair(names, false),
+            None => match PAIR_MAKER.get() {
+                Some(make) => make(&self.path),
+                None => Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "no spawner to make the next pair",
+                )),
+            },
+        }
+    }
+}
+
+/// Asks this process's spawner for a vsock listener's next pair, by its path.
+#[cfg(windows)]
+type MakesPairs = Box<dyn Fn(&Path) -> io::Result<Bound> + Send + Sync>;
+
+#[cfg(windows)]
+static PAIR_MAKER: std::sync::OnceLock<MakesPairs> = std::sync::OnceLock::new();
+
+/// Has `maker` make every next pair of this process's granted vsock listener. Once.
+#[cfg(windows)]
+pub fn set_pair_maker(maker: MakesPairs) -> Result<(), String> {
+    PAIR_MAKER
+        .set(maker)
+        .map_err(|_| "a pair maker was set already".to_string())
 }
 
 /// Dials Unix sockets for this process: a VM's guest connections to host ports, which App
-/// Sandbox will not let it dial (PM M67), nor an AppContainer (PM M201), go through its
-/// spawner.
-type Dialer = Box<dyn Fn(&Path) -> io::Result<super::UnixStream> + Send + Sync>;
+/// Sandbox will not let it dial (PM M67), go through its spawner. On Windows a host port's
+/// pipes, which an AppContainer may open none of (PM M603): its spawner opens them (D272).
+type Dialer = Box<dyn Fn(&Path) -> io::Result<super::HostStream> + Send + Sync>;
 
 static DIALER: std::sync::OnceLock<Dialer> = std::sync::OnceLock::new();
 
@@ -252,8 +321,9 @@ pub fn set_dialer(dialer: Dialer) -> Result<(), String> {
         .map_err(|_| "a dialer was set already".to_string())
 }
 
-/// A connection to the socket at `path` through the dialer set, if one is.
-pub fn dial_unix(path: &Path) -> Option<io::Result<super::UnixStream>> {
+/// A connection to the socket at `path` through the dialer set, if one is: on Windows to the
+/// host port's pipes its file at `path` names.
+pub fn dial_unix(path: &Path) -> Option<io::Result<super::HostStream>> {
     DIALER.get().map(|dial| dial(path))
 }
 

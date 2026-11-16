@@ -30,7 +30,14 @@ mod windows_files;
 #[cfg(windows)]
 mod windows_pipes;
 #[cfg(windows)]
-pub use windows_pipes::Pipes;
+pub use windows_pipes::{Listening, Paired, Pipes};
+
+/// A host program's connection to a VM's vsock device, a dial of its socket's or the guest's
+/// to one of its host ports: a Unix stream socket; on Windows its two pipes (D272).
+#[cfg(unix)]
+pub type HostStream = UnixStream;
+#[cfg(windows)]
+pub type HostStream = Pipes;
 #[cfg(windows)]
 mod windows_process;
 #[cfg(windows)]
@@ -121,10 +128,14 @@ pub mod granule;
 mod granted;
 #[cfg(windows)]
 pub use granted::input_file_id;
+#[cfg(unix)]
+pub use granted::listen_unix;
 pub use granted::{
-    Kept, Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, listen_unix,
-    open_beneath_input, open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
+    Kept, Stager, dial_unix, grant_input, grant_listener, input_metadata, input_path, open_beneath_input,
+    open_input, open_newest_beneath_input, set_dialer, set_stager, stager,
 };
+#[cfg(windows)]
+pub use granted::{PairMaker, listen_pipes, set_pair_maker};
 
 #[cfg(target_os = "linux")]
 pub use shards_syscall_filter as seccomp;
