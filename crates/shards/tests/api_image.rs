@@ -518,12 +518,15 @@ fn a_share_given_no_member_is_the_runs_alone() {
     assert_ended(&*guest, MemberEnd::Exited(0));
 }
 
-/// P6.1: a member whose working directory no share given it as it starts holds is refused
-/// typed at boot (`Workdir`, D277), before anything of the run starts: its project shared and
-/// given no member, given another path, or not shared at all. Its control, the same project
-/// given it, starts in it: `a_project_given_its_harness_is_where_it_works`.
+/// P6.1 (D277): a member whose working directory its guest cannot enter as it starts is
+/// refused by its guest's own step (init's `entering its working directory`), typed `Workdir`
+/// to its orchestrator as its members start, naming the directory and the errno: its project
+/// shared and given no member, given at another path, or not shared at all. A working
+/// directory its image holds (`/etc`) starts as it did before P6.1, no share given it. Its
+/// shared control, the project given its harness, starts in it:
+/// `a_project_given_its_harness_is_where_it_works`.
 #[test]
-fn a_members_workdir_in_no_share_given_it_is_refused_at_boot() {
+fn a_members_workdir_its_guest_cannot_enter_is_refused_typed() {
     if cannot_run_vms() {
         return;
     }
@@ -545,7 +548,7 @@ fn a_members_workdir_in_no_share_given_it_is_refused_at_boot() {
             args: Vec::new(),
             mcp: false,
         }];
-        booted(&ImageShards::new(), &s).map(|_| ())
+        boot(&home, &s)
     };
     let share = |members| ImageShare {
         host: real.clone(),
@@ -562,11 +565,16 @@ fn a_members_workdir_in_no_share_given_it_is_refused_at_boot() {
         ),
         (Vec::new(), at.clone()),
     ] {
-        match started_in(shares, &workdir) {
-            Err(ImageRefusal::Workdir(why)) => assert!(why.contains(&workdir), "{why}"),
+        let guest = started_in(shares, &workdir);
+        match ask(&*guest, |g| g.wait_member(&codex(), 0, Duration::MAX)) {
+            Err(ImageRefusal::Workdir(why)) => {
+                assert!(why.contains(&workdir) && why.contains("errno 2"), "{why}");
+            }
             other => panic!("{workdir}: {other:?}"),
         }
     }
+    let guest = started_in(Vec::new(), "/etc");
+    assert_ended(&*guest, MemberEnd::Exited(0));
 }
 
 /// A share given a member the image declares none of, or one of files alone, is refused by its

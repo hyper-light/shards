@@ -787,6 +787,10 @@ pub mod kind {
     /// `MEMBER_STARTED` says it (`shards_abi::run::members::StartAnswer`), or the VM's own
     /// refusal in that shape where it could not give the guest the start.
     pub const MEMBER_STARTED: u8 = 110;
+    /// A VM → its owner, before its run's [`DONE`]: a member that could not enter its working
+    /// directory as it started, which failed the run (D277), as its guest's
+    /// `WORKDIR_UNENTERED` says it (`shards_abi::run::members::Unentered`).
+    pub const WORKDIR_UNENTERED: u8 = 111;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the

@@ -329,6 +329,51 @@ fn with_said(refused: ImageRefusal, said: &VecDeque<u8>) -> ImageRefusal {
     }
 }
 
+/// What a boot waiting for its run's start takes of `s`, none while it waits: its start, once
+/// told, whatever its host said after it (a refusal after the start is its members', D277,
+/// which their waits are refused with, [`member_end`]); else the host's refusal of `request`'s
+/// run, once it has exited and said all it will; else its end before a start, or its exit.
+fn start_of(s: &mut State, request: &wire::Request) -> Option<Result<wire::Started, ImageRefusal>> {
+    if let Some(started) = s.started.take() {
+        return Some(Ok(started));
+    }
+    if s.refused.is_some() {
+        if !(s.gone() && s.said_all) {
+            return None;
+        }
+        if let Some(refused) = gpu_refused(s, request) {
+            s.refused = None;
+            return Some(Err(refused));
+        }
+        return s.refused.take().map(|r| Err(with_said(r, &s.said)));
+    }
+    if let Some(end) = &s.end {
+        return Some(Err(ImageRefusal::Host(format!(
+            "the run ended before it started: {end:?}{}",
+            quoted(&s.said)
+        ))));
+    }
+    s.gone().then(|| {
+        Err(ImageRefusal::Host(format!(
+            "it exited before its run started{}",
+            quoted(&s.said)
+        )))
+    })
+}
+
+/// Member `index`'s generation `generation`'s end as `s` holds it, none while it waits: its
+/// end, once told; else its run's members refused their start (D277: a member's working
+/// directory its guest could not enter), typed; else ended with its run.
+fn member_end(s: &State, index: u32, generation: u32) -> Option<Result<MemberEnd, ImageRefusal>> {
+    if let Some(end) = s.ends.get(&(index, generation)) {
+        return Some(Ok(*end));
+    }
+    if let Some(refused) = &s.refused {
+        return Some(Err(refused.clone()));
+    }
+    (s.end.is_some() || s.gone()).then_some(Ok(MemberEnd::WithRun))
+}
+
 #[derive(Debug)]
 struct Shared {
     state: Mutex<State>,
@@ -1261,33 +1306,7 @@ impl Begun {
         // refusal is the host's last word, told once it has exited and said all it will.
         let outcome = match created {
             Err(e) => Some(Err(e)),
-            Ok(()) => shared.wait(patience, |s| {
-                if s.refused.is_some() {
-                    if !(s.gone() && s.said_all) {
-                        return None;
-                    }
-                    if let Some(refused) = gpu_refused(s, request) {
-                        s.refused = None;
-                        return Some(Err(refused));
-                    }
-                    return s.refused.take().map(|r| Err(with_said(r, &s.said)));
-                }
-                if let Some(started) = s.started.take() {
-                    return Some(Ok(started));
-                }
-                if let Some(end) = &s.end {
-                    return Some(Err(ImageRefusal::Host(format!(
-                        "the run ended before it started: {end:?}{}",
-                        quoted(&s.said)
-                    ))));
-                }
-                s.gone().then(|| {
-                    Err(ImageRefusal::Host(format!(
-                        "it exited before its run started{}",
-                        quoted(&s.said)
-                    )))
-                })
-            }),
+            Ok(()) => shared.wait(patience, |s| start_of(s, request)),
         };
         if stop.release() {
             end_it(&shared);
@@ -2917,12 +2936,9 @@ impl ImageGuest for Session {
             )));
         }
         let index = info.index;
-        Ok(self.shared.wait(timeout, |s| {
-            if let Some(end) = s.ends.get(&(index, generation)) {
-                return Some(*end);
-            }
-            (s.end.is_some() || s.gone()).then_some(MemberEnd::WithRun)
-        }))
+        self.shared
+            .wait(timeout, |s| member_end(s, index, generation))
+            .transpose()
     }
 
     fn wait_channel(
@@ -3988,8 +4004,8 @@ mod tests {
     /// A refusal comes back typed by its cause, its host's words unchanged: the nesting
     /// grant asked of an image that does not give it (D234) a widening, in the daemon's
     /// words; a crafted image's (NESTING beside an agent) the image's, in its build's, as
-    /// the daemon's read of the image says them; a member's working directory in no share
-    /// given it (D277) its own.
+    /// the daemon's read of the image says them; a member's working directory its guest could
+    /// not enter (D277) in its run host's.
     #[test]
     fn refusals_come_typed_in_their_hosts_words() {
         let undeclared = shards_abi::run::nesting::undeclared();
@@ -3997,7 +4013,8 @@ mod tests {
             "the image's Agentfile (sha256:00): {}",
             shards_abi::run::beside::nesting("agent", "a")
         );
-        let unshared = "Harness codex: /Users/ada/proj: no share given it there".to_string();
+        let unentered =
+            "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started".to_string();
         for (cause, why, typed) in [
             (
                 wire::Cause::Widening,
@@ -4007,8 +4024,8 @@ mod tests {
             (wire::Cause::Image, &crafted, ImageRefusal::Image(crafted.clone())),
             (
                 wire::Cause::Workdir,
-                &unshared,
-                ImageRefusal::Workdir(unshared.clone()),
+                &unentered,
+                ImageRefusal::Workdir(unentered.clone()),
             ),
         ] {
             let s = shared();
@@ -4021,6 +4038,30 @@ mod tests {
             assert_eq!(take(&s, wire::to_client::REFUSED, &refused), Ok(false));
             assert_eq!(lock(&s.state).refused, Some(typed));
         }
+    }
+
+    /// D277: a refusal its host tells after the run's start is its members': the boot takes
+    /// its start whatever came after it, and a member's wait is refused with it, typed, where
+    /// no end of its own came first; before either, the wait goes on.
+    #[test]
+    fn a_refusal_after_the_start_refuses_the_members_waits_not_the_boot() {
+        let request = super::super::request(&stand_in_spec(Path::new("/shards"), Vec::new())).unwrap();
+        let started = wire::Started {
+            members: Vec::new(),
+            published: Vec::new(),
+            control: None,
+            from: wire::StartedFrom::Booted,
+            egress: wire::Narrowing::default(),
+        };
+        let workdir = ImageRefusal::Workdir("Harness codex: /w: errno 2".into());
+        let mut state = State::default();
+        assert_eq!(member_end(&state, 1, 0), None);
+        state.started = Some(started.clone());
+        state.refused = Some(workdir.clone());
+        assert_eq!(start_of(&mut state, &request), Some(Ok(started)));
+        assert_eq!(member_end(&state, 1, 0), Some(Err(workdir)));
+        state.ends.insert((1, 0), MemberEnd::Exited(0));
+        assert_eq!(member_end(&state, 1, 0), Some(Ok(MemberEnd::Exited(0))));
     }
 
     /// A room's answer is kept for the ask awaiting it alone (D241): one for an ask no

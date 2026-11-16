@@ -109,10 +109,11 @@ pub use shards_abi::run::nesting::Ready;
 /// 41, whether a share's or a plug's files may be run from it (D279: [`ShareAt::exec`],
 /// [`PlugAsk::exec`]), so that a side that mounts none `noexec` refuses the run as it is asked,
 /// rather than running what its orchestrator said may not be run; 42, a member's working
-/// directory that no mount given it as it starts holds, refused as the run is asked
-/// ([`Cause::Workdir`], D277), so that its orchestrator is told so typed, rather than the
-/// member's start failing in its guest.
-pub const VERSION: u8 = 42;
+/// directory refused typed ([`Cause::Workdir`], D277); 43, that refusal its guest's own, told
+/// as the run's members start, after [`to_client::STARTED`] and before [`to_client::ENDED`],
+/// where 42's run host refused one no share held before its VM was handed the run, a
+/// directory its image holds among them.
+pub const VERSION: u8 = 43;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -174,9 +175,12 @@ pub mod to_host {
 
 /// What the run host sends.
 pub mod to_client {
-    /// [`Started`](super::Started): the run runs, its members started.
+    /// [`Started`](super::Started): the run runs, its VM having taken it; its members start in
+    /// its guest, and a [`REFUSED`] after this says they did not (D277).
     pub const STARTED: u8 = 16;
-    /// [`Refused`](super::Refused): the run will not be, and the host ends.
+    /// [`Refused`](super::Refused): the run will not be, and the host ends; or, after
+    /// [`STARTED`], its members will not run ([`Cause::Workdir`](super::Cause::Workdir), D277),
+    /// told before its [`ENDED`].
     pub const REFUSED: u8 = 17;
     /// [`Output`](super::Output): a member's bytes, within its credit.
     pub const OUTPUT: u8 = 18;
@@ -835,8 +839,9 @@ pub enum Cause {
     /// A warm run host's microVM is another request's than the run's (D253's pools): the run
     /// is its orchestrator's to start on a host of its own.
     Unfit = 5,
-    /// A member's working directory that no mount given it as it starts holds (D277): it
-    /// could not start there. Appended in version 42.
+    /// A member's working directory its guest could not enter as it started (D277; init's
+    /// `entering its working directory`): none of the run's members runs. Told after
+    /// [`to_client::STARTED`], before [`to_client::ENDED`]. Appended in version 42.
     Workdir = 6,
 }
 
@@ -5077,7 +5082,7 @@ mod tests {
             (Cause::Widening, "egress 22/tcp: the image grants none"),
             (
                 Cause::Workdir,
-                "Harness codex: /Users/ada/proj: no share given it there",
+                "Harness codex: /Users/ada/proj: errno 2: its guest could not enter it as it started",
             ),
         ] {
             let refused = Refused {
