@@ -4309,6 +4309,7 @@ mod tests {
     }
 
     /// `NET_PEER_GRANT`'s payload for `change` of network `id`'s grants.
+    #[cfg(unix)]
     fn stack_grant(id: &shared::NetworkId, change: shared::Change) -> Vec<u8> {
         shared::encode_grant(id, &change).unwrap()
     }
